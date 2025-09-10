@@ -1,0 +1,22 @@
+[
+    {
+       "step":"install git-lfs",
+       "command":"microdnf install git-lfs"
+    },
+    {
+       "step":"Verify git-lfs install",
+       "command":"git lfs install"
+    },
+    {
+       "step":"install huggingface CLI",
+       "command":"pip3 -q install huggingface-hub[cli] numpy==1.26.4"
+    },
+    {
+      "step":"install onnxruntime",
+      "command":"pip3 -q install onnxruntime-genai==0.5.2"
+    },
+    {
+       "step":"download model",
+       "command":"hf download microsoft/Phi-3-mini-4k-instruct-onnx --include cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4/* --local-dir /pybox/model"
+    }
+]

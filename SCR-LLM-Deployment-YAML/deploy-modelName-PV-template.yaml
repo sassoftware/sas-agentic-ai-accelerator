@@ -1,0 +1,96 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llmname
+  namespace: llm
+spec:
+  selector:
+    matchLabels:
+      app: llmname
+  template:
+    metadata:
+      labels:
+        app: llmname
+    spec:
+      containers:
+      - name: llmname
+        image: containerRegistry/llm_name:latest
+        resources:
+          requests:
+            memory: "4000Mi"
+            cpu: "1000m"
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        env:
+        - name: SAS_SCR_LOG_LEVEL_SCR_IO
+          value: TRACE
+        volumeMounts:
+        - name: llm-pv
+          mountPath: /pybox/model/mount
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - llm
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              preference:
+                matchExpressions:
+                - key: "kubernetes.azure.com/scalesetpriority"
+                  operator: In
+                  values:
+                  - spot
+      tolerations:
+      - key: app
+        operator: Equal
+        value: llm
+        effect: NoSchedule
+      - key: "kubernetes.azure.com/scalesetpriority"
+        operator: Equal
+        value: spot
+        effect: NoSchedule
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llmname
+  namespace: llm
+spec:
+  type: ClusterIP
+  selector:
+    app: llmname
+  ports:
+  - port: 443
+    targetPort: 8080
+    protocol: TCP
+---
+kind: Ingress
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: llmname
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - host
+    secretName: llm-tls-certs
+  rules:
+    - host: host
+      http:
+        paths:
+          - path: /llm/model_name(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: llmname
+                port:
+                  number: 443

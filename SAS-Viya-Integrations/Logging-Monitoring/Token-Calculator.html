@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<!--
+    Copyright © 2024, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
+    SPDX-License-Identifier: Apache-2.0
+-->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Content Security Policy meta tag to allow necessary external scripts -->
+    <meta http-equiv="Content-Security-Policy" 
+          content="script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' https://esm.sh https://cdn.tailwindcss.com;">
+    <title>GPT Token Counter (Static)</title>
+    <!-- Tailwind CSS CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for the Inter font and basic layout */
+        body {
+            font-family: 'Inter', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #f0f4f8; /* Light background */
+        }
+        /* Ensure textareas take full width within their containers and align horizontally */
+        .input-group textarea {
+            width: 100%;
+            min-height: 150px; /* Adjusted minimum height for better side-by-side view */
+            resize: vertical; /* Allow vertical resizing */
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-4">
+    <div class="max-w-4xl w-full bg-white p-8 rounded-xl shadow-lg border border-gray-200">
+        <h1 class="text-3xl font-bold text-gray-800 mb-6 text-center">Token & Cost Calculator</h1>
+        <div class="text-sm text-gray-600 text-center mt-8 p-4 bg-gray-50 rounded-lg">
+            
+            <p>Both the token and cost amounts are best guesses, real world usage will vary. This tool only serves as an indicator of how many tokens a prompt will consume.</p>
+            <p class="mt-2">No data is sent to an LLM for processing, the caluclation is done in browser.</p>
+        </div>
+        
+        <div class="flex flex-col md:flex-row md:space-x-4 mb-6">
+            <!-- System Prompt Input -->
+            <div class="input-group flex-1 mb-4 md:mb-0">
+                <label for="systemPromptInput" class="block text-gray-700 text-lg font-medium mb-2">System Prompt:</label>
+                <textarea
+                    id="systemPromptInput"
+                    class="block p-4 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200 ease-in-out text-gray-800"
+                    placeholder="Enter system instructions here..."
+                ></textarea>
+            </div>
+
+            <!-- User Prompt Input -->
+            <div class="input-group flex-1 mb-4 md:mb-0">
+                <label for="userPromptInput" class="block text-gray-700 text-lg font-medium mb-2">User Prompt:</label>
+                <textarea
+                    id="userPromptInput"
+                    class="block p-4 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200 ease-in-out text-gray-800"
+                    placeholder="Enter user query here..."
+                ></textarea>
+            </div>
+
+            <!-- Response Input -->
+            <div class="input-group flex-1">
+                <label for="responseInput" class="block text-gray-700 text-lg font-medium mb-2">Response:</label>
+                <textarea
+                    id="responseInput"
+                    class="block p-4 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200 ease-in-out text-gray-800"
+                    placeholder="Enter model response here..."
+                ></textarea>
+            </div>
+        </div>
+
+        <div class="flex flex-col md:flex-row md:space-x-4 justify-around items-center mb-6">
+            <p class="text-xl font-semibold text-gray-700 mb-4 md:mb-0">
+                Input Tokens: <span id="inputTokensCount" class="text-blue-600">0</span>
+            </p>
+            <p class="text-xl font-semibold text-gray-700">
+                Output Tokens: <span id="outputTokensCount" class="text-blue-600">0</span>
+            </p>
+        </div>
+
+        <div class="flex justify-center items-center mb-6">
+            <p id="loadingIndicator" class="text-sm text-gray-500 flex items-center hidden">
+                <svg class="animate-spin -ml-1 mr-2 h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Loading tokenizer...
+            </p>
+            <p id="errorDisplay" class="text-sm text-red-500 hidden">
+                Error: <span id="errorMessage"></span>
+            </p>
+        </div>
+
+        <div class="mt-8 p-4 bg-gray-50 rounded-lg shadow">
+            <p class="font-bold mb-4">Enter how often a day this prompt will be run: <input type="number" id="dailyRuns" value="1" min="1"></p>
+            <h2 class="text-xl font-bold text-gray-800 mb-4 text-center">Estimated Costs by Model</h2>
+            <div id="priceCalculations" class="space-y-3">
+                <!-- Price calculations will be dynamically inserted here -->
+            </div>
+        </div>
+        <p>This tool uses the <a href="https://github.com/dqbd/tiktoken">`js-tiktoken`</a> library which is licensed under the MIT license.</p>
+    </div>
+
+    <!-- Your custom JavaScript to run the calculation -->
+    <script type="module">
+        // Import getEncoding directly from js-tiktoken via esm.sh CDN
+        import { getEncoding } from 'https://esm.sh/js-tiktoken@1.0.8'; // Using a specific version for stability
+
+        let encoding;
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const errorDisplay = document.getElementById('errorDisplay');
+        const errorMessageSpan = document.getElementById('errorMessage');
+        const priceCalculationsDiv = document.getElementById('priceCalculations');
+
+        // References to the input elements
+        const systemPromptInput = document.getElementById('systemPromptInput');
+        const userPromptInput = document.getElementById('userPromptInput');
+        const responseInput = document.getElementById('responseInput');
+
+        // References to the combined/renamed token count displays
+        const inputTokensCountSpan = document.getElementById('inputTokensCount');
+        const outputTokensCountSpan = document.getElementById('outputTokensCount');
+
+        // Data for LLM pricing
+        let llmPricingData;
+
+        /**
+         * Hides the error message.
+         */
+        function hideError() {
+            errorDisplay.classList.add('hidden');
+            errorMessageSpan.textContent = '';
+        }
+
+        /**
+         * Displays an error message.
+         * @param {string} message - The error message to display.
+         */
+        function showError(message) {
+            errorDisplay.classList.remove('hidden');
+            errorMessageSpan.textContent = message;
+        }
+
+        /**
+         * Calculates the number of tokens for a given text.
+         * @param {string} text - The text string to tokenize.
+         * @returns {number} The token count, or 0 if encoding is not ready or an error occurs.
+         */
+        function getTokenCount(text) {
+            if (!encoding) {
+                return 0; // Tokenizer not ready
+            }
+            try {
+                const tokenIds = encoding.encode(text);
+                return tokenIds.length;
+            } catch (error) {
+                console.error("Error encoding text:", error);
+                showError("Error calculating tokens!");
+                return 0; // Return 0 on error
+            }
+        }
+
+        /**
+         * Updates the combined input token count, output token count, and model prices.
+         */
+        function updateAllTokenCounts() {
+            hideError(); // Hide any previous errors before recalculation
+
+            const systemPromptText = systemPromptInput.value;
+            const userPromptText = userPromptInput.value;
+            const responseText = responseInput.value;
+
+            // Calculate individual counts
+            const systemTokens = getTokenCount(systemPromptText);
+            const userTokens = getTokenCount(userPromptText);
+            const responseTokens = getTokenCount(responseText);
+
+            // Update combined displays
+            const inputTokens = systemTokens + userTokens;
+            const outputTokens = responseTokens;
+            inputTokensCountSpan.textContent = inputTokens;
+            outputTokensCountSpan.textContent = outputTokens;
+
+            // Clear previous price calculations
+            priceCalculationsDiv.innerHTML = '';
+
+            // Calculate and display prices for each LLM model
+            llmPricingData.data.forEach(modelData => {
+                const modelName = modelData[0];
+                const inputTokenPrice = modelData[1];
+                const outputTokenPrice = modelData[2];
+                const secondCost = modelData[3];
+                const costType = modelData[4];
+
+                let estimatedCost = 0;
+
+                if (costType === "Tokens") {
+                    estimatedCost = (inputTokens * inputTokenPrice) + (outputTokens * outputTokenPrice);
+                } else if (costType === "Seconds") {
+                    // Assume 0.05 seconds per token
+                    const totalTokens = inputTokens + outputTokens;
+                    const estimatedSeconds = totalTokens * 0.05;
+                    estimatedCost = estimatedSeconds * secondCost;
+                }
+                estimatedCost = estimatedCost * document.getElementById("dailyRuns").value;
+                const priceElement = document.createElement('p');
+                priceElement.className = "text-md text-gray-700";
+                priceElement.innerHTML = `<strong>${modelName}:</strong> <span class="text-green-700">$${estimatedCost.toFixed(8)} per Day</span>`;
+                priceCalculationsDiv.appendChild(priceElement);
+            });
+        }
+
+        /**
+         * Initializes the tiktoken encoding.
+         * Shows a loading indicator while the encoding is being fetched.
+         */
+        async function initializeTokenizer() {
+            loadingIndicator.classList.remove('hidden'); // Show loading indicator
+            hideError(); // Hide any previous errors
+            try {
+                // 'cl100k_base' is the encoding used by GPT-4, GPT-3.5-Turbo, etc.
+                encoding = await getEncoding("cl100k_base");
+                console.log("js-tiktoken encoding loaded successfully!");
+            } catch (error) {
+                console.error("Failed to load js-tiktoken encoding:", error);
+                showError("Error loading tokenizer. Please check console.");
+            } finally {
+                loadingIndicator.classList.add('hidden'); // Hide loading indicator
+                // Perform initial calculation for all inputs after tokenizer is ready
+                updateAllTokenCounts();
+            }
+        }
+
+        // Add event listeners to all textareas for real-time updates
+        systemPromptInput.addEventListener('input', updateAllTokenCounts);
+        userPromptInput.addEventListener('input', updateAllTokenCounts);
+        responseInput.addEventListener('input', updateAllTokenCounts);
+        const dailyRuns = document.getElementById("dailyRuns");
+        dailyRuns.addEventListener('input', updateAllTokenCounts);
+
+        // Initialize the tokenizer when the DOM is ready
+        document.addEventListener('DOMContentLoaded', initializeTokenizer);
+
+        if (window.addEventListener) {
+            // For standards-compliant web browsers
+            window.addEventListener('message', onMessage, false);
+        } else {
+            window.attachEvent('onmessage', onMessage);
+        }
+
+        // Retrieve data and begin processing
+        function onMessage(event) {
+            llmPricingData = event.data;
+            updateAllTokenCounts();
+        }
+    </script>
+</body>
+</html>

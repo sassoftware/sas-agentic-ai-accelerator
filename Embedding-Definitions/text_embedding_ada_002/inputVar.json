@@ -1,0 +1,23 @@
+[
+    {
+        "name": "document",
+        "description": "Contains the document that you want to get the embedding for",
+        "level": "nominal",
+        "type": "string",
+        "length": 100000
+    },
+    {
+        "name": "project",
+        "description": "Specify the project name for which you are embedding something",
+        "level": "nominal",
+        "type": "string",
+        "length": 256
+    },
+    {
+        "name": "options",
+        "description": "This is an optional argument to detail model parameters",
+        "level": "nominal",
+        "type": "string",
+        "length": 1000
+    }
+]

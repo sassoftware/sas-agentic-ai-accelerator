@@ -1,0 +1,23 @@
+[
+    {
+        "name": "embedding",
+        "description": "Contains the embedding vector",
+        "level": "nominal",
+        "type": "string",
+        "length": 100000
+    },
+    {
+        "name": "run_time",
+        "description": "Inference time of the Embedding Model",
+        "level": "interval",
+        "type": "decimal",
+        "length": 8
+    },
+    {
+        "name": "tokens",
+        "description": "Token amount that was embedded",
+        "level": "interval",
+        "type": "decimal",
+        "length": 8
+    }
+]

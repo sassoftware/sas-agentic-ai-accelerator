@@ -1,0 +1,21 @@
+{
+    "name": "text_embedding_ada_002",
+    "scoreCodeFile": "textEmbeddingAda002.py",
+    "description": "text-embedding-ada-002 is OpenAIs improved, more performant version of OpenAIs ada embedding model. Embeddings are a numerical representation of text that can be used to measure the relatedness between two pieces of text. Embeddings are useful for search, clustering, recommendations, anomaly detection, and classification tasks.",
+    "toolVersion": "3.11-5",
+    "targetVariable": "embedding",
+    "targetLevel": "NOMINAL",
+    "trainCodeType": "Python",
+    "modeler": "gerdaw",
+    "function": "embedding",
+    "algorithm": "Embedding",
+    "tool": "Python 3",
+    "scoreCodeType": "Python",
+    "champion": false,
+    "tags": ["Embedding", "Proprietary", "OpenAI", "small"],
+    "modelPurpose": "Embedding models serve the core purpose of converting complex data types like text, images, and audio into a numerical format, specifically vectors, which are easily processed by machine learning algorithms.",
+    "intendedUse": "Their intended use is to capture the semantic relationships and meaning within this data. For instance, in a text embedding model, words with similar meanings, like car and automobile, would be represented by vectors that are close to each other in a multi-dimensional space. This vector-based representation is fundamental for tasks like semantic search, where the goal is to find information based on its meaning rather than just keyword matches, and for recommendation systems that suggest similar items to a user.",
+    "expectedBenefit": "The expected benefit is a more intuitive and powerful way to handle unstructured data, leading to more accurate and context-aware applications.  This process essentially translates human-understandable concepts into a language that machines can work with, enabling a wide range of advanced AI applications.",
+    "outOfScopeUseCases": "They are not designed for generating new content from scratch; that's the job of generative models. They also cannot perform complex logical reasoning or precise mathematical calculations.",
+    "limitations": "While they are great at capturing relationships, they struggle with polysemy, where a single word has multiple meanings. A simple embedding might place the word bank in a single location in vector space, failing to distinguish between a financial institution and the side of a river. This limitation is somewhat addressed by more advanced, contextual models. Finally, training effective embedding models often requires massive datasets and significant computational resources, making them expensive to develop from scratch."
+}

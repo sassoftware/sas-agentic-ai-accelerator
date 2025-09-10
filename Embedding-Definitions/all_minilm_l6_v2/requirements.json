@@ -1,0 +1,18 @@
+[
+    {
+        "step":"install git-lfs",
+        "command":"microdnf install git-lfs"
+    },
+    {
+        "step":"Verify git-lfs install",
+        "command":"git lfs install"
+    },
+    {
+       "step":"install common packages",
+       "command":"pip3 -q install huggingface-hub[cli] sentence-transformers "
+    },
+    {
+        "step": "download model",
+        "command": "hf download sentence-transformers/all-MiniLM-L6-v2 --local-dir /pybox/model/all_minilm_l6_v2"
+    }
+]

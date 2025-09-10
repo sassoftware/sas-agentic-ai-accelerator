@@ -1,0 +1,21 @@
+{
+    "name": "gemini_pro_15",
+    "scoreCodeFile": "geminipro15Score.py",
+    "description": "Gemini 1.5 Pro is a mid-size multimodal model that is optimized for a wide-range of reasoning tasks. 1.5 Pro can process large amounts of data at once, including 2 hours of video, 19 hours of audio, codebases with 60,000 lines of code, or 2,000 pages of text.",
+    "toolVersion": "3.11-5",
+    "targetVariable": "response",
+    "targetLevel": "NOMINAL",
+    "trainCodeType": "Python",
+    "modeler": "gerdaw",
+    "function": "text generation",
+    "algorithm": "Transformer",
+    "tool": "Python 3",
+    "scoreCodeType": "Python",
+    "champion": false,
+    "tags": ["LLM", "Proprietary", "Google", "small"],
+    "modelPurpose": "To serve as a bridge of understanding, enabling seamless interaction between humans and machines by harnessing the power of natural language. LLMs decode the complexities of human thought, transforming them into actionable insights, creative solutions, and tailored knowledge while fostering accessibility, inclusivity, and empowerment in communication and decision-making.",
+    "intendedUse": "Large Language Models (LLMs) are designed to process and generate human-like text, enabling a wide range of applications across domains. These models support tasks such as text summarization, question answering, content generation, translation, and conversational interactions. LLMs aim to facilitate understanding, streamline workflows, and provide accessible tools for creativity, education, and decision-making. They are built to serve diverse user needs while emphasizing usability, adaptability, and ethical considerations in deployment.",
+    "expectedBenefit": "Large Language Models (LLMs) provide significant utility across various domains by enabling efficient processing and generation of human-like text. Key benefits include enhanced productivity through automation of repetitive tasks, improved accessibility via natural language interfaces, and support for creativity in content generation and ideation. These models contribute to knowledge dissemination by simplifying complex information and tailoring it to diverse audiences. Additionally, they foster inclusivity by enabling multilingual communication and supporting underrepresented languages. When responsibly deployed, LLMs offer scalable solutions that enhance both individual and organizational capabilities.",
+    "outOfScopeUseCases": "Large Language Models (LLMs) are not designed for use in high-stakes decision-making contexts, such as medical diagnosis, legal advice, or financial planning, where expert oversight is required. They should not be employed to generate or propagate false, harmful, or misleading information, nor in unmoderated settings where their output could be misused or misinterpreted. These models are unsuitable for real-time systems with safety-critical implications, such as autonomous vehicles or emergency response systems, and should not be used in applications that violate privacy, such as unauthorized surveillance or data scraping. Additionally, LLMs must not be used in ways that reinforce bias, discrimination, or unethical practices, underscoring the need for careful and responsible deployment.",
+    "limitations": "Large Language Models (LLMs) have several inherent limitations. They may produce outputs that are factually incorrect, outdated, or lack context, as they do not possess real-time knowledge or a true understanding of the information they generate. LLMs are sensitive to the quality of input prompts, and vague or poorly structured inputs can lead to irrelevant or nonsensical responses. They may inadvertently reinforce biases present in their training data or reflect inappropriate content. Additionally, LLMs cannot provide subjective judgment, emotional awareness, or ethical reasoning, which limits their reliability in nuanced or sensitive situations. Their computational demands can also pose challenges for deployment, particularly in resource-constrained environments. Regular monitoring, context-aware use, and human oversight are essential to mitigate these limitations."
+}

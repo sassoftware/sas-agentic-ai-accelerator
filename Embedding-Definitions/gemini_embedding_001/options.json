@@ -1,0 +1,17 @@
+{
+    "API_KEY": {
+        "default": "Google",
+        "range": "sk-****",
+        "description": "This is the Google key that is used to make the actual request."
+    },
+    "Embedding_Length": {
+        "default": 3072,
+        "range": "3072",
+        "description": "The length of the returned embedding vector."
+    },
+    "Input_Token_Limit": {
+        "default": 2048,
+        "range": "2048",
+        "description": "The limit of input tokens for the embedding model."
+    }
+}

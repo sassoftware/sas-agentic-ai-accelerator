@@ -1,0 +1,22 @@
+[
+    {
+      "step": "install git-lfs",
+      "command": "microdnf install git-lfs"
+    },
+    {
+      "step": "Verify git-lfs install",
+      "command": "git lfs install"
+    },
+    {
+      "step": "install huggingface CLI",
+      "command": "pip3 -q install huggingface-hub[cli] transformers torch numpy==1.26.4"
+    },
+    {
+      "step": "Login with huggingface - ensure you have expected the license: https://huggingface.co/mistralai/Mistral-Nemo-Instruct-2407",
+      "command": "hf login --token $(cat /etc/secret-volume/huggingfacetoken)"
+    },
+    {
+      "step": "download model",
+      "command": "hf download --quiet mistralai/Mistral-Nemo-Instruct-2407 --exclude 'consolidated.safetensors' --local-dir /pybox/model/nemo"
+    }
+  ]

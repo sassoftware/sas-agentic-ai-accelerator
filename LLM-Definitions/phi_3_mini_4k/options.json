@@ -1,0 +1,7 @@
+{
+    "max_tokens": {
+        "default": 2048,
+        "range": "1 - 4000",
+        "description": "Parameter to define how long the output can get."
+    }
+}

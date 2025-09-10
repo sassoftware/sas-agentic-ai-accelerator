@@ -1,0 +1,23 @@
+[
+    {
+        "name": "userPrompt",
+        "description": "Contains the variable information for the LLM prompt",
+        "level": "nominal",
+        "type": "string",
+        "length": 5000
+    },
+    {
+        "name": "systemPrompt",
+        "description": "Contains the the behavior on how the LLM should act and respond",
+        "level": "nominal",
+        "type": "string",
+        "length": 1000
+    },
+    {
+        "name": "options",
+        "description": "This is an optional argument to detail model parameters",
+        "level": "nominal",
+        "type": "string",
+        "length": 1000
+    }
+]

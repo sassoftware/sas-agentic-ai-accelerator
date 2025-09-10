@@ -1,0 +1,18 @@
+[
+    {
+      "step": "install git-lfs",
+      "command": "microdnf install git-lfs"
+    },
+    {
+      "step": "Verify git-lfs install",
+      "command": "git lfs install"
+    },
+    {
+      "step": "install huggingface CLI and other packages",
+      "command": "pip3 -q install huggingface-hub[cli] transformers torch accelerate numpy==1.26.4"
+    },
+    {
+      "step": "download model",
+      "command": "hf download --quiet Qwen/Qwen2.5-7B-Instruct --local-dir /pybox/model/qwen_25_7b"
+    }
+  ]

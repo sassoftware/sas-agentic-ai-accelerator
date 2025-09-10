@@ -1,0 +1,12 @@
+{
+    "Embedding_Length": {
+        "default": 768,
+        "range": "768",
+        "description": "The length of the returned embedding vector."
+    },
+    "Input_Token_Limit": {
+        "default": 512,
+        "range": "512",
+        "description": "The limit of input tokens for the embedding model."
+    }
+}

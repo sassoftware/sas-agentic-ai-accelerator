@@ -1,0 +1,17 @@
+{
+    "API_KEY": {
+        "default": "VoyageAI",
+        "range": "sk-****",
+        "description": "This is the VoyageAI key that is used to make the actual request."
+    },
+    "Embedding_Length": {
+        "default": 1024,
+        "range": "1024",
+        "description": "The length of the returned embedding vector."
+    },
+    "Input_Token_Limit": {
+        "default": 16000,
+        "range": "16000",
+        "description": "The limit of input tokens for the embedding model."
+    }
+}

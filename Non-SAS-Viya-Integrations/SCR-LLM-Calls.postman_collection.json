@@ -1,0 +1,308 @@
+{
+	"info": {
+		"_postman_id": "3c5cd6e9-0dff-4614-a031-2642cca85ac7",
+		"name": "SCR-LLM-Calls",
+		"description": "This collection is an add on to jump start your call introduction into the SAS LLM Prompt Builder Framework.  \n  \nYou will find one example request per model currently available as part of the default framework.\n\nNote that for proprietary models (like GPT and Claude) you need to specify an API Key - for this take a look at the collection variables where these have been pre configured and you just need to put in your key.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "9277187"
+	},
+	"item": [
+		{
+			"name": "Call Phi 3 mini 4k",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"inputs\": [\r\n        {\r\n            \"name\": \"systemPrompt\",\r\n            \"value\": \"You are a heplful assitant that provides a short summary of the users input\"\r\n        },\r\n        {\r\n            \"name\": \"userPrompt\",\r\n            \"value\": \"A Boy was given permission to put his hand into a pitcher to get some filberts. But he took such a great fistful that he could not draw his hand out again. There he stood, unwilling to give up a single filbert and yet unable to get them all out at once. Vexed and disappointed he began to cry.\\n\\n\\\"My boy,\\\" said his mother, \\\"be satisfied with half the nuts you have taken and you will easily get your hand out. Then perhaps you may have some more filberts some other time.\\\"\"\r\n        },\r\n        {\r\n            \"name\": \"options\",\r\n            \"value\": \"{max_length:2048}\"\r\n        }\r\n    ]\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{host}}/phi_3_mini_4k/phi_3_mini_4k",
+					"host": [
+						"{{host}}"
+					],
+					"path": [
+						"phi_3_mini_4k",
+						"phi_3_mini_4k"
+					]
+				},
+				"description": "Call the Phi 3 mini model by Microsoft with a 4.000 token context length."
+			},
+			"response": []
+		},
+		{
+			"name": "Call Claude 2.0",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"inputs\": [\r\n        {\r\n            \"name\": \"systemPrompt\",\r\n            \"value\": \"You are a heplful assitant that provides a short summary of the users input\"\r\n        },\r\n        {\r\n            \"name\": \"userPrompt\",\r\n            \"value\": \"A Boy was given permission to put his hand into a pitcher to get some filberts. But he took such a great fistful that he could not draw his hand out again. There he stood, unwilling to give up a single filbert and yet unable to get them all out at once. Vexed and disappointed he began to cry.\\n\\n\\\"My boy,\\\" said his mother, \\\"be satisfied with half the nuts you have taken and you will easily get your hand out. Then perhaps you may have some more filberts some other time.\\\"\"\r\n        },\r\n        {\r\n            \"name\": \"options\",\r\n            \"value\": \"{temperature:1,top_p:1,max_tokens:1000,API_KEY:{{Anthropic-Key}}}\"\r\n        }\r\n    ]\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{host}}/claude_2_0/claude_2_0",
+					"host": [
+						"{{host}}"
+					],
+					"path": [
+						"claude_2_0",
+						"claude_2_0"
+					]
+				},
+				"description": "Call the Claude 2.0 proprietary model by Anthropic - Requires an Anthropic API key."
+			},
+			"response": []
+		},
+		{
+			"name": "Call Claude 2.1",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"inputs\": [\r\n        {\r\n            \"name\": \"systemPrompt\",\r\n            \"value\": \"You are a heplful assitant that provides a short summary of the users input\"\r\n        },\r\n        {\r\n            \"name\": \"userPrompt\",\r\n            \"value\": \"A Boy was given permission to put his hand into a pitcher to get some filberts. But he took such a great fistful that he could not draw his hand out again. There he stood, unwilling to give up a single filbert and yet unable to get them all out at once. Vexed and disappointed he began to cry.\\n\\n\\\"My boy,\\\" said his mother, \\\"be satisfied with half the nuts you have taken and you will easily get your hand out. Then perhaps you may have some more filberts some other time.\\\"\"\r\n        },\r\n        {\r\n            \"name\": \"options\",\r\n            \"value\": \"{temperature:1,top_p:1,max_tokens:1000,API_KEY:{{Anthropic-Key}}}\"\r\n        }\r\n    ]\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{host}}/claude_2_1/claude_2_1",
+					"host": [
+						"{{host}}"
+					],
+					"path": [
+						"claude_2_1",
+						"claude_2_1"
+					]
+				},
+				"description": "Call the Claude 2.1 proprietary model by Anthropic - Requires an Anthropic API key."
+			},
+			"response": []
+		},
+		{
+			"name": "Call Claude 3 Haiku",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"inputs\": [\r\n        {\r\n            \"name\": \"systemPrompt\",\r\n            \"value\": \"You are a heplful assitant that provides a short summary of the users input\"\r\n        },\r\n        {\r\n            \"name\": \"userPrompt\",\r\n            \"value\": \"A Boy was given permission to put his hand into a pitcher to get some filberts. But he took such a great fistful that he could not draw his hand out again. There he stood, unwilling to give up a single filbert and yet unable to get them all out at once. Vexed and disappointed he began to cry.\\n\\n\\\"My boy,\\\" said his mother, \\\"be satisfied with half the nuts you have taken and you will easily get your hand out. Then perhaps you may have some more filberts some other time.\\\"\"\r\n        },\r\n        {\r\n            \"name\": \"options\",\r\n            \"value\": \"{temperature:1,top_p:1,max_tokens:1000,API_KEY:{{Anthropic-Key}}}\"\r\n        }\r\n    ]\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{host}}/claude_haiku_3/claude_haiku_3",
+					"host": [
+						"{{host}}"
+					],
+					"path": [
+						"claude_haiku_3",
+						"claude_haiku_3"
+					]
+				},
+				"description": "Call the Claude 3 Haiku proprietary model by Anthropic - Requires an Anthropic API key."
+			},
+			"response": []
+		},
+		{
+			"name": "Call Claude 3 Sonnet",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"inputs\": [\r\n        {\r\n            \"name\": \"systemPrompt\",\r\n            \"value\": \"You are a heplful assitant that provides a short summary of the users input\"\r\n        },\r\n        {\r\n            \"name\": \"userPrompt\",\r\n            \"value\": \"A Boy was given permission to put his hand into a pitcher to get some filberts. But he took such a great fistful that he could not draw his hand out again. There he stood, unwilling to give up a single filbert and yet unable to get them all out at once. Vexed and disappointed he began to cry.\\n\\n\\\"My boy,\\\" said his mother, \\\"be satisfied with half the nuts you have taken and you will easily get your hand out. Then perhaps you may have some more filberts some other time.\\\"\"\r\n        },\r\n        {\r\n            \"name\": \"options\",\r\n            \"value\": \"{temperature:1,top_p:1,max_tokens:1000,API_KEY:{{Anthropic-Key}}}\"\r\n        }\r\n    ]\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{host}}/claude_sonnet_3/claude_sonnet_3",
+					"host": [
+						"{{host}}"
+					],
+					"path": [
+						"claude_sonnet_3",
+						"claude_sonnet_3"
+					]
+				},
+				"description": "Call the Claude 3 Sonnet proprietary model by Anthropic - Requires an Anthropic API key."
+			},
+			"response": []
+		},
+		{
+			"name": "Call Claude 3.5 Sonnet",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"inputs\": [\r\n        {\r\n            \"name\": \"systemPrompt\",\r\n            \"value\": \"You are a heplful assitant that provides a short summary of the users input\"\r\n        },\r\n        {\r\n            \"name\": \"userPrompt\",\r\n            \"value\": \"A Boy was given permission to put his hand into a pitcher to get some filberts. But he took such a great fistful that he could not draw his hand out again. There he stood, unwilling to give up a single filbert and yet unable to get them all out at once. Vexed and disappointed he began to cry.\\n\\n\\\"My boy,\\\" said his mother, \\\"be satisfied with half the nuts you have taken and you will easily get your hand out. Then perhaps you may have some more filberts some other time.\\\"\"\r\n        },\r\n        {\r\n            \"name\": \"options\",\r\n            \"value\": \"{temperature:1,top_p:1,max_tokens:1000,API_KEY:{{Anthropic-Key}}}\"\r\n        }\r\n    ]\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{host}}/claude_sonnet_3_5/claude_sonnet_3_5",
+					"host": [
+						"{{host}}"
+					],
+					"path": [
+						"claude_sonnet_3_5",
+						"claude_sonnet_3_5"
+					]
+				},
+				"description": "Call the Claude 3.5 Sonnet proprietary model by Anthropic - Requires an Anthropic API key."
+			},
+			"response": []
+		},
+		{
+			"name": "Call Claude 3 Opus",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"inputs\": [\r\n        {\r\n            \"name\": \"systemPrompt\",\r\n            \"value\": \"You are a heplful assitant that provides a short summary of the users input\"\r\n        },\r\n        {\r\n            \"name\": \"userPrompt\",\r\n            \"value\": \"A Boy was given permission to put his hand into a pitcher to get some filberts. But he took such a great fistful that he could not draw his hand out again. There he stood, unwilling to give up a single filbert and yet unable to get them all out at once. Vexed and disappointed he began to cry.\\n\\n\\\"My boy,\\\" said his mother, \\\"be satisfied with half the nuts you have taken and you will easily get your hand out. Then perhaps you may have some more filberts some other time.\\\"\"\r\n        },\r\n        {\r\n            \"name\": \"options\",\r\n            \"value\": \"{temperature:1,top_p:1,max_tokens:1000,API_KEY:{{Anthropic-Key}}}\"\r\n        }\r\n    ]\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{host}}/claude_opus_3/claude_opus_3",
+					"host": [
+						"{{host}}"
+					],
+					"path": [
+						"claude_opus_3",
+						"claude_opus_3"
+					]
+				},
+				"description": "Call the Claude 3 Opus proprietary model by Anthropic - Requires an Anthropic API key."
+			},
+			"response": []
+		},
+		{
+			"name": "Call OpenAI GPT 4o 2024-05-13",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"inputs\": [\r\n        {\r\n            \"name\": \"systemPrompt\",\r\n            \"value\": \"You are a heplful assitant that provides a short summary of the users input\"\r\n        },\r\n        {\r\n            \"name\": \"userPrompt\",\r\n            \"value\": \"A Boy was given permission to put his hand into a pitcher to get some filberts. But he took such a great fistful that he could not draw his hand out again. There he stood, unwilling to give up a single filbert and yet unable to get them all out at once. Vexed and disappointed he began to cry.\\n\\n\\\"My boy,\\\" said his mother, \\\"be satisfied with half the nuts you have taken and you will easily get your hand out. Then perhaps you may have some more filberts some other time.\\\"\"\r\n        },\r\n        {\r\n            \"name\": \"options\",\r\n            \"value\": \"{temperature:1,top_p:1,API_KEY:{{OpenAI-Key}}}\"\r\n        }\r\n    ]\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{host}}/gpt_4o_2024_05_13/gpt_4o_2024_05_13",
+					"host": [
+						"{{host}}"
+					],
+					"path": [
+						"gpt_4o_2024_05_13",
+						"gpt_4o_2024_05_13"
+					]
+				},
+				"description": "Call the OpenAI GPT 4o proprietary model by OpenAI - Requires an OpenAI API key."
+			},
+			"response": []
+		},
+		{
+			"name": "Call OpenAI GPT 4o mini 2024-07-18",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"inputs\": [\r\n        {\r\n            \"name\": \"systemPrompt\",\r\n            \"value\": \"You are a heplful assitant that provides a short summary of the users input\"\r\n        },\r\n        {\r\n            \"name\": \"userPrompt\",\r\n            \"value\": \"A Boy was given permission to put his hand into a pitcher to get some filberts. But he took such a great fistful that he could not draw his hand out again. There he stood, unwilling to give up a single filbert and yet unable to get them all out at once. Vexed and disappointed he began to cry.\\n\\n\\\"My boy,\\\" said his mother, \\\"be satisfied with half the nuts you have taken and you will easily get your hand out. Then perhaps you may have some more filberts some other time.\\\"\"\r\n        },\r\n        {\r\n            \"name\": \"options\",\r\n            \"value\": \"{temperature:1,top_p:1,API_KEY:{{OpenAI-Key}}}\"\r\n        }\r\n    ]\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{host}}/gpt_4o_mini_2024_07_18/gpt_4o_mini_2024_07_18",
+					"host": [
+						"{{host}}"
+					],
+					"path": [
+						"gpt_4o_mini_2024_07_18",
+						"gpt_4o_mini_2024_07_18"
+					]
+				},
+				"description": "Call the OpenAI GPT 4o mini proprietary model by OpenAI - Requires an OpenAI API key."
+			},
+			"response": []
+		},
+		{
+			"name": "Call Mistral Nemo",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"inputs\": [\r\n        {\r\n            \"name\": \"systemPrompt\",\r\n            \"value\": \"You are a heplful assitant that provides a short summary of the users input\"\r\n        },\r\n        {\r\n            \"name\": \"userPrompt\",\r\n            \"value\": \"A Boy was given permission to put his hand into a pitcher to get some filberts. But he took such a great fistful that he could not draw his hand out again. There he stood, unwilling to give up a single filbert and yet unable to get them all out at once. Vexed and disappointed he began to cry.\\n\\n\\\"My boy,\\\" said his mother, \\\"be satisfied with half the nuts you have taken and you will easily get your hand out. Then perhaps you may have some more filberts some other time.\\\"\"\r\n        },\r\n        {\r\n            \"name\": \"options\",\r\n            \"value\": \"{temperature:0.3,max_tokens:256}\"\r\n        }\r\n    ]\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{host}}/mistral_nemo/mistral_nemo",
+					"host": [
+						"{{host}}"
+					],
+					"path": [
+						"mistral_nemo",
+						"mistral_nemo"
+					]
+				},
+				"description": "Call the Mistral0 Nemo mini model by Mistral."
+			},
+			"response": []
+		}
+	],
+	"variable": [
+		{
+			"key": "host",
+			"value": "host/endpoint",
+			"type": "string"
+		},
+		{
+			"key": "Anthropic-Key",
+			"value": "Anthropic-API-Key",
+			"type": "string"
+		},
+		{
+			"key": "OpenAI-Key",
+			"value": "OpenAI-Key",
+			"type": "string"
+		}
+	]
+}

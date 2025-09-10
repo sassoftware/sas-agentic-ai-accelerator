@@ -1,0 +1,6 @@
+[
+    {
+       "step":"install common packages",
+       "command":"pip3 -q install requests transformers numpy==1.26.4"
+    }
+]

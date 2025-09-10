@@ -1,0 +1,22 @@
+[
+    {
+        "step":"install git-lfs",
+        "command":"microdnf install git-lfs"
+    },
+    {
+        "step":"Verify git-lfs install",
+        "command":"git lfs install"
+    },
+    {
+        "step":"install huggingface CLI and other packages",
+        "command":"pip3 -q install huggingface-hub[cli] transformers torch accelerate numpy==1.26.4"
+    },
+    {
+        "step": "Login with huggingface - ensure you have expected the license: https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct",
+        "command": "hf login --token $(cat /etc/secret-volume/huggingfacetoken)"
+      },
+    {
+        "step": "download model",
+        "command": "hf download --quiet meta-llama/Llama-3.2-3B-Instruct --local-dir /pybox/model/llama_32_3b"
+    }
+]

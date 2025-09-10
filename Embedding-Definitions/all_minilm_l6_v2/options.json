@@ -1,0 +1,17 @@
+{
+    "Embedding_Mode": {
+        "default": "query",
+        "range": "query or document",
+        "description": "Specify the mode of embedding, this can be either query (for retrival - default) or document (for storing embeddings)"
+    },
+    "Embedding_Length": {
+        "default": 384,
+        "range": "384",
+        "description": "The length of the returned embedding vector."
+    },
+    "Input_Token_Limit": {
+        "default": 256,
+        "range": "256",
+        "description": "The limit of input tokens for the embedding model."
+    }
+}

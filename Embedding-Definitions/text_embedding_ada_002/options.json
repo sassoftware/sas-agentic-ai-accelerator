@@ -1,0 +1,17 @@
+{
+    "API_KEY": {
+        "default": "OpenAI",
+        "range": "sk-****",
+        "description": "This is the OpenAI key that is used to make the actual request."
+    },
+    "Embedding_Length": {
+        "default": 1536,
+        "range": "1536",
+        "description": "The length of the returned embedding vector."
+    },
+    "Input_Token_Limit": {
+        "default": 8192,
+        "range": "8192",
+        "description": "The limit of input tokens for the embedding model."
+    }
+}
