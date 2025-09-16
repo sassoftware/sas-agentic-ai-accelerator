@@ -113,10 +113,10 @@ sas-viya models destination createAzure \
 
 ## Configurations for SCR Deployment
 
-There are example deployment YAMLs provided under *SCR-LLM-Deployment-YAML* that are build for Azure.
+Example deployment YAML files built for Azure are provided under `SCR-LLM-Deployment-YAML`.
 These examples make the following assumptions:
 
-- Namespace called *llm* in which the SCR containers will be deployed
+- Namespace called `llm` in which the SCR containers will be deployed
 - No resource limits are currently imposed (that is why we recommend having a separate node pool for this workload—in non production environments it is recommended to use a spot-instance with a lot of available CPU and RAM, e.g. Standard_D64s_v5)
 - The URL endpoint schema looks like this: `host/llm/model_name` (here the container will be reached, which means the full address for a container is `host/llm/model_name/model_name`)
 
@@ -127,17 +127,18 @@ Some models have licenses attached to them, which require you to first accept th
 Hugging Face refers to this models as [gated](https://huggingface.co/docs/hub/en/models-gated).
 In order to be able to pull these, you will need to provide a Hugging Face token, which serves as an identifier that ensures that you have accepted the license.
 
-So the next section explains how to obtain a Hugging Face token and integrating it with a build process. For a list of models that require this token please refer to the [./LLM-Definitions/README.md](LLM Definitions README).
+So the next section explains how to obtain a Hugging Face token and integrating it with a build process.
+For a list of models that require this token please refer to the [./LLM-Definitions/README.md](LLM Definitions README).
 
 ### Creating a Hugging Face Token
 
-1.   Head to [Hugging Face](huggingface.co) and Sign Up for a free account.
-2.   Click on your profile image in the top right hand corner and click on *Access Tokens* or use this link as a shortcut: https://huggingface.co/settings/tokens.
-3.   Click on the *Create new Access Token* button.
-4.   As the *Token type* set *Read* and give it a meaningful name like: *LLM-SCR-Deployment* and click the *Create token* button.
-5.   In the modal you get a review of all of the information, copy your token (after closing the token value will be gone) and then click *Done*:
+1. Head to [Hugging Face](huggingface.co) and Sign Up for a free account.
+2. Click on your profile image in the top right hand corner and click on `Access Tokens` or use this link as a shortcut: https://huggingface.co/settings/tokens.
+3. Click on the `Create new Access Token` button.
+4. As the `Token type` set `Read` and give it a meaningful name (like `LLM-SCR-Deployment`), then click the `Create token` button.
+5. In the modal dialog, you will receive a review of all of the information. Copy your token (after closing the token value will be gone) and then click `Done`:
      ![Hugging Face Token](./img/Hugging-Face-Token.png)
-6.   You are taken back to the *Access Tokens* overview page where you can also delete tokens, invalid & refresh them or add additional once as needed.
+6. You are taken back to the `Access Tokens` overview page where you can also delete tokens, invalidate and refresh tokens, or add additional tokens as needed.
 
 Now that we have our token, we can return to the SCR deployment.
 
