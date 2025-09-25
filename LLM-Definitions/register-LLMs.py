@@ -96,7 +96,7 @@ def register_model(base_path):
         print(f"The selected LLM: {base_path} is not vailable in the llm_fact_sheet.csv. This is a required entry!")
     else:
         # Add additional model metadata from the llm_fact_sheet.csv
-        model_attributes['llmmodelType'] = model_attributes.get('llmmodelType', 'GPT')
+        model_attributes['llmModelType'] = model_attributes.get('llmModelType', 'GPT')
         model_data_dict = model_data.to_dict('records')[0]
         model_attributes['provider'] = model_data_dict.get('provider', 'Unkown')
         model_attributes['endPoint'] = f"{args.scr_endpoint}/{base_path}/{base_path}"

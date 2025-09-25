@@ -2,6 +2,22 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [0.1.28] - 2025-09-25
+
+No changes are requires at this time.
+
+### Added
+
+- None
+
+### Changed
+
+- None
+
+### Fixed
+
+- Fix argument error in publish-Embedding script and tag value in register-LLMs
+
 ## [0.1.27] - 2025-09-10
 
 No changes are requires at this time.

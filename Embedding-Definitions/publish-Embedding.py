@@ -31,7 +31,7 @@ try:
         elif destination.destinationType not in ['azure', 'aws', 'gcp', 'privatedocker', 'AWS', 'GCP', 'privateDocker']:
             raise ValueError(f"The provided destination is not a valid SCR destination. Please check: {args.destination}")
         
-        for model in args.llms:
+        for model in args.embedding_models:
             model_details = mr.get_model_details(model)
             headers = {
                 "Content-Type": "application/vnd.sas.models.publishing.request.asynchronous+json",
