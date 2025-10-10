@@ -2,6 +2,24 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [0.1.29] - 2025-10-10
+
+No changes are requires at this time.
+
+### Added
+
+- Expanded documentation pages by a lot
+- Optional argument for the Model-Manager-Setup.py script to provide the ability to change to deployment: k8s or aca
+- Ignore .venv added to the .gitignore
+
+### Changed
+
+- None
+
+### Fixed
+
+- None
+
 ## [0.1.28] - 2025-09-25
 
 No changes are requires at this time.

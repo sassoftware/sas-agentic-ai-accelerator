@@ -1,5 +1,7 @@
 # Troubleshooting Guide
 
+The Troubleshooting Guide tries to provide solution orientied fixes to reported issues. If your issue is not on this please raise an issue or if you already have a solution please contribute it as a pull request.
+
 ## SAS Intelligent Decisioning
 
 This part of the troubleshooting guide describes issues that can occur when working with this in SAS Intelligent Decisioning.
@@ -8,7 +10,7 @@ This part of the troubleshooting guide describes issues that can occur when work
 
 This error can be encountered during testing within SAS Intelligent Decisioning. Here is how the issue might show up for a variable called **llmurl**:
 
-![Duplicate Variable Error](./img/Duplicate-Variable-Error.png)
+![Duplicate Variable Error](../../static/Duplicate-Variable-Error.png)
 
 ```SAS
 ERROR: Compilation error.

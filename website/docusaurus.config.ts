@@ -4,19 +4,19 @@ import type { Config } from "@docusaurus/types";
 import { themes as prismThemes } from "prism-react-renderer";
 
 const config: Config = {
-  title: "sas-portal-framework-for-sas-viya Documentation",
-  favicon: "https://raw.githubusercontent.com/sassoftware/sas-portal-framework-for-sas-viya/refs/heads/main/static/sas.png",
+  title: "SAS Agentic AI Accelerator Documentation",
+  favicon: "https://raw.githubusercontent.com/sassoftware/sas-agentic-ai-accelerator/refs/heads/main/static/sas.png",
 
   // Set the production url of your site here
   url: "https://sassoftware.github.io",
   // Set the /<baseUrl>/ pathname under which your site is served
-  // For GitHub pages deployment, it is often '/sas-portal-framework-for-sas-viya/'
+  // For GitHub pages deployment, it is often '/sas-agentic-ai-accelerator/'
   baseUrl: "/sas-portal-framework-for-sas-viya/",
 
   // GitHub pages deployment config.
   // If you aren't using GitHub pages, you don't need these.
   organizationName: "sassoftware", // Usually your GitHub org/user name.
-  projectName: "sas-portal-framework-for-sas-viya", // Usually your repo name.
+  projectName: "sas-agentic-ai-accelerator", // Usually your repo name.
 
   onBrokenLinks: "throw",
   onBrokenMarkdownLinks: "throw",
@@ -51,14 +51,14 @@ const config: Config = {
       },
     },
     navbar: {
-      title: "SAS Portal Framework for SAS Viya Documentation",
+      title: "SAS Agentic AI Accelerator",
       logo: {
         alt: "SAS",
-        src: "https://raw.githubusercontent.com/sassoftware/sas-portal-framework-for-sas-viya/refs/heads/main/static/sas.png",
+        src: "https://raw.githubusercontent.com/sassoftware/sas-agentic-ai-accelerator/refs/heads/main/static/sas.png",
       },
       items: [
         {
-          href: "https://github.com/sassoftware/sas-portal-framework-for-sas-viya",
+          href: "https://github.com/sassoftware/sas-agentic-ai-accelerator",
           className: "header-github-link",
           title: "GitHub repository",
           position: "right",
@@ -73,7 +73,7 @@ const config: Config = {
           items: [
             {
               label: "GitHub Repository",
-              href: "https://github.com/sassoftware/sas-portal-framework-for-sas-viya",
+              href: "https://github.com/sassoftware/sas-agentic-ai-accelerator",
             },
           ],
         },

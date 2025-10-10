@@ -1,18 +1,18 @@
 # SAS Agentic AI Accelerator
 
-[TOC]
-
-The SAS Agentic AI Accelerator provides an opinionated method for building AI agents leveraging SAS Viya technology.
-It is designed to help users move more quickly from use-case idea to production, utilizing *No/Low/Yes* Code interfaces and full governance as the beating heart of agentic innovation.
+The SAS Agentic AI Accelerator provides a method for building AI agents leveraging SAS Viya technology.
+It is designed to help users move more quickly from use-case idea to production, utilizing *No/Low/Yes* Code interfaces and full governance as a way to build agents that balance autonomy and trust.
 
 It includes:
 
 - The full code + documentation to deploy this in your SAS Viya Environment
-- All the integrations that I have built (SAS Studio Custom Steps, a no code prompt engineering UI, SAS Intelligent Decisioning Node, SAS Macros, Postman Collection and so much more)
+- All the integrations that are built (SAS Studio Custom Steps, a no code prompt engineering UI, SAS Intelligent Decisioning Node, SAS Macros, Postman Collection and so much more)
 - Pre-build deployment recipes for LLMs
 - Pre-build deployment recipes for embedding models
 
-The accelerator builds only on SAS Viya standard components and thus does not use any unsupported APIs or otherwise undocumented features.
+The accelerator builds only on SAS Viya standard components and does not use any unsupported APIs or otherwise undocumented features.
+
+The full documentation can be found [here](https://sassoftware.github.io/sas-agentic-ai-accelerator).
 
 ## Troubleshooting
 
