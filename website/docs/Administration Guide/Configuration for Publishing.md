@@ -4,17 +4,7 @@ sidebar_position: 3
 
 This page details how you should configure your environment in order to publish the SCR containers.
 
-## Configurations for SCR deployment
-
-For the creation of the SAS Container Runtime publishing destination it is recommended to use the [SAS Viya CLI](https://go.documentation.sas.com/doc/en/sasadmincdc/default/calcli/titlepage.htm). The command detailed below is used to create a publishing destination that is using a Azure Container Registry:
-
-There are example deployment YAMLs provided in the *SCR-LLM-Deployment-YAML* folder which are build for Azure. The following assumptions are made:
-
--   Namespace called *llm* in which the SCR containers will be deployed.
--   No resource limits are currently imposed, that is why we recommend having a separate node pool for this workload - in non production environments it is recommended to use a spot-instance with a lot of available CPU and RAM, e.g. Standard_D64s_v5.
--   The URL endpoint schema looks like this *host/llm/model_name* here the container will be reached, that means the full address for a container is *host/llm/model_name/model_name*.
-
-### Hugging Face Token
+## Hugging Face Token
 
 Some open-source models have licenses attached to them, that require you to first accept these licenses in order to be able to pull the model weights for deployment. Hugging Face refers to these models as **gated**.
 
@@ -22,7 +12,7 @@ In order to be able to deploy these models you will have to provide a *Hugging F
 
 *Note:* If you don't plan do use any of these models than you can skip this part of the setup process.
 
-#### Creating a Hugging Face Token
+### Creating a Hugging Face Token
 
 1.   Head to [Hugging Face](huggingface.co) and Sign Up for a free account.
 2.   Click on your profile image in the top right hand corner and click on *Access Tokens* or use this link as a shortcut: https://huggingface.co/settings/tokens.
@@ -52,7 +42,7 @@ After you created the token, you can add this token as secret. Therefore, you ne
 kubectl create secret generic huggingface-token --from-literal=huggingfacetoken='*yourToken*' -n *yourSASNamespace*
 ```
 
-To use the token later in the SAS Model Manager, the token needs to be mounted in the kaniko pod. Therefore the podtemplate of kaniko needs to be changed. Please find further details of the customization in the SAS Model Publish README: *sas-bases/examples/sas-decisions-runtime/buildkit/README.md*.
+To use the token later in the SAS Model Manager, the token needs to be mounted in the Build Kit pod. Therefore the podtemplate of Build Kit needs to be changed. Please find further details of the customization in the SAS Model Publish README: *sas-bases/examples/sas-decisions-runtime/buildkit/README.md*.
 
 After you added the yaml files as described in this README to your site-config, you can change the pod template and add the mount of the secret and increase the resource that Build Kit is allowed to consume:
 

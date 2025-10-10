@@ -1,3 +1,6 @@
+---
+sidebar_position: 6
+---
 
 This documentation page contains information about the folder *LLM-Definitions*, which in turn contains information on how to add LLMs to the repository in the SAS Model Manager. Each model is packaged so that it can be deployed using the SAS Container Runtime (SCR). More on the SCR in the [SAS Documentation](https://go.documentation.sas.com/doc/en/mascrtcdc/default/mascrtag/titlepage.htm).
 
