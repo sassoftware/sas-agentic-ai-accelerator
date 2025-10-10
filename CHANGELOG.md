@@ -14,7 +14,7 @@ No changes are requires at this time.
 
 ### Changed
 
-- None
+- The Model-Manager-Setup.py script now provides bash commands, instead of PowerShell
 
 ### Fixed
 
