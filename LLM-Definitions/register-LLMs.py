@@ -93,80 +93,74 @@ def register_model(base_path):
     model_attributes = get_model_attributes(base_path)
     model_data = llm_fact_sheet[llm_fact_sheet['model_id'] == base_path]
     if model_data.empty:
-        print(f"The selected LLM: {base_path} is not vailable in the llm_fact_sheet.csv. This is a required entry!")
+        print(f"WARNING: The selected LLM: {base_path} is not vailable in the llm_fact_sheet.csv.")
+        print('WARNING: This entry is required for the Logging/Monitoring to work properly!')
+    # Add additional model metadata from the llm_fact_sheet.csv
+    model_attributes['llmModelType'] = model_attributes.get('llmModelType', 'GPT')
+    model_data_dict = model_data.to_dict('records')[0]
+    model_attributes['provider'] = model_data_dict.get('provider', 'Unkown')
+    model_attributes['endPoint'] = f"{args.scr_endpoint}/{base_path}/{base_path}"
+    cost_estimation_type = model_data_dict.get('cost_type', 'Tokens')
+    costPerCall = 0
+    if (cost_estimation_type == 'Tokens'):
+        costPerCall = (float(model_data_dict.get('input_token_price', '0')) + float(model_data_dict.get('output_token_price', '0'))) / 2
+    elif (cost_estimation_type == 'Seconds'):
+        costPerCall = float(model_data_dict.get('second_cost', '0'))
     else:
-        # Add additional model metadata from the llm_fact_sheet.csv
-        model_attributes['llmModelType'] = model_attributes.get('llmModelType', 'GPT')
-        model_data_dict = model_data.to_dict('records')[0]
-        model_attributes['provider'] = model_data_dict.get('provider', 'Unkown')
-        model_attributes['endPoint'] = f"{args.scr_endpoint}/{base_path}/{base_path}"
-        cost_estimation_type = model_data_dict.get('cost_type', 'Tokens')
-        costPerCall = 0
-        if (cost_estimation_type == 'Tokens'):
-            costPerCall = (float(model_data_dict.get('input_token_price', '0')) + float(model_data_dict.get('output_token_price', '0'))) / 2
-        elif (cost_estimation_type == 'Seconds'):
-            costPerCall = float(model_data_dict.get('second_cost', '0'))
-        else:
-            print(f"The cost type for LLMs has to be either Tokens or Seconds, the value provided was: {cost_estimation_type} for {base_path}")
-        model_attributes['costPerCall'] = costPerCall
-        model_object = mr.create_model(model = model_attributes, project = project_attributes['project_name'])
+        print(f"The cost type for LLMs has to be either Tokens or Seconds, the value provided was: {cost_estimation_type} for {base_path}")
+    model_attributes['costPerCall'] = costPerCall
+    model_object = mr.create_model(model = model_attributes, project = project_attributes['project_name'])
     
-        time.sleep(1)
-        # Score script
-        file = open(f"{base_path}/{model_attributes['scoreCodeFile']}", 'rb')
-        mr.add_model_content(model_object,
-                        file, 
-                        name = model_attributes['name'] + '.py',
-                        role = 'score')
-        file.close()
+    time.sleep(1)
+    # Score script
+    file = open(f"{base_path}/{model_attributes['scoreCodeFile']}", 'rb')
+    mr.add_model_content(model_object, file, name = model_attributes['name'] + '.py', role = 'score')
+    file.close()
 
-        # Dependencies
-        file = open(f"{base_path}/requirements.json", 'rb')
-        mr.add_model_content(model_object,
-                        file, 
-                        name = 'requirements.json',
-                        role = 'python pickle')
-        file.close()
+    # Dependencies
+    file = open(f"{base_path}/requirements.json", 'rb')
+    mr.add_model_content(model_object, file, name = 'requirements.json', role = 'python pickle')
+    file.close()
 
-        # Output variables
-        file = open(f"{base_path}/outputVar.json", 'rb')
-        mr.add_model_content(model_object, file, name = 'outputVar.json')
-        file.close()
+    # Output variables
+    file = open(f"{base_path}/outputVar.json", 'rb')
+    mr.add_model_content(model_object, file, name = 'outputVar.json')
+    file.close()
     
-        # Input variables
-        file = open(f"{base_path}/inputVar.json", 'rb')
-        mr.add_model_content(model_object, file, name = 'inputVar.json')
-        file.close()
+    # Input variables
+    file = open(f"{base_path}/inputVar.json", 'rb')
+    mr.add_model_content(model_object, file, name = 'inputVar.json')
+    file.close()
 
-        # Options information
-        file = open(f"{base_path}/options.json", 'rb')
-        mr.add_model_content(model_object, file, name = 'options.json', role='documentation')
-        file.close()
+    # Options information
+    file = open(f"{base_path}/options.json", 'rb')
+    mr.add_model_content(model_object, file, name = 'options.json', role='documentation')
+    file.close()
 
-        # Upload the optional model card
-        if os.path.exists(f"{base_path}/Model-Card.pdf"):
-            file = open(f"{base_path}/Model-Card.pdf", 'rb')
-            mr.add_model_content(model_object, file, name = 'Model-Card.pdf', role = 'documentation')
-        elif os.path.exists(f"{base_path}/Model-Card.md"):
-            file = open(f"{base_path}/Model-Card.md", 'rb')
-            mr.add_model_content(model_object, file, name = 'Model-Card.md', role = 'documentation')
-        else:
-            print(f"No model card added for {base_path}")
+    # Upload the optional model card
+    if os.path.exists(f"{base_path}/Model-Card.pdf"):
+        file = open(f"{base_path}/Model-Card.pdf", 'rb')
+        mr.add_model_content(model_object, file, name = 'Model-Card.pdf', role = 'documentation')
+    elif os.path.exists(f"{base_path}/Model-Card.md"):
+        file = open(f"{base_path}/Model-Card.md", 'rb')
+        mr.add_model_content(model_object, file, name = 'Model-Card.md', role = 'documentation')
+    else:
+        print(f"No model card added for {base_path}")
 
-        # Upload toknizer filesif they exist
-        if os.path.exists(f"{base_path}/tokenizer_config.json"):
-            file = open(f"{base_path}/tokenizer_config.json", 'rb')
-            mr.add_model_content(model_object, file, name = 'tokenizer_config.json', role = 'documentation')
-        if os.path.exists(f"{base_path}/special_tokens_map.json"):
-            file = open(f"{base_path}/special_tokens_map.json", 'rb')
-            mr.add_model_content(model_object, file, name = 'special_tokens_map.json', role = 'documentation')
-        if os.path.exists(f"{base_path}/tokenizer.json"):
-            file = open(f"{base_path}/tokenizer.json", 'rb')
-            mr.add_model_content(model_object, file, name = 'tokenizer.json', role = 'documentation')
+    # Upload toknizer filesif they exist
+    if os.path.exists(f"{base_path}/tokenizer_config.json"):
+        file = open(f"{base_path}/tokenizer_config.json", 'rb')
+        mr.add_model_content(model_object, file, name = 'tokenizer_config.json', role = 'documentation')
+    if os.path.exists(f"{base_path}/special_tokens_map.json"):
+        file = open(f"{base_path}/special_tokens_map.json", 'rb')
+        mr.add_model_content(model_object, file, name = 'special_tokens_map.json', role = 'documentation')
+    if os.path.exists(f"{base_path}/tokenizer.json"):
+        file = open(f"{base_path}/tokenizer.json", 'rb')
+        mr.add_model_content(model_object, file, name = 'tokenizer.json', role = 'documentation')
 
-        update_model_tags(model_attributes, model_object.id)
-        print(f"Link to the model in SAS Model Manager: {args.viya_server}/SASModelManager/models/{model_object.id}")
-        return model_object
+    update_model_tags(model_attributes, model_object.id)
+    print(f"Link to the model in SAS Model Manager: {args.viya_server}/SASModelManager/models/{model_object.id}")
+    return model_object
 
 # Establish a session
 try:

@@ -2,6 +2,22 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [0.1.29] - 2025-10-13
+
+No changes are requires at this time.
+
+### Added
+
+- None
+
+### Changed
+
+- The register-LLMs.py script does no longer require an entry in the LLM Fact Sheet.
+
+### Fixed
+
+- None
+
 ## [0.1.29] - 2025-10-10
 
 No changes are requires at this time.
