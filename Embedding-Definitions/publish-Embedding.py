@@ -16,7 +16,7 @@ parser.add_argument('-u', '--username', type=str, help='Enter your username for 
 parser.add_argument('-p', '--password', type=str, help='Enter your password for the SAS Viya server', required=True)
 parser.add_argument('-m','--embedding_models', nargs='+', help='List of Embedding model names. Decide on the models that you want to be registered - specify the subfolder name, that folder needs to contain a modelConfiguration.json (e.g., gemini_embedding_001 text_embedding_3_small)',  required=True)
 parser.add_argument('-d', '--destination', type=str, help='Specify the name of the target publishing destination, has to be a container publishing destination - i.e. llmACR', required=True)
-parser.add_argument('-k', '--verify_ssl', type=bool, default=True, help='Set to false if you have a self-signed certificat')
+parser.add_argument('-k', '--verify_ssl', type=bool, default='true', help='Set to false if you have a self-signed certificat')
 args = parser.parse_args()
 
 # Specify a wait time, if your SCR jobs consume to many resources - this will add a delay between publishing in seconds
@@ -24,7 +24,7 @@ time_out = 1
 
 # Establish a session
 try:
-    with Session(args.viya_server, args.username, args.password,  verify_ssl = args.verify_ssl) as s:
+    with Session(args.viya_server, args.username, args.password,  verify_ssl = (args.verify_ssl.lower() == 'true')) as s:
         destination = mp.get_destination(args.destination)
         if destination is None:
             raise ValueError(f"No valid destination name specified. Please check the name: {args.destination}")

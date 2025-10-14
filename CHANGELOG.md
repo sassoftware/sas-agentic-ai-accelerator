@@ -2,6 +2,22 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [0.1.30] - 2025-10-14
+
+No changes are requires at this time.
+
+### Added
+
+- None
+
+### Changed
+
+- None
+
+### Fixed
+
+- The verify_ssl couldn't previously be set to false for the Python scripts
+
 ## [0.1.29] - 2025-10-13
 
 No changes are requires at this time.

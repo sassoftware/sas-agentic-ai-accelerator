@@ -22,7 +22,7 @@ parser.add_argument('-p', '--password', type=str, help='Enter your password for 
 parser.add_argument('-rp', '--responsible_party', type=str, help='Enter the person that should be listed as the responsible party for the Model Studio project: Example Person or example@example.com', required=True)
 parser.add_argument('-e', '--scr_endpoint', type=str, help='Enter the endpoint under which the LLM containers are published. Example: https://viya-host/llm', required=True)
 parser.add_argument('-dt', '--deployment_type', type=str, default='k8s', help='Enter the type of deployment, can be k8s (LLM & Embedding is deployed in k8s) or aca (Azure Container App)', required=False)
-parser.add_argument('-k', '--verify_ssl', type=bool, default=True, help='Set to false if you have a self-signed certificat')
+parser.add_argument('-k', '--verify_ssl', type=bool, default='true', help='Set to false if you have a self-signed certificat')
 args = parser.parse_args()
 
 # Define the LLM project attributes
@@ -103,7 +103,7 @@ def get_project_variables(base_path):
 
 # Establish a session
 try:
-    with Session(args.viya_server, args.username, args.password,  verify_ssl = args.verify_ssl) as s:
+    with Session(args.viya_server, args.username, args.password,  verify_ssl = (args.verify_ssl.lower() == 'true')) as s:
         # Check if the repository exists
         repository_exists = mr.get_repository(project_attributes['project_repository'])
         if repository_exists == None:
