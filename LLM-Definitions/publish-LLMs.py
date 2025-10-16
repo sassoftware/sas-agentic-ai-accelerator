@@ -16,7 +16,7 @@ parser.add_argument('-u', '--username', type=str, help='Enter your username for 
 parser.add_argument('-p', '--password', type=str, help='Enter your password for the SAS Viya server', required=True)
 parser.add_argument('-l','--llms', nargs='+', help='List of LLM names Decide on the models that you want to be registered - specify the subfolder name, that folder needs to contain a modelConfiguration.json (e.g., phi_3_mini_4k phi_35_mini)',  required=True)
 parser.add_argument('-d', '--destination', type=str, help='Specify the name of the target publishing destination, has to be a container publishing destination - i.e. llmACR', required=True)
-parser.add_argument('-k', '--verify_ssl', type=bool, default='true', help='Set to false if you have a self-signed certificat')
+parser.add_argument('-k', '--verify_ssl', type=str, default='true', help='Set to false if you have a self-signed certificat')
 args = parser.parse_args()
 
 # Specify a wait time, if your SCR jobs consume to many resources - this will add a delay between publishing in seconds

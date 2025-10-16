@@ -22,7 +22,7 @@ parser.add_argument('-u', '--username', type=str, help='Enter your username for 
 parser.add_argument('-p', '--password', type=str, help='Enter your password for the SAS Viya server', required=True)
 parser.add_argument('-m','--embedding_models', nargs='+', help='List of Embedding model names. Decide on the models that you want to be registered - specify the subfolder name, that folder needs to contain a modelConfiguration.json (e.g., gemini_embedding_001 text_embedding_3_small)',  required=True)
 parser.add_argument('-rp', '--responsible_party', type=str, help='Enter the person that should be listed as the responsible party for the Model Studio project: Example Person or example@example.com', required=True)
-parser.add_argument('-k', '--verify_ssl', type=bool, default='true', help='Set to false if you have a self-signed certificat')
+parser.add_argument('-k', '--verify_ssl', type=str, default='true', help='Set to false if you have a self-signed certificat')
 args = parser.parse_args()
 
 # Define the project attributes
