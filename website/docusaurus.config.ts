@@ -11,7 +11,7 @@ const config: Config = {
   url: "https://sassoftware.github.io",
   // Set the /<baseUrl>/ pathname under which your site is served
   // For GitHub pages deployment, it is often '/sas-agentic-ai-accelerator/'
-  baseUrl: "/sas-portal-framework-for-sas-viya/",
+  baseUrl: "/sas-agentic-ai-accelerator/",
 
   // GitHub pages deployment config.
   // If you aren't using GitHub pages, you don't need these.
