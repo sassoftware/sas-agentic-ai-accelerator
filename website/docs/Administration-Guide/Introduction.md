@@ -44,7 +44,7 @@ sas-viya profile init
 # Enter your SAS Viya host (service endpoint), select the output type (I recommend fulljson) and anble ANSI colored output (I recommend yes)
 # If successfull you should see a line like: Saved 'Default' profile to /path/.sas/config.json
 # Next we need to login just to confirm the connection
-sas-viya auth login loginCode
+sas-viya auth loginCode
 # If successfull you shoud see a line like: Login succeeded. Token saved.
 ```
 3. Next we need to install a couple of plugins (authorization, identities & models) in order to set everything up correctly - if you want to learn more about the different plugins see the [SAS Documentation](https://go.documentation.sas.com/doc/en/sasadmincdc/default/calcli/n1vth8mtb8ipprn1prz5j26p3nvc.htm):
