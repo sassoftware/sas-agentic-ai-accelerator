@@ -14,7 +14,7 @@ In order to be able to deploy these models you will have to provide a *Hugging F
 
 ### Creating a Hugging Face Token
 
-1.   Head to [Hugging Face](huggingface.co) and Sign Up for a free account.
+1.   Head to [Hugging Face](https://huggingface.co/) and Sign Up for a free account.
 2.   Click on your profile image in the top right hand corner and click on *Access Tokens* or use this link as a shortcut: https://huggingface.co/settings/tokens.
 3.   Click on the *Create new Access Token* button.
 4.   As the *Token type* set *Read* and give it a meaningful name like: *LLM-SCR-Deployment* and click the *Create token* button.
