@@ -2,9 +2,25 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [0.1.31] - 2025-10-23
+
+No changes are required at this time.
+
+### Added
+
+- Improve documentation
+
+### Changed
+
+- None
+
+### Fixed
+
+- None
+
 ## [0.1.30] - 2025-10-14
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
@@ -20,7 +36,7 @@ No changes are requires at this time.
 
 ## [0.1.29] - 2025-10-13
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
@@ -36,7 +52,7 @@ No changes are requires at this time.
 
 ## [0.1.29] - 2025-10-10
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
@@ -54,7 +70,7 @@ No changes are requires at this time.
 
 ## [0.1.28] - 2025-09-25
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
@@ -70,7 +86,7 @@ No changes are requires at this time.
 
 ## [0.1.27] - 2025-09-10
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
@@ -87,7 +103,7 @@ No changes are requires at this time.
 
 ## [0.1.26] - 2025-09-08
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
@@ -105,7 +121,7 @@ No changes are requires at this time.
 
 ## [0.1.25] - 2025-09-07
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
@@ -122,7 +138,7 @@ No changes are requires at this time.
 
 ## [0.1.24] - 2025-09-06
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
@@ -138,7 +154,7 @@ No changes are requires at this time.
 
 ## [0.1.23] - 2025-09-02
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
@@ -154,7 +170,7 @@ No changes are requires at this time.
 
 ## [0.1.22] - 2025-09-01
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
@@ -170,7 +186,7 @@ No changes are requires at this time.
 
 ## [0.1.21] - 2025-08-29
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
@@ -203,7 +219,7 @@ Run the *./SAS-Viya-Tool-Integrations/SAS-Intelligent-Decisioning-Integration/Up
 
 ## [0.1.19] - 2025-08-14
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
@@ -219,7 +235,7 @@ No changes are requires at this time.
 
 ## [0.1.18] - 2025-08-13
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
@@ -258,7 +274,7 @@ The *Token-Calculator.html* and *LLM-Details-Page.html* need to be uploaded to a
 
 ## [0.1.16] - 2025-08-10
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
@@ -275,7 +291,7 @@ No changes are requires at this time.
 
 ## [0.1.15] - 2025-08-09
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
@@ -293,7 +309,7 @@ No changes are requires at this time.
 
 ## [0.1.14] - 2025-08-05
 
-No changes are requires at this time.
+No changes are required at this time.
 
 ### Added
 
