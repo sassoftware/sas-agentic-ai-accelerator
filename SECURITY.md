@@ -4,11 +4,6 @@ Efforts to disclose potential issues responsibly are appreciated, and viable con
 To aid investigation of any reported vulnerabilities, please follow the [reporting guidelines](#reporting-guidelines) when submitting your findings.
 
 ## Reporting Guidelines
-<!-- Project maintainers: Activate GitHub's built-in private reporting:
-
-https://docs.github.com/en/code-security/security-advisories/working-with-repository-security-advisories/configuring-private-vulnerability-reporting-for-a-repository
--->
-
 To report a suspected security issue, use private vulnerability reporting.
 
 1. Click the `Security` tab
