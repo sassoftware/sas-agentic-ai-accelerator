@@ -12,7 +12,7 @@ The documentation for this setup is available in the [project documentation](htt
 Now you can add the Prompt Builder UI to the portal by following these steps:
 
 1. Create a new subfolder (the name doesn't matter, but I suggest to use `LLM Prompt Builder`).
-2. In that subfolder upload the `llm-prompt-builder.json` file that the **Setup SAS Model Manager** chapter produced; replace any API-keys as needed.
+2. In that subfolder upload the `llm-prompt-builder.json` file that the **Setup SAS Model Manager** chapter produced; replace any API-keys as needed. If you have lost this file you can use the [utlity script prompt-builder-json.py](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/utility#prompt-builder-json) to recreate it.
 3. Select the file and in the `Details` section under `More > URI`, then copy the `Pathname` (something like `/files/files/a652a4c2-d751-4bf7-8b72-cbce058087fe`.
 4. Paste the URI in the below template and save that template as `portal-page-layout.json`:
 
