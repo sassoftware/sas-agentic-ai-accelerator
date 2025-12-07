@@ -2,6 +2,22 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [0.1.32] - 2025-12-07
+
+No changes are required at this time.
+
+### Added
+
+- Utility script for recreating the Prompt Builder JSON
+
+### Changed
+
+- None
+
+### Fixed
+
+- None
+
 ## [0.1.31] - 2025-10-23
 
 No changes are required at this time.
