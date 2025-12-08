@@ -22,7 +22,7 @@ parser.add_argument('-p', '--password', type=str, help='Enter your password for 
 parser.add_argument('-rp', '--responsible_party', type=str, help='Enter the person that should be listed as the responsible party for the Model Studio project: Example Person or example@example.com', required=True)
 parser.add_argument('-e', '--scr_endpoint', type=str, help='Enter the endpoint under which the LLM containers are published. Example: https://viya-host/llm', required=True)
 parser.add_argument('-dt', '--deployment_type', type=str, default='k8s', help='Enter the type of deployment, can be k8s (LLM & Embedding is deployed in k8s) or aca (Azure Container App)', required=False)
-parser.add_argument('-k', '--verify_ssl', type=str, default='true', help='Set to false if you have a self-signed certificat')
+parser.add_argument('-k', '--verify_ssl', type=str, default='true', help='Set to false if you have a self-signed certificate')
 args = parser.parse_args()
 
 # Define the LLM project attributes
@@ -32,7 +32,7 @@ project_attributes['project_repository'] = 'LLM Repository'
 project_attributes['project_repository_description'] = 'This repository is used to register LLM deployment instructions to, build, monitor and deploy use cases that take advantage of LLMs'
 project_attributes['project_name'] = 'LLM Model Project'
 project_attributes['project_model_function'] = 'LLM'
-project_attributes['project_description'] = 'This project stores all LLMs that are available to be used in use cases. It is possible to grant access to these models on a per model basis. Along side the availability this also documents on how to deploy/call the models.'
+project_attributes['project_description'] = 'This project stores all LLMs that are available to be used in use cases. It is possible to grant access to these models on a per model basis. Alongside the availability this also documents on how to deploy/call the models.'
 project_attributes['project_tags'] = ['LLM-Models', 'SCR-Definitions', 'Python']
 
 # Create the output structure JSON that is used for the LLM Prompt Builder
@@ -59,7 +59,7 @@ rag_project_attributes['project_repository'] = 'LLM Repository'
 rag_project_attributes['project_repository_description'] = 'This repository is used to register LLM deployment instructions to, build, monitor and deploy use cases that take advantage of LLMs'
 rag_project_attributes['project_name'] = 'Embedding Model Project'
 rag_project_attributes['project_model_function'] = 'Embedding'
-rag_project_attributes['project_description'] = 'This project stores all Embedding models that are available to be used in use cases. It is possible to grant access to these models on a per model basis. Along side the availability this also documents on how to deploy/call the models.'
+rag_project_attributes['project_description'] = 'This project stores all Embedding models that are available to be used in use cases. It is possible to grant access to these models on a per model basis. Alongside the availability this also documents on how to deploy/call the models.'
 rag_project_attributes['project_tags'] = ['Embedding-Models', 'SCR-Definitions', 'Python']
 
 # Create the output structure JSON that is used for the RAG Builder
@@ -128,8 +128,8 @@ try:
                 llm_repository_folder = respository_response.json()['folderId']
             else:
                 raise ValueError(f"The {project_attributes['project_repository']} doesn't exist and couldn't be created. You might need help from your SAS Administrator - see: https://go.documentation.sas.com/doc/en/mdlmgrcdc/default/mdlmgrug/n1rip1yj5462z5n1kt9z3wzcnnb5.htm")
-        
-        # Check if the LLM project exsits
+
+        # Check if the LLM project exists
         project_name = mr.get_project(project_attributes['project_name'])
 
         # If the project doesn't exist it will be created
@@ -165,10 +165,10 @@ try:
                 f.write(f'sas-viya authorization create-rule --container-uri /folders/folders/{llm_repository_folder} -g LLMConsumers -p Read,Add,Update,Remove,Delete -d "Enables the LLM Consumers to interact with the LLM repository" --reason "You are not part of the LLM Consumers group"\n\n')
                 f.write('# Create a rule to enable the Prompt Engineers to create new projects in the LLM repository\n')
                 f.write(f'sas-viya authorization create-rule -o /modelRepository/repositories/{llm_repository} -g PromptEngineers -p Read,Add,Create,Update,Remove,Delete -d "Enables the group to create prompt engineering projects in the LLM repository" --reason "You are not part of the prompt engineering group"\n')
-            print('The llm-promp-builder.json is a quick start for the Prompt Builder UI.')
+            print('The llm-prompt-builder.json is a quick start for the Prompt Builder UI.')
             print('The sas-viya-cli-commands.txt is a quick start to setup up the groups and authorization for the framework.')
-        
-        # Check if the Embedding project exsits
+
+        # Check if the Embedding project exists
         project_name = mr.get_project(rag_project_attributes['project_name'])
 
         # If the project doesn't exist it will be created
