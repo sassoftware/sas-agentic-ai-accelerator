@@ -1,4 +1,14 @@
 {
+    "azure_openai_resource": {
+        "default": "westus3.api.cognitive.microsoft.com",
+        "range": "*******",
+        "description": "The Azure OpenAI resource name (e.g., 'my-openai-westus3'). The endpoint will be constructed as https://{resource}.openai.azure.com"
+    },
+    "api_version": {
+        "default": "2025-01-01-preview",
+        "range": "2023-05-15 - 2025-01-01-preview",
+        "description": "Azure OpenAI API version. Use latest stable version for new features."
+    },
     "temperature": {
         "default": 1,
         "range": "0 - 2",

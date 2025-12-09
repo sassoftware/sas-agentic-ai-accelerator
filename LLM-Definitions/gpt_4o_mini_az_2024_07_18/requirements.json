@@ -1,6 +1,6 @@
 [
     {
        "step":"install common packages",
-       "command":"pip3 -q install requests numpy==1.26.4"
+       "command":"pip3 -q install requests>=2.31.0 tiktoken>=0.5.1"
     }
 ]
