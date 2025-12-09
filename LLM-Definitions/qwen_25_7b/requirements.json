@@ -8,8 +8,12 @@
       "command": "git lfs install"
     },
     {
+      "step": "upgrade pip before pip install",
+      "command": "pip3 -q install --upgrade pip setuptools wheel"
+    },
+    {
       "step": "install huggingface CLI and other packages",
-      "command": "pip3 -q install huggingface-hub[cli] transformers torch accelerate numpy==1.26.4"
+      "command": "pip3 -q install huggingface-hub transformers torch accelerate numpy==1.26.4"
     },
     {
       "step": "download model",

@@ -1,5 +1,9 @@
 [
     {
+        "step": "upgrade pip before pip install",
+        "command": "pip3 -q install --upgrade pip setuptools wheel"
+    },
+    {
         "step":"install git-lfs",
         "command":"microdnf install git-lfs"
     },
@@ -9,7 +13,7 @@
     },
     {
         "step":"install huggingface CLI and other packages",
-        "command":"pip3 -q install huggingface-hub[cli] transformers torch numpy==1.26.4"
+        "command":"pip3 -q install huggingface-hub transformers torch numpy==1.26.4"
     },
     {
         "step": "download model",
