@@ -89,3 +89,4 @@ Run: `python gpt4oMiniScore.py`
 - **Configurable at runtime**: Endpoint and API version configured via options
 - **Development flexibility**: Different endpoints for dev/test/prod environments
 - **Future-proof**: Easy to update API versions as Azure releases new features.
+
