@@ -76,3 +76,4 @@ Here you can find a list for general interaction with the SAS Model Manager, the
 Here you can find tools to integrate with SAS Intelligent Decisioning, note that you require a SAS Intelligent Decisioning license for the use of this tool:
 
 -   *Create-Custom-SAS-Intelligent-Decisioning-Node.sas*: run this script from inside a SAS session on the SAS Viya server, this adds a node to the *Objects* pane inside of SAS Intelligent Decisioning.
+
