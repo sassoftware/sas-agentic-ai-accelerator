@@ -2,6 +2,24 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [0.1.33] - 2025-12-16
+
+In order for these changes to take effect you need to update the source code of the [SAS Portalframework for SAS Viya](https://github.com/sassoftware/sas-portal-framework-for-sas-viya). If you have deployed the LLM containers in kubernetes no additional changes are required, if you have deployed them as an Azure Container App or Azure Container Instance please utilize the [prompt-builder-json.py](./utility/prompt-builder-json.py) utility script with the additional option -dt aca in order to enable the prompt builder for this as well.
+
+### Added
+
+- Ability for the prompt builder to also communicate with LLM containers deployed as Azure Container Apps or Azure Container Instances
+- Prompt Templates now include a check for an environment variable called LLMCONTAINERPATH that can be set in order to provide an environment independant path to the endpoint where the LLMs are hosted.
+- Documentation on how to set environment variable
+
+### Changed
+
+- None
+
+### Fixed
+
+- None
+
 ## [0.1.32] - 2025-12-07
 
 No changes are required at this time.

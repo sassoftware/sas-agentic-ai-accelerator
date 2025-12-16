@@ -9,12 +9,22 @@ This script creates the new SAS Model Manager repository and the SAS Model Manag
 ```bash
 # Run the setup script with the help (-h) flag to get more information on each parameter
 # Run the setup script - make sure to update the parameter values that are passed into the script
+# If you are planning on deploying your LLM containers not in kubernetes but rather as Azure Container Apps/Instances use -dt aca
 python ./Model-Manager-Setup.py -vs sas-viya-url -u username -p password -rp responsible_party -e endpoint_from_scr_deployment
 ```
 
 Running this script will produce two additional json files as outputs, that are required for the steps on the page [Setup Additional UIs](Setup-Additional-UIs.md):
 - *llm-prompt-builder.json*, this will enable your users to do No-Code Prompt Engineering.
 - *rag-builder.json*, this will enable your users to do No-Code RAG pipeline setups.
+
+Explanation of the different available options:
+- -vs, short for --viya-server, is the URL for your SAS Viya server. The argument is required.
+- -u, short for --username, is the username to authenticate with SAS Viya. The argument is required.
+- -p, short for --password, is the password to authenticate with SAS Viya. The argument is required.
+- -rp, short for --responsible_party, is the person or group that will be listed in SAS Model Manager as a point of contact. The argument is required.
+- -e, short for --scr_endpoint, is the base URL where the LLM containers will be published. The argument is required.
+- -dt, short for --deployment_type, can be set to k8s (default) if you are deploying the LLM containers to kubernetes or aca if you are deploying the LLM containers to Azure Container Apps/Instances. This argument is optional as it defaults to k8s. For k8s please paste the full link e.g. https://base-url/llm and for Azure Container Apps please only provide the following *randomString.region.azurecontainerapps.io* from the https://model.randomString.region.azurecontainerapps.io/model URL.
+- -k, short for --verify_ssl, should only be changed to false if you have a self-signed certificat on SAS Viya that your machine doesn't recognize. This argument is optional as it defaults to true.
 
 ### Authorizing the Repository
 
