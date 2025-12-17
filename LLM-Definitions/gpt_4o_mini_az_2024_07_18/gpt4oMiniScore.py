@@ -26,7 +26,7 @@ def scoreModel(userPrompt, systemPrompt, options):
     optionsDefaults = {
         "temperature": 1,
         "top_p": 1,
-        "azure_openai_resource": "your-openai-resource",  # NEW: Resource name instead of location
+        "azure_openai_resource": "westus3.api.cognitive.microsoft.com",  # NEW: Resource name instead of location
         "api_version": "2025-01-01-preview"  # NEW: Configurable API version
     }
 
