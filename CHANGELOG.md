@@ -16,7 +16,7 @@ No changes are required at this time.
 
 ### Fixed
 
-- 
+- Implement fix for no longer requiring the fact sheet entry for LLMs
 
 ## [0.1.33] - 2025-12-16
 
