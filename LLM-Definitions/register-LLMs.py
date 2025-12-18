@@ -20,7 +20,7 @@ parser = argparse.ArgumentParser(description='This script registers LLMs to SAS 
 parser.add_argument('-vs', '--viya_server', type=str, help='Enter the URL for the SAS Viya server. An example is example.sas.com', required=True)
 parser.add_argument('-u', '--username', type=str, help='Enter your username for the SAS Viya server', required=True)
 parser.add_argument('-p', '--password', type=str, help='Enter your password for the SAS Viya server', required=True)
-parser.add_argument('-e', '--scr_endpoint', type=str, help='Enter the endpoint under which the LLM containers are published. Example: https://viya-host/llm', required=True)
+parser.add_argument('-e', '--scr_endpoint', type=str, help='Enter the endpoint under which the LLM containers are published. Example: https://viya-host/llm', required=False, default='https://viya-host/llm')
 parser.add_argument('-l','--llms', nargs='+', help='List of LLM names Decide on the models that you want to be registered - specify the subfolder name, that folder needs to contain a modelConfiguration.json (e.g., phi_3_mini_4k phi_35_mini)',  required=True)
 parser.add_argument('-rp', '--responsible_party', type=str, help='Enter the person that should be listed as the responsible party for the Model Studio project: Example Person or example@example.com', required=True)
 parser.add_argument('-k', '--verify_ssl', type=str, default='true', help='Set to false if you have a self-signed certificat')

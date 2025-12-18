@@ -12,7 +12,7 @@ No changes are required at this time.
 
 ### Changed
 
-- None
+- As the SCR endpoint isn't currently used in the register-LLMs.py script it has been moved to optional
 
 ### Fixed
 
