@@ -2,6 +2,22 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [0.1.34] - 2025-12-18
+
+No changes are required at this time.
+
+### Added
+
+- None
+
+### Changed
+
+- None
+
+### Fixed
+
+- 
+
 ## [0.1.33] - 2025-12-16
 
 In order for these changes to take effect you need to update the source code of the [SAS Portalframework for SAS Viya](https://github.com/sassoftware/sas-portal-framework-for-sas-viya). If you have deployed the LLM containers in kubernetes no additional changes are required, if you have deployed them as an Azure Container App or Azure Container Instance please utilize the [prompt-builder-json.py](./utility/prompt-builder-json.py) utility script with the additional option -dt aca in order to enable the prompt builder for this as well.

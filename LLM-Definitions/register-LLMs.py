@@ -95,6 +95,8 @@ def register_model(base_path):
     if model_data.empty:
         print(f"WARNING: The selected LLM: {base_path} is not vailable in the llm_fact_sheet.csv.")
         print('WARNING: This entry is required for the Logging/Monitoring to work properly!')
+        # create new model_data DataFrame, setting only the model column value since no other data are available in llm_fact_sheet.csv
+        model_data = pd.DataFrame([{'model': base_path}], columns = ['model'])
     # Add additional model metadata from the llm_fact_sheet.csv
     model_attributes['llmModelType'] = model_attributes.get('llmModelType', 'GPT')
     model_data_dict = model_data.to_dict('records')[0]
