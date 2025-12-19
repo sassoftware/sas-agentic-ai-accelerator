@@ -135,6 +135,7 @@ def scoreModel(userPrompt, systemPrompt, options):
 
 # Example usage - scoreModel function
 ## Uncomment the block, adapt the API_KEY, replace '*****'
+"""
 if __name__ == "__main__":
     userPrompt = ["Count to ten in French"]
     systemPrompt = ["You are an AI Assistant helping people learn languages"]
@@ -156,3 +157,4 @@ if __name__ == "__main__":
     # Run time: 1.9966557025909424
     # Prompt length: 14
     # Output length: 56
+"""
