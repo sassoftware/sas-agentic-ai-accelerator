@@ -35,9 +35,16 @@ def scoreModel(userPrompt, systemPrompt, options):
     }
 
     def _parse_options(opts):
-        if not opts:
+        # Handle pandas Series (from SAS container) or list
+        if opts is None or (hasattr(opts, '__len__') and len(opts) == 0):
             return {}
-        raw = opts[0]
+        # Extract value from pandas Series if needed
+        if hasattr(opts, 'iloc'):  # pandas Series
+            raw = opts.iloc[0] if len(opts) > 0 else None
+        else:  # list or tuple
+            raw = opts[0] if len(opts) > 0 else None
+        if not raw:
+            return {}
         if isinstance(raw, dict):
             return raw
         if isinstance(raw, str):
