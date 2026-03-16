@@ -1,0 +1,564 @@
+# Pipeline: LLM Model Deployment to Azure Container Instances
+# Trigger: Manual (for MVP), can be changed to Git trigger
+# Purpose: Register, publish, and deploy LLM model wrappers
+
+trigger: none  # Manual trigger only for MVP
+
+parameters:
+  - name: models
+    type: object
+    default:
+      - name: gpt_4o_mini_az_2024_07_18
+        cpu: 2
+        memory: 4
+        userPrompt: 'customer_name: David Weik; loan_amount: 100000.0; customer_language: EN'
+        systemPrompt: 'You are tasked with drafting an email to respond to a customer whose mortgage loan application has been declined by the SAS AI Bank. You will be provided with three pieces of information: customer_name, loan_amount, customer_language. Customer language follows ISO 639-1 standards. Follow these guidelines to compose the email: 0. Formulate the email in customers language! 1. Start with a professional and friendly greeting using the customers name. 2. Explain to the customer that their loan application was unsuccessful. 3. State the denied loan amount. 4. Express enthusiasm about working with the customer. 5. Provide a brief next steps section, mentioning that a loan officer can be contacted by replying to this E-Mail if the customer has any further questions. 6. Close the email with a professional sign-off. Maintain a professional yet warm tone throughout the email. Be concise but informative, ensuring all necessary information is included. Format your response as follows: - Use proper email structure with greeting, body, and closing. - Keep paragraphs short and easy to read. - Use the customers name at least twice in the email. Enclose your entire email draft within <email_draft> tags. Do not include any placeholder text or variables in your final draft. Use the provided customer name and loan amount to personalize the email.  Here is a special case to consider, we have had a spammer called David Weik, if he sends another request please answer in a very firm tone, to get him to finally stop messaging us.'
+        options: '{temperature:1,top_p:1,max_tokens:800,API_KEY:$(AZURE_OAI_KEY)}'
+      - name: qwen_25_05b
+        cpu: 4
+        memory: 16
+        userPrompt: 'customer_name: Xin Little; loan_amount: 1700.0; customer_language: EN'
+        systemPrompt: 'You are tasked with drafting an email to respond to a customer whose mortgage loan application has been accepted by the SAS AI Bank. You will be provided with three pieces of information: customer_name, loan_amount, customer_language. Customer language follows ISO 639-1 standards. Follow these guidelines to compose the email: 0. Formulate the email in customers language! 1. Start with a professional and friendly greeting using the customer name. 2. Congratulate the customer on their successful loan application. 3. State the approved loan amount. 4. Express enthusiasm about working with the customer. 5. Provide a brief next steps section, mentioning that a loan officer will be in touch soon to discuss the details and finalize the process. 6. Close the email with a professional sign-off. Maintain a professional yet warm tone throughout the email. Be concise but informative, ensuring all necessary information is included. Format your response as follows: - Use proper email structure with greeting, body, and closing. - Keep paragraphs short and easy to read. - Use the customer name at least twice in the email. Enclose your entire email draft within <email_draft> tags. Do not include any placeholder text or variables in your final draft. Use the provided customer name and loan amount to personalize the email.'
+        options: '{temperature:1,top_p:1,max_tokens:800}'
+      - name: phi_3_mini_4k
+        cpu: 4
+        memory: 16
+        userPrompt: 'customer_name: Robert Petit; loan_amount: 20000.0; customer_language: FR'
+        systemPrompt: 'You are tasked with drafting an email to respond to a customer whose mortgage loan application has been accepted by the SAS AI Bank. You will be provided with three pieces of information: customer_name, loan_amount, customer_language. Customer language follows ISO 639-1 standards. Follow these guidelines to compose the email: 0. Formulate the email in customers language! 1. Start with a professional and friendly greeting using the customer name. 2. Congratulate the customer on their successful loan application. 3. State the approved loan amount. 4. Express enthusiasm about working with the customer. 5. Provide a brief next steps section, mentioning that a loan officer will be in touch soon to discuss the details and finalize the process. 6. Close the email with a professional sign-off. Maintain a professional yet warm tone throughout the email. Be concise but informative, ensuring all necessary information is included. Format your response as follows: - Use proper email structure with greeting, body, and closing. - Keep paragraphs short and easy to read. - Use the customers name at least twice in the email. Enclose your entire email draft within <email_draft> tags. Do not include any placeholder text or variables in your final draft. Use the provided customer name and loan amount to personalize the email.'
+        options: '{temperature:1,top_p:1,max_tokens:800}'
+
+
+pool:
+  name: $(pool)
+
+variables:
+  - group: sas-viya-credentials  # Contains PREFIX, SAS_VIYA_URL, AZURE_OAI_KEY, SAS_USER, SAS_PASS
+  - name: PREFIXNODASH
+    value: $[replace(variables['PREFIX'], '-', '')]
+  - name: sasCertFile
+    value: 'gelenv_trustedcerts.pem'
+  - name: azureSubscription
+    value: 'my_service_connection'
+  - name: resourceGroup
+    value: '$(PREFIX)-rg'
+  - name: location
+    value: 'westus3'
+  - name: acrName
+    value: '$(PREFIXNODASH)acr'
+  - name: vnetName
+    value: '$(PREFIX)-vnet'
+  - name: subnetName
+    value: '$(PREFIX)-cont-subnet'
+  - name: RUN_TESTS
+    value: 'true'  # Set to 'true' to enable optional Test stage
+
+stages:
+  - stage: Register
+    displayName: 'Register LLM Model Wrappers'
+    jobs:
+      - job: RegisterModels
+        displayName: 'Register LLM Wrappers in Model Manager'
+        pool:
+          name: $(pool)
+        steps:
+          - script: |
+              python3 -m pip install --user requests "sasctl>=1.10.3" "pandas>=2.1.3" "python-dotenv"
+            displayName: 'Install Python dependencies'
+
+          - task: DownloadSecureFile@1
+            name: sasCert
+            inputs:
+              secureFile: '$(sasCertFile)'
+            displayName: 'Download SAS certificate'
+
+          - script: |
+              rm -rf sas-agentic-ai-accelerator
+              git clone https://github.com/sassoftware/sas-agentic-ai-accelerator.git
+              cd sas-agentic-ai-accelerator
+              git checkout bteleuca_contributions
+            displayName: 'Clone model wrapper repository'
+            workingDirectory: '$(Build.SourcesDirectory)'
+
+          - script: |
+              export REQUESTS_CA_BUNDLE="$(sasCert.secureFilePath)"
+              cd $(Build.SourcesDirectory)/sas-agentic-ai-accelerator
+
+              python3 Model-Manager-Setup.py \
+                -u "$SAS_USER" \
+                -p "$SAS_CRED" \
+                -vs "$SAS_VIYA_URL" \
+                -rp "$SAS_USER" \
+                -e "${SAS_VIYA_URL}/llm" \
+                -dt aca \
+                -k true
+
+              echo "LLM Model Project created"
+            displayName: 'Create LLM Model Project'
+            env:
+              SAS_VIYA_URL: $(SAS_VIYA_URL)
+              SAS_USER: $(SAS_USER)
+              SAS_CRED: $(SAS_PASS)
+
+          - script: |
+              export REQUESTS_CA_BUNDLE="$(sasCert.secureFilePath)"
+              cd $(Build.SourcesDirectory)/sas-agentic-ai-accelerator/LLM-Definitions
+
+              MODEL_NAMES=$(echo "$MODELS_JSON" | jq -r '.[].name' | paste -sd' ' -)
+
+              if [ -z "$MODEL_NAMES" ]; then
+                echo "No models configured."
+                exit 1
+              fi
+
+              python3 ./register-LLMs.py \
+                --viya_server "$SAS_VIYA_URL" \
+                --username "$SAS_USER" \
+                --password "$SAS_CRED" \
+                --responsible_party "$SAS_USER" \
+                --verify_ssl true \
+                --scr_endpoint "${SAS_VIYA_URL}/llm" \
+                --llms $MODEL_NAMES
+
+              echo "LLM wrappers registered"
+            displayName: 'Register LLM model wrappers'
+            env:
+              MODELS_JSON: ${{ convertToJson(parameters.models) }}
+              SAS_VIYA_URL: $(SAS_VIYA_URL)
+              SAS_USER: $(SAS_USER)
+              SAS_CRED: $(SAS_PASS)
+
+          - script: |
+              echo "Models registered in SAS Model Manager:"
+              echo "$MODELS_JSON" | jq -r '.[].name | "- \(.)"'
+            displayName: 'Verify registration'
+            env:
+              MODELS_JSON: ${{ convertToJson(parameters.models) }}
+
+  - stage: Publish
+    displayName: 'Publish Models to ACR'
+    dependsOn: Register
+    jobs:
+      - job: PublishModels
+        displayName: 'Publish LLM Containers'
+        pool:
+          name: $(pool)
+        steps:
+          - script: |
+              python3 -m pip install --user requests "sasctl>=1.10.3" "pandas>=2.1.3" "python-dotenv"
+            displayName: 'Install Python dependencies'
+
+          - task: DownloadSecureFile@1
+            name: sasCert
+            inputs:
+              secureFile: '$(sasCertFile)'
+            displayName: 'Download SAS certificate'
+
+          - script: |
+              rm -rf sas-agentic-ai-accelerator
+              git clone https://github.com/sassoftware/sas-agentic-ai-accelerator.git
+              cd sas-agentic-ai-accelerator
+              git checkout bteleuca_contributions
+            displayName: 'Clone model wrapper repository'
+            workingDirectory: '$(Build.SourcesDirectory)'
+
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                export REQUESTS_CA_BUNDLE="$(sasCert.secureFilePath)"
+                cd $(Build.SourcesDirectory)/sas-agentic-ai-accelerator/LLM-Definitions
+
+                MODEL_NAMES=$(echo "$MODELS_JSON" | jq -r '.[].name' | paste -sd' ' -)
+
+                if [ -z "$MODEL_NAMES" ]; then
+                  echo "No models configured."
+                  exit 1
+                fi
+
+                echo "Checking existing images in ACR: $ACR_NAME"
+
+                EXISTING_REPOS=$(az acr repository list -n "$ACR_NAME" --output tsv 2>/dev/null || echo "")
+
+                echo "Existing ACR repos:"
+                echo "$EXISTING_REPOS"
+
+                # Filter models to only those NOT in ACR
+                MODELS_TO_PUBLISH=""
+                for MODEL in $MODEL_NAMES; do
+                  if echo "$EXISTING_REPOS" | grep -Fxq "$MODEL"; then
+                    echo "✓ Model '$MODEL' already exists in ACR - skipping"
+                  else
+                    echo "→ Model '$MODEL' not found in ACR - will publish"
+                    MODELS_TO_PUBLISH="$MODELS_TO_PUBLISH $MODEL"
+                  fi
+                done
+
+                MODELS_TO_PUBLISH=$(echo "$MODELS_TO_PUBLISH" | xargs)
+
+                if [ -z "$MODELS_TO_PUBLISH" ]; then
+                  echo "✓ All models already published to ACR - nothing to do"
+                  exit 0
+                fi
+
+                echo ""
+                echo "Publishing models: $MODELS_TO_PUBLISH"
+
+                # Publish only missing models
+                python3 publish-LLMs.py \
+                  -vs "$SAS_VIYA_URL" \
+                  -u "$SAS_USER" \
+                  -p "$SAS_CRED" \
+                  -k true \
+                  -d AzureCLI \
+                  -l $MODELS_TO_PUBLISH
+
+                echo "Models publishing to ACR..."
+                echo "This may take 5-10 minutes per model"
+            displayName: 'Publish LLM models to ACR'
+            env:
+              ACR_NAME: '$(acrName)'
+              MODELS_JSON: ${{ convertToJson(parameters.models) }}
+              SAS_VIYA_URL: $(SAS_VIYA_URL)
+              SAS_USER: $(SAS_USER)
+              SAS_CRED: $(SAS_PASS)
+
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Wait for images to appear in ACR
+                MODEL_NAMES=$(echo "$MODELS_JSON" | jq -r '.[].name' | paste -sd' ' -)
+                FOUND=false
+
+                echo "Waiting for images in ACR: $ACR_NAME"
+                echo "Models to verify: $MODEL_NAMES"
+
+                # Poll ACR for images (max 20 minutes)
+                for i in {1..40}; do
+                  REPOS=$(az acr repository list -n "$ACR_NAME" --output tsv 2>/dev/null || echo "")
+                  MISSING=""
+
+                  for MODEL in $MODEL_NAMES; do
+                    if ! echo "$REPOS" | grep -Fxq "$MODEL"; then
+                      MISSING="$MISSING $MODEL"
+                    fi
+                  done
+
+                  if [ -z "$MISSING" ]; then
+                    echo "✓ All model images are present in ACR"
+                    echo "$REPOS"
+                    FOUND=true
+                    break
+                  fi
+
+                  echo "Waiting... ($i/40) Missing:$MISSING"
+                  sleep 30
+                done
+
+                if [ "$FOUND" != "true" ]; then
+                  echo "Timed out waiting for required model images in ACR"
+                  exit 1
+                fi
+            displayName: 'Verify ACR images'
+            env:
+              ACR_NAME: '$(acrName)'
+              MODELS_JSON: ${{ convertToJson(parameters.models) }}
+
+  - stage: Deploy
+    displayName: 'Deploy LLM Containers to ACI'
+    dependsOn: Publish
+    jobs:
+      - job: DeployContainers
+        displayName: 'Deploy to Azure Container Instances'
+        pool:
+          name: $(pool)
+        steps:
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "RG: $(resourceGroup)"
+                echo "PREFIX: $(PREFIX)"
+                echo "PREFIXNODASH: $(PREFIXNODASH)"
+                echo "ACR_NAME: $(acrName)"
+                echo "LOCATION: $(location)"
+                echo "VNET: $(vnetName)"
+                echo "SUBNET: $(subnetName)"
+
+                # Get ACR password
+                ACR_PASS=$(az acr credential show -n "$(acrName)" --query "passwords[0].value" -o tsv)
+
+                # Create subnet for containers (if not exists)
+                az network vnet subnet create \
+                  --resource-group "$(resourceGroup)" \
+                  --vnet-name "$VNET" \
+                  --name "$SUBNET" \
+                  --address-prefixes 192.168.3.0/24 \
+                  --delegations Microsoft.ContainerInstance/containerGroups \
+                  --only-show-errors || echo "Subnet already exists"
+
+                echo "✓ VNET subnet ready"
+            displayName: 'Setup networking'
+
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Resource Group: $(resourceGroup)"
+                echo "PREFIX: $(PREFIX)"
+                echo "PREFIXNODASH: $(PREFIXNODASH)"
+                echo "ACR_NAME: $(acrName)"
+                echo "Location: $(location)"
+                echo "VNET: $(vnetName)"
+                echo "SUBNET: $(subnetName)"
+
+                ACR_PASS=$(az acr credential show -n "$(acrName)" --query "passwords[0].value" -o tsv)
+
+                sanitize_name() {
+                  echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g'
+                }
+
+                while IFS= read -r MODEL_ROW; do
+                  MODEL=$(echo "$MODEL_ROW" | jq -r '.name')
+                  CPU=$(echo "$MODEL_ROW" | jq -r '.cpu // 2')
+                  MEMORY=$(echo "$MODEL_ROW" | jq -r '.memory // 4')
+                  SUFFIX=$(sanitize_name "$MODEL")
+                  CONT=$(echo "$(PREFIXNODASH)-${SUFFIX}" | cut -c1-63 | sed 's/-$//')
+
+                  echo "Processing model: $MODEL -> Container: $CONT"
+
+                  EXISTING_STATE=$(az container show --resource-group "$(resourceGroup)" --name "$CONT" --query "instanceView.state" -o tsv 2>/dev/null || echo "NotFound")
+                  EXISTING_IP=$(az container show --resource-group "$(resourceGroup)" --name "$CONT" --query "ipAddress.ip" -o tsv 2>/dev/null || echo "")
+
+                  if [ "$EXISTING_STATE" == "Running" ] && [ -n "$EXISTING_IP" ] && [ "$EXISTING_IP" != "0.0.0.0" ]; then
+                    echo "✓ Container '$CONT' already healthy for model '$MODEL' (IP: $EXISTING_IP) - skipping create"
+                    continue
+                  fi
+
+                  echo "Deploying model '$MODEL' to container '$CONT' (cpu=$CPU memory=$MEMORY)..."
+
+                  az container create \
+                    --resource-group "$(resourceGroup)" \
+                    --name "$CONT" \
+                    --image "$(acrName).azurecr.io/${MODEL}:latest" \
+                    --registry-login-server "$(acrName).azurecr.io" \
+                    --registry-username "$(acrName)" \
+                    --registry-password "$ACR_PASS" \
+                    --cpu "$CPU" \
+                    --memory "$MEMORY" \
+                    --os-type Linux \
+                    --ip-address Private \
+                    --ports 8080 \
+                    --vnet "$(vnetName)" \
+                    --subnet "$(subnetName)" \
+                    --location "$(location)" \
+                    --no-wait
+
+                  echo "✓ Deployment initiated for $MODEL"
+                done < <(echo "$MODELS_JSON" | jq -c '.[]')
+            displayName: 'Deploy model containers'
+            env:
+              MODELS_JSON: ${{ convertToJson(parameters.models) }}
+
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                READY=false
+
+                sanitize_name() {
+                  echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g'
+                }
+
+                echo "Waiting for containers and IP assignment (max 15 minutes)..."
+
+                for i in {1..30}; do
+                  ALL_READY=true
+
+                  for MODEL in $(echo "$MODELS_JSON" | jq -r '.[].name'); do
+                    SUFFIX=$(sanitize_name "$MODEL")
+                    CONT=$(echo "$(PREFIXNODASH)-${SUFFIX}" | cut -c1-63 | sed 's/-$//')
+
+                    STATE=$(az container show --resource-group "$(resourceGroup)" --name "$CONT" --query "instanceView.state" -o tsv 2>/dev/null || echo "NotFound")
+                    IP=$(az container show --resource-group "$(resourceGroup)" --name "$CONT" --query "ipAddress.ip" -o tsv 2>/dev/null || echo "")
+
+                    echo "Attempt $i: $MODEL -> State=$STATE (IP: ${IP:-pending})"
+
+                    if [ "$STATE" != "Running" ] || [ -z "$IP" ] || [ "$IP" == "0.0.0.0" ]; then
+                      ALL_READY=false
+                    fi
+                  done
+
+                  if [ "$ALL_READY" == "true" ]; then
+                    echo "✓ All containers running with IPs assigned"
+                    READY=true
+                    break
+                  fi
+
+                  sleep 30
+                done
+
+                if [ "$READY" != "true" ]; then
+                  echo "Timed out waiting for containers to become ready"
+                  exit 1
+                fi
+            displayName: 'Wait for containers and IP assignment'
+            env:
+              MODELS_JSON: ${{ convertToJson(parameters.models) }}
+
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                sanitize_name() {
+                  echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g'
+                }
+
+                ENDPOINTS=$(jq -n '[]')
+                MISSING_IP=false
+
+                for MODEL in $(echo "$MODELS_JSON" | jq -r '.[].name'); do
+                  SUFFIX=$(sanitize_name "$MODEL")
+                  CONT=$(echo "$(PREFIXNODASH)-${SUFFIX}" | cut -c1-63 | sed 's/-$//')
+
+                  MODEL_IP=""
+                  for i in {1..15}; do
+                    MODEL_IP=$(az container show --resource-group "$(resourceGroup)" --name "$CONT" --query "ipAddress.ip" -o tsv 2>/dev/null || echo "")
+                    if [ -n "$MODEL_IP" ] && [ "$MODEL_IP" != "0.0.0.0" ]; then
+                      break
+                    fi
+                    echo "Waiting for valid IP for $MODEL ($CONT) attempt $i/15..."
+                    sleep 10
+                  done
+
+                  if [ -z "$MODEL_IP" ] || [ "$MODEL_IP" == "0.0.0.0" ]; then
+                    echo "ERROR: No valid IP found for model '$MODEL' container '$CONT'"
+                    MISSING_IP=true
+                    continue
+                  fi
+
+                  MODEL_ENDPOINT="http://${MODEL_IP}:8080/${MODEL}"
+
+                  echo "Model: $MODEL"
+                  echo "Container: $CONT"
+                  echo "IP: $MODEL_IP"
+                  echo "Endpoint: $MODEL_ENDPOINT"
+
+                  ENDPOINTS=$(echo "$ENDPOINTS" | jq \
+                    --arg name "$MODEL" \
+                    --arg container "$CONT" \
+                    --arg ip "$MODEL_IP" \
+                    --arg endpoint "$MODEL_ENDPOINT" \
+                    '. + [{name: $name, container: $container, ip: $ip, endpoint: $endpoint}]')
+                done
+
+                if [ "$MISSING_IP" == "true" ]; then
+                  echo "One or more containers did not have a valid IP. Failing endpoint artifact creation."
+                  exit 1
+                fi
+
+                echo "Container IPs retrieved:"
+                echo "$ENDPOINTS" | jq '.'
+
+                # Create JSON file with endpoints
+                echo "$ENDPOINTS" > $(Build.ArtifactStagingDirectory)/llm-endpoints.json
+
+                cat $(Build.ArtifactStagingDirectory)/llm-endpoints.json
+            name: getEndpoints
+            displayName: 'Retrieve container endpoints'
+            env:
+              MODELS_JSON: ${{ convertToJson(parameters.models) }}
+
+          - script: |
+              # Delete old artifact using REST API to allow fresh publish on rerun
+              PAT=$(System.AccessToken)
+              ORGURL=$(System.TeamFoundationCollectionUri)
+              PROJECT=$(System.TeamProject)
+              BUILD=$(Build.BuildId)
+
+              echo "Attempting to delete old artifact..."
+              curl -s -u ":$PAT" -X DELETE \
+                "${ORGURL}${PROJECT}/_apis/pipelines/builds/${BUILD}/artifacts/llm-endpoints?api-version=7.0" \
+                || echo "Old artifact not found or already deleted (OK)"
+
+              echo "Ready to publish fresh artifact"
+            displayName: 'Delete old artifact (if exists)'
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/llm-endpoints.json'
+              artifact: 'llm-endpoints'
+              publishLocation: 'pipeline'
+            displayName: 'Publish LLM endpoints artifact'
+
+  - stage: Test
+    displayName: 'Test LLM Endpoints (Optional)'
+    dependsOn: Deploy
+    condition: eq(variables['RUN_TESTS'], 'true')
+    jobs:
+      - job: TestScoring
+        displayName: 'Test LLM Scoring'
+        pool:
+          name: $(pool)
+        steps:
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              artifactName: 'llm-endpoints'
+              targetPath: '$(Pipeline.Workspace)/endpoints'
+            displayName: 'Download LLM endpoints'
+
+          - script: |
+              echo "====== Testing LLM Endpoints ======"
+
+              ENDPOINTS_FILE="$(Pipeline.Workspace)/endpoints/llm-endpoints.json"
+
+              while IFS= read -r MODEL_ROW; do
+                MODEL=$(echo "$MODEL_ROW" | jq -r '.name')
+                USER_PROMPT=$(echo "$MODEL_ROW" | jq -r '.userPrompt')
+                SYSTEM_PROMPT=$(echo "$MODEL_ROW" | jq -r '.systemPrompt')
+                OPTIONS=$(echo "$MODEL_ROW" | jq -r '.options')
+                ENDPOINT=$(jq -r --arg model "$MODEL" '.[] | select(.name == $model) | .endpoint' "$ENDPOINTS_FILE")
+
+                if [ -z "$ENDPOINT" ] || [ "$ENDPOINT" = "null" ]; then
+                  echo "No endpoint found for model: $MODEL"
+                  continue
+                fi
+
+                echo ""
+                echo "Model: $MODEL"
+                echo "Endpoint: $ENDPOINT"
+
+                PAYLOAD=$(jq -n \
+                  --arg userPrompt "$USER_PROMPT" \
+                  --arg systemPrompt "$SYSTEM_PROMPT" \
+                  --arg options "$OPTIONS" \
+                  '{
+                    inputs: [
+                      {name:"userPrompt", value:$userPrompt},
+                      {name:"systemPrompt", value:$systemPrompt},
+                      {name:"options", value:$options}
+                    ]
+                  }')
+
+                curl --location --request POST "$ENDPOINT" \
+                  --header 'Content-Type: application/json' \
+                  --header 'Accept: application/vnd.sas.microanalytic.module.step.output+json' \
+                  --data-raw "$PAYLOAD" | jq '.' || echo "Scoring request failed for $MODEL"
+
+                echo "✓ Scoring test complete for $MODEL"
+              done < <(echo "$MODELS_JSON" | jq -c '.[]')
+            displayName: 'Test scoring endpoints'
+            env:
+              MODELS_JSON: ${{ convertToJson(parameters.models) }}
