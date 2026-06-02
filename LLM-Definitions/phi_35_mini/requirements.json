@@ -3,14 +3,7 @@
       "step": "upgrade pip before pip install",
       "command": "pip3 -q install --upgrade pip setuptools wheel"
     },
-    {
-       "step":"install git-lfs",
-       "command":"microdnf install git-lfs"
-    },
-    {
-       "step":"Verify git-lfs install",
-       "command":"git lfs install"
-    },
+
     {
        "step":"install huggingface CLI",
        "command":"pip3 -q install huggingface-hub numpy==1.26.4"
