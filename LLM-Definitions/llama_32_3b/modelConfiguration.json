@@ -1,4 +1,4 @@
-﻿{
+{
     "name": "llama_32_3b",
     "scoreCodeFile": "llama323bScore.py",
     "description": "Llama-3.2-3B-Instruct is a small language model.",

@@ -1,4 +1,4 @@
-﻿{
+{
     "name": "smollm_17b",
     "scoreCodeFile": "smollm17bScore.py",
     "description": "SmolLM is a series of state-of-the-art small language models with 1.7B parameters",

@@ -1,4 +1,4 @@
-﻿{
+{
     "name": "phi_35_mini",
     "scoreCodeFile": "phi35miniScore.py",
     "description": "Phi 3.5 Mini is an open-source model provided by Microsoft with a 128k token length.",

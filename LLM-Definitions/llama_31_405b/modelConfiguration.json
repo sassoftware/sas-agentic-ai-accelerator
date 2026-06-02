@@ -1,4 +1,4 @@
-﻿{
+{
     "name": "llama_31_405b",
     "scoreCodeFile": "llama31405bScore.py",
     "description": "Llama-3.1-405B-Instruct is a gigantic model that is hard to run.",

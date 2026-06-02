@@ -1,4 +1,4 @@
-﻿{
+{
     "name": "gpt_41_az_2025_01_01",
     "scoreCodeFile": "gpt41MiniScore.py",
     "description": "GPT-4.1 is the latest iteration of the GPT-4o family, optimized for coding and instruction following. Available via Azure OpenAI and Azure AI Foundry.",

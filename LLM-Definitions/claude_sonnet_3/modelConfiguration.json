@@ -1,4 +1,4 @@
-﻿{
+{
     "name": "claude_sonnet_3",
     "scoreCodeFile": "claudeSonnet3Score.py",
     "description": "Claude is a family of state-of-the-art large language models developed by Anthropic. Claude 3 Sonnet currently the second best Sonnet model.",

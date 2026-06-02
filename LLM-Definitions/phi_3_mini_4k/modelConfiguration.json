@@ -1,4 +1,4 @@
-﻿{
+{
     "name": "phi_3_mini_4k",
     "scoreCodeFile": "phi3Score.py",
     "description": "Phi 3 Mini with a context of 4k. Provides a user and system prompt input and returns the generated text and key performance metrics",

@@ -1,4 +1,4 @@
-﻿{
+{
     "name": "claude_opus_3",
     "scoreCodeFile": "claudeOpus3Score.py",
     "description": "Claude is a family of state-of-the-art large language models developed by Anthropic. Claude 3 Opus is the currently their most expensive model.",

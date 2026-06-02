@@ -1,4 +1,4 @@
-﻿{
+{
     "name": "gemini_flash_lite_25",
     "scoreCodeFile": "geminiflashlite25Score.py",
     "description": "A Gemini 2.5 Flash model optimized for cost-efficiency and high throughput.",

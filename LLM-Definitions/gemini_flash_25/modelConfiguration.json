@@ -1,4 +1,4 @@
-﻿{
+{
     "name": "gemini_flash_25",
     "scoreCodeFile": "geminiflash25Score.py",
     "description": "Our best model in terms of price-performance, offering well-rounded capabilities. 2.5 Flash is best for large scale processing, low-latency, high volume tasks that require thinking, and agentic use cases.",

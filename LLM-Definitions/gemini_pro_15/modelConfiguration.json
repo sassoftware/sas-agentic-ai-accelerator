@@ -1,4 +1,4 @@
-﻿{
+{
     "name": "gemini_pro_15",
     "scoreCodeFile": "geminipro15Score.py",
     "description": "Gemini 1.5 Pro is a mid-size multimodal model that is optimized for a wide-range of reasoning tasks. 1.5 Pro can process large amounts of data at once, including 2 hours of video, 19 hours of audio, codebases with 60,000 lines of code, or 2,000 pages of text.",

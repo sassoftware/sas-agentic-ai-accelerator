@@ -1,4 +1,4 @@
-﻿{
+{
     "name": "gpt_4o_mini_2025_01_01",
     "scoreCodeFile": "gpt4oMiniScore.py",
     "description": "GPT-4o (omni) mini is the most advanced small category by OpenAI.",
