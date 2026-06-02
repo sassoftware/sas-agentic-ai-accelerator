@@ -2,9 +2,15 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## Future Updates
+
+* Register all flag -> `python ./register-LLMs.py --all ...` - register all models with an entry in LLM_Definitions.
+
 ## [edu-2026.03] - 2026-06-02
 
-No environment updates required at this time.
+### Removed
+
+The `git-lfs` steps have been removed from all local/open-source model `requirements.json` files — they were never needed, as model weights are downloaded via `hf download` (HuggingFace Hub API), which does not use git. The steps were dead weight and a potential failure point in container environments where `microdnf` is unavailable.
 
 ### Added
 
