@@ -22,7 +22,6 @@ def scoreModel(userPrompt, systemPrompt, options):
     started_timestamp = time.time()
     optionsDefaults = {
         "temperature": 1,
-        "top_p": 1,
         "max_tokens": 1000,
     }
     optionsParsed = {}
@@ -46,7 +45,6 @@ def scoreModel(userPrompt, systemPrompt, options):
             "messages": [{"role": "user", "content": userPrompt[0]}],
             "max_tokens": int(options["max_tokens"]),
             "temperature": float(options["temperature"]),
-            "top_p": float(options["top_p"]),
         },
     )
     response = responseObject.json()['content'][0]['text']
