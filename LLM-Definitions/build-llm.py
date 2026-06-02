@@ -167,7 +167,7 @@ def make_options(provider, api_version="2025-01-01-preview"):
                 "range": "*******",
                 "description": (
                     "Either a resource name (e.g., 'my-openai-westus3' -> host 'my-openai-westus3.openai.azure.com') "
-                    "or a full host (e.g., 'sbxbotres.cognitiveservices.azure.com'). Used to construct "
+                    "or a full host (e.g., 'my-resource.cognitiveservices.azure.com'). Used to construct "
                     "https://{host}/openai/deployments/{modelVersion}/chat/completions?api-version={api_version} "
                     "when 'endpoint_url' is not provided."
                 ),
@@ -182,7 +182,7 @@ def make_options(provider, api_version="2025-01-01-preview"):
                 "range": "*******",
                 "description": (
                     "Optional full URL override for the chat completions endpoint, e.g., "
-                    "'https://sbxbotres.cognitiveservices.azure.com/openai/deployments/__MODEL_VERSION__/chat/completions?api-version=2025-01-01-preview'. "
+                    "'https://my-resource.cognitiveservices.azure.com/openai/deployments/__MODEL_VERSION__/chat/completions?api-version=2025-01-01-preview'. "
                     "If set, this is used directly."
                 ),
             },
@@ -895,7 +895,7 @@ To use this model, you need:
 1. Locate your service and expand **Resource Management** > **Keys and Endpoint**.
    - **Endpoint** examples:
      - Azure OpenAI: `https://westus3.api.cognitive.microsoft.com/`
-     - Azure AI Foundry: `https://sbxbotres.cognitiveservices.azure.com/`
+     - Azure AI Foundry: `https://my-resource.cognitiveservices.azure.com/`
    - Save the **hostname** (e.g., `westus3.api.cognitive.microsoft.com`). Configure it as `azure_openai_resource` in the scoring options.
    - **API Key**: Copy either key. Pass it as `API_KEY` in options.
 
@@ -914,7 +914,7 @@ To use this model, you need:
 
 **Option 1 — Full endpoint URL** (recommended for Azure AI Foundry):
 ```
-endpoint_url:https://sbxbotres.cognitiveservices.azure.com/openai/deployments/__MODEL_VERSION__/chat/completions?api-version=2025-01-01-preview
+endpoint_url:https://my-resource.cognitiveservices.azure.com/openai/deployments/__MODEL_VERSION__/chat/completions?api-version=2025-01-01-preview
 ```
 
 **Option 2 — Resource hostname** (Azure OpenAI):
@@ -926,7 +926,7 @@ azure_openai_resource:westus3.api.cognitive.microsoft.com,api_version:2025-01-01
 
 **Azure AI Foundry:**
 ```
-{endpoint_url:https://sbxbotres.cognitiveservices.azure.com/openai/deployments/__MODEL_VERSION__/chat/completions?api-version=2025-01-01-preview,temperature:1,top_p:1,API_KEY:your-key-here}
+{endpoint_url:https://my-resource.cognitiveservices.azure.com/openai/deployments/__MODEL_VERSION__/chat/completions?api-version=2025-01-01-preview,temperature:1,top_p:1,API_KEY:your-key-here}
 ```
 
 **Azure OpenAI:**
@@ -1277,7 +1277,7 @@ def main():
         print("  Enter small, medium, or large.")
 
     # 7. Modeler
-    modeler = ask("Modeler", default="sbxbot")
+    modeler = ask("Modeler", default="modeler")
     print()
 
     # 8. Folder name
