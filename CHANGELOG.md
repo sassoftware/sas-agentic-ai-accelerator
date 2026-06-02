@@ -23,7 +23,7 @@ No environment updates required at this time.
 
 ### Fixed
 
-- `toolVersion` in `phi_3_mini_4k/modelConfiguration.json` corrected from `3.11-5` to `3.11.5` — SAS Model Manager 2026.03 stable rejects the hyphenated format `3.11-5` with HTTP 400
+- `toolVersion` in `LLM-Definitions/_model_/modelConfiguration.json` corrected from `3.11-5` to `3.11.5` — SAS Model Manager 2026.03 stable rejects the hyphenated format `3.11-5` with HTTP 400
 - Default endpoint construction in Azure OpenAI score files when only a resource name (not a full host) is provided
 - `huggingface-hub` install flag changed from `[cli]` to `>=0.18.0` for compatibility with SAS Viya 2025.09 LTS
 - Typos and a missing model entry corrected in `llm_fact_sheet.csv`
