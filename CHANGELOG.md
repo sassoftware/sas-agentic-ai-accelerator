@@ -14,10 +14,15 @@ The `git-lfs` steps have been removed from all local/open-source model `requirem
 
 ### Added
 
+- `build-llm.py` — interactive CLI to scaffold a complete new LLM definition folder. Run with `python build-llm.py` from the `LLM-Definitions/` directory. The wizard walks through:
+  1. **Provider selection** — Azure OpenAI, OpenAI, Anthropic, Google (Gemini), Meta / HuggingFace, or Other
+  2. **Model details** — API model ID, Azure API version (Azure only), HuggingFace repo ID and gated-model flag (HuggingFace only), display name, description, LLM/SLM classification, size tag, modeler
+  3. **Folder and score file names** — auto-suggested from the model ID following the project naming convention; both can be overridden
+  4. **Fact sheet details** — release date, parameter count, context window, pricing, knowledge cut-off; appended automatically to `llm_fact_sheet.csv`
+
+  Generated files per model: `modelConfiguration.json`, `{Name}Score.py`, `inputVar.json`, `outputVar.json`, `options.json`, `requirements.json`, `README.md`. Provider-specific behavior: Anthropic score files omit `top_p` (API constraint); HuggingFace `requirements.json` includes the correct `hf download` step (no git-lfs); Azure score files embed the chosen `api_version`.
 - `gpt_41_az_2025_01_01` — GPT-4.1 model definition for Azure OpenAI, including score file, `modelConfiguration.json`, fact sheet entry, and README
 - `publish-LLMsd.py` — debug variant of the publish script that prints full HTTP diagnostics (status, headers, response body) to help diagnose SAS Model Manager publish failures
-- `build-llm.py` — interactive CLI to scaffold a complete new LLM definition folder (prompts for provider, model ID, display name, tags, and generates all required files)
-- `CLAUDE.md` — specification document for the LLM definition builder, covering naming conventions, file templates, and validation rules
 - Azure DevOps ACI pipeline documentation for deploying the SAS LLM wrapper
 
 ### Changed
