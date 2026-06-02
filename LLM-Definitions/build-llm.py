@@ -153,7 +153,7 @@ def make_model_config(folder_name, score_file, description, modeler, tags):
     }
 
 
-def make_options(provider):
+def make_options(provider, api_version="2025-01-01-preview"):
     tt = {
         "temperature": {"default": 1, "range": "0 - 2",
                         "description": "What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic."},
@@ -173,7 +173,7 @@ def make_options(provider):
                 ),
             },
             "api_version": {
-                "default": "2025-01-01-preview",
+                "default": api_version,
                 "range": "2023-05-15 - 2025-01-01-preview",
                 "description": "Azure OpenAI API version. Use latest stable version for new features.",
             },
@@ -312,7 +312,7 @@ def scoreModel(userPrompt, systemPrompt, options):
         "temperature": 1,
         "top_p": 1,
         "azure_openai_resource": "westus3.api.cognitive.microsoft.com",
-        "api_version": "2025-01-01-preview",
+        "api_version": "__API_VERSION__",
         "endpoint_url": None,
         "API_KEY": None,
     }
@@ -844,9 +844,12 @@ _SCORE_TEMPLATES = {
 }
 
 
-def make_score(provider, model_version, score_file):
+def make_score(provider, model_version, score_file, api_version="2025-01-01-preview"):
     tmpl = _SCORE_TEMPLATES.get(provider, _OTHER_SCORE)
-    return tmpl.replace('__MODEL_VERSION__', model_version).replace('__SCORE_FILE__', score_file)
+    return (tmpl
+            .replace('__MODEL_VERSION__', model_version)
+            .replace('__SCORE_FILE__', score_file)
+            .replace('__API_VERSION__', api_version))
 
 
 # ── README templates ──────────────────────────────────────────────────────────
@@ -1171,6 +1174,42 @@ def _read_base(filename, fallback):
     return json.dumps(fallback, indent=4)
 
 
+# ── Fact sheet helper ────────────────────────────────────────────────────────
+
+def _append_fact_sheet_row(folder_name, display_name, provider, description,
+                           release_date, param_count, deployment_type, license_type,
+                           cost_type, input_price, output_price, second_cost,
+                           context_length, temperature, top_p, top_k, max_tokens,
+                           knowledge_cut_off):
+    csv_path = os.path.join(SCRIPT_DIR, "llm_fact_sheet.csv")
+    if not os.path.exists(csv_path):
+        print("  [SKIP] llm_fact_sheet.csv not found — skipping fact sheet entry.")
+        return
+
+    def q(v):
+        if v == '.':
+            return '.'
+        try:
+            float(v)
+            return str(v)
+        except (ValueError, TypeError):
+            return f'"{v}"'
+
+    fields = [
+        q(folder_name), q(display_name), q(provider), q(description),
+        release_date, param_count,
+        q(deployment_type), q(license_type), q(cost_type),
+        input_price, output_price, second_cost,
+        context_length,
+        temperature, top_p, top_k, max_tokens,
+        knowledge_cut_off,
+    ]
+    row = ','.join(str(f) for f in fields)
+    with open(csv_path, 'a', encoding='utf-8', newline='') as f:
+        f.write('\n' + row)
+    print("  [OK] llm_fact_sheet.csv")
+
+
 # ── Main interactive flow ─────────────────────────────────────────────────────
 
 def main():
@@ -1200,7 +1239,13 @@ def main():
             break
         print("  Required — cannot be empty.")
 
-    # 2b. HuggingFace-specific
+    # 2b. Azure-specific
+    api_version = "2025-01-01-preview"
+    if provider == "Azure OpenAI":
+        api_version = ask("Azure API version", default="2025-01-01-preview")
+        print()
+
+    # 2c. HuggingFace-specific
     hf_repo_id = None
     hf_gated = False
     if provider == "Meta / HuggingFace (local/SCR)":
@@ -1254,6 +1299,32 @@ def main():
         score_file += '.py'
     print()
 
+    # 10. Fact sheet details
+    print("Fact sheet details (for logging / monitoring — press Enter to skip any field):")
+    release_date      = ask("Release date (YYYY-MM-DD)", default=".")
+    param_count       = ask("Parameter count (e.g. 8000000000)", default=".")
+    context_length    = ask("Context window (tokens)", default=".")
+    knowledge_cut_off = ask("Knowledge cut-off date (YYYY-MM-DD)", default=".")
+
+    deployment_type = "SCR" if provider == "Meta / HuggingFace (local/SCR)" else "API"
+    cost_type       = "Seconds" if provider == "Meta / HuggingFace (local/SCR)" else "Tokens"
+    if provider in ("Azure OpenAI", "OpenAI", "Anthropic", "Google (Gemini)"):
+        license_type = "Proprietary"
+    else:
+        license_type = ask("License (e.g. MIT, Apache 2.0, Llama 3.2)", default=".")
+
+    input_price = output_price = second_cost = "."
+    if deployment_type == "API":
+        input_price  = ask("Input token price in USD (e.g. 0.00000015)", default="0")
+        output_price = ask("Output token price in USD", default="0")
+    else:
+        second_cost = ask("Per-second cost in USD (e.g. 0.000039178)", default=".")
+    print()
+
+    fs_top_p      = "0.95" if provider == "Google (Gemini)" else "1"
+    fs_top_k      = "40"   if provider == "Google (Gemini)" else "."
+    fs_max_tokens = {"Anthropic": "1000", "Google (Gemini)": "256"}.get(provider, ".")
+
     # Validate destination
     dest = os.path.join(SCRIPT_DIR, folder_name)
     if os.path.exists(dest):
@@ -1272,7 +1343,7 @@ def main():
                 make_model_config(folder_name, score_file, description, modeler, tags))
     written.append("modelConfiguration.json")
 
-    _write_text(dest, score_file, make_score(provider, model_version, score_file))
+    _write_text(dest, score_file, make_score(provider, model_version, score_file, api_version=api_version))
     written.append(score_file)
 
     _write_text(dest, "inputVar.json",  _read_base("inputVar.json",  _INPUT_VAR))
@@ -1281,7 +1352,7 @@ def main():
     _write_text(dest, "outputVar.json", _read_base("outputVar.json", _OUTPUT_VAR))
     written.append("outputVar.json")
 
-    _write_json(dest, "options.json",      make_options(provider))
+    _write_json(dest, "options.json",      make_options(provider, api_version=api_version))
     written.append("options.json")
 
     _write_json(dest, "requirements.json", make_requirements(
@@ -1291,6 +1362,14 @@ def main():
     _write_text(dest, "README.md",
                 make_readme(provider, display_name, model_version, score_file))
     written.append("README.md")
+
+    _append_fact_sheet_row(
+        folder_name, display_name, provider, description,
+        release_date, param_count, deployment_type, license_type,
+        cost_type, input_price, output_price, second_cost,
+        context_length, "1", fs_top_p, fs_top_k, fs_max_tokens,
+        knowledge_cut_off,
+    )
 
     print()
     for f in written:
