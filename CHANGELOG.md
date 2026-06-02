@@ -2,6 +2,33 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [edu-2026.03] - 2026-06-02
+
+No environment updates required at this time.
+
+### Added
+
+- `gpt_41_az_2025_01_01` — GPT-4.1 model definition for Azure OpenAI, including score file, `modelConfiguration.json`, fact sheet entry, and README
+- `publish-LLMsd.py` — debug variant of the publish script that prints full HTTP diagnostics (status, headers, response body) to help diagnose SAS Model Manager publish failures
+- `build-llm.py` — interactive CLI to scaffold a complete new LLM definition folder (prompts for provider, model ID, display name, tags, and generates all required files)
+- `CLAUDE.md` — specification document for the LLM definition builder, covering naming conventions, file templates, and validation rules
+- Azure DevOps ACI pipeline documentation for deploying the SAS LLM wrapper
+
+### Changed
+
+- Standardized the `pip` upgrade step across all model definition `requirements.json` files for consistency
+- `_parse_options` helper updated to correctly handle pandas Series input passed by the SAS scoring context
+- Provider name key in `llm-prompt-builder.json` aligned to match the expected key format
+- Removed restricted open-source models that cannot be redistributed
+
+### Fixed
+
+- `toolVersion` in `phi_3_mini_4k/modelConfiguration.json` corrected from `3.11-5` to `3.11.5` — SAS Model Manager 2026.03 stable rejects the hyphenated format `3.11-5` with HTTP 400
+- Default endpoint construction in Azure OpenAI score files when only a resource name (not a full host) is provided
+- `huggingface-hub` install flag changed from `[cli]` to `>=0.18.0` for compatibility with SAS Viya 2025.09 LTS
+- Typos and a missing model entry corrected in `llm_fact_sheet.csv`
+- VA monitoring baseline report data item mismatches resolved
+
 ## [0.1.34] - 2025-12-18
 
 No changes are required at this time.

@@ -1,8 +1,8 @@
-{
+﻿{
     "name": "claude_2_0",
     "scoreCodeFile": "claude20Score.py",
     "description": "Claude is a family of state-of-the-art large language models developed by Anthropic. Claude 2.0 is an old version of Claude.",
-    "toolVersion": "3.11-5",
+    "toolVersion": "3.11.5",
     "targetVariable": "response",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",

@@ -1,8 +1,8 @@
-{
+﻿{
     "name": "gpt_4o_2024_05_13",
     "scoreCodeFile": "gpt4oScore.py",
     "description": "GPT-4o (omni) is a the most advanced model by OpenAI.",
-    "toolVersion": "3.11-5",
+    "toolVersion": "3.11.5",
     "targetVariable": "response",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",

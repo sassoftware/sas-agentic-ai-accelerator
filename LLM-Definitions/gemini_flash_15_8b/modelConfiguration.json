@@ -1,8 +1,8 @@
-{
+﻿{
     "name": "gemini_flash_15_8b",
     "scoreCodeFile": "geminiflash158bScore.py",
     "description": "Gemini 1.5 Flash-8B is a small model designed for lower intelligence tasks.",
-    "toolVersion": "3.11-5",
+    "toolVersion": "3.11.5",
     "targetVariable": "response",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",

@@ -1,8 +1,8 @@
-{
+﻿{
     "name": "claude_haiku_3",
     "scoreCodeFile": "claudeHaiku3Score.py",
     "description": "Claude is a family of state-of-the-art large language models developed by Anthropic. Claude 3 Haiku currently the best Haiku model.",
-    "toolVersion": "3.11-5",
+    "toolVersion": "3.11.5",
     "targetVariable": "response",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",

@@ -1,8 +1,8 @@
-{
+﻿{
     "name": "gemini_pro_25",
     "scoreCodeFile": "geminipro25Score.py",
     "description": "Gemini 2.5 Pro is our state-of-the-art thinking model, capable of reasoning over complex problems in code, math, and STEM, as well as analyzing large datasets, codebases, and documents using long context.",
-    "toolVersion": "3.11-5",
+    "toolVersion": "3.11.5",
     "targetVariable": "response",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",

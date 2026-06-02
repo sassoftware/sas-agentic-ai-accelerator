@@ -1,8 +1,8 @@
-{
+﻿{
     "name": "gemini_flash_15_002",
     "scoreCodeFile": "geminiflash15002Score.py",
     "description": "Gemini 1.5 Flash is a fast and versatile multimodal model for scaling across diverse tasks.",
-    "toolVersion": "3.11-5",
+    "toolVersion": "3.11.5",
     "targetVariable": "response",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",

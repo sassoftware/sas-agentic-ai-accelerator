@@ -1,8 +1,8 @@
-{
+﻿{
     "name": "smollm_360m",
     "scoreCodeFile": "smollm360mScore.py",
     "description": "SmolLM is a series of state-of-the-art small language models with 360M parameters",
-    "toolVersion": "3.11-5",
+    "toolVersion": "3.11.5",
     "targetVariable": "response",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",
