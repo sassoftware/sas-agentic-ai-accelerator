@@ -1,0 +1,10 @@
+[
+    {
+        "step": "upgrade pip before pip install",
+        "command": "pip3 -q install --upgrade pip setuptools wheel"
+    },
+    {
+        "step": "install common packages",
+        "command": "pip3 -q install requests>=2.31.0 tiktoken>=0.5.1"
+    }
+]
