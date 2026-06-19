@@ -4,6 +4,7 @@ import logging
 import sys
 import requests
 import tiktoken
+import os
 
 # Requires an Azure OpenAI resource with a deployment named gpt-4o-mini
 # You will require an API_KEY from your Azure OpenAI resource page
@@ -26,7 +27,7 @@ def scoreModel(userPrompt, systemPrompt, options):
     optionsDefaults = {
         "temperature": 1,
         "top_p": 1,
-        "azure_openai_resource": "westus3.api.cognitive.microsoft.com",  # NEW: Resource name instead of location
+        "azure_openai_resource": os.environ.get("AZURE_OPEN_AI_ENDPOINT", "westus3.api.cognitive.microsoft.com"),
         "api_version": "2025-01-01-preview"  # NEW: Configurable API version
     }
 

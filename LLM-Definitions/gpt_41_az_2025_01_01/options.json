@@ -12,7 +12,7 @@
     "endpoint_url": {
         "default": null,
         "range": "*******",
-        "description": "Optional full URL override for the chat completions endpoint, e.g., 'https://sbxbotres.cognitiveservices.azure.com/openai/deployments/gpt-4.1/chat/completions?api-version=2025-01-01-preview'. If set, this is used directly."
+        "description": "Optional full URL override for the chat completions endpoint, e.g., 'https://myres.cognitiveservices.azure.com/openai/deployments/gpt-4.1/chat/completions?api-version=2025-01-01-preview'. If set, this is used directly."
     },
     "temperature": {
         "default": 1,
@@ -27,6 +27,6 @@
     "API_KEY": {
         "default": "AzureOpenAI",
         "range": "*******",
-        "description": "This is the ProviderName key that is used to make the actual request."
+        "description": "Azure OpenAI API key from the Azure portal Keys & Endpoint section."
     }
 }

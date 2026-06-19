@@ -292,6 +292,7 @@ import logging
 import sys
 import requests
 import tiktoken
+import os
 
 # Requires an Azure OpenAI / Azure AI Foundry deployment
 modelVersion = '__MODEL_VERSION__'
@@ -312,7 +313,7 @@ def scoreModel(userPrompt, systemPrompt, options):
     optionsDefaults = {
         "temperature": 1,
         "top_p": 1,
-        "azure_openai_resource": "westus3.api.cognitive.microsoft.com",
+        "azure_openai_resource": os.environ.get("AZURE_OPEN_AI_ENDPOINT", "westus3.api.cognitive.microsoft.com"),
         "api_version": "__API_VERSION__",
         "endpoint_url": None,
         "API_KEY": None,
