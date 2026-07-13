@@ -4,11 +4,11 @@ In this folder you find integrations that are purpose built for this framework t
 
 ## Importing the Standard Assets [Under Heavy Constructions]
 
-The [SAS LLM Use Case Framework.json](./SAS%20LLM%20Use%20Case%20Framework.json) is a transfer package that can be imported using the SAS Environment Manager and it contains the following - each indent represent a subfolder until the lowest level where it represents files, in square brackets is a note where to find more information on the different integrations:
+The [SAS Agentic AI Accelerator.json](./SAS%20Agentic%20AI%20Accelerator.json) is a transfer package that can be imported using the SAS Environment Manager and it contains the following - each indent represent a subfolder until the lowest level where it represents files, in square brackets is a note where to find more information on the different integrations:
 
 ```
 SAS Content
-  - SAS LLM Use Case Framework
+  - SAS Agentic AI Accelerator
     - Custom Steps [Custom Steps]
       - LLM - Log Parser.step
     - Logging and Monitoring [Logging and Monitoring]
@@ -49,7 +49,7 @@ Here you can find everything to setup the logging and monitoring for this framew
 
 #### The Monitoring Baseline Report [Under Construction - Ignore for now]
 
-If you have important the baseline package of this framework than you have a SAS Visual Analytics report available to you which is located under *SAS LLM Use Case Framework > Logging and Monitoring > Monitoring Baseline* if you changed the parsed log data source from *Public.LLM_LOGS* then you will have to replace the data source accordingly.
+If you have important the baseline package of this framework than you have a SAS Visual Analytics report available to you which is located under *SAS Agentic AI Accelerator > Logging and Monitoring > Monitoring Baseline* if you changed the parsed log data source from *Public.LLM_LOGS* then you will have to replace the data source accordingly.
 
 A note on prices, the report contains a calculated item called Average Price / Total Price, these two items contain big formulas that calculate the prices of the LLM usage. These formulas can be adjusted as you need it, note that most LLM providers denote their prices in millions of tokens and distinguish between input and output tokens - the data in this report is noted in individual tokens. Per default open-source models which are deployed in the SAS Open-Source Python container are priced as $0. Now you could of course add a price per second and then multiply with the runtime, but that isn't provided by default. The calculated item has a comment at the top that will help you to add additional pricing.
 
