@@ -7,12 +7,16 @@ sidebar_position: 10
 This step is not required, but the LLM Prompt Builder is a no-code tool that lets prompt engineers test new prompts across LLMs, compare the results, version their experiments, and turn the best prompt into a model for further consumption in the platform.
 
 :::note Standalone build
-The Prompt Builder is shipped as a **standalone application** in the [`LLM-Prompt-Builder`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/LLM-Prompt-Builder) directory of this repository. It has **no dependency on the SAS Portal Framework for SAS Viya** — it builds to a single self-contained HTML file that you embed directly in a SAS Visual Analytics report through SAS Job Execution.
+The Prompt Builder is shipped as a **standalone application** in the [`LLM-Prompt-Builder`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/LLM-Prompt-Builder) directory of this repository. It has **no dependency on the SAS Portal Framework for SAS Viya** — it is a single self-contained HTML file that you embed directly in a SAS Visual Analytics report through SAS Job Execution.
 :::
 
-## 1. Build the single-file app
+## 1. Get the single-file app
 
-From a machine with Node.js (`^18 || ^20 || >=22`):
+You have two options:
+
+**Option A — use the prebuilt file (recommended).** Download the ready-to-use [`dist/index.html`](https://github.com/sassoftware/sas-agentic-ai-accelerator/blob/main/LLM-Prompt-Builder/dist/index.html) from the repository. No Node.js or build step is required — skip straight to step 2.
+
+**Option B — build it yourself.** With Node.js (`^18 || ^20 || >=22`) installed:
 
 ```bash
 git clone https://github.com/sassoftware/sas-agentic-ai-accelerator.git
@@ -21,11 +25,11 @@ npm install
 npm run build
 ```
 
-This produces a single self-contained file at `dist/index.html`. See the [project README](https://github.com/sassoftware/sas-agentic-ai-accelerator/blob/main/LLM-Prompt-Builder/README.md) for local development and customization details.
+This produces the same single-file `dist/index.html`. See the [project README](https://github.com/sassoftware/sas-agentic-ai-accelerator/blob/main/LLM-Prompt-Builder/README.md) for local development and customization details.
 
 ## 2. Create a SAS Job Execution definition
 
-The single-file build is served to Visual Analytics through **SAS Job Execution**:
+The single-file app is served to Visual Analytics through **SAS Job Execution**:
 
 1. In **SAS Studio** or **SAS Environment Manager**, create a new **Job Definition**.
 2. Use the full contents of `dist/index.html` as the HTML body of the job.
@@ -43,15 +47,15 @@ SAS Job Execution serves HTML through a Go template engine that treats `{{ … }
 
 ### Configuration (Properties panel)
 
-The object publishes an options group that Visual Analytics renders as the object's **Properties** panel, so the report author edits these settings there rather than hand-editing a query string:
+The environment-specific values below are exactly those captured in your `llm-prompt-builder.json` — the file produced in the [Setup SAS Model Manager](./Setup-SAS-Model-Manager.md) chapter (regenerate it with the [`prompt-builder-json.py`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/utility#prompt-builder-json) utility if you have lost it). Copy each value from that file into the object's **Properties** panel:
 
-| Setting | Meaning |
-|---|---|
-| `viyaHost` | SAS Viya base URL. Defaults to the embedding origin. |
-| `modelRepositoryID` | Model Manager repository in which new prompt projects are created. |
-| `llmProjectID` | Model Manager project holding the available LLM definitions (each with an `options.json`). |
-| `SCREndpoint` | Base URL of the SCR endpoint hosting the LLM containers. |
-| `deploymentType` | `k8s` (default) or `aca` (Azure Container Apps / Instances). |
+| Properties-panel field | `llm-prompt-builder.json` key | Meaning |
+|---|---|---|
+| SAS Viya host | *(not in the file)* | SAS Viya base URL. Leave blank to default to the embedding origin. |
+| Model Manager repository ID | `modelRepositoryID` | Model Manager repository in which new prompt projects are created. |
+| LLM project ID | `llmProjectID` | Model Manager project holding the available LLM definitions (each with an `options.json`). |
+| SCR endpoint | `SCREndpoint` | Base URL of the SCR endpoint hosting the LLM containers. |
+| Deployment type | `deploymentType` | `k8s` (default) or `aca` (Azure Container Apps / Instances). See [Container Deployment](./Container-Deployment.md). |
 
 :::info
 Until these values are supplied the object shows a **"Configuration required"** message and does not call SAS Viya, so it never fails against placeholder IDs. The same parameters can also be appended to the object's URL by hand, which is a reliable fallback if your Visual Analytics version does not render the options panel.
@@ -59,11 +63,11 @@ Until these values are supplied the object shows a **"Configuration required"** 
 
 ### API keys (assigned data)
 
-The API key(s) are supplied through the object's **assigned data** so they never appear in the URL or the report definition. Assign a data source with **two columns**, one provider per row:
+The API keys are the entries under `API_KEYS` in that same `llm-prompt-builder.json`. They are supplied through the object's **assigned data** — never the URL or Properties panel — so they never appear in the report definition or a shareable link. Assign a data source with **two columns**, one provider per row:
 
 | Column | Meaning |
 |---|---|
-| 1st | Key **name** — must match the `API_KEY.default` value referenced by an LLM's `options.json` (e.g. `Anthropic`, `OpenAI`, `Google`). |
+| 1st | Key **name** — the `API_KEYS` entry name, which must match the `API_KEY.default` value referenced by an LLM's `options.json` (e.g. `Anthropic`, `OpenAI`, `Google`). |
 | 2nd | Key **value** — the actual API key. |
 
 You can create this table with the [`create-api-key-table.sas`](https://github.com/sassoftware/sas-agentic-ai-accelerator/blob/main/LLM-Prompt-Builder/create-api-key-table.sas) helper.

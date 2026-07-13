@@ -16,6 +16,6 @@ There are example deployment YAMLs provided in the *SCR-LLM-Deployment-YAML* fol
 
 ### Azure Container Apps/Instances
 
-If you want to deploy the LLM containers as Azure Container Apps or Azure Container Instances than please make sure that when you follow the [Deploying the LLM Prompt Builder](./Setup-Additional-UIs.md) that your `llm-prompt-builder.json` contains the attribute *deploymentType* and its value is set to *aca*.
+If you want to deploy the LLM containers as Azure Container Apps or Azure Container Instances than please make sure that when you follow the [Deploying the LLM Prompt Builder](./Setup-Additional-UIs.md) you set the object's *deploymentType* to *aca* (the value recorded in your `llm-prompt-builder.json`).
 
 Please also note that the attribute *SCREndpoint* contains the value *randomString.region.azurecontainerapps.io* from the https://model.randomString.region.azurecontainerapps.io/model URL of your Azure Container App.

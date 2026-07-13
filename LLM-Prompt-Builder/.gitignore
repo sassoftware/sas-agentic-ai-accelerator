@@ -1,8 +1,10 @@
 # Dependencies
 node_modules/
 
-# Build output
-dist/
+# Build output — the prebuilt single-file app (dist/index.html) is committed so
+# it can be embedded without a local build; all other build output stays ignored.
+dist/*
+!dist/index.html
 dist-*/
 
 # Logs
