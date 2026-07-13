@@ -5,3 +5,11 @@ sas-viya
 sas-viya.exe
 sas-viya-cli-commands.txt
 .venv/
+
+# Local credentials for the setup scripts (never commit) — see .env.example
+.env
+.env.local
+
+# Python bytecode
+__pycache__/
+*.pyc
