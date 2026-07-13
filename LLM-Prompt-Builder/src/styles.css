@@ -1,0 +1,89 @@
+/*
+ Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
+ SPDX-License-Identifier: Apache-2.0
+
+ Prompt Builder specific styles. Bootstrap provides the base component styling;
+ these rules cover the pieces the Prompt Builder adds on top (model option rows,
+ the info tooltips, nested accordions, and rendered markdown responses).
+*/
+
+body {
+  padding: 1rem;
+}
+
+button {
+  margin-right: 1em;
+}
+
+/* Nested accordion inside an experiment run */
+.nested-accordion {
+  margin-left: 20px;
+}
+
+/* Per-model option inputs, revealed when a model checkbox is ticked */
+.model-options {
+  gap: 10px;
+  align-items: center;
+  display: none; /* Hide by default */
+}
+.model-options input[type='number'] {
+  width: 60px;
+  align-self: baseline;
+}
+
+/* Hover-reveal information tooltips next to each option */
+.info-container {
+  position: relative;
+  display: inline-block;
+  margin-bottom: 20px;
+}
+
+.info-icon {
+  cursor: pointer;
+  font-size: 16px;
+  margin-left: 5px;
+  position: relative;
+}
+
+.info-content {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background-color: #f9f9f9;
+  padding: 10px;
+  border: 1px solid #ccc;
+  box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
+  z-index: 1;
+  white-space: normal;
+  word-wrap: break-word;
+  word-break: break-word;
+  max-width: min(1000px, 90vw);
+}
+
+.info-icon:hover + .info-content {
+  display: block;
+}
+
+/* Rendered markdown of an LLM response */
+.markdown-body {
+  overflow-wrap: anywhere;
+}
+.markdown-body pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background-color: #f6f8fa;
+  padding: 0.75rem;
+  border-radius: 6px;
+}
+.markdown-body code {
+  word-break: break-word;
+}
+.markdown-body img {
+  max-width: 100%;
+}
+
+/* Best-prompt star icon in an experiment run header */
+.bestPrompt {
+  vertical-align: middle;
+}

@@ -2,6 +2,25 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [0.1.35] - 2026-07-13
+
+The Prompt Builder is now also available as a **standalone application** in the [`LLM-Prompt-Builder`](./LLM-Prompt-Builder) directory. It has no dependency on the [SAS Portal Framework for SAS Viya](https://github.com/sassoftware/sas-portal-framework-for-sas-viya) and can be extended independently. It ships as a single self-contained HTML file that is embedded in a SAS Visual Analytics report via SAS Job Execution.
+
+### Added
+
+- Standalone LLM Prompt Builder (`LLM-Prompt-Builder/`): a no-code prompt-engineering UI (Vite + TypeScript) that builds to a single-file `index.html` for embedding in SAS Visual Analytics via SAS Job Execution
+- Configuration is delivered through the Visual Analytics properties panel (Data-Driven Content options), while API keys are delivered through the object's assigned data — keeping secrets out of the URL and the report definition
+- Multi-language UI (English and German included)
+- `create-api-key-table.sas` helper to create the API-key table consumed by the object's assigned data
+
+### Changed
+
+- None
+
+### Fixed
+
+- None
+
 ## [0.1.34] - 2025-12-18
 
 No changes are required at this time.
