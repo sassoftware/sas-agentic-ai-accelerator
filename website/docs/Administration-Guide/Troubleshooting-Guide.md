@@ -17,7 +17,7 @@ ERROR: Compilation error.
 ERROR: Line 167: Duplicate declaration for llmurl.
 ```
 
-This error occurs when your model (for example the prompt template model) has the same variable twice in its *Variable* tab inside of SAS Model Manager. If that is the case, you have identified the source of the error. In order to fix this, please ensure that you are using the current version of the *Prompt Builder UI* (compare the versions using the https://github.com/sassoftware/sas-portal-framework-for-sas-viya/blob/main/CHANGELOG.md). If you created the model not using that tool, please make sure that model variables are correctly updated when creating new versions of the model.
+This error occurs when your model (for example the prompt template model) has the same variable twice in its *Variable* tab inside of SAS Model Manager. If that is the case, you have identified the source of the error. In order to fix this, please ensure that you are using the current version of the *Prompt Builder UI* (compare the versions using the [project CHANGELOG](https://github.com/sassoftware/sas-agentic-ai-accelerator/blob/main/CHANGELOG.md)). If you created the model not using that tool, please make sure that model variables are correctly updated when creating new versions of the model.
 
 ## Micro Analytic Service
 

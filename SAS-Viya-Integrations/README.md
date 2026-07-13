@@ -4,7 +4,7 @@ In this folder you find integrations that are purpose built for this framework t
 
 ## Importing the Standard Assets [Under Heavy Constructions]
 
-The [SAS LLM Use Case Framework.json](./SAS-LLM-Use-Case-Framework.json) is a transfer package that can be imported using the SAS Environment Manager and it contains the following - each indent represent a subfolder until the lowest level where it represents files, in square brackets is a note where to find more information on the different integrations:
+The [SAS LLM Use Case Framework.json](./SAS%20LLM%20Use%20Case%20Framework.json) is a transfer package that can be imported using the SAS Environment Manager and it contains the following - each indent represent a subfolder until the lowest level where it represents files, in square brackets is a note where to find more information on the different integrations:
 
 ```
 SAS Content
