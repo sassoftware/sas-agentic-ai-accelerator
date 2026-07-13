@@ -1,0 +1,4 @@
+# The prebuilt single-file app is generated with LF line endings. Pin it so the
+# committed artifact matches a fresh build in CI regardless of contributor OS
+# (see .github/workflows/verify-prompt-builder.yml).
+LLM-Prompt-Builder/dist/index.html text eol=lf

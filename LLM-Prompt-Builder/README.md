@@ -48,6 +48,13 @@ Scripts:
 | `npm run preview` | Serve the built `dist/` locally |
 | `npm run typecheck` | `tsc --noEmit` only |
 
+> **Prebuilt file.** A ready-to-embed `dist/index.html` is committed to the
+> repository so administrators can deploy it without a local build. If you change
+> anything under `src/` or the build config, run `npm run build` and commit the
+> regenerated `dist/index.html` — CI rebuilds and fails the PR if the committed
+> file is out of date (see
+> [`.github/workflows/verify-prompt-builder.yml`](../.github/workflows/verify-prompt-builder.yml)).
+
 ## Configuration
 
 There are two configuration inputs, deliberately split so **secrets never travel

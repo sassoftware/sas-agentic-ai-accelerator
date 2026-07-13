@@ -1,0 +1,43 @@
+name: Verify LLM Prompt Builder prebuilt
+
+# The single-file build LLM-Prompt-Builder/dist/index.html is committed so it can
+# be embedded without a local build. This workflow guards against that artifact
+# drifting from source: it rebuilds from the committed source and fails if the
+# result differs from what is checked in.
+
+on:
+  pull_request:
+    paths:
+      - "LLM-Prompt-Builder/**"
+  push:
+    branches:
+      - main
+    paths:
+      - "LLM-Prompt-Builder/**"
+
+defaults:
+  run:
+    shell: bash
+    working-directory: ./LLM-Prompt-Builder
+
+jobs:
+  verify-prebuilt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: LLM-Prompt-Builder/package-lock.json
+      - run: npm ci
+      - name: Rebuild the single-file app
+        run: npm run build
+      - name: Verify dist/index.html is up to date
+        run: |
+          if ! git diff --quiet -- dist/index.html; then
+            echo "::error file=LLM-Prompt-Builder/dist/index.html::Prebuilt dist/index.html is out of date. Run 'npm run build' in LLM-Prompt-Builder/ and commit the regenerated file."
+            git --no-pager diff --stat -- dist/index.html
+            exit 1
+          fi
+          echo "Prebuilt dist/index.html matches a fresh build."
