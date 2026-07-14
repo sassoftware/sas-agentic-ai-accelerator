@@ -1,12 +1,13 @@
 ---
 sidebar_position: 8
+title: Container Deployment
 ---
 
 ## Configurations for SCR deployment
 
-For the creation of the SAS Container Runtime publishing destination it is recommended to use the [SAS Viya CLI](https://go.documentation.sas.com/doc/en/sasadmincdc/default/calcli/titlepage.htm). The command detailed below is used to create a publishing destination that is using a Azure Container Registry:
+For the creation of the SAS Container Runtime publishing destination it is recommended to use the [SAS Viya CLI](https://go.documentation.sas.com/doc/en/sasadmincdc/default/calcli/titlepage.htm). The command detailed below is used to create a publishing destination that is using a Azure Container Registry.
 
-### Kubernetes deployment
+### Kubernetes Deployment
 
 There are example deployment YAMLs provided in the *SCR-LLM-Deployment-YAML* folder which are build for Azure. The following assumptions are made:
 
@@ -16,6 +17,6 @@ There are example deployment YAMLs provided in the *SCR-LLM-Deployment-YAML* fol
 
 ### Azure Container Apps/Instances
 
-If you want to deploy the LLM containers as Azure Container Apps or Azure Container Instances than please make sure that when you follow the [Deploying the LLM Prompt Builder](./Setup-Additional-UIs.md) that your `llm-prompt-builder.json` contains the attribute *deploymentType* and its value is set to *aca*.
+If you want to deploy the LLM containers as Azure Container Apps or Azure Container Instances than please make sure that when you follow the [Deploying the LLM Prompt Builder](./Setup-Additional-UIs.md) you set the object's *deploymentType* to *aca* (the value recorded in your `llm-prompt-builder.json`).
 
 Please also note that the attribute *SCREndpoint* contains the value *randomString.region.azurecontainerapps.io* from the https://model.randomString.region.azurecontainerapps.io/model URL of your Azure Container App.

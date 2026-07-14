@@ -1,16 +1,17 @@
 ---
 sidebar_position: 3
+title: Configuration for Publishing
 ---
 
 This page details how you should configure your environment in order to publish the SCR containers.
 
 ## Hugging Face Token
 
-Some open-source models have licenses attached to them, that require you to first accept these licenses in order to be able to pull the model weights for deployment. Hugging Face refers to these models as **gated**.
+*Note:* If you don't plan do use any gated open-weight models than you can skip this part of the setup process.
+
+Some open-weight models have licenses attached to them, that require you to first accept these licenses in order to be able to pull the model weights for deployment. Hugging Face refers to these models as **gated** - [Gated Models Documentation](https://huggingface.co/docs/hub/en/models-gated).
 
 In order to be able to deploy these models you will have to provide a *Hugging Face access token*, which serves as an identifier that ensures that you have accepted the license. So first will be a sub-section about how to get a Hugging Face token and then we talk about how that token is integrated with the build process - for a list of models that require this token please refer to the [LLM Definitions page](LLM-Definitions.md).
-
-*Note:* If you don't plan do use any of these models than you can skip this part of the setup process.
 
 ### Creating a Hugging Face Token
 
@@ -30,7 +31,7 @@ Now that we have our token, we can get back to the SCR deployment.
 
 This section provides instructions on how to change the Build Kit pod in two ways:
 1. Mounting a secret as a volume, this is optional and only required if you use a *gated* model (see previous section).
-2. Increasing the ressources for the Build Kit Pod, this is required if you either expect many models to be published at once or if you publish open-source models that have more than 3B parameters.
+2. Increasing the ressources for the Build Kit Pod, this is required if you either expect many models to be published at once or if you publish open-weight models that have more than 3B parameters. **NOTE:** If you only use hosted language models, e.g. via Azure AI Foundry or AWS Bedrock than you do not need to change the sizings here.
 
 If you have secrets that you need within the build process of the SCR container, you can add them as a [secret on Kubernetes](https://kubernetes.io/docs/concepts/configuration/secret/).
 

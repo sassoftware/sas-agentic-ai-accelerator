@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build output — the prebuilt single-file app (dist/index.html) is committed so
+# it can be embedded without a local build; all other build output stays ignored.
+dist/*
+!dist/index.html
+dist-*/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.local

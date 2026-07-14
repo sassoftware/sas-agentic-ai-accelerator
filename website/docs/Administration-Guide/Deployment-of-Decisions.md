@@ -1,5 +1,6 @@
 ---
 sidebar_position: 11
+title: Deployment of Decisions
 ---
 
 This page details considerations when deploying the decisions in MAS/SCR.

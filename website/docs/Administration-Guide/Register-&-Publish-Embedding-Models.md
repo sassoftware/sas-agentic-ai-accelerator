@@ -19,6 +19,10 @@ python ./register-Embedding.py -vs sas-viya-url -u username -p password -rp resp
 
 A help function is also available with more information.
 
+:::tip
+Every parameter except the model list can be supplied via an environment variable or a `.env` file instead of the command line — see [Providing credentials without the command line](./Setup-SAS-Model-Manager.md#envSetup). If you omit the password you will be prompted for it securely.
+:::
+
 If you want to add your own Embedding to the mix, please use the *_Base_Definition* folder as your template and remember to contribute back! If you are adding a new proprietary model provider please note that the default value for the API_KEY attribute should be set to the name of the provider.
 
 ## Publish the Embedding Models to the SCR Destination

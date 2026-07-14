@@ -54,7 +54,7 @@ sas-viya auth loginCode
 sas-viya plugins install -repo SAS authorization
 # Next we install the identities plugin
 sas-viya plugins install -repo SAS identities
-# And then the models plugin
+# Then the models plugin
 sas-viya plugins install -repo SAS models
 ```
 4. Now the CLI is ready and setup for you to continue on.

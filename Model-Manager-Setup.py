@@ -15,15 +15,39 @@ except:
     print('In order to run this script you need to install the sasctl package')
     raise
 
+# Configuration can be supplied via CLI args, environment variables, or a .env
+# file. Precedence: CLI arg > environment variable > .env value > default.
+import os
+import getpass
+try:
+    from dotenv import load_dotenv, find_dotenv
+    load_dotenv(find_dotenv(usecwd=True))  # real env vars take precedence over .env
+except ImportError:
+    pass  # python-dotenv is optional; OS environment variables are still honored
+
 parser = argparse.ArgumentParser(description='This script sets up the LLM repository and LLM Model Project in SAS Model Manager')
-parser.add_argument('-vs', '--viya_server', type=str, help='Enter the URL for the SAS Viya server. An example is example.sas.com', required=True)
-parser.add_argument('-u', '--username', type=str, help='Enter your username for the SAS Viya server', required=True)
-parser.add_argument('-p', '--password', type=str, help='Enter your password for the SAS Viya server', required=True)
-parser.add_argument('-rp', '--responsible_party', type=str, help='Enter the person that should be listed as the responsible party for the Model Studio project: Example Person or example@example.com', required=True)
-parser.add_argument('-e', '--scr_endpoint', type=str, help='Enter the endpoint under which the LLM containers are published. Example: https://viya-host/llm', required=True)
-parser.add_argument('-dt', '--deployment_type', type=str, default='k8s', help='Enter the type of deployment, can be k8s (LLM & Embedding is deployed in k8s) or aca (Azure Container App)', required=False)
-parser.add_argument('-k', '--verify_ssl', type=str, default='true', help='Set to false if you have a self-signed certificat')
+parser.add_argument('-vs', '--viya_server', type=str, default=os.environ.get('SAS_VIYA_URL'), help='URL for the SAS Viya server, e.g. example.sas.com (env: SAS_VIYA_URL)')
+parser.add_argument('-u', '--username', type=str, default=os.environ.get('SAS_VIYA_USER'), help='Username for the SAS Viya server (env: SAS_VIYA_USER)')
+parser.add_argument('-p', '--password', type=str, default=os.environ.get('SAS_VIYA_PASSWORD'), help='Password for the SAS Viya server (env: SAS_VIYA_PASSWORD); prompted if omitted')
+parser.add_argument('-rp', '--responsible_party', type=str, default=os.environ.get('SAS_RESPONSIBLE_PARTY'), help='Person listed as the responsible party for the project, e.g. example@example.com (env: SAS_RESPONSIBLE_PARTY)')
+parser.add_argument('-e', '--scr_endpoint', type=str, default=os.environ.get('SAS_SCR_ENDPOINT'), help='Endpoint under which the LLM containers are published, e.g. https://viya-host/llm (env: SAS_SCR_ENDPOINT)')
+parser.add_argument('-dt', '--deployment_type', type=str, default=os.environ.get('SAS_DEPLOYMENT_TYPE', 'k8s'), help='Deployment type k8s (default) or aca (Azure Container App) (env: SAS_DEPLOYMENT_TYPE)')
+parser.add_argument('-k', '--verify_ssl', type=str, default=os.environ.get('SAS_VIYA_VERIFY_SSL', 'true'), help='Set to false if you have a self-signed certificate (env: SAS_VIYA_VERIFY_SSL)')
 args = parser.parse_args()
+
+# Prompt for the password if it was not supplied via CLI, environment, or .env
+if not args.password:
+    args.password = getpass.getpass('SAS Viya password: ')
+
+# The following are required regardless of where they are supplied from
+_missing = [name for name, value in {
+    '--viya_server / SAS_VIYA_URL': args.viya_server,
+    '--username / SAS_VIYA_USER': args.username,
+    '--responsible_party / SAS_RESPONSIBLE_PARTY': args.responsible_party,
+    '--scr_endpoint / SAS_SCR_ENDPOINT': args.scr_endpoint,
+}.items() if not value]
+if _missing:
+    parser.error('Missing required configuration (provide via CLI, environment variable, or .env): ' + ', '.join(_missing))
 
 # Define the LLM project attributes
 project_attributes = {}
@@ -190,6 +214,6 @@ try:
             # Output the file for the RAG builder
             print('The rag-builder.json is a quick start for the RAG Builder UI.')
 except:
-    print(f'Failed to establish a connection to {args.viya_server} with the user {args.username} and the password {args.password}.')
+    print(f'Failed to establish a connection to {args.viya_server}.')
     print('Make sure that the above values are valid - if that is the case, maybe try using the option -k False, to skip SSL verification.')
     raise

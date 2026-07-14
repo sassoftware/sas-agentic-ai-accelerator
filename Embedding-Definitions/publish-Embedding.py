@@ -10,14 +10,37 @@ except:
     print('In order to run this script you need to install the sasctl package')
     raise
 
+# Configuration can be supplied via CLI args, environment variables, or a .env
+# file. Precedence: CLI arg > environment variable > .env value > default.
+import os
+import getpass
+try:
+    from dotenv import load_dotenv, find_dotenv
+    load_dotenv(find_dotenv(usecwd=True))  # real env vars take precedence over .env
+except ImportError:
+    pass  # python-dotenv is optional; OS environment variables are still honored
+
 parser = argparse.ArgumentParser(description='This script registers LLMs to SAS Model Manager')
-parser.add_argument('-vs', '--viya_server', type=str, help='Enter the URL for the SAS Viya server. An example is example.sas.com', required=True)
-parser.add_argument('-u', '--username', type=str, help='Enter your username for the SAS Viya server', required=True)
-parser.add_argument('-p', '--password', type=str, help='Enter your password for the SAS Viya server', required=True)
+parser.add_argument('-vs', '--viya_server', type=str, default=os.environ.get('SAS_VIYA_URL'), help='URL for the SAS Viya server, e.g. example.sas.com (env: SAS_VIYA_URL)')
+parser.add_argument('-u', '--username', type=str, default=os.environ.get('SAS_VIYA_USER'), help='Username for the SAS Viya server (env: SAS_VIYA_USER)')
+parser.add_argument('-p', '--password', type=str, default=os.environ.get('SAS_VIYA_PASSWORD'), help='Password for the SAS Viya server (env: SAS_VIYA_PASSWORD); prompted if omitted')
 parser.add_argument('-m','--embedding_models', nargs='+', help='List of Embedding model names. Decide on the models that you want to be registered - specify the subfolder name, that folder needs to contain a modelConfiguration.json (e.g., gemini_embedding_001 text_embedding_3_small)',  required=True)
-parser.add_argument('-d', '--destination', type=str, help='Specify the name of the target publishing destination, has to be a container publishing destination - i.e. llmACR', required=True)
-parser.add_argument('-k', '--verify_ssl', type=str, default='true', help='Set to false if you have a self-signed certificat')
+parser.add_argument('-d', '--destination', type=str, default=os.environ.get('SAS_PUBLISH_DESTINATION'), help='Name of the target container publishing destination, e.g. llmACR (env: SAS_PUBLISH_DESTINATION)')
+parser.add_argument('-k', '--verify_ssl', type=str, default=os.environ.get('SAS_VIYA_VERIFY_SSL', 'true'), help='Set to false if you have a self-signed certificate (env: SAS_VIYA_VERIFY_SSL)')
 args = parser.parse_args()
+
+# Prompt for the password if it was not supplied via CLI, environment, or .env
+if not args.password:
+    args.password = getpass.getpass('SAS Viya password: ')
+
+# The following are required regardless of where they are supplied from
+_missing = [name for name, value in {
+    '--viya_server / SAS_VIYA_URL': args.viya_server,
+    '--username / SAS_VIYA_USER': args.username,
+    '--destination / SAS_PUBLISH_DESTINATION': args.destination,
+}.items() if not value]
+if _missing:
+    parser.error('Missing required configuration (provide via CLI, environment variable, or .env): ' + ', '.join(_missing))
 
 # Specify a wait time, if your SCR jobs consume to many resources - this will add a delay between publishing in seconds
 time_out = 1
@@ -66,6 +89,6 @@ try:
             else:
                 print(f'The publishing of mode {model} to the publishing destination {args.destination} failed with the status_code {res.status_code}')
 except:
-    print(f'Failed to establish a connection to {args.viya_server} with the user {args.username} and the password {args.password}.')
+    print(f'Failed to establish a connection to {args.viya_server}.')
     print('Make sure that the above values are valid - if that is the case, maybe try using the option -k False, to skip SSL verification.')
     raise

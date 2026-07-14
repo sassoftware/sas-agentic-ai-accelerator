@@ -18,7 +18,7 @@
 
 * Set the node definition;
 %let _dntNodeName = Call LLM;
-%let _dntDescription = Enables you to call an LLM that is wrapped in the SAS LLM Use Case Framework template;
+%let _dntDescription = Enables you to call an LLM that is wrapped in the SAS Agentic AI Accelerator template;
 %let _dntHasProperties = true;
 %let _dntHasInputs = true;
 %let _dntHasOutputs = true;
