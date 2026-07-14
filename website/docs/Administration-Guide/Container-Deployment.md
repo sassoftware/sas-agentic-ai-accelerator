@@ -1,12 +1,13 @@
 ---
 sidebar_position: 8
+title: Container Deployment
 ---
 
 ## Configurations for SCR deployment
 
-For the creation of the SAS Container Runtime publishing destination it is recommended to use the [SAS Viya CLI](https://go.documentation.sas.com/doc/en/sasadmincdc/default/calcli/titlepage.htm). The command detailed below is used to create a publishing destination that is using a Azure Container Registry:
+For the creation of the SAS Container Runtime publishing destination it is recommended to use the [SAS Viya CLI](https://go.documentation.sas.com/doc/en/sasadmincdc/default/calcli/titlepage.htm). The command detailed below is used to create a publishing destination that is using a Azure Container Registry.
 
-### Kubernetes deployment
+### Kubernetes Deployment
 
 There are example deployment YAMLs provided in the *SCR-LLM-Deployment-YAML* folder which are build for Azure. The following assumptions are made:
 

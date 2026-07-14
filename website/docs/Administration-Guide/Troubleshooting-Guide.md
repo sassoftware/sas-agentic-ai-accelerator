@@ -1,3 +1,7 @@
+---
+title: Troubleshooting Guide
+---
+
 # Troubleshooting Guide
 
 The Troubleshooting Guide tries to provide solution orientied fixes to reported issues. If your issue is not on this please raise an issue or if you already have a solution please contribute it as a pull request.

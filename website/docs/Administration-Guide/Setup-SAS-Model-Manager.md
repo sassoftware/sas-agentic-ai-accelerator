@@ -5,7 +5,7 @@ title: Setup SAS Model Manager
 
 The SAS Agentic AI Accelerator will create an additional model repository in your environment called **LLM Repository**. This repository will be used both to store the project which contains the LLMs, all the different prompting projects, the embedding models and the RAG setups. The project is created using the script `Model-Manager-Setup.py` which is located in the root folder of the repository.
 
-This script creates the new SAS Model Manager repository and the SAS Model Manager projects for you that serve as the home for all LLM and Embedding related models. You need to run the script from within the locally cloned version of this repository. Make sure that the Python environment that was created during the [initial setup](Introduction.md) is still active:
+This script creates the new SAS Model Manager repository and the SAS Model Manager projects for you that serve as the home for all LLM and Embedding related models. You need to run the script from within the locally cloned version of this repository. Make sure that the Python environment that was created during the [initial setup](Introduction.md) is still active - check out [Providing credentials without the command line](#envSetup) for how to move things into a `.env` instead of as CLI arguments:
 
 ```bash
 # Run the setup script with the help (-h) flag to get more information on each parameter
@@ -27,7 +27,7 @@ Explanation of the different available options:
 - -dt, short for --deployment_type, can be set to k8s (default) if you are deploying the LLM containers to kubernetes or aca if you are deploying the LLM containers to Azure Container Apps/Instances. This argument is optional as it defaults to k8s. For k8s please paste the full link e.g. https://base-url/llm and for Azure Container Apps please only provide the following *randomString.region.azurecontainerapps.io* from the https://model.randomString.region.azurecontainerapps.io/model URL.
 - -k, short for --verify_ssl, should only be changed to false if you have a self-signed certificat on SAS Viya that your machine doesn't recognize. This argument is optional as it defaults to true.
 
-### Providing credentials without the command line
+### Providing credentials without the command line {#envSetup}
 
 Every Python setup script (`Model-Manager-Setup.py`, `register-LLMs.py`, `publish-LLMs.py`, `register-Embedding.py`, `publish-Embedding.py` and `utility/prompt-builder-json.py`) can read any parameter from an **environment variable** or a **`.env` file** instead of the command line. This keeps your credentials out of your shell history and the process list. The order of precedence is: command-line argument, then environment variable, then `.env` file, then the built-in default.
 
