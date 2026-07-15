@@ -80,6 +80,19 @@ interface ExperimentTrackerEntry {
 /** Entry keys that are metadata rather than per-model experiment results. */
 const TRACKER_META_KEYS = ['systemPrompt', 'userPrompt', 'author', 'variables'];
 
+/** A user-defined output variable parsed from the LLM's JSON response. */
+interface PromptOutputVariable {
+  name: string;
+  description: string;
+  type: 'string' | 'decimal';
+  defaultValue: string;
+}
+
+/** The outputs an integrated LLM call can return (mirroring the SCR contract). */
+const DEFAULT_LLM_OUTPUTS = ['response', 'run_time', 'prompt_length', 'output_length'];
+/** Names an output variable must not use. */
+const RESERVED_OUTPUT_NAMES = [...DEFAULT_LLM_OUTPUTS, 'parse_status'];
+
 interface ModelExperimentData {
   best_prompt: boolean | null;
   fastest_prompt: boolean | null;
@@ -1662,7 +1675,7 @@ export async function buildPromptBuilder(
     }
 
     // Save the prompt run to the prompt
-    const promptExperimentSaveButton = document.createElement('div');
+    const promptExperimentSaveButton = document.createElement('button');
     promptExperimentSaveButton.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-save-button`;
     promptExperimentSaveButton.innerText = `${promptBuilderInterfaceText?.promptBuilderSaveExperimentsButton}`;
     promptExperimentSaveButton.setAttribute('type', 'button');
@@ -1672,7 +1685,7 @@ export async function buildPromptBuilder(
     };
 
     // Save the prompt run and turn the best prompt into a model
-    const promptExperimentCreateModelButton = document.createElement('div');
+    const promptExperimentCreateModelButton = document.createElement('button');
     promptExperimentCreateModelButton.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-create-model-button`;
     promptExperimentCreateModelButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
     promptExperimentCreateModelButton.setAttribute('type', 'button');
@@ -1698,6 +1711,185 @@ export async function buildPromptBuilder(
     promptExperimentIntegratedCallLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestIntegratedLabel}`;
     promptExperimentIntegratedCallDiv.appendChild(promptExperimentIntegratedCallCheckbox);
     promptExperimentIntegratedCallDiv.appendChild(promptExperimentIntegratedCallLabel);
+
+    // Options of the integrated LLM call, revealed only when the checkbox is
+    // ticked: which default outputs to keep, and which output variables to
+    // parse from the LLM's JSON response.
+    const promptExperimentManifestOptions = document.createElement('div');
+    promptExperimentManifestOptions.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-manifest-options`;
+    promptExperimentManifestOptions.classList.add('pet-manifest-options');
+    promptExperimentManifestOptions.style.display = 'none';
+    promptExperimentIntegratedCallCheckbox.addEventListener('change', () => {
+      promptExperimentManifestOptions.style.display = promptExperimentIntegratedCallCheckbox.checked ? '' : 'none';
+    });
+    const manifestOutputsLabel = document.createElement('p');
+    manifestOutputsLabel.classList.add('fw-bold', 'mb-1');
+    manifestOutputsLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestOutputsLabel}`;
+    promptExperimentManifestOptions.appendChild(manifestOutputsLabel);
+    const manifestOutputsRow = document.createElement('div');
+    DEFAULT_LLM_OUTPUTS.forEach((outputName) => {
+      const outputDiv = document.createElement('div');
+      outputDiv.classList.add('form-check', 'form-check-inline');
+      const outputCheckbox = document.createElement('input');
+      outputCheckbox.type = 'checkbox';
+      outputCheckbox.classList.add('form-check-input');
+      outputCheckbox.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-out-${outputName}`;
+      outputCheckbox.checked = true;
+      const outputLabel = document.createElement('label');
+      outputLabel.classList.add('form-check-label');
+      outputLabel.htmlFor = outputCheckbox.id;
+      outputLabel.innerText = outputName;
+      outputDiv.appendChild(outputCheckbox);
+      outputDiv.appendChild(outputLabel);
+      manifestOutputsRow.appendChild(outputDiv);
+    });
+    promptExperimentManifestOptions.appendChild(manifestOutputsRow);
+    const outputVariablesLabel = document.createElement('p');
+    outputVariablesLabel.classList.add('fw-bold', 'mb-1', 'mt-3');
+    outputVariablesLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderOutputVariablesHeading}`;
+    const outputVariablesDescription = document.createElement('p');
+    outputVariablesDescription.innerText = `${promptBuilderInterfaceText?.promptBuilderOutputVariablesDescription}`;
+    const promptBuilderOutputVariablesContainer = document.createElement('div');
+    promptBuilderOutputVariablesContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-outvars`;
+    const outputVariablesAddButton = document.createElement('button');
+    outputVariablesAddButton.type = 'button';
+    outputVariablesAddButton.classList.add('btn', 'btn-secondary');
+    outputVariablesAddButton.innerText = `${promptBuilderInterfaceText?.promptBuilderOutputVariablesAddButton}`;
+    outputVariablesAddButton.onclick = () => createOutputVariableRow();
+    promptExperimentManifestOptions.appendChild(outputVariablesLabel);
+    promptExperimentManifestOptions.appendChild(outputVariablesDescription);
+    promptExperimentManifestOptions.appendChild(promptBuilderOutputVariablesContainer);
+    promptExperimentManifestOptions.appendChild(outputVariablesAddButton);
+
+    function createOutputVariableRow(variable?: PromptOutputVariable): void {
+      const outputRow = document.createElement('div');
+      outputRow.classList.add('row', 'g-2', 'align-items-start', 'mb-2', 'pb-outvar-row');
+      // Name
+      const nameColumn = document.createElement('div');
+      nameColumn.classList.add('col-md-3');
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.maxLength = 32;
+      nameInput.classList.add('form-control', 'pb-outvar-name');
+      nameInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderVariablesNameLabel}`;
+      nameInput.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesNameLabel}`);
+      nameInput.value = variable?.name ?? '';
+      nameInput.oninput = () => validateOutputVariableRows();
+      const nameFeedback = document.createElement('div');
+      nameFeedback.classList.add('invalid-feedback');
+      nameColumn.appendChild(nameInput);
+      nameColumn.appendChild(nameFeedback);
+      // Description
+      const descriptionColumn = document.createElement('div');
+      descriptionColumn.classList.add('col-md-4');
+      const descriptionInput = document.createElement('input');
+      descriptionInput.type = 'text';
+      descriptionInput.maxLength = 500;
+      descriptionInput.classList.add('form-control', 'pb-outvar-description');
+      descriptionInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderVariablesDescriptionLabel}`;
+      descriptionInput.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesDescriptionLabel}`);
+      descriptionInput.value = variable?.description ?? '';
+      descriptionColumn.appendChild(descriptionInput);
+      // Data type
+      const typeColumn = document.createElement('div');
+      typeColumn.classList.add('col-md-2');
+      const typeSelect = document.createElement('select');
+      typeSelect.classList.add('form-select', 'pb-outvar-type');
+      typeSelect.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesTypeLabel}`);
+      const stringOption = document.createElement('option');
+      stringOption.value = 'string';
+      stringOption.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesTypeString}`;
+      const decimalOption = document.createElement('option');
+      decimalOption.value = 'decimal';
+      decimalOption.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesTypeDecimal}`;
+      typeSelect.appendChild(stringOption);
+      typeSelect.appendChild(decimalOption);
+      typeSelect.value = variable?.type === 'decimal' ? 'decimal' : 'string';
+      typeSelect.onchange = () => validateOutputVariableRows();
+      typeColumn.appendChild(typeSelect);
+      // Optional default value, used when the key is missing from the response
+      const defaultColumn = document.createElement('div');
+      defaultColumn.classList.add('col-md-2');
+      const defaultInput = document.createElement('input');
+      defaultInput.type = 'text';
+      defaultInput.classList.add('form-control', 'pb-outvar-default');
+      defaultInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderVariablesDefaultLabel}`;
+      defaultInput.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesDefaultLabel}`);
+      defaultInput.value = variable?.defaultValue ?? '';
+      defaultInput.oninput = () => validateOutputVariableRows();
+      const defaultFeedback = document.createElement('div');
+      defaultFeedback.classList.add('invalid-feedback');
+      defaultFeedback.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesValueNotNumeric}`;
+      defaultColumn.appendChild(defaultInput);
+      defaultColumn.appendChild(defaultFeedback);
+      // Remove
+      const removeColumn = document.createElement('div');
+      removeColumn.classList.add('col-md-1');
+      const removeButton = document.createElement('button');
+      removeButton.type = 'button';
+      removeButton.classList.add('btn', 'btn-outline-danger', 'pb-outvar-remove');
+      removeButton.innerHTML = '&times;';
+      removeButton.title = `${promptBuilderInterfaceText?.promptBuilderVariablesRemoveButton}`;
+      removeButton.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesRemoveButton}`);
+      removeButton.onclick = () => {
+        outputRow.remove();
+        validateOutputVariableRows();
+      };
+      removeColumn.appendChild(removeButton);
+
+      outputRow.appendChild(nameColumn);
+      outputRow.appendChild(descriptionColumn);
+      outputRow.appendChild(typeColumn);
+      outputRow.appendChild(defaultColumn);
+      outputRow.appendChild(removeColumn);
+      promptBuilderOutputVariablesContainer.appendChild(outputRow);
+    }
+
+    // Flag invalid, duplicate or reserved names and non-numeric decimal defaults.
+    function validateOutputVariableRows(): void {
+      const seenNames = new Set<string>();
+      promptBuilderOutputVariablesContainer.querySelectorAll('.pb-outvar-row').forEach((row) => {
+        const nameInput = row.querySelector('.pb-outvar-name') as HTMLInputElement;
+        const nameFeedback = nameInput.nextElementSibling as HTMLElement;
+        const typeSelect = row.querySelector('.pb-outvar-type') as HTMLSelectElement;
+        const defaultInput = row.querySelector('.pb-outvar-default') as HTMLInputElement;
+        const name = nameInput.value.trim();
+        let nameInvalidText = '';
+        if (name !== '' && !isValidDS2VariableName(name)) {
+          nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderVariablesNameInvalid}`;
+        } else if (name !== '' && RESERVED_OUTPUT_NAMES.includes(name)) {
+          nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderOutputVariablesNameReserved}`;
+        } else if (name !== '' && seenNames.has(name)) {
+          nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderVariablesNameDuplicate}`;
+        } else if (name !== '') {
+          seenNames.add(name);
+        }
+        nameFeedback.innerText = nameInvalidText;
+        nameInput.classList.toggle('is-invalid', nameInvalidText !== '');
+        const defaultInvalid =
+          typeSelect.value === 'decimal' && defaultInput.value.trim() !== '' && isNaN(Number(defaultInput.value));
+        defaultInput.classList.toggle('is-invalid', defaultInvalid);
+      });
+    }
+
+    // Collect the currently valid output variable definitions.
+    function collectPromptOutputVariables(): PromptOutputVariable[] {
+      validateOutputVariableRows();
+      const outputVariables: PromptOutputVariable[] = [];
+      const seenNames = new Set<string>();
+      promptBuilderOutputVariablesContainer.querySelectorAll('.pb-outvar-row').forEach((row) => {
+        const name = (row.querySelector('.pb-outvar-name') as HTMLInputElement).value.trim();
+        if (!isValidDS2VariableName(name) || RESERVED_OUTPUT_NAMES.includes(name) || seenNames.has(name)) return;
+        seenNames.add(name);
+        outputVariables.push({
+          name,
+          description: (row.querySelector('.pb-outvar-description') as HTMLInputElement).value.trim(),
+          type: (row.querySelector('.pb-outvar-type') as HTMLSelectElement).value === 'decimal' ? 'decimal' : 'string',
+          defaultValue: (row.querySelector('.pb-outvar-default') as HTMLInputElement).value,
+        });
+      });
+      return outputVariables;
+    }
 
     // Response for the user about saving
     const promptExperimentResultContainer = document.createElement('div');
@@ -1928,42 +2120,70 @@ export async function buildPromptBuilder(
           scoreCodeOptions += scoreCodeOptions.length > 0 ? ',API_KEY:{API_KEY}' : 'API_KEY:{API_KEY}';
         }
         // With the integrated call the manifested model calls the LLM container
-        // itself and returns the same outputs as the LLM models (response,
-        // run_time, prompt_length, output_length — mirroring how the Prompt
-        // Builder consumes the SCR responses); otherwise it returns the
+        // itself and returns the selected default outputs (mirroring how the
+        // Prompt Builder consumes the SCR responses) plus any output variables
+        // parsed from the LLM's JSON response; otherwise it returns the
         // llmBody/llmURL pair for the Call LLM node in SAS Intelligent Decisioning.
         const integratedLLMCall = promptExperimentIntegratedCallCheckbox.checked;
+        const selectedDefaultOutputs = DEFAULT_LLM_OUTPUTS.filter(
+          (outputName) =>
+            (document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-pet-out-${outputName}`) as HTMLInputElement | null)?.checked
+        );
+        const outputVariables = integratedLLMCall ? collectPromptOutputVariables() : [];
+        const parseOutputs = outputVariables.length > 0;
+        const defaultOutputDefinitions: Record<string, { name: string; description: string; level: string; type: string; length: number }> = {
+          response: {
+            name: 'response',
+            description: 'The response of the LLM to the manifested prompt',
+            level: 'nominal',
+            type: 'string',
+            length: 1000000,
+          },
+          run_time: {
+            name: 'run_time',
+            description: 'Time in seconds the LLM call took',
+            level: 'interval',
+            type: 'decimal',
+            length: 8,
+          },
+          prompt_length: {
+            name: 'prompt_length',
+            description: 'Number of input tokens',
+            level: 'interval',
+            type: 'decimal',
+            length: 8,
+          },
+          output_length: {
+            name: 'output_length',
+            description: 'Number of output tokens',
+            level: 'interval',
+            type: 'decimal',
+            length: 8,
+          },
+        };
         // Create the output variables definition
         const outputVars = integratedLLMCall
           ? [
-              {
-                name: 'response',
-                description: 'The response of the LLM to the manifested prompt',
-                level: 'nominal',
-                type: 'string',
-                length: 1000000,
-              },
-              {
-                name: 'run_time',
-                description: 'Time in seconds the LLM call took',
-                level: 'interval',
-                type: 'decimal',
-                length: 8,
-              },
-              {
-                name: 'prompt_length',
-                description: 'Number of input tokens',
-                level: 'interval',
-                type: 'decimal',
-                length: 8,
-              },
-              {
-                name: 'output_length',
-                description: 'Number of output tokens',
-                level: 'interval',
-                type: 'decimal',
-                length: 8,
-              },
+              ...selectedDefaultOutputs.map((outputName) => defaultOutputDefinitions[outputName]),
+              ...outputVariables.map((variable) => ({
+                name: variable.name,
+                description: variable.description,
+                level: variable.type === 'decimal' ? 'interval' : 'nominal',
+                type: variable.type === 'decimal' ? 'decimal' : 'string',
+                length: variable.type === 'decimal' ? 8 : 10000000,
+              })),
+              ...(parseOutputs
+                ? [
+                    {
+                      name: 'parse_status',
+                      description:
+                        '1 when the LLM response was parsed as JSON and every output variable was extracted, 0 otherwise',
+                      level: 'interval',
+                      type: 'decimal',
+                      length: 8,
+                    },
+                  ]
+                : []),
             ]
           : [
               {
@@ -1981,6 +2201,15 @@ export async function buildPromptBuilder(
                 length: 256,
               },
             ];
+        // At least one output has to remain selected or defined
+        if (outputVars.length === 0) {
+          if (promptExperimentResultTargetContainer) {
+            promptExperimentResultTargetContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestNoOutputs}`;
+          }
+          promptExperimentCreateModelTargetButton.disabled = false;
+          promptExperimentCreateModelTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
+          return;
+        }
         // Handle the different LLM Container deployment types
         const deploymentTypeHandling = (promptBuilderObject.deploymentType as string) ?? 'k8s';
         let llmEndpoint = '';
@@ -1991,28 +2220,78 @@ export async function buildPromptBuilder(
         }
         // The tail of the score code: either hand the prepared call over to the
         // Call LLM node (llmBody/llmURL) or perform it directly with requests,
-        // unwrapping the SCR `data` envelope exactly like the Prompt Builder does.
+        // unwrapping the SCR `data` envelope exactly like the Prompt Builder
+        // does, and optionally parsing the JSON response into output variables.
+        const pythonDefaultLiteral = (variable: PromptOutputVariable): string => {
+          if (variable.type === 'decimal') {
+            const numericDefault = Number(variable.defaultValue);
+            return variable.defaultValue.trim() !== '' && !isNaN(numericDefault) ? `${numericDefault}` : 'None';
+          }
+          return JSON.stringify(variable.defaultValue);
+        };
+        const scoreCodeOutputList = integratedLLMCall
+          ? [
+              ...selectedDefaultOutputs,
+              ...outputVariables.map((variable) => variable.name),
+              ...(parseOutputs ? ['parse_status'] : []),
+            ].join(', ')
+          : 'llmBody, llmURL';
+        const parsingBlock = `        # Parse the JSON response into the output variables. A fenced
+        # \`\`\`json block is unwrapped first, since LLMs often add one.
+        cleaned = str(response).strip()
+        if cleaned.startswith("\`\`\`"):
+            cleaned = cleaned[cleaned.find("\\n") + 1 :] if "\\n" in cleaned else cleaned[3:]
+            if cleaned.rstrip().endswith("\`\`\`"):
+                cleaned = cleaned.rstrip()[:-3]
+        try:
+            parsed = json.loads(cleaned)
+            if not isinstance(parsed, dict):
+                raise ValueError("the response is not a JSON object")
+${outputVariables
+  .map(
+    (variable) =>
+      `            if "${variable.name}" in parsed:\n                ${variable.name} = ${variable.type === 'decimal' ? 'float' : 'str'}(parsed["${variable.name}"])`
+  )
+  .join('\n')}
+            if all(key in parsed for key in [${outputVariables.map((variable) => `"${variable.name}"`).join(', ')}]):
+                parse_status = 1
+        except Exception:
+            parse_status = 0
+`;
         const scoreCodeReturn = integratedLLMCall
-          ? `    # Call the LLM container and unwrap the SCR response envelope
+          ? `${
+              parseOutputs
+                ? `    # Defaults for the output variables parsed from the LLM response
+${outputVariables.map((variable) => `    ${variable.name} = ${pythonDefaultLiteral(variable)}`).join('\n')}
+    # 1 when the response was parsed and every output variable was extracted
+    parse_status = 0
+`
+                : ''
+            }    response = ""
+    run_time = None
+    prompt_length = None
+    output_length = None
+    # Call the LLM container and unwrap the SCR response envelope
     llmCall = requests.post(
         llmURL,
         data=llmBody.encode("utf-8"),
         headers={"Content-Type": "application/json", "Accept": "application/json"},
     )
-    if llmCall.status_code != 200:
-        return f"LLM call failed with status {llmCall.status_code}", None, None, None
-    llmJson = llmCall.json()
-    llmData = llmJson.get("data", llmJson) if isinstance(llmJson, dict) else {}
-    response = llmData.get("response", "")
-    run_time = llmData.get("run_time")
-    prompt_length = llmData.get("prompt_length")
-    output_length = llmData.get("output_length")
-    return response, run_time, prompt_length, output_length`
+    if llmCall.status_code == 200:
+        llmJson = llmCall.json()
+        llmData = llmJson.get("data", llmJson) if isinstance(llmJson, dict) else {}
+        response = llmData.get("response", "")
+        run_time = llmData.get("run_time")
+        prompt_length = llmData.get("prompt_length")
+        output_length = llmData.get("output_length")
+${parseOutputs ? parsingBlock : ''}    else:
+        response = f"LLM call failed with status {llmCall.status_code}"
+    return ${scoreCodeOutputList}`
           : `    return llmBody, llmURL`;
         const scoreCode = `import os
-${integratedLLMCall ? 'import requests\n' : ''}
+${integratedLLMCall ? 'import requests\n' : ''}${parseOutputs ? 'import json\n' : ''}
 def scoreModel(${scoreCodeInput}):
-    "Output: ${integratedLLMCall ? 'response, run_time, prompt_length, output_length' : 'llmBody, llmURL'}"
+    "Output: ${scoreCodeOutputList}"
     # The llm and the target endpoint
     llm = "${(bestPromptItem as PETRow).model}"
     # Retrieves the endpoint where the LLM containers are hosted - e.g. https://example.com/llm
@@ -2089,6 +2368,7 @@ ${scoreCodeReturn}`;
     promptBuilderContainer.appendChild(promptExperimentSaveButton);
     promptBuilderContainer.appendChild(promptExperimentCreateModelButton);
     promptBuilderContainer.appendChild(promptExperimentIntegratedCallDiv);
+    promptBuilderContainer.appendChild(promptExperimentManifestOptions);
     promptBuilderContainer.appendChild(document.createElement('br'));
     promptBuilderContainer.appendChild(document.createElement('br'));
     promptBuilderContainer.appendChild(promptExperimentResultContainer);

@@ -45,6 +45,14 @@ a[role='button'] {
   z-index: 1080;
 }
 
+/* Options of the integrated LLM call below the manifest button row */
+.pet-manifest-options {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+}
+
 /* Per-model option inputs, revealed when a model checkbox is ticked */
 .model-options {
   gap: 10px;

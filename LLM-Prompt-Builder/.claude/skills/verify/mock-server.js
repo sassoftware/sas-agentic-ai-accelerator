@@ -132,8 +132,12 @@ http
       if (p === '/decisions/flows/flow-A') return json(res, 200, { id: 'flow-A', name: 'Loan Approval Decision' });
       if (p === '/decisions/flows/flow-B') return json(res, 200, { id: 'flow-B', name: 'Fraud Check Decision' });
       if (/^\/scr\//.test(p) && req.method === 'POST') {
+        // A fenced JSON response, as LLMs often produce, to exercise parsing
         return json(res, 200, {
-          data: { response: 'Mock LLM response', run_time: 1.5, prompt_length: 42, output_length: 7 },
+          data: {
+            response: '```json\n{"sentiment": "positive", "score": 0.9}\n```',
+            run_time: 1.5, prompt_length: 42, output_length: 7,
+          },
         });
       }
       if (/^\/modelRepository\/models\/[^/]+\/variables$/.test(p) && req.method === 'GET') {

@@ -209,7 +209,15 @@ function multipartJson(body) {
   );
 
   // ---- manifest with the LLM call integrated into the model -----------------
+  assert(
+    !(await page.isVisible('#app-obj-LPB-pet-manifest-options')),
+    'manifest options stay hidden until the LLM call is integrated'
+  );
   await page.check('#app-obj-LPB-pet-manifest-integrated');
+  assert(
+    await page.isVisible('#app-obj-LPB-pet-manifest-options'),
+    'manifest options revealed by checking the integrated-call box'
+  );
   await resetLog();
   await page.click('#app-obj-LPB-pet-create-model-button');
   await waitUntil(
@@ -248,6 +256,72 @@ function multipartJson(body) {
   assert(!pyIntegrated.includes('return llmBody, llmURL'), 'integrated call no longer returns llmBody/llmURL');
   // probe: syntax-check the generated python
   require('fs').writeFileSync('manifested-integrated.py', pyIntegrated.match(/import os[\s\S]*?(?=\r\n--)/)[0]);
+
+  // ---- parse the LLM response into output variables --------------------------
+  await page.uncheck('#app-obj-LPB-pet-out-run_time');
+  await page.uncheck('#app-obj-LPB-pet-out-prompt_length');
+  await page.click('text="Add Output Variable"');
+  await page.click('text="Add Output Variable"');
+  const outRows = page.locator('.pb-outvar-row');
+  await outRows.nth(0).locator('.pb-outvar-name').fill('sentiment');
+  await outRows.nth(0).locator('.pb-outvar-description').fill('Detected sentiment');
+  await outRows.nth(0).locator('.pb-outvar-default').fill('neutral');
+  await outRows.nth(1).locator('.pb-outvar-name').fill('score');
+  await outRows.nth(1).locator('.pb-outvar-type').selectOption('decimal');
+  await outRows.nth(1).locator('.pb-outvar-default').fill('0.5');
+  step(true, 'defined string and decimal output variables with defaults');
+  // probe: reserved names are rejected
+  await page.click('text="Add Output Variable"');
+  await outRows.nth(2).locator('.pb-outvar-name').fill('response');
+  assert(
+    await outRows.nth(2).locator('.pb-outvar-name').evaluate((el) => el.classList.contains('is-invalid')),
+    'reserved output name (response) is flagged'
+  );
+  await outRows.nth(2).locator('.pb-outvar-remove').click();
+  await page.screenshot({ path: 'shot-10-output-parsing.png', fullPage: true });
+
+  await resetLog();
+  await page.click('#app-obj-LPB-pet-create-model-button');
+  await waitUntil(
+    async () => (await getLog()).some((e) => e.method === 'POST' && e.body.includes('def scoreModel(')),
+    'parsing score code uploaded'
+  );
+  aLog = await getLog();
+  const findPart3 = (name) => aLog.find((e) => e.method === 'POST' && e.body.includes(`filename="${name}"`));
+  const outputVarsParsing = multipartJson(findPart3('outputVar.json').body);
+  assert(
+    JSON.stringify(outputVarsParsing.map((v) => [v.name, v.type])) ===
+      JSON.stringify([
+        ['response', 'string'],
+        ['output_length', 'decimal'],
+        ['sentiment', 'string'],
+        ['score', 'decimal'],
+        ['parse_status', 'decimal'],
+      ]),
+    `deselected defaults dropped; parsed outputs + parse_status added (got: ${JSON.stringify(outputVarsParsing.map((v) => v.name))})`
+  );
+  assert(
+    outputVarsParsing.find((v) => v.name === 'sentiment').length === 10000000 &&
+      outputVarsParsing.find((v) => v.name === 'sentiment').description === 'Detected sentiment',
+    'parsed string output carries 10M length and its description'
+  );
+  const pyParsing = aLog.find((e) => e.method === 'POST' && e.body.includes('def scoreModel(')).body;
+  assert(pyParsing.includes('import json'), 'parsing score code imports json');
+  assert(
+    pyParsing.includes('"Output: response, output_length, sentiment, score, parse_status"'),
+    'parsing score code declares the selected + parsed outputs'
+  );
+  assert(pyParsing.includes('sentiment = "neutral"') && pyParsing.includes('score = 0.5'), 'defaults initialized');
+  assert(pyParsing.includes('cleaned.startswith("```")'), 'fenced ```json responses are unwrapped');
+  assert(pyParsing.includes('float(parsed["score"])'), 'decimal outputs are coerced with float()');
+  assert(
+    pyParsing.includes('return response, output_length, sentiment, score, parse_status'),
+    'parsing score code returns the chosen output tuple'
+  );
+  require('fs').writeFileSync('manifested-parsing.py', pyParsing.match(/import os[\s\S]*?(?=\r\n--)/)[0]);
+  // restore the defaults for any later manifests
+  await page.check('#app-obj-LPB-pet-out-run_time');
+  await page.check('#app-obj-LPB-pet-out-prompt_length');
 
   // ---- auto-load re-applies the best prompt on re-selection -----------------
   await page.fill('#app-obj-LPB-system-prompt', 'scratch');
