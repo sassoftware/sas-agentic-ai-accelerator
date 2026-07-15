@@ -1,0 +1,4 @@
+# The prebuilt dist/index.html is byte-compared against a fresh Linux build in
+# CI, so every file that flows into the build must have identical line endings
+# on every platform. Force LF for the whole app.
+* text=auto eol=lf
