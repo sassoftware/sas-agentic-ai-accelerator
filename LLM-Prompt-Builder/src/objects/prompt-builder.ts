@@ -1679,6 +1679,23 @@ export async function buildPromptBuilder(
       await promptBuilderSaveExperiments();
       await promptBulderCreateBestPromptModel();
     };
+    // Choose whether the manifested model performs the LLM call itself
+    // (returning the same outputs as the LLM models) or returns the
+    // llmBody/llmURL pair for the Call LLM node in SAS Intelligent Decisioning.
+    const promptExperimentIntegratedCallDiv = document.createElement('div');
+    promptExperimentIntegratedCallDiv.classList.add('form-check', 'form-check-inline', 'pet-manifest-integrated');
+    promptExperimentIntegratedCallDiv.title = `${promptBuilderInterfaceText?.promptBuilderManifestIntegratedInfo}`;
+    const promptExperimentIntegratedCallCheckbox = document.createElement('input');
+    promptExperimentIntegratedCallCheckbox.type = 'checkbox';
+    promptExperimentIntegratedCallCheckbox.classList.add('form-check-input');
+    promptExperimentIntegratedCallCheckbox.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-manifest-integrated`;
+    const promptExperimentIntegratedCallLabel = document.createElement('label');
+    promptExperimentIntegratedCallLabel.classList.add('form-check-label');
+    promptExperimentIntegratedCallLabel.htmlFor = promptExperimentIntegratedCallCheckbox.id;
+    promptExperimentIntegratedCallLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestIntegratedLabel}`;
+    promptExperimentIntegratedCallDiv.appendChild(promptExperimentIntegratedCallCheckbox);
+    promptExperimentIntegratedCallDiv.appendChild(promptExperimentIntegratedCallLabel);
+
     // Load the most recent best prompt back into the workbench
     const promptExperimentLoadBestButton = document.createElement('button');
     promptExperimentLoadBestButton.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-load-best-button`;
@@ -1917,23 +1934,60 @@ export async function buildPromptBuilder(
         if (requiresAPIKey) {
           scoreCodeOptions += scoreCodeOptions.length > 0 ? ',API_KEY:{API_KEY}' : 'API_KEY:{API_KEY}';
         }
+        // With the integrated call the manifested model calls the LLM container
+        // itself and returns the same outputs as the LLM models (response,
+        // run_time, prompt_length, output_length — mirroring how the Prompt
+        // Builder consumes the SCR responses); otherwise it returns the
+        // llmBody/llmURL pair for the Call LLM node in SAS Intelligent Decisioning.
+        const integratedLLMCall = promptExperimentIntegratedCallCheckbox.checked;
         // Create the output variables definition
-        const outputVars = [
-          {
-            name: 'llmBody',
-            description: 'Contains the structered input for the Call LLM node in SAS Intelligent Decisioning',
-            level: 'nominal',
-            type: 'string',
-            length: 1000000,
-          },
-          {
-            name: 'llmURL',
-            description: 'The URL of the LLM container that will be called',
-            level: 'nominal',
-            type: 'string',
-            length: 256,
-          },
-        ];
+        const outputVars = integratedLLMCall
+          ? [
+              {
+                name: 'response',
+                description: 'The response of the LLM to the manifested prompt',
+                level: 'nominal',
+                type: 'string',
+                length: 1000000,
+              },
+              {
+                name: 'run_time',
+                description: 'Time in seconds the LLM call took',
+                level: 'interval',
+                type: 'decimal',
+                length: 8,
+              },
+              {
+                name: 'prompt_length',
+                description: 'Number of input tokens',
+                level: 'interval',
+                type: 'decimal',
+                length: 8,
+              },
+              {
+                name: 'output_length',
+                description: 'Number of output tokens',
+                level: 'interval',
+                type: 'decimal',
+                length: 8,
+              },
+            ]
+          : [
+              {
+                name: 'llmBody',
+                description: 'Contains the structered input for the Call LLM node in SAS Intelligent Decisioning',
+                level: 'nominal',
+                type: 'string',
+                length: 1000000,
+              },
+              {
+                name: 'llmURL',
+                description: 'The URL of the LLM container that will be called',
+                level: 'nominal',
+                type: 'string',
+                length: 256,
+              },
+            ];
         // Handle the different LLM Container deployment types
         const deploymentTypeHandling = (promptBuilderObject.deploymentType as string) ?? 'k8s';
         let llmEndpoint = '';
@@ -1942,10 +1996,30 @@ export async function buildPromptBuilder(
         } else if (deploymentTypeHandling === 'aca') {
           llmEndpoint = 'https://{llm.replace("_", "-")}.{endpoint}/{llm}';
         }
+        // The tail of the score code: either hand the prepared call over to the
+        // Call LLM node (llmBody/llmURL) or perform it directly with requests,
+        // unwrapping the SCR `data` envelope exactly like the Prompt Builder does.
+        const scoreCodeReturn = integratedLLMCall
+          ? `    # Call the LLM container and unwrap the SCR response envelope
+    llmCall = requests.post(
+        llmURL,
+        data=llmBody.encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+    )
+    if llmCall.status_code != 200:
+        return f"LLM call failed with status {llmCall.status_code}", None, None, None
+    llmJson = llmCall.json()
+    llmData = llmJson.get("data", llmJson) if isinstance(llmJson, dict) else {}
+    response = llmData.get("response", "")
+    run_time = llmData.get("run_time")
+    prompt_length = llmData.get("prompt_length")
+    output_length = llmData.get("output_length")
+    return response, run_time, prompt_length, output_length`
+          : `    return llmBody, llmURL`;
         const scoreCode = `import os
-
+${integratedLLMCall ? 'import requests\n' : ''}
 def scoreModel(${scoreCodeInput}):
-    "Output: llmBody, llmURL"
+    "Output: ${integratedLLMCall ? 'response, run_time, prompt_length, output_length' : 'llmBody, llmURL'}"
     # The llm and the target endpoint
     llm = "${(bestPromptItem as PETRow).model}"
     # Retrieves the endpoint where the LLM containers are hosted - e.g. https://example.com/llm
@@ -1959,7 +2033,7 @@ def scoreModel(${scoreCodeInput}):
     # Here the user prompt will be created from the inputs of the call
     userPrompt = ${scoreCodeUserPromptLiteral}.replace('\\n', "\\\\n").replace("'", '"').replace('"', '\\\\"')
     llmBody = '{"inputs":[{"name":"systemPrompt","value":"' + systemPrompt + '"},{"name":"userPrompt","value":"' + userPrompt + '"},{"name":"options","value":"' + options + '"}]}'
-    return llmBody, llmURL`;
+${scoreCodeReturn}`;
         const mainfestPromptScoreCodeBlob = new Blob([scoreCode], { type: 'text/x-python' });
         // Clean up previous variables first
         const modelVariables = await getModelVariables(promptExperimentRunModel);
@@ -2022,6 +2096,7 @@ def scoreModel(${scoreCodeInput}):
     promptBuilderContainer.appendChild(promptExperimentSaveButton);
     promptBuilderContainer.appendChild(promptExperimentCreateModelButton);
     promptBuilderContainer.appendChild(promptExperimentLoadBestButton);
+    promptBuilderContainer.appendChild(promptExperimentIntegratedCallDiv);
     promptBuilderContainer.appendChild(document.createElement('br'));
     promptBuilderContainer.appendChild(document.createElement('br'));
     promptBuilderContainer.appendChild(promptExperimentResultContainer);

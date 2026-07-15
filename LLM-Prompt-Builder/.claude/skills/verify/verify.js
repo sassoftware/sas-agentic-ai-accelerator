@@ -193,6 +193,53 @@ function multipartJson(body) {
     pyBody.includes('userPrompt = f"""Value: {str(amount).strip()} and {{{{unknown}}}} stays"""'),
     'user prompt manifested as f-string; unknown tokens stay literal'
   );
+  assert(pyBody.includes('return llmBody, llmURL'), 'default manifest returns llmBody/llmURL for the Call LLM node');
+  const outputVarsDefault = multipartJson(findPart('outputVar.json').body);
+  assert(
+    JSON.stringify(outputVarsDefault.map((v) => v.name)) === JSON.stringify(['llmBody', 'llmURL']),
+    `default manifest outputs llmBody/llmURL (got: ${outputVarsDefault.map((v) => v.name)})`
+  );
+
+  // ---- manifest with the LLM call integrated into the model -----------------
+  await page.check('#app-obj-LPB-pet-manifest-integrated');
+  await resetLog();
+  await page.click('#app-obj-LPB-pet-create-model-button');
+  await waitUntil(
+    async () => (await getLog()).some((e) => e.method === 'POST' && e.body.includes('def scoreModel(')),
+    'integrated score code uploaded'
+  );
+  aLog = await getLog();
+  const findPart2 = (name) => aLog.find((e) => e.method === 'POST' && e.body.includes(`filename="${name}"`));
+  const outputVarsIntegrated = multipartJson(findPart2('outputVar.json').body);
+  assert(
+    JSON.stringify(outputVarsIntegrated.map((v) => [v.name, v.type])) ===
+      JSON.stringify([
+        ['response', 'string'],
+        ['run_time', 'decimal'],
+        ['prompt_length', 'decimal'],
+        ['output_length', 'decimal'],
+      ]),
+    `integrated manifest outputs mirror the SCR LLM contract (got: ${JSON.stringify(outputVarsIntegrated.map((v) => v.name))})`
+  );
+  const pyIntegrated = aLog.find((e) => e.method === 'POST' && e.body.includes('def scoreModel(')).body;
+  assert(pyIntegrated.includes('import requests'), 'integrated score code imports requests');
+  assert(
+    pyIntegrated.includes('"Output: response, run_time, prompt_length, output_length"'),
+    'integrated score code declares the SCR-style outputs'
+  );
+  assert(pyIntegrated.includes('requests.post('), 'integrated score code performs the LLM call');
+  assert(
+    pyIntegrated.includes('llmData = llmJson.get("data", llmJson)'),
+    'integrated score code unwraps the SCR data envelope'
+  );
+  assert(
+    pyIntegrated.includes('return response, run_time, prompt_length, output_length'),
+    'integrated score code returns the LLM results'
+  );
+  assert(pyIntegrated.includes('def scoreModel(customer, amount):'), 'integrated call keeps the variable inputs');
+  assert(!pyIntegrated.includes('return llmBody, llmURL'), 'integrated call no longer returns llmBody/llmURL');
+  // probe: syntax-check the generated python
+  require('fs').writeFileSync('manifested-integrated.py', pyIntegrated.match(/import os[\s\S]*?(?=\r\n--)/)[0]);
 
   // ---- Load Best Prompt restores the workbench ------------------------------
   await page.fill('#app-obj-LPB-system-prompt', 'scratch');
