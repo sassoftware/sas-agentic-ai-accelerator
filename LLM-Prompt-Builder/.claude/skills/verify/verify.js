@@ -62,6 +62,28 @@ function multipartJson(body) {
   await page.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
   step(true, 'app booted against the mock (project dropdown rendered)');
 
+  // ---- UX: heading hierarchy, sections, gated run button, modal copy --------
+  assert((await page.$$('h1')).length === 1, 'exactly one h1 on the page');
+  assert((await page.$$('.pb-section')).length === 5, 'page grouped into five visual sections');
+  assert(await page.isDisabled('#app-obj-LPB-run-experiment'), 'Run Experiments disabled until an LLM is selected');
+  assert(
+    (await page.getAttribute('#app-obj-LPB-run-experiment', 'title')).length > 0,
+    'disabled Run Experiments carries a hint'
+  );
+  await page.click('#LPB-modal-button-container button[data-bs-target="#promptBuilderCreatePromptModal"]');
+  await page.waitForSelector('.modal.show .modal-body');
+  const createModalBody = await page.textContent('.modal.show .modal-body');
+  assert(
+    createModalBody.includes('saved into the currently selected project'),
+    'create-prompt explanation moved into the modal body'
+  );
+  assert(
+    (await page.textContent('.modal.show .modal-title')).trim() === 'Create a new Prompt',
+    'create-prompt button/title shortened'
+  );
+  await page.click('.modal.show .btn-close');
+  await page.waitForSelector('.modal.show', { state: 'detached' });
+
   // ---- load a prompt with 3 saved runs -------------------------------------
   await page.selectOption('#LPB-project-dropdown', 'proj-1');
   await waitUntil(
@@ -95,6 +117,10 @@ function multipartJson(body) {
   );
   step(true, 'most recent best run (fixture run 2) auto-loaded on prompt selection');
   assert(await page.isChecked('#model0'), 'auto-load reselected the best run LLM');
+  assert(
+    !(await page.isDisabled('#app-obj-LPB-run-experiment')),
+    'Run Experiments enabled once an LLM is selected'
+  );
 
   // ---- load an experiment run back into the workbench ----------------------
   await page.click('#app-obj-LPB-pet-2 .pet-run-load');
@@ -176,6 +202,11 @@ function multipartJson(body) {
     async () => (await getLog()).some((e) => e.method === 'POST' && e.body.includes('def scoreModel(')),
     'score code uploaded'
   );
+  await waitUntil(async () => {
+    const toastTexts = await page.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''));
+    return toastTexts.some((t) => t.includes('manifested')) && toastTexts.some((t) => t.includes('saved'));
+  }, 'save + manifest toasts');
+  step(true, 'save and manifest success reported via toasts');
   aLog = await getLog();
   const findPart = (name) => aLog.find((e) => e.method === 'POST' && e.body.includes(`filename="${name}"`));
   const savedTracker = multipartJson(findPart('Prompt-Experiment-Tracker.json').body);
@@ -319,9 +350,41 @@ function multipartJson(body) {
     'parsing score code returns the chosen output tuple'
   );
   require('fs').writeFileSync('manifested-parsing.py', pyParsing.match(/import os[\s\S]*?(?=\r\n--)/)[0]);
-  // restore the defaults for any later manifests
-  await page.check('#app-obj-LPB-pet-out-run_time');
-  await page.check('#app-obj-LPB-pet-out-prompt_length');
+
+  // ---- manifest config persisted with the run and restored by loading it ----
+  const run4HeaderParsing = multipartJson(findPart3('Prompt-Experiment-Tracker.json').body).find(
+    (r) => r.runId === 4 && r.model === ''
+  );
+  assert(
+    run4HeaderParsing.manifest && run4HeaderParsing.manifest.integratedLLMCall === true,
+    'manifest config (integrated flag) persisted on the manifested run'
+  );
+  assert(
+    JSON.stringify(run4HeaderParsing.manifest.selectedOutputs) === '["response","output_length"]',
+    `selected default outputs persisted (got: ${JSON.stringify(run4HeaderParsing.manifest.selectedOutputs)})`
+  );
+  assert(
+    run4HeaderParsing.manifest.outputVariables.length === 2 &&
+      run4HeaderParsing.manifest.outputVariables[0].name === 'sentiment' &&
+      run4HeaderParsing.manifest.outputVariables[0].defaultValue === 'neutral',
+    'output variable definitions persisted with the run'
+  );
+  // scramble the panel, then load run #4 to restore the whole configuration
+  await page.uncheck('#app-obj-LPB-pet-manifest-integrated');
+  await page.click('#app-obj-LPB-pet-3 .pet-run-load');
+  await waitUntil(
+    async () => page.isChecked('#app-obj-LPB-pet-manifest-integrated'),
+    'integrated flag restored by loading the run'
+  );
+  step(true, 'loading the run restored the integrated-call setting');
+  assert(await page.isVisible('#app-obj-LPB-pet-manifest-options'), 'options panel visible again after load');
+  assert(!(await page.isChecked('#app-obj-LPB-pet-out-run_time')), 'deselected default output restored by load');
+  assert(await page.isChecked('#app-obj-LPB-pet-out-response'), 'selected default output restored by load');
+  assert((await page.locator('.pb-outvar-row').count()) === 2, 'output variable rows restored by load');
+  assert(
+    (await page.locator('.pb-outvar-row').nth(0).locator('.pb-outvar-default').inputValue()) === 'neutral',
+    'output variable default value restored by load'
+  );
 
   // ---- auto-load re-applies the best prompt on re-selection -----------------
   await page.fill('#app-obj-LPB-system-prompt', 'scratch');
@@ -335,6 +398,14 @@ function multipartJson(body) {
   assert(
     (await page.locator('.pb-variable-row').count()) === 0,
     'variables menu reset to match the auto-loaded run (which has none)'
+  );
+  assert(
+    !(await page.isChecked('#app-obj-LPB-pet-manifest-integrated')),
+    'manifest config reset when the loaded run has none'
+  );
+  assert(
+    (await page.locator('.pb-outvar-row').count()) === 0 && (await page.isChecked('#app-obj-LPB-pet-out-run_time')),
+    'output variables cleared and default outputs reselected on reset'
   );
   await page.screenshot({ path: 'shot-08-variables-workbench.png', fullPage: true });
 

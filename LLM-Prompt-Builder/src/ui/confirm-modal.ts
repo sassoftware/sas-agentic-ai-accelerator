@@ -34,8 +34,8 @@ export function showConfirmModal(options: ConfirmModalOptions): Promise<boolean>
     // Create the modal header
     const confirmModalHeader = document.createElement('div');
     confirmModalHeader.classList.add('modal-header');
-    const confirmModalTitle = document.createElement('h1');
-    confirmModalTitle.classList.add('modal-title');
+    const confirmModalTitle = document.createElement('h2');
+    confirmModalTitle.classList.add('modal-title', 'fs-5');
     confirmModalTitle.textContent = options.title;
     const confirmModalCloseButton = document.createElement('button');
     confirmModalCloseButton.type = 'button';

@@ -53,6 +53,14 @@ a[role='button'] {
   border-radius: 6px;
 }
 
+/* Visual sections grouping the page (project/prompt, LLMs, workbench, tracker) */
+.pb-section {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+}
+
 /* Per-model option inputs, revealed when a model checkbox is ticked */
 .model-options {
   gap: 10px;

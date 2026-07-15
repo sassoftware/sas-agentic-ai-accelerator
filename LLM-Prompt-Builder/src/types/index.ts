@@ -32,6 +32,7 @@ export interface PromptBuilderConfig {
 /** Text for a create-project / create-prompt modal. */
 export interface ModalText {
   modalTitle?: string;
+  modalDescription?: string;
   nameLabel?: string;
   descriptionLabel?: string;
   closeButtonText?: string;

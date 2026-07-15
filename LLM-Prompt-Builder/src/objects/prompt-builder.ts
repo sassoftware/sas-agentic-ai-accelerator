@@ -74,11 +74,12 @@ interface ExperimentTrackerEntry {
   systemPrompt: string;
   userPrompt: string;
   variables?: PromptVariable[];
+  manifest?: ManifestConfig;
   [modelName: string]: unknown;
 }
 
 /** Entry keys that are metadata rather than per-model experiment results. */
-const TRACKER_META_KEYS = ['systemPrompt', 'userPrompt', 'author', 'variables'];
+const TRACKER_META_KEYS = ['systemPrompt', 'userPrompt', 'author', 'variables', 'manifest'];
 
 /** A user-defined output variable parsed from the LLM's JSON response. */
 interface PromptOutputVariable {
@@ -86,6 +87,13 @@ interface PromptOutputVariable {
   description: string;
   type: 'string' | 'decimal';
   defaultValue: string;
+}
+
+/** Manifest configuration captured with a run so loading can restore it. */
+interface ManifestConfig {
+  integratedLLMCall: boolean;
+  selectedOutputs: string[];
+  outputVariables: PromptOutputVariable[];
 }
 
 /** The outputs an integrated LLM call can return (mirroring the SCR contract). */
@@ -110,6 +118,8 @@ interface PETRow {
   userPrompt: string;
   /** Variable definitions of the run; only set on the run's header row. */
   variables?: PromptVariable[] | null;
+  /** Manifest configuration of the run; only set on the run's header row. */
+  manifest?: ManifestConfig | null;
   model: string;
   options: string;
   response: string;
@@ -123,6 +133,7 @@ interface PETRow {
 
 interface ModalText {
   modalTitle?: string;
+  modalDescription?: string;
   nameLabel?: string;
   descriptionLabel?: string;
   closeButtonText?: string;
@@ -213,7 +224,7 @@ export async function buildPromptBuilder(
     const promptBuilderProjectHeader = document.createElement('h2');
     promptBuilderProjectHeader.innerText = promptBuilderInterfaceText?.promptBuilderProjectHeader as string;
     // Select from existing projects
-    const promptBuilderProjectSelectorHeader = document.createElement('h2');
+    const promptBuilderProjectSelectorHeader = document.createElement('h3');
     promptBuilderProjectSelectorHeader.innerText = `${promptBuilderInterfaceText?.projectSelect}:`;
     const promptBuilderProjectSelectorDropdown = document.createElement('select');
     promptBuilderProjectSelectorDropdown.setAttribute('class', 'form-select');
@@ -260,7 +271,7 @@ export async function buildPromptBuilder(
       promptBuilderProjectSelectorDropdown.append(projectMod);
     }
     // Add the existing prompt selector
-    const promptBuilderPromptHeader = document.createElement('h2');
+    const promptBuilderPromptHeader = document.createElement('h3');
     promptBuilderPromptHeader.innerText = `${promptBuilderInterfaceText?.promptSelect}:`;
     const promptBuilderPromptSelectorDropdown = document.createElement('select');
     promptBuilderPromptSelectorDropdown.setAttribute('class', 'form-select');
@@ -299,6 +310,7 @@ export async function buildPromptBuilder(
                   userPrompt: value.userPrompt,
                 };
                 if (Array.isArray(value.variables)) loadedRun.variables = value.variables;
+                if (value.manifest) loadedRun.manifest = value.manifest;
                 promptBuilderPreviousExperiment.push(loadedRun);
                 promptBuilderPreviousRunID = value.runId;
               } else {
@@ -613,8 +625,8 @@ export async function buildPromptBuilder(
       const createModalModalHeader = document.createElement('div');
       createModalModalHeader.classList.add('modal-header');
       // Create the modal title
-      const createModalModalTitle = document.createElement('h1');
-      createModalModalTitle.classList.add('modal-title');
+      const createModalModalTitle = document.createElement('h2');
+      createModalModalTitle.classList.add('modal-title', 'fs-5');
       createModalModalTitle.innerHTML = tmpModalText?.modalTitle ?? '';
       // Create the modal close button
       const createModalModalCloseButton = document.createElement('button');
@@ -625,6 +637,12 @@ export async function buildPromptBuilder(
       // Create the modal body
       const createModalModalBody = document.createElement('div');
       createModalModalBody.classList.add('modal-body');
+      // Optional explanatory description shown above the inputs
+      if (tmpModalText?.modalDescription) {
+        const createModalModalDescription = document.createElement('p');
+        createModalModalDescription.innerText = tmpModalText.modalDescription;
+        createModalModalBody.appendChild(createModalModalDescription);
+      }
       // Create the first modal input
       const createModalBodyInput1Text = document.createElement('span');
       createModalBodyInput1Text.innerHTML = `${tmpModalText?.nameLabel}:`;
@@ -742,6 +760,7 @@ export async function buildPromptBuilder(
         checkbox.addEventListener('change', () => {
           const optionsDiv = document.getElementById(`options${index}`);
           if (optionsDiv) optionsDiv.style.display = checkbox.checked ? 'flex' : 'none';
+          updateRunExperimentsButtonState();
         });
 
         const label = document.createElement('label');
@@ -851,7 +870,7 @@ export async function buildPromptBuilder(
     }
 
     // Model Selector
-    const promptBuilderModelSelectorHeader = document.createElement('h1');
+    const promptBuilderModelSelectorHeader = document.createElement('h2');
     promptBuilderModelSelectorHeader.innerText = promptBuilderInterfaceText?.promptBuilderModelSelectorHeading as string;
     const promptBuilderModelSelectorContainer = document.createElement('div');
     promptBuilderModelSelectorContainer.setAttribute('id', `${promptBuilderObject?.id}-model-selector-container`);
@@ -877,14 +896,14 @@ export async function buildPromptBuilder(
     generateModelSelection(promptBuilderAvailableLLMs);
 
     // Add the prompting inputs
-    const promptBuilderPromptingHeader = document.createElement('h1');
+    const promptBuilderPromptingHeader = document.createElement('h2');
     promptBuilderPromptingHeader.innerText = promptBuilderInterfaceText?.promptBuilderPromptingHeader as string;
     const promptBulderPromptingExplainer = document.createElement('p');
     promptBulderPromptingExplainer.innerHTML = promptBuilderInterfaceText?.promptBulderPromptingExplainer as string;
 
     // Variables manager: define name/description/type/value rows whose values
     // are substituted into the prompts via the {{variableName}} syntax.
-    const promptBuilderVariablesHeader = document.createElement('h2');
+    const promptBuilderVariablesHeader = document.createElement('h3');
     promptBuilderVariablesHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesHeading}`;
     const promptBuilderVariablesDescription = document.createElement('p');
     promptBuilderVariablesDescription.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesDescription}`;
@@ -1116,6 +1135,17 @@ export async function buildPromptBuilder(
     promptBuilderRunExperimentsButton.onclick = async function () {
       promptBuilderRunExperiment();
     };
+    // Disabled (with a hint) until at least one LLM is selected
+    function updateRunExperimentsButtonState(): void {
+      const anyLLMSelected = promptBuilderAvailableLLMs.some(
+        (_, llmIndex) => (document.getElementById(`model${llmIndex}`) as HTMLInputElement | null)?.checked
+      );
+      promptBuilderRunExperimentsButton.disabled = !anyLLMSelected;
+      promptBuilderRunExperimentsButton.title = anyLLMSelected
+        ? ''
+        : `${promptBuilderInterfaceText?.promptExperimentSelectModelsAlert}`;
+    }
+    updateRunExperimentsButtonState();
 
     const promptBuilderRunExperimentError = document.createElement('p');
     promptBuilderRunExperimentError.style.color = 'red';
@@ -1221,7 +1251,12 @@ export async function buildPromptBuilder(
       const promptVariables = collectPromptVariables();
       const resolvedSystemPrompt = substitutePromptVariables(systemPrompt, promptVariables);
       const resolvedUserPrompt = substitutePromptVariables(userPrompt, promptVariables);
-      promptExperimentTracker.push({ systemPrompt: systemPrompt, userPrompt: userPrompt, variables: promptVariables });
+      promptExperimentTracker.push({
+        systemPrompt: systemPrompt,
+        userPrompt: userPrompt,
+        variables: promptVariables,
+        manifest: collectManifestConfig(),
+      });
 
       const allPromises: Promise<ExperimentResult>[] = [];
 
@@ -1288,6 +1323,8 @@ export async function buildPromptBuilder(
       experimentRunning = false;
     }
 
+    const promptExperimentTrackerHeader = document.createElement('h2');
+    promptExperimentTrackerHeader.innerText = `${promptBuilderInterfaceText?.promptExperimentTrackerHeading}`;
     const promptExperimentContainer = document.createElement('div');
     promptExperimentContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet`;
 
@@ -1580,6 +1617,7 @@ export async function buildPromptBuilder(
       if (systemPromptInput) systemPromptInput.value = trackerEntry.systemPrompt ?? '';
       if (userPromptInput) userPromptInput.value = trackerEntry.userPrompt ?? '';
       setPromptVariables(Array.isArray(trackerEntry.variables) ? trackerEntry.variables : []);
+      applyManifestConfig(trackerEntry.manifest);
       // Reselect the run's LLMs and restore their option values
       const runModels = Object.keys(trackerEntry).filter((key) => !TRACKER_META_KEYS.includes(key));
       promptBuilderAvailableLLMs.forEach((availableLLM, llmIndex) => {
@@ -1640,6 +1678,7 @@ export async function buildPromptBuilder(
                 systemPrompt: entry.systemPrompt,
                 userPrompt: entry.userPrompt,
                 variables: Array.isArray(entry.variables) ? entry.variables : null,
+                manifest: entry.manifest ?? null,
                 model: '',
                 options: '',
                 response: '',
@@ -1690,16 +1729,25 @@ export async function buildPromptBuilder(
     promptExperimentCreateModelButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
     promptExperimentCreateModelButton.setAttribute('type', 'button');
     promptExperimentCreateModelButton.setAttribute('class', 'btn btn-primary');
-    promptExperimentCreateModelButton.style.marginLeft = '4px';
     promptExperimentCreateModelButton.onclick = async function () {
+      // Persist the manifest configuration with the manifested run so loading
+      // the run later restores it
+      stampManifestConfigOnBestRun();
       await promptBuilderSaveExperiments();
       await promptBulderCreateBestPromptModel();
     };
+    // Manifest section: configure how the best prompt becomes a model, with
+    // the action button below the configuration.
+    const promptExperimentManifestHeader = document.createElement('h2');
+    promptExperimentManifestHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestHeading}`;
+    const promptExperimentManifestDescription = document.createElement('p');
+    promptExperimentManifestDescription.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestDescription}`;
+
     // Choose whether the manifested model performs the LLM call itself
     // (returning the same outputs as the LLM models) or returns the
     // llmBody/llmURL pair for the Call LLM node in SAS Intelligent Decisioning.
     const promptExperimentIntegratedCallDiv = document.createElement('div');
-    promptExperimentIntegratedCallDiv.classList.add('form-check', 'form-check-inline', 'pet-manifest-integrated');
+    promptExperimentIntegratedCallDiv.classList.add('form-check', 'pet-manifest-integrated');
     promptExperimentIntegratedCallDiv.title = `${promptBuilderInterfaceText?.promptBuilderManifestIntegratedInfo}`;
     const promptExperimentIntegratedCallCheckbox = document.createElement('input');
     promptExperimentIntegratedCallCheckbox.type = 'checkbox';
@@ -1872,6 +1920,63 @@ export async function buildPromptBuilder(
       });
     }
 
+    function setPromptOutputVariables(outputVariables: PromptOutputVariable[]): void {
+      promptBuilderOutputVariablesContainer.innerHTML = '';
+      outputVariables.forEach((variable) => createOutputVariableRow(variable));
+      validateOutputVariableRows();
+    }
+
+    // Snapshot of the manifest panel, stored with a run so loading restores it.
+    function collectManifestConfig(): ManifestConfig {
+      return {
+        integratedLLMCall: promptExperimentIntegratedCallCheckbox.checked,
+        selectedOutputs: DEFAULT_LLM_OUTPUTS.filter(
+          (outputName) =>
+            (document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-pet-out-${outputName}`) as HTMLInputElement | null)?.checked
+        ),
+        outputVariables: collectPromptOutputVariables(),
+      };
+    }
+
+    // Restore the manifest panel from a run's stored configuration; runs
+    // without one reset the panel to its defaults.
+    function applyManifestConfig(config?: ManifestConfig | null): void {
+      const targetConfig: ManifestConfig = config ?? {
+        integratedLLMCall: false,
+        selectedOutputs: [...DEFAULT_LLM_OUTPUTS],
+        outputVariables: [],
+      };
+      if (promptExperimentIntegratedCallCheckbox.checked !== targetConfig.integratedLLMCall) {
+        promptExperimentIntegratedCallCheckbox.checked = targetConfig.integratedLLMCall;
+        // Fires the listener that shows/hides the options panel
+        promptExperimentIntegratedCallCheckbox.dispatchEvent(new Event('change'));
+      }
+      DEFAULT_LLM_OUTPUTS.forEach((outputName) => {
+        const outputCheckbox = document.getElementById(
+          `${paneID}-obj-${promptBuilderObject?.id}-pet-out-${outputName}`
+        ) as HTMLInputElement | null;
+        if (outputCheckbox) outputCheckbox.checked = targetConfig.selectedOutputs.includes(outputName);
+      });
+      setPromptOutputVariables(Array.isArray(targetConfig.outputVariables) ? targetConfig.outputVariables : []);
+    }
+
+    // Persist the current manifest configuration with the run that is being
+    // manifested (the most recent one with a best response).
+    function stampManifestConfigOnBestRun(): void {
+      for (let index = promptExperimentTracker.length - 1; index >= 0; index--) {
+        const trackerEntry = promptExperimentTracker[index];
+        const hasBestPrompt = Object.keys(trackerEntry).some(
+          (key) => !TRACKER_META_KEYS.includes(key) && (trackerEntry[key] as ModelExperimentData)?.best_prompt
+        );
+        if (hasBestPrompt) {
+          trackerEntry.manifest = collectManifestConfig();
+          // Rebuild the saveable rows so the save that follows persists it
+          petRows = promptExperimentTransformData(promptExperimentTracker);
+          return;
+        }
+      }
+    }
+
     // Collect the currently valid output variable definitions.
     function collectPromptOutputVariables(): PromptOutputVariable[] {
       validateOutputVariableRows();
@@ -1938,8 +2043,10 @@ export async function buildPromptBuilder(
       );
       if (promptExperimentPromptResponseObject.status_code === 201) {
         experimentsModified = false;
+        showToast(`${promptBuilderInterfaceText?.promptBuilderSaveToast}`);
         promptExperimentResultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveSucessResponse} <a target="_blank" rel="noopener noreferrer" href="${VIYA}/SASModelManager/models/${promptExperimentRunModel}">${VIYA}/SASModelManager/models/${promptExperimentRunModel}</a></p>`;
       } else {
+        showToast(`${promptBuilderInterfaceText.promptExperimentSaveFailureResponse}`);
         promptExperimentResultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveFailureResponse}</p>`;
       }
 
@@ -2322,6 +2429,7 @@ ${scoreCodeReturn}`;
           'score',
           'text/x-python'
         );
+        showToast(`${promptBuilderInterfaceText?.promptBuilderManifestToast}`);
       } else {
         if (promptExperimentResultTargetContainer) {
           promptExperimentResultTargetContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelNoBestPrompt}`;
@@ -2333,45 +2441,67 @@ ${scoreCodeReturn}`;
       promptExperimentCreateModelTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
     }
 
+    // Assemble the page into four visual sections: project & prompt selection,
+    // LLM selection, the prompt workbench, and the experiment tracker/manifest.
+    const createPageSection = (): HTMLDivElement => {
+      const pageSection = document.createElement('div');
+      pageSection.classList.add('pb-section');
+      return pageSection;
+    };
+
     promptBuilderContainer.appendChild(promptBuilderHeader);
     promptBuilderContainer.appendChild(promptBuilderDescription);
-    promptBuilderContainer.appendChild(promptBuilderProjectHeader);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderProjectSelectorHeader);
-    promptBuilderContainer.appendChild(promptBuilderProjectSelectorDropdown);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderPromptHeader);
-    promptBuilderContainer.appendChild(promptBuilderPromptSelectorDropdown);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderModalButtonContainer);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderModelSelectorHeader);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderModelSelectorContainer);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderPromptingHeader);
-    promptBuilderContainer.appendChild(promptBulderPromptingExplainer);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderVariablesHeader);
-    promptBuilderContainer.appendChild(promptBuilderVariablesDescription);
-    promptBuilderContainer.appendChild(promptBuilderVariablesContainer);
-    promptBuilderContainer.appendChild(promptBuilderVariablesAddButton);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderPromptingContainer);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderRunExperimentsButton);
-    promptBuilderContainer.appendChild(promptBuilderRunExperimentError);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptExperimentContainer);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptExperimentSaveButton);
-    promptBuilderContainer.appendChild(promptExperimentCreateModelButton);
-    promptBuilderContainer.appendChild(promptExperimentIntegratedCallDiv);
-    promptBuilderContainer.appendChild(promptExperimentManifestOptions);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptExperimentResultContainer);
+
+    const projectSection = createPageSection();
+    projectSection.appendChild(promptBuilderProjectHeader);
+    projectSection.appendChild(promptBuilderProjectSelectorHeader);
+    projectSection.appendChild(promptBuilderProjectSelectorDropdown);
+    projectSection.appendChild(document.createElement('br'));
+    projectSection.appendChild(promptBuilderPromptHeader);
+    projectSection.appendChild(promptBuilderPromptSelectorDropdown);
+    projectSection.appendChild(document.createElement('br'));
+    projectSection.appendChild(promptBuilderModalButtonContainer);
+    promptBuilderContainer.appendChild(projectSection);
+
+    const llmSection = createPageSection();
+    llmSection.appendChild(promptBuilderModelSelectorHeader);
+    llmSection.appendChild(promptBuilderModelSelectorContainer);
+    promptBuilderContainer.appendChild(llmSection);
+
+    const workbenchSection = createPageSection();
+    workbenchSection.appendChild(promptBuilderPromptingHeader);
+    workbenchSection.appendChild(promptBulderPromptingExplainer);
+    workbenchSection.appendChild(promptBuilderVariablesHeader);
+    workbenchSection.appendChild(promptBuilderVariablesDescription);
+    workbenchSection.appendChild(promptBuilderVariablesContainer);
+    workbenchSection.appendChild(promptBuilderVariablesAddButton);
+    workbenchSection.appendChild(document.createElement('br'));
+    workbenchSection.appendChild(document.createElement('br'));
+    workbenchSection.appendChild(promptBuilderPromptingContainer);
+    workbenchSection.appendChild(document.createElement('br'));
+    workbenchSection.appendChild(promptBuilderRunExperimentsButton);
+    workbenchSection.appendChild(promptBuilderRunExperimentError);
+    promptBuilderContainer.appendChild(workbenchSection);
+
+    const trackerSection = createPageSection();
+    trackerSection.appendChild(promptExperimentTrackerHeader);
+    trackerSection.appendChild(promptExperimentContainer);
+    trackerSection.appendChild(document.createElement('br'));
+    trackerSection.appendChild(promptExperimentSaveButton);
+    promptBuilderContainer.appendChild(trackerSection);
+
+    // Manifest: configuration first, the action button below it
+    const manifestSection = createPageSection();
+    manifestSection.appendChild(promptExperimentManifestHeader);
+    manifestSection.appendChild(promptExperimentManifestDescription);
+    manifestSection.appendChild(promptExperimentIntegratedCallDiv);
+    manifestSection.appendChild(promptExperimentManifestOptions);
+    manifestSection.appendChild(document.createElement('br'));
+    manifestSection.appendChild(promptExperimentCreateModelButton);
+    manifestSection.appendChild(document.createElement('br'));
+    manifestSection.appendChild(document.createElement('br'));
+    manifestSection.appendChild(promptExperimentResultContainer);
+    promptBuilderContainer.appendChild(manifestSection);
 
     return promptBuilderContainer;
 }
