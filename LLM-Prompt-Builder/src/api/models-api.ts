@@ -259,6 +259,26 @@ export async function deleteModelVariable(
 }
 
 /**
+ * Delete a model.
+ */
+export async function deleteModel(modelID: string): Promise<number> {
+  const response = await viyaFetch(`/modelRepository/models/${modelID}`, {
+    method: 'DELETE',
+  });
+  return response.status;
+}
+
+/**
+ * Delete a model project.
+ */
+export async function deleteModelProject(projectID: string): Promise<number> {
+  const response = await viyaFetch(`/modelRepository/projects/${projectID}`, {
+    method: 'DELETE',
+  });
+  return response.status;
+}
+
+/**
  * Create a new model version.
  */
 export async function createModelVersion(

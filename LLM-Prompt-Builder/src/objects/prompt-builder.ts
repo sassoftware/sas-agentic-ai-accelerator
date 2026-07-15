@@ -6,6 +6,7 @@
  */
 
 import type { PromptBuilderConfig, InterfaceText, PromptBuilderText } from '../types';
+import type { DependentDecision } from '../types/relationships';
 import { getAppState } from '../state/app-state';
 import { getFileContent } from '../api/files-api';
 import {
@@ -20,9 +21,13 @@ import {
   deleteModelContent,
   getModelVariables,
   deleteModelVariable,
+  deleteModel,
+  deleteModelProject,
 } from '../api/models-api';
+import { getModelDependentDecisions } from '../api/relationships-api';
 import { callSCRLLM } from '../api/scr-api';
 import { createAccordionItem } from '../ui/accordion';
+import { showConfirmModal } from '../ui/confirm-modal';
 import { escapeHtml } from '../ui/dom-helpers';
 import { renderMarkdown } from '../ui/markdown';
 import { isValidDS2VariableName, validateAndCorrectPackageName } from '../util/validation';
@@ -187,9 +192,8 @@ export async function buildPromptBuilder(
     promptBuilderProjectSelectorDropdown.setAttribute('id', `${promptBuilderObject?.id}-project-dropdown`);
     promptBuilderProjectSelectorDropdown.onchange = async function () {
       const self = this as unknown as HTMLSelectElement;
-      // Reset the prompt experiment tracker
-      const prommpExperimentTargetContainer = document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-pet`);
-      if (prommpExperimentTargetContainer) prommpExperimentTargetContainer.innerHTML = '';
+      // Reset the in-memory experiment state of the previously selected prompt
+      resetExperimentTrackerState();
       // Reset the prompt selector
       promptBuilderPromptSelectorDropdown.innerHTML = '';
       const tmpPromptBuilderPromptSelectorItem = document.createElement('option');
@@ -199,6 +203,8 @@ export async function buildPromptBuilder(
 
       // Get the prompts from the selected projects
       const currentProject = self.options[self.selectedIndex].value;
+      // Enable project deletion only for a real project selection
+      deleteProjectButton.disabled = currentProject === `${promptBuilderInterfaceText?.projectSelect}`;
       try {
         const currentProjectPrompts = await getModelProjectModels(currentProject);
         for (const existingPrompt in currentProjectPrompts) {
@@ -237,9 +243,8 @@ export async function buildPromptBuilder(
     promptBuilderPromptSelectorDropdown.append(promptBuilderPromptSelectorItem);
     promptBuilderPromptSelectorDropdown.onchange = async function () {
       const self = this as unknown as HTMLSelectElement;
-      // Reset the prompt experiment tracker
-      const prommpExperimentTargetContainer = document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-pet`);
-      if (prommpExperimentTargetContainer) prommpExperimentTargetContainer.innerHTML = '';
+      // Reset the in-memory experiment state of the previously selected prompt
+      resetExperimentTrackerState();
       const promptBuilderPromptSelectedModelID = self.options[self.selectedIndex].value;
       // Get the ID of a previously created Prompt Experiment Tracker and delete it
       let promptBuilderAvailablePTE: Awaited<ReturnType<typeof getModelContents>> = [];
@@ -279,10 +284,15 @@ export async function buildPromptBuilder(
               };
             }
           });
-          createPromptExperimentTracker(promptBuilderPreviousExperiment);
+          // Assign the tracker before rendering so the saveable rows are rebuilt
+          // from the freshly loaded runs (the render reads the closure variable).
           promptExperimentTracker = [...promptBuilderPreviousExperiment];
+          createPromptExperimentTracker(promptExperimentTracker);
         }
       }
+      // Enable prompt deletion only for a real prompt selection
+      deletePromptButton.disabled =
+        promptBuilderPromptSelectedModelID === `${promptBuilderInterfaceText?.promptSelect}`;
       // Activate link to SAS Model Manager
       const tmpOpenInMMButton = document.getElementById(`${promptBuilderObject?.id}-openInMMButton`) as HTMLAnchorElement | null;
       if (tmpOpenInMMButton) {
@@ -369,6 +379,166 @@ export async function buildPromptBuilder(
       }
       const modalInstance = Modal.getInstance(document.getElementById('promptBuilderCreatePromptModal')!);
       if (modalInstance) modalInstance.hide();
+    }
+
+    // Clear all in-memory experiment state and deactivate the prompt-bound
+    // actions. Used when the project/prompt selection changes and after a
+    // prompt or project was deleted.
+    function resetExperimentTrackerState(): void {
+      const prommpExperimentTargetContainer = document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-pet`);
+      if (prommpExperimentTargetContainer) prommpExperimentTargetContainer.innerHTML = '';
+      promptExperimentTracker = [];
+      promptExperimentTrackerRunID = 0;
+      petRows = [];
+      experimentsModified = false;
+      promptExperimentResultContainer.innerHTML = '';
+      openInMMButton.classList.add('disabled');
+      openInMMButton.setAttribute('aria-disabled', 'true');
+      openInMMButton.removeAttribute('href');
+      openInMMButton.onclick = null;
+      deletePromptButton.disabled = true;
+    }
+
+    // Build the confirmation-modal body describing which SAS Intelligent
+    // Decisioning decisions use a prompt. null means the check itself failed;
+    // the user is warned but can still make an explicit choice.
+    function buildUsageBody(decisions: DependentDecision[] | null): (HTMLElement | string)[] {
+      if (decisions === null) {
+        return [`${promptBuilderInterfaceText?.promptBuilderDeleteUsageCheckFailed}`];
+      }
+      if (decisions.length === 0) {
+        return [`${promptBuilderInterfaceText?.promptBuilderDeleteNoUsage}`];
+      }
+      const decisionList = document.createElement('ul');
+      decisions.forEach((decision) => {
+        const decisionListItem = document.createElement('li');
+        const decisionLink = document.createElement('a');
+        decisionLink.href = `${VIYA}/SASDecisionManager/decisions/${decision.id}`;
+        decisionLink.setAttribute('target', '_blank');
+        decisionLink.setAttribute('rel', 'noopener noreferrer');
+        decisionLink.textContent = decision.name;
+        decisionLink.onclick = (event) => openModelManagerLink(event, decisionLink, promptBuilderInterfaceText);
+        decisionListItem.appendChild(decisionLink);
+        decisionList.appendChild(decisionListItem);
+      });
+      return [
+        `${decisions.length} ${promptBuilderInterfaceText?.promptBuilderDeleteUsageFound}`,
+        decisionList,
+      ];
+    }
+
+    // Check whether any decisions use the model; null signals that the check
+    // failed (e.g. the relationships service is unavailable) rather than that
+    // no usage was found.
+    async function checkModelDecisionUsage(modelID: string): Promise<DependentDecision[] | null> {
+      try {
+        return await getModelDependentDecisions(modelID);
+      } catch (error) {
+        console.error('Failed to check decision usage for the prompt.', error);
+        return null;
+      }
+    }
+
+    // Function to call when deleting the selected prompt
+    async function promptBuilderDeletePrompt(): Promise<void> {
+      const promptSelectedIndex = promptBuilderPromptSelectorDropdown.selectedIndex;
+      const promptModelID = promptBuilderPromptSelectorDropdown.value;
+      if (promptModelID === `${promptBuilderInterfaceText?.promptSelect}`) return;
+      const promptModelName = promptBuilderPromptSelectorDropdown.options[promptSelectedIndex].text;
+      deletePromptButton.disabled = true;
+      deletePromptButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText?.promptBuilderDeletePromptButton}`;
+      try {
+        const decisions = await checkModelDecisionUsage(promptModelID);
+        const confirmed = await showConfirmModal({
+          title: `${promptBuilderInterfaceText?.promptBuilderDeletePromptTitle} ${promptModelName}`,
+          body: buildUsageBody(decisions),
+          confirmText: `${promptBuilderInterfaceText?.promptBuilderDeleteConfirmButton}`,
+          cancelText: `${promptBuilderInterfaceText?.promptBuilderDeleteCancelButton}`,
+        });
+        if (!confirmed) return;
+        const deleteStatus = await deleteModel(promptModelID);
+        if (deleteStatus === 204) {
+          promptBuilderPromptSelectorDropdown.remove(promptSelectedIndex);
+          promptBuilderPromptSelectorDropdown.value = `${promptBuilderInterfaceText?.promptSelect}`;
+          resetExperimentTrackerState();
+        } else {
+          promptExperimentResultContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`;
+        }
+      } finally {
+        deletePromptButton.innerText = `${promptBuilderInterfaceText?.promptBuilderDeletePromptButton}`;
+        deletePromptButton.disabled =
+          promptBuilderPromptSelectorDropdown.value === `${promptBuilderInterfaceText?.promptSelect}`;
+      }
+    }
+
+    // Function to call when deleting the selected project
+    async function promptBuilderDeleteProject(): Promise<void> {
+      const projectSelectedIndex = promptBuilderProjectSelectorDropdown.selectedIndex;
+      const projectID = promptBuilderProjectSelectorDropdown.value;
+      if (projectID === `${promptBuilderInterfaceText?.projectSelect}`) return;
+      const projectName = promptBuilderProjectSelectorDropdown.options[projectSelectedIndex].text;
+      deleteProjectButton.disabled = true;
+      deleteProjectButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText?.promptBuilderDeleteProjectButton}`;
+      try {
+        let projectPrompts: Awaited<ReturnType<typeof getModelProjectModels>> = [];
+        try {
+          projectPrompts = await getModelProjectModels(projectID);
+        } catch (error) {
+          console.error('Failed to load the prompts of the selected project.', error);
+          promptExperimentResultContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`;
+          return;
+        }
+        // Confirm every contained prompt (with its decision usage) one by one
+        // BEFORE deleting anything, so a single cancel aborts the whole
+        // operation without leaving a partially deleted project behind.
+        if (projectPrompts.length === 0) {
+          const confirmed = await showConfirmModal({
+            title: `${promptBuilderInterfaceText?.promptBuilderDeleteProjectButton}: ${projectName}`,
+            body: [`${promptBuilderInterfaceText?.promptBuilderDeleteProjectEmptyNote}`],
+            confirmText: `${promptBuilderInterfaceText?.promptBuilderDeleteConfirmButton}`,
+            cancelText: `${promptBuilderInterfaceText?.promptBuilderDeleteCancelButton}`,
+          });
+          if (!confirmed) return;
+        }
+        for (let i = 0; i < projectPrompts.length; i++) {
+          const decisions = await checkModelDecisionUsage(projectPrompts[i].value);
+          const confirmed = await showConfirmModal({
+            title: `${promptBuilderInterfaceText?.promptBuilderDeleteProjectTitle} ${projectPrompts[i].innerHTML} (${i + 1}/${projectPrompts.length})`,
+            body: buildUsageBody(decisions),
+            confirmText: `${promptBuilderInterfaceText?.promptBuilderDeleteConfirmButton}`,
+            cancelText: `${promptBuilderInterfaceText?.promptBuilderDeleteCancelButton}`,
+          });
+          if (!confirmed) return;
+        }
+        // Delete the confirmed prompts explicitly before the project itself —
+        // whether a project DELETE cascades to its models varies by SAS Viya
+        // release, deleting them one by one is deterministic.
+        for (const projectPrompt of projectPrompts) {
+          const modelDeleteStatus = await deleteModel(projectPrompt.value);
+          if (modelDeleteStatus !== 204) {
+            promptExperimentResultContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`;
+            return;
+          }
+        }
+        const projectDeleteStatus = await deleteModelProject(projectID);
+        if (projectDeleteStatus === 204) {
+          promptBuilderProjectSelectorDropdown.remove(projectSelectedIndex);
+          promptBuilderProjectSelectorDropdown.value = `${promptBuilderInterfaceText?.projectSelect}`;
+          // Reset the prompt selector to the placeholder-only state
+          promptBuilderPromptSelectorDropdown.innerHTML = '';
+          const tmpPromptBuilderPromptSelectorItem = document.createElement('option');
+          tmpPromptBuilderPromptSelectorItem.value = `${promptBuilderInterfaceText?.promptSelect}`;
+          tmpPromptBuilderPromptSelectorItem.innerHTML = `${promptBuilderInterfaceText?.promptSelect}`;
+          promptBuilderPromptSelectorDropdown.append(tmpPromptBuilderPromptSelectorItem);
+          resetExperimentTrackerState();
+        } else {
+          promptExperimentResultContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`;
+        }
+      } finally {
+        deleteProjectButton.innerText = `${promptBuilderInterfaceText?.promptBuilderDeleteProjectButton}`;
+        deleteProjectButton.disabled =
+          promptBuilderProjectSelectorDropdown.value === `${promptBuilderInterfaceText?.projectSelect}`;
+      }
     }
 
     function promptBuilderCreateModal(
@@ -491,6 +661,30 @@ export async function buildPromptBuilder(
     openInMMButton.setAttribute('aria-disabled', 'true');
     openInMMButton.innerHTML = promptBuilderInterfaceText?.promptBuilderOpenInMMButton as string;
     promptBuilderModalButtonContainer.appendChild(openInMMButton);
+
+    // Delete the selected prompt / project. Both stay disabled until a real
+    // selection exists in the corresponding dropdown.
+    const deletePromptButton = document.createElement('button');
+    deletePromptButton.type = 'button';
+    deletePromptButton.id = `${promptBuilderObject?.id}-delete-prompt-button`;
+    deletePromptButton.classList.add('btn', 'btn-danger');
+    deletePromptButton.disabled = true;
+    deletePromptButton.innerText = `${promptBuilderInterfaceText?.promptBuilderDeletePromptButton}`;
+    deletePromptButton.onclick = async function () {
+      promptBuilderDeletePrompt();
+    };
+    promptBuilderModalButtonContainer.appendChild(deletePromptButton);
+
+    const deleteProjectButton = document.createElement('button');
+    deleteProjectButton.type = 'button';
+    deleteProjectButton.id = `${promptBuilderObject?.id}-delete-project-button`;
+    deleteProjectButton.classList.add('btn', 'btn-danger');
+    deleteProjectButton.disabled = true;
+    deleteProjectButton.innerText = `${promptBuilderInterfaceText?.promptBuilderDeleteProjectButton}`;
+    deleteProjectButton.onclick = async function () {
+      promptBuilderDeleteProject();
+    };
+    promptBuilderModalButtonContainer.appendChild(deleteProjectButton);
 
     function generateModelSelection(availableModels: AvailableLLM[]): void {
       availableModels.forEach((model, index) => {
@@ -674,6 +868,12 @@ export async function buildPromptBuilder(
     promptBuilderRunExperimentError.id = `${paneID}-obj-${promptBuilderObject?.id}-run-error`;
     let promptExperimentTrackerRunID = 0;
     let promptExperimentTracker: ExperimentTrackerEntry[] = [];
+    // Set when a run was deleted since the last save/load, so an emptied
+    // tracker can still be saved.
+    let experimentsModified = false;
+    // Blocks run deletion while an experiment is in flight (the run indices
+    // would shift under the running experiment otherwise).
+    let experimentRunning = false;
 
     // Add prompt evaluations here
     function annotatePrompts(arr: ExperimentResult[]): void {
@@ -710,6 +910,7 @@ export async function buildPromptBuilder(
       ) as HTMLButtonElement;
       promptBuilderRunExperimentTargetButton.disabled = true;
       promptBuilderRunExperimentTargetButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText.promptBuilderRunExperimentsButtonRunStatus}`;
+      experimentRunning = true;
       // Reset error message
       const promptBuilderRunExperimentErrorText = document.getElementById(
         `${paneID}-obj-${promptBuilderObject?.id}-run-error`
@@ -751,6 +952,7 @@ export async function buildPromptBuilder(
         alert(promptBuilderInterfaceText.promptExperimentSelectModelsAlert);
         promptBuilderRunExperimentTargetButton.disabled = false;
         promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
+        experimentRunning = false;
         return;
       }
 
@@ -824,6 +1026,7 @@ export async function buildPromptBuilder(
 
       promptBuilderRunExperimentTargetButton.disabled = false;
       promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
+      experimentRunning = false;
     }
 
     const promptExperimentContainer = document.createElement('div');
@@ -854,6 +1057,23 @@ export async function buildPromptBuilder(
             'run',
             `${promptBuilderInterfaceText.promptExperimentTrackerRunHeader}${index + 1}`
           );
+          // Add a delete button for the run as a sibling of the accordion
+          // toggle (a button nested inside a button would be invalid HTML)
+          const promptExperimentRunHeader = promptExperimentRunContainer.querySelector('.accordion-header') as HTMLElement | null;
+          if (promptExperimentRunHeader) {
+            promptExperimentRunHeader.classList.add('d-flex', 'align-items-center');
+            const deleteRunButton = document.createElement('button');
+            deleteRunButton.type = 'button';
+            deleteRunButton.classList.add('btn', 'btn-outline-danger', 'btn-sm', 'pet-run-delete');
+            deleteRunButton.title = `${promptBuilderInterfaceText.promptExperimentDeleteRunButton}`;
+            deleteRunButton.setAttribute(
+              'aria-label',
+              `${promptBuilderInterfaceText.promptExperimentDeleteRunButton} ${index + 1}`
+            );
+            deleteRunButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText.promptExperimentDeleteRunButton}</title><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>`;
+            deleteRunButton.onclick = () => deleteExperimentRun(index);
+            promptExperimentRunHeader.appendChild(deleteRunButton);
+          }
           const promptExperimentRunContainerItemBody = document.createElement('div');
           promptExperimentRunContainerItemBody.className = 'accordion-body';
           // Add the System Prompt to the main run body
@@ -954,6 +1174,9 @@ export async function buildPromptBuilder(
                         obj.best_prompt = bestPromptCheckbox.checked ? 1 : 0;
                       }
                     });
+                    // Keep the tracker in sync so the selection survives a
+                    // re-render (e.g. after a run was deleted)
+                    modelData.best_prompt = bestPromptCheckbox.checked;
                   });
 
                   const bestPromptLabel = document.createElement('label');
@@ -1037,6 +1260,25 @@ export async function buildPromptBuilder(
         }
       });
       petRows = promptExperimentTransformData(promptExperimentTracker);
+    }
+
+    // Delete one experiment run and renumber the remaining ones. The runId is
+    // positional (index + 1), so re-rendering from the spliced tracker keeps
+    // the headers, checkbox wiring and the persisted rows contiguous at 1..N.
+    function deleteExperimentRun(index: number): void {
+      if (experimentRunning) return;
+      promptExperimentTracker.splice(index, 1);
+      experimentsModified = true;
+      renderAllExperimentRuns();
+    }
+
+    function renderAllExperimentRuns(): void {
+      const prommpExperimentTargetContainer = document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-pet`);
+      if (prommpExperimentTargetContainer) prommpExperimentTargetContainer.innerHTML = '';
+      // createPromptExperimentTracker only renders the entry whose index equals
+      // the run counter and then increments it, so start from 0 to render all
+      promptExperimentTrackerRunID = 0;
+      createPromptExperimentTracker(promptExperimentTracker);
     }
 
     // Transform the data structure to be saved in SAS Model Manager
@@ -1123,8 +1365,9 @@ export async function buildPromptBuilder(
       const promptExperimentRunModel = (
         document.getElementById(`${promptBuilderObject?.id}-prompt-dropdown`) as HTMLSelectElement
       ).value;
-      // Check if an experiment was run
-      if (petRows.length === 0) {
+      // Check if an experiment was run (deleting runs also counts as a change,
+      // so an emptied tracker can still be saved)
+      if (petRows.length === 0 && !experimentsModified) {
         promptExperimentSaveTargetButton.disabled = false;
         promptExperimentSaveTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderSaveExperimentsButton}`;
         alert(promptBuilderInterfaceText.promptExperimentSaveModelsExperimentAlert);
@@ -1153,6 +1396,7 @@ export async function buildPromptBuilder(
         'Prompt-Experiment-Tracker.json'
       );
       if (promptExperimentPromptResponseObject.status_code === 201) {
+        experimentsModified = false;
         promptExperimentResultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveSucessResponse} <a target="_blank" rel="noopener noreferrer" href="${VIYA}/SASModelManager/models/${promptExperimentRunModel}">${VIYA}/SASModelManager/models/${promptExperimentRunModel}</a></p>`;
       } else {
         promptExperimentResultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveFailureResponse}</p>`;

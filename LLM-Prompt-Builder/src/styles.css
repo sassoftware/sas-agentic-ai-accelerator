@@ -20,6 +20,12 @@ button {
   margin-left: 20px;
 }
 
+/* Delete button next to an experiment-run accordion header */
+.pet-run-delete {
+  margin: 0 0.5rem;
+  flex-shrink: 0;
+}
+
 /* Per-model option inputs, revealed when a model checkbox is ticked */
 .model-options {
   gap: 10px;

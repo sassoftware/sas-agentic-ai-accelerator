@@ -56,7 +56,14 @@ function goTemplateSafeScripts(): Plugin {
 // Point this at your SAS Viya host so `npm run dev` can proxy Model Manager /
 // identities API calls (the SCR endpoint is an absolute URL and is not proxied).
 const DEV_VIYA_HOST = 'https://your-viya-host.com';
-const proxyPaths = ['/modelRepository', '/modelManagement', '/identities', '/files'];
+const proxyPaths = [
+  '/modelRepository',
+  '/modelManagement',
+  '/identities',
+  '/files',
+  '/relationships',
+  '/decisions',
+];
 
 export default defineConfig({
   base: './',
