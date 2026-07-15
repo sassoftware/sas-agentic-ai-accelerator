@@ -38,8 +38,6 @@
     "promptBuilderVariablesInsertMenuHeader": "Insert variable",
     "promptExperimentTrackerVariables": "Variables:",
     "promptExperimentLoadRunButton": "Load experiment run",
-    "promptBuilderLoadBestPromptButton": "Load Best Prompt",
-    "promptBuilderLoadNoBestPrompt": "No experiment run with a selected best response was found.",
     "promptBuilderLoadMissingLLMs": "These LLMs are no longer available:",
     "promptBuilderSystemPromptPlaceholder": "Enter the system prompt here...",
     "promptBuilderUserPromptPlaceholder": "Enter the user prompt here...",

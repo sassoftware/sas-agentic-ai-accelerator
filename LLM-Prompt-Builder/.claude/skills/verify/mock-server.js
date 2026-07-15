@@ -37,6 +37,8 @@ const trackerRows = [
   headerRow(5, 'Sys 3', 'User 3'), modelRow(5, 'Response three', 'demo_llm', '{temperature:0.9}'),
   modelRow(5, 'Response other', 'other_llm'),
 ];
+// Run 2 carries a selected best response so prompt selection auto-loads it.
+trackerRows[3].best_prompt = 1;
 
 // model-used: two distinct dependent decision flows, one of them reported
 // twice (flow + revision) to exercise the dedupe. model-free: no dependents.

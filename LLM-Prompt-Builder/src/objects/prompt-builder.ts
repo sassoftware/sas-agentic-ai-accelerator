@@ -314,6 +314,8 @@ export async function buildPromptBuilder(
             // from the freshly loaded runs (the render reads the closure variable).
             promptExperimentTracker = [...promptBuilderPreviousExperiment];
             createPromptExperimentTracker(promptExperimentTracker);
+            // Bring the most recent best prompt straight into the workbench
+            loadMostRecentBestRun();
           } catch (error) {
             console.error('Failed to load the Prompt-Experiment-Tracker for the selected prompt.', error);
           }
@@ -1593,7 +1595,9 @@ export async function buildPromptBuilder(
       }
     }
 
-    // Load the most recent run that has a best response selected.
+    // Load the most recent run that has a best response selected. Runs
+    // automatically after a prompt's tracker is loaded, so it stays silent
+    // when no best response has been selected yet.
     function loadMostRecentBestRun(): void {
       for (let index = promptExperimentTracker.length - 1; index >= 0; index--) {
         const trackerEntry = promptExperimentTracker[index];
@@ -1606,7 +1610,6 @@ export async function buildPromptBuilder(
           return;
         }
       }
-      showToast(`${promptBuilderInterfaceText?.promptBuilderLoadNoBestPrompt}`);
     }
 
     // Transform the data structure to be saved in SAS Model Manager
@@ -1695,16 +1698,6 @@ export async function buildPromptBuilder(
     promptExperimentIntegratedCallLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestIntegratedLabel}`;
     promptExperimentIntegratedCallDiv.appendChild(promptExperimentIntegratedCallCheckbox);
     promptExperimentIntegratedCallDiv.appendChild(promptExperimentIntegratedCallLabel);
-
-    // Load the most recent best prompt back into the workbench
-    const promptExperimentLoadBestButton = document.createElement('button');
-    promptExperimentLoadBestButton.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-load-best-button`;
-    promptExperimentLoadBestButton.innerText = `${promptBuilderInterfaceText?.promptBuilderLoadBestPromptButton}`;
-    promptExperimentLoadBestButton.setAttribute('type', 'button');
-    promptExperimentLoadBestButton.setAttribute('class', 'btn btn-secondary');
-    promptExperimentLoadBestButton.onclick = function () {
-      loadMostRecentBestRun();
-    };
 
     // Response for the user about saving
     const promptExperimentResultContainer = document.createElement('div');
@@ -1821,7 +1814,7 @@ export async function buildPromptBuilder(
                 description: variable.description,
                 level: variable.type === 'decimal' ? 'interval' : 'nominal',
                 type: variable.type === 'decimal' ? 'decimal' : 'string',
-                length: variable.type === 'decimal' ? 8 : 128000,
+                length: variable.type === 'decimal' ? 8 : 10000000,
               });
             }
           });
@@ -2095,7 +2088,6 @@ ${scoreCodeReturn}`;
     promptBuilderContainer.appendChild(document.createElement('br'));
     promptBuilderContainer.appendChild(promptExperimentSaveButton);
     promptBuilderContainer.appendChild(promptExperimentCreateModelButton);
-    promptBuilderContainer.appendChild(promptExperimentLoadBestButton);
     promptBuilderContainer.appendChild(promptExperimentIntegratedCallDiv);
     promptBuilderContainer.appendChild(document.createElement('br'));
     promptBuilderContainer.appendChild(document.createElement('br'));

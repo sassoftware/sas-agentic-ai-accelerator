@@ -88,6 +88,14 @@ function multipartJson(body) {
 
   // ============ PHASE A: variables manager + load-run features ============
 
+  // ---- most recent best run auto-loads on prompt selection -----------------
+  await waitUntil(
+    async () => (await page.inputValue('#app-obj-LPB-system-prompt')) === 'Sys 2',
+    'best run auto-loaded'
+  );
+  step(true, 'most recent best run (fixture run 2) auto-loaded on prompt selection');
+  assert(await page.isChecked('#model0'), 'auto-load reselected the best run LLM');
+
   // ---- load an experiment run back into the workbench ----------------------
   await page.click('#app-obj-LPB-pet-2 .pet-run-load');
   await waitUntil(
@@ -179,8 +187,8 @@ function multipartJson(body) {
   const inputVars = multipartJson(findPart('inputVar.json').body);
   assert(
     JSON.stringify(inputVars.map((v) => [v.name, v.type, v.length, v.level])) ===
-      JSON.stringify([['customer', 'string', 128000, 'nominal'], ['amount', 'decimal', 8, 'interval']]),
-    `manifest inputs derived from the referenced variables (got: ${JSON.stringify(inputVars)})`
+      JSON.stringify([['customer', 'string', 10000000, 'nominal'], ['amount', 'decimal', 8, 'interval']]),
+    `manifest inputs derived from the referenced variables, strings 10M long (got: ${JSON.stringify(inputVars)})`
   );
   assert(inputVars[0].description === 'Customer name', 'variable description carried into the model input');
   const pyBody = aLog.find((e) => e.method === 'POST' && e.body.includes('def scoreModel(')).body;
@@ -241,19 +249,18 @@ function multipartJson(body) {
   // probe: syntax-check the generated python
   require('fs').writeFileSync('manifested-integrated.py', pyIntegrated.match(/import os[\s\S]*?(?=\r\n--)/)[0]);
 
-  // ---- Load Best Prompt restores the workbench ------------------------------
+  // ---- auto-load re-applies the best prompt on re-selection -----------------
   await page.fill('#app-obj-LPB-system-prompt', 'scratch');
-  await page.fill('#app-obj-LPB-user-prompt', 'scratch');
-  await page.click('#app-obj-LPB-pet-load-best-button');
+  await page.selectOption('#LPB-prompt-dropdown', 'Select an existing Prompt-Test');
+  await page.selectOption('#LPB-prompt-dropdown', 'model-used');
   await waitUntil(
-    async () => (await page.inputValue('#app-obj-LPB-system-prompt')) === 'Hello {{customer}} with {json} braces',
-    'load best restored the system prompt'
+    async () => (await page.inputValue('#app-obj-LPB-system-prompt')) === 'Sys 2',
+    'auto-load after re-selecting the prompt'
   );
-  step(true, 'Load Best Prompt restored the most recent best run');
-  assert((await page.locator('.pb-variable-row').count()) === 2, 'variables menu reset from the loaded run');
+  step(true, 'best prompt auto-loads again after re-selecting the prompt');
   assert(
-    (await page.locator('.pb-variable-row').nth(0).locator('.pb-var-value').inputValue()) === 'ACME Corp',
-    'variable value restored from the loaded run'
+    (await page.locator('.pb-variable-row').count()) === 0,
+    'variables menu reset to match the auto-loaded run (which has none)'
   );
   await page.screenshot({ path: 'shot-08-variables-workbench.png', fullPage: true });
 
