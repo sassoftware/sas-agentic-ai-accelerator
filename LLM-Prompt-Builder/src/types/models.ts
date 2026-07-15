@@ -16,22 +16,28 @@ export interface SasApiCollection<T> {
   [key: string]: unknown;
 }
 
-/** A `<select>` option shape ({ value, innerHTML }). */
+/** A `<select>` option shape ({ value, innerHTML }) plus filter metadata. */
 export interface DropdownOption {
   value: string;
   innerHTML: string;
+  createdBy?: string;
+  modifiedBy?: string;
   [key: string]: unknown;
 }
 
 export interface ModelProject {
   id: string;
   name: string;
+  createdBy?: string;
+  modifiedBy?: string;
   [key: string]: unknown;
 }
 
 export interface Model {
   id: string;
   name: string;
+  createdBy?: string;
+  modifiedBy?: string;
   items?: Array<{ id: string; name: string; [key: string]: unknown }>;
   [key: string]: unknown;
 }

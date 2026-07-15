@@ -6,6 +6,7 @@
  */
 
 import type { PromptBuilderConfig, InterfaceText, PromptBuilderText } from '../types';
+import type { DropdownOption } from '../types/models';
 import type { DependentDecision } from '../types/relationships';
 import { getAppState } from '../state/app-state';
 import { getFileContent } from '../api/files-api';
@@ -224,6 +225,11 @@ export async function buildPromptBuilder(
     // Add the project selection/creation
     const promptBuilderProjectHeader = document.createElement('h2');
     promptBuilderProjectHeader.innerText = promptBuilderInterfaceText?.promptBuilderProjectHeader as string;
+    // Full project/prompt lists with their metadata; the dropdowns render a
+    // filtered view of these, so long lists stay searchable.
+    let promptBuilderAllProjects: DropdownOption[] = [];
+    let promptBuilderProjectPrompts: DropdownOption[] = [];
+
     // Select from existing projects
     const promptBuilderProjectSelectorHeader = document.createElement('h3');
     promptBuilderProjectSelectorHeader.innerText = `${promptBuilderInterfaceText?.projectSelect}:`;
@@ -234,43 +240,24 @@ export async function buildPromptBuilder(
       const self = this as unknown as HTMLSelectElement;
       // Reset the in-memory experiment state of the previously selected prompt
       resetExperimentTrackerState();
-      // Reset the prompt selector
-      promptBuilderPromptSelectorDropdown.innerHTML = '';
-      const tmpPromptBuilderPromptSelectorItem = document.createElement('option');
-      tmpPromptBuilderPromptSelectorItem.value = `${promptBuilderInterfaceText?.promptSelect}`;
-      tmpPromptBuilderPromptSelectorItem.innerHTML = `${promptBuilderInterfaceText?.promptSelect}`;
-      promptBuilderPromptSelectorDropdown.append(tmpPromptBuilderPromptSelectorItem);
+      // Reset the prompt list and its filters
+      promptBuilderProjectPrompts = [];
+      promptFilter.nameInput.value = '';
+      renderPromptOptions();
 
       // Get the prompts from the selected projects
       const currentProject = self.options[self.selectedIndex].value;
       // Enable project deletion only for a real project selection
       deleteProjectButton.disabled = currentProject === `${promptBuilderInterfaceText?.projectSelect}`;
       try {
-        const currentProjectPrompts = await getModelProjectModels(currentProject);
-        for (const existingPrompt in currentProjectPrompts) {
-          const promptObj = document.createElement('option');
-          promptObj.value = currentProjectPrompts[existingPrompt]?.value;
-          promptObj.innerHTML = currentProjectPrompts[existingPrompt]?.innerHTML;
-          promptBuilderPromptSelectorDropdown.append(promptObj);
-        }
+        promptBuilderProjectPrompts = await getModelProjectModels(currentProject);
       } catch (error) {
         console.error('Failed to load prompts for the selected project.', error);
+        promptBuilderProjectPrompts = [];
       }
+      updateUserFilterOptions(promptFilter.userSelect, promptBuilderProjectPrompts);
+      renderPromptOptions();
     };
-    // Add all of the projects to the dropdown
-    const promptBuilderProjectSelectorItem = document.createElement('option');
-    promptBuilderProjectSelectorItem.value = `${promptBuilderInterfaceText?.projectSelect}`;
-    promptBuilderProjectSelectorItem.innerHTML = `${promptBuilderInterfaceText?.projectSelect}`;
-    promptBuilderProjectSelectorDropdown.append(promptBuilderProjectSelectorItem);
-    // Get all projects in the specified repository
-    const existingProjects = await getModelProjects(`contains(tags,'Prompt-Engineering')`);
-    // Add the projects to the dropdown
-    for (const existingProject in existingProjects) {
-      const projectMod = document.createElement('option');
-      projectMod.value = existingProjects[existingProject]?.value;
-      projectMod.innerHTML = existingProjects[existingProject]?.innerHTML;
-      promptBuilderProjectSelectorDropdown.append(projectMod);
-    }
     // Add the existing prompt selector
     const promptBuilderPromptHeader = document.createElement('h3');
     promptBuilderPromptHeader.innerText = `${promptBuilderInterfaceText?.promptSelect}:`;
@@ -361,6 +348,122 @@ export async function buildPromptBuilder(
       }
     };
 
+    // Name + user filters for the two selection lists. The lists can get very
+    // long, so each dropdown only renders the matching entries — filtering by
+    // name and by who created or last modified an entry. The current selection
+    // always stays in the list.
+    function createListFilter(
+      filterIdPrefix: string,
+      onFilterChange: () => void
+    ): { filterRow: HTMLDivElement; nameInput: HTMLInputElement; userSelect: HTMLSelectElement } {
+      const filterRow = document.createElement('div');
+      filterRow.classList.add('row', 'g-2', 'mb-2', 'pb-list-filter');
+      const nameColumn = document.createElement('div');
+      nameColumn.classList.add('col-md-8');
+      const nameInput = document.createElement('input');
+      nameInput.type = 'search';
+      nameInput.id = `${filterIdPrefix}-name`;
+      nameInput.classList.add('form-control', 'form-control-sm');
+      nameInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderFilterNamePlaceholder}`;
+      nameInput.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderFilterNamePlaceholder}`);
+      nameInput.oninput = onFilterChange;
+      nameColumn.appendChild(nameInput);
+      const userColumn = document.createElement('div');
+      userColumn.classList.add('col-md-4');
+      const userSelect = document.createElement('select');
+      userSelect.id = `${filterIdPrefix}-user`;
+      userSelect.classList.add('form-select', 'form-select-sm');
+      userSelect.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderFilterUserLabel}`);
+      userSelect.onchange = onFilterChange;
+      userColumn.appendChild(userSelect);
+      filterRow.appendChild(nameColumn);
+      filterRow.appendChild(userColumn);
+      updateUserFilterOptions(userSelect, []);
+      return { filterRow, nameInput, userSelect };
+    }
+
+    // Rebuild a user filter from the distinct createdBy/modifiedBy values
+    function updateUserFilterOptions(userSelect: HTMLSelectElement, items: DropdownOption[]): void {
+      const previousUser = userSelect.value;
+      const users = new Set<string>();
+      items.forEach((item) => {
+        if (typeof item.createdBy === 'string' && item.createdBy) users.add(item.createdBy);
+        if (typeof item.modifiedBy === 'string' && item.modifiedBy) users.add(item.modifiedBy);
+      });
+      userSelect.innerHTML = '';
+      const allUsersOption = document.createElement('option');
+      allUsersOption.value = '';
+      allUsersOption.innerText = `${promptBuilderInterfaceText?.promptBuilderFilterUserAll}`;
+      userSelect.appendChild(allUsersOption);
+      [...users].sort().forEach((user) => {
+        const userOption = document.createElement('option');
+        userOption.value = user;
+        userOption.innerText = user;
+        userSelect.appendChild(userOption);
+      });
+      userSelect.value = users.has(previousUser) ? previousUser : '';
+    }
+
+    function renderFilteredOptions(
+      dropdown: HTMLSelectElement,
+      items: DropdownOption[],
+      nameInput: HTMLInputElement,
+      userSelect: HTMLSelectElement,
+      placeholderText: string
+    ): void {
+      const selectedValue = dropdown.value;
+      const nameFilter = nameInput.value.trim().toLowerCase();
+      const userFilter = userSelect.value;
+      dropdown.innerHTML = '';
+      const placeholderOption = document.createElement('option');
+      placeholderOption.value = placeholderText;
+      placeholderOption.innerHTML = placeholderText;
+      dropdown.appendChild(placeholderOption);
+      items
+        .filter(
+          (item) =>
+            item.value === selectedValue ||
+            (String(item.innerHTML ?? '').toLowerCase().includes(nameFilter) &&
+              (userFilter === '' || item.createdBy === userFilter || item.modifiedBy === userFilter))
+        )
+        .forEach((item) => {
+          const listOption = document.createElement('option');
+          listOption.value = item.value;
+          listOption.innerHTML = item.innerHTML;
+          dropdown.appendChild(listOption);
+        });
+      dropdown.value = [...dropdown.options].some((option) => option.value === selectedValue)
+        ? selectedValue
+        : placeholderText;
+    }
+
+    const projectFilter = createListFilter(`${promptBuilderObject?.id}-project-filter`, () => renderProjectOptions());
+    const promptFilter = createListFilter(`${promptBuilderObject?.id}-prompt-filter`, () => renderPromptOptions());
+    function renderProjectOptions(): void {
+      renderFilteredOptions(
+        promptBuilderProjectSelectorDropdown,
+        promptBuilderAllProjects,
+        projectFilter.nameInput,
+        projectFilter.userSelect,
+        `${promptBuilderInterfaceText?.projectSelect}`
+      );
+    }
+    function renderPromptOptions(): void {
+      renderFilteredOptions(
+        promptBuilderPromptSelectorDropdown,
+        promptBuilderProjectPrompts,
+        promptFilter.nameInput,
+        promptFilter.userSelect,
+        `${promptBuilderInterfaceText?.promptSelect}`
+      );
+    }
+
+    // Get all projects in the specified repository and render the filterable list
+    promptBuilderAllProjects = await getModelProjects(`contains(tags,'Prompt-Engineering')`);
+    updateUserFilterOptions(projectFilter.userSelect, promptBuilderAllProjects);
+    renderProjectOptions();
+    renderPromptOptions();
+
     // Add the creation prompt buttons and modals. The row is a flex container
     // so the destructive actions can sit right-aligned, away from the rest.
     const promptBuilderModalButtonContainer = document.createElement('div');
@@ -391,10 +494,17 @@ export async function buildPromptBuilder(
         tags: ['LLM', 'Prompt-Engineering'],
       };
       const promptBuilderNewProjectObject = await createModelProject(promptBuilderNewProjectDefinition);
-      const newPromptBuilderProjectSelectorItem = document.createElement('option');
-      newPromptBuilderProjectSelectorItem.value = `${promptBuilderNewProjectObject?.id}`;
-      newPromptBuilderProjectSelectorItem.innerHTML = `${promptBuilderNewProjectObject?.name}`;
-      promptBuilderProjectSelectorDropdown.append(newPromptBuilderProjectSelectorItem);
+      promptBuilderAllProjects.push({
+        value: `${promptBuilderNewProjectObject?.id}`,
+        innerHTML: `${promptBuilderNewProjectObject?.name}`,
+        createdBy: promptBuilderNewProjectObject?.createdBy ?? getAppState().userName ?? undefined,
+        modifiedBy: promptBuilderNewProjectObject?.modifiedBy ?? getAppState().userName ?? undefined,
+      });
+      // Clear the filters so the new project is visible, then select it
+      projectFilter.nameInput.value = '';
+      projectFilter.userSelect.value = '';
+      updateUserFilterOptions(projectFilter.userSelect, promptBuilderAllProjects);
+      renderProjectOptions();
       // Set the newly created project as the currently selected project
       promptBuilderProjectSelectorDropdown.value = `${promptBuilderNewProjectObject?.id}`;
       promptBuilderProjectSelectorDropdown.dispatchEvent(new Event('change'));
@@ -425,10 +535,17 @@ export async function buildPromptBuilder(
         scoreCodeType: 'python',
       };
       const promptBuilderNewPromptObject = await createModel(promptBuilderNewPromptDefinition);
-      const newPromptBuilderPromptSelectorItem = document.createElement('option');
-      newPromptBuilderPromptSelectorItem.value = `${promptBuilderNewPromptObject?.items?.[0]?.id}`;
-      newPromptBuilderPromptSelectorItem.innerHTML = `${promptBuilderNewPromptObject?.items?.[0]?.name}`;
-      promptBuilderPromptSelectorDropdown.append(newPromptBuilderPromptSelectorItem);
+      promptBuilderProjectPrompts.push({
+        value: `${promptBuilderNewPromptObject?.items?.[0]?.id}`,
+        innerHTML: `${promptBuilderNewPromptObject?.items?.[0]?.name}`,
+        createdBy: (promptBuilderNewPromptObject?.items?.[0]?.createdBy as string | undefined) ?? getAppState().userName ?? undefined,
+        modifiedBy: (promptBuilderNewPromptObject?.items?.[0]?.modifiedBy as string | undefined) ?? getAppState().userName ?? undefined,
+      });
+      // Clear the filters so the new prompt is visible, then select it
+      promptFilter.nameInput.value = '';
+      promptFilter.userSelect.value = '';
+      updateUserFilterOptions(promptFilter.userSelect, promptBuilderProjectPrompts);
+      renderPromptOptions();
       // Set the newly created project as the currently selected project
       promptBuilderPromptSelectorDropdown.value = `${promptBuilderNewPromptObject?.items?.[0]?.id}`;
       promptBuilderPromptSelectorDropdown.dispatchEvent(new Event('change'));
@@ -522,8 +639,10 @@ export async function buildPromptBuilder(
         if (!confirmed) return;
         const deleteStatus = await deleteModel(promptModelID);
         if (deleteStatus === 204) {
-          promptBuilderPromptSelectorDropdown.remove(promptSelectedIndex);
+          promptBuilderProjectPrompts = promptBuilderProjectPrompts.filter((item) => item.value !== promptModelID);
+          updateUserFilterOptions(promptFilter.userSelect, promptBuilderProjectPrompts);
           promptBuilderPromptSelectorDropdown.value = `${promptBuilderInterfaceText?.promptSelect}`;
+          renderPromptOptions();
           resetExperimentTrackerState();
         } else {
           showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
@@ -586,14 +705,15 @@ export async function buildPromptBuilder(
         }
         const projectDeleteStatus = await deleteModelProject(projectID);
         if (projectDeleteStatus === 204) {
-          promptBuilderProjectSelectorDropdown.remove(projectSelectedIndex);
+          promptBuilderAllProjects = promptBuilderAllProjects.filter((item) => item.value !== projectID);
+          updateUserFilterOptions(projectFilter.userSelect, promptBuilderAllProjects);
           promptBuilderProjectSelectorDropdown.value = `${promptBuilderInterfaceText?.projectSelect}`;
+          renderProjectOptions();
           // Reset the prompt selector to the placeholder-only state
-          promptBuilderPromptSelectorDropdown.innerHTML = '';
-          const tmpPromptBuilderPromptSelectorItem = document.createElement('option');
-          tmpPromptBuilderPromptSelectorItem.value = `${promptBuilderInterfaceText?.promptSelect}`;
-          tmpPromptBuilderPromptSelectorItem.innerHTML = `${promptBuilderInterfaceText?.promptSelect}`;
-          promptBuilderPromptSelectorDropdown.append(tmpPromptBuilderPromptSelectorItem);
+          promptBuilderProjectPrompts = [];
+          updateUserFilterOptions(promptFilter.userSelect, promptBuilderProjectPrompts);
+          promptBuilderPromptSelectorDropdown.value = `${promptBuilderInterfaceText?.promptSelect}`;
+          renderPromptOptions();
           resetExperimentTrackerState();
         } else {
           showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
@@ -2502,9 +2622,11 @@ ${scoreCodeReturn}`;
     const projectSection = createPageSection();
     projectSection.appendChild(promptBuilderProjectHeader);
     projectSection.appendChild(promptBuilderProjectSelectorHeader);
+    projectSection.appendChild(projectFilter.filterRow);
     projectSection.appendChild(promptBuilderProjectSelectorDropdown);
     projectSection.appendChild(document.createElement('br'));
     projectSection.appendChild(promptBuilderPromptHeader);
+    projectSection.appendChild(promptFilter.filterRow);
     projectSection.appendChild(promptBuilderPromptSelectorDropdown);
     projectSection.appendChild(document.createElement('br'));
     projectSection.appendChild(promptBuilderModalButtonContainer);

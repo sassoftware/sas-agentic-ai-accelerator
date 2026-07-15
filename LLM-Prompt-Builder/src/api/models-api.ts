@@ -30,7 +30,7 @@ export async function getModelProjects(
   let options: DropdownOption[] = [];
   if (data?.items) {
     for (const item of data.items) {
-      options.push({ value: item.id, innerHTML: item.name });
+      options.push({ value: item.id, innerHTML: item.name, createdBy: item.createdBy, modifiedBy: item.modifiedBy });
     }
   }
 
@@ -58,7 +58,7 @@ export async function getModelProjectModels(
   let options: DropdownOption[] = [];
   if (data?.items) {
     for (const item of data.items) {
-      options.push({ value: item.id, innerHTML: item.name });
+      options.push({ value: item.id, innerHTML: item.name, createdBy: item.createdBy, modifiedBy: item.modifiedBy });
     }
   }
 

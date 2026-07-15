@@ -88,7 +88,9 @@ http
         return json(res, 200, { id: 'tester', name: 'Tester' });
       }
       if (p === '/modelRepository/projects') {
-        return json(res, 200, { items: [{ id: 'proj-1', name: 'Demo Project' }] });
+        return json(res, 200, {
+          items: [{ id: 'proj-1', name: 'Demo Project', createdBy: 'anna', modifiedBy: 'anna' }],
+        });
       }
       if (p === '/modelRepository/projects/llm-proj/models') {
         const filter = u.searchParams.get('filter') || '';
@@ -98,9 +100,9 @@ http
       if (p === '/modelRepository/projects/proj-1/models') {
         return json(res, 200, {
           items: [
-            { id: 'model-used', name: 'Used Prompt' },
-            { id: 'model-free', name: 'score_metric_answer_relevancy' },
-            { id: 'model-err', name: 'Error Prompt' },
+            { id: 'model-used', name: 'Used Prompt', createdBy: 'anna', modifiedBy: 'ben' },
+            { id: 'model-free', name: 'score_metric_answer_relevancy', createdBy: 'ben', modifiedBy: 'ben' },
+            { id: 'model-err', name: 'Error Prompt', createdBy: 'carla', modifiedBy: 'anna' },
           ],
         });
       }

@@ -5,6 +5,9 @@
     "promptBuilderProjectHeader": "Wähle oder Erstelle ein Projekt für das Prompt Tracking",
     "projectSelect": "Wähle ein Projekt",
     "promptSelect": "Wähle einen bestehenden Prompt-Test",
+    "promptBuilderFilterNamePlaceholder": "Nach Name filtern...",
+    "promptBuilderFilterUserAll": "Alle Benutzer",
+    "promptBuilderFilterUserLabel": "Nach Ersteller/Bearbeiter filtern",
     "promptBuilderCreateProject": {
       "modalTitle": "Erstelle ein neues Projekt",
       "nameLabel": "Gebe einen Projekt Namen ein",

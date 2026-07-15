@@ -112,9 +112,48 @@ function multipartJson(body) {
   assert(!(await page.isDisabled('#LPB-delete-project-button')), 'Delete Project enabled after project selection');
   assert(await page.isDisabled('#LPB-delete-prompt-button'), 'Delete Prompt still disabled (no prompt selected)');
 
+  // ---- name/user filters on the selection lists ------------------------------
+  const promptUserOptions = await page.$$eval('#LPB-prompt-filter-user option', (els) => els.map((e) => e.value));
+  assert(
+    JSON.stringify(promptUserOptions) === JSON.stringify(['', 'anna', 'ben', 'carla']),
+    `user filter lists the distinct createdBy/modifiedBy users (got: ${promptUserOptions})`
+  );
+  await page.fill('#LPB-prompt-filter-name', 'score');
+  await waitUntil(
+    async () => (await page.$$('#LPB-prompt-dropdown option')).length === 2,
+    'name filter narrows the prompt list'
+  );
+  step(true, 'prompt list filtered by name ("score" leaves one match)');
+  await page.fill('#LPB-prompt-filter-name', '');
+  await page.selectOption('#LPB-prompt-filter-user', 'carla');
+  await waitUntil(
+    async () => (await page.$$('#LPB-prompt-dropdown option')).length === 2,
+    'user filter narrows the prompt list'
+  );
+  const carlaOptions = await page.$$eval('#LPB-prompt-dropdown option', (els) => els.map((e) => e.textContent));
+  assert(carlaOptions.includes('Error Prompt'), `filtering by user keeps only their prompts (got: ${carlaOptions})`);
+  await page.selectOption('#LPB-prompt-filter-user', '');
+  await waitUntil(
+    async () => (await page.$$('#LPB-prompt-dropdown option')).length === 4,
+    'clearing the user filter restores the list'
+  );
+  assert((await page.$$('#LPB-project-filter-name')).length === 1, 'project list has its own filter row');
+
   await page.selectOption('#LPB-prompt-dropdown', 'model-used');
   await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 3, '3 runs rendered');
   step(true, 'tracker with GAPPED runIds (1,2,5) and a two-model run loaded without errors');
+  // probe: the active selection survives a non-matching filter
+  await page.fill('#LPB-prompt-filter-name', 'zzz');
+  await waitUntil(
+    async () => (await page.$$('#LPB-prompt-dropdown option')).length === 2,
+    'filter narrowed the list around the selection'
+  );
+  assert(
+    (await page.inputValue('#LPB-prompt-dropdown')) === 'model-used',
+    'active selection stays visible and selected under a non-matching filter'
+  );
+  await page.fill('#LPB-prompt-filter-name', '');
+  await waitUntil(async () => (await page.$$('#LPB-prompt-dropdown option')).length === 4, 'filter cleared');
   let headers = await runHeaderTexts();
   assert(
     headers.join('|') === 'Prompt Experiment Run #3|Prompt Experiment Run #2|Prompt Experiment Run #1',
