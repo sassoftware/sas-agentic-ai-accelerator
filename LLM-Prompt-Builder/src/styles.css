@@ -11,8 +11,17 @@ body {
   padding: 1rem;
 }
 
-button {
+/* Anchors styled as buttons (e.g. "Open in SAS Model Manager") need the same
+   spacing as real buttons. */
+button,
+a[role='button'] {
   margin-right: 1em;
+}
+
+/* Keep long unbroken prompt/decision names inside the confirmation modal. */
+.modal-title,
+.modal-body {
+  overflow-wrap: anywhere;
 }
 
 /* Nested accordion inside an experiment run */

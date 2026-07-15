@@ -39,7 +39,11 @@ function multipartJson(body) {
 (async () => {
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
-  page.on('pageerror', (e) => console.log('[pageerror]', e.message));
+  const pageErrors = [];
+  page.on('pageerror', (e) => {
+    pageErrors.push(e.message);
+    console.log('[pageerror]', e.message);
+  });
   page.on('console', (m) => {
     if (m.type() === 'error') console.log('[console.error]', m.text());
   });
@@ -68,12 +72,17 @@ function multipartJson(body) {
 
   await page.selectOption('#LPB-prompt-dropdown', 'model-used');
   await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 3, '3 runs rendered');
+  step(true, 'tracker with GAPPED runIds (1,2,5) and a two-model run loaded without errors');
   let headers = await runHeaderTexts();
   assert(
     headers.join('|') === 'Prompt Experiment Run #3|Prompt Experiment Run #2|Prompt Experiment Run #1',
     `3 runs numbered 1..3 newest-first (got: ${headers.join('|')})`
   );
   assert(!(await page.isDisabled('#LPB-delete-prompt-button')), 'Delete Prompt enabled after prompt selection');
+  const mmGap = await page.evaluate(
+    () => getComputedStyle(document.getElementById('LPB-openInMMButton')).marginRight
+  );
+  assert(mmGap === '16px', `gap between Open-in-MM link and Delete Prompt button (margin-right: ${mmGap})`);
   await page.screenshot({ path: 'shot-01-three-runs.png', fullPage: true });
 
   // Tick "Best Response" in run #1 (expand run accordion, then the model accordion)
@@ -115,8 +124,8 @@ function multipartJson(body) {
   );
   const savedRows = multipartJson(log.find((e) => e.method === 'POST' && /contents\?/.test(e.url)).body);
   assert(
-    JSON.stringify(savedRows.map((r) => r.runId)) === '[1,1,2,2]',
-    `saved rows renumbered contiguously (got runIds: ${savedRows.map((r) => r.runId)})`
+    JSON.stringify(savedRows.map((r) => r.runId)) === '[1,1,2,2,2]',
+    `saved rows renumbered contiguously despite the runId gap (got runIds: ${savedRows.map((r) => r.runId)})`
   );
   assert(savedRows[1].best_prompt === true || savedRows[1].best_prompt === 1, 'saved run #1 row carries best_prompt');
   assert(savedRows[2].systemPrompt === 'Sys 3', 'saved run #2 header row holds the former run-3 prompt');
@@ -182,6 +191,12 @@ function multipartJson(body) {
   await page.waitForSelector('.modal.show .modal-body');
   modalBody = await page.textContent('.modal.show .modal-body');
   assert(modalBody.includes('No decisions were found using this prompt.'), 'no-usage note shown');
+  const noOverflow = await page.evaluate(() => {
+    const content = document.querySelector('.modal.show .modal-content');
+    const title = document.querySelector('.modal.show .modal-title');
+    return content.scrollWidth <= content.clientWidth + 1 && title.scrollWidth <= title.clientWidth + 1;
+  });
+  assert(noOverflow, 'long prompt name (score_metric_answer_relevancy) wraps inside the modal');
   await page.screenshot({ path: 'shot-04-delete-prompt-nousage.png', fullPage: true });
   await page.click('.modal.show .btn-secondary');
   await page.waitForSelector('.modal.show', { state: 'detached' });
@@ -257,6 +272,8 @@ function multipartJson(body) {
   assert(await page.isDisabled('#LPB-delete-project-button'), 'Delete Project disabled after deletion');
   assert(await page.isDisabled('#LPB-delete-prompt-button'), 'Delete Prompt disabled after deletion');
   await page.screenshot({ path: 'shot-06-after-project-delete.png', fullPage: true });
+
+  assert(pageErrors.length === 0, `no uncaught page errors during the whole session (got: ${pageErrors.join(' | ')})`);
 
   await browser.close();
   console.log('\n===== SUMMARY =====');

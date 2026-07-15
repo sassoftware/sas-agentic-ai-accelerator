@@ -255,39 +255,48 @@ export async function buildPromptBuilder(
       }
       for (const promptBuilderAvailablepte in promptBuilderAvailablePTE) {
         if (promptBuilderAvailablePTE[promptBuilderAvailablepte]?.name === 'Prompt-Experiment-Tracker.json') {
-          // Reset the prompt tracker to nothing
-          promptExperimentTrackerRunID = 0;
-          const promptBuilderCurrentPTE = await getFileContent(promptBuilderAvailablePTE[promptBuilderAvailablepte].fileUri!);
-          const promptBuilderCurrentPTEContent: PETRow[] = await promptBuilderCurrentPTE.json();
-          const promptBuilderPreviousExperiment: ExperimentTrackerEntry[] = [];
-          let promptBuilderPreviousRunID = 0;
-          promptBuilderCurrentPTEContent.forEach((value) => {
-            if (value.runId !== promptBuilderPreviousRunID) {
-              promptBuilderPreviousExperiment.push({ systemPrompt: value.systemPrompt, userPrompt: value.userPrompt });
-              promptBuilderPreviousRunID = value.runId;
-            } else {
-              (promptBuilderPreviousExperiment[promptBuilderPreviousRunID - 1] as Record<string, unknown>)[value?.model] = {
-                best_prompt: value?.best_prompt,
-                fastest_prompt: value?.fastest_prompt ?? false,
-                fewest_tokens_prompt: value?.fewest_tokens_prompt ?? false,
-                output_length: value?.output_length,
-                prompt_length: value?.prompt_length,
-                run_time: value?.run_time,
-                options: JSON.parse(
-                  value?.options
-                    .replace(/(\w+):/g, '"$1":')
-                    .replace(/"API_KEY":"?([^",}]+)"?/g, function (_match: string, p1: string) {
-                      return `"API_KEY":"${p1}"`;
-                    })
-                ),
-                response: value?.response,
-              };
-            }
-          });
-          // Assign the tracker before rendering so the saveable rows are rebuilt
-          // from the freshly loaded runs (the render reads the closure variable).
-          promptExperimentTracker = [...promptBuilderPreviousExperiment];
-          createPromptExperimentTracker(promptExperimentTracker);
+          // A tracker that cannot be parsed must not abort the handler — the
+          // Model Manager link and delete buttons below still have to work.
+          try {
+            // Reset the prompt tracker to nothing
+            promptExperimentTrackerRunID = 0;
+            const promptBuilderCurrentPTE = await getFileContent(promptBuilderAvailablePTE[promptBuilderAvailablepte].fileUri!);
+            const promptBuilderCurrentPTEContent: PETRow[] = await promptBuilderCurrentPTE.json();
+            const promptBuilderPreviousExperiment: ExperimentTrackerEntry[] = [];
+            let promptBuilderPreviousRunID = 0;
+            promptBuilderCurrentPTEContent.forEach((value) => {
+              if (value.runId !== promptBuilderPreviousRunID) {
+                promptBuilderPreviousExperiment.push({ systemPrompt: value.systemPrompt, userPrompt: value.userPrompt });
+                promptBuilderPreviousRunID = value.runId;
+              } else {
+                // Index the last pushed run: persisted runIds can have gaps
+                // (a run whose experiments all failed produces no rows), so
+                // runId - 1 is not a safe array position.
+                (promptBuilderPreviousExperiment[promptBuilderPreviousExperiment.length - 1] as Record<string, unknown>)[value?.model] = {
+                  best_prompt: value?.best_prompt,
+                  fastest_prompt: value?.fastest_prompt ?? false,
+                  fewest_tokens_prompt: value?.fewest_tokens_prompt ?? false,
+                  output_length: value?.output_length,
+                  prompt_length: value?.prompt_length,
+                  run_time: value?.run_time,
+                  options: JSON.parse(
+                    value?.options
+                      .replace(/(\w+):/g, '"$1":')
+                      .replace(/"API_KEY":"?([^",}]+)"?/g, function (_match: string, p1: string) {
+                        return `"API_KEY":"${p1}"`;
+                      })
+                  ),
+                  response: value?.response,
+                };
+              }
+            });
+            // Assign the tracker before rendering so the saveable rows are rebuilt
+            // from the freshly loaded runs (the render reads the closure variable).
+            promptExperimentTracker = [...promptBuilderPreviousExperiment];
+            createPromptExperimentTracker(promptExperimentTracker);
+          } catch (error) {
+            console.error('Failed to load the Prompt-Experiment-Tracker for the selected prompt.', error);
+          }
         }
       }
       // Enable prompt deletion only for a real prompt selection

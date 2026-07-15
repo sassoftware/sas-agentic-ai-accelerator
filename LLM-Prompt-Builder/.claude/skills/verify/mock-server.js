@@ -19,18 +19,21 @@ function headerRow(runId, sys, user) {
     best_prompt: null, fastest_prompt: null, fewest_tokens_prompt: null,
   };
 }
-function modelRow(runId, response) {
+function modelRow(runId, response, model = 'demo_llm') {
   return {
-    runId, systemPrompt: '', userPrompt: '', model: 'demo_llm',
+    runId, systemPrompt: '', userPrompt: '', model,
     options: '{temperature:0.7}', response,
     run_time: 1.2, prompt_length: 10, output_length: 20,
     best_prompt: 0, fastest_prompt: true, fewest_tokens_prompt: true,
   };
 }
+// runIds intentionally have a gap (1, 2, 5) — runs whose experiments all
+// failed persist no rows, so real trackers contain gaps. The last run has two
+// model results.
 const trackerRows = [
   headerRow(1, 'Sys 1', 'User 1'), modelRow(1, 'Response one'),
   headerRow(2, 'Sys 2', 'User 2'), modelRow(2, 'Response two'),
-  headerRow(3, 'Sys 3', 'User 3'), modelRow(3, 'Response three'),
+  headerRow(5, 'Sys 3', 'User 3'), modelRow(5, 'Response three'), modelRow(5, 'Response other', 'other_llm'),
 ];
 
 // model-used: two distinct dependent decision flows, one of them reported
@@ -92,7 +95,7 @@ http
         return json(res, 200, {
           items: [
             { id: 'model-used', name: 'Used Prompt' },
-            { id: 'model-free', name: 'Free Prompt' },
+            { id: 'model-free', name: 'score_metric_answer_relevancy' },
             { id: 'model-err', name: 'Error Prompt' },
           ],
         });
