@@ -57,7 +57,8 @@ function multipartJson(body) {
       els.map((e) => e.textContent.trim())
     );
 
-  await page.goto(`${BASE}/?modelRepositoryID=repo-1&llmProjectID=llm-proj&SCREndpoint=http://localhost:9/scr`);
+  const APP_URL = `${BASE}/?modelRepositoryID=repo-1&llmProjectID=llm-proj&SCREndpoint=${BASE}/scr`;
+  await page.goto(APP_URL);
   await page.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
   step(true, 'app booted against the mock (project dropdown rendered)');
 
@@ -84,6 +85,141 @@ function multipartJson(body) {
   );
   assert(mmGap === '16px', `gap between Open-in-MM link and Delete Prompt button (margin-right: ${mmGap})`);
   await page.screenshot({ path: 'shot-01-three-runs.png', fullPage: true });
+
+  // ============ PHASE A: variables manager + load-run features ============
+
+  // ---- load an experiment run back into the workbench ----------------------
+  await page.click('#app-obj-LPB-pet-2 .pet-run-load');
+  await waitUntil(
+    async () => (await page.inputValue('#app-obj-LPB-system-prompt')) === 'Sys 3',
+    'system prompt loaded from run'
+  );
+  step(true, 'per-run Load restored the system prompt');
+  assert((await page.inputValue('#app-obj-LPB-user-prompt')) === 'User 3', 'user prompt loaded from run');
+  assert(await page.isChecked('#model0'), 'demo_llm reselected by loading the run');
+  assert((await page.inputValue('#temperature0')) === '0.9', `run's non-default temperature restored (got: ${await page.inputValue('#temperature0')})`);
+  await page.waitForSelector('.toast-body');
+  const toastText = await page.textContent('.toast-body');
+  assert(toastText.includes('other_llm'), `toast reports the unavailable LLM (got: ${toastText})`);
+  await page.screenshot({ path: 'shot-07-load-run-toast.png', fullPage: true });
+
+  // ---- variables manager: define, validate, insert via context menu --------
+  await page.click('text="Add Variable"');
+  await page.click('text="Add Variable"');
+  const varRows = page.locator('.pb-variable-row');
+  await varRows.nth(0).locator('.pb-var-name').fill('customer');
+  await varRows.nth(0).locator('.pb-var-description').fill('Customer name');
+  await varRows.nth(0).locator('.pb-var-value').fill('ACME Corp');
+  await varRows.nth(1).locator('.pb-var-name').fill('amount');
+  await varRows.nth(1).locator('.pb-var-type').selectOption('decimal');
+  await varRows.nth(1).locator('.pb-var-value').fill('42');
+  step(true, 'defined a string and a decimal variable');
+  // probe: invalid name gets flagged and is excluded
+  await page.click('text="Add Variable"');
+  await varRows.nth(2).locator('.pb-var-name').fill('9bad');
+  assert(
+    await varRows.nth(2).locator('.pb-var-name').evaluate((el) => el.classList.contains('is-invalid')),
+    'invalid variable name (starts with a digit) is flagged'
+  );
+  await varRows.nth(2).locator('.pb-var-remove').click();
+
+  await page.fill('#app-obj-LPB-system-prompt', 'Hello {{customer}} with {json} braces');
+  await page.fill('#app-obj-LPB-user-prompt', 'Value: ');
+  await page.focus('#app-obj-LPB-user-prompt');
+  await page.keyboard.press('Control+End');
+  await page.click('#app-obj-LPB-user-prompt', { button: 'right' });
+  await page.waitForSelector('.pb-variable-menu');
+  await page.screenshot({ path: 'shot-09-context-menu.png' });
+  await page.click('.pb-variable-menu .dropdown-item:has-text("amount")');
+  await waitUntil(
+    async () => (await page.inputValue('#app-obj-LPB-user-prompt')) === 'Value: {{amount}}',
+    'context menu inserted the token'
+  );
+  step(true, 'right-click context menu inserted {{amount}} at the cursor');
+  await page.focus('#app-obj-LPB-user-prompt');
+  await page.keyboard.press('Control+End');
+  await page.keyboard.type(' and {{unknown}} stays');
+
+  // ---- run an experiment: values substituted, snapshot stored --------------
+  await resetLog();
+  await page.click('#app-obj-LPB-run-experiment');
+  await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 4, 'new experiment run rendered');
+  let aLog = await getLog();
+  const scrCall = aLog.find((e) => e.method === 'POST' && e.url === '/scr/demo_llm/demo_llm');
+  assert(scrCall, 'SCR LLM endpoint was called');
+  const scrInputs = JSON.parse(scrCall.body).inputs;
+  const scrSystem = scrInputs.find((i) => i.name === 'systemPrompt').value;
+  const scrUser = scrInputs.find((i) => i.name === 'userPrompt').value;
+  assert(scrSystem === 'Hello ACME Corp with {json} braces', `system prompt substituted for the LLM (got: ${scrSystem})`);
+  assert(scrUser === 'Value: 42 and {{unknown}} stays', `user prompt substituted; unknown token kept literal (got: ${scrUser})`);
+  const varLine = await page.textContent('#app-obj-LPB-pet-3-run-variables');
+  assert(
+    varLine.includes('customer (string): ACME Corp') && varLine.includes('amount (decimal): 42'),
+    `new run lists its variable snapshot (got: ${varLine.trim()})`
+  );
+
+  // ---- manifest: variables become the model inputs and f-string slots ------
+  await page.click('#app-obj-LPB-pet-3 > .accordion-item > h2 > .accordion-button');
+  await page.click('#app-obj-LPB-pet-3-run-nested-demo_llm .accordion-button');
+  await page.check('#best-prompt-3-demo_llm');
+  await resetLog();
+  await page.click('#app-obj-LPB-pet-create-model-button');
+  await waitUntil(
+    async () => (await getLog()).some((e) => e.method === 'POST' && e.body.includes('def scoreModel(')),
+    'score code uploaded'
+  );
+  aLog = await getLog();
+  const findPart = (name) => aLog.find((e) => e.method === 'POST' && e.body.includes(`filename="${name}"`));
+  const savedTracker = multipartJson(findPart('Prompt-Experiment-Tracker.json').body);
+  const run4Header = savedTracker.find((r) => r.runId === 4 && r.model === '');
+  assert(
+    Array.isArray(run4Header.variables) && run4Header.variables.length === 2 && run4Header.variables[0].name === 'customer',
+    'tracker header row persists the variable definitions'
+  );
+  const inputVars = multipartJson(findPart('inputVar.json').body);
+  assert(
+    JSON.stringify(inputVars.map((v) => [v.name, v.type, v.length, v.level])) ===
+      JSON.stringify([['customer', 'string', 128000, 'nominal'], ['amount', 'decimal', 8, 'interval']]),
+    `manifest inputs derived from the referenced variables (got: ${JSON.stringify(inputVars)})`
+  );
+  assert(inputVars[0].description === 'Customer name', 'variable description carried into the model input');
+  const pyBody = aLog.find((e) => e.method === 'POST' && e.body.includes('def scoreModel(')).body;
+  assert(pyBody.includes('def scoreModel(customer, amount):'), 'score function signature built from the variables');
+  assert(
+    pyBody.includes('systemPrompt = f"""Hello {str(customer).strip()} with {{json}} braces"""'),
+    'system prompt manifested as f-string with escaped literal braces'
+  );
+  assert(
+    pyBody.includes('userPrompt = f"""Value: {str(amount).strip()} and {{{{unknown}}}} stays"""'),
+    'user prompt manifested as f-string; unknown tokens stay literal'
+  );
+
+  // ---- Load Best Prompt restores the workbench ------------------------------
+  await page.fill('#app-obj-LPB-system-prompt', 'scratch');
+  await page.fill('#app-obj-LPB-user-prompt', 'scratch');
+  await page.click('#app-obj-LPB-pet-load-best-button');
+  await waitUntil(
+    async () => (await page.inputValue('#app-obj-LPB-system-prompt')) === 'Hello {{customer}} with {json} braces',
+    'load best restored the system prompt'
+  );
+  step(true, 'Load Best Prompt restored the most recent best run');
+  assert((await page.locator('.pb-variable-row').count()) === 2, 'variables menu reset from the loaded run');
+  assert(
+    (await page.locator('.pb-variable-row').nth(0).locator('.pb-var-value').inputValue()) === 'ACME Corp',
+    'variable value restored from the loaded run'
+  );
+  await page.screenshot({ path: 'shot-08-variables-workbench.png', fullPage: true });
+
+  // ============ PHASE B: deletion features (fresh page) ============
+  await page.goto(APP_URL);
+  await page.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+  await page.selectOption('#LPB-project-dropdown', 'proj-1');
+  await waitUntil(
+    async () => (await page.$$('#LPB-prompt-dropdown option')).length === 4,
+    'prompt dropdown refilled'
+  );
+  await page.selectOption('#LPB-prompt-dropdown', 'model-used');
+  await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 3, '3 runs re-rendered after reload');
 
   // Tick "Best Response" in run #1 (expand run accordion, then the model accordion)
   await page.click('#app-obj-LPB-pet-0 > .accordion-item > h2 > .accordion-button');

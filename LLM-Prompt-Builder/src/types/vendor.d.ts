@@ -17,6 +17,15 @@ declare module 'bootstrap/js/dist/modal' {
   }
 }
 
+declare module 'bootstrap/js/dist/toast' {
+  export default class Toast {
+    constructor(element: Element, options?: Record<string, unknown>);
+    show(): void;
+    hide(): void;
+    dispose(): void;
+  }
+}
+
 declare module 'bootstrap/js/dist/collapse';
 
 declare module '*.css';

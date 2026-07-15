@@ -19,21 +19,23 @@ function headerRow(runId, sys, user) {
     best_prompt: null, fastest_prompt: null, fewest_tokens_prompt: null,
   };
 }
-function modelRow(runId, response, model = 'demo_llm') {
+function modelRow(runId, response, model = 'demo_llm', options = '{temperature:0.7}') {
   return {
     runId, systemPrompt: '', userPrompt: '', model,
-    options: '{temperature:0.7}', response,
+    options, response,
     run_time: 1.2, prompt_length: 10, output_length: 20,
     best_prompt: 0, fastest_prompt: true, fewest_tokens_prompt: true,
   };
 }
 // runIds intentionally have a gap (1, 2, 5) — runs whose experiments all
 // failed persist no rows, so real trackers contain gaps. The last run has two
-// model results.
+// model results (one of them from an LLM that is no longer available) and a
+// non-default temperature to prove option restoration on load.
 const trackerRows = [
   headerRow(1, 'Sys 1', 'User 1'), modelRow(1, 'Response one'),
   headerRow(2, 'Sys 2', 'User 2'), modelRow(2, 'Response two'),
-  headerRow(5, 'Sys 3', 'User 3'), modelRow(5, 'Response three'), modelRow(5, 'Response other', 'other_llm'),
+  headerRow(5, 'Sys 3', 'User 3'), modelRow(5, 'Response three', 'demo_llm', '{temperature:0.9}'),
+  modelRow(5, 'Response other', 'other_llm'),
 ];
 
 // model-used: two distinct dependent decision flows, one of them reported
@@ -127,6 +129,14 @@ http
       }
       if (p === '/decisions/flows/flow-A') return json(res, 200, { id: 'flow-A', name: 'Loan Approval Decision' });
       if (p === '/decisions/flows/flow-B') return json(res, 200, { id: 'flow-B', name: 'Fraud Check Decision' });
+      if (/^\/scr\//.test(p) && req.method === 'POST') {
+        return json(res, 200, {
+          data: { response: 'Mock LLM response', run_time: 1.5, prompt_length: 42, output_length: 7 },
+        });
+      }
+      if (/^\/modelRepository\/models\/[^/]+\/variables$/.test(p) && req.method === 'GET') {
+        return json(res, 200, { items: [] });
+      }
       if (req.method === 'DELETE') { res.writeHead(204); return res.end(); }
       if (/^\/modelRepository\/models\/[^/]+\/modelVersions$/.test(p) && req.method === 'POST') {
         return json(res, 200, { id: 'v2' });

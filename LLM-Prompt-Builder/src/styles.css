@@ -29,10 +29,20 @@ a[role='button'] {
   margin-left: 20px;
 }
 
-/* Delete button next to an experiment-run accordion header */
-.pet-run-delete {
-  margin: 0 0.5rem;
+/* Load/delete buttons next to an experiment-run accordion header */
+.pet-run-delete,
+.pet-run-load {
+  margin: 0 0 0 0.5rem;
   flex-shrink: 0;
+}
+.pet-run-delete {
+  margin-right: 0.5rem;
+}
+
+/* Right-click "insert variable" menu on the prompt fields */
+.pb-variable-menu {
+  position: fixed;
+  z-index: 1080;
 }
 
 /* Per-model option inputs, revealed when a model checkbox is ticked */

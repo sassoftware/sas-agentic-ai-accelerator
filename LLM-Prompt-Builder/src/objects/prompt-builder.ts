@@ -28,6 +28,7 @@ import { getModelDependentDecisions } from '../api/relationships-api';
 import { callSCRLLM } from '../api/scr-api';
 import { createAccordionItem } from '../ui/accordion';
 import { showConfirmModal } from '../ui/confirm-modal';
+import { showToast } from '../ui/toast';
 import { escapeHtml } from '../ui/dom-helpers';
 import { renderMarkdown } from '../ui/markdown';
 import { isValidDS2VariableName, validateAndCorrectPackageName } from '../util/validation';
@@ -61,11 +62,23 @@ interface ExperimentResult {
   options: Record<string, unknown>;
 }
 
+/** A user-defined prompt variable, referenced as {{name}} in the prompts. */
+interface PromptVariable {
+  name: string;
+  description: string;
+  type: 'string' | 'decimal';
+  value: string;
+}
+
 interface ExperimentTrackerEntry {
   systemPrompt: string;
   userPrompt: string;
+  variables?: PromptVariable[];
   [modelName: string]: unknown;
 }
+
+/** Entry keys that are metadata rather than per-model experiment results. */
+const TRACKER_META_KEYS = ['systemPrompt', 'userPrompt', 'author', 'variables'];
 
 interface ModelExperimentData {
   best_prompt: boolean | null;
@@ -82,6 +95,8 @@ interface PETRow {
   runId: number;
   systemPrompt: string;
   userPrompt: string;
+  /** Variable definitions of the run; only set on the run's header row. */
+  variables?: PromptVariable[] | null;
   model: string;
   options: string;
   response: string;
@@ -266,7 +281,12 @@ export async function buildPromptBuilder(
             let promptBuilderPreviousRunID = 0;
             promptBuilderCurrentPTEContent.forEach((value) => {
               if (value.runId !== promptBuilderPreviousRunID) {
-                promptBuilderPreviousExperiment.push({ systemPrompt: value.systemPrompt, userPrompt: value.userPrompt });
+                const loadedRun: ExperimentTrackerEntry = {
+                  systemPrompt: value.systemPrompt,
+                  userPrompt: value.userPrompt,
+                };
+                if (Array.isArray(value.variables)) loadedRun.variables = value.variables;
+                promptBuilderPreviousExperiment.push(loadedRun);
                 promptBuilderPreviousRunID = value.runId;
               } else {
                 // Index the last pushed run: persisted runIds can have gaps
@@ -846,6 +866,214 @@ export async function buildPromptBuilder(
     promptBuilderPromptingHeader.innerText = promptBuilderInterfaceText?.promptBuilderPromptingHeader as string;
     const promptBulderPromptingExplainer = document.createElement('p');
     promptBulderPromptingExplainer.innerHTML = promptBuilderInterfaceText?.promptBulderPromptingExplainer as string;
+
+    // Variables manager: define name/description/type/value rows whose values
+    // are substituted into the prompts via the {{variableName}} syntax.
+    const promptBuilderVariablesHeader = document.createElement('h2');
+    promptBuilderVariablesHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesHeading}`;
+    const promptBuilderVariablesDescription = document.createElement('p');
+    promptBuilderVariablesDescription.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesDescription}`;
+    const promptBuilderVariablesContainer = document.createElement('div');
+    promptBuilderVariablesContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-variables`;
+    const promptBuilderVariablesAddButton = document.createElement('button');
+    promptBuilderVariablesAddButton.type = 'button';
+    promptBuilderVariablesAddButton.classList.add('btn', 'btn-secondary');
+    promptBuilderVariablesAddButton.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesAddButton}`;
+    promptBuilderVariablesAddButton.onclick = () => createPromptVariableRow();
+
+    function createPromptVariableRow(variable?: PromptVariable): void {
+      const variableRow = document.createElement('div');
+      variableRow.classList.add('row', 'g-2', 'align-items-start', 'mb-2', 'pb-variable-row');
+      // Name
+      const nameColumn = document.createElement('div');
+      nameColumn.classList.add('col-md-3');
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.maxLength = 32;
+      nameInput.classList.add('form-control', 'pb-var-name');
+      nameInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderVariablesNameLabel}`;
+      nameInput.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesNameLabel}`);
+      nameInput.value = variable?.name ?? '';
+      nameInput.oninput = () => validatePromptVariableRows();
+      const nameFeedback = document.createElement('div');
+      nameFeedback.classList.add('invalid-feedback');
+      nameColumn.appendChild(nameInput);
+      nameColumn.appendChild(nameFeedback);
+      // Description
+      const descriptionColumn = document.createElement('div');
+      descriptionColumn.classList.add('col-md-4');
+      const descriptionInput = document.createElement('input');
+      descriptionInput.type = 'text';
+      descriptionInput.maxLength = 500;
+      descriptionInput.classList.add('form-control', 'pb-var-description');
+      descriptionInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderVariablesDescriptionLabel}`;
+      descriptionInput.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesDescriptionLabel}`);
+      descriptionInput.value = variable?.description ?? '';
+      descriptionColumn.appendChild(descriptionInput);
+      // Data type (the 128000-character default string length stays internal)
+      const typeColumn = document.createElement('div');
+      typeColumn.classList.add('col-md-2');
+      const typeSelect = document.createElement('select');
+      typeSelect.classList.add('form-select', 'pb-var-type');
+      typeSelect.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesTypeLabel}`);
+      const stringOption = document.createElement('option');
+      stringOption.value = 'string';
+      stringOption.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesTypeString}`;
+      const decimalOption = document.createElement('option');
+      decimalOption.value = 'decimal';
+      decimalOption.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesTypeDecimal}`;
+      typeSelect.appendChild(stringOption);
+      typeSelect.appendChild(decimalOption);
+      typeSelect.value = variable?.type === 'decimal' ? 'decimal' : 'string';
+      typeSelect.onchange = () => validatePromptVariableRows();
+      typeColumn.appendChild(typeSelect);
+      // Value
+      const valueColumn = document.createElement('div');
+      valueColumn.classList.add('col-md-2');
+      const valueInput = document.createElement('input');
+      valueInput.type = 'text';
+      valueInput.classList.add('form-control', 'pb-var-value');
+      valueInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderVariablesValueLabel}`;
+      valueInput.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesValueLabel}`);
+      valueInput.value = variable?.value ?? '';
+      valueInput.oninput = () => validatePromptVariableRows();
+      const valueFeedback = document.createElement('div');
+      valueFeedback.classList.add('invalid-feedback');
+      valueFeedback.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesValueNotNumeric}`;
+      valueColumn.appendChild(valueInput);
+      valueColumn.appendChild(valueFeedback);
+      // Remove
+      const removeColumn = document.createElement('div');
+      removeColumn.classList.add('col-md-1');
+      const removeButton = document.createElement('button');
+      removeButton.type = 'button';
+      removeButton.classList.add('btn', 'btn-outline-danger', 'pb-var-remove');
+      removeButton.innerHTML = '&times;';
+      removeButton.title = `${promptBuilderInterfaceText?.promptBuilderVariablesRemoveButton}`;
+      removeButton.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesRemoveButton}`);
+      removeButton.onclick = () => {
+        variableRow.remove();
+        validatePromptVariableRows();
+      };
+      removeColumn.appendChild(removeButton);
+
+      variableRow.appendChild(nameColumn);
+      variableRow.appendChild(descriptionColumn);
+      variableRow.appendChild(typeColumn);
+      variableRow.appendChild(valueColumn);
+      variableRow.appendChild(removeColumn);
+      promptBuilderVariablesContainer.appendChild(variableRow);
+    }
+
+    // Flag invalid/duplicate names and non-numeric decimal values on the rows.
+    function validatePromptVariableRows(): void {
+      const seenNames = new Set<string>();
+      promptBuilderVariablesContainer.querySelectorAll('.pb-variable-row').forEach((row) => {
+        const nameInput = row.querySelector('.pb-var-name') as HTMLInputElement;
+        const nameFeedback = nameInput.nextElementSibling as HTMLElement;
+        const typeSelect = row.querySelector('.pb-var-type') as HTMLSelectElement;
+        const valueInput = row.querySelector('.pb-var-value') as HTMLInputElement;
+        const name = nameInput.value.trim();
+        let nameInvalidText = '';
+        if (name !== '' && !isValidDS2VariableName(name)) {
+          nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderVariablesNameInvalid}`;
+        } else if (name !== '' && seenNames.has(name)) {
+          nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderVariablesNameDuplicate}`;
+        } else if (name !== '') {
+          seenNames.add(name);
+        }
+        nameFeedback.innerText = nameInvalidText;
+        nameInput.classList.toggle('is-invalid', nameInvalidText !== '');
+        const valueInvalid =
+          typeSelect.value === 'decimal' && valueInput.value.trim() !== '' && isNaN(Number(valueInput.value));
+        valueInput.classList.toggle('is-invalid', valueInvalid);
+      });
+    }
+
+    // Collect the currently valid variable definitions (rows with an invalid,
+    // empty or duplicate name are highlighted by validation and skipped here).
+    function collectPromptVariables(): PromptVariable[] {
+      validatePromptVariableRows();
+      const variables: PromptVariable[] = [];
+      const seenNames = new Set<string>();
+      promptBuilderVariablesContainer.querySelectorAll('.pb-variable-row').forEach((row) => {
+        const name = (row.querySelector('.pb-var-name') as HTMLInputElement).value.trim();
+        if (!isValidDS2VariableName(name) || seenNames.has(name)) return;
+        seenNames.add(name);
+        variables.push({
+          name,
+          description: (row.querySelector('.pb-var-description') as HTMLInputElement).value.trim(),
+          type: (row.querySelector('.pb-var-type') as HTMLSelectElement).value === 'decimal' ? 'decimal' : 'string',
+          value: (row.querySelector('.pb-var-value') as HTMLInputElement).value,
+        });
+      });
+      return variables;
+    }
+
+    function setPromptVariables(variables: PromptVariable[]): void {
+      promptBuilderVariablesContainer.innerHTML = '';
+      variables.forEach((variable) => createPromptVariableRow(variable));
+      validatePromptVariableRows();
+    }
+
+    // Replace {{variableName}} tokens with the variable values. Tokens that do
+    // not match a defined variable are left as literal text.
+    function substitutePromptVariables(text: string, variables: PromptVariable[]): string {
+      let result = text;
+      variables.forEach((variable) => {
+        result = result.replace(
+          new RegExp(`\\{\\{\\s*${variable.name}\\s*\\}\\}`, 'g'),
+          () => variable.value
+        );
+      });
+      return result;
+    }
+
+    // Right-click menu on the prompt fields to insert a {{variable}} at the
+    // cursor. Falls back to the browser menu when no variables are defined.
+    let promptVariableInsertMenu: HTMLDivElement | null = null;
+    function hidePromptVariableInsertMenu(): void {
+      promptVariableInsertMenu?.remove();
+      promptVariableInsertMenu = null;
+    }
+    document.addEventListener('click', hidePromptVariableInsertMenu);
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') hidePromptVariableInsertMenu();
+    });
+    function attachPromptVariableInsertMenu(promptTextarea: HTMLTextAreaElement): void {
+      promptTextarea.addEventListener('contextmenu', (event) => {
+        const variables = collectPromptVariables();
+        if (variables.length === 0) return;
+        event.preventDefault();
+        hidePromptVariableInsertMenu();
+        const insertMenu = document.createElement('div');
+        insertMenu.classList.add('dropdown-menu', 'show', 'pb-variable-menu');
+        insertMenu.style.left = `${event.clientX}px`;
+        insertMenu.style.top = `${event.clientY}px`;
+        const insertMenuHeader = document.createElement('h6');
+        insertMenuHeader.classList.add('dropdown-header');
+        insertMenuHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesInsertMenuHeader}`;
+        insertMenu.appendChild(insertMenuHeader);
+        variables.forEach((variable) => {
+          const insertMenuItem = document.createElement('button');
+          insertMenuItem.type = 'button';
+          insertMenuItem.classList.add('dropdown-item');
+          insertMenuItem.innerText = variable.name;
+          if (variable.description) insertMenuItem.title = variable.description;
+          insertMenuItem.onclick = () => {
+            const selectionStart = promptTextarea.selectionStart ?? promptTextarea.value.length;
+            const selectionEnd = promptTextarea.selectionEnd ?? selectionStart;
+            promptTextarea.setRangeText(`{{${variable.name}}}`, selectionStart, selectionEnd, 'end');
+            promptTextarea.focus();
+            hidePromptVariableInsertMenu();
+          };
+          insertMenu.appendChild(insertMenuItem);
+        });
+        document.body.appendChild(insertMenu);
+        promptVariableInsertMenu = insertMenu;
+      });
+    }
+
     const promptBuilderPromptingContainer = document.createElement('div');
     promptBuilderPromptingContainer.style.gap = '20px';
     promptBuilderPromptingContainer.style.display = 'flex';
@@ -861,6 +1089,8 @@ export async function buildPromptBuilder(
     promptBuilderUserPrompt.style.height = '200px';
     promptBuilderPromptingContainer.appendChild(promptBuilderSystemPrompt);
     promptBuilderPromptingContainer.appendChild(promptBuilderUserPrompt);
+    attachPromptVariableInsertMenu(promptBuilderSystemPrompt);
+    attachPromptVariableInsertMenu(promptBuilderUserPrompt);
 
     // Start running experiments
     const promptBuilderRunExperimentsButton = document.createElement('button');
@@ -971,7 +1201,12 @@ export async function buildPromptBuilder(
       const userPrompt = (
         document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-user-prompt`) as HTMLTextAreaElement
       ).value;
-      promptExperimentTracker.push({ systemPrompt: systemPrompt, userPrompt: userPrompt });
+      // The tracker stores the templates plus a snapshot of the variables; the
+      // LLMs receive the prompts with the {{variable}} values filled in.
+      const promptVariables = collectPromptVariables();
+      const resolvedSystemPrompt = substitutePromptVariables(systemPrompt, promptVariables);
+      const resolvedUserPrompt = substitutePromptVariables(userPrompt, promptVariables);
+      promptExperimentTracker.push({ systemPrompt: systemPrompt, userPrompt: userPrompt, variables: promptVariables });
 
       const allPromises: Promise<ExperimentResult>[] = [];
 
@@ -983,8 +1218,8 @@ export async function buildPromptBuilder(
           callSCRLLM(
             promptBuilderObject.SCREndpoint as string,
             modelName,
-            systemPrompt,
-            userPrompt,
+            resolvedSystemPrompt,
+            resolvedUserPrompt,
             options,
             (promptBuilderObject.deploymentType as string) ?? 'k8s'
           ).then((data) => ({ modelName, data: data as ExperimentResult['data'], options }))
@@ -1071,6 +1306,17 @@ export async function buildPromptBuilder(
           const promptExperimentRunHeader = promptExperimentRunContainer.querySelector('.accordion-header') as HTMLElement | null;
           if (promptExperimentRunHeader) {
             promptExperimentRunHeader.classList.add('d-flex', 'align-items-center');
+            const loadRunButton = document.createElement('button');
+            loadRunButton.type = 'button';
+            loadRunButton.classList.add('btn', 'btn-outline-primary', 'btn-sm', 'pet-run-load');
+            loadRunButton.title = `${promptBuilderInterfaceText.promptExperimentLoadRunButton}`;
+            loadRunButton.setAttribute(
+              'aria-label',
+              `${promptBuilderInterfaceText.promptExperimentLoadRunButton} ${index + 1}`
+            );
+            loadRunButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText.promptExperimentLoadRunButton}</title><path d="M440-320v-326L336-542l-56-58 200-200 200 200-56 58-104-104v326h-80ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T680-160H240Z"/></svg>`;
+            loadRunButton.onclick = () => loadExperimentRun(index);
+            promptExperimentRunHeader.appendChild(loadRunButton);
             const deleteRunButton = document.createElement('button');
             deleteRunButton.type = 'button';
             deleteRunButton.classList.add('btn', 'btn-outline-danger', 'btn-sm', 'pet-run-delete');
@@ -1096,16 +1342,30 @@ export async function buildPromptBuilder(
           // Append to the container
           promptExperimentRunContainerItemBody.appendChild(promptExperimentRunContainerItemBodySystemPrompt);
           promptExperimentRunContainerItemBody.appendChild(promptExperimentRunContainerItemBodyUserPrompt);
+          // List the variable definitions used by the run, if any
+          const promptExperimentRunVariables = promptExperimentTrackerRunResult.variables;
+          if (Array.isArray(promptExperimentRunVariables) && promptExperimentRunVariables.length > 0) {
+            const variablesLine = document.createElement('p');
+            variablesLine.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-${index}-run-variables`;
+            const variablesLabel = document.createElement('b');
+            variablesLabel.innerText = `${promptBuilderInterfaceText.promptExperimentTrackerVariables}`;
+            variablesLine.appendChild(variablesLabel);
+            const variablesList = document.createElement('ul');
+            (promptExperimentRunVariables as PromptVariable[]).forEach((variable) => {
+              const variableItem = document.createElement('li');
+              variableItem.textContent = `${variable.name} (${variable.type}): ${variable.value}`;
+              if (variable.description) variableItem.title = variable.description;
+              variablesList.appendChild(variableItem);
+            });
+            variablesLine.appendChild(variablesList);
+            promptExperimentRunContainerItemBody.appendChild(variablesLine);
+          }
           (promptExperimentRunContainer.lastChild as HTMLElement)!.lastChild!.appendChild(promptExperimentRunContainerItemBody);
           // Iterate over the models used in the run
           const promptExperimentContainerModelContainer = document.createElement('div');
           promptExperimentContainerModelContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-${index}-run-nested`;
           for (const promptExperimentRunModelKey in promptExperimentTrackerRunResult) {
-            if (
-              promptExperimentRunModelKey !== 'systemPrompt' &&
-              promptExperimentRunModelKey !== 'userPrompt' &&
-              promptExperimentRunModelKey !== 'author'
-            ) {
+            if (!TRACKER_META_KEYS.includes(promptExperimentRunModelKey)) {
               const modelData = promptExperimentTrackerRunResult[promptExperimentRunModelKey] as ModelExperimentData;
               // Create the accordion
               const promptExperimentContainerModelContainerAccordion = document.createElement('div');
@@ -1290,12 +1550,71 @@ export async function buildPromptBuilder(
       createPromptExperimentTracker(promptExperimentTracker);
     }
 
+    // Restore an experiment run into the workbench: prompts, variables, LLM
+    // selection and each selected LLM's option values. LLMs of the run that
+    // are no longer available are reported in a toast.
+    function loadExperimentRun(index: number): void {
+      const trackerEntry = promptExperimentTracker[index];
+      if (!trackerEntry) return;
+      const systemPromptInput = document.getElementById(
+        `${paneID}-obj-${promptBuilderObject?.id}-system-prompt`
+      ) as HTMLTextAreaElement | null;
+      const userPromptInput = document.getElementById(
+        `${paneID}-obj-${promptBuilderObject?.id}-user-prompt`
+      ) as HTMLTextAreaElement | null;
+      if (systemPromptInput) systemPromptInput.value = trackerEntry.systemPrompt ?? '';
+      if (userPromptInput) userPromptInput.value = trackerEntry.userPrompt ?? '';
+      setPromptVariables(Array.isArray(trackerEntry.variables) ? trackerEntry.variables : []);
+      // Reselect the run's LLMs and restore their option values
+      const runModels = Object.keys(trackerEntry).filter((key) => !TRACKER_META_KEYS.includes(key));
+      promptBuilderAvailableLLMs.forEach((availableLLM, llmIndex) => {
+        const llmCheckbox = document.getElementById(`model${llmIndex}`) as HTMLInputElement | null;
+        if (!llmCheckbox) return;
+        const selected = runModels.includes(availableLLM.name);
+        if (llmCheckbox.checked !== selected) {
+          llmCheckbox.checked = selected;
+          // Fires the listener that shows/hides the option inputs
+          llmCheckbox.dispatchEvent(new Event('change'));
+        }
+        if (selected) {
+          const modelData = trackerEntry[availableLLM.name] as ModelExperimentData;
+          Object.entries(modelData?.options ?? {}).forEach(([optionKey, optionValue]) => {
+            if (optionKey === 'API_KEY') return;
+            const optionInput = document.getElementById(`${optionKey}${llmIndex}`) as HTMLInputElement | null;
+            if (optionInput) optionInput.value = String(optionValue);
+          });
+        }
+      });
+      const missingLLMs = runModels.filter(
+        (modelName) => !promptBuilderAvailableLLMs.some((availableLLM) => availableLLM.name === modelName)
+      );
+      if (missingLLMs.length > 0) {
+        showToast(`${promptBuilderInterfaceText?.promptBuilderLoadMissingLLMs} ${missingLLMs.join(', ')}`);
+      }
+    }
+
+    // Load the most recent run that has a best response selected.
+    function loadMostRecentBestRun(): void {
+      for (let index = promptExperimentTracker.length - 1; index >= 0; index--) {
+        const trackerEntry = promptExperimentTracker[index];
+        const hasBestPrompt = Object.keys(trackerEntry).some(
+          (key) =>
+            !TRACKER_META_KEYS.includes(key) && (trackerEntry[key] as ModelExperimentData)?.best_prompt
+        );
+        if (hasBestPrompt) {
+          loadExperimentRun(index);
+          return;
+        }
+      }
+      showToast(`${promptBuilderInterfaceText?.promptBuilderLoadNoBestPrompt}`);
+    }
+
     // Transform the data structure to be saved in SAS Model Manager
     function promptExperimentTransformData(inputArray: ExperimentTrackerEntry[]): PETRow[] {
       return inputArray
         .map((entry, index) => {
           const MODELKEYS = Object.keys(entry).filter(
-            (key) => key !== 'systemPrompt' && key !== 'userPrompt'
+            (key) => !TRACKER_META_KEYS.includes(key)
           );
           const responseForModel: PETRow[] = [];
           MODELKEYS.forEach((MODELKEY, MODELINDEX) => {
@@ -1304,6 +1623,7 @@ export async function buildPromptBuilder(
                 runId: index + 1,
                 systemPrompt: entry.systemPrompt,
                 userPrompt: entry.userPrompt,
+                variables: Array.isArray(entry.variables) ? entry.variables : null,
                 model: '',
                 options: '',
                 response: '',
@@ -1359,6 +1679,16 @@ export async function buildPromptBuilder(
       await promptBuilderSaveExperiments();
       await promptBulderCreateBestPromptModel();
     };
+    // Load the most recent best prompt back into the workbench
+    const promptExperimentLoadBestButton = document.createElement('button');
+    promptExperimentLoadBestButton.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-load-best-button`;
+    promptExperimentLoadBestButton.innerText = `${promptBuilderInterfaceText?.promptBuilderLoadBestPromptButton}`;
+    promptExperimentLoadBestButton.setAttribute('type', 'button');
+    promptExperimentLoadBestButton.setAttribute('class', 'btn btn-secondary');
+    promptExperimentLoadBestButton.onclick = function () {
+      loadMostRecentBestRun();
+    };
+
     // Response for the user about saving
     const promptExperimentResultContainer = document.createElement('div');
     promptExperimentResultContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-save-result`;
@@ -1443,15 +1773,12 @@ export async function buildPromptBuilder(
           }
         }
       });
-      // Get the system & user Prompt for the Best Prompt
+      // Get the system & user Prompt for the Best Prompt (its run header row)
       let basePrompt: PETRow | null = null;
       if (bestPromptItem !== null) {
         basePrompt = petRows.find(
-          (item) => item.runId === (bestPromptItem as PETRow).runId && item.systemPrompt.trim().length > 0
+          (item) => item.runId === (bestPromptItem as PETRow).runId && item.model === ''
         ) ?? null;
-        let parsedUserPrompt = basePrompt!.userPrompt.trim().split(';');
-        // Remove empty items, if the user closed with a semi-colon
-        parsedUserPrompt = parsedUserPrompt.filter(Boolean);
         const promptInputs: {
           name: string;
           description: string;
@@ -1459,44 +1786,71 @@ export async function buildPromptBuilder(
           type: string;
           length: number;
         }[] = [];
-        // Parse the input and create the input signature
-        if (parsedUserPrompt.length >= 1) {
-          parsedUserPrompt.forEach((item) => {
-            // Check that the variable name doesn't contain blanks
-            const tempInputVar = item.split(':');
-            if (tempInputVar.length > 1 && isValidDS2VariableName(tempInputVar[0])) {
-              const varType =
-                String(tempInputVar[1]).trim() === '' || isNaN(Number(tempInputVar[1]))
-                  ? 'string'
-                  : 'decimal';
-              const varLevel = varType === 'string' ? 'nominal' : 'interval';
+        // Runs created with the variables manager carry their definitions: the
+        // model inputs are the variables referenced as {{name}} in either
+        // prompt template. Runs without stored variables fall back to the
+        // legacy variableName:variableValue;... parsing of the user prompt.
+        const runVariables: PromptVariable[] | null = Array.isArray(basePrompt?.variables)
+          ? (basePrompt!.variables as PromptVariable[])
+          : null;
+        const referencedVariables: PromptVariable[] = [];
+        if (runVariables) {
+          runVariables.forEach((variable) => {
+            const variableToken = new RegExp(`\\{\\{\\s*${variable.name}\\s*\\}\\}`);
+            if (variableToken.test(basePrompt!.systemPrompt) || variableToken.test(basePrompt!.userPrompt)) {
+              referencedVariables.push(variable);
               promptInputs.push({
-                name: tempInputVar[0],
-                description: '',
-                level: varLevel,
-                type: varType,
-                length: varType === 'string' ? 128000 : 8,
+                name: variable.name,
+                description: variable.description,
+                level: variable.type === 'decimal' ? 'interval' : 'nominal',
+                type: variable.type === 'decimal' ? 'decimal' : 'string',
+                length: variable.type === 'decimal' ? 8 : 128000,
               });
-            } else {
-              if (!promptInputs.some((pi) => pi.name === 'userPrompt')) {
-                promptInputs.push({
-                  name: 'userPrompt',
-                  description: 'Captures any non-structured inputs for the prompt template',
-                  level: 'nominal',
-                  type: 'string',
-                  length: 128000,
-                });
-              }
             }
           });
         } else {
-          promptInputs.push({
-            name: 'userPrompt',
-            description: 'Captures any non-structured inputs for the prompt template',
-            level: 'nominal',
-            type: 'string',
-            length: 128000,
-          });
+          let parsedUserPrompt = basePrompt!.userPrompt.trim().split(';');
+          // Remove empty items, if the user closed with a semi-colon
+          parsedUserPrompt = parsedUserPrompt.filter(Boolean);
+          // Parse the input and create the input signature
+          if (parsedUserPrompt.length >= 1) {
+            parsedUserPrompt.forEach((item) => {
+              // Check that the variable name doesn't contain blanks
+              const tempInputVar = item.split(':');
+              if (tempInputVar.length > 1 && isValidDS2VariableName(tempInputVar[0])) {
+                const varType =
+                  String(tempInputVar[1]).trim() === '' || isNaN(Number(tempInputVar[1]))
+                    ? 'string'
+                    : 'decimal';
+                const varLevel = varType === 'string' ? 'nominal' : 'interval';
+                promptInputs.push({
+                  name: tempInputVar[0],
+                  description: '',
+                  level: varLevel,
+                  type: varType,
+                  length: varType === 'string' ? 128000 : 8,
+                });
+              } else {
+                if (!promptInputs.some((pi) => pi.name === 'userPrompt')) {
+                  promptInputs.push({
+                    name: 'userPrompt',
+                    description: 'Captures any non-structured inputs for the prompt template',
+                    level: 'nominal',
+                    type: 'string',
+                    length: 128000,
+                  });
+                }
+              }
+            });
+          } else {
+            promptInputs.push({
+              name: 'userPrompt',
+              description: 'Captures any non-structured inputs for the prompt template',
+              level: 'nominal',
+              type: 'string',
+              length: 128000,
+            });
+          }
         }
         // Check if the options contains an API-Key
         let requiresAPIKey = false;
@@ -1532,6 +1886,26 @@ export async function buildPromptBuilder(
             scoreCodeUserPrompt += `${promptInputs[i].name}: {str(${promptInputs[i].name}).strip()}`;
           }
         }
+        // For variable-based runs both prompts become Python f-strings built
+        // from the stored templates: literal braces are escaped for the
+        // f-string and each referenced {{variable}} becomes a score-function
+        // input that is inserted at its position in the template.
+        const promptTemplateToPythonFString = (template: string): string => {
+          let fString = template.replace(/\{/g, '{{').replace(/\}/g, '}}');
+          referencedVariables.forEach((variable) => {
+            fString = fString.replace(
+              new RegExp(`\\{\\{\\{\\{\\s*${variable.name}\\s*\\}\\}\\}\\}`, 'g'),
+              `{str(${variable.name}).strip()}`
+            );
+          });
+          return fString;
+        };
+        const scoreCodeSystemPromptLiteral = runVariables
+          ? `f"""${promptTemplateToPythonFString(basePrompt!.systemPrompt)}"""`
+          : `"""${basePrompt!.systemPrompt}"""`;
+        const scoreCodeUserPromptLiteral = runVariables
+          ? `f"""${promptTemplateToPythonFString(basePrompt!.userPrompt)}"""`
+          : `f"${scoreCodeUserPrompt}"`;
         // Create the options string for the score code
         let scoreCodeOptions = '';
         for (let i = 0; i < bestPromptOptionsList.length; i++) {
@@ -1581,9 +1955,9 @@ def scoreModel(${scoreCodeInput}):
     # These are the options that were set for the best prompt
     options = f"{{${scoreCodeOptions}}}"
     # This is the system prompt that was selected as the best one by the prompt engineer
-    systemPrompt = """${basePrompt!.systemPrompt}""".replace('\\n', "\\\\n").replace("'", '"').replace('"', '\\\\"')
+    systemPrompt = ${scoreCodeSystemPromptLiteral}.replace('\\n', "\\\\n").replace("'", '"').replace('"', '\\\\"')
     # Here the user prompt will be created from the inputs of the call
-    userPrompt = f"${scoreCodeUserPrompt}".replace('\\n', "\\\\n").replace("'", '"').replace('"', '\\\\"')
+    userPrompt = ${scoreCodeUserPromptLiteral}.replace('\\n', "\\\\n").replace("'", '"').replace('"', '\\\\"')
     llmBody = '{"inputs":[{"name":"systemPrompt","value":"' + systemPrompt + '"},{"name":"userPrompt","value":"' + userPrompt + '"},{"name":"options","value":"' + options + '"}]}'
     return llmBody, llmURL`;
         const mainfestPromptScoreCodeBlob = new Blob([scoreCode], { type: 'text/x-python' });
@@ -1632,6 +2006,12 @@ def scoreModel(${scoreCodeInput}):
     promptBuilderContainer.appendChild(promptBuilderPromptingHeader);
     promptBuilderContainer.appendChild(promptBulderPromptingExplainer);
     promptBuilderContainer.appendChild(document.createElement('br'));
+    promptBuilderContainer.appendChild(promptBuilderVariablesHeader);
+    promptBuilderContainer.appendChild(promptBuilderVariablesDescription);
+    promptBuilderContainer.appendChild(promptBuilderVariablesContainer);
+    promptBuilderContainer.appendChild(promptBuilderVariablesAddButton);
+    promptBuilderContainer.appendChild(document.createElement('br'));
+    promptBuilderContainer.appendChild(document.createElement('br'));
     promptBuilderContainer.appendChild(promptBuilderPromptingContainer);
     promptBuilderContainer.appendChild(document.createElement('br'));
     promptBuilderContainer.appendChild(promptBuilderRunExperimentsButton);
@@ -1641,6 +2021,7 @@ def scoreModel(${scoreCodeInput}):
     promptBuilderContainer.appendChild(document.createElement('br'));
     promptBuilderContainer.appendChild(promptExperimentSaveButton);
     promptBuilderContainer.appendChild(promptExperimentCreateModelButton);
+    promptBuilderContainer.appendChild(promptExperimentLoadBestButton);
     promptBuilderContainer.appendChild(document.createElement('br'));
     promptBuilderContainer.appendChild(document.createElement('br'));
     promptBuilderContainer.appendChild(promptExperimentResultContainer);
