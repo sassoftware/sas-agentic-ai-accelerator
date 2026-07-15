@@ -451,6 +451,9 @@ export async function buildPromptBuilder(
       petRows = [];
       experimentsModified = false;
       promptExperimentResultContainer.innerHTML = '';
+      // Reset the manifest panel to its defaults; loading a run afterwards
+      // re-applies that run's stored configuration
+      applyManifestConfig(null);
       updateTrackerEmptyState();
       updateManifestButtonState();
       openInMMButton.classList.add('disabled');

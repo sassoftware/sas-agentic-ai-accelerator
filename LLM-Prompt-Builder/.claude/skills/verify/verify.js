@@ -416,6 +416,20 @@ function multipartJson(body) {
     'output variable default value restored by load'
   );
 
+  // ---- switching to a prompt WITHOUT a tracker also resets the panel --------
+  assert(await page.isChecked('#app-obj-LPB-pet-manifest-integrated'), 'panel configured before the switch');
+  await page.selectOption('#LPB-prompt-dropdown', 'model-free');
+  await waitUntil(
+    async () => !(await page.isChecked('#app-obj-LPB-pet-manifest-integrated')),
+    'manifest panel reset on switching to a tracker-less prompt'
+  );
+  step(true, 'output/manifest panel reset when switching to a prompt without runs');
+  assert((await page.locator('.pb-outvar-row').count()) === 0, 'output variable rows cleared by the switch');
+  assert(await page.isChecked('#app-obj-LPB-pet-out-run_time'), 'default outputs reselected by the switch');
+  assert(!(await page.isVisible('#app-obj-LPB-pet-manifest-options')), 'options panel hidden again after the switch');
+  await page.selectOption('#LPB-prompt-dropdown', 'model-used');
+  await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 3, 'switched back to the tracked prompt');
+
   // ---- auto-load re-applies the best prompt on re-selection -----------------
   await page.fill('#app-obj-LPB-system-prompt', 'scratch');
   await page.selectOption('#LPB-prompt-dropdown', 'Select an existing Prompt-Test');
