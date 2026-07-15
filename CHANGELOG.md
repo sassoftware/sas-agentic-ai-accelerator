@@ -22,8 +22,11 @@ The standalone LLM Prompt Builder now supports deleting prompt experiment runs, 
 
 - The `variableName:variableValue;...` user-prompt syntax is replaced by the `{{variableName}}` variables described above; prompts saved with the old syntax still load and manifest through the previous parsing
 - Reworked page layout: the page is grouped into five visual sections (project & prompt, LLMs, prompt workbench, experiment tracker, manifest) with a proper heading hierarchy, and manifesting is its own section with the configuration above the action button
-- Saving and manifesting now confirm success via toast notifications, "Run Experiments" stays disabled (with a hint) until at least one LLM is selected, and the create-prompt explanation moved from the button label into the dialog
+- Saving and manifesting now confirm success via toast notifications (deletion errors report through toasts as well), "Run Experiments" stays disabled (with a hint) until at least one LLM is selected, "Manifest Best Prompt" stays disabled until a run has a selected best response, and the create-prompt explanation moved from the button label into the dialog
 - "Save Experiments" and "Manifest Best Prompt" are real buttons now, so they are keyboard-accessible and properly disabled while busy
+- The experiment tracker shows an empty-state hint until a prompt with runs is selected, the destructive delete buttons sit right-aligned away from the other actions, and the LLM option explanations are Bootstrap tooltips (keyboard- and touch-accessible)
+- A SAS-blue accent theme (buttons, checkboxes, headings, white section cards on a light background) replaces the stock Bootstrap look, and a loading spinner is shown while the app fetches its metadata
+- The LLM definitions and their options are now loaded in parallel instead of one after another, which speeds up the initial load considerably for environments with many LLMs
 - The Vite dev-server proxy now also forwards `/relationships` and `/decisions` calls to the configured SAS Viya host
 
 ### Fixed

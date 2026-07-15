@@ -33,6 +33,7 @@ import { escapeHtml } from '../ui/dom-helpers';
 import { renderMarkdown } from '../ui/markdown';
 import { isValidDS2VariableName, validateAndCorrectPackageName } from '../util/validation';
 import Modal from 'bootstrap/js/dist/modal';
+import Tooltip from 'bootstrap/js/dist/tooltip';
 
 interface ModelOption {
   default: unknown;
@@ -360,9 +361,11 @@ export async function buildPromptBuilder(
       }
     };
 
-    // Add the creation prompt buttons and modals
+    // Add the creation prompt buttons and modals. The row is a flex container
+    // so the destructive actions can sit right-aligned, away from the rest.
     const promptBuilderModalButtonContainer = document.createElement('div');
     promptBuilderModalButtonContainer.setAttribute('id', `${promptBuilderObject?.id}-modal-button-container`);
+    promptBuilderModalButtonContainer.classList.add('d-flex', 'flex-wrap', 'align-items-center');
 
     // Function to call when creating a new project
     async function promptBuilderCreateProject(): Promise<void> {
@@ -448,6 +451,8 @@ export async function buildPromptBuilder(
       petRows = [];
       experimentsModified = false;
       promptExperimentResultContainer.innerHTML = '';
+      updateTrackerEmptyState();
+      updateManifestButtonState();
       openInMMButton.classList.add('disabled');
       openInMMButton.setAttribute('aria-disabled', 'true');
       openInMMButton.removeAttribute('href');
@@ -518,7 +523,7 @@ export async function buildPromptBuilder(
           promptBuilderPromptSelectorDropdown.value = `${promptBuilderInterfaceText?.promptSelect}`;
           resetExperimentTrackerState();
         } else {
-          promptExperimentResultContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`;
+          showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
         }
       } finally {
         deletePromptButton.innerText = `${promptBuilderInterfaceText?.promptBuilderDeletePromptButton}`;
@@ -541,7 +546,7 @@ export async function buildPromptBuilder(
           projectPrompts = await getModelProjectModels(projectID);
         } catch (error) {
           console.error('Failed to load the prompts of the selected project.', error);
-          promptExperimentResultContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`;
+          showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
           return;
         }
         // Confirm every contained prompt (with its decision usage) one by one
@@ -572,7 +577,7 @@ export async function buildPromptBuilder(
         for (const projectPrompt of projectPrompts) {
           const modelDeleteStatus = await deleteModel(projectPrompt.value);
           if (modelDeleteStatus !== 204) {
-            promptExperimentResultContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`;
+            showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
             return;
           }
         }
@@ -588,7 +593,7 @@ export async function buildPromptBuilder(
           promptBuilderPromptSelectorDropdown.append(tmpPromptBuilderPromptSelectorItem);
           resetExperimentTrackerState();
         } else {
-          promptExperimentResultContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`;
+          showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
         }
       } finally {
         deleteProjectButton.innerText = `${promptBuilderInterfaceText?.promptBuilderDeleteProjectButton}`;
@@ -729,7 +734,7 @@ export async function buildPromptBuilder(
     const deletePromptButton = document.createElement('button');
     deletePromptButton.type = 'button';
     deletePromptButton.id = `${promptBuilderObject?.id}-delete-prompt-button`;
-    deletePromptButton.classList.add('btn', 'btn-danger');
+    deletePromptButton.classList.add('btn', 'btn-danger', 'ms-auto');
     deletePromptButton.disabled = true;
     deletePromptButton.innerText = `${promptBuilderInterfaceText?.promptBuilderDeletePromptButton}`;
     deletePromptButton.onclick = async function () {
@@ -747,6 +752,24 @@ export async function buildPromptBuilder(
       promptBuilderDeleteProject();
     };
     promptBuilderModalButtonContainer.appendChild(deleteProjectButton);
+
+    // Label + info icon for an LLM option; the explanation is a Bootstrap
+    // tooltip so it also works with keyboard focus and touch.
+    function createOptionLabel(labelText: string, infoHtml: string): HTMLDivElement {
+      const labelContainer = document.createElement('div');
+      labelContainer.classList.add('info-container');
+      labelContainer.append(`${labelText}: `);
+      const infoIcon = document.createElement('span');
+      infoIcon.classList.add('info-icon');
+      infoIcon.innerHTML = '&#x2139;&#xFE0F;';
+      infoIcon.setAttribute('tabindex', '0');
+      infoIcon.setAttribute('role', 'button');
+      infoIcon.setAttribute('aria-label', labelText);
+      infoIcon.setAttribute('data-bs-toggle', 'tooltip');
+      new Tooltip(infoIcon, { title: infoHtml, html: true, container: 'body' });
+      labelContainer.appendChild(infoIcon);
+      return labelContainer;
+    }
 
     function generateModelSelection(availableModels: AvailableLLM[]): void {
       availableModels.forEach((model, index) => {
@@ -780,10 +803,9 @@ export async function buildPromptBuilder(
           temperatureInput.step = '0.1';
           temperatureInput.min = '0';
           temperatureInput.max = '1';
-          const temperatureInformationContainer = document.createElement('div');
-          temperatureInformationContainer.className = 'info-container';
-          temperatureInformationContainer.innerHTML = `Temperature: <span class="info-icon">&#x2139;&#xFE0F;</span><span class="info-content">${promptBuilderInterfaceText?.promptBuilderTemperatureInfo}</span>`;
-          optionsDiv.appendChild(temperatureInformationContainer);
+          optionsDiv.appendChild(
+            createOptionLabel('Temperature', String(promptBuilderInterfaceText?.promptBuilderTemperatureInfo))
+          );
           optionsDiv.appendChild(temperatureInput);
         }
 
@@ -795,10 +817,9 @@ export async function buildPromptBuilder(
           topPInput.step = '0.1';
           topPInput.min = '0';
           topPInput.max = '1';
-          const topPInformationContainer = document.createElement('div');
-          topPInformationContainer.className = 'info-container';
-          topPInformationContainer.innerHTML = `Top P: <span class="info-icon">&#x2139;&#xFE0F;</span><span class="info-content">${promptBuilderInterfaceText?.promptBuilderTop_PInfo}</span>`;
-          optionsDiv.appendChild(topPInformationContainer);
+          optionsDiv.appendChild(
+            createOptionLabel('Top P', String(promptBuilderInterfaceText?.promptBuilderTop_PInfo))
+          );
           optionsDiv.appendChild(topPInput);
         }
 
@@ -810,10 +831,9 @@ export async function buildPromptBuilder(
           topKInput.step = '1';
           topKInput.min = '1';
           topKInput.max = '100';
-          const topKInformationContainer = document.createElement('div');
-          topKInformationContainer.className = 'info-container';
-          topKInformationContainer.innerHTML = `Top K: <span class="info-icon">&#x2139;&#xFE0F;</span><span class="info-content">${promptBuilderInterfaceText?.promptBuilderTop_KInfo}</span>`;
-          optionsDiv.appendChild(topKInformationContainer);
+          optionsDiv.appendChild(
+            createOptionLabel('Top K', String(promptBuilderInterfaceText?.promptBuilderTop_KInfo))
+          );
           optionsDiv.appendChild(topKInput);
         }
 
@@ -825,10 +845,9 @@ export async function buildPromptBuilder(
           maxLengthInput.step = '1';
           maxLengthInput.min = '0';
           maxLengthInput.max = '1000000';
-          const maxLengthInformationContainer = document.createElement('div');
-          maxLengthInformationContainer.className = 'info-container';
-          maxLengthInformationContainer.innerHTML = `Max Length: <span class="info-icon">&#x2139;&#xFE0F;</span><span class="info-content">${promptBuilderInterfaceText?.promptBuilderMax_LengthInfo}</span>`;
-          optionsDiv.appendChild(maxLengthInformationContainer);
+          optionsDiv.appendChild(
+            createOptionLabel('Max Length', String(promptBuilderInterfaceText?.promptBuilderMax_LengthInfo))
+          );
           optionsDiv.appendChild(maxLengthInput);
         }
 
@@ -840,10 +859,9 @@ export async function buildPromptBuilder(
           maxTokensInput.step = '1';
           maxTokensInput.min = '0';
           maxTokensInput.max = '1000000';
-          const maxTokensInformationContainer = document.createElement('div');
-          maxTokensInformationContainer.className = 'info-container';
-          maxTokensInformationContainer.innerHTML = `Max Tokens: <span class="info-icon">&#x2139;&#xFE0F;</span><span class="info-content">${promptBuilderInterfaceText?.promptBuilderMax_LengthInfo}</span>`;
-          optionsDiv.appendChild(maxTokensInformationContainer);
+          optionsDiv.appendChild(
+            createOptionLabel('Max Tokens', String(promptBuilderInterfaceText?.promptBuilderMax_LengthInfo))
+          );
           optionsDiv.appendChild(maxTokensInput);
         }
 
@@ -855,10 +873,9 @@ export async function buildPromptBuilder(
           maxNewTokensInput.step = '1';
           maxNewTokensInput.min = '0';
           maxNewTokensInput.max = '1000000';
-          const maxNewTokensInformationContainer = document.createElement('div');
-          maxNewTokensInformationContainer.className = 'info-container';
-          maxNewTokensInformationContainer.innerHTML = `Max New Tokens: <span class="info-icon">&#x2139;&#xFE0F;</span><span class="info-content">${promptBuilderInterfaceText?.promptBuilderMax_LengthInfo}</span>`;
-          optionsDiv.appendChild(maxNewTokensInformationContainer);
+          optionsDiv.appendChild(
+            createOptionLabel('Max New Tokens', String(promptBuilderInterfaceText?.promptBuilderMax_LengthInfo))
+          );
           optionsDiv.appendChild(maxNewTokensInput);
         }
 
@@ -874,25 +891,28 @@ export async function buildPromptBuilder(
     promptBuilderModelSelectorHeader.innerText = promptBuilderInterfaceText?.promptBuilderModelSelectorHeading as string;
     const promptBuilderModelSelectorContainer = document.createElement('div');
     promptBuilderModelSelectorContainer.setAttribute('id', `${promptBuilderObject?.id}-model-selector-container`);
-    let promptBuilderAvailableLLMs: AvailableLLM[] = (await getModelProjectModels(promptBuilderObject?.llmProjectID as string)).map(o => ({ ...o, id: o.value, name: o.innerHTML }));
-    const promptBuilderDeprecatedLLMs: AvailableLLM[] = (await getModelProjectModels(promptBuilderObject?.llmProjectID as string, "eq(tags,'deprecated')")).map(o => ({ ...o, id: o.value, name: o.innerHTML }));
-    promptBuilderAvailableLLMs = promptBuilderAvailableLLMs.filter(
-      (obj1) => !promptBuilderDeprecatedLLMs.some((obj2) => obj1.id === obj2.id)
-    );
-    for (const promptBuilderAvailableLLM in promptBuilderAvailableLLMs) {
-      const promptBuilderAvailableLLMContents = await getModelContents(promptBuilderAvailableLLMs[promptBuilderAvailableLLM]?.id);
-      for (const promptBuilderAvailableLLMContent in promptBuilderAvailableLLMContents) {
-        if (promptBuilderAvailableLLMContents[promptBuilderAvailableLLMContent]?.name === 'options.json') {
-          promptBuilderAvailableLLMs[promptBuilderAvailableLLM].fileURI =
-            promptBuilderAvailableLLMContents[promptBuilderAvailableLLMContent]?.fileUri;
-          const promptBuilderCurrentOptions = await getFileContent(
-            promptBuilderAvailableLLMs[promptBuilderAvailableLLM].fileURI!
-          );
-          const promptBuilderCurrentOptionsContent = await promptBuilderCurrentOptions.json();
-          promptBuilderAvailableLLMs[promptBuilderAvailableLLM].options = promptBuilderCurrentOptionsContent;
+    // Load the available and deprecated LLM lists, then each LLM's options.json,
+    // all in parallel — done serially this delays the first paint noticeably.
+    const [promptBuilderAllLLMOptions, promptBuilderDeprecatedLLMOptions] = await Promise.all([
+      getModelProjectModels(promptBuilderObject?.llmProjectID as string),
+      getModelProjectModels(promptBuilderObject?.llmProjectID as string, "eq(tags,'deprecated')"),
+    ]);
+    const promptBuilderDeprecatedLLMs: AvailableLLM[] = promptBuilderDeprecatedLLMOptions.map(o => ({ ...o, id: o.value, name: o.innerHTML }));
+    const promptBuilderAvailableLLMs: AvailableLLM[] = promptBuilderAllLLMOptions
+      .map(o => ({ ...o, id: o.value, name: o.innerHTML }))
+      .filter((obj1) => !promptBuilderDeprecatedLLMs.some((obj2) => obj1.id === obj2.id));
+    await Promise.all(
+      promptBuilderAvailableLLMs.map(async (availableLLM) => {
+        const availableLLMContents = await getModelContents(availableLLM.id);
+        for (const availableLLMContent of availableLLMContents) {
+          if (availableLLMContent?.name === 'options.json') {
+            availableLLM.fileURI = availableLLMContent.fileUri;
+            const currentOptions = await getFileContent(availableLLM.fileURI!);
+            availableLLM.options = await currentOptions.json();
+          }
         }
-      }
-    }
+      })
+    );
     generateModelSelection(promptBuilderAvailableLLMs);
 
     // Add the prompting inputs
@@ -1325,6 +1345,14 @@ export async function buildPromptBuilder(
 
     const promptExperimentTrackerHeader = document.createElement('h2');
     promptExperimentTrackerHeader.innerText = `${promptBuilderInterfaceText?.promptExperimentTrackerHeading}`;
+    // Empty-state hint, shown while no experiment runs exist
+    const promptExperimentEmptyHint = document.createElement('p');
+    promptExperimentEmptyHint.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-empty`;
+    promptExperimentEmptyHint.classList.add('text-muted');
+    promptExperimentEmptyHint.innerText = `${promptBuilderInterfaceText?.promptExperimentTrackerEmpty}`;
+    function updateTrackerEmptyState(): void {
+      promptExperimentEmptyHint.style.display = promptExperimentTracker.length === 0 ? '' : 'none';
+    }
     const promptExperimentContainer = document.createElement('div');
     promptExperimentContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet`;
 
@@ -1498,6 +1526,7 @@ export async function buildPromptBuilder(
                     // Keep the tracker in sync so the selection survives a
                     // re-render (e.g. after a run was deleted)
                     modelData.best_prompt = bestPromptCheckbox.checked;
+                    updateManifestButtonState();
                   });
 
                   const bestPromptLabel = document.createElement('label');
@@ -1581,6 +1610,8 @@ export async function buildPromptBuilder(
         }
       });
       petRows = promptExperimentTransformData(promptExperimentTracker);
+      updateTrackerEmptyState();
+      updateManifestButtonState();
     }
 
     // Delete one experiment run and renumber the remaining ones. The runId is
@@ -1736,6 +1767,19 @@ export async function buildPromptBuilder(
       await promptBuilderSaveExperiments();
       await promptBulderCreateBestPromptModel();
     };
+    // Disabled (with a hint) until a run has a best response selected
+    function updateManifestButtonState(): void {
+      const hasBestPrompt = promptExperimentTracker.some((trackerEntry) =>
+        Object.keys(trackerEntry).some(
+          (key) => !TRACKER_META_KEYS.includes(key) && (trackerEntry[key] as ModelExperimentData)?.best_prompt
+        )
+      );
+      promptExperimentCreateModelButton.disabled = !hasBestPrompt;
+      promptExperimentCreateModelButton.title = hasBestPrompt
+        ? ''
+        : `${promptBuilderInterfaceText?.promptBuilderCreateModelNoBestPrompt}`;
+    }
+    updateManifestButtonState();
     // Manifest section: configure how the best prompt becomes a model, with
     // the action button below the configuration.
     const promptExperimentManifestHeader = document.createElement('h2');
@@ -2485,6 +2529,7 @@ ${scoreCodeReturn}`;
 
     const trackerSection = createPageSection();
     trackerSection.appendChild(promptExperimentTrackerHeader);
+    trackerSection.appendChild(promptExperimentEmptyHint);
     trackerSection.appendChild(promptExperimentContainer);
     trackerSection.appendChild(document.createElement('br'));
     trackerSection.appendChild(promptExperimentSaveButton);

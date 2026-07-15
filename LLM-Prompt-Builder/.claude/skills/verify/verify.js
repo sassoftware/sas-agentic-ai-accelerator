@@ -66,6 +66,25 @@ function multipartJson(body) {
   assert((await page.$$('h1')).length === 1, 'exactly one h1 on the page');
   assert((await page.$$('.pb-section')).length === 5, 'page grouped into five visual sections');
   assert(await page.isDisabled('#app-obj-LPB-run-experiment'), 'Run Experiments disabled until an LLM is selected');
+  assert(await page.isVisible('#app-obj-LPB-pet-empty'), 'tracker shows an empty-state hint');
+  assert(
+    await page.isDisabled('#app-obj-LPB-pet-create-model-button'),
+    'Manifest disabled until a best response exists'
+  );
+  assert(
+    (await page.getAttribute('#app-obj-LPB-pet-create-model-button', 'title')).length > 0,
+    'disabled Manifest button carries a hint'
+  );
+  const brandColor = await page.evaluate(
+    () => getComputedStyle(document.getElementById('app-obj-LPB-run-experiment')).backgroundColor
+  );
+  assert(brandColor === 'rgb(7, 102, 209)', `SAS-blue accent applied to primary buttons (got: ${brandColor})`);
+  const deleteRightAligned = await page.evaluate(() => {
+    const buttonRow = document.getElementById('LPB-modal-button-container');
+    const deleteProject = document.getElementById('LPB-delete-project-button');
+    return buttonRow.getBoundingClientRect().right - deleteProject.getBoundingClientRect().right < 40;
+  });
+  assert(deleteRightAligned, 'destructive actions right-aligned in the button row');
   assert(
     (await page.getAttribute('#app-obj-LPB-run-experiment', 'title')).length > 0,
     'disabled Run Experiments carries a hint'
@@ -121,6 +140,17 @@ function multipartJson(body) {
     !(await page.isDisabled('#app-obj-LPB-run-experiment')),
     'Run Experiments enabled once an LLM is selected'
   );
+  assert(!(await page.isVisible('#app-obj-LPB-pet-empty')), 'empty-state hint hidden once runs exist');
+  assert(
+    !(await page.isDisabled('#app-obj-LPB-pet-create-model-button')),
+    'Manifest enabled (loaded tracker has a best response)'
+  );
+  // probe: option explanations are keyboard/touch-friendly Bootstrap tooltips
+  await page.hover('#options0 .info-icon');
+  await page.waitForSelector('.tooltip');
+  const tooltipText = await page.textContent('.tooltip');
+  assert(tooltipText.includes('Temperature is a parameter'), 'option info shown as Bootstrap tooltip on hover');
+  await page.mouse.move(0, 0);
 
   // ---- load an experiment run back into the workbench ----------------------
   await page.click('#app-obj-LPB-pet-2 .pet-run-load');
@@ -470,6 +500,11 @@ function multipartJson(body) {
   await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 1, 'second run deleted');
   await page.click('#app-obj-LPB-pet-0 .pet-run-delete');
   await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 0, 'all runs deleted');
+  assert(await page.isVisible('#app-obj-LPB-pet-empty'), 'empty-state hint returns when all runs are deleted');
+  assert(
+    await page.isDisabled('#app-obj-LPB-pet-create-model-button'),
+    'Manifest disabled again once the best run is gone'
+  );
   const dialogsBefore = dialogs.length;
   await resetLog();
   await page.click('#app-obj-LPB-pet-save-button');

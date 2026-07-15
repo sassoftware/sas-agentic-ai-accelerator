@@ -100,6 +100,20 @@ async function main(): Promise<void> {
     getAppState().userName = null;
   }
 
+  // Show a loading indicator while the builder fetches its metadata
+  const loadingIndicator = document.createElement('div');
+  loadingIndicator.className = 'd-flex justify-content-center p-5';
+  const loadingSpinner = document.createElement('div');
+  loadingSpinner.className = 'spinner-border';
+  loadingSpinner.style.color = 'var(--pb-primary)';
+  loadingSpinner.setAttribute('role', 'status');
+  const loadingLabel = document.createElement('span');
+  loadingLabel.className = 'visually-hidden';
+  loadingLabel.textContent = 'Loading...';
+  loadingSpinner.appendChild(loadingLabel);
+  loadingIndicator.appendChild(loadingSpinner);
+  root.replaceChildren(loadingIndicator);
+
   try {
     const element = await buildPromptBuilder(promptBuilder, 'app', interfaceText);
     root.replaceChildren(element);

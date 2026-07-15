@@ -49,6 +49,7 @@
     "promptBuilderTop_KInfo": "Der Top-k-Parameter beeinflusst, wie das Modell Tokens für die Ausgabe auswählt. Ein Top-k-Wert von 1 bedeutet, dass das ausgewählte Token das wahrscheinlichste unter allen Tokens im Vokabular des Modells ist (auch als greedy decoding bezeichnet), während ein Top-k-Wert von 3 bedeutet, dass das nächste Token aus den drei wahrscheinlichsten Tokens mithilfe der Temperatur ausgewählt wird. Bei jedem Schritt der Token-Auswahl werden die Top-k-Tokens mit den höchsten Wahrscheinlichkeiten betrachtet. Anschließend werden die Tokens basierend auf Top-p weiter gefiltert, und das finale Token wird mithilfe der Temperatur-Sampling-Methode ausgewählt.",
     "promptBuilderMax_LengthInfo": "Max_length: Dieser Parameter definiert die obere Grenze für die Länge des generierten Textes. Sobald das Modell dieses Token-Limit erreicht, wird es die Textgenerierung stoppen, auch wenn die Antwort nicht vollständig abgeschlossen ist.",
     "promptExperimentTrackerHeading": "Prompt Experiment Tracker",
+    "promptExperimentTrackerEmpty": "Wähle einen Prompt, um seine Experimentläufe zu sehen — neue Läufe erscheinen hier.",
     "promptExperimentTrackerRunHeader": "Prompt Experiment Lauf #",
     "promptExperimentTrackerSystemPrompt": "System Prompt:",
     "promptExperimentTrackerUserPrompt": "User Prompt",

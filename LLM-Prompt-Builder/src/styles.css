@@ -7,8 +7,47 @@
  the info tooltips, nested accordions, and rendered markdown responses).
 */
 
+/* SAS-inspired accent layer over stock Bootstrap */
+:root {
+  --pb-primary: #0766d1;
+  --pb-primary-dark: #0554ab;
+  --pb-primary-darker: #04437f;
+  --pb-heading: #0f2c53;
+}
+
 body {
   padding: 1rem;
+  background-color: #f6f8fb;
+}
+
+h1,
+.pb-section > h2 {
+  color: var(--pb-heading);
+}
+
+.btn-primary {
+  --bs-btn-bg: var(--pb-primary);
+  --bs-btn-border-color: var(--pb-primary);
+  --bs-btn-hover-bg: var(--pb-primary-dark);
+  --bs-btn-hover-border-color: var(--pb-primary-dark);
+  --bs-btn-active-bg: var(--pb-primary-darker);
+  --bs-btn-active-border-color: var(--pb-primary-darker);
+  --bs-btn-disabled-bg: var(--pb-primary);
+  --bs-btn-disabled-border-color: var(--pb-primary);
+}
+
+.btn-outline-primary {
+  --bs-btn-color: var(--pb-primary);
+  --bs-btn-border-color: var(--pb-primary);
+  --bs-btn-hover-bg: var(--pb-primary);
+  --bs-btn-hover-border-color: var(--pb-primary);
+  --bs-btn-active-bg: var(--pb-primary-dark);
+  --bs-btn-active-border-color: var(--pb-primary-dark);
+}
+
+.form-check-input:checked {
+  background-color: var(--pb-primary);
+  border-color: var(--pb-primary);
 }
 
 /* Anchors styled as buttons (e.g. "Open in SAS Model Manager") need the same
@@ -59,6 +98,7 @@ a[role='button'] {
   padding: 1rem;
   border: 1px solid #dee2e6;
   border-radius: 6px;
+  background-color: #fff;
 }
 
 /* Per-model option inputs, revealed when a model checkbox is ticked */
@@ -86,24 +126,10 @@ a[role='button'] {
   position: relative;
 }
 
-.info-content {
-  display: none;
-  position: absolute;
-  top: 100%;
-  left: 0;
-  background-color: #f9f9f9;
-  padding: 10px;
-  border: 1px solid #ccc;
-  box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
-  z-index: 1;
-  white-space: normal;
-  word-wrap: break-word;
-  word-break: break-word;
-  max-width: min(1000px, 90vw);
-}
-
-.info-icon:hover + .info-content {
-  display: block;
+/* The explanations are Bootstrap tooltips; give the long texts room */
+.tooltip-inner {
+  max-width: min(600px, 90vw);
+  text-align: left;
 }
 
 /* Rendered markdown of an LLM response */
