@@ -259,6 +259,38 @@ export async function deleteModelVariable(
 }
 
 /**
+ * Update a model's tags: reads the model (for its ETag and current tags),
+ * removes the given tags, appends the new ones and PUTs the model back.
+ * Returns the HTTP status of the failing GET or of the PUT.
+ */
+export async function updateModelTags(
+  modelID: string,
+  removeTags: string[],
+  addTags: string[]
+): Promise<number> {
+  const getResponse = await viyaFetch(`/modelRepository/models/${modelID}`, {
+    accept: 'application/vnd.sas.models.model+json',
+  });
+  if (!getResponse.ok) return getResponse.status;
+  const model = (await getResponse.json()) as Record<string, unknown>;
+  const etag = getResponse.headers.get('ETag');
+  const currentTags = Array.isArray(model.tags) ? (model.tags as string[]) : [];
+  model.tags = [
+    ...currentTags.filter((tag) => !removeTags.includes(tag) && !addTags.includes(tag)),
+    ...addTags,
+  ];
+  const headers: Record<string, string> = {};
+  if (etag) headers['If-Match'] = etag;
+  const putResponse = await viyaFetch(`/modelRepository/models/${modelID}`, {
+    method: 'PUT',
+    body: JSON.stringify(model),
+    contentType: 'application/vnd.sas.models.model+json',
+    headers,
+  });
+  return putResponse.status;
+}
+
+/**
  * Delete a model.
  */
 export async function deleteModel(modelID: string): Promise<number> {

@@ -24,6 +24,7 @@ import {
   deleteModelVariable,
   deleteModel,
   deleteModelProject,
+  updateModelTags,
 } from '../api/models-api';
 import { getModelDependentDecisions } from '../api/relationships-api';
 import { callSCRLLM } from '../api/scr-api';
@@ -2596,6 +2597,27 @@ ${scoreCodeReturn}`;
           'score',
           'text/x-python'
         );
+        // Tag the model with the manifested LLM and the chosen manifest mode.
+        // Tags from an earlier manifest (other LLM names, mode flags) are
+        // removed first so re-manifesting does not leave stale tags behind.
+        const manifestTags = [
+          (bestPromptItem as PETRow).model,
+          ...(integratedLLMCall ? ['LLM-Call-Included'] : []),
+          ...(parseOutputs ? ['Output-Parsing'] : []),
+        ];
+        const staleManifestTags = [
+          'LLM-Call-Included',
+          'Output-Parsing',
+          ...promptBuilderAvailableLLMs.map((availableLLM) => availableLLM.name),
+          ...promptExperimentTracker.flatMap((trackerEntry) =>
+            Object.keys(trackerEntry).filter((key) => !TRACKER_META_KEYS.includes(key))
+          ),
+        ];
+        try {
+          await updateModelTags(promptExperimentRunModel, staleManifestTags, manifestTags);
+        } catch (error) {
+          console.error('Failed to update the tags of the manifested model.', error);
+        }
         showToast(`${promptBuilderInterfaceText?.promptBuilderManifestToast}`);
       } else {
         if (promptExperimentResultTargetContainer) {

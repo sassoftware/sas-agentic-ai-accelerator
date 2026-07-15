@@ -74,7 +74,7 @@ http
       const u = new URL(req.url, 'http://localhost');
       const p = u.pathname;
       if (p !== '/__log' && p !== '/__reset') {
-        log.push({ method: req.method, url: req.url, body: raw });
+        log.push({ method: req.method, url: req.url, body: raw, ifMatch: req.headers['if-match'] || null });
       }
 
       if (p === '/__log') return json(res, 200, log);
@@ -144,6 +144,20 @@ http
       }
       if (/^\/modelRepository\/models\/[^/]+\/variables$/.test(p) && req.method === 'GET') {
         return json(res, 200, { items: [] });
+      }
+      if (/^\/modelRepository\/models\/[^/]+$/.test(p) && req.method === 'GET') {
+        // Tags include leftovers from an "earlier manifest" to prove cleanup
+        res.writeHead(200, { 'Content-Type': 'application/json', ETag: '"abc123"' });
+        return res.end(
+          JSON.stringify({
+            id: p.split('/').pop(),
+            name: 'Used Prompt',
+            tags: ['LLM', 'Prompt-Template', 'Custom-Tag', 'other_llm', 'LLM-Call-Included'],
+          })
+        );
+      }
+      if (/^\/modelRepository\/models\/[^/]+$/.test(p) && req.method === 'PUT') {
+        return json(res, 200, {});
       }
       if (req.method === 'DELETE') { res.writeHead(204); return res.end(); }
       if (/^\/modelRepository\/models\/[^/]+\/modelVersions$/.test(p) && req.method === 'POST') {

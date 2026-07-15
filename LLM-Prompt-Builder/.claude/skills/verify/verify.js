@@ -302,6 +302,14 @@ function multipartJson(body) {
     'user prompt manifested as f-string; unknown tokens stay literal'
   );
   assert(pyBody.includes('return llmBody, llmURL'), 'default manifest returns llmBody/llmURL for the Call LLM node');
+  const tagPut = aLog.find((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-used');
+  assert(tagPut, 'manifest PUTs the model to update its tags');
+  assert(tagPut.ifMatch === '"abc123"', `tag update sends the model ETag as If-Match (got: ${tagPut.ifMatch})`);
+  const putTags = JSON.parse(tagPut.body).tags;
+  assert(
+    JSON.stringify(putTags) === JSON.stringify(['LLM', 'Prompt-Template', 'Custom-Tag', 'demo_llm']),
+    `LLM tag added, stale manifest tags (other_llm, LLM-Call-Included) removed, custom tags kept (got: ${putTags})`
+  );
   const outputVarsDefault = multipartJson(findPart('outputVar.json').body);
   assert(
     JSON.stringify(outputVarsDefault.map((v) => v.name)) === JSON.stringify(['llmBody', 'llmURL']),
@@ -419,6 +427,12 @@ function multipartJson(body) {
     'parsing score code returns the chosen output tuple'
   );
   require('fs').writeFileSync('manifested-parsing.py', pyParsing.match(/import os[\s\S]*?(?=\r\n--)/)[0]);
+  const tagPutParsing = aLog.find((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-used');
+  const parsingTags = JSON.parse(tagPutParsing.body).tags;
+  assert(
+    parsingTags.includes('demo_llm') && parsingTags.includes('LLM-Call-Included') && parsingTags.includes('Output-Parsing'),
+    `integrated + parsing manifest adds the mode tags (got: ${parsingTags})`
+  );
 
   // ---- manifest config persisted with the run and restored by loading it ----
   const run4HeaderParsing = multipartJson(findPart3('Prompt-Experiment-Tracker.json').body).find(
