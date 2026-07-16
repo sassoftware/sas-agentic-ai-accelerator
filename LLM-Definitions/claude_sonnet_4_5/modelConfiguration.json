@@ -2,7 +2,7 @@
     "name": "claude_sonnet_4_5",
     "scoreCodeFile": "claudeSonnet45Score.py",
     "description": "Claude Sonnet 4.5 by Anthropic, served through the Anthropic API.",
-    "toolVersion": "3.11-5",
+    "toolVersion": "3.11",
     "targetVariable": "response",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",

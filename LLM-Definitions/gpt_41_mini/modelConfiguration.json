@@ -2,7 +2,7 @@
     "name": "gpt_41_mini",
     "scoreCodeFile": "gpt41MiniScore.py",
     "description": "GPT-4.1 Mini by OpenAI, served through the OpenAI API.",
-    "toolVersion": "3.11-5",
+    "toolVersion": "3.11",
     "targetVariable": "response",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",
