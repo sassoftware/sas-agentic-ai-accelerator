@@ -315,6 +315,11 @@ function multipartJson(body) {
     JSON.stringify(outputVarsDefault.map((v) => v.name)) === JSON.stringify(['llmBody', 'llmURL']),
     `default manifest outputs llmBody/llmURL (got: ${outputVarsDefault.map((v) => v.name)})`
   );
+  assert(
+    aLog.some((e) => e.method === 'DELETE' && e.url === '/modelRepository/models/model-used/contents/c-req'),
+    'stale requirements.json from an earlier integrated manifest is removed by a Call-LLM-node manifest'
+  );
+  assert(!findPart('requirements.json'), 'Call-LLM-node manifest does not upload a requirements.json');
 
   // ---- manifest with the LLM call integrated into the model -----------------
   assert(
@@ -332,8 +337,22 @@ function multipartJson(body) {
     async () => (await getLog()).some((e) => e.method === 'POST' && e.body.includes('def scoreModel(')),
     'integrated score code uploaded'
   );
+  await waitUntil(
+    async () => (await getLog()).some((e) => e.method === 'POST' && e.body.includes('filename="requirements.json"')),
+    'requirements.json uploaded with the integrated manifest'
+  );
   aLog = await getLog();
   const findPart2 = (name) => aLog.find((e) => e.method === 'POST' && e.body.includes(`filename="${name}"`));
+  const reqUpload = findPart2('requirements.json');
+  assert(
+    reqUpload.url.includes('role=python%20pickle'),
+    `requirements.json registered with the python pickle role like the LLM definitions (got: ${reqUpload.url})`
+  );
+  const reqJson = multipartJson(reqUpload.body);
+  assert(
+    Array.isArray(reqJson) && reqJson.length === 1 && reqJson[0].command === 'pip3 -q install requests',
+    `requirements.json installs the requests package (got: ${JSON.stringify(reqJson)})`
+  );
   const outputVarsIntegrated = multipartJson(findPart2('outputVar.json').body);
   assert(
     JSON.stringify(outputVarsIntegrated.map((v) => [v.name, v.type])) ===
@@ -362,6 +381,24 @@ function multipartJson(body) {
   );
   assert(pyIntegrated.includes('def scoreModel(customer, amount):'), 'integrated call keeps the variable inputs');
   assert(!pyIntegrated.includes('return llmBody, llmURL'), 'integrated call no longer returns llmBody/llmURL');
+  assert(pyIntegrated.includes('verify=sslVerify'), 'integrated call verifies TLS via the configurable CA bundle');
+  assert(
+    pyIntegrated.includes('os.getenv("LLMCONTAINERCABUNDLE", "/security/trustedcerts.pem")'),
+    'CA bundle defaults to the one SAS Viya mounts into its pods'
+  );
+  assert(
+    pyIntegrated.includes('timeout=float(os.getenv("LLMCONTAINERTIMEOUT", "600"))'),
+    'integrated call applies a configurable timeout'
+  );
+  assert(
+    pyIntegrated.includes('except Exception as error:') && pyIntegrated.includes('response = f"LLM call failed: {error}"'),
+    'a failed LLM call is reported through the response output instead of raising'
+  );
+  assert(pyIntegrated.includes('llmBody = json.dumps('), 'integrated request body is built with json.dumps');
+  assert(
+    !pyIntegrated.includes(`.replace("'", '"')`),
+    'integrated prompts are not run through the legacy escape chain'
+  );
   // probe: syntax-check the generated python
   require('fs').writeFileSync('manifested-integrated.py', pyIntegrated.match(/import os[\s\S]*?(?=\r\n--)/)[0]);
 

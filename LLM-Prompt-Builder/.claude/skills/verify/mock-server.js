@@ -115,8 +115,14 @@ http
         return json(res, 200, { temperature: { default: 0.7 } });
       }
       if (p === '/modelRepository/models/model-used/contents' && req.method === 'GET') {
+        // The requirements.json entry simulates a leftover from an earlier
+        // integrated-call manifest: a manifest without the LLM call must
+        // remove it.
         return json(res, 200, {
-          items: [{ id: 'c-trk', name: 'Prompt-Experiment-Tracker.json', fileUri: '/files/files/trk-1' }],
+          items: [
+            { id: 'c-trk', name: 'Prompt-Experiment-Tracker.json', fileUri: '/files/files/trk-1' },
+            { id: 'c-req', name: 'requirements.json', fileUri: '/files/files/req-1' },
+          ],
         });
       }
       if (/^\/modelRepository\/models\/(model-free|model-err)\/contents$/.test(p) && req.method === 'GET') {

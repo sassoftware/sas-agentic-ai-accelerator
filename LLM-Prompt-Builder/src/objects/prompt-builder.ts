@@ -2511,27 +2511,27 @@ export async function buildPromptBuilder(
               ...(parseOutputs ? ['parse_status'] : []),
             ].join(', ')
           : 'llmBody, llmURL';
-        const parsingBlock = `        # Parse the JSON response into the output variables. A fenced
-        # \`\`\`json block is unwrapped first, since LLMs often add one.
-        cleaned = str(response).strip()
-        if cleaned.startswith("\`\`\`"):
-            cleaned = cleaned[cleaned.find("\\n") + 1 :] if "\\n" in cleaned else cleaned[3:]
-            if cleaned.rstrip().endswith("\`\`\`"):
-                cleaned = cleaned.rstrip()[:-3]
-        try:
-            parsed = json.loads(cleaned)
-            if not isinstance(parsed, dict):
-                raise ValueError("the response is not a JSON object")
+        const parsingBlock = `            # Parse the JSON response into the output variables. A fenced
+            # \`\`\`json block is unwrapped first, since LLMs often add one.
+            cleaned = str(response).strip()
+            if cleaned.startswith("\`\`\`"):
+                cleaned = cleaned[cleaned.find("\\n") + 1 :] if "\\n" in cleaned else cleaned[3:]
+                if cleaned.rstrip().endswith("\`\`\`"):
+                    cleaned = cleaned.rstrip()[:-3]
+            try:
+                parsed = json.loads(cleaned)
+                if not isinstance(parsed, dict):
+                    raise ValueError("the response is not a JSON object")
 ${outputVariables
   .map(
     (variable) =>
-      `            if "${variable.name}" in parsed:\n                ${variable.name} = ${variable.type === 'decimal' ? 'float' : 'str'}(parsed["${variable.name}"])`
+      `                if "${variable.name}" in parsed:\n                    ${variable.name} = ${variable.type === 'decimal' ? 'float' : 'str'}(parsed["${variable.name}"])`
   )
   .join('\n')}
-            if all(key in parsed for key in [${outputVariables.map((variable) => `"${variable.name}"`).join(', ')}]):
-                parse_status = 1
-        except Exception:
-            parse_status = 0
+                if all(key in parsed for key in [${outputVariables.map((variable) => `"${variable.name}"`).join(', ')}]):
+                    parse_status = 1
+            except Exception:
+                parse_status = 0
 `;
         const scoreCodeReturn = integratedLLMCall
           ? `${
@@ -2546,25 +2546,56 @@ ${outputVariables.map((variable) => `    ${variable.name} = ${pythonDefaultLiter
     run_time = None
     prompt_length = None
     output_length = None
-    # Call the LLM container and unwrap the SCR response envelope
-    llmCall = requests.post(
-        llmURL,
-        data=llmBody.encode("utf-8"),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-    )
-    if llmCall.status_code == 200:
-        llmJson = llmCall.json()
-        llmData = llmJson.get("data", llmJson) if isinstance(llmJson, dict) else {}
-        response = llmData.get("response", "")
-        run_time = llmData.get("run_time")
-        prompt_length = llmData.get("prompt_length")
-        output_length = llmData.get("output_length")
-${parseOutputs ? parsingBlock : ''}    else:
-        response = f"LLM call failed with status {llmCall.status_code}"
+    # TLS verification of the LLM container call: trust the CA bundle SAS Viya
+    # mounts into every pod, or the one LLMCONTAINERCABUNDLE points to. Setting
+    # LLMCONTAINERSSLVERIFY=false disables the verification entirely.
+    sslVerify = os.getenv("LLMCONTAINERCABUNDLE", "/security/trustedcerts.pem")
+    if not os.path.isfile(sslVerify):
+        sslVerify = True
+    if os.getenv("LLMCONTAINERSSLVERIFY", "").strip().lower() in ("false", "no", "0"):
+        sslVerify = False
+    # Call the LLM container and unwrap the SCR response envelope. Failures are
+    # reported through the response output instead of raising, so a failed call
+    # cannot abort a whole scoring or SAS Intelligent Decisioning run.
+    try:
+        llmCall = requests.post(
+            llmURL,
+            data=llmBody.encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            verify=sslVerify,
+            timeout=float(os.getenv("LLMCONTAINERTIMEOUT", "600")),
+        )
+        if llmCall.status_code == 200:
+            llmJson = llmCall.json()
+            llmData = llmJson.get("data", llmJson) if isinstance(llmJson, dict) else {}
+            response = llmData.get("response", "")
+            run_time = llmData.get("run_time")
+            prompt_length = llmData.get("prompt_length")
+            output_length = llmData.get("output_length")
+${parseOutputs ? parsingBlock : ''}        else:
+            response = f"LLM call failed with status {llmCall.status_code}"
+    except Exception as error:
+        response = f"LLM call failed: {error}"
     return ${scoreCodeOutputList}`
           : `    return llmBody, llmURL`;
+        // With the integrated call the request body is built with json.dumps,
+        // which escapes the prompt texts and runtime input values correctly.
+        // The Call LLM node path keeps the legacy manual escaping that the
+        // node applies when it embeds llmBody into its own request.
+        const scoreCodeBodyBlock = integratedLLMCall
+          ? `    # This is the system prompt that was selected as the best one by the prompt engineer
+    systemPrompt = ${scoreCodeSystemPromptLiteral}
+    # Here the user prompt will be created from the inputs of the call
+    userPrompt = ${scoreCodeUserPromptLiteral}
+    # The request body for the LLM container in the SCR input format
+    llmBody = json.dumps({"inputs": [{"name": "systemPrompt", "value": systemPrompt}, {"name": "userPrompt", "value": userPrompt}, {"name": "options", "value": options}]})`
+          : `    # This is the system prompt that was selected as the best one by the prompt engineer
+    systemPrompt = ${scoreCodeSystemPromptLiteral}.replace('\\n', "\\\\n").replace("'", '"').replace('"', '\\\\"')
+    # Here the user prompt will be created from the inputs of the call
+    userPrompt = ${scoreCodeUserPromptLiteral}.replace('\\n', "\\\\n").replace("'", '"').replace('"', '\\\\"')
+    llmBody = '{"inputs":[{"name":"systemPrompt","value":"' + systemPrompt + '"},{"name":"userPrompt","value":"' + userPrompt + '"},{"name":"options","value":"' + options + '"}]}'`;
         const scoreCode = `import os
-${integratedLLMCall ? 'import requests\n' : ''}${parseOutputs ? 'import json\n' : ''}
+${integratedLLMCall ? 'import requests\nimport json\n' : ''}
 def scoreModel(${scoreCodeInput}):
     "Output: ${scoreCodeOutputList}"
     # The llm and the target endpoint
@@ -2575,11 +2606,7 @@ def scoreModel(${scoreCodeInput}):
     llmURL = f"""${llmEndpoint}"""
     # These are the options that were set for the best prompt
     options = f"{{${scoreCodeOptions}}}"
-    # This is the system prompt that was selected as the best one by the prompt engineer
-    systemPrompt = ${scoreCodeSystemPromptLiteral}.replace('\\n', "\\\\n").replace("'", '"').replace('"', '\\\\"')
-    # Here the user prompt will be created from the inputs of the call
-    userPrompt = ${scoreCodeUserPromptLiteral}.replace('\\n', "\\\\n").replace("'", '"').replace('"', '\\\\"')
-    llmBody = '{"inputs":[{"name":"systemPrompt","value":"' + systemPrompt + '"},{"name":"userPrompt","value":"' + userPrompt + '"},{"name":"options","value":"' + options + '"}]}'
+${scoreCodeBodyBlock}
 ${scoreCodeReturn}`;
         const mainfestPromptScoreCodeBlob = new Blob([scoreCode], { type: 'text/x-python' });
         // Clean up previous variables first
@@ -2597,6 +2624,27 @@ ${scoreCodeReturn}`;
           'score',
           'text/x-python'
         );
+        // The integrated call imports the requests package at score time: ship
+        // a requirements.json (same format and role as the LLM definitions) so
+        // publishing destinations that build a Python environment install it.
+        // A stale one from an earlier manifest is removed when the LLM call is
+        // no longer included.
+        if (integratedLLMCall) {
+          await createModelContent(
+            promptExperimentRunModel,
+            [{ step: 'install requests', command: 'pip3 -q install requests' }],
+            'requirements.json',
+            'python pickle'
+          );
+        } else {
+          const manifestModelContents = await getModelContents(promptExperimentRunModel);
+          const staleRequirements = manifestModelContents.find(
+            (modelContent) => modelContent.name === 'requirements.json'
+          );
+          if (staleRequirements?.id) {
+            await deleteModelContent(promptExperimentRunModel, staleRequirements.id);
+          }
+        }
         // Tag the model with the manifested LLM and the chosen manifest mode.
         // Tags from an earlier manifest (other LLM names, mode flags) are
         // removed first so re-manifesting does not leave stale tags behind.
