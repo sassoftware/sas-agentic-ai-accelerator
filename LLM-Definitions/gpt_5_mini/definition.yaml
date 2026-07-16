@@ -1,0 +1,42 @@
+schema: 1
+kind: llm
+model_id: gpt_5_mini
+display_name: GPT-5 Mini
+provider:
+  adapter: openai
+  model_version: gpt-5-mini
+  endpoint: https://api.openai.com/v1/chat/completions
+  params: {}
+  auth:
+    mode: api_key
+    key_name: OpenAI
+runtime:
+  template: openai_chat
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  reasoning_effort:
+    default: medium
+  max_completion_tokens:
+    default: 4000
+    max: 128000.0
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: OpenAI
+  scr_sizing: small
+  extra: []
+metadata:
+  description: GPT-5 Mini by OpenAI, served through the OpenAI API.
+  release_date: '2025-08-07'
+  knowledge_cutoff: '2024-05-30'
+  context_length: 400000
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 2.5e-07
+    output_token_price: 2.0e-06
+modeler: david.weik@sas.com
+generation:
+  overrides: []
+  catalog_provenance: openai (live, enriched from static snapshot 2026-01-15)

@@ -28,3 +28,5 @@ gemini_flash_lite_25,Gemini Flash Lite 2.5,Google,A Gemini 2.5 Flash model optim
 "smollm_135m","SmolLM 135M","Hugging Face","SmolLM is a series of small language models available in three sizes: 135M, 360M, and 1.7B parameters.",2024-07-16,135000000,SCR,Apache 2.0,Seconds,.,.,0.000039178,2048,0.6,0.92,.,100,2024-06-01
 "smollm_360m","SmolLM 360M","Hugging Face","SmolLM is a series of small language models available in three sizes: 135M, 360M, and 1.7B parameters.",2024-07-16,360000000,SCR,Apache 2.0,Seconds,.,.,0.000039178,2048,0.6,0.92,.,100,2024-06-01
 "claude_sonnet_4_5","Claude Sonnet 4.5","Anthropic","Claude Sonnet 4.5 by Anthropic, served through the Anthropic API.",2025-09-29,.,"API","Proprietary","Tokens",0.000003,0.000015,.,200000,1,1,.,1000,2025-01-01
+"gpt_41_mini","GPT-4.1 Mini","OpenAI","GPT-4.1 Mini by OpenAI, served through the OpenAI API.",2025-04-14,.,"API","Proprietary","Tokens",0.0000004,0.0000016,.,1047576,1,1,.,1000,2024-06-01
+"gpt_5_mini","GPT-5 Mini","OpenAI","GPT-5 Mini by OpenAI, served through the OpenAI API.",2025-08-07,.,"API","Proprietary","Tokens",0.00000025,0.000002,.,400000,.,.,.,.,2024-05-30

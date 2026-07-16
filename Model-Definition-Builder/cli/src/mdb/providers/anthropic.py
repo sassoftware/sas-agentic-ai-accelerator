@@ -38,7 +38,6 @@ class AnthropicAdapter(ProviderAdapter):
             session, "https://api.anthropic.com/v1/models",
             headers={"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION},
         )
-        static = {m.ref: m for m in []}
         models = []
         for entry in payload.get("data", []):
             models.append(CatalogModel(

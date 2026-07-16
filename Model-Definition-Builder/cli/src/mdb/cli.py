@@ -113,22 +113,43 @@ def _pick_from_list(title: str, entries: list[str]) -> int:
         console.print(f"[yellow]Enter a number between 1 and {len(entries)}.[/yellow]")
 
 
+def _enrich_from_static(live: list[CatalogModel], static: list[CatalogModel]) -> list[CatalogModel]:
+    """Live listings confirm availability; static snapshots fill metadata gaps
+    (OpenAI's /v1/models returns ids only - no context length or pricing)."""
+    static_by_ref = {m.ref: m for m in static}
+    for model in live:
+        known = static_by_ref.get(model.ref)
+        if known is None:
+            continue
+        if model.display_name == model.ref:
+            model.display_name = known.display_name
+        for attr in ("context_length", "max_output_tokens", "input_price_per_m",
+                     "output_price_per_m", "knowledge_cutoff", "release_date"):
+            if getattr(model, attr) is None:
+                setattr(model, attr, getattr(known, attr))
+        model.reasoning = model.reasoning or known.reasoning
+        model.extended_thinking = model.extended_thinking or known.extended_thinking
+        if known.source != "static":
+            model.source = f"live, enriched from {known.source}"
+    return live
+
+
 def _catalog_for(adapter: ProviderAdapter, ctx: Context, offline: bool, verify_ssl: bool) -> list[CatalogModel]:
+    static = adapter.static_catalog(ctx.core.core_dir)
     if not offline and not env_flag("MDB_OFFLINE"):
         try:
             session = make_session(verify_ssl)
             models = adapter.live_catalog(session, _env_api_key(adapter))
             if models:
                 console.print(f"[dim]Live catalog: {len(models)} models from {adapter.display_name}.[/dim]")
-                return models
+                return _enrich_from_static(models, static)
         except NotImplementedError as exc:
             console.print(f"[dim]{exc}[/dim]")
         except Exception as exc:
             console.print(f"[yellow]Live catalog unavailable ({exc}) - falling back to the bundled snapshot.[/yellow]")
-    models = adapter.static_catalog(ctx.core.core_dir)
-    if models:
-        console.print(f"[dim]Using bundled static catalog ({models[0].source}) - confirm pricing before relying on cost monitoring.[/dim]")
-    return models
+    if static:
+        console.print(f"[dim]Using bundled static catalog ({static[0].source}) - confirm pricing before relying on cost monitoring.[/dim]")
+    return static
 
 
 def _select_model(adapter: ProviderAdapter, catalog: list[CatalogModel], ref: Optional[str],
