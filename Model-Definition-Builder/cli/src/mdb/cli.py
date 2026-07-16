@@ -190,6 +190,12 @@ def add(
     verify_ssl: bool = typer.Option(True, "--verify-ssl/--no-verify-ssl", help="TLS verification for provider calls"),
     resource: Optional[str] = typer.Option(None, help="Azure resource host (azure-foundry)"),
     deployment: Optional[str] = typer.Option(None, help="Azure deployment name (azure-foundry)"),
+    commit_resource: bool = typer.Option(
+        False, "--commit-resource",
+        help="Bake the Azure resource host into the definition as its default. Without this, the "
+             "definition stays environment-neutral: deployed containers read AZURE_OPENAI_RESOURCE "
+             "or a per-call option instead.",
+    ),
     repo: Optional[str] = typer.Option(None, help="Hugging Face repo id (hf-selfhosted)"),
     gated: Optional[bool] = typer.Option(None, help="HF repo is gated (hf-selfhosted)"),
     params_billions: Optional[float] = typer.Option(None, help="Parameter count in billions (hf-selfhosted)"),
@@ -238,6 +244,15 @@ def add(
             answers[question.param] = Prompt.ask(question.prompt, default=question.default or None)
     if description:
         answers["description"] = description
+    if answers.get("resource"):
+        if commit_resource or yes:
+            answers["commit_resource"] = commit_resource
+        else:
+            answers["commit_resource"] = Confirm.ask(
+                f"Bake '{answers['resource']}' into the definition as its default resource? "
+                "(No keeps it environment-driven via AZURE_OPENAI_RESOURCE)",
+                default=False,
+            )
 
     catalog = _catalog_for(adapter, ctx, offline, verify_ssl) if not adapter.questions() else []
     manual_ref = answers.get("deployment") or answers.get("repo")

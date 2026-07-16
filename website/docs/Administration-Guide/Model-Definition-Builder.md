@@ -35,6 +35,10 @@ mdb add hf-selfhosted --repo Qwen/Qwen2.5-0.5B-Instruct --id qwen_25_05b --param
 
 Supported providers today: OpenRouter, OpenAI, Azure AI Foundry (v1 endpoint, key auth), Mistral, Anthropic and self-hosted Hugging Face models. AWS Bedrock, Google Gemini, Voyage and Embedding definitions follow in the next release.
 
+### Azure across subscriptions and projects
+
+Azure definitions are environment-neutral by default: the resource host you enter during `mdb add` is used for smoke tests, but is **not** baked into the definition unless you confirm it (or pass `--commit-resource`). A deployed container resolves its target in this order: per-call `azure_openai_resource` option → `AZURE_OPENAI_RESOURCE` container environment variable → the baked default. Set `AZURE_OPENAI_RESOURCE` in each deployment's YAML to serve dev, test and production (or different customer subscriptions) from the same published image — and set it in your `.env` so the wizard and smoke tests use your environment automatically. `mdb validate` reminds you when a definition carries a baked resource.
+
 API keys are read from environment variables or the `.env` file at the repository root (for example `ANTHROPIC_API_KEY`, `AZURE_OPENAI_API_KEY`). The wizard tells you which variable it used; keys are never written into any generated file.
 
 After adding a model:

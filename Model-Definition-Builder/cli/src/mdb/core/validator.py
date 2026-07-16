@@ -131,6 +131,17 @@ def validate_folder(folder: Path, core: CoreAssets, fact_sheet: Path) -> list[Is
                     "Remove the secret - keys belong in .env / LLM_API_KEYS, never in committed files.",
                 ))
 
+    # V009 - environment-specific hosts committed into a shareable definition
+    params = manifest.provider.params
+    if manifest.runtime.template == "azure_openai_v1" and params.get("commit_resource") and params.get("resource"):
+        issues.append(Issue(
+            "V009", "warning", model_id,
+            f"The Azure resource '{params['resource']}' is baked into the definition - "
+            "it is bound to that subscription/project.",
+            "Set provider.params.commit_resource: false and regenerate; deployed containers then "
+            "resolve the resource via the AZURE_OPENAI_RESOURCE environment variable or a per-call option.",
+        ))
+
     # V008 - pricing placeholders that would silently corrupt cost monitoring
     pricing = manifest.metadata.pricing
     if pricing.cost_type == "Tokens" and not (pricing.input_token_price or pricing.output_token_price):

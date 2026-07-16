@@ -1,11 +1,15 @@
 {{ generated_header }}import time
 import json
 import logging
+import os
 import sys
 import requests
 
 # Requires an Azure OpenAI / Azure AI Foundry deployment.
 # The model is addressed by its DEPLOYMENT NAME, which you choose in Azure.
+# The target resource resolves per call: options override > AZURE_OPENAI_RESOURCE
+# container environment variable > the default baked into this file - so one
+# published image can serve different subscriptions/projects without a rebuild.
 deploymentName = '{{ deployment_name }}'
 
 # Initiate the logger to write output information to the log
@@ -23,7 +27,7 @@ def scoreModel(userPrompt, systemPrompt, options):
     started_timestamp = time.time()
     optionsDefaults = {
 {{ options_defaults_block }}
-        "azure_openai_resource": "{{ azure_resource }}",
+        "azure_openai_resource": os.environ.get("AZURE_OPENAI_RESOURCE", "{{ azure_resource }}"),
         "endpoint_url": "",
     }
     options = {**optionsDefaults, **_parse_options(options)}

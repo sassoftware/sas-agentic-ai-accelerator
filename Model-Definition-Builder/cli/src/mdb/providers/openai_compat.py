@@ -9,6 +9,7 @@ catalog source. OpenRouter doubles as the metadata backbone: its public
 """
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 import requests
@@ -127,15 +128,23 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
 
     def questions(self) -> list[Question]:
         return [
-            Question("resource", "Azure resource host (e.g. myres.openai.azure.com or just 'myres')"),
+            Question("resource", "Azure resource host (e.g. myres.openai.azure.com or just 'myres')",
+                     default=os.environ.get("AZURE_OPENAI_RESOURCE", "")),
             Question("deployment", "Deployment name (as chosen in Azure AI Foundry)"),
         ]
 
     def provider_params(self, cm: CatalogModel, answers: dict) -> dict:
-        return {"resource": answers.get("resource", "")}
+        return {
+            "resource": answers.get("resource", ""),
+            # False keeps the definition environment-neutral: the resource is only
+            # used CLI-side (smoke tests), while deployed containers resolve it via
+            # the AZURE_OPENAI_RESOURCE environment variable or a per-call option.
+            "commit_resource": bool(answers.get("commit_resource")),
+        }
 
     def _resource_base(self, manifest: ModelManifest) -> str:
-        host = (manifest.provider.params.get("resource") or "").strip()
+        host = (manifest.provider.params.get("resource")
+                or os.environ.get("AZURE_OPENAI_RESOURCE") or "").strip()
         if host and "." not in host:
             host = f"{host}.openai.azure.com"
         return f"https://{host}/openai/v1"

@@ -175,7 +175,11 @@ def _render_score(manifest: ModelManifest, core: CoreAssets) -> str:
     }
     if manifest.runtime.template == "azure_openai_v1":
         context["deployment_name"] = manifest.provider.model_version
-        context["azure_resource"] = manifest.provider.params.get("resource", "")
+        # The resource is only baked in when explicitly committed; otherwise the
+        # definition stays environment-neutral (AZURE_OPENAI_RESOURCE env var /
+        # per-call option decide at runtime).
+        params = manifest.provider.params
+        context["azure_resource"] = params.get("resource", "") if params.get("commit_resource") else ""
     if manifest.runtime.template == "anthropic_messages":
         context["anthropic_version"] = manifest.provider.params.get("anthropic_version", "2023-06-01")
     rendered = template.render(**context)
@@ -194,12 +198,16 @@ def _render_options_json(manifest: ModelManifest, core: CoreAssets) -> str:
             "description": resolved["description"],
         }
     if manifest.runtime.template == "azure_openai_v1":
+        params = manifest.provider.params
         entries["azure_openai_resource"] = {
-            "default": manifest.provider.params.get("resource", ""),
+            "default": params.get("resource", "") if params.get("commit_resource") else "",
             "range": "your-resource.openai.azure.com",
             "description": (
                 "The Azure OpenAI / Azure AI Foundry resource host that serves the deployment. "
-                "A short resource name is expanded to <name>.openai.azure.com."
+                "A short resource name is expanded to <name>.openai.azure.com. Resolution order: "
+                "this option > the AZURE_OPENAI_RESOURCE environment variable of the container > "
+                "this default - set the environment variable per deployment to serve different "
+                "subscriptions/projects from the same image."
             ),
         }
         entries["endpoint_url"] = {

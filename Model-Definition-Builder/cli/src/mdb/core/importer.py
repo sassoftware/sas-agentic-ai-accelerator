@@ -121,6 +121,14 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
     if template == "azure_openai_v1":
         resource_match = re.search(r'"azure_openai_resource"\s*:\s*"([^"]*)"', score_text)
         params["resource"] = resource_match.group(1) if resource_match else ""
+        if params["resource"]:
+            # Legacy folders baked their resource in; preserve that behavior and flag it
+            params["commit_resource"] = True
+            notes.append(
+                f"The resource '{params['resource']}' stays baked in (commit_resource: true) to preserve "
+                "behavior. Consider setting commit_resource: false to make the definition "
+                "environment-neutral (AZURE_OPENAI_RESOURCE decides per deployment)."
+            )
         if not model_version:
             deploy_match = re.search(r"deploymentName\s*=\s*'([^']+)'", score_text)
             model_version = deploy_match.group(1) if deploy_match else model_id
