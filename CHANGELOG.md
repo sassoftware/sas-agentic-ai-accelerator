@@ -2,6 +2,46 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [1.0.0] - 2026-07-15
+
+The standalone LLM Prompt Builder now supports deleting prompt experiment runs, prompts and whole projects. To get the update, rebuild the [`LLM-Prompt-Builder`](./LLM-Prompt-Builder) (or use the prebuilt `dist/index.html`) and re-upload it to your SAS Job Execution definition.
+
+### Added
+
+- Prompt experiment runs can now be deleted from the experiment tracker; the remaining runs are automatically renumbered and the change is persisted with the next "Save Experiments"
+- Prompts can now be deleted; before deletion the SAS Relationships service is queried and the confirmation dialog lists every SAS Intelligent Decisioning decision that uses the prompt (with a deep link to each decision), or notes that no decisions were found
+- Projects can now be deleted; every prompt in the project goes through the same decision-usage confirmation first and a single cancel aborts the whole operation without deleting anything
+- Prompt variables: define variables (name, description, string/decimal data type and a value) above the prompt fields and reference them in the system or user prompt with the `{{variableName}}` syntax — right-clicking inside a prompt field opens a menu to insert them. The values are substituted when experiments run, every run stores a snapshot of its variable setup and values in the experiment tracker, and a manifested best prompt turns the referenced variables into the documented inputs of the generated Python score code
+- Experiment runs can be loaded back into the workbench — a load button on every run, and selecting a prompt automatically loads its most recent run with a selected best response. Loading restores the prompts, the variables, the LLM selection and the LLM option values, and a notification lists any LLMs of the run that are no longer available
+- "Include the LLM call in the manifested model" option: when checked, the manifested Python model calls the LLM container directly (via the `requests` package) and returns the same outputs as the LLM models themselves. Unchecked keeps the previous behavior of returning `llmBody` and `llmURL` for the Call LLM node in SAS Intelligent Decisioning
+- With the LLM call included, the default outputs (`response`, `run_time`, `prompt_length`, `output_length`) can be individually selected, and the LLM response can be parsed into user-defined output variables (name, description, string/decimal data type and an optional default value). This expects the LLM to respond with JSON only — a fenced ```json block is unwrapped automatically — and adds a `parse_status` output that returns 1 when every output variable was extracted and 0 otherwise
+- The manifest configuration (LLM call included, selected default outputs and output variable definitions) is stored with the run in the experiment tracker, so loading a run also restores it
+- Manifesting with the LLM call included also stores a `requirements.json` with the model (same format and role as the LLM definitions), so publishing destinations that build a Python environment install the required `requests` package; it is removed again when a later manifest no longer includes the call
+- The integrated LLM call in the generated score code verifies TLS against the CA bundle SAS Viya mounts into its pods (`/security/trustedcerts.pem`) and supports three new environment variables: `LLMCONTAINERCABUNDLE` (alternative CA bundle path), `LLMCONTAINERSSLVERIFY=false` (disable TLS verification) and `LLMCONTAINERTIMEOUT` (call timeout in seconds, default 600)
+- Manifesting tags the model in SAS Model Manager with the LLM of the best prompt plus `LLM-Call-Included` and `Output-Parsing` mode tags; tags from an earlier manifest are replaced while custom tags are kept
+- The project and prompt selection lists can be filtered by name and by the user who created or last modified an entry (long lists stay searchable; the active selection always remains visible)
+- New reusable confirmation modal (`src/ui/confirm-modal.ts`), toast notifications (`src/ui/toast.ts`) and SAS Relationships API wrapper (`src/api/relationships-api.ts`) in the standalone Prompt Builder
+
+### Changed
+
+- The `variableName:variableValue;...` user-prompt syntax is replaced by the `{{variableName}}` variables described above; prompts saved with the old syntax still load and manifest through the previous parsing
+- Reworked page layout: the page is grouped into five visual sections (project & prompt, LLMs, prompt workbench, experiment tracker, manifest) with a proper heading hierarchy, and manifesting is its own section with the configuration above the action button
+- Saving and manifesting now confirm success via toast notifications (deletion errors report through toasts as well), "Run Experiments" stays disabled (with a hint) until at least one LLM is selected, "Manifest Best Prompt" stays disabled until a run has a selected best response, and the create-prompt explanation moved from the button label into the dialog
+- "Save Experiments" and "Manifest Best Prompt" are real buttons now, so they are keyboard-accessible and properly disabled while busy
+- The experiment tracker shows an empty-state hint until a prompt with runs is selected, the destructive delete buttons sit right-aligned away from the other actions, and the LLM option explanations are Bootstrap tooltips (keyboard- and touch-accessible)
+- A SAS-blue accent theme (buttons, checkboxes, headings, white section cards on a light background) replaces the stock Bootstrap look, and a loading spinner is shown while the app fetches its metadata
+- The LLM definitions and their options are now loaded in parallel instead of one after another, which speeds up the initial load considerably for environments with many LLMs
+- The Vite dev-server proxy now also forwards `/relationships` and `/decisions` calls to the configured SAS Viya host
+
+### Fixed
+
+- Loading a prompt whose saved experiment tracker contains non-consecutive run numbers (runs whose experiments all failed leave gaps) no longer fails with a console error and unresponsive buttons; the runs load normally and are renumbered contiguously on the next save
+- Selecting a "Best Response" checkbox now also updates the in-memory experiment tracker, so unsaved selections survive a re-render of the tracker
+- Loading an existing prompt now rebuilds the saveable experiment rows from the loaded runs (previously they were rebuilt from stale state, so a "Best Response" selected right after loading could not be saved)
+- Switching the project or prompt selection now fully resets the in-memory experiment state, so experiments from a previously selected prompt can no longer be saved to a different prompt
+- A failed LLM call in a manifested model (network, TLS or a non-200 response) no longer raises an exception — which aborted the whole scoring or SAS Intelligent Decisioning run with a pymas execute error — but reports the failure through the `response` output while the parsed output variables keep their defaults and `parse_status` returns 0
+- The integrated LLM call builds its request body with `json.dumps` now, so prompts and input values containing apostrophes, quotes, newlines or backslashes are transmitted correctly (the previous manual escaping replaced apostrophes with double quotes and produced an invalid request body for backslashes)
+
 ## [0.1.35] - 2026-07-13
 
 The Prompt Builder is now also available as a **standalone application** in the [`LLM-Prompt-Builder`](./LLM-Prompt-Builder) directory. It has no dependency on the [SAS Portal Framework for SAS Viya](https://github.com/sassoftware/sas-portal-framework-for-sas-viya) and can be extended independently. It ships as a single self-contained HTML file that is embedded in a SAS Visual Analytics report via SAS Job Execution.

@@ -23,6 +23,23 @@ import { viteSingleFile } from 'vite-plugin-singlefile';
  * Scripts with a `src` attribute (there should be none after inlining) and
  * empty scripts are left untouched.
  */
+/**
+ * Normalize the entry template's line endings before Vite parses it, so a
+ * checkout with CRLF endings (e.g. Windows with autocrlf) produces exactly
+ * the same bundle as a LF checkout — CI byte-compares the committed
+ * dist/index.html against a fresh Linux build.
+ */
+function normalizeTemplateEol(): Plugin {
+  return {
+    name: 'normalize-template-eol',
+    enforce: 'pre',
+    transformIndexHtml: {
+      order: 'pre',
+      handler: (html) => html.replace(/\r\n?/g, '\n'),
+    },
+  };
+}
+
 function goTemplateSafeScripts(): Plugin {
   return {
     name: 'go-template-safe-scripts',
@@ -34,6 +51,10 @@ function goTemplateSafeScripts(): Plugin {
             typeof file.source === 'string'
               ? file.source
               : new TextDecoder().decode(file.source);
+          // Normalize line endings (including lone carriage returns) so the
+          // output is byte-identical regardless of the checkout's line endings
+          // (CI compares the committed file against a fresh Linux build).
+          html = html.replace(/\r\n?/g, '\n');
           html = html.replace(
             /<script([^>]*)>([\s\S]*?)<\/script>/gi,
             (match, attrs: string, code: string) => {
@@ -56,14 +77,21 @@ function goTemplateSafeScripts(): Plugin {
 // Point this at your SAS Viya host so `npm run dev` can proxy Model Manager /
 // identities API calls (the SCR endpoint is an absolute URL and is not proxied).
 const DEV_VIYA_HOST = 'https://your-viya-host.com';
-const proxyPaths = ['/modelRepository', '/modelManagement', '/identities', '/files'];
+const proxyPaths = [
+  '/modelRepository',
+  '/modelManagement',
+  '/identities',
+  '/files',
+  '/relationships',
+  '/decisions',
+];
 
 export default defineConfig({
   base: './',
   // No public directory: a single-file build inlines everything (locales are
   // imported as modules, not fetched at runtime).
   publicDir: false,
-  plugins: [viteSingleFile(), goTemplateSafeScripts()],
+  plugins: [normalizeTemplateEol(), viteSingleFile(), goTemplateSafeScripts()],
   build: {
     outDir: 'dist',
     // Inline every asset regardless of size so nothing is emitted as a

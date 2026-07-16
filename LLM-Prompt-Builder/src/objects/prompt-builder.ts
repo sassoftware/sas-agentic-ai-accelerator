@@ -6,6 +6,8 @@
  */
 
 import type { PromptBuilderConfig, InterfaceText, PromptBuilderText } from '../types';
+import type { DropdownOption } from '../types/models';
+import type { DependentDecision } from '../types/relationships';
 import { getAppState } from '../state/app-state';
 import { getFileContent } from '../api/files-api';
 import {
@@ -20,13 +22,20 @@ import {
   deleteModelContent,
   getModelVariables,
   deleteModelVariable,
+  deleteModel,
+  deleteModelProject,
+  updateModelTags,
 } from '../api/models-api';
+import { getModelDependentDecisions } from '../api/relationships-api';
 import { callSCRLLM } from '../api/scr-api';
 import { createAccordionItem } from '../ui/accordion';
+import { showConfirmModal } from '../ui/confirm-modal';
+import { showToast } from '../ui/toast';
 import { escapeHtml } from '../ui/dom-helpers';
 import { renderMarkdown } from '../ui/markdown';
 import { isValidDS2VariableName, validateAndCorrectPackageName } from '../util/validation';
 import Modal from 'bootstrap/js/dist/modal';
+import Tooltip from 'bootstrap/js/dist/tooltip';
 
 interface ModelOption {
   default: unknown;
@@ -56,11 +65,44 @@ interface ExperimentResult {
   options: Record<string, unknown>;
 }
 
+/** A user-defined prompt variable, referenced as {{name}} in the prompts. */
+interface PromptVariable {
+  name: string;
+  description: string;
+  type: 'string' | 'decimal';
+  value: string;
+}
+
 interface ExperimentTrackerEntry {
   systemPrompt: string;
   userPrompt: string;
+  variables?: PromptVariable[];
+  manifest?: ManifestConfig;
   [modelName: string]: unknown;
 }
+
+/** Entry keys that are metadata rather than per-model experiment results. */
+const TRACKER_META_KEYS = ['systemPrompt', 'userPrompt', 'author', 'variables', 'manifest'];
+
+/** A user-defined output variable parsed from the LLM's JSON response. */
+interface PromptOutputVariable {
+  name: string;
+  description: string;
+  type: 'string' | 'decimal';
+  defaultValue: string;
+}
+
+/** Manifest configuration captured with a run so loading can restore it. */
+interface ManifestConfig {
+  integratedLLMCall: boolean;
+  selectedOutputs: string[];
+  outputVariables: PromptOutputVariable[];
+}
+
+/** The outputs an integrated LLM call can return (mirroring the SCR contract). */
+const DEFAULT_LLM_OUTPUTS = ['response', 'run_time', 'prompt_length', 'output_length'];
+/** Names an output variable must not use. */
+const RESERVED_OUTPUT_NAMES = [...DEFAULT_LLM_OUTPUTS, 'parse_status'];
 
 interface ModelExperimentData {
   best_prompt: boolean | null;
@@ -77,6 +119,10 @@ interface PETRow {
   runId: number;
   systemPrompt: string;
   userPrompt: string;
+  /** Variable definitions of the run; only set on the run's header row. */
+  variables?: PromptVariable[] | null;
+  /** Manifest configuration of the run; only set on the run's header row. */
+  manifest?: ManifestConfig | null;
   model: string;
   options: string;
   response: string;
@@ -90,6 +136,7 @@ interface PETRow {
 
 interface ModalText {
   modalTitle?: string;
+  modalDescription?: string;
   nameLabel?: string;
   descriptionLabel?: string;
   closeButtonText?: string;
@@ -179,54 +226,41 @@ export async function buildPromptBuilder(
     // Add the project selection/creation
     const promptBuilderProjectHeader = document.createElement('h2');
     promptBuilderProjectHeader.innerText = promptBuilderInterfaceText?.promptBuilderProjectHeader as string;
+    // Full project/prompt lists with their metadata; the dropdowns render a
+    // filtered view of these, so long lists stay searchable.
+    let promptBuilderAllProjects: DropdownOption[] = [];
+    let promptBuilderProjectPrompts: DropdownOption[] = [];
+
     // Select from existing projects
-    const promptBuilderProjectSelectorHeader = document.createElement('h2');
+    const promptBuilderProjectSelectorHeader = document.createElement('h3');
     promptBuilderProjectSelectorHeader.innerText = `${promptBuilderInterfaceText?.projectSelect}:`;
     const promptBuilderProjectSelectorDropdown = document.createElement('select');
     promptBuilderProjectSelectorDropdown.setAttribute('class', 'form-select');
     promptBuilderProjectSelectorDropdown.setAttribute('id', `${promptBuilderObject?.id}-project-dropdown`);
     promptBuilderProjectSelectorDropdown.onchange = async function () {
       const self = this as unknown as HTMLSelectElement;
-      // Reset the prompt experiment tracker
-      const prommpExperimentTargetContainer = document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-pet`);
-      if (prommpExperimentTargetContainer) prommpExperimentTargetContainer.innerHTML = '';
-      // Reset the prompt selector
-      promptBuilderPromptSelectorDropdown.innerHTML = '';
-      const tmpPromptBuilderPromptSelectorItem = document.createElement('option');
-      tmpPromptBuilderPromptSelectorItem.value = `${promptBuilderInterfaceText?.promptSelect}`;
-      tmpPromptBuilderPromptSelectorItem.innerHTML = `${promptBuilderInterfaceText?.promptSelect}`;
-      promptBuilderPromptSelectorDropdown.append(tmpPromptBuilderPromptSelectorItem);
+      // Reset the in-memory experiment state of the previously selected prompt
+      resetExperimentTrackerState();
+      // Reset the prompt list and its filters
+      promptBuilderProjectPrompts = [];
+      promptFilter.nameInput.value = '';
+      renderPromptOptions();
 
       // Get the prompts from the selected projects
       const currentProject = self.options[self.selectedIndex].value;
+      // Enable project deletion only for a real project selection
+      deleteProjectButton.disabled = currentProject === `${promptBuilderInterfaceText?.projectSelect}`;
       try {
-        const currentProjectPrompts = await getModelProjectModels(currentProject);
-        for (const existingPrompt in currentProjectPrompts) {
-          const promptObj = document.createElement('option');
-          promptObj.value = currentProjectPrompts[existingPrompt]?.value;
-          promptObj.innerHTML = currentProjectPrompts[existingPrompt]?.innerHTML;
-          promptBuilderPromptSelectorDropdown.append(promptObj);
-        }
+        promptBuilderProjectPrompts = await getModelProjectModels(currentProject);
       } catch (error) {
         console.error('Failed to load prompts for the selected project.', error);
+        promptBuilderProjectPrompts = [];
       }
+      updateUserFilterOptions(promptFilter.userSelect, promptBuilderProjectPrompts);
+      renderPromptOptions();
     };
-    // Add all of the projects to the dropdown
-    const promptBuilderProjectSelectorItem = document.createElement('option');
-    promptBuilderProjectSelectorItem.value = `${promptBuilderInterfaceText?.projectSelect}`;
-    promptBuilderProjectSelectorItem.innerHTML = `${promptBuilderInterfaceText?.projectSelect}`;
-    promptBuilderProjectSelectorDropdown.append(promptBuilderProjectSelectorItem);
-    // Get all projects in the specified repository
-    const existingProjects = await getModelProjects(`contains(tags,'Prompt-Engineering')`);
-    // Add the projects to the dropdown
-    for (const existingProject in existingProjects) {
-      const projectMod = document.createElement('option');
-      projectMod.value = existingProjects[existingProject]?.value;
-      projectMod.innerHTML = existingProjects[existingProject]?.innerHTML;
-      promptBuilderProjectSelectorDropdown.append(projectMod);
-    }
     // Add the existing prompt selector
-    const promptBuilderPromptHeader = document.createElement('h2');
+    const promptBuilderPromptHeader = document.createElement('h3');
     promptBuilderPromptHeader.innerText = `${promptBuilderInterfaceText?.promptSelect}:`;
     const promptBuilderPromptSelectorDropdown = document.createElement('select');
     promptBuilderPromptSelectorDropdown.setAttribute('class', 'form-select');
@@ -237,9 +271,8 @@ export async function buildPromptBuilder(
     promptBuilderPromptSelectorDropdown.append(promptBuilderPromptSelectorItem);
     promptBuilderPromptSelectorDropdown.onchange = async function () {
       const self = this as unknown as HTMLSelectElement;
-      // Reset the prompt experiment tracker
-      const prommpExperimentTargetContainer = document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-pet`);
-      if (prommpExperimentTargetContainer) prommpExperimentTargetContainer.innerHTML = '';
+      // Reset the in-memory experiment state of the previously selected prompt
+      resetExperimentTrackerState();
       const promptBuilderPromptSelectedModelID = self.options[self.selectedIndex].value;
       // Get the ID of a previously created Prompt Experiment Tracker and delete it
       let promptBuilderAvailablePTE: Awaited<ReturnType<typeof getModelContents>> = [];
@@ -250,39 +283,61 @@ export async function buildPromptBuilder(
       }
       for (const promptBuilderAvailablepte in promptBuilderAvailablePTE) {
         if (promptBuilderAvailablePTE[promptBuilderAvailablepte]?.name === 'Prompt-Experiment-Tracker.json') {
-          // Reset the prompt tracker to nothing
-          promptExperimentTrackerRunID = 0;
-          const promptBuilderCurrentPTE = await getFileContent(promptBuilderAvailablePTE[promptBuilderAvailablepte].fileUri!);
-          const promptBuilderCurrentPTEContent: PETRow[] = await promptBuilderCurrentPTE.json();
-          const promptBuilderPreviousExperiment: ExperimentTrackerEntry[] = [];
-          let promptBuilderPreviousRunID = 0;
-          promptBuilderCurrentPTEContent.forEach((value) => {
-            if (value.runId !== promptBuilderPreviousRunID) {
-              promptBuilderPreviousExperiment.push({ systemPrompt: value.systemPrompt, userPrompt: value.userPrompt });
-              promptBuilderPreviousRunID = value.runId;
-            } else {
-              (promptBuilderPreviousExperiment[promptBuilderPreviousRunID - 1] as Record<string, unknown>)[value?.model] = {
-                best_prompt: value?.best_prompt,
-                fastest_prompt: value?.fastest_prompt ?? false,
-                fewest_tokens_prompt: value?.fewest_tokens_prompt ?? false,
-                output_length: value?.output_length,
-                prompt_length: value?.prompt_length,
-                run_time: value?.run_time,
-                options: JSON.parse(
-                  value?.options
-                    .replace(/(\w+):/g, '"$1":')
-                    .replace(/"API_KEY":"?([^",}]+)"?/g, function (_match: string, p1: string) {
-                      return `"API_KEY":"${p1}"`;
-                    })
-                ),
-                response: value?.response,
-              };
-            }
-          });
-          createPromptExperimentTracker(promptBuilderPreviousExperiment);
-          promptExperimentTracker = [...promptBuilderPreviousExperiment];
+          // A tracker that cannot be parsed must not abort the handler — the
+          // Model Manager link and delete buttons below still have to work.
+          try {
+            // Reset the prompt tracker to nothing
+            promptExperimentTrackerRunID = 0;
+            const promptBuilderCurrentPTE = await getFileContent(promptBuilderAvailablePTE[promptBuilderAvailablepte].fileUri!);
+            const promptBuilderCurrentPTEContent: PETRow[] = await promptBuilderCurrentPTE.json();
+            const promptBuilderPreviousExperiment: ExperimentTrackerEntry[] = [];
+            let promptBuilderPreviousRunID = 0;
+            promptBuilderCurrentPTEContent.forEach((value) => {
+              if (value.runId !== promptBuilderPreviousRunID) {
+                const loadedRun: ExperimentTrackerEntry = {
+                  systemPrompt: value.systemPrompt,
+                  userPrompt: value.userPrompt,
+                };
+                if (Array.isArray(value.variables)) loadedRun.variables = value.variables;
+                if (value.manifest) loadedRun.manifest = value.manifest;
+                promptBuilderPreviousExperiment.push(loadedRun);
+                promptBuilderPreviousRunID = value.runId;
+              } else {
+                // Index the last pushed run: persisted runIds can have gaps
+                // (a run whose experiments all failed produces no rows), so
+                // runId - 1 is not a safe array position.
+                (promptBuilderPreviousExperiment[promptBuilderPreviousExperiment.length - 1] as Record<string, unknown>)[value?.model] = {
+                  best_prompt: value?.best_prompt,
+                  fastest_prompt: value?.fastest_prompt ?? false,
+                  fewest_tokens_prompt: value?.fewest_tokens_prompt ?? false,
+                  output_length: value?.output_length,
+                  prompt_length: value?.prompt_length,
+                  run_time: value?.run_time,
+                  options: JSON.parse(
+                    value?.options
+                      .replace(/(\w+):/g, '"$1":')
+                      .replace(/"API_KEY":"?([^",}]+)"?/g, function (_match: string, p1: string) {
+                        return `"API_KEY":"${p1}"`;
+                      })
+                  ),
+                  response: value?.response,
+                };
+              }
+            });
+            // Assign the tracker before rendering so the saveable rows are rebuilt
+            // from the freshly loaded runs (the render reads the closure variable).
+            promptExperimentTracker = [...promptBuilderPreviousExperiment];
+            createPromptExperimentTracker(promptExperimentTracker);
+            // Bring the most recent best prompt straight into the workbench
+            loadMostRecentBestRun();
+          } catch (error) {
+            console.error('Failed to load the Prompt-Experiment-Tracker for the selected prompt.', error);
+          }
         }
       }
+      // Enable prompt deletion only for a real prompt selection
+      deletePromptButton.disabled =
+        promptBuilderPromptSelectedModelID === `${promptBuilderInterfaceText?.promptSelect}`;
       // Activate link to SAS Model Manager
       const tmpOpenInMMButton = document.getElementById(`${promptBuilderObject?.id}-openInMMButton`) as HTMLAnchorElement | null;
       if (tmpOpenInMMButton) {
@@ -294,9 +349,127 @@ export async function buildPromptBuilder(
       }
     };
 
-    // Add the creation prompt buttons and modals
+    // Name + user filters for the two selection lists. The lists can get very
+    // long, so each dropdown only renders the matching entries — filtering by
+    // name and by who created or last modified an entry. The current selection
+    // always stays in the list.
+    function createListFilter(
+      filterIdPrefix: string,
+      onFilterChange: () => void
+    ): { filterRow: HTMLDivElement; nameInput: HTMLInputElement; userSelect: HTMLSelectElement } {
+      const filterRow = document.createElement('div');
+      filterRow.classList.add('row', 'g-2', 'mb-2', 'pb-list-filter');
+      const nameColumn = document.createElement('div');
+      nameColumn.classList.add('col-md-8');
+      const nameInput = document.createElement('input');
+      nameInput.type = 'search';
+      nameInput.id = `${filterIdPrefix}-name`;
+      nameInput.classList.add('form-control', 'form-control-sm');
+      nameInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderFilterNamePlaceholder}`;
+      nameInput.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderFilterNamePlaceholder}`);
+      nameInput.oninput = onFilterChange;
+      nameColumn.appendChild(nameInput);
+      const userColumn = document.createElement('div');
+      userColumn.classList.add('col-md-4');
+      const userSelect = document.createElement('select');
+      userSelect.id = `${filterIdPrefix}-user`;
+      userSelect.classList.add('form-select', 'form-select-sm');
+      userSelect.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderFilterUserLabel}`);
+      userSelect.onchange = onFilterChange;
+      userColumn.appendChild(userSelect);
+      filterRow.appendChild(nameColumn);
+      filterRow.appendChild(userColumn);
+      updateUserFilterOptions(userSelect, []);
+      return { filterRow, nameInput, userSelect };
+    }
+
+    // Rebuild a user filter from the distinct createdBy/modifiedBy values
+    function updateUserFilterOptions(userSelect: HTMLSelectElement, items: DropdownOption[]): void {
+      const previousUser = userSelect.value;
+      const users = new Set<string>();
+      items.forEach((item) => {
+        if (typeof item.createdBy === 'string' && item.createdBy) users.add(item.createdBy);
+        if (typeof item.modifiedBy === 'string' && item.modifiedBy) users.add(item.modifiedBy);
+      });
+      userSelect.innerHTML = '';
+      const allUsersOption = document.createElement('option');
+      allUsersOption.value = '';
+      allUsersOption.innerText = `${promptBuilderInterfaceText?.promptBuilderFilterUserAll}`;
+      userSelect.appendChild(allUsersOption);
+      [...users].sort().forEach((user) => {
+        const userOption = document.createElement('option');
+        userOption.value = user;
+        userOption.innerText = user;
+        userSelect.appendChild(userOption);
+      });
+      userSelect.value = users.has(previousUser) ? previousUser : '';
+    }
+
+    function renderFilteredOptions(
+      dropdown: HTMLSelectElement,
+      items: DropdownOption[],
+      nameInput: HTMLInputElement,
+      userSelect: HTMLSelectElement,
+      placeholderText: string
+    ): void {
+      const selectedValue = dropdown.value;
+      const nameFilter = nameInput.value.trim().toLowerCase();
+      const userFilter = userSelect.value;
+      dropdown.innerHTML = '';
+      const placeholderOption = document.createElement('option');
+      placeholderOption.value = placeholderText;
+      placeholderOption.innerHTML = placeholderText;
+      dropdown.appendChild(placeholderOption);
+      items
+        .filter(
+          (item) =>
+            item.value === selectedValue ||
+            (String(item.innerHTML ?? '').toLowerCase().includes(nameFilter) &&
+              (userFilter === '' || item.createdBy === userFilter || item.modifiedBy === userFilter))
+        )
+        .forEach((item) => {
+          const listOption = document.createElement('option');
+          listOption.value = item.value;
+          listOption.innerHTML = item.innerHTML;
+          dropdown.appendChild(listOption);
+        });
+      dropdown.value = [...dropdown.options].some((option) => option.value === selectedValue)
+        ? selectedValue
+        : placeholderText;
+    }
+
+    const projectFilter = createListFilter(`${promptBuilderObject?.id}-project-filter`, () => renderProjectOptions());
+    const promptFilter = createListFilter(`${promptBuilderObject?.id}-prompt-filter`, () => renderPromptOptions());
+    function renderProjectOptions(): void {
+      renderFilteredOptions(
+        promptBuilderProjectSelectorDropdown,
+        promptBuilderAllProjects,
+        projectFilter.nameInput,
+        projectFilter.userSelect,
+        `${promptBuilderInterfaceText?.projectSelect}`
+      );
+    }
+    function renderPromptOptions(): void {
+      renderFilteredOptions(
+        promptBuilderPromptSelectorDropdown,
+        promptBuilderProjectPrompts,
+        promptFilter.nameInput,
+        promptFilter.userSelect,
+        `${promptBuilderInterfaceText?.promptSelect}`
+      );
+    }
+
+    // Get all projects in the specified repository and render the filterable list
+    promptBuilderAllProjects = await getModelProjects(`contains(tags,'Prompt-Engineering')`);
+    updateUserFilterOptions(projectFilter.userSelect, promptBuilderAllProjects);
+    renderProjectOptions();
+    renderPromptOptions();
+
+    // Add the creation prompt buttons and modals. The row is a flex container
+    // so the destructive actions can sit right-aligned, away from the rest.
     const promptBuilderModalButtonContainer = document.createElement('div');
     promptBuilderModalButtonContainer.setAttribute('id', `${promptBuilderObject?.id}-modal-button-container`);
+    promptBuilderModalButtonContainer.classList.add('d-flex', 'flex-wrap', 'align-items-center');
 
     // Function to call when creating a new project
     async function promptBuilderCreateProject(): Promise<void> {
@@ -322,10 +495,17 @@ export async function buildPromptBuilder(
         tags: ['LLM', 'Prompt-Engineering'],
       };
       const promptBuilderNewProjectObject = await createModelProject(promptBuilderNewProjectDefinition);
-      const newPromptBuilderProjectSelectorItem = document.createElement('option');
-      newPromptBuilderProjectSelectorItem.value = `${promptBuilderNewProjectObject?.id}`;
-      newPromptBuilderProjectSelectorItem.innerHTML = `${promptBuilderNewProjectObject?.name}`;
-      promptBuilderProjectSelectorDropdown.append(newPromptBuilderProjectSelectorItem);
+      promptBuilderAllProjects.push({
+        value: `${promptBuilderNewProjectObject?.id}`,
+        innerHTML: `${promptBuilderNewProjectObject?.name}`,
+        createdBy: promptBuilderNewProjectObject?.createdBy ?? getAppState().userName ?? undefined,
+        modifiedBy: promptBuilderNewProjectObject?.modifiedBy ?? getAppState().userName ?? undefined,
+      });
+      // Clear the filters so the new project is visible, then select it
+      projectFilter.nameInput.value = '';
+      projectFilter.userSelect.value = '';
+      updateUserFilterOptions(projectFilter.userSelect, promptBuilderAllProjects);
+      renderProjectOptions();
       // Set the newly created project as the currently selected project
       promptBuilderProjectSelectorDropdown.value = `${promptBuilderNewProjectObject?.id}`;
       promptBuilderProjectSelectorDropdown.dispatchEvent(new Event('change'));
@@ -356,10 +536,17 @@ export async function buildPromptBuilder(
         scoreCodeType: 'python',
       };
       const promptBuilderNewPromptObject = await createModel(promptBuilderNewPromptDefinition);
-      const newPromptBuilderPromptSelectorItem = document.createElement('option');
-      newPromptBuilderPromptSelectorItem.value = `${promptBuilderNewPromptObject?.items?.[0]?.id}`;
-      newPromptBuilderPromptSelectorItem.innerHTML = `${promptBuilderNewPromptObject?.items?.[0]?.name}`;
-      promptBuilderPromptSelectorDropdown.append(newPromptBuilderPromptSelectorItem);
+      promptBuilderProjectPrompts.push({
+        value: `${promptBuilderNewPromptObject?.items?.[0]?.id}`,
+        innerHTML: `${promptBuilderNewPromptObject?.items?.[0]?.name}`,
+        createdBy: (promptBuilderNewPromptObject?.items?.[0]?.createdBy as string | undefined) ?? getAppState().userName ?? undefined,
+        modifiedBy: (promptBuilderNewPromptObject?.items?.[0]?.modifiedBy as string | undefined) ?? getAppState().userName ?? undefined,
+      });
+      // Clear the filters so the new prompt is visible, then select it
+      promptFilter.nameInput.value = '';
+      promptFilter.userSelect.value = '';
+      updateUserFilterOptions(promptFilter.userSelect, promptBuilderProjectPrompts);
+      renderPromptOptions();
       // Set the newly created project as the currently selected project
       promptBuilderPromptSelectorDropdown.value = `${promptBuilderNewPromptObject?.items?.[0]?.id}`;
       promptBuilderPromptSelectorDropdown.dispatchEvent(new Event('change'));
@@ -369,6 +556,174 @@ export async function buildPromptBuilder(
       }
       const modalInstance = Modal.getInstance(document.getElementById('promptBuilderCreatePromptModal')!);
       if (modalInstance) modalInstance.hide();
+    }
+
+    // Clear all in-memory experiment state and deactivate the prompt-bound
+    // actions. Used when the project/prompt selection changes and after a
+    // prompt or project was deleted.
+    function resetExperimentTrackerState(): void {
+      const prommpExperimentTargetContainer = document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-pet`);
+      if (prommpExperimentTargetContainer) prommpExperimentTargetContainer.innerHTML = '';
+      promptExperimentTracker = [];
+      promptExperimentTrackerRunID = 0;
+      petRows = [];
+      experimentsModified = false;
+      promptExperimentResultContainer.innerHTML = '';
+      // Reset the manifest panel to its defaults; loading a run afterwards
+      // re-applies that run's stored configuration
+      applyManifestConfig(null);
+      updateTrackerEmptyState();
+      updateManifestButtonState();
+      openInMMButton.classList.add('disabled');
+      openInMMButton.setAttribute('aria-disabled', 'true');
+      openInMMButton.removeAttribute('href');
+      openInMMButton.onclick = null;
+      deletePromptButton.disabled = true;
+    }
+
+    // Build the confirmation-modal body describing which SAS Intelligent
+    // Decisioning decisions use a prompt. null means the check itself failed;
+    // the user is warned but can still make an explicit choice.
+    function buildUsageBody(decisions: DependentDecision[] | null): (HTMLElement | string)[] {
+      if (decisions === null) {
+        return [`${promptBuilderInterfaceText?.promptBuilderDeleteUsageCheckFailed}`];
+      }
+      if (decisions.length === 0) {
+        return [`${promptBuilderInterfaceText?.promptBuilderDeleteNoUsage}`];
+      }
+      const decisionList = document.createElement('ul');
+      decisions.forEach((decision) => {
+        const decisionListItem = document.createElement('li');
+        const decisionLink = document.createElement('a');
+        decisionLink.href = `${VIYA}/SASDecisionManager/decisions/${decision.id}`;
+        decisionLink.setAttribute('target', '_blank');
+        decisionLink.setAttribute('rel', 'noopener noreferrer');
+        decisionLink.textContent = decision.name;
+        decisionLink.onclick = (event) => openModelManagerLink(event, decisionLink, promptBuilderInterfaceText);
+        decisionListItem.appendChild(decisionLink);
+        decisionList.appendChild(decisionListItem);
+      });
+      return [
+        `${decisions.length} ${promptBuilderInterfaceText?.promptBuilderDeleteUsageFound}`,
+        decisionList,
+      ];
+    }
+
+    // Check whether any decisions use the model; null signals that the check
+    // failed (e.g. the relationships service is unavailable) rather than that
+    // no usage was found.
+    async function checkModelDecisionUsage(modelID: string): Promise<DependentDecision[] | null> {
+      try {
+        return await getModelDependentDecisions(modelID);
+      } catch (error) {
+        console.error('Failed to check decision usage for the prompt.', error);
+        return null;
+      }
+    }
+
+    // Function to call when deleting the selected prompt
+    async function promptBuilderDeletePrompt(): Promise<void> {
+      const promptSelectedIndex = promptBuilderPromptSelectorDropdown.selectedIndex;
+      const promptModelID = promptBuilderPromptSelectorDropdown.value;
+      if (promptModelID === `${promptBuilderInterfaceText?.promptSelect}`) return;
+      const promptModelName = promptBuilderPromptSelectorDropdown.options[promptSelectedIndex].text;
+      deletePromptButton.disabled = true;
+      deletePromptButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText?.promptBuilderDeletePromptButton}`;
+      try {
+        const decisions = await checkModelDecisionUsage(promptModelID);
+        const confirmed = await showConfirmModal({
+          title: `${promptBuilderInterfaceText?.promptBuilderDeletePromptTitle} ${promptModelName}`,
+          body: buildUsageBody(decisions),
+          confirmText: `${promptBuilderInterfaceText?.promptBuilderDeleteConfirmButton}`,
+          cancelText: `${promptBuilderInterfaceText?.promptBuilderDeleteCancelButton}`,
+        });
+        if (!confirmed) return;
+        const deleteStatus = await deleteModel(promptModelID);
+        if (deleteStatus === 204) {
+          promptBuilderProjectPrompts = promptBuilderProjectPrompts.filter((item) => item.value !== promptModelID);
+          updateUserFilterOptions(promptFilter.userSelect, promptBuilderProjectPrompts);
+          promptBuilderPromptSelectorDropdown.value = `${promptBuilderInterfaceText?.promptSelect}`;
+          renderPromptOptions();
+          resetExperimentTrackerState();
+        } else {
+          showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
+        }
+      } finally {
+        deletePromptButton.innerText = `${promptBuilderInterfaceText?.promptBuilderDeletePromptButton}`;
+        deletePromptButton.disabled =
+          promptBuilderPromptSelectorDropdown.value === `${promptBuilderInterfaceText?.promptSelect}`;
+      }
+    }
+
+    // Function to call when deleting the selected project
+    async function promptBuilderDeleteProject(): Promise<void> {
+      const projectSelectedIndex = promptBuilderProjectSelectorDropdown.selectedIndex;
+      const projectID = promptBuilderProjectSelectorDropdown.value;
+      if (projectID === `${promptBuilderInterfaceText?.projectSelect}`) return;
+      const projectName = promptBuilderProjectSelectorDropdown.options[projectSelectedIndex].text;
+      deleteProjectButton.disabled = true;
+      deleteProjectButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText?.promptBuilderDeleteProjectButton}`;
+      try {
+        let projectPrompts: Awaited<ReturnType<typeof getModelProjectModels>> = [];
+        try {
+          projectPrompts = await getModelProjectModels(projectID);
+        } catch (error) {
+          console.error('Failed to load the prompts of the selected project.', error);
+          showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
+          return;
+        }
+        // Confirm every contained prompt (with its decision usage) one by one
+        // BEFORE deleting anything, so a single cancel aborts the whole
+        // operation without leaving a partially deleted project behind.
+        if (projectPrompts.length === 0) {
+          const confirmed = await showConfirmModal({
+            title: `${promptBuilderInterfaceText?.promptBuilderDeleteProjectButton}: ${projectName}`,
+            body: [`${promptBuilderInterfaceText?.promptBuilderDeleteProjectEmptyNote}`],
+            confirmText: `${promptBuilderInterfaceText?.promptBuilderDeleteConfirmButton}`,
+            cancelText: `${promptBuilderInterfaceText?.promptBuilderDeleteCancelButton}`,
+          });
+          if (!confirmed) return;
+        }
+        for (let i = 0; i < projectPrompts.length; i++) {
+          const decisions = await checkModelDecisionUsage(projectPrompts[i].value);
+          const confirmed = await showConfirmModal({
+            title: `${promptBuilderInterfaceText?.promptBuilderDeleteProjectTitle} ${projectPrompts[i].innerHTML} (${i + 1}/${projectPrompts.length})`,
+            body: buildUsageBody(decisions),
+            confirmText: `${promptBuilderInterfaceText?.promptBuilderDeleteConfirmButton}`,
+            cancelText: `${promptBuilderInterfaceText?.promptBuilderDeleteCancelButton}`,
+          });
+          if (!confirmed) return;
+        }
+        // Delete the confirmed prompts explicitly before the project itself —
+        // whether a project DELETE cascades to its models varies by SAS Viya
+        // release, deleting them one by one is deterministic.
+        for (const projectPrompt of projectPrompts) {
+          const modelDeleteStatus = await deleteModel(projectPrompt.value);
+          if (modelDeleteStatus !== 204) {
+            showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
+            return;
+          }
+        }
+        const projectDeleteStatus = await deleteModelProject(projectID);
+        if (projectDeleteStatus === 204) {
+          promptBuilderAllProjects = promptBuilderAllProjects.filter((item) => item.value !== projectID);
+          updateUserFilterOptions(projectFilter.userSelect, promptBuilderAllProjects);
+          promptBuilderProjectSelectorDropdown.value = `${promptBuilderInterfaceText?.projectSelect}`;
+          renderProjectOptions();
+          // Reset the prompt selector to the placeholder-only state
+          promptBuilderProjectPrompts = [];
+          updateUserFilterOptions(promptFilter.userSelect, promptBuilderProjectPrompts);
+          promptBuilderPromptSelectorDropdown.value = `${promptBuilderInterfaceText?.promptSelect}`;
+          renderPromptOptions();
+          resetExperimentTrackerState();
+        } else {
+          showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
+        }
+      } finally {
+        deleteProjectButton.innerText = `${promptBuilderInterfaceText?.promptBuilderDeleteProjectButton}`;
+        deleteProjectButton.disabled =
+          promptBuilderProjectSelectorDropdown.value === `${promptBuilderInterfaceText?.projectSelect}`;
+      }
     }
 
     function promptBuilderCreateModal(
@@ -399,8 +754,8 @@ export async function buildPromptBuilder(
       const createModalModalHeader = document.createElement('div');
       createModalModalHeader.classList.add('modal-header');
       // Create the modal title
-      const createModalModalTitle = document.createElement('h1');
-      createModalModalTitle.classList.add('modal-title');
+      const createModalModalTitle = document.createElement('h2');
+      createModalModalTitle.classList.add('modal-title', 'fs-5');
       createModalModalTitle.innerHTML = tmpModalText?.modalTitle ?? '';
       // Create the modal close button
       const createModalModalCloseButton = document.createElement('button');
@@ -411,6 +766,12 @@ export async function buildPromptBuilder(
       // Create the modal body
       const createModalModalBody = document.createElement('div');
       createModalModalBody.classList.add('modal-body');
+      // Optional explanatory description shown above the inputs
+      if (tmpModalText?.modalDescription) {
+        const createModalModalDescription = document.createElement('p');
+        createModalModalDescription.innerText = tmpModalText.modalDescription;
+        createModalModalBody.appendChild(createModalModalDescription);
+      }
       // Create the first modal input
       const createModalBodyInput1Text = document.createElement('span');
       createModalBodyInput1Text.innerHTML = `${tmpModalText?.nameLabel}:`;
@@ -492,6 +853,48 @@ export async function buildPromptBuilder(
     openInMMButton.innerHTML = promptBuilderInterfaceText?.promptBuilderOpenInMMButton as string;
     promptBuilderModalButtonContainer.appendChild(openInMMButton);
 
+    // Delete the selected prompt / project. Both stay disabled until a real
+    // selection exists in the corresponding dropdown.
+    const deletePromptButton = document.createElement('button');
+    deletePromptButton.type = 'button';
+    deletePromptButton.id = `${promptBuilderObject?.id}-delete-prompt-button`;
+    deletePromptButton.classList.add('btn', 'btn-danger', 'ms-auto');
+    deletePromptButton.disabled = true;
+    deletePromptButton.innerText = `${promptBuilderInterfaceText?.promptBuilderDeletePromptButton}`;
+    deletePromptButton.onclick = async function () {
+      promptBuilderDeletePrompt();
+    };
+    promptBuilderModalButtonContainer.appendChild(deletePromptButton);
+
+    const deleteProjectButton = document.createElement('button');
+    deleteProjectButton.type = 'button';
+    deleteProjectButton.id = `${promptBuilderObject?.id}-delete-project-button`;
+    deleteProjectButton.classList.add('btn', 'btn-danger');
+    deleteProjectButton.disabled = true;
+    deleteProjectButton.innerText = `${promptBuilderInterfaceText?.promptBuilderDeleteProjectButton}`;
+    deleteProjectButton.onclick = async function () {
+      promptBuilderDeleteProject();
+    };
+    promptBuilderModalButtonContainer.appendChild(deleteProjectButton);
+
+    // Label + info icon for an LLM option; the explanation is a Bootstrap
+    // tooltip so it also works with keyboard focus and touch.
+    function createOptionLabel(labelText: string, infoHtml: string): HTMLDivElement {
+      const labelContainer = document.createElement('div');
+      labelContainer.classList.add('info-container');
+      labelContainer.append(`${labelText}: `);
+      const infoIcon = document.createElement('span');
+      infoIcon.classList.add('info-icon');
+      infoIcon.innerHTML = '&#x2139;&#xFE0F;';
+      infoIcon.setAttribute('tabindex', '0');
+      infoIcon.setAttribute('role', 'button');
+      infoIcon.setAttribute('aria-label', labelText);
+      infoIcon.setAttribute('data-bs-toggle', 'tooltip');
+      new Tooltip(infoIcon, { title: infoHtml, html: true, container: 'body' });
+      labelContainer.appendChild(infoIcon);
+      return labelContainer;
+    }
+
     function generateModelSelection(availableModels: AvailableLLM[]): void {
       availableModels.forEach((model, index) => {
         const modelDiv = document.createElement('div');
@@ -504,6 +907,7 @@ export async function buildPromptBuilder(
         checkbox.addEventListener('change', () => {
           const optionsDiv = document.getElementById(`options${index}`);
           if (optionsDiv) optionsDiv.style.display = checkbox.checked ? 'flex' : 'none';
+          updateRunExperimentsButtonState();
         });
 
         const label = document.createElement('label');
@@ -523,10 +927,9 @@ export async function buildPromptBuilder(
           temperatureInput.step = '0.1';
           temperatureInput.min = '0';
           temperatureInput.max = '1';
-          const temperatureInformationContainer = document.createElement('div');
-          temperatureInformationContainer.className = 'info-container';
-          temperatureInformationContainer.innerHTML = `Temperature: <span class="info-icon">&#x2139;&#xFE0F;</span><span class="info-content">${promptBuilderInterfaceText?.promptBuilderTemperatureInfo}</span>`;
-          optionsDiv.appendChild(temperatureInformationContainer);
+          optionsDiv.appendChild(
+            createOptionLabel('Temperature', String(promptBuilderInterfaceText?.promptBuilderTemperatureInfo))
+          );
           optionsDiv.appendChild(temperatureInput);
         }
 
@@ -538,10 +941,9 @@ export async function buildPromptBuilder(
           topPInput.step = '0.1';
           topPInput.min = '0';
           topPInput.max = '1';
-          const topPInformationContainer = document.createElement('div');
-          topPInformationContainer.className = 'info-container';
-          topPInformationContainer.innerHTML = `Top P: <span class="info-icon">&#x2139;&#xFE0F;</span><span class="info-content">${promptBuilderInterfaceText?.promptBuilderTop_PInfo}</span>`;
-          optionsDiv.appendChild(topPInformationContainer);
+          optionsDiv.appendChild(
+            createOptionLabel('Top P', String(promptBuilderInterfaceText?.promptBuilderTop_PInfo))
+          );
           optionsDiv.appendChild(topPInput);
         }
 
@@ -553,10 +955,9 @@ export async function buildPromptBuilder(
           topKInput.step = '1';
           topKInput.min = '1';
           topKInput.max = '100';
-          const topKInformationContainer = document.createElement('div');
-          topKInformationContainer.className = 'info-container';
-          topKInformationContainer.innerHTML = `Top K: <span class="info-icon">&#x2139;&#xFE0F;</span><span class="info-content">${promptBuilderInterfaceText?.promptBuilderTop_KInfo}</span>`;
-          optionsDiv.appendChild(topKInformationContainer);
+          optionsDiv.appendChild(
+            createOptionLabel('Top K', String(promptBuilderInterfaceText?.promptBuilderTop_KInfo))
+          );
           optionsDiv.appendChild(topKInput);
         }
 
@@ -568,10 +969,9 @@ export async function buildPromptBuilder(
           maxLengthInput.step = '1';
           maxLengthInput.min = '0';
           maxLengthInput.max = '1000000';
-          const maxLengthInformationContainer = document.createElement('div');
-          maxLengthInformationContainer.className = 'info-container';
-          maxLengthInformationContainer.innerHTML = `Max Length: <span class="info-icon">&#x2139;&#xFE0F;</span><span class="info-content">${promptBuilderInterfaceText?.promptBuilderMax_LengthInfo}</span>`;
-          optionsDiv.appendChild(maxLengthInformationContainer);
+          optionsDiv.appendChild(
+            createOptionLabel('Max Length', String(promptBuilderInterfaceText?.promptBuilderMax_LengthInfo))
+          );
           optionsDiv.appendChild(maxLengthInput);
         }
 
@@ -583,10 +983,9 @@ export async function buildPromptBuilder(
           maxTokensInput.step = '1';
           maxTokensInput.min = '0';
           maxTokensInput.max = '1000000';
-          const maxTokensInformationContainer = document.createElement('div');
-          maxTokensInformationContainer.className = 'info-container';
-          maxTokensInformationContainer.innerHTML = `Max Tokens: <span class="info-icon">&#x2139;&#xFE0F;</span><span class="info-content">${promptBuilderInterfaceText?.promptBuilderMax_LengthInfo}</span>`;
-          optionsDiv.appendChild(maxTokensInformationContainer);
+          optionsDiv.appendChild(
+            createOptionLabel('Max Tokens', String(promptBuilderInterfaceText?.promptBuilderMax_LengthInfo))
+          );
           optionsDiv.appendChild(maxTokensInput);
         }
 
@@ -598,10 +997,9 @@ export async function buildPromptBuilder(
           maxNewTokensInput.step = '1';
           maxNewTokensInput.min = '0';
           maxNewTokensInput.max = '1000000';
-          const maxNewTokensInformationContainer = document.createElement('div');
-          maxNewTokensInformationContainer.className = 'info-container';
-          maxNewTokensInformationContainer.innerHTML = `Max New Tokens: <span class="info-icon">&#x2139;&#xFE0F;</span><span class="info-content">${promptBuilderInterfaceText?.promptBuilderMax_LengthInfo}</span>`;
-          optionsDiv.appendChild(maxNewTokensInformationContainer);
+          optionsDiv.appendChild(
+            createOptionLabel('Max New Tokens', String(promptBuilderInterfaceText?.promptBuilderMax_LengthInfo))
+          );
           optionsDiv.appendChild(maxNewTokensInput);
         }
 
@@ -613,36 +1011,247 @@ export async function buildPromptBuilder(
     }
 
     // Model Selector
-    const promptBuilderModelSelectorHeader = document.createElement('h1');
+    const promptBuilderModelSelectorHeader = document.createElement('h2');
     promptBuilderModelSelectorHeader.innerText = promptBuilderInterfaceText?.promptBuilderModelSelectorHeading as string;
     const promptBuilderModelSelectorContainer = document.createElement('div');
     promptBuilderModelSelectorContainer.setAttribute('id', `${promptBuilderObject?.id}-model-selector-container`);
-    let promptBuilderAvailableLLMs: AvailableLLM[] = (await getModelProjectModels(promptBuilderObject?.llmProjectID as string)).map(o => ({ ...o, id: o.value, name: o.innerHTML }));
-    const promptBuilderDeprecatedLLMs: AvailableLLM[] = (await getModelProjectModels(promptBuilderObject?.llmProjectID as string, "eq(tags,'deprecated')")).map(o => ({ ...o, id: o.value, name: o.innerHTML }));
-    promptBuilderAvailableLLMs = promptBuilderAvailableLLMs.filter(
-      (obj1) => !promptBuilderDeprecatedLLMs.some((obj2) => obj1.id === obj2.id)
-    );
-    for (const promptBuilderAvailableLLM in promptBuilderAvailableLLMs) {
-      const promptBuilderAvailableLLMContents = await getModelContents(promptBuilderAvailableLLMs[promptBuilderAvailableLLM]?.id);
-      for (const promptBuilderAvailableLLMContent in promptBuilderAvailableLLMContents) {
-        if (promptBuilderAvailableLLMContents[promptBuilderAvailableLLMContent]?.name === 'options.json') {
-          promptBuilderAvailableLLMs[promptBuilderAvailableLLM].fileURI =
-            promptBuilderAvailableLLMContents[promptBuilderAvailableLLMContent]?.fileUri;
-          const promptBuilderCurrentOptions = await getFileContent(
-            promptBuilderAvailableLLMs[promptBuilderAvailableLLM].fileURI!
-          );
-          const promptBuilderCurrentOptionsContent = await promptBuilderCurrentOptions.json();
-          promptBuilderAvailableLLMs[promptBuilderAvailableLLM].options = promptBuilderCurrentOptionsContent;
+    // Load the available and deprecated LLM lists, then each LLM's options.json,
+    // all in parallel — done serially this delays the first paint noticeably.
+    const [promptBuilderAllLLMOptions, promptBuilderDeprecatedLLMOptions] = await Promise.all([
+      getModelProjectModels(promptBuilderObject?.llmProjectID as string),
+      getModelProjectModels(promptBuilderObject?.llmProjectID as string, "eq(tags,'deprecated')"),
+    ]);
+    const promptBuilderDeprecatedLLMs: AvailableLLM[] = promptBuilderDeprecatedLLMOptions.map(o => ({ ...o, id: o.value, name: o.innerHTML }));
+    const promptBuilderAvailableLLMs: AvailableLLM[] = promptBuilderAllLLMOptions
+      .map(o => ({ ...o, id: o.value, name: o.innerHTML }))
+      .filter((obj1) => !promptBuilderDeprecatedLLMs.some((obj2) => obj1.id === obj2.id));
+    await Promise.all(
+      promptBuilderAvailableLLMs.map(async (availableLLM) => {
+        const availableLLMContents = await getModelContents(availableLLM.id);
+        for (const availableLLMContent of availableLLMContents) {
+          if (availableLLMContent?.name === 'options.json') {
+            availableLLM.fileURI = availableLLMContent.fileUri;
+            const currentOptions = await getFileContent(availableLLM.fileURI!);
+            availableLLM.options = await currentOptions.json();
+          }
         }
-      }
-    }
+      })
+    );
     generateModelSelection(promptBuilderAvailableLLMs);
 
     // Add the prompting inputs
-    const promptBuilderPromptingHeader = document.createElement('h1');
+    const promptBuilderPromptingHeader = document.createElement('h2');
     promptBuilderPromptingHeader.innerText = promptBuilderInterfaceText?.promptBuilderPromptingHeader as string;
     const promptBulderPromptingExplainer = document.createElement('p');
     promptBulderPromptingExplainer.innerHTML = promptBuilderInterfaceText?.promptBulderPromptingExplainer as string;
+
+    // Variables manager: define name/description/type/value rows whose values
+    // are substituted into the prompts via the {{variableName}} syntax.
+    const promptBuilderVariablesHeader = document.createElement('h3');
+    promptBuilderVariablesHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesHeading}`;
+    const promptBuilderVariablesDescription = document.createElement('p');
+    promptBuilderVariablesDescription.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesDescription}`;
+    const promptBuilderVariablesContainer = document.createElement('div');
+    promptBuilderVariablesContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-variables`;
+    const promptBuilderVariablesAddButton = document.createElement('button');
+    promptBuilderVariablesAddButton.type = 'button';
+    promptBuilderVariablesAddButton.classList.add('btn', 'btn-secondary');
+    promptBuilderVariablesAddButton.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesAddButton}`;
+    promptBuilderVariablesAddButton.onclick = () => createPromptVariableRow();
+
+    function createPromptVariableRow(variable?: PromptVariable): void {
+      const variableRow = document.createElement('div');
+      variableRow.classList.add('row', 'g-2', 'align-items-start', 'mb-2', 'pb-variable-row');
+      // Name
+      const nameColumn = document.createElement('div');
+      nameColumn.classList.add('col-md-3');
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.maxLength = 32;
+      nameInput.classList.add('form-control', 'pb-var-name');
+      nameInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderVariablesNameLabel}`;
+      nameInput.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesNameLabel}`);
+      nameInput.value = variable?.name ?? '';
+      nameInput.oninput = () => validatePromptVariableRows();
+      const nameFeedback = document.createElement('div');
+      nameFeedback.classList.add('invalid-feedback');
+      nameColumn.appendChild(nameInput);
+      nameColumn.appendChild(nameFeedback);
+      // Description
+      const descriptionColumn = document.createElement('div');
+      descriptionColumn.classList.add('col-md-4');
+      const descriptionInput = document.createElement('input');
+      descriptionInput.type = 'text';
+      descriptionInput.maxLength = 500;
+      descriptionInput.classList.add('form-control', 'pb-var-description');
+      descriptionInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderVariablesDescriptionLabel}`;
+      descriptionInput.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesDescriptionLabel}`);
+      descriptionInput.value = variable?.description ?? '';
+      descriptionColumn.appendChild(descriptionInput);
+      // Data type (the 128000-character default string length stays internal)
+      const typeColumn = document.createElement('div');
+      typeColumn.classList.add('col-md-2');
+      const typeSelect = document.createElement('select');
+      typeSelect.classList.add('form-select', 'pb-var-type');
+      typeSelect.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesTypeLabel}`);
+      const stringOption = document.createElement('option');
+      stringOption.value = 'string';
+      stringOption.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesTypeString}`;
+      const decimalOption = document.createElement('option');
+      decimalOption.value = 'decimal';
+      decimalOption.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesTypeDecimal}`;
+      typeSelect.appendChild(stringOption);
+      typeSelect.appendChild(decimalOption);
+      typeSelect.value = variable?.type === 'decimal' ? 'decimal' : 'string';
+      typeSelect.onchange = () => validatePromptVariableRows();
+      typeColumn.appendChild(typeSelect);
+      // Value
+      const valueColumn = document.createElement('div');
+      valueColumn.classList.add('col-md-2');
+      const valueInput = document.createElement('input');
+      valueInput.type = 'text';
+      valueInput.classList.add('form-control', 'pb-var-value');
+      valueInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderVariablesValueLabel}`;
+      valueInput.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesValueLabel}`);
+      valueInput.value = variable?.value ?? '';
+      valueInput.oninput = () => validatePromptVariableRows();
+      const valueFeedback = document.createElement('div');
+      valueFeedback.classList.add('invalid-feedback');
+      valueFeedback.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesValueNotNumeric}`;
+      valueColumn.appendChild(valueInput);
+      valueColumn.appendChild(valueFeedback);
+      // Remove
+      const removeColumn = document.createElement('div');
+      removeColumn.classList.add('col-md-1');
+      const removeButton = document.createElement('button');
+      removeButton.type = 'button';
+      removeButton.classList.add('btn', 'btn-outline-danger', 'pb-var-remove');
+      removeButton.innerHTML = '&times;';
+      removeButton.title = `${promptBuilderInterfaceText?.promptBuilderVariablesRemoveButton}`;
+      removeButton.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesRemoveButton}`);
+      removeButton.onclick = () => {
+        variableRow.remove();
+        validatePromptVariableRows();
+      };
+      removeColumn.appendChild(removeButton);
+
+      variableRow.appendChild(nameColumn);
+      variableRow.appendChild(descriptionColumn);
+      variableRow.appendChild(typeColumn);
+      variableRow.appendChild(valueColumn);
+      variableRow.appendChild(removeColumn);
+      promptBuilderVariablesContainer.appendChild(variableRow);
+    }
+
+    // Flag invalid/duplicate names and non-numeric decimal values on the rows.
+    function validatePromptVariableRows(): void {
+      const seenNames = new Set<string>();
+      promptBuilderVariablesContainer.querySelectorAll('.pb-variable-row').forEach((row) => {
+        const nameInput = row.querySelector('.pb-var-name') as HTMLInputElement;
+        const nameFeedback = nameInput.nextElementSibling as HTMLElement;
+        const typeSelect = row.querySelector('.pb-var-type') as HTMLSelectElement;
+        const valueInput = row.querySelector('.pb-var-value') as HTMLInputElement;
+        const name = nameInput.value.trim();
+        let nameInvalidText = '';
+        if (name !== '' && !isValidDS2VariableName(name)) {
+          nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderVariablesNameInvalid}`;
+        } else if (name !== '' && seenNames.has(name)) {
+          nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderVariablesNameDuplicate}`;
+        } else if (name !== '') {
+          seenNames.add(name);
+        }
+        nameFeedback.innerText = nameInvalidText;
+        nameInput.classList.toggle('is-invalid', nameInvalidText !== '');
+        const valueInvalid =
+          typeSelect.value === 'decimal' && valueInput.value.trim() !== '' && isNaN(Number(valueInput.value));
+        valueInput.classList.toggle('is-invalid', valueInvalid);
+      });
+    }
+
+    // Collect the currently valid variable definitions (rows with an invalid,
+    // empty or duplicate name are highlighted by validation and skipped here).
+    function collectPromptVariables(): PromptVariable[] {
+      validatePromptVariableRows();
+      const variables: PromptVariable[] = [];
+      const seenNames = new Set<string>();
+      promptBuilderVariablesContainer.querySelectorAll('.pb-variable-row').forEach((row) => {
+        const name = (row.querySelector('.pb-var-name') as HTMLInputElement).value.trim();
+        if (!isValidDS2VariableName(name) || seenNames.has(name)) return;
+        seenNames.add(name);
+        variables.push({
+          name,
+          description: (row.querySelector('.pb-var-description') as HTMLInputElement).value.trim(),
+          type: (row.querySelector('.pb-var-type') as HTMLSelectElement).value === 'decimal' ? 'decimal' : 'string',
+          value: (row.querySelector('.pb-var-value') as HTMLInputElement).value,
+        });
+      });
+      return variables;
+    }
+
+    function setPromptVariables(variables: PromptVariable[]): void {
+      promptBuilderVariablesContainer.innerHTML = '';
+      variables.forEach((variable) => createPromptVariableRow(variable));
+      validatePromptVariableRows();
+    }
+
+    // Replace {{variableName}} tokens with the variable values. Tokens that do
+    // not match a defined variable are left as literal text.
+    function substitutePromptVariables(text: string, variables: PromptVariable[]): string {
+      let result = text;
+      variables.forEach((variable) => {
+        result = result.replace(
+          new RegExp(`\\{\\{\\s*${variable.name}\\s*\\}\\}`, 'g'),
+          () => variable.value
+        );
+      });
+      return result;
+    }
+
+    // Right-click menu on the prompt fields to insert a {{variable}} at the
+    // cursor. Falls back to the browser menu when no variables are defined.
+    let promptVariableInsertMenu: HTMLDivElement | null = null;
+    function hidePromptVariableInsertMenu(): void {
+      promptVariableInsertMenu?.remove();
+      promptVariableInsertMenu = null;
+    }
+    document.addEventListener('click', hidePromptVariableInsertMenu);
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') hidePromptVariableInsertMenu();
+    });
+    function attachPromptVariableInsertMenu(promptTextarea: HTMLTextAreaElement): void {
+      promptTextarea.addEventListener('contextmenu', (event) => {
+        const variables = collectPromptVariables();
+        if (variables.length === 0) return;
+        event.preventDefault();
+        hidePromptVariableInsertMenu();
+        const insertMenu = document.createElement('div');
+        insertMenu.classList.add('dropdown-menu', 'show', 'pb-variable-menu');
+        insertMenu.style.left = `${event.clientX}px`;
+        insertMenu.style.top = `${event.clientY}px`;
+        const insertMenuHeader = document.createElement('h6');
+        insertMenuHeader.classList.add('dropdown-header');
+        insertMenuHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesInsertMenuHeader}`;
+        insertMenu.appendChild(insertMenuHeader);
+        variables.forEach((variable) => {
+          const insertMenuItem = document.createElement('button');
+          insertMenuItem.type = 'button';
+          insertMenuItem.classList.add('dropdown-item');
+          insertMenuItem.innerText = variable.name;
+          if (variable.description) insertMenuItem.title = variable.description;
+          insertMenuItem.onclick = () => {
+            const selectionStart = promptTextarea.selectionStart ?? promptTextarea.value.length;
+            const selectionEnd = promptTextarea.selectionEnd ?? selectionStart;
+            promptTextarea.setRangeText(`{{${variable.name}}}`, selectionStart, selectionEnd, 'end');
+            promptTextarea.focus();
+            hidePromptVariableInsertMenu();
+          };
+          insertMenu.appendChild(insertMenuItem);
+        });
+        document.body.appendChild(insertMenu);
+        promptVariableInsertMenu = insertMenu;
+      });
+    }
+
     const promptBuilderPromptingContainer = document.createElement('div');
     promptBuilderPromptingContainer.style.gap = '20px';
     promptBuilderPromptingContainer.style.display = 'flex';
@@ -658,6 +1267,8 @@ export async function buildPromptBuilder(
     promptBuilderUserPrompt.style.height = '200px';
     promptBuilderPromptingContainer.appendChild(promptBuilderSystemPrompt);
     promptBuilderPromptingContainer.appendChild(promptBuilderUserPrompt);
+    attachPromptVariableInsertMenu(promptBuilderSystemPrompt);
+    attachPromptVariableInsertMenu(promptBuilderUserPrompt);
 
     // Start running experiments
     const promptBuilderRunExperimentsButton = document.createElement('button');
@@ -668,12 +1279,29 @@ export async function buildPromptBuilder(
     promptBuilderRunExperimentsButton.onclick = async function () {
       promptBuilderRunExperiment();
     };
+    // Disabled (with a hint) until at least one LLM is selected
+    function updateRunExperimentsButtonState(): void {
+      const anyLLMSelected = promptBuilderAvailableLLMs.some(
+        (_, llmIndex) => (document.getElementById(`model${llmIndex}`) as HTMLInputElement | null)?.checked
+      );
+      promptBuilderRunExperimentsButton.disabled = !anyLLMSelected;
+      promptBuilderRunExperimentsButton.title = anyLLMSelected
+        ? ''
+        : `${promptBuilderInterfaceText?.promptExperimentSelectModelsAlert}`;
+    }
+    updateRunExperimentsButtonState();
 
     const promptBuilderRunExperimentError = document.createElement('p');
     promptBuilderRunExperimentError.style.color = 'red';
     promptBuilderRunExperimentError.id = `${paneID}-obj-${promptBuilderObject?.id}-run-error`;
     let promptExperimentTrackerRunID = 0;
     let promptExperimentTracker: ExperimentTrackerEntry[] = [];
+    // Set when a run was deleted since the last save/load, so an emptied
+    // tracker can still be saved.
+    let experimentsModified = false;
+    // Blocks run deletion while an experiment is in flight (the run indices
+    // would shift under the running experiment otherwise).
+    let experimentRunning = false;
 
     // Add prompt evaluations here
     function annotatePrompts(arr: ExperimentResult[]): void {
@@ -710,6 +1338,7 @@ export async function buildPromptBuilder(
       ) as HTMLButtonElement;
       promptBuilderRunExperimentTargetButton.disabled = true;
       promptBuilderRunExperimentTargetButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText.promptBuilderRunExperimentsButtonRunStatus}`;
+      experimentRunning = true;
       // Reset error message
       const promptBuilderRunExperimentErrorText = document.getElementById(
         `${paneID}-obj-${promptBuilderObject?.id}-run-error`
@@ -751,6 +1380,7 @@ export async function buildPromptBuilder(
         alert(promptBuilderInterfaceText.promptExperimentSelectModelsAlert);
         promptBuilderRunExperimentTargetButton.disabled = false;
         promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
+        experimentRunning = false;
         return;
       }
 
@@ -760,7 +1390,17 @@ export async function buildPromptBuilder(
       const userPrompt = (
         document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-user-prompt`) as HTMLTextAreaElement
       ).value;
-      promptExperimentTracker.push({ systemPrompt: systemPrompt, userPrompt: userPrompt });
+      // The tracker stores the templates plus a snapshot of the variables; the
+      // LLMs receive the prompts with the {{variable}} values filled in.
+      const promptVariables = collectPromptVariables();
+      const resolvedSystemPrompt = substitutePromptVariables(systemPrompt, promptVariables);
+      const resolvedUserPrompt = substitutePromptVariables(userPrompt, promptVariables);
+      promptExperimentTracker.push({
+        systemPrompt: systemPrompt,
+        userPrompt: userPrompt,
+        variables: promptVariables,
+        manifest: collectManifestConfig(),
+      });
 
       const allPromises: Promise<ExperimentResult>[] = [];
 
@@ -772,8 +1412,8 @@ export async function buildPromptBuilder(
           callSCRLLM(
             promptBuilderObject.SCREndpoint as string,
             modelName,
-            systemPrompt,
-            userPrompt,
+            resolvedSystemPrompt,
+            resolvedUserPrompt,
             options,
             (promptBuilderObject.deploymentType as string) ?? 'k8s'
           ).then((data) => ({ modelName, data: data as ExperimentResult['data'], options }))
@@ -824,8 +1464,19 @@ export async function buildPromptBuilder(
 
       promptBuilderRunExperimentTargetButton.disabled = false;
       promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
+      experimentRunning = false;
     }
 
+    const promptExperimentTrackerHeader = document.createElement('h2');
+    promptExperimentTrackerHeader.innerText = `${promptBuilderInterfaceText?.promptExperimentTrackerHeading}`;
+    // Empty-state hint, shown while no experiment runs exist
+    const promptExperimentEmptyHint = document.createElement('p');
+    promptExperimentEmptyHint.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-empty`;
+    promptExperimentEmptyHint.classList.add('text-muted');
+    promptExperimentEmptyHint.innerText = `${promptBuilderInterfaceText?.promptExperimentTrackerEmpty}`;
+    function updateTrackerEmptyState(): void {
+      promptExperimentEmptyHint.style.display = promptExperimentTracker.length === 0 ? '' : 'none';
+    }
     const promptExperimentContainer = document.createElement('div');
     promptExperimentContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet`;
 
@@ -854,6 +1505,34 @@ export async function buildPromptBuilder(
             'run',
             `${promptBuilderInterfaceText.promptExperimentTrackerRunHeader}${index + 1}`
           );
+          // Add a delete button for the run as a sibling of the accordion
+          // toggle (a button nested inside a button would be invalid HTML)
+          const promptExperimentRunHeader = promptExperimentRunContainer.querySelector('.accordion-header') as HTMLElement | null;
+          if (promptExperimentRunHeader) {
+            promptExperimentRunHeader.classList.add('d-flex', 'align-items-center');
+            const loadRunButton = document.createElement('button');
+            loadRunButton.type = 'button';
+            loadRunButton.classList.add('btn', 'btn-outline-primary', 'btn-sm', 'pet-run-load');
+            loadRunButton.title = `${promptBuilderInterfaceText.promptExperimentLoadRunButton}`;
+            loadRunButton.setAttribute(
+              'aria-label',
+              `${promptBuilderInterfaceText.promptExperimentLoadRunButton} ${index + 1}`
+            );
+            loadRunButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText.promptExperimentLoadRunButton}</title><path d="M440-320v-326L336-542l-56-58 200-200 200 200-56 58-104-104v326h-80ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T680-160H240Z"/></svg>`;
+            loadRunButton.onclick = () => loadExperimentRun(index);
+            promptExperimentRunHeader.appendChild(loadRunButton);
+            const deleteRunButton = document.createElement('button');
+            deleteRunButton.type = 'button';
+            deleteRunButton.classList.add('btn', 'btn-outline-danger', 'btn-sm', 'pet-run-delete');
+            deleteRunButton.title = `${promptBuilderInterfaceText.promptExperimentDeleteRunButton}`;
+            deleteRunButton.setAttribute(
+              'aria-label',
+              `${promptBuilderInterfaceText.promptExperimentDeleteRunButton} ${index + 1}`
+            );
+            deleteRunButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText.promptExperimentDeleteRunButton}</title><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>`;
+            deleteRunButton.onclick = () => deleteExperimentRun(index);
+            promptExperimentRunHeader.appendChild(deleteRunButton);
+          }
           const promptExperimentRunContainerItemBody = document.createElement('div');
           promptExperimentRunContainerItemBody.className = 'accordion-body';
           // Add the System Prompt to the main run body
@@ -867,16 +1546,30 @@ export async function buildPromptBuilder(
           // Append to the container
           promptExperimentRunContainerItemBody.appendChild(promptExperimentRunContainerItemBodySystemPrompt);
           promptExperimentRunContainerItemBody.appendChild(promptExperimentRunContainerItemBodyUserPrompt);
+          // List the variable definitions used by the run, if any
+          const promptExperimentRunVariables = promptExperimentTrackerRunResult.variables;
+          if (Array.isArray(promptExperimentRunVariables) && promptExperimentRunVariables.length > 0) {
+            const variablesLine = document.createElement('p');
+            variablesLine.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-${index}-run-variables`;
+            const variablesLabel = document.createElement('b');
+            variablesLabel.innerText = `${promptBuilderInterfaceText.promptExperimentTrackerVariables}`;
+            variablesLine.appendChild(variablesLabel);
+            const variablesList = document.createElement('ul');
+            (promptExperimentRunVariables as PromptVariable[]).forEach((variable) => {
+              const variableItem = document.createElement('li');
+              variableItem.textContent = `${variable.name} (${variable.type}): ${variable.value}`;
+              if (variable.description) variableItem.title = variable.description;
+              variablesList.appendChild(variableItem);
+            });
+            variablesLine.appendChild(variablesList);
+            promptExperimentRunContainerItemBody.appendChild(variablesLine);
+          }
           (promptExperimentRunContainer.lastChild as HTMLElement)!.lastChild!.appendChild(promptExperimentRunContainerItemBody);
           // Iterate over the models used in the run
           const promptExperimentContainerModelContainer = document.createElement('div');
           promptExperimentContainerModelContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-${index}-run-nested`;
           for (const promptExperimentRunModelKey in promptExperimentTrackerRunResult) {
-            if (
-              promptExperimentRunModelKey !== 'systemPrompt' &&
-              promptExperimentRunModelKey !== 'userPrompt' &&
-              promptExperimentRunModelKey !== 'author'
-            ) {
+            if (!TRACKER_META_KEYS.includes(promptExperimentRunModelKey)) {
               const modelData = promptExperimentTrackerRunResult[promptExperimentRunModelKey] as ModelExperimentData;
               // Create the accordion
               const promptExperimentContainerModelContainerAccordion = document.createElement('div');
@@ -954,6 +1647,10 @@ export async function buildPromptBuilder(
                         obj.best_prompt = bestPromptCheckbox.checked ? 1 : 0;
                       }
                     });
+                    // Keep the tracker in sync so the selection survives a
+                    // re-render (e.g. after a run was deleted)
+                    modelData.best_prompt = bestPromptCheckbox.checked;
+                    updateManifestButtonState();
                   });
 
                   const bestPromptLabel = document.createElement('label');
@@ -1037,6 +1734,88 @@ export async function buildPromptBuilder(
         }
       });
       petRows = promptExperimentTransformData(promptExperimentTracker);
+      updateTrackerEmptyState();
+      updateManifestButtonState();
+    }
+
+    // Delete one experiment run and renumber the remaining ones. The runId is
+    // positional (index + 1), so re-rendering from the spliced tracker keeps
+    // the headers, checkbox wiring and the persisted rows contiguous at 1..N.
+    function deleteExperimentRun(index: number): void {
+      if (experimentRunning) return;
+      promptExperimentTracker.splice(index, 1);
+      experimentsModified = true;
+      renderAllExperimentRuns();
+    }
+
+    function renderAllExperimentRuns(): void {
+      const prommpExperimentTargetContainer = document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-pet`);
+      if (prommpExperimentTargetContainer) prommpExperimentTargetContainer.innerHTML = '';
+      // createPromptExperimentTracker only renders the entry whose index equals
+      // the run counter and then increments it, so start from 0 to render all
+      promptExperimentTrackerRunID = 0;
+      createPromptExperimentTracker(promptExperimentTracker);
+    }
+
+    // Restore an experiment run into the workbench: prompts, variables, LLM
+    // selection and each selected LLM's option values. LLMs of the run that
+    // are no longer available are reported in a toast.
+    function loadExperimentRun(index: number): void {
+      const trackerEntry = promptExperimentTracker[index];
+      if (!trackerEntry) return;
+      const systemPromptInput = document.getElementById(
+        `${paneID}-obj-${promptBuilderObject?.id}-system-prompt`
+      ) as HTMLTextAreaElement | null;
+      const userPromptInput = document.getElementById(
+        `${paneID}-obj-${promptBuilderObject?.id}-user-prompt`
+      ) as HTMLTextAreaElement | null;
+      if (systemPromptInput) systemPromptInput.value = trackerEntry.systemPrompt ?? '';
+      if (userPromptInput) userPromptInput.value = trackerEntry.userPrompt ?? '';
+      setPromptVariables(Array.isArray(trackerEntry.variables) ? trackerEntry.variables : []);
+      applyManifestConfig(trackerEntry.manifest);
+      // Reselect the run's LLMs and restore their option values
+      const runModels = Object.keys(trackerEntry).filter((key) => !TRACKER_META_KEYS.includes(key));
+      promptBuilderAvailableLLMs.forEach((availableLLM, llmIndex) => {
+        const llmCheckbox = document.getElementById(`model${llmIndex}`) as HTMLInputElement | null;
+        if (!llmCheckbox) return;
+        const selected = runModels.includes(availableLLM.name);
+        if (llmCheckbox.checked !== selected) {
+          llmCheckbox.checked = selected;
+          // Fires the listener that shows/hides the option inputs
+          llmCheckbox.dispatchEvent(new Event('change'));
+        }
+        if (selected) {
+          const modelData = trackerEntry[availableLLM.name] as ModelExperimentData;
+          Object.entries(modelData?.options ?? {}).forEach(([optionKey, optionValue]) => {
+            if (optionKey === 'API_KEY') return;
+            const optionInput = document.getElementById(`${optionKey}${llmIndex}`) as HTMLInputElement | null;
+            if (optionInput) optionInput.value = String(optionValue);
+          });
+        }
+      });
+      const missingLLMs = runModels.filter(
+        (modelName) => !promptBuilderAvailableLLMs.some((availableLLM) => availableLLM.name === modelName)
+      );
+      if (missingLLMs.length > 0) {
+        showToast(`${promptBuilderInterfaceText?.promptBuilderLoadMissingLLMs} ${missingLLMs.join(', ')}`);
+      }
+    }
+
+    // Load the most recent run that has a best response selected. Runs
+    // automatically after a prompt's tracker is loaded, so it stays silent
+    // when no best response has been selected yet.
+    function loadMostRecentBestRun(): void {
+      for (let index = promptExperimentTracker.length - 1; index >= 0; index--) {
+        const trackerEntry = promptExperimentTracker[index];
+        const hasBestPrompt = Object.keys(trackerEntry).some(
+          (key) =>
+            !TRACKER_META_KEYS.includes(key) && (trackerEntry[key] as ModelExperimentData)?.best_prompt
+        );
+        if (hasBestPrompt) {
+          loadExperimentRun(index);
+          return;
+        }
+      }
     }
 
     // Transform the data structure to be saved in SAS Model Manager
@@ -1044,7 +1823,7 @@ export async function buildPromptBuilder(
       return inputArray
         .map((entry, index) => {
           const MODELKEYS = Object.keys(entry).filter(
-            (key) => key !== 'systemPrompt' && key !== 'userPrompt'
+            (key) => !TRACKER_META_KEYS.includes(key)
           );
           const responseForModel: PETRow[] = [];
           MODELKEYS.forEach((MODELKEY, MODELINDEX) => {
@@ -1053,6 +1832,8 @@ export async function buildPromptBuilder(
                 runId: index + 1,
                 systemPrompt: entry.systemPrompt,
                 userPrompt: entry.userPrompt,
+                variables: Array.isArray(entry.variables) ? entry.variables : null,
+                manifest: entry.manifest ?? null,
                 model: '',
                 options: '',
                 response: '',
@@ -1088,7 +1869,7 @@ export async function buildPromptBuilder(
     }
 
     // Save the prompt run to the prompt
-    const promptExperimentSaveButton = document.createElement('div');
+    const promptExperimentSaveButton = document.createElement('button');
     promptExperimentSaveButton.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-save-button`;
     promptExperimentSaveButton.innerText = `${promptBuilderInterfaceText?.promptBuilderSaveExperimentsButton}`;
     promptExperimentSaveButton.setAttribute('type', 'button');
@@ -1098,16 +1879,291 @@ export async function buildPromptBuilder(
     };
 
     // Save the prompt run and turn the best prompt into a model
-    const promptExperimentCreateModelButton = document.createElement('div');
+    const promptExperimentCreateModelButton = document.createElement('button');
     promptExperimentCreateModelButton.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-create-model-button`;
     promptExperimentCreateModelButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
     promptExperimentCreateModelButton.setAttribute('type', 'button');
     promptExperimentCreateModelButton.setAttribute('class', 'btn btn-primary');
-    promptExperimentCreateModelButton.style.marginLeft = '4px';
     promptExperimentCreateModelButton.onclick = async function () {
+      // Persist the manifest configuration with the manifested run so loading
+      // the run later restores it
+      stampManifestConfigOnBestRun();
       await promptBuilderSaveExperiments();
       await promptBulderCreateBestPromptModel();
     };
+    // Disabled (with a hint) until a run has a best response selected
+    function updateManifestButtonState(): void {
+      const hasBestPrompt = promptExperimentTracker.some((trackerEntry) =>
+        Object.keys(trackerEntry).some(
+          (key) => !TRACKER_META_KEYS.includes(key) && (trackerEntry[key] as ModelExperimentData)?.best_prompt
+        )
+      );
+      promptExperimentCreateModelButton.disabled = !hasBestPrompt;
+      promptExperimentCreateModelButton.title = hasBestPrompt
+        ? ''
+        : `${promptBuilderInterfaceText?.promptBuilderCreateModelNoBestPrompt}`;
+    }
+    updateManifestButtonState();
+    // Manifest section: configure how the best prompt becomes a model, with
+    // the action button below the configuration.
+    const promptExperimentManifestHeader = document.createElement('h2');
+    promptExperimentManifestHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestHeading}`;
+    const promptExperimentManifestDescription = document.createElement('p');
+    promptExperimentManifestDescription.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestDescription}`;
+
+    // Choose whether the manifested model performs the LLM call itself
+    // (returning the same outputs as the LLM models) or returns the
+    // llmBody/llmURL pair for the Call LLM node in SAS Intelligent Decisioning.
+    const promptExperimentIntegratedCallDiv = document.createElement('div');
+    promptExperimentIntegratedCallDiv.classList.add('form-check', 'pet-manifest-integrated');
+    promptExperimentIntegratedCallDiv.title = `${promptBuilderInterfaceText?.promptBuilderManifestIntegratedInfo}`;
+    const promptExperimentIntegratedCallCheckbox = document.createElement('input');
+    promptExperimentIntegratedCallCheckbox.type = 'checkbox';
+    promptExperimentIntegratedCallCheckbox.classList.add('form-check-input');
+    promptExperimentIntegratedCallCheckbox.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-manifest-integrated`;
+    const promptExperimentIntegratedCallLabel = document.createElement('label');
+    promptExperimentIntegratedCallLabel.classList.add('form-check-label');
+    promptExperimentIntegratedCallLabel.htmlFor = promptExperimentIntegratedCallCheckbox.id;
+    promptExperimentIntegratedCallLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestIntegratedLabel}`;
+    promptExperimentIntegratedCallDiv.appendChild(promptExperimentIntegratedCallCheckbox);
+    promptExperimentIntegratedCallDiv.appendChild(promptExperimentIntegratedCallLabel);
+
+    // Options of the integrated LLM call, revealed only when the checkbox is
+    // ticked: which default outputs to keep, and which output variables to
+    // parse from the LLM's JSON response.
+    const promptExperimentManifestOptions = document.createElement('div');
+    promptExperimentManifestOptions.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-manifest-options`;
+    promptExperimentManifestOptions.classList.add('pet-manifest-options');
+    promptExperimentManifestOptions.style.display = 'none';
+    promptExperimentIntegratedCallCheckbox.addEventListener('change', () => {
+      promptExperimentManifestOptions.style.display = promptExperimentIntegratedCallCheckbox.checked ? '' : 'none';
+    });
+    const manifestOutputsLabel = document.createElement('p');
+    manifestOutputsLabel.classList.add('fw-bold', 'mb-1');
+    manifestOutputsLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestOutputsLabel}`;
+    promptExperimentManifestOptions.appendChild(manifestOutputsLabel);
+    const manifestOutputsRow = document.createElement('div');
+    DEFAULT_LLM_OUTPUTS.forEach((outputName) => {
+      const outputDiv = document.createElement('div');
+      outputDiv.classList.add('form-check', 'form-check-inline');
+      const outputCheckbox = document.createElement('input');
+      outputCheckbox.type = 'checkbox';
+      outputCheckbox.classList.add('form-check-input');
+      outputCheckbox.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-out-${outputName}`;
+      outputCheckbox.checked = true;
+      const outputLabel = document.createElement('label');
+      outputLabel.classList.add('form-check-label');
+      outputLabel.htmlFor = outputCheckbox.id;
+      outputLabel.innerText = outputName;
+      outputDiv.appendChild(outputCheckbox);
+      outputDiv.appendChild(outputLabel);
+      manifestOutputsRow.appendChild(outputDiv);
+    });
+    promptExperimentManifestOptions.appendChild(manifestOutputsRow);
+    const outputVariablesLabel = document.createElement('p');
+    outputVariablesLabel.classList.add('fw-bold', 'mb-1', 'mt-3');
+    outputVariablesLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderOutputVariablesHeading}`;
+    const outputVariablesDescription = document.createElement('p');
+    outputVariablesDescription.innerText = `${promptBuilderInterfaceText?.promptBuilderOutputVariablesDescription}`;
+    const promptBuilderOutputVariablesContainer = document.createElement('div');
+    promptBuilderOutputVariablesContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-outvars`;
+    const outputVariablesAddButton = document.createElement('button');
+    outputVariablesAddButton.type = 'button';
+    outputVariablesAddButton.classList.add('btn', 'btn-secondary');
+    outputVariablesAddButton.innerText = `${promptBuilderInterfaceText?.promptBuilderOutputVariablesAddButton}`;
+    outputVariablesAddButton.onclick = () => createOutputVariableRow();
+    promptExperimentManifestOptions.appendChild(outputVariablesLabel);
+    promptExperimentManifestOptions.appendChild(outputVariablesDescription);
+    promptExperimentManifestOptions.appendChild(promptBuilderOutputVariablesContainer);
+    promptExperimentManifestOptions.appendChild(outputVariablesAddButton);
+
+    function createOutputVariableRow(variable?: PromptOutputVariable): void {
+      const outputRow = document.createElement('div');
+      outputRow.classList.add('row', 'g-2', 'align-items-start', 'mb-2', 'pb-outvar-row');
+      // Name
+      const nameColumn = document.createElement('div');
+      nameColumn.classList.add('col-md-3');
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.maxLength = 32;
+      nameInput.classList.add('form-control', 'pb-outvar-name');
+      nameInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderVariablesNameLabel}`;
+      nameInput.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesNameLabel}`);
+      nameInput.value = variable?.name ?? '';
+      nameInput.oninput = () => validateOutputVariableRows();
+      const nameFeedback = document.createElement('div');
+      nameFeedback.classList.add('invalid-feedback');
+      nameColumn.appendChild(nameInput);
+      nameColumn.appendChild(nameFeedback);
+      // Description
+      const descriptionColumn = document.createElement('div');
+      descriptionColumn.classList.add('col-md-4');
+      const descriptionInput = document.createElement('input');
+      descriptionInput.type = 'text';
+      descriptionInput.maxLength = 500;
+      descriptionInput.classList.add('form-control', 'pb-outvar-description');
+      descriptionInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderVariablesDescriptionLabel}`;
+      descriptionInput.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesDescriptionLabel}`);
+      descriptionInput.value = variable?.description ?? '';
+      descriptionColumn.appendChild(descriptionInput);
+      // Data type
+      const typeColumn = document.createElement('div');
+      typeColumn.classList.add('col-md-2');
+      const typeSelect = document.createElement('select');
+      typeSelect.classList.add('form-select', 'pb-outvar-type');
+      typeSelect.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesTypeLabel}`);
+      const stringOption = document.createElement('option');
+      stringOption.value = 'string';
+      stringOption.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesTypeString}`;
+      const decimalOption = document.createElement('option');
+      decimalOption.value = 'decimal';
+      decimalOption.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesTypeDecimal}`;
+      typeSelect.appendChild(stringOption);
+      typeSelect.appendChild(decimalOption);
+      typeSelect.value = variable?.type === 'decimal' ? 'decimal' : 'string';
+      typeSelect.onchange = () => validateOutputVariableRows();
+      typeColumn.appendChild(typeSelect);
+      // Optional default value, used when the key is missing from the response
+      const defaultColumn = document.createElement('div');
+      defaultColumn.classList.add('col-md-2');
+      const defaultInput = document.createElement('input');
+      defaultInput.type = 'text';
+      defaultInput.classList.add('form-control', 'pb-outvar-default');
+      defaultInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderVariablesDefaultLabel}`;
+      defaultInput.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesDefaultLabel}`);
+      defaultInput.value = variable?.defaultValue ?? '';
+      defaultInput.oninput = () => validateOutputVariableRows();
+      const defaultFeedback = document.createElement('div');
+      defaultFeedback.classList.add('invalid-feedback');
+      defaultFeedback.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesValueNotNumeric}`;
+      defaultColumn.appendChild(defaultInput);
+      defaultColumn.appendChild(defaultFeedback);
+      // Remove
+      const removeColumn = document.createElement('div');
+      removeColumn.classList.add('col-md-1');
+      const removeButton = document.createElement('button');
+      removeButton.type = 'button';
+      removeButton.classList.add('btn', 'btn-outline-danger', 'pb-outvar-remove');
+      removeButton.innerHTML = '&times;';
+      removeButton.title = `${promptBuilderInterfaceText?.promptBuilderVariablesRemoveButton}`;
+      removeButton.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderVariablesRemoveButton}`);
+      removeButton.onclick = () => {
+        outputRow.remove();
+        validateOutputVariableRows();
+      };
+      removeColumn.appendChild(removeButton);
+
+      outputRow.appendChild(nameColumn);
+      outputRow.appendChild(descriptionColumn);
+      outputRow.appendChild(typeColumn);
+      outputRow.appendChild(defaultColumn);
+      outputRow.appendChild(removeColumn);
+      promptBuilderOutputVariablesContainer.appendChild(outputRow);
+    }
+
+    // Flag invalid, duplicate or reserved names and non-numeric decimal defaults.
+    function validateOutputVariableRows(): void {
+      const seenNames = new Set<string>();
+      promptBuilderOutputVariablesContainer.querySelectorAll('.pb-outvar-row').forEach((row) => {
+        const nameInput = row.querySelector('.pb-outvar-name') as HTMLInputElement;
+        const nameFeedback = nameInput.nextElementSibling as HTMLElement;
+        const typeSelect = row.querySelector('.pb-outvar-type') as HTMLSelectElement;
+        const defaultInput = row.querySelector('.pb-outvar-default') as HTMLInputElement;
+        const name = nameInput.value.trim();
+        let nameInvalidText = '';
+        if (name !== '' && !isValidDS2VariableName(name)) {
+          nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderVariablesNameInvalid}`;
+        } else if (name !== '' && RESERVED_OUTPUT_NAMES.includes(name)) {
+          nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderOutputVariablesNameReserved}`;
+        } else if (name !== '' && seenNames.has(name)) {
+          nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderVariablesNameDuplicate}`;
+        } else if (name !== '') {
+          seenNames.add(name);
+        }
+        nameFeedback.innerText = nameInvalidText;
+        nameInput.classList.toggle('is-invalid', nameInvalidText !== '');
+        const defaultInvalid =
+          typeSelect.value === 'decimal' && defaultInput.value.trim() !== '' && isNaN(Number(defaultInput.value));
+        defaultInput.classList.toggle('is-invalid', defaultInvalid);
+      });
+    }
+
+    function setPromptOutputVariables(outputVariables: PromptOutputVariable[]): void {
+      promptBuilderOutputVariablesContainer.innerHTML = '';
+      outputVariables.forEach((variable) => createOutputVariableRow(variable));
+      validateOutputVariableRows();
+    }
+
+    // Snapshot of the manifest panel, stored with a run so loading restores it.
+    function collectManifestConfig(): ManifestConfig {
+      return {
+        integratedLLMCall: promptExperimentIntegratedCallCheckbox.checked,
+        selectedOutputs: DEFAULT_LLM_OUTPUTS.filter(
+          (outputName) =>
+            (document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-pet-out-${outputName}`) as HTMLInputElement | null)?.checked
+        ),
+        outputVariables: collectPromptOutputVariables(),
+      };
+    }
+
+    // Restore the manifest panel from a run's stored configuration; runs
+    // without one reset the panel to its defaults.
+    function applyManifestConfig(config?: ManifestConfig | null): void {
+      const targetConfig: ManifestConfig = config ?? {
+        integratedLLMCall: false,
+        selectedOutputs: [...DEFAULT_LLM_OUTPUTS],
+        outputVariables: [],
+      };
+      if (promptExperimentIntegratedCallCheckbox.checked !== targetConfig.integratedLLMCall) {
+        promptExperimentIntegratedCallCheckbox.checked = targetConfig.integratedLLMCall;
+        // Fires the listener that shows/hides the options panel
+        promptExperimentIntegratedCallCheckbox.dispatchEvent(new Event('change'));
+      }
+      DEFAULT_LLM_OUTPUTS.forEach((outputName) => {
+        const outputCheckbox = document.getElementById(
+          `${paneID}-obj-${promptBuilderObject?.id}-pet-out-${outputName}`
+        ) as HTMLInputElement | null;
+        if (outputCheckbox) outputCheckbox.checked = targetConfig.selectedOutputs.includes(outputName);
+      });
+      setPromptOutputVariables(Array.isArray(targetConfig.outputVariables) ? targetConfig.outputVariables : []);
+    }
+
+    // Persist the current manifest configuration with the run that is being
+    // manifested (the most recent one with a best response).
+    function stampManifestConfigOnBestRun(): void {
+      for (let index = promptExperimentTracker.length - 1; index >= 0; index--) {
+        const trackerEntry = promptExperimentTracker[index];
+        const hasBestPrompt = Object.keys(trackerEntry).some(
+          (key) => !TRACKER_META_KEYS.includes(key) && (trackerEntry[key] as ModelExperimentData)?.best_prompt
+        );
+        if (hasBestPrompt) {
+          trackerEntry.manifest = collectManifestConfig();
+          // Rebuild the saveable rows so the save that follows persists it
+          petRows = promptExperimentTransformData(promptExperimentTracker);
+          return;
+        }
+      }
+    }
+
+    // Collect the currently valid output variable definitions.
+    function collectPromptOutputVariables(): PromptOutputVariable[] {
+      validateOutputVariableRows();
+      const outputVariables: PromptOutputVariable[] = [];
+      const seenNames = new Set<string>();
+      promptBuilderOutputVariablesContainer.querySelectorAll('.pb-outvar-row').forEach((row) => {
+        const name = (row.querySelector('.pb-outvar-name') as HTMLInputElement).value.trim();
+        if (!isValidDS2VariableName(name) || RESERVED_OUTPUT_NAMES.includes(name) || seenNames.has(name)) return;
+        seenNames.add(name);
+        outputVariables.push({
+          name,
+          description: (row.querySelector('.pb-outvar-description') as HTMLInputElement).value.trim(),
+          type: (row.querySelector('.pb-outvar-type') as HTMLSelectElement).value === 'decimal' ? 'decimal' : 'string',
+          defaultValue: (row.querySelector('.pb-outvar-default') as HTMLInputElement).value,
+        });
+      });
+      return outputVariables;
+    }
+
     // Response for the user about saving
     const promptExperimentResultContainer = document.createElement('div');
     promptExperimentResultContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-save-result`;
@@ -1123,8 +2179,9 @@ export async function buildPromptBuilder(
       const promptExperimentRunModel = (
         document.getElementById(`${promptBuilderObject?.id}-prompt-dropdown`) as HTMLSelectElement
       ).value;
-      // Check if an experiment was run
-      if (petRows.length === 0) {
+      // Check if an experiment was run (deleting runs also counts as a change,
+      // so an emptied tracker can still be saved)
+      if (petRows.length === 0 && !experimentsModified) {
         promptExperimentSaveTargetButton.disabled = false;
         promptExperimentSaveTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderSaveExperimentsButton}`;
         alert(promptBuilderInterfaceText.promptExperimentSaveModelsExperimentAlert);
@@ -1153,8 +2210,11 @@ export async function buildPromptBuilder(
         'Prompt-Experiment-Tracker.json'
       );
       if (promptExperimentPromptResponseObject.status_code === 201) {
+        experimentsModified = false;
+        showToast(`${promptBuilderInterfaceText?.promptBuilderSaveToast}`);
         promptExperimentResultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveSucessResponse} <a target="_blank" rel="noopener noreferrer" href="${VIYA}/SASModelManager/models/${promptExperimentRunModel}">${VIYA}/SASModelManager/models/${promptExperimentRunModel}</a></p>`;
       } else {
+        showToast(`${promptBuilderInterfaceText.promptExperimentSaveFailureResponse}`);
         promptExperimentResultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveFailureResponse}</p>`;
       }
 
@@ -1190,15 +2250,12 @@ export async function buildPromptBuilder(
           }
         }
       });
-      // Get the system & user Prompt for the Best Prompt
+      // Get the system & user Prompt for the Best Prompt (its run header row)
       let basePrompt: PETRow | null = null;
       if (bestPromptItem !== null) {
         basePrompt = petRows.find(
-          (item) => item.runId === (bestPromptItem as PETRow).runId && item.systemPrompt.trim().length > 0
+          (item) => item.runId === (bestPromptItem as PETRow).runId && item.model === ''
         ) ?? null;
-        let parsedUserPrompt = basePrompt!.userPrompt.trim().split(';');
-        // Remove empty items, if the user closed with a semi-colon
-        parsedUserPrompt = parsedUserPrompt.filter(Boolean);
         const promptInputs: {
           name: string;
           description: string;
@@ -1206,44 +2263,71 @@ export async function buildPromptBuilder(
           type: string;
           length: number;
         }[] = [];
-        // Parse the input and create the input signature
-        if (parsedUserPrompt.length >= 1) {
-          parsedUserPrompt.forEach((item) => {
-            // Check that the variable name doesn't contain blanks
-            const tempInputVar = item.split(':');
-            if (tempInputVar.length > 1 && isValidDS2VariableName(tempInputVar[0])) {
-              const varType =
-                String(tempInputVar[1]).trim() === '' || isNaN(Number(tempInputVar[1]))
-                  ? 'string'
-                  : 'decimal';
-              const varLevel = varType === 'string' ? 'nominal' : 'interval';
+        // Runs created with the variables manager carry their definitions: the
+        // model inputs are the variables referenced as {{name}} in either
+        // prompt template. Runs without stored variables fall back to the
+        // legacy variableName:variableValue;... parsing of the user prompt.
+        const runVariables: PromptVariable[] | null = Array.isArray(basePrompt?.variables)
+          ? (basePrompt!.variables as PromptVariable[])
+          : null;
+        const referencedVariables: PromptVariable[] = [];
+        if (runVariables) {
+          runVariables.forEach((variable) => {
+            const variableToken = new RegExp(`\\{\\{\\s*${variable.name}\\s*\\}\\}`);
+            if (variableToken.test(basePrompt!.systemPrompt) || variableToken.test(basePrompt!.userPrompt)) {
+              referencedVariables.push(variable);
               promptInputs.push({
-                name: tempInputVar[0],
-                description: '',
-                level: varLevel,
-                type: varType,
-                length: varType === 'string' ? 128000 : 8,
+                name: variable.name,
+                description: variable.description,
+                level: variable.type === 'decimal' ? 'interval' : 'nominal',
+                type: variable.type === 'decimal' ? 'decimal' : 'string',
+                length: variable.type === 'decimal' ? 8 : 10000000,
               });
-            } else {
-              if (!promptInputs.some((pi) => pi.name === 'userPrompt')) {
-                promptInputs.push({
-                  name: 'userPrompt',
-                  description: 'Captures any non-structured inputs for the prompt template',
-                  level: 'nominal',
-                  type: 'string',
-                  length: 128000,
-                });
-              }
             }
           });
         } else {
-          promptInputs.push({
-            name: 'userPrompt',
-            description: 'Captures any non-structured inputs for the prompt template',
-            level: 'nominal',
-            type: 'string',
-            length: 128000,
-          });
+          let parsedUserPrompt = basePrompt!.userPrompt.trim().split(';');
+          // Remove empty items, if the user closed with a semi-colon
+          parsedUserPrompt = parsedUserPrompt.filter(Boolean);
+          // Parse the input and create the input signature
+          if (parsedUserPrompt.length >= 1) {
+            parsedUserPrompt.forEach((item) => {
+              // Check that the variable name doesn't contain blanks
+              const tempInputVar = item.split(':');
+              if (tempInputVar.length > 1 && isValidDS2VariableName(tempInputVar[0])) {
+                const varType =
+                  String(tempInputVar[1]).trim() === '' || isNaN(Number(tempInputVar[1]))
+                    ? 'string'
+                    : 'decimal';
+                const varLevel = varType === 'string' ? 'nominal' : 'interval';
+                promptInputs.push({
+                  name: tempInputVar[0],
+                  description: '',
+                  level: varLevel,
+                  type: varType,
+                  length: varType === 'string' ? 128000 : 8,
+                });
+              } else {
+                if (!promptInputs.some((pi) => pi.name === 'userPrompt')) {
+                  promptInputs.push({
+                    name: 'userPrompt',
+                    description: 'Captures any non-structured inputs for the prompt template',
+                    level: 'nominal',
+                    type: 'string',
+                    length: 128000,
+                  });
+                }
+              }
+            });
+          } else {
+            promptInputs.push({
+              name: 'userPrompt',
+              description: 'Captures any non-structured inputs for the prompt template',
+              level: 'nominal',
+              type: 'string',
+              length: 128000,
+            });
+          }
         }
         // Check if the options contains an API-Key
         let requiresAPIKey = false;
@@ -1279,6 +2363,26 @@ export async function buildPromptBuilder(
             scoreCodeUserPrompt += `${promptInputs[i].name}: {str(${promptInputs[i].name}).strip()}`;
           }
         }
+        // For variable-based runs both prompts become Python f-strings built
+        // from the stored templates: literal braces are escaped for the
+        // f-string and each referenced {{variable}} becomes a score-function
+        // input that is inserted at its position in the template.
+        const promptTemplateToPythonFString = (template: string): string => {
+          let fString = template.replace(/\{/g, '{{').replace(/\}/g, '}}');
+          referencedVariables.forEach((variable) => {
+            fString = fString.replace(
+              new RegExp(`\\{\\{\\{\\{\\s*${variable.name}\\s*\\}\\}\\}\\}`, 'g'),
+              `{str(${variable.name}).strip()}`
+            );
+          });
+          return fString;
+        };
+        const scoreCodeSystemPromptLiteral = runVariables
+          ? `f"""${promptTemplateToPythonFString(basePrompt!.systemPrompt)}"""`
+          : `"""${basePrompt!.systemPrompt}"""`;
+        const scoreCodeUserPromptLiteral = runVariables
+          ? `f"""${promptTemplateToPythonFString(basePrompt!.userPrompt)}"""`
+          : `f"${scoreCodeUserPrompt}"`;
         // Create the options string for the score code
         let scoreCodeOptions = '';
         for (let i = 0; i < bestPromptOptionsList.length; i++) {
@@ -1290,23 +2394,97 @@ export async function buildPromptBuilder(
         if (requiresAPIKey) {
           scoreCodeOptions += scoreCodeOptions.length > 0 ? ',API_KEY:{API_KEY}' : 'API_KEY:{API_KEY}';
         }
-        // Create the output variables definition
-        const outputVars = [
-          {
-            name: 'llmBody',
-            description: 'Contains the structered input for the Call LLM node in SAS Intelligent Decisioning',
+        // With the integrated call the manifested model calls the LLM container
+        // itself and returns the selected default outputs (mirroring how the
+        // Prompt Builder consumes the SCR responses) plus any output variables
+        // parsed from the LLM's JSON response; otherwise it returns the
+        // llmBody/llmURL pair for the Call LLM node in SAS Intelligent Decisioning.
+        const integratedLLMCall = promptExperimentIntegratedCallCheckbox.checked;
+        const selectedDefaultOutputs = DEFAULT_LLM_OUTPUTS.filter(
+          (outputName) =>
+            (document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-pet-out-${outputName}`) as HTMLInputElement | null)?.checked
+        );
+        const outputVariables = integratedLLMCall ? collectPromptOutputVariables() : [];
+        const parseOutputs = outputVariables.length > 0;
+        const defaultOutputDefinitions: Record<string, { name: string; description: string; level: string; type: string; length: number }> = {
+          response: {
+            name: 'response',
+            description: 'The response of the LLM to the manifested prompt',
             level: 'nominal',
             type: 'string',
             length: 1000000,
           },
-          {
-            name: 'llmURL',
-            description: 'The URL of the LLM container that will be called',
-            level: 'nominal',
-            type: 'string',
-            length: 256,
+          run_time: {
+            name: 'run_time',
+            description: 'Time in seconds the LLM call took',
+            level: 'interval',
+            type: 'decimal',
+            length: 8,
           },
-        ];
+          prompt_length: {
+            name: 'prompt_length',
+            description: 'Number of input tokens',
+            level: 'interval',
+            type: 'decimal',
+            length: 8,
+          },
+          output_length: {
+            name: 'output_length',
+            description: 'Number of output tokens',
+            level: 'interval',
+            type: 'decimal',
+            length: 8,
+          },
+        };
+        // Create the output variables definition
+        const outputVars = integratedLLMCall
+          ? [
+              ...selectedDefaultOutputs.map((outputName) => defaultOutputDefinitions[outputName]),
+              ...outputVariables.map((variable) => ({
+                name: variable.name,
+                description: variable.description,
+                level: variable.type === 'decimal' ? 'interval' : 'nominal',
+                type: variable.type === 'decimal' ? 'decimal' : 'string',
+                length: variable.type === 'decimal' ? 8 : 10000000,
+              })),
+              ...(parseOutputs
+                ? [
+                    {
+                      name: 'parse_status',
+                      description:
+                        '1 when the LLM response was parsed as JSON and every output variable was extracted, 0 otherwise',
+                      level: 'interval',
+                      type: 'decimal',
+                      length: 8,
+                    },
+                  ]
+                : []),
+            ]
+          : [
+              {
+                name: 'llmBody',
+                description: 'Contains the structered input for the Call LLM node in SAS Intelligent Decisioning',
+                level: 'nominal',
+                type: 'string',
+                length: 1000000,
+              },
+              {
+                name: 'llmURL',
+                description: 'The URL of the LLM container that will be called',
+                level: 'nominal',
+                type: 'string',
+                length: 256,
+              },
+            ];
+        // At least one output has to remain selected or defined
+        if (outputVars.length === 0) {
+          if (promptExperimentResultTargetContainer) {
+            promptExperimentResultTargetContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestNoOutputs}`;
+          }
+          promptExperimentCreateModelTargetButton.disabled = false;
+          promptExperimentCreateModelTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
+          return;
+        }
         // Handle the different LLM Container deployment types
         const deploymentTypeHandling = (promptBuilderObject.deploymentType as string) ?? 'k8s';
         let llmEndpoint = '';
@@ -1315,10 +2493,111 @@ export async function buildPromptBuilder(
         } else if (deploymentTypeHandling === 'aca') {
           llmEndpoint = 'https://{llm.replace("_", "-")}.{endpoint}/{llm}';
         }
+        // The tail of the score code: either hand the prepared call over to the
+        // Call LLM node (llmBody/llmURL) or perform it directly with requests,
+        // unwrapping the SCR `data` envelope exactly like the Prompt Builder
+        // does, and optionally parsing the JSON response into output variables.
+        const pythonDefaultLiteral = (variable: PromptOutputVariable): string => {
+          if (variable.type === 'decimal') {
+            const numericDefault = Number(variable.defaultValue);
+            return variable.defaultValue.trim() !== '' && !isNaN(numericDefault) ? `${numericDefault}` : 'None';
+          }
+          return JSON.stringify(variable.defaultValue);
+        };
+        const scoreCodeOutputList = integratedLLMCall
+          ? [
+              ...selectedDefaultOutputs,
+              ...outputVariables.map((variable) => variable.name),
+              ...(parseOutputs ? ['parse_status'] : []),
+            ].join(', ')
+          : 'llmBody, llmURL';
+        const parsingBlock = `            # Parse the JSON response into the output variables. A fenced
+            # \`\`\`json block is unwrapped first, since LLMs often add one.
+            cleaned = str(response).strip()
+            if cleaned.startswith("\`\`\`"):
+                cleaned = cleaned[cleaned.find("\\n") + 1 :] if "\\n" in cleaned else cleaned[3:]
+                if cleaned.rstrip().endswith("\`\`\`"):
+                    cleaned = cleaned.rstrip()[:-3]
+            try:
+                parsed = json.loads(cleaned)
+                if not isinstance(parsed, dict):
+                    raise ValueError("the response is not a JSON object")
+${outputVariables
+  .map(
+    (variable) =>
+      `                if "${variable.name}" in parsed:\n                    ${variable.name} = ${variable.type === 'decimal' ? 'float' : 'str'}(parsed["${variable.name}"])`
+  )
+  .join('\n')}
+                if all(key in parsed for key in [${outputVariables.map((variable) => `"${variable.name}"`).join(', ')}]):
+                    parse_status = 1
+            except Exception:
+                parse_status = 0
+`;
+        const scoreCodeReturn = integratedLLMCall
+          ? `${
+              parseOutputs
+                ? `    # Defaults for the output variables parsed from the LLM response
+${outputVariables.map((variable) => `    ${variable.name} = ${pythonDefaultLiteral(variable)}`).join('\n')}
+    # 1 when the response was parsed and every output variable was extracted
+    parse_status = 0
+`
+                : ''
+            }    response = ""
+    run_time = None
+    prompt_length = None
+    output_length = None
+    # TLS verification of the LLM container call: trust the CA bundle SAS Viya
+    # mounts into every pod, or the one LLMCONTAINERCABUNDLE points to. Setting
+    # LLMCONTAINERSSLVERIFY=false disables the verification entirely.
+    sslVerify = os.getenv("LLMCONTAINERCABUNDLE", "/security/trustedcerts.pem")
+    if not os.path.isfile(sslVerify):
+        sslVerify = True
+    if os.getenv("LLMCONTAINERSSLVERIFY", "").strip().lower() in ("false", "no", "0"):
+        sslVerify = False
+    # Call the LLM container and unwrap the SCR response envelope. Failures are
+    # reported through the response output instead of raising, so a failed call
+    # cannot abort a whole scoring or SAS Intelligent Decisioning run.
+    try:
+        llmCall = requests.post(
+            llmURL,
+            data=llmBody.encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            verify=sslVerify,
+            timeout=float(os.getenv("LLMCONTAINERTIMEOUT", "600")),
+        )
+        if llmCall.status_code == 200:
+            llmJson = llmCall.json()
+            llmData = llmJson.get("data", llmJson) if isinstance(llmJson, dict) else {}
+            response = llmData.get("response", "")
+            run_time = llmData.get("run_time")
+            prompt_length = llmData.get("prompt_length")
+            output_length = llmData.get("output_length")
+${parseOutputs ? parsingBlock : ''}        else:
+            response = f"LLM call failed with status {llmCall.status_code}"
+    except Exception as error:
+        response = f"LLM call failed: {error}"
+    return ${scoreCodeOutputList}`
+          : `    return llmBody, llmURL`;
+        // With the integrated call the request body is built with json.dumps,
+        // which escapes the prompt texts and runtime input values correctly.
+        // The Call LLM node path keeps the legacy manual escaping that the
+        // node applies when it embeds llmBody into its own request.
+        const scoreCodeBodyBlock = integratedLLMCall
+          ? `    # This is the system prompt that was selected as the best one by the prompt engineer
+    systemPrompt = ${scoreCodeSystemPromptLiteral}
+    # Here the user prompt will be created from the inputs of the call
+    userPrompt = ${scoreCodeUserPromptLiteral}
+    # The request body for the LLM container in the SCR input format
+    llmBody = json.dumps({"inputs": [{"name": "systemPrompt", "value": systemPrompt}, {"name": "userPrompt", "value": userPrompt}, {"name": "options", "value": options}]})`
+          : `    # This is the system prompt that was selected as the best one by the prompt engineer
+    systemPrompt = ${scoreCodeSystemPromptLiteral}.replace('\\n', "\\\\n").replace("'", '"').replace('"', '\\\\"')
+    # Here the user prompt will be created from the inputs of the call
+    userPrompt = ${scoreCodeUserPromptLiteral}.replace('\\n', "\\\\n").replace("'", '"').replace('"', '\\\\"')
+    llmBody = '{"inputs":[{"name":"systemPrompt","value":"' + systemPrompt + '"},{"name":"userPrompt","value":"' + userPrompt + '"},{"name":"options","value":"' + options + '"}]}'`;
         const scoreCode = `import os
-
+${integratedLLMCall ? 'import requests\nimport json\n' : ''}
 def scoreModel(${scoreCodeInput}):
-    "Output: llmBody, llmURL"
+    "Output: ${scoreCodeOutputList}"
     # The llm and the target endpoint
     llm = "${(bestPromptItem as PETRow).model}"
     # Retrieves the endpoint where the LLM containers are hosted - e.g. https://example.com/llm
@@ -1327,12 +2606,8 @@ def scoreModel(${scoreCodeInput}):
     llmURL = f"""${llmEndpoint}"""
     # These are the options that were set for the best prompt
     options = f"{{${scoreCodeOptions}}}"
-    # This is the system prompt that was selected as the best one by the prompt engineer
-    systemPrompt = """${basePrompt!.systemPrompt}""".replace('\\n', "\\\\n").replace("'", '"').replace('"', '\\\\"')
-    # Here the user prompt will be created from the inputs of the call
-    userPrompt = f"${scoreCodeUserPrompt}".replace('\\n', "\\\\n").replace("'", '"').replace('"', '\\\\"')
-    llmBody = '{"inputs":[{"name":"systemPrompt","value":"' + systemPrompt + '"},{"name":"userPrompt","value":"' + userPrompt + '"},{"name":"options","value":"' + options + '"}]}'
-    return llmBody, llmURL`;
+${scoreCodeBodyBlock}
+${scoreCodeReturn}`;
         const mainfestPromptScoreCodeBlob = new Blob([scoreCode], { type: 'text/x-python' });
         // Clean up previous variables first
         const modelVariables = await getModelVariables(promptExperimentRunModel);
@@ -1349,6 +2624,49 @@ def scoreModel(${scoreCodeInput}):
           'score',
           'text/x-python'
         );
+        // The integrated call imports the requests package at score time: ship
+        // a requirements.json (same format and role as the LLM definitions) so
+        // publishing destinations that build a Python environment install it.
+        // A stale one from an earlier manifest is removed when the LLM call is
+        // no longer included.
+        if (integratedLLMCall) {
+          await createModelContent(
+            promptExperimentRunModel,
+            [{ step: 'install requests', command: 'pip3 -q install requests' }],
+            'requirements.json',
+            'python pickle'
+          );
+        } else {
+          const manifestModelContents = await getModelContents(promptExperimentRunModel);
+          const staleRequirements = manifestModelContents.find(
+            (modelContent) => modelContent.name === 'requirements.json'
+          );
+          if (staleRequirements?.id) {
+            await deleteModelContent(promptExperimentRunModel, staleRequirements.id);
+          }
+        }
+        // Tag the model with the manifested LLM and the chosen manifest mode.
+        // Tags from an earlier manifest (other LLM names, mode flags) are
+        // removed first so re-manifesting does not leave stale tags behind.
+        const manifestTags = [
+          (bestPromptItem as PETRow).model,
+          ...(integratedLLMCall ? ['LLM-Call-Included'] : []),
+          ...(parseOutputs ? ['Output-Parsing'] : []),
+        ];
+        const staleManifestTags = [
+          'LLM-Call-Included',
+          'Output-Parsing',
+          ...promptBuilderAvailableLLMs.map((availableLLM) => availableLLM.name),
+          ...promptExperimentTracker.flatMap((trackerEntry) =>
+            Object.keys(trackerEntry).filter((key) => !TRACKER_META_KEYS.includes(key))
+          ),
+        ];
+        try {
+          await updateModelTags(promptExperimentRunModel, staleManifestTags, manifestTags);
+        } catch (error) {
+          console.error('Failed to update the tags of the manifested model.', error);
+        }
+        showToast(`${promptBuilderInterfaceText?.promptBuilderManifestToast}`);
       } else {
         if (promptExperimentResultTargetContainer) {
           promptExperimentResultTargetContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelNoBestPrompt}`;
@@ -1360,37 +2678,70 @@ def scoreModel(${scoreCodeInput}):
       promptExperimentCreateModelTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
     }
 
+    // Assemble the page into four visual sections: project & prompt selection,
+    // LLM selection, the prompt workbench, and the experiment tracker/manifest.
+    const createPageSection = (): HTMLDivElement => {
+      const pageSection = document.createElement('div');
+      pageSection.classList.add('pb-section');
+      return pageSection;
+    };
+
     promptBuilderContainer.appendChild(promptBuilderHeader);
     promptBuilderContainer.appendChild(promptBuilderDescription);
-    promptBuilderContainer.appendChild(promptBuilderProjectHeader);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderProjectSelectorHeader);
-    promptBuilderContainer.appendChild(promptBuilderProjectSelectorDropdown);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderPromptHeader);
-    promptBuilderContainer.appendChild(promptBuilderPromptSelectorDropdown);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderModalButtonContainer);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderModelSelectorHeader);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderModelSelectorContainer);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderPromptingHeader);
-    promptBuilderContainer.appendChild(promptBulderPromptingExplainer);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderPromptingContainer);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptBuilderRunExperimentsButton);
-    promptBuilderContainer.appendChild(promptBuilderRunExperimentError);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptExperimentContainer);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptExperimentSaveButton);
-    promptBuilderContainer.appendChild(promptExperimentCreateModelButton);
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(document.createElement('br'));
-    promptBuilderContainer.appendChild(promptExperimentResultContainer);
+
+    const projectSection = createPageSection();
+    projectSection.appendChild(promptBuilderProjectHeader);
+    projectSection.appendChild(promptBuilderProjectSelectorHeader);
+    projectSection.appendChild(projectFilter.filterRow);
+    projectSection.appendChild(promptBuilderProjectSelectorDropdown);
+    projectSection.appendChild(document.createElement('br'));
+    projectSection.appendChild(promptBuilderPromptHeader);
+    projectSection.appendChild(promptFilter.filterRow);
+    projectSection.appendChild(promptBuilderPromptSelectorDropdown);
+    projectSection.appendChild(document.createElement('br'));
+    projectSection.appendChild(promptBuilderModalButtonContainer);
+    promptBuilderContainer.appendChild(projectSection);
+
+    const llmSection = createPageSection();
+    llmSection.appendChild(promptBuilderModelSelectorHeader);
+    llmSection.appendChild(promptBuilderModelSelectorContainer);
+    promptBuilderContainer.appendChild(llmSection);
+
+    const workbenchSection = createPageSection();
+    workbenchSection.appendChild(promptBuilderPromptingHeader);
+    workbenchSection.appendChild(promptBulderPromptingExplainer);
+    workbenchSection.appendChild(promptBuilderVariablesHeader);
+    workbenchSection.appendChild(promptBuilderVariablesDescription);
+    workbenchSection.appendChild(promptBuilderVariablesContainer);
+    workbenchSection.appendChild(promptBuilderVariablesAddButton);
+    workbenchSection.appendChild(document.createElement('br'));
+    workbenchSection.appendChild(document.createElement('br'));
+    workbenchSection.appendChild(promptBuilderPromptingContainer);
+    workbenchSection.appendChild(document.createElement('br'));
+    workbenchSection.appendChild(promptBuilderRunExperimentsButton);
+    workbenchSection.appendChild(promptBuilderRunExperimentError);
+    promptBuilderContainer.appendChild(workbenchSection);
+
+    const trackerSection = createPageSection();
+    trackerSection.appendChild(promptExperimentTrackerHeader);
+    trackerSection.appendChild(promptExperimentEmptyHint);
+    trackerSection.appendChild(promptExperimentContainer);
+    trackerSection.appendChild(document.createElement('br'));
+    trackerSection.appendChild(promptExperimentSaveButton);
+    promptBuilderContainer.appendChild(trackerSection);
+
+    // Manifest: configuration first, the action button below it
+    const manifestSection = createPageSection();
+    manifestSection.appendChild(promptExperimentManifestHeader);
+    manifestSection.appendChild(promptExperimentManifestDescription);
+    manifestSection.appendChild(promptExperimentIntegratedCallDiv);
+    manifestSection.appendChild(promptExperimentManifestOptions);
+    manifestSection.appendChild(document.createElement('br'));
+    manifestSection.appendChild(promptExperimentCreateModelButton);
+    manifestSection.appendChild(document.createElement('br'));
+    manifestSection.appendChild(document.createElement('br'));
+    manifestSection.appendChild(promptExperimentResultContainer);
+    promptBuilderContainer.appendChild(manifestSection);
 
     return promptBuilderContainer;
 }
