@@ -1,0 +1,43 @@
+{
+    "provider": "anthropic",
+    "snapshot_date": "2026-01-15",
+    "pricing_note": "Prices in USD per 1M tokens. Static fallback snapshot - always confirm against https://www.anthropic.com/pricing before relying on cost monitoring.",
+    "models": [
+        {
+            "ref": "claude-opus-4-5-20251101",
+            "display_name": "Claude Opus 4.5",
+            "kind": "llm",
+            "context_length": 200000,
+            "max_output_tokens": 64000,
+            "input_price_per_m": 5.0,
+            "output_price_per_m": 25.0,
+            "knowledge_cutoff": "2025-03-01",
+            "release_date": "2025-11-24",
+            "extended_thinking": true
+        },
+        {
+            "ref": "claude-sonnet-4-5-20250929",
+            "display_name": "Claude Sonnet 4.5",
+            "kind": "llm",
+            "context_length": 200000,
+            "max_output_tokens": 64000,
+            "input_price_per_m": 3.0,
+            "output_price_per_m": 15.0,
+            "knowledge_cutoff": "2025-01-01",
+            "release_date": "2025-09-29",
+            "extended_thinking": true
+        },
+        {
+            "ref": "claude-haiku-4-5-20251001",
+            "display_name": "Claude Haiku 4.5",
+            "kind": "llm",
+            "context_length": 200000,
+            "max_output_tokens": 64000,
+            "input_price_per_m": 1.0,
+            "output_price_per_m": 5.0,
+            "knowledge_cutoff": "2025-02-01",
+            "release_date": "2025-10-15",
+            "extended_thinking": true
+        }
+    ]
+}

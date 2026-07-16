@@ -2,6 +2,26 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [1.1.0] - Unreleased
+
+The new **Model Definition Builder** (`Model-Definition-Builder/`) takes the chore out of creating and maintaining LLM and Embedding model definitions. A single `definition.yaml` per model becomes the source of truth and the `mdb` CLI generates every framework asset from it (score script, inputVar/outputVar, modelConfiguration, options, requirements, model card, README and the fact-sheet row). Existing definition folders remain untouched and continue to work with the established register/publish scripts.
+
+### Added
+
+- Model Definition Builder CLI (`mdb`, package `sas-mdb`) with the commands `add` (interactive wizard and non-interactive flags), `generate` (incl. `--check` drift gate), `validate` (incl. `--live` provider smoke test), `sync` (fact-sheet upsert), `import` (reverse-engineer an existing definition folder into a manifest) and `test` (local scoreModel invocation)
+- `definition-core/`: versioned manifest JSON Schema with a typed option vocabulary, score-script templates per provider family, the shared static assets (inputVar/outputVar, modelConfiguration boilerplate, tag taxonomy) and static provider catalog fallback tables for offline use
+- Provider adapters: OpenAI-compatible (OpenAI, OpenRouter, Azure AI Foundry v1, Mistral), Anthropic and self-hosted Hugging Face; third-party adapters can be added via Python entry points
+- Claude Sonnet 4.5 (`claude_sonnet_4_5`) as the first fully generated LLM definition, including its fact-sheet entry
+- Documentation: Administration Guide page "Model Definition Builder" and a README in `Model-Definition-Builder/`
+
+### Changed
+
+- None
+
+### Fixed
+
+- None
+
 ## [1.0.0] - 2026-07-15
 
 The standalone LLM Prompt Builder now supports deleting prompt experiment runs, prompts and whole projects. To get the update, rebuild the [`LLM-Prompt-Builder`](./LLM-Prompt-Builder) (or use the prebuilt `dist/index.html`) and re-upload it to your SAS Job Execution definition.

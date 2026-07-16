@@ -1,0 +1,494 @@
+# Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""The mdb command-line interface.
+
+Every command prints the exact next step; nothing requires reading docs
+before first success. Restricted networks are first-class: --offline works
+everywhere, proxies and corporate CA bundles are honored from the
+environment (HTTPS_PROXY, REQUESTS_CA_BUNDLE) and MDB_VERIFY_SSL=false
+mirrors the repo's existing -k convention.
+"""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Optional
+
+import typer
+from rich.console import Console
+from rich.prompt import Confirm, Prompt
+from rich.table import Table
+
+from . import __version__
+from .core import drift, facts
+from .core.generator import CoreAssets, GenerationError, render_assets, score_file_name
+from .core.importer import import_folder
+from .core.manifest import MANIFEST_FILENAME, ModelManifest, export_json_schema, load_manifest
+from .core.netutil import env_flag, make_session
+from .core.paths import RepoNotFoundError, core_dir, definitions_dir, fact_sheet_path, find_repo_root
+from .core.validator import validate_all, validate_folder
+from .providers import load_adapters
+from .providers.base import CatalogModel, ProviderAdapter, slugify
+
+app = typer.Typer(
+    name="mdb",
+    help="Model Definition Builder for the SAS Agentic AI Accelerator.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+console = Console()
+
+
+class Context:
+    def __init__(self) -> None:
+        try:
+            self.repo = find_repo_root()
+        except RepoNotFoundError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(2)
+        self.core = CoreAssets.load(core_dir(self.repo))
+        self.defs_dir = definitions_dir(self.repo, "llm")
+        self.fact_sheet = fact_sheet_path(self.repo, "llm")
+
+    def managed_folders(self) -> list[Path]:
+        return sorted(
+            f for f in self.defs_dir.iterdir()
+            if f.is_dir() and (f / MANIFEST_FILENAME).is_file()
+        )
+
+    def resolve_targets(self, ids: list[str], select_all: bool) -> list[Path]:
+        if select_all:
+            folders = self.managed_folders()
+            if not folders:
+                console.print("[yellow]No managed definitions found (no folder has a definition.yaml yet).[/yellow]")
+                console.print("Adopt an existing folder with [bold]mdb import <model_id>[/bold] or create one with [bold]mdb add[/bold].")
+                raise typer.Exit(0)
+            return folders
+        if not ids:
+            console.print("[red]Name at least one model_id or pass --all.[/red]")
+            raise typer.Exit(2)
+        folders = []
+        for model_id in ids:
+            folder = self.defs_dir / model_id
+            if not folder.is_dir():
+                console.print(f"[red]{model_id}: no folder {folder}[/red]")
+                raise typer.Exit(2)
+            folders.append(folder)
+        return folders
+
+
+def _env_api_key(adapter: ProviderAdapter) -> Optional[str]:
+    if not adapter.env_key_var:
+        return None
+    return os.environ.get(adapter.env_key_var)
+
+
+def _print_issues(issues) -> bool:
+    """Prints issues, returns True if any error is present."""
+    has_error = False
+    for issue in issues:
+        color = {"error": "red", "warning": "yellow", "info": "dim"}[issue.severity]
+        console.print(f"[{color}]{issue.format()}[/{color}]")
+        has_error = has_error or issue.severity == "error"
+    return has_error
+
+
+# ---------------------------------------------------------------------------
+# add
+# ---------------------------------------------------------------------------
+
+def _pick_from_list(title: str, entries: list[str]) -> int:
+    console.print(f"\n[bold]{title}[/bold]")
+    for index, entry in enumerate(entries, start=1):
+        console.print(f"  {index}. {entry}")
+    while True:
+        raw = Prompt.ask("Number", default="1")
+        try:
+            choice = int(raw)
+            if 1 <= choice <= len(entries):
+                return choice - 1
+        except ValueError:
+            pass
+        console.print(f"[yellow]Enter a number between 1 and {len(entries)}.[/yellow]")
+
+
+def _catalog_for(adapter: ProviderAdapter, ctx: Context, offline: bool, verify_ssl: bool) -> list[CatalogModel]:
+    if not offline and not env_flag("MDB_OFFLINE"):
+        try:
+            session = make_session(verify_ssl)
+            models = adapter.live_catalog(session, _env_api_key(adapter))
+            if models:
+                console.print(f"[dim]Live catalog: {len(models)} models from {adapter.display_name}.[/dim]")
+                return models
+        except NotImplementedError as exc:
+            console.print(f"[dim]{exc}[/dim]")
+        except Exception as exc:
+            console.print(f"[yellow]Live catalog unavailable ({exc}) - falling back to the bundled snapshot.[/yellow]")
+    models = adapter.static_catalog(ctx.core.core_dir)
+    if models:
+        console.print(f"[dim]Using bundled static catalog ({models[0].source}) - confirm pricing before relying on cost monitoring.[/dim]")
+    return models
+
+
+def _select_model(adapter: ProviderAdapter, catalog: list[CatalogModel], ref: Optional[str],
+                  yes: bool) -> Optional[CatalogModel]:
+    if ref:
+        for model in catalog:
+            if model.ref == ref:
+                return model
+        return CatalogModel(ref=ref, display_name=ref, source="manual entry")
+    if not catalog:
+        return None
+    if yes:
+        console.print("[red]--yes needs an explicit model reference (mdb add <provider> <model-ref> --yes).[/red]")
+        raise typer.Exit(2)
+    search = Prompt.ask("Filter the model list (empty for all)", default="")
+    filtered = [m for m in catalog if search.lower() in m.ref.lower() or search.lower() in m.display_name.lower()]
+    if not filtered:
+        console.print("[yellow]No match - showing everything.[/yellow]")
+        filtered = catalog
+    filtered = filtered[:30]
+    labels = []
+    for m in filtered:
+        price = (f"${m.input_price_per_m:g}/${m.output_price_per_m:g} per 1M"
+                 if m.input_price_per_m is not None else "price unknown")
+        ctx_len = f"{m.context_length:,} ctx" if m.context_length else "ctx unknown"
+        flags = " [reasoning]" if m.reasoning else ""
+        labels.append(f"{m.display_name}  ({m.ref}, {ctx_len}, {price}){flags}")
+    return filtered[_pick_from_list(f"Models available from {adapter.display_name}", labels)]
+
+
+@app.command()
+def add(
+    provider: Optional[str] = typer.Argument(None, help="Provider adapter id (see 'mdb providers')"),
+    ref: Optional[str] = typer.Argument(None, help="Provider model reference / deployment name / HF repo"),
+    model_id: Optional[str] = typer.Option(None, "--id", help="Definition folder name (snake_case)"),
+    yes: bool = typer.Option(False, "--yes", help="Non-interactive: accept all defaults"),
+    offline: bool = typer.Option(False, "--offline", help="No network calls - use bundled catalogs / manual entry"),
+    verify_ssl: bool = typer.Option(True, "--verify-ssl/--no-verify-ssl", help="TLS verification for provider calls"),
+    resource: Optional[str] = typer.Option(None, help="Azure resource host (azure-foundry)"),
+    deployment: Optional[str] = typer.Option(None, help="Azure deployment name (azure-foundry)"),
+    repo: Optional[str] = typer.Option(None, help="Hugging Face repo id (hf-selfhosted)"),
+    gated: Optional[bool] = typer.Option(None, help="HF repo is gated (hf-selfhosted)"),
+    params_billions: Optional[float] = typer.Option(None, help="Parameter count in billions (hf-selfhosted)"),
+    description: Optional[str] = typer.Option(None, help="Model description for Model Manager and the fact sheet"),
+):
+    """Add a new model definition: pick a provider and model, answer a few questions,
+    and every framework asset is generated."""
+    ctx = Context()
+    adapters = load_adapters()
+
+    if provider is None:
+        ids = list(adapters)
+        labels = [f"{adapters[i].display_name}  ({i})" for i in ids]
+        provider = ids[_pick_from_list("Providers", labels)]
+    if provider not in adapters:
+        console.print(f"[red]Unknown provider '{provider}'. Known: {', '.join(adapters)}[/red]")
+        raise typer.Exit(2)
+    adapter = adapters[provider]
+
+    if adapter.env_key_var:
+        if _env_api_key(adapter):
+            console.print(f"[green]Using {adapter.env_key_var} from the environment/.env.[/green]")
+        else:
+            console.print(
+                f"[yellow]No {adapter.env_key_var} found.[/yellow] Get one at {adapter.docs_url} "
+                "and add it to your .env - catalog browsing may be limited and smoke tests will be skipped."
+            )
+
+    flag_answers = {
+        "resource": resource, "deployment": deployment, "repo": repo,
+        "gated": {True: "y", False: "n"}.get(gated),
+        "params_billions": str(params_billions) if params_billions is not None else None,
+        "description": description,
+    }
+    answers: dict[str, str] = {}
+    for question in adapter.questions():
+        supplied = flag_answers.get(question.param)
+        if supplied is not None:
+            answers[question.param] = supplied
+        elif yes:
+            if question.required and not question.default:
+                console.print(f"[red]--yes needs --{question.param.replace('_', '-')} for {adapter.display_name}.[/red]")
+                raise typer.Exit(2)
+            answers[question.param] = question.default
+        else:
+            answers[question.param] = Prompt.ask(question.prompt, default=question.default or None)
+    if description:
+        answers["description"] = description
+
+    catalog = _catalog_for(adapter, ctx, offline, verify_ssl) if not adapter.questions() else []
+    manual_ref = answers.get("deployment") or answers.get("repo")
+    if manual_ref and not ref:
+        ref = manual_ref
+    cm = _select_model(adapter, catalog, ref, yes)
+    if cm is None:
+        if not ref and yes:
+            console.print("[red]No model reference given.[/red]")
+            raise typer.Exit(2)
+        the_ref = ref or Prompt.ask("Provider model reference (exact model string)")
+        display = the_ref if yes else Prompt.ask("Display name", default=the_ref)
+        cm = CatalogModel(ref=the_ref, display_name=display, source="manual entry")
+
+    proposed = model_id or slugify(cm.display_name)
+    final_id = proposed if yes else Prompt.ask("Definition folder / model_id", default=proposed)
+
+    folder = ctx.defs_dir / final_id
+    if folder.exists() and any(folder.iterdir()):
+        console.print(f"[red]{folder} already exists and is not empty - pick another id or use mdb import.[/red]")
+        raise typer.Exit(2)
+
+    modeler = os.environ.get("SAS_RESPONSIBLE_PARTY", "") or os.environ.get("USERNAME", "") or os.environ.get("USER", "")
+    manifest = adapter.build_manifest(cm, final_id, answers, modeler)
+
+    try:
+        rendered = render_assets(manifest, ctx.core)
+    except GenerationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold]Will create LLM-Definitions/{final_id}/[/bold] with:")
+    console.print(f"  {MANIFEST_FILENAME}  (the only file you edit)")
+    for name in sorted(rendered):
+        console.print(f"  {name}")
+    console.print(f"  + a row in llm_fact_sheet.csv (pricing source: {manifest.generation.catalog_provenance})")
+    if not yes and not Confirm.ask("Write these files?", default=True):
+        raise typer.Exit(0)
+
+    folder.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifest.save(folder)
+    for name, content in rendered.items():
+        (folder / name).write_bytes(content)
+    drift.write_lock(folder, manifest_path.read_bytes(), rendered)
+    facts.upsert_row(ctx.fact_sheet, manifest)
+
+    console.print(f"\n[green]Created {final_id} ({len(rendered)} files + fact-sheet row).[/green]")
+    console.print("Next steps:")
+    console.print(f"  1. mdb validate {final_id} --live     (smoke-test the provider before Viya)")
+    console.print(f"  2. cd LLM-Definitions && python register-LLMs.py -l {final_id}")
+
+
+# ---------------------------------------------------------------------------
+# generate / validate / sync
+# ---------------------------------------------------------------------------
+
+@app.command()
+def generate(
+    ids: Optional[list[str]] = typer.Argument(None),
+    all_: bool = typer.Option(False, "--all", help="Every managed definition"),
+    check: bool = typer.Option(False, "--check", help="CI drift gate: report, write nothing, exit 1 on drift"),
+    force: bool = typer.Option(False, "--force", help="Overwrite hand-edited generated files"),
+):
+    """(Re)render all generated assets from definition.yaml."""
+    ctx = Context()
+    failed = False
+    for folder in ctx.resolve_targets(ids or [], all_):
+        model_id = folder.name
+        try:
+            manifest = load_manifest(folder)
+            rendered = render_assets(manifest, ctx.core)
+        except Exception as exc:
+            console.print(f"[red]{model_id}: {exc}[/red]")
+            failed = True
+            continue
+        classifications = drift.classify(folder, rendered)
+        pending = [c for c in classifications if c.status != drift.FileStatus.UNCHANGED]
+        if check:
+            if pending:
+                failed = True
+                for c in pending:
+                    console.print(f"[red]{model_id}/{c.filename}: {c.status.value}[/red]")
+            else:
+                console.print(f"[green]{model_id}: clean[/green]")
+            continue
+        blockers = [c for c in pending
+                    if c.status in (drift.FileStatus.HAND_EDITED, drift.FileStatus.UNTRACKED)]
+        if blockers and not force:
+            failed = True
+            for c in blockers:
+                console.print(
+                    f"[red]{model_id}/{c.filename} was edited by hand.[/red] Fold the change into "
+                    f"definition.yaml, add it to generation.overrides, or rerun with --force."
+                )
+            continue
+        for c in pending:
+            (folder / c.filename).write_bytes(rendered[c.filename])
+        drift.write_lock(folder, (folder / MANIFEST_FILENAME).read_bytes(), rendered)
+        console.print(f"[green]{model_id}: {len(pending)} file(s) written, {len(classifications) - len(pending)} unchanged.[/green]")
+    if not check and not failed:
+        console.print("Next: mdb sync --all   (keep the fact sheet in step)")
+    raise typer.Exit(1 if failed else 0)
+
+
+@app.command()
+def validate(
+    ids: Optional[list[str]] = typer.Argument(None),
+    all_: bool = typer.Option(False, "--all", help="Every folder, incl. unmanaged (reported, never failed)"),
+    live: bool = typer.Option(False, "--live", help="One real provider call per model (needs API keys)"),
+    verify_ssl: bool = typer.Option(True, "--verify-ssl/--no-verify-ssl"),
+):
+    """Static coherence rules (and optionally a live provider smoke test)."""
+    ctx = Context()
+    if all_ and not ids:
+        issues = validate_all(ctx.defs_dir, ctx.core, ctx.fact_sheet)
+    else:
+        issues = []
+        for folder in ctx.resolve_targets(ids or [], all_):
+            issues.extend(validate_folder(folder, ctx.core, ctx.fact_sheet))
+    has_error = _print_issues(issues)
+    if not issues:
+        console.print("[green]Everything checks out.[/green]")
+
+    if live:
+        adapters = load_adapters()
+        session = make_session(verify_ssl)
+        targets = ctx.resolve_targets(ids or [], all_) if ids or all_ else []
+        for folder in targets:
+            if not (folder / MANIFEST_FILENAME).is_file():
+                continue
+            manifest = load_manifest(folder)
+            adapter = adapters.get(manifest.provider.adapter)
+            if adapter is None:
+                console.print(f"[yellow]{folder.name}: unknown adapter '{manifest.provider.adapter}' - skipped.[/yellow]")
+                continue
+            result = adapter.smoke_test(manifest, _env_api_key(adapter), session)
+            if result.skipped:
+                console.print(f"[dim]{folder.name}: {result.detail}[/dim]")
+            elif result.ok:
+                console.print(f"[green]{folder.name}: {result.detail}[/green]")
+            else:
+                has_error = True
+                console.print(f"[red]{folder.name}: smoke test failed - {result.detail}[/red]")
+    raise typer.Exit(1 if has_error else 0)
+
+
+@app.command()
+def sync(
+    ids: Optional[list[str]] = typer.Argument(None),
+    all_: bool = typer.Option(False, "--all"),
+):
+    """Upsert the fact-sheet rows of managed definitions (legacy rows stay untouched)."""
+    ctx = Context()
+    for folder in ctx.resolve_targets(ids or [], all_):
+        if not (folder / MANIFEST_FILENAME).is_file():
+            continue
+        manifest = load_manifest(folder)
+        result = facts.upsert_row(ctx.fact_sheet, manifest)
+        console.print(f"{folder.name}: fact-sheet row {result}")
+
+
+# ---------------------------------------------------------------------------
+# import / test / providers / schema
+# ---------------------------------------------------------------------------
+
+@app.command("import")
+def import_(
+    model_id: str = typer.Argument(..., help="Existing hand-written definition folder to adopt"),
+    apply: bool = typer.Option(False, "--apply", help="Also regenerate the files and sync the fact sheet"),
+):
+    """Reverse-engineer definition.yaml from an existing folder (best effort, reviewed by you)."""
+    ctx = Context()
+    folder = ctx.defs_dir / model_id
+    if not folder.is_dir():
+        console.print(f"[red]No folder {folder}[/red]")
+        raise typer.Exit(2)
+    if (folder / MANIFEST_FILENAME).is_file():
+        console.print(f"[yellow]{model_id} already has a definition.yaml - nothing imported.[/yellow]")
+        raise typer.Exit(0)
+    result = import_folder(folder, ctx.fact_sheet)
+    manifest_path = result.manifest.save(folder)
+    console.print(f"[green]Wrote {manifest_path}.[/green]")
+    for note in result.notes:
+        console.print(f"  [yellow]note:[/yellow] {note}")
+
+    rendered = render_assets(result.manifest, ctx.core)
+    changed = [c for c in drift.classify(folder, rendered) if c.status != drift.FileStatus.UNCHANGED]
+    if changed:
+        console.print("\nRegenerating would change these files (intended normalizations included):")
+        for c in changed:
+            console.print(f"  {c.filename} ({c.status.value})")
+    if apply:
+        for c in changed:
+            (folder / c.filename).write_bytes(rendered[c.filename])
+        drift.write_lock(folder, manifest_path.read_bytes(), rendered)
+        facts.upsert_row(ctx.fact_sheet, result.manifest)
+        console.print(f"[green]Converged {model_id} ({len(changed)} file(s) rewritten).[/green]")
+        console.print(f"Re-test before re-publishing: mdb validate {model_id} --live")
+    else:
+        console.print(f"\nReview definition.yaml, then converge with: mdb import {model_id} --apply")
+        console.print("(or delete definition.yaml to leave the folder fully hand-maintained)")
+
+
+@app.command()
+def test(
+    model_id: str = typer.Argument(...),
+    prompt: str = typer.Option("Reply with the single word OK.", "--prompt"),
+    system: str = typer.Option("You are a helpful assistant.", "--system"),
+):
+    """Invoke the generated scoreModel() locally (makes a real provider call for API models)."""
+    ctx = Context()
+    folder = ctx.defs_dir / model_id
+    manifest = load_manifest(folder)
+    adapters = load_adapters()
+    adapter = adapters.get(manifest.provider.adapter)
+    options: dict = {}
+    if manifest.provider.auth.mode == "api_key":
+        key = _env_api_key(adapter) if adapter else None
+        if not key:
+            console.print(f"[red]No API key found ({adapter.env_key_var if adapter else 'unknown env var'}) - "
+                          "set it in the environment or .env.[/red]")
+            raise typer.Exit(2)
+        options["API_KEY"] = key
+    score_path = folder / score_file_name(model_id)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(f"mdb_score_{model_id}", score_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    console.print(f"[dim]Calling scoreModel() from {score_path.name}...[/dim]")
+    response, run_time, prompt_length, output_length = module.scoreModel(
+        [prompt], [system], [json.dumps(options)]
+    )
+    table = Table(show_header=False)
+    table.add_row("response", str(response))
+    table.add_row("run_time", f"{run_time:.2f}s")
+    table.add_row("prompt_length", str(prompt_length))
+    table.add_row("output_length", str(output_length))
+    console.print(table)
+
+
+@app.command()
+def providers():
+    """List the available provider adapters."""
+    table = Table()
+    table.add_column("id")
+    table.add_column("name")
+    table.add_column("API key env var")
+    table.add_column("score template")
+    for adapter in load_adapters().values():
+        table.add_row(adapter.id, adapter.display_name, adapter.env_key_var or "-", adapter.template)
+    console.print(table)
+    console.print("Third-party adapters: pip packages exposing the 'mdb.providers' entry-point group.")
+
+
+@app.command("schema-export")
+def schema_export():
+    """Regenerate definition-core/schema/manifest.schema.json from the pydantic models."""
+    ctx = Context()
+    target = ctx.core.core_dir / "schema" / "manifest.schema.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes((json.dumps(export_json_schema(), indent=4, ensure_ascii=False) + "\n").encode("utf-8"))
+    console.print(f"[green]Wrote {target}[/green]")
+
+
+def main() -> None:
+    try:
+        from dotenv import find_dotenv, load_dotenv
+        load_dotenv(find_dotenv(usecwd=True))
+    except ImportError:
+        pass
+    app()
+
+
+if __name__ == "__main__":
+    main()

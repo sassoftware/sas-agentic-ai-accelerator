@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sas-mdb"
+version = "0.1.0"
+description = "Model Definition Builder CLI for the SAS Agentic AI Accelerator - generates LLM and Embedding model definitions from a single manifest per model"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.0",
+    "jinja2>=3.1",
+    "pydantic>=2.5",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+mdb = "mdb.cli:main"
+
+# Third-party provider adapters register under this entry-point group:
+# [project.entry-points."mdb.providers"]
+# myprovider = "my_package.adapter:MyAdapter"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

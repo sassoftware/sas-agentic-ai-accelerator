@@ -1,0 +1,48 @@
+schema: 1
+kind: llm
+model_id: claude_sonnet_4_5
+display_name: Claude Sonnet 4.5
+provider:
+  adapter: anthropic
+  model_version: claude-sonnet-4-5-20250929
+  endpoint: https://api.anthropic.com/v1/messages
+  params:
+    anthropic_version: '2023-06-01'
+  auth:
+    mode: api_key
+    key_name: Anthropic
+runtime:
+  template: anthropic_messages
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  temperature:
+    default: 1
+  top_p:
+    default: 1
+  max_tokens:
+    default: 1000
+    max: 64000.0
+  thinking_budget:
+    default: 0
+    max: 64000.0
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: Anthropic
+  scr_sizing: small
+  extra: []
+metadata:
+  description: Claude Sonnet 4.5 by Anthropic, served through the Anthropic API.
+  release_date: '2025-09-29'
+  knowledge_cutoff: '2025-01-01'
+  context_length: 200000
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 3.0e-06
+    output_token_price: 1.5e-05
+modeler: gerdaw
+generation:
+  overrides: []
+  catalog_provenance: anthropic (static snapshot 2026-01-15)
