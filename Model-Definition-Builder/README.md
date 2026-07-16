@@ -1,6 +1,6 @@
 # Model Definition Builder
 
-The Model Definition Builder takes the chore out of creating and maintaining the LLM (and, in an upcoming release, Embedding) model definitions of this repository. One small `definition.yaml` per model is the source of truth; the `mdb` CLI generates every other framework asset from it:
+The Model Definition Builder takes the chore out of creating and maintaining the LLM and Embedding model definitions of this repository. One small `definition.yaml` per model is the source of truth; the `mdb` CLI generates every other framework asset from it:
 
 - the score script (`<modelId>Score.py`) with the canonical options parser and error handling
 - `inputVar.json` / `outputVar.json` (byte-identical fleet-wide by construction)
@@ -38,7 +38,7 @@ mdb import <model_id>            # adopt an existing hand-written folder
 mdb test <model_id>              # invoke the generated scoreModel() locally
 ```
 
-Provider API keys are read from the environment or a `.env` at the repo root (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `AZURE_OPENAI_API_KEY`, `MISTRAL_API_KEY`). Keys never enter manifests or generated files — `mdb validate` scans for secret-shaped strings.
+Provider API keys are read from the environment or a `.env` at the repo root (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `AZURE_OPENAI_API_KEY`, `MISTRAL_API_KEY`, `GEMINI_API_KEY`, `VOYAGE_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`). Keys never enter manifests or generated files — `mdb validate` scans for secret-shaped strings. Environment-specific hosts stay out of definitions by default: Azure resources and Bedrock regions resolve per call via options or the `AZURE_OPENAI_RESOURCE` / `AWS_BEDROCK_REGION` container environment variables.
 
 ## Restricted networks
 

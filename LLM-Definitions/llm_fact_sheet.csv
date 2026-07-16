@@ -30,3 +30,4 @@ gemini_flash_lite_25,Gemini Flash Lite 2.5,Google,A Gemini 2.5 Flash model optim
 "claude_sonnet_4_5","Claude Sonnet 4.5","Anthropic","Claude Sonnet 4.5 by Anthropic, served through the Anthropic API.",2025-09-29,.,"API","Proprietary","Tokens",0.000003,0.000015,.,200000,1,1,.,1000,2025-01-01
 "gpt_41_mini","GPT-4.1 Mini","OpenAI","GPT-4.1 Mini by OpenAI, served through the OpenAI API.",2025-04-14,.,"API","Proprietary","Tokens",0.0000004,0.0000016,.,1047576,1,1,.,1000,2024-06-01
 "gpt_5_mini","GPT-5 Mini","OpenAI","GPT-5 Mini by OpenAI, served through the OpenAI API.",2025-08-07,.,"API","Proprietary","Tokens",0.00000025,0.000002,.,400000,.,.,.,.,2024-05-30
+"claude_haiku_4_5_bedrock","us.anthropic.claude-haiku-4-5-20251001-v1:0","AWS Bedrock","us.anthropic.claude-haiku-4-5-20251001-v1:0 by AWS Bedrock, served through the AWS Bedrock API.",.,.,"API","Proprietary","Tokens",.,.,.,.,1,1,.,1000,.

@@ -62,6 +62,24 @@
             "knowledge_cutoff": "2023-10-01",
             "release_date": "2024-07-18",
             "reasoning": false
+        },
+        {
+            "ref": "text-embedding-3-small",
+            "display_name": "Text Embedding 3 Small",
+            "kind": "embedding",
+            "context_length": 8192,
+            "embedding_length": 1536,
+            "input_price_per_m": 0.02,
+            "release_date": "2024-01-25"
+        },
+        {
+            "ref": "text-embedding-3-large",
+            "display_name": "Text Embedding 3 Large",
+            "kind": "embedding",
+            "context_length": 8192,
+            "embedding_length": 3072,
+            "input_price_per_m": 0.13,
+            "release_date": "2024-01-25"
         }
     ]
 }

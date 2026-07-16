@@ -1,14 +1,23 @@
 {
     "constants": {
         "toolVersion": "3.11",
-        "targetVariable": "response",
         "targetLevel": "NOMINAL",
         "trainCodeType": "Python",
-        "function": "text generation",
-        "algorithm": "Transformer",
         "tool": "Python 3",
         "scoreCodeType": "Python",
         "champion": false
+    },
+    "kind_constants": {
+        "llm": {
+            "targetVariable": "response",
+            "function": "text generation",
+            "algorithm": "Transformer"
+        },
+        "embedding": {
+            "targetVariable": "embedding",
+            "function": "embedding",
+            "algorithm": "Embedding"
+        }
     },
     "prose": {
         "modelPurpose": "To serve as a bridge of understanding, enabling seamless interaction between humans and machines by harnessing the power of natural language. LLMs decode the complexities of human thought, transforming them into actionable insights, creative solutions, and tailored knowledge while fostering accessibility, inclusivity, and empowerment in communication and decision-making.",

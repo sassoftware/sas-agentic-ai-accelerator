@@ -145,12 +145,6 @@ class ModelManifest(BaseModel):
             )
         return v
 
-    @model_validator(mode="after")
-    def _kind_supported(self) -> "ModelManifest":
-        if self.kind != "llm":
-            raise ValueError("kind 'embedding' arrives with Phase 1.1 - only 'llm' is supported right now")
-        return self
-
     # -- serialization ----------------------------------------------------
 
     FIELD_ORDER: ClassVar[list[str]] = [

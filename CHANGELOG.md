@@ -10,13 +10,17 @@ The new **Model Definition Builder** (`Model-Definition-Builder/`) takes the cho
 
 - Model Definition Builder CLI (`mdb`, package `sas-mdb`) with the commands `add` (interactive wizard and non-interactive flags), `generate` (incl. `--check` drift gate), `validate` (incl. `--live` provider smoke test), `sync` (fact-sheet upsert), `import` (reverse-engineer an existing definition folder into a manifest) and `test` (local scoreModel invocation)
 - `definition-core/`: versioned manifest JSON Schema with a typed option vocabulary, score-script templates per provider family, the shared static assets (inputVar/outputVar, modelConfiguration boilerplate, tag taxonomy) and static provider catalog fallback tables for offline use
-- Provider adapters: OpenAI-compatible (OpenAI, OpenRouter, Azure AI Foundry v1, Mistral), Anthropic and self-hosted Hugging Face; third-party adapters can be added via Python entry points
-- Claude Sonnet 4.5 (`claude_sonnet_4_5`) as the first fully generated LLM definition, including its fact-sheet entry
+- Provider adapters: OpenAI-compatible (OpenAI, OpenRouter, Azure AI Foundry v1, Mistral), Anthropic, AWS Bedrock (Converse API with a Bedrock API key by default or a boto3/SigV4 variant), Google Gemini, Voyage AI and self-hosted Hugging Face (`transformers` and `sentence-transformers`); third-party adapters can be added via Python entry points
+- Embedding definitions are fully supported: generated embedding scorers return all three declared outputs and embed the complete vector (fixing two long-standing bugs in several hand-written definitions), and `embedding_fact_sheet.csv` rows are kept in sync
+- Environment-neutral definitions: Azure resources and AWS Bedrock regions resolve at scoring time via per-call options or the `AZURE_OPENAI_RESOURCE` / `AWS_BEDROCK_REGION` container environment variables, so one published image serves multiple subscriptions/projects/regions
+- Typed scoring options: the option vocabulary covers `reasoning_effort`, `thinking_budget`, `max_completion_tokens`, `seed`, penalties, and the embedding options `input_type`, `dimensions` and `normalize`; `options.json` carries additive `type`/`values` fields for non-numeric options so UIs can render proper controls (numeric options keep the established shape)
+- Generated definitions as working examples: `claude_sonnet_4_5`, `gpt_41_mini`, `gpt_5_mini` (reasoning model, live-verified), `claude_haiku_4_5_bedrock` and `titan_embed_text_v2`
 - Documentation: Administration Guide page "Model Definition Builder" and a README in `Model-Definition-Builder/`
+- CI safeguard `verify-model-definitions.yml`: re-renders every managed definition on pull requests and fails when committed assets drift from their manifest
 
 ### Changed
 
-- None
+- The generator emits `toolVersion: "3.11"` — newer SAS Viya releases reject the legacy `3.11-5` format when publishing (hand-written definitions still carry `3.11-5` and will hit the same publish error on current Viya until they are migrated)
 
 ### Fixed
 

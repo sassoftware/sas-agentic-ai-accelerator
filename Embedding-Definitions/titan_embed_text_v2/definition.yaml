@@ -1,0 +1,40 @@
+schema: 1
+kind: embedding
+model_id: titan_embed_text_v2
+display_name: Titan Text Embeddings V2
+provider:
+  adapter: bedrock
+  model_version: amazon.titan-embed-text-v2:0
+  params:
+    region: us-east-1
+    auth_variant: bearer
+  auth:
+    mode: api_key
+    key_name: AWSBedrock
+runtime:
+  template: emb_bedrock_titan
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  Embedding_Length:
+    default: 1024
+  Input_Token_Limit:
+    default: 8192
+tags:
+  size_class: Embedding
+  license_class: Proprietary
+  provider_tag: AWS Bedrock
+  scr_sizing: small
+  extra: []
+metadata:
+  description: Titan Text Embeddings V2 by AWS Bedrock, served through the AWS Bedrock API.
+  release_date: '2024-04-30'
+  context_length: 8192
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 2.0e-08
+modeler: david.weik@sas.com
+generation:
+  overrides: []
+  catalog_provenance: bedrock (static snapshot 2026-01-15)

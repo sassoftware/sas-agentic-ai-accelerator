@@ -33,7 +33,11 @@ mdb add azure-foundry --resource myres --deployment my-gpt41 --id gpt_41_az --ye
 mdb add hf-selfhosted --repo Qwen/Qwen2.5-0.5B-Instruct --id qwen_25_05b --params-billions 0.5 --yes
 ```
 
-Supported providers today: OpenRouter, OpenAI, Azure AI Foundry (v1 endpoint, key auth), Mistral, Anthropic and self-hosted Hugging Face models. AWS Bedrock, Google Gemini, Voyage and Embedding definitions follow in the next release.
+Supported providers: OpenRouter, OpenAI, Azure AI Foundry (v1 endpoint, key auth), Mistral, Anthropic, AWS Bedrock (Converse API - Bedrock API key by default, `--auth-variant sigv4` for boto3/IAM shops), Google Gemini, Voyage AI and self-hosted Hugging Face models (`transformers` for LLMs, `sentence-transformers` for embeddings).
+
+**Embedding definitions** work exactly like LLM definitions: the wizard picks the kind from the model you select (or the runtime you choose for self-hosted models), the folder lands in `Embedding-Definitions/`, the row goes to `embedding_fact_sheet.csv`, and registration continues with `register-Embedding.py`. The generated embedding scorers return all three declared outputs (embedding, run_time, tokens) and embed the full vector — two long-standing bugs in several hand-written definitions that the templates fix centrally.
+
+AWS Bedrock regions work like Azure resources: the region resolves per call as option → `AWS_BEDROCK_REGION` container environment variable → baked default, so one image can serve multiple regions.
 
 ### Azure across subscriptions and projects
 

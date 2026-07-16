@@ -34,6 +34,8 @@ class HuggingFaceAdapter(ProviderAdapter):
     def questions(self) -> list[Question]:
         return [
             Question("repo", "Hugging Face repo id (e.g. Qwen/Qwen2.5-0.5B-Instruct)"),
+            Question("runtime", "Runtime family: transformers (LLM) or sentence-transformers (embedding)",
+                     default="transformers", required=False),
             Question("gated", "Is the repo gated (license acceptance required)? [y/N]", default="n", required=False),
             Question("params_billions", "Parameter count in billions (e.g. 0.5) - sets SLM/LLM and sizing", default="", required=False),
         ]
@@ -48,13 +50,28 @@ class HuggingFaceAdapter(ProviderAdapter):
     def build_manifest(self, cm: CatalogModel, model_id: str, answers: dict, modeler: str) -> ModelManifest:
         repo = answers.get("repo", cm.ref)
         gated = str(answers.get("gated", "n")).strip().lower() in ("y", "yes", "true", "1")
+        runtime = (answers.get("runtime") or "transformers").strip().lower()
+        is_embedding = runtime.startswith("sentence")
+        kind = "embedding" if is_embedding else "llm"
         try:
             params_billions = float(answers.get("params_billions") or 0)
         except ValueError:
             params_billions = 0.0
-        size_class = "LLM" if params_billions > 7 else "SLM"
+        if is_embedding:
+            size_class = "Embedding"
+            options = {
+                "Embedding_Mode": OptionSpec(default="query"),
+                "Embedding_Length": OptionSpec(default=cm.embedding_length or 384),
+                "Input_Token_Limit": OptionSpec(default=cm.context_length or 512),
+            }
+            template, profile = "emb_sentence_transformers", "hf-sentence-transformers"
+        else:
+            size_class = "LLM" if params_billions > 7 else "SLM"
+            options = self.default_options(cm)
+            template, profile = self.template, self.requirements_profile
         sizing = "small" if params_billions <= 1 else ("medium" if params_billions <= 8 else "large")
         return ModelManifest(
+            kind=kind,
             model_id=model_id,
             display_name=cm.display_name,
             provider=ProviderBlock(
@@ -63,8 +80,8 @@ class HuggingFaceAdapter(ProviderAdapter):
                 params={"hf": {"repo": repo, "gated": gated}},
                 auth=AuthBlock(mode="none"),
             ),
-            runtime=RuntimeBlock(template=self.template, requirements_profile=self.requirements_profile),
-            options=self.default_options(cm),
+            runtime=RuntimeBlock(template=template, requirements_profile=profile),
+            options=options,
             tags=TagsBlock(
                 size_class=size_class,
                 license_class="Open-Source",

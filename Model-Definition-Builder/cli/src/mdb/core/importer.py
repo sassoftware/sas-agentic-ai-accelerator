@@ -23,7 +23,8 @@ from .manifest import (
 KNOWN_SIZE_CLASSES = {"LLM", "SLM", "Embedding"}
 KNOWN_LICENSE_CLASSES = {"Proprietary", "Open-Source"}
 KNOWN_SIZINGS = {"small", "medium", "large"}
-CORE_OPTIONS = {"temperature", "top_p", "top_k", "max_tokens"}
+CORE_OPTIONS = {"temperature", "top_p", "top_k", "max_tokens",
+                "Embedding_Length", "Input_Token_Limit", "Embedding_Mode", "input_type"}
 
 
 @dataclass
@@ -32,21 +33,35 @@ class ImportResult:
     notes: list[str] = field(default_factory=list)
 
 
-def _detect_family(score_text: str) -> tuple[str, str]:
-    """Returns (template, adapter_id) guessed from score-script markers."""
+def _detect_family(score_text: str) -> tuple[str, str, str]:
+    """Returns (kind, template, adapter_id) guessed from score-script markers."""
+    if "def scoreModel(document" in score_text:
+        if "SentenceTransformer" in score_text:
+            return "embedding", "emb_sentence_transformers", "hf-selfhosted"
+        if "voyageai.com" in score_text:
+            return "embedding", "emb_voyage", "voyage"
+        if "embedContent" in score_text or "generativelanguage.googleapis.com" in score_text:
+            return "embedding", "emb_gemini", "google"
+        if "bedrock-runtime" in score_text:
+            return "embedding", "emb_bedrock_titan", "bedrock"
+        return "embedding", "emb_openai", "openai"
     if "AutoModelForCausalLM" in score_text:
-        return "hf_transformers", "hf-selfhosted"
+        return "llm", "hf_transformers", "hf-selfhosted"
     if "api.anthropic.com" in score_text:
-        return "anthropic_messages", "anthropic"
+        return "llm", "anthropic_messages", "anthropic"
     if "openai.azure.com" in score_text or "cognitive.microsoft.com" in score_text or "azure_openai_resource" in score_text:
-        return "azure_openai_v1", "azure-foundry"
+        return "llm", "azure_openai_v1", "azure-foundry"
+    if "generativelanguage.googleapis.com" in score_text:
+        return "llm", "gemini_generate", "google"
+    if "bedrock-runtime" in score_text:
+        return "llm", "bedrock_converse", "bedrock"
     if "openrouter.ai" in score_text:
-        return "openai_chat", "openrouter"
+        return "llm", "openai_chat", "openrouter"
     if "api.mistral.ai" in score_text:
-        return "openai_chat", "mistral"
+        return "llm", "openai_chat", "mistral"
     if "api.openai.com" in score_text:
-        return "openai_chat", "openai"
-    return "openai_chat", "openai"
+        return "llm", "openai_chat", "openai"
+    return "llm", "openai_chat", "openai"
 
 
 def _parse_tags(tags: list[str], notes: list[str]) -> TagsBlock:
@@ -93,7 +108,7 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
     if not score_text:
         notes.append(f"Score file {config.get('scoreCodeFile')} not found - template guessed without markers.")
 
-    template, adapter_id = _detect_family(score_text)
+    kind, template, adapter_id = _detect_family(score_text)
 
     model_version = ""
     match = re.search(r"modelVersion\s*=\s*'([^']+)'", score_text)
@@ -106,8 +121,8 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
 
     params: dict = {}
     requirements_profile = "api-wrapper"
-    if template == "hf_transformers":
-        requirements_profile = "hf-transformers"
+    if template in ("hf_transformers", "emb_sentence_transformers"):
+        requirements_profile = "hf-transformers" if template == "hf_transformers" else "hf-sentence-transformers"
         endpoint = None
         requirements_text = (folder / "requirements.json").read_text(encoding="utf-8") \
             if (folder / "requirements.json").is_file() else ""
@@ -150,8 +165,13 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
     if not row:
         notes.append("No fact-sheet row found - metadata defaults are minimal; fill definition.yaml by hand.")
 
+    if kind == "embedding" and template in ("emb_openai", "emb_voyage"):
+        notes.append("Embedding normalization: the generated scorer returns all three declared outputs "
+                     "(embedding, run_time, tokens) - several legacy scorers only returned two.")
+
     tags = _parse_tags(list(config.get("tags", [])), notes)
     manifest = ModelManifest(
+        kind=kind,
         model_id=model_id,
         display_name=row.get("model") or config.get("name", model_id),
         provider=ProviderBlock(
@@ -170,7 +190,8 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
             knowledge_cutoff=row.get("knowledge_cut_off") or None,
             context_length=_num(row.get("context_length"), int),
             size=_num(row.get("size"), int),
-            deployment_type=(row.get("deployment_type") or ("SCR" if template == "hf_transformers" else "API")).strip('"') or "API",
+            deployment_type=(row.get("deployment_type")
+                             or ("SCR" if requirements_profile.startswith("hf-") else "API")).strip('"') or "API",
             pricing=PricingBlock(
                 cost_type=(row.get("cost_type") or "Tokens").strip('"') or "Tokens",
                 input_token_price=_num(row.get("input_token_price")),

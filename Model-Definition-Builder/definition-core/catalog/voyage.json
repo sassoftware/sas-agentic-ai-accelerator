@@ -1,0 +1,34 @@
+{
+    "provider": "voyage",
+    "snapshot_date": "2026-01-15",
+    "pricing_note": "Prices in USD per 1M tokens (input only - embeddings have no output tokens). Static snapshot - confirm against https://docs.voyageai.com/docs/pricing.",
+    "models": [
+        {
+            "ref": "voyage-3.5",
+            "display_name": "Voyage 3.5",
+            "kind": "embedding",
+            "context_length": 32000,
+            "embedding_length": 1024,
+            "input_price_per_m": 0.06,
+            "release_date": "2025-01-21"
+        },
+        {
+            "ref": "voyage-3.5-lite",
+            "display_name": "Voyage 3.5 Lite",
+            "kind": "embedding",
+            "context_length": 32000,
+            "embedding_length": 1024,
+            "input_price_per_m": 0.02,
+            "release_date": "2025-01-21"
+        },
+        {
+            "ref": "voyage-code-3",
+            "display_name": "Voyage Code 3",
+            "kind": "embedding",
+            "context_length": 32000,
+            "embedding_length": 1024,
+            "input_price_per_m": 0.18,
+            "release_date": "2024-12-04"
+        }
+    ]
+}

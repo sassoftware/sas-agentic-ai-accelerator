@@ -11,7 +11,10 @@
                 "openai_chat": {"body_key": "temperature", "cast": "float"},
                 "azure_openai_v1": {"body_key": "temperature", "cast": "float"},
                 "anthropic_messages": {"body_key": "temperature", "cast": "float"},
-                "hf_transformers": {"generate_key": "temperature", "cast": "float"}
+                "hf_transformers": {"generate_key": "temperature", "cast": "float"},
+                "bedrock_converse": {"body_key": "temperature", "cast": "float"},
+                "bedrock_converse_sigv4": {"body_key": "temperature", "cast": "float"},
+                "gemini_generate": {"body_key": "temperature", "cast": "float"}
             }
         },
         "top_p": {
@@ -24,7 +27,10 @@
                 "openai_chat": {"body_key": "top_p", "cast": "float"},
                 "azure_openai_v1": {"body_key": "top_p", "cast": "float"},
                 "anthropic_messages": {"body_key": "top_p", "cast": "float"},
-                "hf_transformers": {"generate_key": "top_p", "cast": "float"}
+                "hf_transformers": {"generate_key": "top_p", "cast": "float"},
+                "bedrock_converse": {"body_key": "topP", "cast": "float"},
+                "bedrock_converse_sigv4": {"body_key": "topP", "cast": "float"},
+                "gemini_generate": {"body_key": "topP", "cast": "float"}
             }
         },
         "top_k": {
@@ -35,7 +41,8 @@
             "description": "The topK parameter changes how the model selects tokens for output. A topK of 1 means the selected token is the most probable among all the tokens in the model's vocabulary (also called greedy decoding), while a topK of 3 means that the next token is selected from among the 3 most probable using the temperature. For each token selection step, the topK tokens with the highest probabilities are sampled. Tokens are then further filtered based on topP with the final token selected using temperature sampling.",
             "families": {
                 "anthropic_messages": {"body_key": "top_k", "cast": "int"},
-                "hf_transformers": {"generate_key": "top_k", "cast": "int"}
+                "hf_transformers": {"generate_key": "top_k", "cast": "int"},
+                "gemini_generate": {"body_key": "topK", "cast": "int"}
             }
         },
         "max_tokens": {
@@ -47,7 +54,10 @@
                 "openai_chat": {"body_key": "max_tokens", "cast": "int"},
                 "azure_openai_v1": {"body_key": "max_tokens", "cast": "int"},
                 "anthropic_messages": {"body_key": "max_tokens", "cast": "int"},
-                "hf_transformers": {"generate_key": "max_new_tokens", "cast": "int"}
+                "hf_transformers": {"generate_key": "max_new_tokens", "cast": "int"},
+                "bedrock_converse": {"body_key": "maxTokens", "cast": "int"},
+                "bedrock_converse_sigv4": {"body_key": "maxTokens", "cast": "int"},
+                "gemini_generate": {"body_key": "maxOutputTokens", "cast": "int"}
             }
         },
         "max_completion_tokens": {
@@ -110,6 +120,55 @@
             "families": {
                 "anthropic_messages": {"body_key": "__thinking__", "cast": "int"}
             }
+        },
+        "input_type": {
+            "type": "enum",
+            "values": ["document", "query"],
+            "range": "document | query",
+            "description": "Whether the text is embedded as a document (for storage/indexing) or as a query (for retrieval). Using the matching type on both sides improves retrieval quality.",
+            "families": {
+                "emb_voyage": {"body_key": "input_type", "cast": "str"}
+            }
+        },
+        "Embedding_Mode": {
+            "type": "enum",
+            "values": ["query", "document"],
+            "range": "query | document",
+            "description": "Whether the text is embedded as a query (for retrieval) or as a document (for storage/indexing). Using the matching mode on both sides improves retrieval quality.",
+            "families": {
+                "emb_sentence_transformers": {"builtin": true}
+            }
+        },
+        "dimensions": {
+            "type": "int",
+            "min": 1,
+            "range": "model dependent",
+            "description": "Number of dimensions the returned embedding should have (only for models that support shortening embeddings).",
+            "families": {
+                "emb_openai": {"body_key": "dimensions", "cast": "int"},
+                "emb_gemini": {"body_key": "outputDimensionality", "cast": "int"},
+                "emb_bedrock_titan": {"body_key": "dimensions", "cast": "int"}
+            }
+        },
+        "normalize": {
+            "type": "bool",
+            "range": "true | false",
+            "description": "Whether to normalize the returned embedding vector to unit length (recommended for retrieval).",
+            "families": {
+                "emb_bedrock_titan": {"body_key": "normalize", "cast": "bool"}
+            }
+        },
+        "Embedding_Length": {
+            "type": "int",
+            "range": "{default}",
+            "description": "The length of the returned embedding vector.",
+            "informational": true
+        },
+        "Input_Token_Limit": {
+            "type": "int",
+            "range": "{default}",
+            "description": "The limit of input tokens for the embedding model.",
+            "informational": true
         }
     },
     "api_key": {

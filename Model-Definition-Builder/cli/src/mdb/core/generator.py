@@ -34,8 +34,7 @@ class CoreAssets:
     vocabulary: dict[str, Any]
     api_key_meta: dict[str, str]
     boilerplate: dict[str, Any]
-    input_var: str
-    output_var: str
+    var_files: dict[str, tuple[str, str]]  # kind -> (inputVar, outputVar)
 
     @classmethod
     def load(cls, core_dir: Path) -> "CoreAssets":
@@ -46,8 +45,16 @@ class CoreAssets:
             vocabulary=vocab_doc["options"],
             api_key_meta=vocab_doc["api_key"],
             boilerplate=json.loads((static / "modelconfig-boilerplate.json").read_text(encoding="utf-8")),
-            input_var=(static / "inputVar-llm.json").read_text(encoding="utf-8"),
-            output_var=(static / "outputVar-llm.json").read_text(encoding="utf-8"),
+            var_files={
+                "llm": (
+                    (static / "inputVar-llm.json").read_text(encoding="utf-8"),
+                    (static / "outputVar-llm.json").read_text(encoding="utf-8"),
+                ),
+                "embedding": (
+                    (static / "inputVar-emb.json").read_text(encoding="utf-8"),
+                    (static / "outputVar-emb.json").read_text(encoding="utf-8"),
+                ),
+            },
         )
 
     def jinja(self) -> Environment:
@@ -95,6 +102,7 @@ def _resolve_option(name: str, spec: OptionSpec, core: CoreAssets) -> dict[str, 
         "description": spec.description or vocab.get("description", ""),
         "range": spec.range or vocab.get("range"),
         "families": vocab.get("families", {}),
+        "informational": vocab.get("informational", False),
     }
     return resolved
 
@@ -104,6 +112,8 @@ def _legacy_range(name: str, resolved: dict[str, Any], manifest: ModelManifest) 
     if template and "{max}" in template:
         max_value = resolved.get("max") or manifest.metadata.context_length or 200000
         return template.replace("{max}", str(int(max_value)))
+    if template and "{default}" in template:
+        return template.replace("{default}", str(resolved["default"]))
     if template:
         return template
     if resolved["type"] == "enum" and resolved.get("values"):
@@ -113,7 +123,7 @@ def _legacy_range(name: str, resolved: dict[str, Any], manifest: ModelManifest) 
     return ""
 
 
-CAST_FN = {"float": "float", "int": "int", "str": "str"}
+CAST_FN = {"float": "float", "int": "int", "str": "str", "bool": "bool"}
 
 
 def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
@@ -125,6 +135,8 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
 
     for name, spec in manifest.options.items():
         resolved = _resolve_option(name, spec, core)
+        if resolved["informational"]:
+            continue  # options.json only - never enters the score script
         defaults_lines.append(f'        "{name}": {_py_literal(spec.default)},')
         family_map = resolved["families"].get(family)
         if family_map is None:
@@ -132,6 +144,8 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
                 f"Option '{name}' is not supported by score template family '{family}'. "
                 "Remove the option or extend the vocabulary."
             )
+        if family_map.get("builtin"):
+            continue  # the template itself consumes the option (e.g. Embedding_Mode branch)
         cast = CAST_FN.get(family_map.get("cast", "str"), "str")
         if "body_key" in family_map:
             body_key = family_map["body_key"]
@@ -150,6 +164,7 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
     return {
         "options_defaults_block": "\n".join(defaults_lines),
         "body_options_block": "\n".join(body_lines),
+        "body_options_block_nested": "\n".join("    " + line for line in body_lines),
         "generate_options_block": ",\n".join(generate_lines),
         "thinking_block": thinking_block,
     }
@@ -182,6 +197,8 @@ def _render_score(manifest: ModelManifest, core: CoreAssets) -> str:
         context["azure_resource"] = params.get("resource", "") if params.get("commit_resource") else ""
     if manifest.runtime.template == "anthropic_messages":
         context["anthropic_version"] = manifest.provider.params.get("anthropic_version", "2023-06-01")
+    if "bedrock" in manifest.runtime.template:
+        context["region"] = manifest.provider.params.get("region", "")
     rendered = template.render(**context)
     if not rendered.endswith("\n"):
         rendered += "\n"
@@ -192,11 +209,18 @@ def _render_options_json(manifest: ModelManifest, core: CoreAssets) -> str:
     entries: dict[str, dict[str, Any]] = {}
     for name, spec in manifest.options.items():
         resolved = _resolve_option(name, spec, core)
-        entries[name] = {
+        entry: dict[str, Any] = {
             "default": spec.default,
             "range": _legacy_range(name, resolved, manifest),
             "description": resolved["description"],
         }
+        # Additive typed-option fields for UI consumers (Prompt Builder): only
+        # emitted for non-numeric types so legacy numeric entries stay byte-identical.
+        if resolved["type"] in ("enum", "bool", "string"):
+            entry["type"] = resolved["type"]
+            if resolved["type"] == "enum" and resolved.get("values"):
+                entry["values"] = resolved["values"]
+        entries[name] = entry
     if manifest.runtime.template == "azure_openai_v1":
         params = manifest.provider.params
         entries["azure_openai_resource"] = {
@@ -232,6 +256,7 @@ def _render_model_configuration(manifest: ModelManifest, core: CoreAssets) -> st
         "modeler": manifest.modeler,
         "tags": manifest.tags.as_list(),
         **core.boilerplate["constants"],
+        **core.boilerplate["kind_constants"][manifest.kind],
         **core.boilerplate["prose"],
     }
     ordered = {key: values[key] for key in core.boilerplate["keyOrder"]}
@@ -259,6 +284,27 @@ def _render_requirements(manifest: ModelManifest) -> str:
             {
                 "step": "install huggingface CLI and other packages",
                 "command": "pip3 -q install huggingface-hub>=0.18.0 transformers torch accelerate numpy==1.26.4",
+            },
+        ]
+        if hf.get("gated"):
+            steps.append({
+                "step": f"Login with huggingface - ensure you have accepted the license: https://huggingface.co/{repo}",
+                "command": "hf login --token $(cat /etc/secret-volume/huggingfacetoken)",
+            })
+        steps.append({
+            "step": "download model",
+            "command": f"hf download --quiet {repo} --local-dir /pybox/model/{manifest.model_id}",
+        })
+    elif profile == "hf-sentence-transformers":
+        hf = manifest.provider.params.get("hf", {})
+        repo = hf.get("repo") or manifest.provider.model_version
+        steps = [
+            {"step": "install git-lfs", "command": "microdnf install git-lfs"},
+            {"step": "Verify git-lfs install", "command": "git lfs install"},
+            upgrade_step,
+            {
+                "step": "install huggingface CLI and other packages",
+                "command": "pip3 -q install huggingface-hub>=0.18.0 sentence-transformers numpy==1.26.4",
             },
         ]
         if hf.get("gated"):
@@ -323,10 +369,11 @@ def _render_docs(manifest: ModelManifest, core: CoreAssets, options_json: str) -
 def render_assets(manifest: ModelManifest, core: CoreAssets) -> dict[str, bytes]:
     """Render every generated asset for a definition. Returns filename -> bytes (LF)."""
     options_json = _render_options_json(manifest, core)
+    input_var, output_var = core.var_files[manifest.kind]
     text_assets: dict[str, str] = {
         score_file_name(manifest.model_id): _render_score(manifest, core),
-        "inputVar.json": core.input_var,
-        "outputVar.json": core.output_var,
+        "inputVar.json": input_var,
+        "outputVar.json": output_var,
         "modelConfiguration.json": _render_model_configuration(manifest, core),
         "options.json": options_json,
         "requirements.json": _render_requirements(manifest),

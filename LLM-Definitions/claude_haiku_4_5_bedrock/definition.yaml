@@ -1,0 +1,40 @@
+schema: 1
+kind: llm
+model_id: claude_haiku_4_5_bedrock
+display_name: us.anthropic.claude-haiku-4-5-20251001-v1:0
+provider:
+  adapter: bedrock
+  model_version: us.anthropic.claude-haiku-4-5-20251001-v1:0
+  params:
+    region: us-east-1
+    auth_variant: bearer
+  auth:
+    mode: api_key
+    key_name: AWSBedrock
+runtime:
+  template: bedrock_converse
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  temperature:
+    default: 1
+  top_p:
+    default: 1
+  max_tokens:
+    default: 1000
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: AWS Bedrock
+  scr_sizing: small
+  extra: []
+metadata:
+  description: us.anthropic.claude-haiku-4-5-20251001-v1:0 by AWS Bedrock, served through the AWS Bedrock
+    API.
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+modeler: david.weik@sas.com
+generation:
+  overrides: []
+  catalog_provenance: bedrock (manual entry)

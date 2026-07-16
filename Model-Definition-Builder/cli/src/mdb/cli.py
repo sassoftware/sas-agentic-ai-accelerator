@@ -40,6 +40,9 @@ app = typer.Typer(
 console = Console()
 
 
+KINDS = ("llm", "embedding")
+
+
 class Context:
     def __init__(self) -> None:
         try:
@@ -48,14 +51,31 @@ class Context:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(2)
         self.core = CoreAssets.load(core_dir(self.repo))
-        self.defs_dir = definitions_dir(self.repo, "llm")
-        self.fact_sheet = fact_sheet_path(self.repo, "llm")
+
+    def defs_dir(self, kind: str) -> Path:
+        return definitions_dir(self.repo, kind)
+
+    def fact_sheet(self, kind: str) -> Path:
+        return fact_sheet_path(self.repo, kind)
+
+    def kind_of(self, folder: Path) -> str:
+        return "embedding" if folder.parent.name == "Embedding-Definitions" else "llm"
 
     def managed_folders(self) -> list[Path]:
-        return sorted(
-            f for f in self.defs_dir.iterdir()
-            if f.is_dir() and (f / MANIFEST_FILENAME).is_file()
-        )
+        folders = []
+        for kind in KINDS:
+            folders.extend(
+                f for f in sorted(self.defs_dir(kind).iterdir())
+                if f.is_dir() and (f / MANIFEST_FILENAME).is_file()
+            )
+        return folders
+
+    def find_folder(self, model_id: str) -> Path | None:
+        for kind in KINDS:
+            folder = self.defs_dir(kind) / model_id
+            if folder.is_dir():
+                return folder
+        return None
 
     def resolve_targets(self, ids: list[str], select_all: bool) -> list[Path]:
         if select_all:
@@ -70,9 +90,9 @@ class Context:
             raise typer.Exit(2)
         folders = []
         for model_id in ids:
-            folder = self.defs_dir / model_id
-            if not folder.is_dir():
-                console.print(f"[red]{model_id}: no folder {folder}[/red]")
+            folder = self.find_folder(model_id)
+            if folder is None:
+                console.print(f"[red]{model_id}: no such folder in LLM-Definitions or Embedding-Definitions[/red]")
                 raise typer.Exit(2)
             folders.append(folder)
         return folders
@@ -176,6 +196,8 @@ def _select_model(adapter: ProviderAdapter, catalog: list[CatalogModel], ref: Op
                  if m.input_price_per_m is not None else "price unknown")
         ctx_len = f"{m.context_length:,} ctx" if m.context_length else "ctx unknown"
         flags = " [reasoning]" if m.reasoning else ""
+        if m.kind == "embedding":
+            flags += " [embedding]"
         labels.append(f"{m.display_name}  ({m.ref}, {ctx_len}, {price}){flags}")
     return filtered[_pick_from_list(f"Models available from {adapter.display_name}", labels)]
 
@@ -254,7 +276,9 @@ def add(
                 default=False,
             )
 
-    catalog = _catalog_for(adapter, ctx, offline, verify_ssl) if not adapter.questions() else []
+    # Adapters with questions may still have a catalog (Bedrock); Azure and HF
+    # simply yield an empty list and fall through to manual entry.
+    catalog = _catalog_for(adapter, ctx, offline, verify_ssl)
     manual_ref = answers.get("deployment") or answers.get("repo")
     if manual_ref and not ref:
         ref = manual_ref
@@ -270,25 +294,26 @@ def add(
     proposed = model_id or slugify(cm.display_name)
     final_id = proposed if yes else Prompt.ask("Definition folder / model_id", default=proposed)
 
-    folder = ctx.defs_dir / final_id
+    modeler = os.environ.get("SAS_RESPONSIBLE_PARTY", "") or os.environ.get("USERNAME", "") or os.environ.get("USER", "")
+    try:
+        manifest = adapter.build_manifest(cm, final_id, answers, modeler)
+        rendered = render_assets(manifest, ctx.core)
+    except (GenerationError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    defs_name = "LLM-Definitions" if manifest.kind == "llm" else "Embedding-Definitions"
+    folder = ctx.defs_dir(manifest.kind) / final_id
     if folder.exists() and any(folder.iterdir()):
         console.print(f"[red]{folder} already exists and is not empty - pick another id or use mdb import.[/red]")
         raise typer.Exit(2)
 
-    modeler = os.environ.get("SAS_RESPONSIBLE_PARTY", "") or os.environ.get("USERNAME", "") or os.environ.get("USER", "")
-    manifest = adapter.build_manifest(cm, final_id, answers, modeler)
-
-    try:
-        rendered = render_assets(manifest, ctx.core)
-    except GenerationError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1)
-
-    console.print(f"\n[bold]Will create LLM-Definitions/{final_id}/[/bold] with:")
+    fact_sheet = ctx.fact_sheet(manifest.kind)
+    console.print(f"\n[bold]Will create {defs_name}/{final_id}/[/bold] with:")
     console.print(f"  {MANIFEST_FILENAME}  (the only file you edit)")
     for name in sorted(rendered):
         console.print(f"  {name}")
-    console.print(f"  + a row in llm_fact_sheet.csv (pricing source: {manifest.generation.catalog_provenance})")
+    console.print(f"  + a row in {fact_sheet.name} (pricing source: {manifest.generation.catalog_provenance})")
     if not yes and not Confirm.ask("Write these files?", default=True):
         raise typer.Exit(0)
 
@@ -297,12 +322,13 @@ def add(
     for name, content in rendered.items():
         (folder / name).write_bytes(content)
     drift.write_lock(folder, manifest_path.read_bytes(), rendered)
-    facts.upsert_row(ctx.fact_sheet, manifest)
+    facts.upsert_row(fact_sheet, manifest)
 
+    register_script = "register-LLMs.py" if manifest.kind == "llm" else "register-Embedding.py"
     console.print(f"\n[green]Created {final_id} ({len(rendered)} files + fact-sheet row).[/green]")
     console.print("Next steps:")
     console.print(f"  1. mdb validate {final_id} --live     (smoke-test the provider before Viya)")
-    console.print(f"  2. cd LLM-Definitions && python register-LLMs.py -l {final_id}")
+    console.print(f"  2. cd {defs_name} && python {register_script} -l {final_id}")
 
 
 # ---------------------------------------------------------------------------
@@ -367,11 +393,13 @@ def validate(
     """Static coherence rules (and optionally a live provider smoke test)."""
     ctx = Context()
     if all_ and not ids:
-        issues = validate_all(ctx.defs_dir, ctx.core, ctx.fact_sheet)
+        issues = []
+        for kind in KINDS:
+            issues.extend(validate_all(ctx.defs_dir(kind), ctx.core, ctx.fact_sheet(kind)))
     else:
         issues = []
         for folder in ctx.resolve_targets(ids or [], all_):
-            issues.extend(validate_folder(folder, ctx.core, ctx.fact_sheet))
+            issues.extend(validate_folder(folder, ctx.core, ctx.fact_sheet(ctx.kind_of(folder))))
     has_error = _print_issues(issues)
     if not issues:
         console.print("[green]Everything checks out.[/green]")
@@ -410,7 +438,7 @@ def sync(
         if not (folder / MANIFEST_FILENAME).is_file():
             continue
         manifest = load_manifest(folder)
-        result = facts.upsert_row(ctx.fact_sheet, manifest)
+        result = facts.upsert_row(ctx.fact_sheet(manifest.kind), manifest)
         console.print(f"{folder.name}: fact-sheet row {result}")
 
 
@@ -425,14 +453,15 @@ def import_(
 ):
     """Reverse-engineer definition.yaml from an existing folder (best effort, reviewed by you)."""
     ctx = Context()
-    folder = ctx.defs_dir / model_id
-    if not folder.is_dir():
-        console.print(f"[red]No folder {folder}[/red]")
+    folder = ctx.find_folder(model_id)
+    if folder is None:
+        console.print(f"[red]{model_id}: no such folder in LLM-Definitions or Embedding-Definitions[/red]")
         raise typer.Exit(2)
     if (folder / MANIFEST_FILENAME).is_file():
         console.print(f"[yellow]{model_id} already has a definition.yaml - nothing imported.[/yellow]")
         raise typer.Exit(0)
-    result = import_folder(folder, ctx.fact_sheet)
+    fact_sheet = ctx.fact_sheet(ctx.kind_of(folder))
+    result = import_folder(folder, fact_sheet)
     manifest_path = result.manifest.save(folder)
     console.print(f"[green]Wrote {manifest_path}.[/green]")
     for note in result.notes:
@@ -448,7 +477,7 @@ def import_(
         for c in changed:
             (folder / c.filename).write_bytes(rendered[c.filename])
         drift.write_lock(folder, manifest_path.read_bytes(), rendered)
-        facts.upsert_row(ctx.fact_sheet, result.manifest)
+        facts.upsert_row(fact_sheet, result.manifest)
         console.print(f"[green]Converged {model_id} ({len(changed)} file(s) rewritten).[/green]")
         console.print(f"Re-test before re-publishing: mdb validate {model_id} --live")
     else:
@@ -464,7 +493,10 @@ def test(
 ):
     """Invoke the generated scoreModel() locally (makes a real provider call for API models)."""
     ctx = Context()
-    folder = ctx.defs_dir / model_id
+    folder = ctx.find_folder(model_id)
+    if folder is None:
+        console.print(f"[red]{model_id}: no such folder in LLM-Definitions or Embedding-Definitions[/red]")
+        raise typer.Exit(2)
     manifest = load_manifest(folder)
     adapters = load_adapters()
     adapter = adapters.get(manifest.provider.adapter)
@@ -482,14 +514,21 @@ def test(
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)  # type: ignore[union-attr]
     console.print(f"[dim]Calling scoreModel() from {score_path.name}...[/dim]")
-    response, run_time, prompt_length, output_length = module.scoreModel(
-        [prompt], [system], [json.dumps(options)]
-    )
     table = Table(show_header=False)
-    table.add_row("response", str(response))
-    table.add_row("run_time", f"{run_time:.2f}s")
-    table.add_row("prompt_length", str(prompt_length))
-    table.add_row("output_length", str(output_length))
+    if manifest.kind == "embedding":
+        embedding, run_time, tokens = module.scoreModel([prompt], ["mdb-test"], [json.dumps(options)])
+        vector = json.loads(embedding)
+        table.add_row("embedding", f"{len(vector)}-dimension vector [{vector[0]:.5f}, {vector[1]:.5f}, ...]")
+        table.add_row("run_time", f"{run_time:.2f}s")
+        table.add_row("tokens", str(tokens))
+    else:
+        response, run_time, prompt_length, output_length = module.scoreModel(
+            [prompt], [system], [json.dumps(options)]
+        )
+        table.add_row("response", str(response))
+        table.add_row("run_time", f"{run_time:.2f}s")
+        table.add_row("prompt_length", str(prompt_length))
+        table.add_row("output_length", str(output_length))
     console.print(table)
 
 

@@ -1,0 +1,57 @@
+{{ generated_header }}import time
+import json
+import logging
+import sys
+import requests
+
+modelVersion = '{{ model_version }}'
+modelEndpoint = '{{ endpoint }}'
+
+# Initiate the logger to write output information to the log
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+    format='%(levelname)s - %(message)s'
+)
+logger = logging.getLogger("scoreModel")
+
+{% include "partials/_options_parser.py.j2" %}
+
+def scoreModel(document, project, options):
+    "Output: embedding, run_time, tokens"
+    started_timestamp = time.time()
+    optionsDefaults = {
+{{ options_defaults_block }}
+    }
+    options = {**optionsDefaults, **_parse_options(options)}
+    payload = {
+        "input": document[0],
+        "model": modelVersion,
+        "encoding_format": "float",
+{{ body_options_block }}
+    }
+    responseObject = requests.post(
+        modelEndpoint,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {options['API_KEY']}",
+        },
+        json=payload,
+        timeout={{ timeout_s }},
+    )
+    try:
+        responseJson = responseObject.json()
+    except Exception:
+        logger.error(f"Non-JSON response: {responseObject.status_code} - {responseObject.text}")
+        raise
+    if responseObject.status_code < 200 or responseObject.status_code >= 300:
+        logger.error(f"HTTP {responseObject.status_code}: {json.dumps(responseJson)}")
+        raise RuntimeError(f"Request failed: {responseObject.status_code}")
+    embedding = json.dumps(responseJson['data'][0]['embedding'])
+    tokens = responseJson['usage']['prompt_tokens']
+    run_time = time.time() - started_timestamp
+    # Logging the response
+    logger.info(f"project: {project[0]}")
+    logger.info(f"tokens: {tokens}")
+    logger.info(f"run_time: {run_time}")
+    return embedding, run_time, tokens

@@ -7,8 +7,11 @@ from importlib.metadata import entry_points
 
 from .anthropic import AnthropicAdapter
 from .base import ProviderAdapter
+from .bedrock import BedrockAdapter
+from .google import GoogleAdapter
 from .hf_selfhosted import HuggingFaceAdapter
 from .openai_compat import AzureFoundryAdapter, OpenAICompatAdapter
+from .voyage import VoyageAdapter
 
 
 def _builtin_adapters() -> list[ProviderAdapter]:
@@ -45,6 +48,9 @@ def _builtin_adapters() -> list[ProviderAdapter]:
             static_catalog_file="mistral.json",
         ),
         AnthropicAdapter(),
+        BedrockAdapter(),
+        GoogleAdapter(),
+        VoyageAdapter(),
         HuggingFaceAdapter(),
     ]
 

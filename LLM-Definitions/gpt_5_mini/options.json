@@ -2,7 +2,13 @@
     "reasoning_effort": {
         "default": "medium",
         "range": "low | medium | high",
-        "description": "Constrains how much effort a reasoning model spends on thinking before answering. Lower values respond faster and use fewer tokens."
+        "description": "Constrains how much effort a reasoning model spends on thinking before answering. Lower values respond faster and use fewer tokens.",
+        "type": "enum",
+        "values": [
+            "low",
+            "medium",
+            "high"
+        ]
     },
     "max_completion_tokens": {
         "default": 4000,

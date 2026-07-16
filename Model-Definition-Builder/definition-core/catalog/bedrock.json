@@ -1,0 +1,60 @@
+{
+    "provider": "bedrock",
+    "snapshot_date": "2026-01-15",
+    "pricing_note": "Prices in USD per 1M tokens, on-demand us-east-1. Static snapshot - confirm against https://aws.amazon.com/bedrock/pricing/. Model refs use the us. cross-region inference profile where on-demand is unavailable; eu./apac. shops swap the prefix, and manual entry always works.",
+    "models": [
+        {
+            "ref": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "display_name": "Claude Sonnet 4.5 (Bedrock)",
+            "kind": "llm",
+            "context_length": 200000,
+            "max_output_tokens": 64000,
+            "input_price_per_m": 3.0,
+            "output_price_per_m": 15.0,
+            "knowledge_cutoff": "2025-01-01",
+            "release_date": "2025-09-29"
+        },
+        {
+            "ref": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "display_name": "Claude Haiku 4.5 (Bedrock)",
+            "kind": "llm",
+            "context_length": 200000,
+            "max_output_tokens": 64000,
+            "input_price_per_m": 1.0,
+            "output_price_per_m": 5.0,
+            "knowledge_cutoff": "2025-02-01",
+            "release_date": "2025-10-15"
+        },
+        {
+            "ref": "us.amazon.nova-pro-v1:0",
+            "display_name": "Amazon Nova Pro",
+            "kind": "llm",
+            "context_length": 300000,
+            "max_output_tokens": 5120,
+            "input_price_per_m": 0.8,
+            "output_price_per_m": 3.2,
+            "knowledge_cutoff": "2024-10-01",
+            "release_date": "2024-12-03"
+        },
+        {
+            "ref": "us.amazon.nova-lite-v1:0",
+            "display_name": "Amazon Nova Lite",
+            "kind": "llm",
+            "context_length": 300000,
+            "max_output_tokens": 5120,
+            "input_price_per_m": 0.06,
+            "output_price_per_m": 0.24,
+            "knowledge_cutoff": "2024-10-01",
+            "release_date": "2024-12-03"
+        },
+        {
+            "ref": "amazon.titan-embed-text-v2:0",
+            "display_name": "Titan Text Embeddings V2",
+            "kind": "embedding",
+            "context_length": 8192,
+            "embedding_length": 1024,
+            "input_price_per_m": 0.02,
+            "release_date": "2024-04-30"
+        }
+    ]
+}

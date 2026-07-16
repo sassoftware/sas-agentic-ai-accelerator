@@ -21,6 +21,7 @@ from .base import CatalogModel, ProviderAdapter, Question, SmokeResult
 
 class OpenAICompatAdapter(ProviderAdapter):
     template = "openai_chat"
+    embedding_template = "emb_openai"
 
     def __init__(self, id: str, display_name: str, provider_tag: str, key_name: str,
                  env_key_var: str, base_url: str, docs_url: str = "",
@@ -37,6 +38,9 @@ class OpenAICompatAdapter(ProviderAdapter):
 
     def endpoint(self, answers: dict) -> Optional[str]:
         return f"{self.base_url}/chat/completions"
+
+    def embedding_endpoint(self, answers: dict) -> Optional[str]:
+        return f"{self.base_url}/embeddings"
 
     def live_catalog(self, session: requests.Session, api_key: Optional[str]) -> list[CatalogModel]:
         headers = {}

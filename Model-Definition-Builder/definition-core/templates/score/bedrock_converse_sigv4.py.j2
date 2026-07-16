@@ -1,0 +1,53 @@
+{{ generated_header }}import time
+import json
+import logging
+import os
+import sys
+import boto3
+
+# AWS Bedrock via the Converse API with SigV4 auth (boto3): credentials come
+# from the standard AWS chain (environment variables, IRSA, instance profile) -
+# no key travels through the options string.
+# The region resolves per call: options override > AWS_BEDROCK_REGION container
+# environment variable > the default baked into this file.
+modelId = '{{ model_version }}'
+
+# Initiate the logger to write output information to the log
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+    format='%(levelname)s - %(message)s'
+)
+logger = logging.getLogger("scoreModel")
+
+{% include "partials/_options_parser.py.j2" %}
+
+def scoreModel(userPrompt, systemPrompt, options):
+    "Output: response, run_time, prompt_length, output_length"
+    started_timestamp = time.time()
+    optionsDefaults = {
+{{ options_defaults_block }}
+        "aws_bedrock_region": os.environ.get("AWS_BEDROCK_REGION", "{{ region }}"),
+    }
+    options = {**optionsDefaults, **_parse_options(options)}
+    client = boto3.client("bedrock-runtime", region_name=options["aws_bedrock_region"])
+    responseJson = client.converse(
+        modelId=modelId,
+        system=[{"text": systemPrompt[0]}],
+        messages=[{"role": "user", "content": [{"text": userPrompt[0]}]}],
+        inferenceConfig={
+{{ body_options_block_nested }}
+        },
+    )
+    response = "".join(
+        block["text"] for block in responseJson["output"]["message"]["content"] if "text" in block
+    )
+    prompt_length = responseJson['usage']['inputTokens']
+    output_length = responseJson['usage']['outputTokens']
+    run_time = time.time() - started_timestamp
+    # Logging the response
+    logger.info(f"prompt_length: {prompt_length}")
+    logger.info(f"output_length: {output_length}")
+    logger.info(f"run_time: {run_time}")
+    logger.info(f"response: {response}")
+    return response, run_time, prompt_length, output_length

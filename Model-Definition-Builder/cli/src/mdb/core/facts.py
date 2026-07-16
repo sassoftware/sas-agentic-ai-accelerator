@@ -17,13 +17,20 @@ from pathlib import Path
 
 from .manifest import ModelManifest
 
-# Columns of llm_fact_sheet.csv, in order
-COLUMNS = [
-    "model_id", "model", "provider", "description", "release_date", "size",
-    "deployment_type", "license", "cost_type", "input_token_price",
-    "output_token_price", "second_cost", "context_length", "temperature",
-    "top_p", "top_k", "max_tokens", "knowledge_cut_off",
-]
+# Fact-sheet columns per kind, in order
+COLUMNS_BY_KIND = {
+    "llm": [
+        "model_id", "model", "provider", "description", "release_date", "size",
+        "deployment_type", "license", "cost_type", "input_token_price",
+        "output_token_price", "second_cost", "context_length", "temperature",
+        "top_p", "top_k", "max_tokens", "knowledge_cut_off",
+    ],
+    "embedding": [
+        "model_id", "model", "provider", "description", "size",
+        "deployment_type", "license", "cost_type", "input_token_price",
+        "second_cost", "max_tokens", "embedding_length",
+    ],
+}
 QUOTED_COLUMNS = {"model_id", "model", "provider", "description", "deployment_type", "license", "cost_type"}
 NULL = "."
 
@@ -46,19 +53,28 @@ def _option_default(manifest: ModelManifest, name: str) -> str:
 def row_values(manifest: ModelManifest) -> dict[str, str]:
     md = manifest.metadata
     pricing = md.pricing
-    return {
+    common = {
         "model_id": manifest.model_id,
         "model": manifest.display_name,
         "provider": manifest.tags.provider_tag,
         "description": md.description,
-        "release_date": md.release_date or NULL,
         "size": _fmt_number(md.size),
         "deployment_type": md.deployment_type,
         "license": manifest.tags.license_class,
         "cost_type": pricing.cost_type,
         "input_token_price": _fmt_number(pricing.input_token_price),
-        "output_token_price": _fmt_number(pricing.output_token_price),
         "second_cost": _fmt_number(pricing.second_cost),
+    }
+    if manifest.kind == "embedding":
+        return {
+            **common,
+            "max_tokens": _option_default(manifest, "Input_Token_Limit"),
+            "embedding_length": _option_default(manifest, "Embedding_Length"),
+        }
+    return {
+        **common,
+        "release_date": md.release_date or NULL,
+        "output_token_price": _fmt_number(pricing.output_token_price),
         "context_length": _fmt_number(md.context_length),
         "temperature": _option_default(manifest, "temperature"),
         "top_p": _option_default(manifest, "top_p"),
@@ -68,9 +84,9 @@ def row_values(manifest: ModelManifest) -> dict[str, str]:
     }
 
 
-def _format_row(values: dict[str, str]) -> str:
+def _format_row(values: dict[str, str], kind: str) -> str:
     fields = []
-    for column in COLUMNS:
+    for column in COLUMNS_BY_KIND[kind]:
         value = values.get(column, NULL)
         if column in QUOTED_COLUMNS:
             fields.append('"' + value.replace('"', '""') + '"')
@@ -88,7 +104,7 @@ def upsert_row(fact_sheet: Path, manifest: ModelManifest) -> str:
     if trailing_empty:
         lines = lines[:-1]
 
-    new_line = _format_row(row_values(manifest))
+    new_line = _format_row(row_values(manifest), manifest.kind)
     result = "added"
     out: list[str] = []
     replaced = False

@@ -30,6 +30,7 @@ class CatalogModel:
     kind: str = "llm"
     context_length: Optional[int] = None
     max_output_tokens: Optional[int] = None
+    embedding_length: Optional[int] = None
     input_price_per_m: Optional[float] = None
     output_price_per_m: Optional[float] = None
     knowledge_cutoff: Optional[str] = None
@@ -80,6 +81,7 @@ class ProviderAdapter(ABC):
     env_key_var: Optional[str]
     docs_url: str = ""
     template: str = "openai_chat"
+    embedding_template: Optional[str] = None  # set when the adapter supports kind=embedding
     requirements_profile: str = "api-wrapper"
     static_catalog_file: Optional[str] = None
 
@@ -101,6 +103,7 @@ class ProviderAdapter(ABC):
                 kind=entry.get("kind", "llm"),
                 context_length=entry.get("context_length"),
                 max_output_tokens=entry.get("max_output_tokens"),
+                embedding_length=entry.get("embedding_length"),
                 input_price_per_m=entry.get("input_price_per_m"),
                 output_price_per_m=entry.get("output_price_per_m"),
                 knowledge_cutoff=entry.get("knowledge_cutoff"),
@@ -114,7 +117,17 @@ class ProviderAdapter(ABC):
     def questions(self) -> list[Question]:
         return []
 
+    def embedding_options(self, cm: CatalogModel) -> dict[str, OptionSpec]:
+        options: dict[str, OptionSpec] = {}
+        if cm.embedding_length:
+            options["Embedding_Length"] = OptionSpec(default=cm.embedding_length)
+        if cm.context_length:
+            options["Input_Token_Limit"] = OptionSpec(default=cm.context_length)
+        return options
+
     def default_options(self, cm: CatalogModel) -> dict[str, OptionSpec]:
+        if cm.kind == "embedding":
+            return self.embedding_options(cm)
         if cm.reasoning:
             return {
                 "reasoning_effort": OptionSpec(default="medium"),
@@ -133,25 +146,37 @@ class ProviderAdapter(ABC):
     def endpoint(self, answers: dict) -> Optional[str]:
         ...
 
+    def embedding_endpoint(self, answers: dict) -> Optional[str]:
+        return None
+
     def provider_params(self, cm: CatalogModel, answers: dict) -> dict:
         return {}
 
+    def score_template_for(self, cm: CatalogModel) -> str:
+        if cm.kind == "embedding":
+            if not self.embedding_template:
+                raise ValueError(f"{self.display_name} does not support embedding definitions.")
+            return self.embedding_template
+        return self.template
+
     def build_manifest(self, cm: CatalogModel, model_id: str, answers: dict, modeler: str) -> ModelManifest:
         return ModelManifest(
+            kind=cm.kind,
             model_id=model_id,
             display_name=cm.display_name,
             provider=ProviderBlock(
                 adapter=self.id,
                 model_version=cm.ref,
-                endpoint=self.endpoint(answers),
+                endpoint=self.endpoint(answers) if cm.kind == "llm" else self.embedding_endpoint(answers),
                 params=self.provider_params(cm, answers),
                 auth=AuthBlock(mode="api_key", key_name=self.key_name) if self.key_name
                 else AuthBlock(mode="none"),
             ),
-            runtime=RuntimeBlock(template=self.template, requirements_profile=self.requirements_profile),
+            runtime=RuntimeBlock(template=self.score_template_for(cm),
+                                 requirements_profile=self.requirements_profile),
             options=self.default_options(cm),
             tags=TagsBlock(
-                size_class="LLM",
+                size_class="Embedding" if cm.kind == "embedding" else "LLM",
                 license_class="Proprietary",
                 provider_tag=self.provider_tag,
                 scr_sizing="small",
