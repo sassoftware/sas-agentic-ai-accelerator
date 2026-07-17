@@ -539,6 +539,163 @@ def test(
     console.print(table)
 
 
+# ---------------------------------------------------------------------------
+# register / publish / ship / endpoints (Viya lifecycle)
+# ---------------------------------------------------------------------------
+
+def _scr_endpoint() -> str:
+    endpoint = os.environ.get("SAS_SCR_ENDPOINT")
+    if not endpoint:
+        console.print("[yellow]SAS_SCR_ENDPOINT is not set - the registered endPoint attribute will use "
+                      "a placeholder. Set it in .env for correct endpoint metadata.[/yellow]")
+        endpoint = "https://viya-host/llm"
+    return endpoint.rstrip("/")
+
+
+def _viya_session():
+    from .viya.session import ViyaConfigError, create_session
+    try:
+        return create_session()
+    except ViyaConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+
+
+@app.command()
+def register(
+    ids: Optional[list[str]] = typer.Argument(None),
+    all_: bool = typer.Option(False, "--all"),
+    update: bool = typer.Option(False, "--update", help="Update an already-registered model in place "
+                                                        "(new minor version + content replacement)"),
+):
+    """Register managed definitions in SAS Model Manager (both kinds, one path)."""
+    from .viya.registry import register_model
+    ctx = Context()
+    targets = [f for f in ctx.resolve_targets(ids or [], all_) if (f / MANIFEST_FILENAME).is_file()]
+    scr = _scr_endpoint()
+    failed = False
+    with _viya_session() as session:
+        for folder in targets:
+            manifest = load_manifest(folder)
+            row = facts.read_row(ctx.fact_sheet(manifest.kind), manifest.model_id)
+            if row is None:
+                console.print(f"[yellow]{manifest.model_id}: no fact-sheet row - run mdb sync first "
+                              "(cost monitoring metadata will be incomplete).[/yellow]")
+            try:
+                result = register_model(session, manifest, folder, row, scr, update=update)
+            except Exception as exc:
+                console.print(f"[red]{manifest.model_id}: {exc}[/red]")
+                failed = True
+                continue
+            color = {"created": "green", "updated": "green", "skipped": "yellow"}[result.action]
+            hint = "" if result.action != "skipped" else "  (already registered - use --update to replace)"
+            console.print(f"[{color}]{result.model_id}: {result.action}{hint}[/{color}] "
+                          f"{os.environ.get('SAS_VIYA_URL', '')}{result.url}")
+    if not failed:
+        console.print("Next: mdb publish <id> --wait")
+    raise typer.Exit(1 if failed else 0)
+
+
+@app.command()
+def publish(
+    ids: Optional[list[str]] = typer.Argument(None),
+    all_: bool = typer.Option(False, "--all"),
+    destination: Optional[str] = typer.Option(None, "-d", "--destination",
+                                              help="SCR publishing destination (env: SAS_PUBLISH_DESTINATION)"),
+    wait: bool = typer.Option(False, "--wait", help="Poll until the image build completes"),
+):
+    """Publish registered models to an SCR container destination."""
+    from .viya.registry import publish_model
+    ctx = Context()
+    dest = destination or os.environ.get("SAS_PUBLISH_DESTINATION")
+    if not dest:
+        console.print("[red]No destination - pass -d or set SAS_PUBLISH_DESTINATION.[/red]")
+        raise typer.Exit(2)
+    failed = False
+    with _viya_session() as session:
+        for folder in ctx.resolve_targets(ids or [], all_):
+            model_id = folder.name
+            try:
+                state = publish_model(session, model_id, dest, wait=wait)
+            except Exception as exc:
+                console.print(f"[red]{model_id}: {exc}[/red]")
+                failed = True
+                continue
+            if state in ("requested", "completed"):
+                console.print(f"[green]{model_id}: publish {state} on {dest}[/green]")
+            else:
+                console.print(f"[red]{model_id}: publish {state} on {dest}[/red]")
+                failed = True
+    raise typer.Exit(1 if failed else 0)
+
+
+@app.command()
+def ship(
+    model_id: str = typer.Argument(...),
+    destination: Optional[str] = typer.Option(None, "-d", "--destination"),
+    verify_ssl: bool = typer.Option(True, "--verify-ssl/--no-verify-ssl"),
+):
+    """validate --live, register --update and publish --wait in one resumable go."""
+    ctx = Context()
+    folder = ctx.find_folder(model_id)
+    if folder is None or not (folder / MANIFEST_FILENAME).is_file():
+        console.print(f"[red]{model_id}: no managed definition found.[/red]")
+        raise typer.Exit(2)
+    manifest = load_manifest(folder)
+    issues = validate_folder(folder, ctx.core, ctx.fact_sheet(manifest.kind))
+    if _print_issues(issues):
+        console.print("[red]Fix the validation errors above, then rerun mdb ship.[/red]")
+        raise typer.Exit(1)
+    adapters = load_adapters()
+    adapter = adapters.get(manifest.provider.adapter)
+    if adapter is not None:
+        result = adapter.smoke_test(manifest, _env_api_key(adapter), make_session(verify_ssl))
+        if result.skipped:
+            console.print(f"[dim]smoke test: {result.detail}[/dim]")
+        elif result.ok:
+            console.print(f"[green]smoke test: {result.detail}[/green]")
+        else:
+            console.print(f"[red]smoke test failed: {result.detail}[/red]")
+            raise typer.Exit(1)
+    for stage in (
+        lambda: register(ids=[model_id], all_=False, update=True),
+        lambda: publish(ids=[model_id], all_=False, destination=destination, wait=True),
+    ):
+        try:
+            stage()
+        except typer.Exit as exit_info:
+            if exit_info.exit_code:
+                raise
+    console.print(f"[green]{model_id}: shipped.[/green]")
+
+
+@app.command()
+def endpoints(
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+):
+    """The SCR endpoint manifest for every managed definition."""
+    ctx = Context()
+    scr = _scr_endpoint()
+    entries = []
+    for folder in ctx.managed_folders():
+        manifest = load_manifest(folder)
+        entries.append({
+            "model_id": manifest.model_id,
+            "kind": manifest.kind,
+            "endpoint": f"{scr}/{manifest.model_id}/{manifest.model_id}",
+        })
+    if as_json:
+        console.print_json(json.dumps(entries))
+        return
+    table = Table()
+    table.add_column("model_id")
+    table.add_column("kind")
+    table.add_column("SCR endpoint")
+    for entry in entries:
+        table.add_row(entry["model_id"], entry["kind"], entry["endpoint"])
+    console.print(table)
+
+
 @app.command()
 def providers():
     """List the available provider adapters."""

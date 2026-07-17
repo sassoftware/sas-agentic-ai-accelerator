@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+viya = ["sasctl>=1.10", "setuptools"]  # setuptools provides the distutils shim sasctl needs on Python 3.12+
 
 [project.scripts]
 mdb = "mdb.cli:main"

@@ -52,6 +52,21 @@ mdb validate <model_id> --live                          # smoke-test the provide
 cd LLM-Definitions && python register-LLMs.py -l <model_id>
 ```
 
+## Register, update and publish from the CLI
+
+`mdb` now owns the full Viya lifecycle for managed definitions (install the extra: `pip install -e Model-Definition-Builder/cli[viya]`):
+
+```bash
+mdb register <model_id>              # create in SAS Model Manager (skips if it exists)
+mdb register <model_id> --update     # replace a registered model IN PLACE: new minor
+                                     # version + content replacement + refreshed attributes
+mdb publish <model_id> --wait        # publish to SCR and poll until the image build finishes
+mdb ship <model_id>                  # validate --live -> register --update -> publish --wait
+mdb endpoints --json                 # SCR endpoint manifest for CI and testing
+```
+
+`--update` removes the old delete-and-re-register workaround: after `mdb generate`, one command refreshes the registered model while keeping its ID, history (a new model version is created) and project placement. Both kinds use one implementation — embedding models register into the Embedding Model Project with the same content roles and fact-sheet enrichment. Each registered model also stores its `definition.yaml` as model content, so the source of truth travels with the model. The classic `register-LLMs.py` / `publish-LLMs.py` scripts keep working unchanged for hand-written definitions.
+
 ## Keeping definitions consistent
 
 `definition.yaml` inside the model folder is the only file you edit. After changing it:

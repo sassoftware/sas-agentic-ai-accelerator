@@ -21,6 +21,7 @@ The new **Model Definition Builder** (`Model-Definition-Builder/`) takes the cho
 - CI safeguard `verify-model-definitions.yml`: re-renders every managed definition on pull requests and fails when committed assets drift from their manifest
 - The Prompt Builder now renders a control for **every** option of an LLM instead of a fixed set: typed options from the Model Definition Builder appear as segmented selectors (`enum` with up to five values, e.g. the normalized Reasoning Effort scale), checkboxes (`bool`) or text inputs (`string`), unknown numeric options as number inputs — previously options like `reasoning_effort` or an Azure resource override were silently ignored and the score-code defaults applied
 - Custom (non-vocabulary) options are supported with an inline `type` in `definition.yaml`: they pass through to the provider under their own name and `mdb generate`/`mdb validate` warn (V010) that they render with their raw name and get no standardized label or cross-provider translation
+- Viya lifecycle verbs (`pip install sas-mdb[viya]`): `mdb register [--update]` creates or replaces a registered model in place (new minor version, content replacement via `contents?onConflict=update`, refreshed attributes and tags — no more delete-and-re-register), `mdb publish --wait` polls the SCR image build to completion, `mdb ship` chains validate/register/publish, and `mdb endpoints` emits the SCR endpoint manifest; one implementation covers LLM and Embedding models, and every registered model stores its `definition.yaml` as model content
 
 ### Changed
 
