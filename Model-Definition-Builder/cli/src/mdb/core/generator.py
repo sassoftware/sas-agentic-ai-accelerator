@@ -91,7 +91,8 @@ def _resolve_option(name: str, spec: OptionSpec, core: CoreAssets) -> dict[str, 
     if not vocab and spec.type is None:
         raise GenerationError(
             f"Option '{name}' is not in the option vocabulary and declares no inline type. "
-            "Add it to definition-core/static/option-vocabulary.json or set type/description/range inline."
+            "Add it to definition-core/static/option-vocabulary.json, or declare it inline "
+            "with type/description (it then passes through to the provider under its own name)."
         )
     resolved = {
         "type": spec.type or vocab.get("type", "number"),
@@ -103,9 +104,18 @@ def _resolve_option(name: str, spec: OptionSpec, core: CoreAssets) -> dict[str, 
         "description": spec.description or vocab.get("description", ""),
         "range": spec.range or vocab.get("range"),
         "families": vocab.get("families", {}),
-        "informational": vocab.get("informational", False),
+        "informational": spec.informational if spec.informational is not None
+        else vocab.get("informational", False),
+        # Not in the vocabulary: UIs show the raw name/author description, and
+        # there is no standardized label or cross-provider translation
+        "custom": not vocab,
     }
     return resolved
+
+
+def list_custom_options(manifest: ModelManifest, core: CoreAssets) -> list[str]:
+    """Names of options this manifest declares outside the standardized vocabulary."""
+    return [name for name in manifest.options if name not in core.vocabulary]
 
 
 def _legacy_range(name: str, resolved: dict[str, Any], manifest: ModelManifest) -> str:
@@ -125,6 +135,8 @@ def _legacy_range(name: str, resolved: dict[str, Any], manifest: ModelManifest) 
 
 
 CAST_FN = {"float": "float", "int": "int", "str": "str", "bool": "bool"}
+# Python coercion for custom pass-through options, keyed by option type
+TYPE_CAST = {"number": "float", "int": "int", "bool": "bool", "enum": "str", "string": "str"}
 
 
 def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
@@ -139,6 +151,15 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
         if resolved["informational"]:
             continue  # options.json only - never enters the score script
         defaults_lines.append(f'        "{name}": {_py_literal(spec.default)},')
+        if resolved["custom"]:
+            # Custom pass-through: sent to the provider as-is under its own
+            # name - the author owns compatibility (mdb warns about this)
+            cast = CAST_FN[TYPE_CAST.get(resolved["type"], "str")]
+            if family == "hf_transformers":
+                generate_lines.append(f"        {name}={cast}(options['{name}'])")
+            else:
+                body_lines.append(f'        "{name}": {cast}(options["{name}"]),')
+            continue
         family_map = resolved["families"].get(family)
         if family_map is None:
             raise GenerationError(

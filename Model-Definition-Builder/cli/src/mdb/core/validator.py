@@ -15,7 +15,7 @@ from typing import Literal, Optional
 
 from .drift import FileStatus, classify
 from .facts import read_row
-from .generator import CoreAssets, GenerationError, render_assets
+from .generator import CoreAssets, GenerationError, list_custom_options, render_assets
 from .manifest import MANIFEST_FILENAME, ModelManifest, load_manifest
 
 Severity = Literal["error", "warning", "info"]
@@ -140,6 +140,19 @@ def validate_folder(folder: Path, core: CoreAssets, fact_sheet: Path) -> list[Is
             "it is bound to that subscription/project.",
             "Set provider.params.commit_resource: false and regenerate; deployed containers then "
             "resolve the resource via the AZURE_OPENAI_RESOURCE environment variable or a per-call option.",
+        ))
+
+    # V010 - options outside the standardized vocabulary (allowed, but the
+    # author should know what they are giving up)
+    for option_name in list_custom_options(manifest, core):
+        issues.append(Issue(
+            "V010", "warning", model_id,
+            f"Option '{option_name}' is not in the standardized option vocabulary. It is passed to "
+            f"the provider as-is under its own name, and UIs like the Prompt Builder show it with "
+            f"that raw name and your description - it gets no standardized label, no typed control "
+            f"metadata beyond what you declared inline, and no cross-provider value translation.",
+            "That can be perfectly fine for a provider-specific option. To standardize it, add an "
+            "entry to definition-core/static/option-vocabulary.json (label, type, per-family mapping).",
         ))
 
     # V008 - pricing placeholders that would silently corrupt cost monitoring

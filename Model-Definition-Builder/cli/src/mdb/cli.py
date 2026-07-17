@@ -22,7 +22,7 @@ from rich.table import Table
 
 from . import __version__
 from .core import drift, facts
-from .core.generator import CoreAssets, GenerationError, render_assets, score_file_name
+from .core.generator import CoreAssets, GenerationError, list_custom_options, render_assets, score_file_name
 from .core.importer import import_folder
 from .core.manifest import MANIFEST_FILENAME, ModelManifest, export_json_schema, load_manifest
 from .core.netutil import env_flag, make_session
@@ -378,6 +378,13 @@ def generate(
             (folder / c.filename).write_bytes(rendered[c.filename])
         drift.write_lock(folder, (folder / MANIFEST_FILENAME).read_bytes(), rendered)
         console.print(f"[green]{model_id}: {len(pending)} file(s) written, {len(classifications) - len(pending)} unchanged.[/green]")
+        for option_name in list_custom_options(manifest, ctx.core):
+            console.print(
+                f"[yellow]{model_id}: option '{option_name}' is not in the standardized vocabulary - "
+                "it is sent to the provider as-is and shows up in UIs under its raw name with your "
+                "description (no standardized label, no cross-provider translation). "
+                "Fine if intended; standardize it in definition-core/static/option-vocabulary.json otherwise.[/yellow]"
+            )
     if not check and not failed:
         console.print("Next: mdb sync --all   (keep the fact sheet in step)")
     raise typer.Exit(1 if failed else 0)

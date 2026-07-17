@@ -19,7 +19,8 @@ The new **Model Definition Builder** (`Model-Definition-Builder/`) takes the cho
 - Generated definitions as working examples: `claude_sonnet_4_5`, `gpt_41_mini`, `gpt_5_mini` (reasoning model, live-verified), `claude_haiku_4_5_bedrock` and `titan_embed_text_v2`
 - Documentation: Administration Guide page "Model Definition Builder" and a README in `Model-Definition-Builder/`
 - CI safeguard `verify-model-definitions.yml`: re-renders every managed definition on pull requests and fails when committed assets drift from their manifest
-- The Prompt Builder now renders a control for **every** option of an LLM instead of a fixed set: typed options from the Model Definition Builder appear as dropdowns (`enum`), checkboxes (`bool`) or text inputs (`string`), unknown numeric options as number inputs — previously options like `reasoning_effort` or an Azure resource override were silently ignored and the score-code defaults applied
+- The Prompt Builder now renders a control for **every** option of an LLM instead of a fixed set: typed options from the Model Definition Builder appear as segmented selectors (`enum` with up to five values, e.g. the normalized Reasoning Effort scale), checkboxes (`bool`) or text inputs (`string`), unknown numeric options as number inputs — previously options like `reasoning_effort` or an Azure resource override were silently ignored and the score-code defaults applied
+- Custom (non-vocabulary) options are supported with an inline `type` in `definition.yaml`: they pass through to the provider under their own name and `mdb generate`/`mdb validate` warn (V010) that they render with their raw name and get no standardized label or cross-provider translation
 
 ### Changed
 

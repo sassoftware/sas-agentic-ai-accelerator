@@ -36,6 +36,8 @@ class OptionSpec(BaseModel):
     label: Optional[str] = None  # human-readable display label, overrides the vocabulary
     description: Optional[str] = None  # overrides the vocabulary description
     range: Optional[str] = None  # overrides the legacy free-text range string
+    # Custom options only: documented in options.json but never sent to the provider
+    informational: Optional[bool] = None
 
 
 class AuthBlock(BaseModel):
