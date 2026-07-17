@@ -91,10 +91,18 @@ def test_reasoning_model_gets_no_temperature(core):
         "reasoning_effort": OptionSpec(default="medium"),
         "max_completion_tokens": OptionSpec(default=4000, max=128000),
     })
-    score = render_assets(manifest, core)["testModel1Score.py"].decode()
+    rendered = render_assets(manifest, core)
+    score = rendered["testModel1Score.py"].decode()
     assert "reasoning_effort" in score
     assert "max_completion_tokens" in score
     assert '"temperature"' not in score
+    # the normalized 5-level scale translates to the provider's own values
+    assert '"maximum": "high"' in score
+    assert '.get(str(options["reasoning_effort"]), "medium")' in score
+    options = json.loads(rendered["options.json"])
+    assert options["reasoning_effort"]["values"] == ["minimal", "low", "medium", "high", "maximum"]
+    assert options["reasoning_effort"]["label"] == "Reasoning Effort"
+    assert options["max_completion_tokens"]["label"] == "Max Tokens"
 
 
 def test_unsupported_option_fails_loudly(core):

@@ -99,6 +99,7 @@ def _resolve_option(name: str, spec: OptionSpec, core: CoreAssets) -> dict[str, 
         "min": spec.min if spec.min is not None else vocab.get("min"),
         "max": spec.max if spec.max is not None else vocab.get("max"),
         "values": spec.values or vocab.get("values"),
+        "label": spec.label or vocab.get("label"),
         "description": spec.description or vocab.get("description", ""),
         "range": spec.range or vocab.get("range"),
         "families": vocab.get("families", {}),
@@ -147,6 +148,16 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
         if family_map.get("builtin"):
             continue  # the template itself consumes the option (e.g. Embedding_Mode branch)
         cast = CAST_FN.get(family_map.get("cast", "str"), "str")
+        if "value_map" in family_map and "body_key" in family_map:
+            # Normalized enum translated to the provider's own value set, e.g.
+            # the 5-level reasoning scale where 'maximum' maps to OpenAI 'high'
+            value_map = family_map["value_map"]
+            fallback = value_map.get(str(spec.default), next(iter(value_map.values())))
+            body_lines.append(
+                f'        "{family_map["body_key"]}": {json.dumps(value_map)}'
+                f'.get(str(options["{name}"]), "{fallback}"),'
+            )
+            continue
         if "body_key" in family_map:
             body_key = family_map["body_key"]
             if body_key == "__thinking__":
@@ -220,6 +231,9 @@ def _render_options_json(manifest: ModelManifest, core: CoreAssets) -> str:
             entry["type"] = resolved["type"]
             if resolved["type"] == "enum" and resolved.get("values"):
                 entry["values"] = resolved["values"]
+        # Human-readable display label (additive; UIs fall back to the key)
+        if resolved.get("label"):
+            entry["label"] = resolved["label"]
         entries[name] = entry
     if manifest.runtime.template == "azure_openai_v1":
         params = manifest.provider.params

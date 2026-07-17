@@ -125,6 +125,16 @@ a[role='button'] {
   align-self: baseline;
   margin-top: 5px;
 }
+/* Segmented enum selector (e.g. Reasoning Effort levels) */
+.option-segment-container {
+  align-self: baseline;
+  position: relative;
+  z-index: 1;
+}
+.option-segment .btn {
+  padding: 2px 8px;
+  font-size: 0.8rem;
+}
 
 /* Hover-reveal information tooltips next to each option */
 .info-container {

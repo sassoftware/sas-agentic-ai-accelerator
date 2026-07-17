@@ -33,6 +33,7 @@ class OptionSpec(BaseModel):
     min: Optional[float] = None
     max: Optional[float] = None
     values: Optional[list[str]] = None  # enum options only
+    label: Optional[str] = None  # human-readable display label, overrides the vocabulary
     description: Optional[str] = None  # overrides the vocabulary description
     range: Optional[str] = None  # overrides the legacy free-text range string
 

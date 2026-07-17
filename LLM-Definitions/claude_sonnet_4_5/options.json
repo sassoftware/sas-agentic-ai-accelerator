@@ -17,7 +17,8 @@
     "thinking_budget": {
         "default": 0,
         "range": "0 (off) or 1024 and above",
-        "description": "Number of tokens an extended-thinking model may spend on internal reasoning before answering. 0 disables extended thinking."
+        "description": "Number of tokens an extended-thinking model may spend on internal reasoning before answering. 0 disables extended thinking.",
+        "label": "Thinking Budget"
     },
     "API_KEY": {
         "default": "Anthropic",

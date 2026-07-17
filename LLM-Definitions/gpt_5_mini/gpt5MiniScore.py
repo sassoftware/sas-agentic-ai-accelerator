@@ -68,7 +68,7 @@ def scoreModel(userPrompt, systemPrompt, options):
         "model": modelVersion,
         "messages": [{"role": "system", "content": systemPrompt[0]},
             {"role": "user", "content": userPrompt[0]}],
-        "reasoning_effort": str(options["reasoning_effort"]),
+        "reasoning_effort": {"minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "maximum": "high"}.get(str(options["reasoning_effort"]), "medium"),
         "max_completion_tokens": int(options["max_completion_tokens"]),
     }
     responseObject = requests.post(

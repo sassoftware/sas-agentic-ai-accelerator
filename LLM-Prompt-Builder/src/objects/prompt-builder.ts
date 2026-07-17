@@ -34,16 +34,19 @@ import { showToast } from '../ui/toast';
 import { escapeHtml } from '../ui/dom-helpers';
 import { renderMarkdown } from '../ui/markdown';
 import { isValidDS2VariableName, validateAndCorrectPackageName } from '../util/validation';
+import { createTypedOptionControl, optionDisplayLabel, syncSegmentedControl } from '../ui/option-controls';
 import Modal from 'bootstrap/js/dist/modal';
 import Tooltip from 'bootstrap/js/dist/tooltip';
 
 interface ModelOption {
   default: unknown;
   /** Optional typed-option fields (Model Definition Builder emits these for
-   *  non-numeric options): 'enum' renders a dropdown of `values`, 'bool' a
-   *  checkbox, 'string' a text input. Absent = numeric input (legacy shape). */
+   *  non-numeric options): 'enum' renders a segmented selector (or dropdown)
+   *  of `values`, 'bool' a checkbox, 'string' a text input. Absent = numeric
+   *  input (legacy shape). `label` overrides the displayed option name. */
   type?: 'enum' | 'bool' | 'string';
   values?: string[];
+  label?: string;
   description?: string;
   [key: string]: unknown;
 }
@@ -995,6 +998,22 @@ export async function buildPromptBuilder(
           optionsDiv.appendChild(maxTokensInput);
         }
 
+        // Reasoning models cap output via max_completion_tokens - same user
+        // concept as Max Tokens, so it presents identically.
+        if (model?.options?.max_completion_tokens) {
+          const maxCompletionInput = document.createElement('input');
+          maxCompletionInput.type = 'number';
+          maxCompletionInput.id = `max_completion_tokens${index}`;
+          maxCompletionInput.value = String(model.options.max_completion_tokens.default);
+          maxCompletionInput.step = '1';
+          maxCompletionInput.min = '0';
+          maxCompletionInput.max = '1000000';
+          optionsDiv.appendChild(
+            createOptionLabel('Max Tokens', String(promptBuilderInterfaceText?.promptBuilderMax_LengthInfo))
+          );
+          optionsDiv.appendChild(maxCompletionInput);
+        }
+
         if (model?.options?.max_new_tokens) {
           const maxNewTokensInput = document.createElement('input');
           maxNewTokensInput.type = 'number';
@@ -1009,54 +1028,20 @@ export async function buildPromptBuilder(
           optionsDiv.appendChild(maxNewTokensInput);
         }
 
-        // Every remaining option gets a control derived from its (optional)
-        // typed-option fields, so models with e.g. reasoning_effort or an
-        // Azure resource override are fully configurable instead of silently
-        // running on their score-code defaults.
+        // Every remaining option gets a control from the reusable typed-option
+        // component (segmented selector for small enums, checkbox for bools,
+        // text/number inputs otherwise), so models with e.g. reasoning_effort
+        // or an Azure resource override are fully configurable instead of
+        // silently running on their score-code defaults.
         const legacyRenderedOptions = new Set([
-          'API_KEY', 'temperature', 'top_p', 'top_k', 'max_length', 'max_tokens', 'max_new_tokens',
+          'API_KEY', 'temperature', 'top_p', 'top_k', 'max_length', 'max_tokens',
+          'max_new_tokens', 'max_completion_tokens',
         ]);
         Object.entries(model?.options ?? {}).forEach(([optionKey, optionMeta]) => {
           if (legacyRenderedOptions.has(optionKey)) return;
           const tooltipText = String(optionMeta?.description ?? optionKey);
-          if (optionMeta?.type === 'enum' && Array.isArray(optionMeta.values)) {
-            const select = document.createElement('select');
-            select.id = `${optionKey}${index}`;
-            select.className = 'form-select form-select-sm';
-            optionMeta.values.forEach((enumValue) => {
-              const opt = document.createElement('option');
-              opt.value = enumValue;
-              opt.innerText = enumValue;
-              if (enumValue === String(optionMeta.default)) opt.selected = true;
-              select.appendChild(opt);
-            });
-            optionsDiv.appendChild(createOptionLabel(optionKey, tooltipText));
-            optionsDiv.appendChild(select);
-          } else if (optionMeta?.type === 'bool') {
-            const boolInput = document.createElement('input');
-            boolInput.type = 'checkbox';
-            boolInput.id = `${optionKey}${index}`;
-            boolInput.className = 'form-check-input';
-            boolInput.checked = optionMeta.default === true || optionMeta.default === 'true';
-            optionsDiv.appendChild(createOptionLabel(optionKey, tooltipText));
-            optionsDiv.appendChild(boolInput);
-          } else if (optionMeta?.type === 'string') {
-            const textInput = document.createElement('input');
-            textInput.type = 'text';
-            textInput.id = `${optionKey}${index}`;
-            textInput.className = 'form-control form-control-sm';
-            textInput.value = String(optionMeta?.default ?? '');
-            optionsDiv.appendChild(createOptionLabel(optionKey, tooltipText));
-            optionsDiv.appendChild(textInput);
-          } else {
-            const numberInput = document.createElement('input');
-            numberInput.type = 'number';
-            numberInput.id = `${optionKey}${index}`;
-            numberInput.step = 'any';
-            numberInput.value = String(optionMeta?.default ?? '');
-            optionsDiv.appendChild(createOptionLabel(optionKey, tooltipText));
-            optionsDiv.appendChild(numberInput);
-          }
+          optionsDiv.appendChild(createOptionLabel(optionDisplayLabel(optionKey, optionMeta), tooltipText));
+          optionsDiv.appendChild(createTypedOptionControl(optionKey, optionMeta, `${optionKey}${index}`));
         });
 
         modelDiv.appendChild(checkbox);
@@ -1857,6 +1842,7 @@ export async function buildPromptBuilder(
               optionInput.checked = optionValue === true || optionValue === 'true';
             } else {
               optionInput.value = String(optionValue);
+              if (optionInput instanceof HTMLInputElement) syncSegmentedControl(optionInput);
             }
           });
         }
