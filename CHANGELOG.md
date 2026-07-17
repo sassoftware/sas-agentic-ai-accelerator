@@ -4,6 +4,8 @@ This changelog documents all the different updates that occur for this framework
 
 ## [1.1.0] - Unreleased
 
+To pick up the Prompt Builder option-control update, re-upload the prebuilt `LLM-Prompt-Builder/dist/index.html` to your SAS Job Execution definition.
+
 The new **Model Definition Builder** (`Model-Definition-Builder/`) takes the chore out of creating and maintaining LLM and Embedding model definitions. A single `definition.yaml` per model becomes the source of truth and the `mdb` CLI generates every framework asset from it (score script, inputVar/outputVar, modelConfiguration, options, requirements, model card, README and the fact-sheet row). Existing definition folders remain untouched and continue to work with the established register/publish scripts.
 
 ### Added
@@ -17,6 +19,7 @@ The new **Model Definition Builder** (`Model-Definition-Builder/`) takes the cho
 - Generated definitions as working examples: `claude_sonnet_4_5`, `gpt_41_mini`, `gpt_5_mini` (reasoning model, live-verified), `claude_haiku_4_5_bedrock` and `titan_embed_text_v2`
 - Documentation: Administration Guide page "Model Definition Builder" and a README in `Model-Definition-Builder/`
 - CI safeguard `verify-model-definitions.yml`: re-renders every managed definition on pull requests and fails when committed assets drift from their manifest
+- The Prompt Builder now renders a control for **every** option of an LLM instead of a fixed set: typed options from the Model Definition Builder appear as dropdowns (`enum`), checkboxes (`bool`) or text inputs (`string`), unknown numeric options as number inputs — previously options like `reasoning_effort` or an Azure resource override were silently ignored and the score-code defaults applied
 
 ### Changed
 

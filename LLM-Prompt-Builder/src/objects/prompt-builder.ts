@@ -39,6 +39,12 @@ import Tooltip from 'bootstrap/js/dist/tooltip';
 
 interface ModelOption {
   default: unknown;
+  /** Optional typed-option fields (Model Definition Builder emits these for
+   *  non-numeric options): 'enum' renders a dropdown of `values`, 'bool' a
+   *  checkbox, 'string' a text input. Absent = numeric input (legacy shape). */
+  type?: 'enum' | 'bool' | 'string';
+  values?: string[];
+  description?: string;
   [key: string]: unknown;
 }
 
@@ -1003,6 +1009,56 @@ export async function buildPromptBuilder(
           optionsDiv.appendChild(maxNewTokensInput);
         }
 
+        // Every remaining option gets a control derived from its (optional)
+        // typed-option fields, so models with e.g. reasoning_effort or an
+        // Azure resource override are fully configurable instead of silently
+        // running on their score-code defaults.
+        const legacyRenderedOptions = new Set([
+          'API_KEY', 'temperature', 'top_p', 'top_k', 'max_length', 'max_tokens', 'max_new_tokens',
+        ]);
+        Object.entries(model?.options ?? {}).forEach(([optionKey, optionMeta]) => {
+          if (legacyRenderedOptions.has(optionKey)) return;
+          const tooltipText = String(optionMeta?.description ?? optionKey);
+          if (optionMeta?.type === 'enum' && Array.isArray(optionMeta.values)) {
+            const select = document.createElement('select');
+            select.id = `${optionKey}${index}`;
+            select.className = 'form-select form-select-sm';
+            optionMeta.values.forEach((enumValue) => {
+              const opt = document.createElement('option');
+              opt.value = enumValue;
+              opt.innerText = enumValue;
+              if (enumValue === String(optionMeta.default)) opt.selected = true;
+              select.appendChild(opt);
+            });
+            optionsDiv.appendChild(createOptionLabel(optionKey, tooltipText));
+            optionsDiv.appendChild(select);
+          } else if (optionMeta?.type === 'bool') {
+            const boolInput = document.createElement('input');
+            boolInput.type = 'checkbox';
+            boolInput.id = `${optionKey}${index}`;
+            boolInput.className = 'form-check-input';
+            boolInput.checked = optionMeta.default === true || optionMeta.default === 'true';
+            optionsDiv.appendChild(createOptionLabel(optionKey, tooltipText));
+            optionsDiv.appendChild(boolInput);
+          } else if (optionMeta?.type === 'string') {
+            const textInput = document.createElement('input');
+            textInput.type = 'text';
+            textInput.id = `${optionKey}${index}`;
+            textInput.className = 'form-control form-control-sm';
+            textInput.value = String(optionMeta?.default ?? '');
+            optionsDiv.appendChild(createOptionLabel(optionKey, tooltipText));
+            optionsDiv.appendChild(textInput);
+          } else {
+            const numberInput = document.createElement('input');
+            numberInput.type = 'number';
+            numberInput.id = `${optionKey}${index}`;
+            numberInput.step = 'any';
+            numberInput.value = String(optionMeta?.default ?? '');
+            optionsDiv.appendChild(createOptionLabel(optionKey, tooltipText));
+            optionsDiv.appendChild(numberInput);
+          }
+        });
+
         modelDiv.appendChild(checkbox);
         modelDiv.appendChild(label);
         modelDiv.appendChild(optionsDiv);
@@ -1354,16 +1410,20 @@ export async function buildPromptBuilder(
           };
           Object.keys(promptBuilderCurrentLLM.options ?? {}).forEach((key) => {
             if (key !== 'API_KEY') {
-              try {
-                currentlySelectedModel.options[`${key}`] = parseFloat(
-                  (document.getElementById(`${key}${index}`) as HTMLInputElement).value
-                );
-              } catch {
-                promptBuilderRunExperimentTargetButton.disabled = false;
-                console.log(
-                  `The Error was caused by the ${currentlySelectedModel} and the following option which couldn't be resolved ${currentlySelectedModel.options[`${key}`]}`
-                );
-                promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderModelCallFailed}`;
+              const optionMeta = promptBuilderCurrentLLM.options![key];
+              const control = document.getElementById(`${key}${index}`) as
+                | HTMLInputElement
+                | HTMLSelectElement
+                | null;
+              if (!control) return; // no control rendered for this option - the score code default applies
+              if (optionMeta?.type === 'bool') {
+                currentlySelectedModel.options[`${key}`] = (control as HTMLInputElement).checked;
+              } else if (optionMeta?.type === 'enum' || optionMeta?.type === 'string') {
+                currentlySelectedModel.options[`${key}`] = control.value;
+              } else {
+                const numeric = parseFloat(control.value);
+                // A non-numeric value in a legacy-shaped option passes through as text
+                currentlySelectedModel.options[`${key}`] = Number.isNaN(numeric) ? control.value : numeric;
               }
             } else if (key === 'API_KEY') {
               const apiKeys = promptBuilderObject?.API_KEYS as Record<string, string> | undefined;
@@ -1788,8 +1848,16 @@ export async function buildPromptBuilder(
           const modelData = trackerEntry[availableLLM.name] as ModelExperimentData;
           Object.entries(modelData?.options ?? {}).forEach(([optionKey, optionValue]) => {
             if (optionKey === 'API_KEY') return;
-            const optionInput = document.getElementById(`${optionKey}${llmIndex}`) as HTMLInputElement | null;
-            if (optionInput) optionInput.value = String(optionValue);
+            const optionInput = document.getElementById(`${optionKey}${llmIndex}`) as
+              | HTMLInputElement
+              | HTMLSelectElement
+              | null;
+            if (!optionInput) return;
+            if (optionInput instanceof HTMLInputElement && optionInput.type === 'checkbox') {
+              optionInput.checked = optionValue === true || optionValue === 'true';
+            } else {
+              optionInput.value = String(optionValue);
+            }
           });
         }
       });
