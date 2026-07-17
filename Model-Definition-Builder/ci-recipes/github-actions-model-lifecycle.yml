@@ -1,0 +1,35 @@
+# Thin model-lifecycle pipeline: every step is one mdb verb.
+# (Supersedes hand-rolled register/publish/deploy pipelines - the logic lives
+# in the CLI, the pipeline just calls it.)
+#
+# Copy into .github/workflows/ and configure the secrets:
+#   SAS_VIYA_URL, SAS_VIYA_USER, SAS_VIYA_PASSWORD, SAS_PUBLISH_DESTINATION,
+#   SAS_SCR_ENDPOINT, SAS_RESPONSIBLE_PARTY (+ provider keys for --live).
+name: Model lifecycle
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_id:
+        description: "Definition to ship (folder name)"
+        required: true
+
+jobs:
+  ship:
+    runs-on: ubuntu-latest
+    env:
+      SAS_VIYA_URL: ${{ secrets.SAS_VIYA_URL }}
+      SAS_VIYA_USER: ${{ secrets.SAS_VIYA_USER }}
+      SAS_VIYA_PASSWORD: ${{ secrets.SAS_VIYA_PASSWORD }}
+      SAS_VIYA_VERIFY_SSL: "false"
+      SAS_PUBLISH_DESTINATION: ${{ secrets.SAS_PUBLISH_DESTINATION }}
+      SAS_SCR_ENDPOINT: ${{ secrets.SAS_SCR_ENDPOINT }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e "./Model-Definition-Builder/cli[viya]"
+      - run: mdb validate ${{ inputs.model_id }}
+      - run: mdb ship ${{ inputs.model_id }}

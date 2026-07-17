@@ -699,6 +699,55 @@ def endpoints(
 
 
 @app.command()
+def deploy(
+    ids: Optional[list[str]] = typer.Argument(None),
+    all_: bool = typer.Option(False, "--all"),
+    registry: Optional[str] = typer.Option(None, "--registry", help="Container registry (env: SAS_CONTAINER_REGISTRY)"),
+    host: Optional[str] = typer.Option(None, "--host", help="Ingress host (default: host of SAS_SCR_ENDPOINT)"),
+    pv: bool = typer.Option(False, "--pv", help="Force the persistent-volume template variant"),
+    out: str = typer.Option("deploy-yaml", "--out", help="Output directory for the rendered YAML"),
+):
+    """Render ready-to-apply SCR deployment YAML (fills all template placeholders)."""
+    import re
+    from urllib.parse import urlparse
+    ctx = Context()
+    registry = registry or os.environ.get("SAS_CONTAINER_REGISTRY")
+    if not registry:
+        console.print("[red]No registry - pass --registry or set SAS_CONTAINER_REGISTRY "
+                      "(e.g. myregistry.azurecr.io).[/red]")
+        raise typer.Exit(2)
+    if not host:
+        scr = os.environ.get("SAS_SCR_ENDPOINT", "")
+        host = urlparse(scr).hostname or ""
+    if not host:
+        console.print("[red]No ingress host - pass --host or set SAS_SCR_ENDPOINT.[/red]")
+        raise typer.Exit(2)
+    template_dir = ctx.repo / "SCR-LLM-Deployment-YAML"
+    out_dir = Path(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for folder in ctx.resolve_targets(ids or [], all_):
+        if not (folder / MANIFEST_FILENAME).is_file():
+            continue
+        manifest = load_manifest(folder)
+        use_pv = pv or manifest.runtime.requirements_profile.startswith("hf-")
+        template = template_dir / ("deploy-modelName-PV-template.yaml" if use_pv
+                                   else "deploy-modelName-template.yaml")
+        lines = []
+        for line in template.read_text(encoding="utf-8").splitlines():
+            line = line.replace("containerRegistry", registry)
+            line = line.replace("llm_name", manifest.model_id)
+            line = line.replace("llmname", manifest.model_id.replace("_", "-"))
+            line = line.replace("model_name", manifest.model_id)
+            line = re.sub(r"host$", host, line)  # 'host' value slots only, never the 'hosts:' key
+            lines.append(line)
+        target = out_dir / f"deploy-{manifest.model_id}.yaml"
+        target.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
+        console.print(f"[green]{manifest.model_id}: {target}[/green]"
+                      + (" (PV variant)" if use_pv else ""))
+    console.print(f"Apply with: kubectl apply -f {out_dir}/deploy-<model_id>.yaml -n <namespace>")
+
+
+@app.command()
 def radar(
     ids: Optional[list[str]] = typer.Argument(None),
     all_: bool = typer.Option(False, "--all"),
