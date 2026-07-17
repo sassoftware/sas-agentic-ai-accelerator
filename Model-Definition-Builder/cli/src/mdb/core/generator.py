@@ -10,6 +10,7 @@ and tests all share one code path.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -160,6 +161,11 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
         if resolved["custom"]:
             # Custom pass-through: sent to the provider as-is under its own
             # name - the author owns compatibility (mdb warns about this)
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+                raise GenerationError(
+                    f"Custom option name '{name}' is not a valid identifier - it would render "
+                    "broken score code. Use letters, digits and underscores only."
+                )
             cast = CAST_FN[TYPE_CAST.get(resolved["type"], "str")]
             if family == "hf_transformers":
                 generate_lines.append(f"        {name}={cast}(options['{name}'])")
@@ -275,16 +281,18 @@ def _render_options_json(manifest: ModelManifest, core: CoreAssets) -> str:
             "range": "your-resource.openai.azure.com",
             "description": (
                 "The Azure OpenAI / Azure AI Foundry resource host that serves the deployment. "
-                "A short resource name is expanded to <name>.openai.azure.com. Resolution order: "
+                "A short resource name is expanded to the full openai.azure.com host. Resolution order: "
                 "this option > the AZURE_OPENAI_RESOURCE environment variable of the container > "
                 "this default - set the environment variable per deployment to serve different "
                 "subscriptions/projects from the same image."
             ),
+            "type": "string",
         }
         entries["endpoint_url"] = {
             "default": "",
             "range": "https://**** (optional)",
             "description": "Optional full chat-completions URL that overrides the resource-based endpoint.",
+            "type": "string",
         }
     if manifest.provider.auth.mode == "api_key":
         entries["API_KEY"] = {
@@ -330,7 +338,7 @@ def _render_requirements(manifest: ModelManifest) -> str:
             upgrade_step,
             {
                 "step": "install huggingface CLI and other packages",
-                "command": "pip3 -q install huggingface-hub>=0.18.0 transformers torch accelerate numpy==1.26.4",
+                "command": "pip3 -q install 'huggingface-hub>=0.18.0' transformers torch accelerate numpy==1.26.4",
             },
         ]
         if hf.get("gated"):
@@ -351,7 +359,7 @@ def _render_requirements(manifest: ModelManifest) -> str:
             upgrade_step,
             {
                 "step": "install huggingface CLI and other packages",
-                "command": "pip3 -q install huggingface-hub>=0.18.0 numpy onnxruntime-genai",
+                "command": "pip3 -q install 'huggingface-hub>=0.18.0' numpy onnxruntime-genai",
             },
         ]
         if hf.get("gated"):
@@ -372,7 +380,7 @@ def _render_requirements(manifest: ModelManifest) -> str:
             upgrade_step,
             {
                 "step": "install huggingface CLI and other packages",
-                "command": "pip3 -q install huggingface-hub>=0.18.0 sentence-transformers numpy==1.26.4",
+                "command": "pip3 -q install 'huggingface-hub>=0.18.0' sentence-transformers numpy==1.26.4",
             },
         ]
         if hf.get("gated"):

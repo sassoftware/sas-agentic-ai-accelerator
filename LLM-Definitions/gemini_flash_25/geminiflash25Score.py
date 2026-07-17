@@ -30,9 +30,11 @@ def _parse_options(opts):
     if isinstance(raw, dict):
         return raw
     if isinstance(raw, str):
-        # Try strict JSON first
+        # Try strict JSON first (must be an object - scalars fall through)
         try:
-            return json.loads(raw)
+            parsed_json = json.loads(raw)
+            if isinstance(parsed_json, dict):
+                return parsed_json
         except Exception:
             pass
         # Fallback: parse simple k:v comma list like {key:value,key2:value2}
@@ -93,8 +95,9 @@ def scoreModel(userPrompt, systemPrompt, options):
     if responseObject.status_code < 200 or responseObject.status_code >= 300:
         logger.error(f"HTTP {responseObject.status_code}: {json.dumps(responseJson)}")
         raise RuntimeError(f"Request failed: {responseObject.status_code}")
+    candidateContent = responseJson["candidates"][0].get("content", {})
     response = "".join(
-        part["text"] for part in responseJson["candidates"][0]["content"]["parts"] if "text" in part
+        part["text"] for part in candidateContent.get("parts", []) if "text" in part
     )
     prompt_length = responseJson['usageMetadata']['promptTokenCount']
     output_length = responseJson['usageMetadata'].get('candidatesTokenCount', 0)

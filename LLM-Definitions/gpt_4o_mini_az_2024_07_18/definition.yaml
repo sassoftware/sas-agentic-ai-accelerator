@@ -36,7 +36,7 @@ metadata:
     cost_type: Tokens
     input_token_price: 1.5e-07
     output_token_price: 6.0e-07
-modeler: sbxbot
+modeler: gerdaw
 generation:
   overrides: []
   score_code_file: gpt4oMiniScore.py

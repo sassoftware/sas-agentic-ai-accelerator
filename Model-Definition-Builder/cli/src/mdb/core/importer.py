@@ -112,6 +112,8 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
 
     model_version = ""
     match = re.search(r"modelVersion\s*=\s*'([^']+)'", score_text)
+    if not match:  # Bedrock scorers name the variable 'modelId'
+        match = re.search(r"modelId\s*=\s*'([^']+)'", score_text)
     if not match:  # legacy Gemini scorers name the variable 'model'
         match = re.search(r"^model\s*=\s*'([^']+)'", score_text, re.MULTILINE)
     if match:
@@ -159,7 +161,8 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
         # The base template's placeholder leaked into some folders (PR #6 finding);
         # normalize to the provider's LLM_API_KEYS KeyName
         replacement = {"azure-foundry": "AzureOpenAI", "openai": "OpenAI", "anthropic": "Anthropic",
-                       "google": "Google", "voyage": "VoyageAI"}.get(adapter_id, key_name)
+                       "google": "Google", "voyage": "VoyageAI", "bedrock": "AWSBedrock",
+                       "mistral": "Mistral", "openrouter": "OpenRouter"}.get(adapter_id, key_name)
         notes.append(f"API_KEY default was the '{key_name}' placeholder - normalized to '{replacement}' "
                      "(must match the LLM_API_KEYS KeyName).")
         key_name = replacement
@@ -197,7 +200,7 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
     UNRECONSTRUCTABLE = [
         ("og.Model(", "onnxruntime-genai runtime", True),
         ("MistralTokenizer", "mistral-inference runtime", True),
-        ("pipeline(", "transformers pipeline runtime", False),
+        ("pipeline(", "transformers pipeline runtime", True),
         ('AutoTokenizer.from_pretrained("./")', "hosted-endpoint hybrid scorer", True),
     ]
     for marker, why, custom_requirements in UNRECONSTRUCTABLE:

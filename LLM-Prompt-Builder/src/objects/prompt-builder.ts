@@ -1404,6 +1404,9 @@ export async function buildPromptBuilder(
               if (optionMeta?.type === 'bool') {
                 currentlySelectedModel.options[`${key}`] = (control as HTMLInputElement).checked;
               } else if (optionMeta?.type === 'enum' || optionMeta?.type === 'string') {
+                // A blank string option is "not set": omitting it lets the score
+                // code fall back to container env vars (AZURE_OPENAI_RESOURCE etc.)
+                if (optionMeta?.type === 'string' && control.value === '') return;
                 currentlySelectedModel.options[`${key}`] = control.value;
               } else {
                 const numeric = parseFloat(control.value);

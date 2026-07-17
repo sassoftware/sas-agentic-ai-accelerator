@@ -40,5 +40,6 @@ modeler: gerdaw
 generation:
   overrides:
   - llama323bScore.py
+  - requirements.json
   score_code_file: llama323bScore.py
   catalog_provenance: mdb import of hand-written folder

@@ -12,12 +12,14 @@
     "azure_openai_resource": {
         "default": "",
         "range": "your-resource.openai.azure.com",
-        "description": "The Azure OpenAI / Azure AI Foundry resource host that serves the deployment. A short resource name is expanded to <name>.openai.azure.com. Resolution order: this option > the AZURE_OPENAI_RESOURCE environment variable of the container > this default - set the environment variable per deployment to serve different subscriptions/projects from the same image."
+        "description": "The Azure OpenAI / Azure AI Foundry resource host that serves the deployment. A short resource name is expanded to the full openai.azure.com host. Resolution order: this option > the AZURE_OPENAI_RESOURCE environment variable of the container > this default - set the environment variable per deployment to serve different subscriptions/projects from the same image.",
+        "type": "string"
     },
     "endpoint_url": {
         "default": "",
         "range": "https://**** (optional)",
-        "description": "Optional full chat-completions URL that overrides the resource-based endpoint."
+        "description": "Optional full chat-completions URL that overrides the resource-based endpoint.",
+        "type": "string"
     },
     "API_KEY": {
         "default": "AzureOpenAI",

@@ -87,8 +87,9 @@ def row_values(manifest: ModelManifest) -> dict[str, str]:
 def _format_row(values: dict[str, str], kind: str) -> str:
     fields = []
     for column in COLUMNS_BY_KIND[kind]:
-        value = values.get(column, NULL)
-        if column in QUOTED_COLUMNS:
+        # A record must stay one physical line - the upsert works line-wise
+        value = " ".join(values.get(column, NULL).split())
+        if column in QUOTED_COLUMNS or "," in value or '"' in value:
             fields.append('"' + value.replace('"', '""') + '"')
         else:
             fields.append(value)
@@ -97,7 +98,8 @@ def _format_row(values: dict[str, str], kind: str) -> str:
 
 def upsert_row(fact_sheet: Path, manifest: ModelManifest) -> str:
     """Insert or replace the manifest's row. Returns 'added', 'updated' or 'unchanged'."""
-    raw = fact_sheet.read_text(encoding="utf-8")
+    # read_bytes avoids universal-newline translation, so CRLF sheets stay CRLF
+    raw = fact_sheet.read_bytes().decode("utf-8")
     newline = "\r\n" if "\r\n" in raw else "\n"
     lines = raw.split(newline)
     trailing_empty = lines and lines[-1] == ""

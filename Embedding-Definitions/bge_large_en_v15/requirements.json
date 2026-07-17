@@ -13,7 +13,7 @@
     },
     {
         "step": "install huggingface CLI and other packages",
-        "command": "pip3 -q install huggingface-hub>=0.18.0 sentence-transformers numpy==1.26.4"
+        "command": "pip3 -q install 'huggingface-hub>=0.18.0' sentence-transformers numpy==1.26.4"
     },
     {
         "step": "download model",

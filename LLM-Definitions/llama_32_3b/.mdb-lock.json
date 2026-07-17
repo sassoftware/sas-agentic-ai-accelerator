@@ -1,13 +1,12 @@
 {
     "generator": "mdb 0.1.0",
-    "manifest_sha256": "ec2ace4d0cefaaef1af707ae30d981c1284c04b2fe66900babea24bfcc40d837",
+    "manifest_sha256": "7acf969983a1047e1b9140e36ad9897ff65aa3905f8df041550a9c1f268c8d40",
     "files": {
         "Model-Card.md": "01835a07b74a36c7dd550f8caa29ca050395b6cfba2e3abe89a87c61ad9acb0d",
         "README.md": "736892750e918af7d239ae4f8160ca5781020ae5318c1b06ed5f50a30b3c61f3",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
         "modelConfiguration.json": "ed0a9a5b24da5a00a036a7bff56fc59ed31acf72822996109b4c6997e2de4227",
         "options.json": "d7eb0b5485a179d06eb45035a350773e539f4a9594a014499d6186c64ff8a49d",
-        "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
-        "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"
+        "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2"
     }
 }

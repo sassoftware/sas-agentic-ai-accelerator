@@ -6,7 +6,7 @@
     "targetVariable": "response",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",
-    "modeler": "sbxbot",
+    "modeler": "gerdaw",
     "function": "text generation",
     "algorithm": "Transformer",
     "tool": "Python 3",

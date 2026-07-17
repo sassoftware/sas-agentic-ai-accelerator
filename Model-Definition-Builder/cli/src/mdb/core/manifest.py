@@ -101,6 +101,15 @@ class MetadataBlock(BaseModel):
     description: str
     release_date: Optional[str] = None
     knowledge_cutoff: Optional[str] = None
+
+    @field_validator("release_date", "knowledge_cutoff", mode="before")
+    @classmethod
+    def _dates_as_strings(cls, v):
+        # Hand-edited YAML with unquoted ISO dates parses to datetime.date
+        import datetime
+        if isinstance(v, (datetime.date, datetime.datetime)):
+            return v.isoformat()[:10]
+        return v
     context_length: Optional[int] = None
     size: Optional[int] = None  # parameter count; None renders as '.' in the fact sheet
     deployment_type: Literal["API", "SCR"] = "API"

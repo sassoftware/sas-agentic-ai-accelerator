@@ -471,12 +471,20 @@ def import_(
         raise typer.Exit(0)
     fact_sheet = ctx.fact_sheet(ctx.kind_of(folder))
     result = import_folder(folder, fact_sheet)
+    # Render BEFORE writing the manifest: a folder must never be left
+    # half-adopted when e.g. an option cannot be resolved
+    try:
+        rendered = render_assets(result.manifest, ctx.core)
+    except GenerationError as exc:
+        console.print(f"[red]{model_id}: {exc}[/red]")
+        console.print("Nothing was written - the folder stays fully hand-maintained. "
+                      "Declare the option inline (type/description) in a definition.yaml "
+                      "or extend the vocabulary, then rerun mdb import.")
+        raise typer.Exit(1)
     manifest_path = result.manifest.save(folder)
     console.print(f"[green]Wrote {manifest_path}.[/green]")
     for note in result.notes:
         console.print(f"  [yellow]note:[/yellow] {note}")
-
-    rendered = render_assets(result.manifest, ctx.core)
     changed = [c for c in drift.classify(folder, rendered) if c.status != drift.FileStatus.UNCHANGED]
     if changed:
         console.print("\nRegenerating would change these files (intended normalizations included):")
@@ -808,6 +816,14 @@ def retire(
     manifest.tags.extra.append("deprecated")
     manifest.save(folder)
     rendered = render_assets(manifest, ctx.core)
+    blockers = [c for c in drift.classify(folder, rendered)
+                if c.status in (drift.FileStatus.HAND_EDITED, drift.FileStatus.UNTRACKED)]
+    if blockers:
+        for c in blockers:
+            console.print(f"[red]{model_id}/{c.filename} was edited by hand - retire refuses to overwrite it.[/red]")
+        console.print("Fold the edits into definition.yaml (or generation.overrides), run mdb generate --force, "
+                      "then rerun mdb retire.")
+        raise typer.Exit(1)
     for name, content in rendered.items():
         (folder / name).write_bytes(content)
     drift.write_lock(folder, (folder / MANIFEST_FILENAME).read_bytes(), rendered)
