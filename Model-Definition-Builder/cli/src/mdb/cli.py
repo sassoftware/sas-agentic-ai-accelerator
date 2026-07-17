@@ -830,6 +830,98 @@ def providers():
     console.print("Third-party adapters: pip packages exposing the 'mdb.providers' entry-point group.")
 
 
+provider_app = typer.Typer(help="Third-party provider adapter tooling.")
+app.add_typer(provider_app, name="provider")
+
+SCAFFOLD_ADAPTER = '''"""Adapter for {name} - fill in the TODOs, then pip install this package."""
+from mdb.providers.openai_compat import OpenAICompatAdapter
+
+
+class {cls}(OpenAICompatAdapter):
+    def __init__(self):
+        super().__init__(
+            id="{name}",
+            display_name="{title}",  # TODO
+            provider_tag="{title}",  # TODO: the tag shown in SAS Model Manager
+            key_name="{title}",      # TODO: must match your LLM_API_KEYS KeyName
+            env_key_var="{env}_API_KEY",
+            base_url="https://api.example.com/v1",  # TODO: OpenAI-compatible base URL
+            docs_url="https://example.com/keys",    # TODO
+        )
+'''
+
+SCAFFOLD_PYPROJECT = '''[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mdb-provider-{name}"
+version = "0.1.0"
+dependencies = ["sas-mdb"]
+
+[project.entry-points."mdb.providers"]
+{name} = "mdb_provider_{snake}.adapter:{cls}"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+'''
+
+
+@provider_app.command("scaffold")
+def provider_scaffold(name: str = typer.Argument(..., help="Adapter id (kebab-case)")):
+    """Generate a third-party adapter package skeleton (entry-point wired)."""
+    snake = name.replace("-", "_")
+    cls = "".join(part.capitalize() for part in snake.split("_")) + "Adapter"
+    root = Path(f"mdb-provider-{name}")
+    (root / "src" / f"mdb_provider_{snake}").mkdir(parents=True, exist_ok=True)
+    (root / "pyproject.toml").write_text(
+        SCAFFOLD_PYPROJECT.format(name=name, snake=snake, cls=cls), encoding="utf-8")
+    pkg = root / "src" / f"mdb_provider_{snake}"
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "adapter.py").write_text(
+        SCAFFOLD_ADAPTER.format(name=name, cls=cls, title=snake.title().replace("_", " "),
+                                env=snake.upper()), encoding="utf-8")
+    console.print(f"[green]Scaffolded {root}/[/green] - fill in the TODOs, then:")
+    console.print(f"  pip install -e {root} && mdb provider check {name}")
+
+
+@provider_app.command("check")
+def provider_check(adapter_id: str = typer.Argument(...)):
+    """Conformance-check an adapter: catalog shape, manifest build, asset rendering."""
+    from .providers.base import CatalogModel
+    ctx = Context()
+    adapters = load_adapters()
+    adapter = adapters.get(adapter_id)
+    if adapter is None:
+        console.print(f"[red]Adapter '{adapter_id}' not found (is its package installed?).[/red]")
+        raise typer.Exit(2)
+    problems = []
+    for attr in ("id", "display_name", "provider_tag", "template"):
+        if not getattr(adapter, attr, None):
+            problems.append(f"missing attribute: {attr}")
+    try:
+        static = adapter.static_catalog(ctx.core.core_dir)
+        console.print(f"static catalog: {len(static)} models")
+    except Exception as exc:
+        problems.append(f"static_catalog raised: {exc}")
+        static = []
+    dummy = static[0] if static else CatalogModel(ref="dummy-model", display_name="Dummy Model")
+    try:
+        manifest = adapter.build_manifest(dummy, "conformance_check_model", {
+            "resource": "dummyres", "deployment": "dummy", "repo": "org/dummy",
+            "region": "us-east-1",
+        }, "tester")
+        rendered = render_assets(manifest, ctx.core)
+        console.print(f"manifest builds and renders {len(rendered)} assets")
+    except Exception as exc:
+        problems.append(f"build/render failed: {exc}")
+    if problems:
+        for problem in problems:
+            console.print(f"[red]FAIL: {problem}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]{adapter_id}: conformance checks passed.[/green]")
+
+
 @app.command("schema-export")
 def schema_export():
     """Regenerate definition-core/schema/manifest.schema.json from the pydantic models."""

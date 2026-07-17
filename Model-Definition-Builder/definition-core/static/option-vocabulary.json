@@ -35,6 +35,10 @@
                 "gemini_generate": {
                     "body_key": "temperature",
                     "cast": "float"
+                },
+                "hf_onnx": {
+                    "generate_key": "temperature",
+                    "cast": "float"
                 }
             }
         },
@@ -71,6 +75,10 @@
                 },
                 "gemini_generate": {
                     "body_key": "topP",
+                    "cast": "float"
+                },
+                "hf_onnx": {
+                    "generate_key": "top_p",
                     "cast": "float"
                 }
             }
@@ -128,6 +136,10 @@
                 },
                 "gemini_generate": {
                     "body_key": "maxOutputTokens",
+                    "cast": "int"
+                },
+                "hf_onnx": {
+                    "generate_key": "max_length",
                     "cast": "int"
                 }
             }
@@ -265,6 +277,14 @@
                 "emb_voyage": {
                     "body_key": "input_type",
                     "cast": "str"
+                },
+                "emb_bedrock_cohere": {
+                    "body_key": "input_type",
+                    "cast": "str",
+                    "value_map": {
+                        "document": "search_document",
+                        "query": "search_query"
+                    }
                 }
             }
         },

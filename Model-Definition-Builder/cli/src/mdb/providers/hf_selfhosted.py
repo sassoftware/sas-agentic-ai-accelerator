@@ -34,7 +34,8 @@ class HuggingFaceAdapter(ProviderAdapter):
     def questions(self) -> list[Question]:
         return [
             Question("repo", "Hugging Face repo id (e.g. Qwen/Qwen2.5-0.5B-Instruct)"),
-            Question("runtime", "Runtime family: transformers (LLM) or sentence-transformers (embedding)",
+            Question("runtime", "Runtime family: transformers (LLM), onnx (LLM via onnxruntime-genai) "
+                                "or sentence-transformers (embedding)",
                      default="transformers", required=False),
             Question("gated", "Is the repo gated (license acceptance required)? [y/N]", default="n", required=False),
             Question("params_billions", "Parameter count in billions (e.g. 0.5) - sets SLM/LLM and sizing", default="", required=False),
@@ -65,6 +66,10 @@ class HuggingFaceAdapter(ProviderAdapter):
                 "Input_Token_Limit": OptionSpec(default=cm.context_length or 512),
             }
             template, profile = "emb_sentence_transformers", "hf-sentence-transformers"
+        elif runtime == "onnx":
+            size_class = "LLM" if params_billions > 7 else "SLM"
+            options = self.default_options(cm)
+            template, profile = "hf_onnx", "hf-onnx"
         else:
             size_class = "LLM" if params_billions > 7 else "SLM"
             options = self.default_options(cm)

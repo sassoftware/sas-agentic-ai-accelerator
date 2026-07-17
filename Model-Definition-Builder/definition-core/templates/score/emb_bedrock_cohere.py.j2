@@ -1,0 +1,65 @@
+{{ generated_header }}import time
+import json
+import logging
+import os
+import sys
+import urllib.parse
+import requests
+
+# Cohere Embed via AWS Bedrock InvokeModel with a Bedrock API key (bearer
+# token) in the API_KEY option. Region: options > AWS_BEDROCK_REGION > baked.
+modelId = '{{ model_version }}'
+
+# Initiate the logger to write output information to the log
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+    format='%(levelname)s - %(message)s'
+)
+logger = logging.getLogger("scoreModel")
+
+{% include "partials/_options_parser.py.j2" %}
+
+def scoreModel(document, project, options):
+    "Output: embedding, run_time, tokens"
+    started_timestamp = time.time()
+    optionsDefaults = {
+{{ options_defaults_block }}
+        "aws_bedrock_region": os.environ.get("AWS_BEDROCK_REGION", "{{ region }}"),
+    }
+    options = {**optionsDefaults, **_parse_options(options)}
+    region = options["aws_bedrock_region"]
+    modelEndpoint = (
+        f"https://bedrock-runtime.{region}.amazonaws.com/model/"
+        f"{urllib.parse.quote(modelId, safe='')}/invoke"
+    )
+    payload = {
+        "texts": [document[0]],
+{{ body_options_block }}
+    }
+    responseObject = requests.post(
+        modelEndpoint,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {options['API_KEY']}",
+        },
+        json=payload,
+        timeout={{ timeout_s }},
+    )
+    try:
+        responseJson = responseObject.json()
+    except Exception:
+        logger.error(f"Non-JSON response: {responseObject.status_code} - {responseObject.text}")
+        raise
+    if responseObject.status_code < 200 or responseObject.status_code >= 300:
+        logger.error(f"HTTP {responseObject.status_code}: {json.dumps(responseJson)}")
+        raise RuntimeError(f"Request failed: {responseObject.status_code}")
+    embedding = json.dumps(responseJson['embeddings'][0])
+    # Cohere on Bedrock reports no token usage; a rough character-based estimate
+    tokens = responseJson.get('inputTextTokenCount', max(1, len(document[0]) // 4))
+    run_time = time.time() - started_timestamp
+    # Logging the response
+    logger.info(f"project: {project[0]}")
+    logger.info(f"tokens: {tokens}")
+    logger.info(f"run_time: {run_time}")
+    return embedding, run_time, tokens

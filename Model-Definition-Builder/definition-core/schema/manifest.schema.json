@@ -38,6 +38,18 @@
                     "title": "Overrides",
                     "type": "array"
                 },
+                "score_code_file": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Score Code File"
+                },
                 "catalog_provenance": {
                     "default": "manual entry",
                     "title": "Catalog Provenance",
@@ -200,6 +212,18 @@
                     "default": null,
                     "title": "Values"
                 },
+                "label": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Label"
+                },
                 "description": {
                     "anyOf": [
                         {
@@ -223,6 +247,18 @@
                     ],
                     "default": null,
                     "title": "Range"
+                },
+                "informational": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Informational"
                 }
             },
             "required": [

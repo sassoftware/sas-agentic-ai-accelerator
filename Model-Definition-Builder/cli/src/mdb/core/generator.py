@@ -237,6 +237,12 @@ def _render_score(manifest: ModelManifest, core: CoreAssets) -> str:
         context["anthropic_version"] = manifest.provider.params.get("anthropic_version", "2023-06-01")
     if "bedrock" in manifest.runtime.template:
         context["region"] = manifest.provider.params.get("region", "")
+    if manifest.runtime.template == "hf_onnx":
+        hf = manifest.provider.params.get("hf", {})
+        context["onnx_dir"] = hf.get("onnx_dir", ".")
+        context["chat_template"] = hf.get(
+            "chat_template", "<|system|>\\n{systemPrompt}<|end|><|user|>\\n{userPrompt} <|end|>\\n<|assistant|>"
+        )
     rendered = template.render(**context)
     if not rendered.endswith("\n"):
         rendered += "\n"
@@ -325,6 +331,27 @@ def _render_requirements(manifest: ModelManifest) -> str:
             {
                 "step": "install huggingface CLI and other packages",
                 "command": "pip3 -q install huggingface-hub>=0.18.0 transformers torch accelerate numpy==1.26.4",
+            },
+        ]
+        if hf.get("gated"):
+            steps.append({
+                "step": f"Login with huggingface - ensure you have accepted the license: https://huggingface.co/{repo}",
+                "command": "hf login --token $(cat /etc/secret-volume/huggingfacetoken)",
+            })
+        steps.append({
+            "step": "download model",
+            "command": f"hf download --quiet {repo} --local-dir /pybox/model/{manifest.model_id}",
+        })
+    elif profile == "hf-onnx":
+        hf = manifest.provider.params.get("hf", {})
+        repo = hf.get("repo") or manifest.provider.model_version
+        steps = [
+            {"step": "install git-lfs", "command": "microdnf install git-lfs"},
+            {"step": "Verify git-lfs install", "command": "git lfs install"},
+            upgrade_step,
+            {
+                "step": "install huggingface CLI and other packages",
+                "command": "pip3 -q install huggingface-hub>=0.18.0 numpy onnxruntime-genai",
             },
         ]
         if hf.get("gated"):

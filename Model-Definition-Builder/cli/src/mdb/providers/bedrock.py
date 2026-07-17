@@ -50,6 +50,11 @@ class BedrockAdapter(ProviderAdapter):
             "auth_variant": (answers.get("auth_variant") or "bearer").strip().lower(),
         }
 
+    def score_template_for(self, cm: CatalogModel) -> str:
+        if cm.kind == "embedding" and "cohere" in cm.ref.lower():
+            return "emb_bedrock_cohere"
+        return super().score_template_for(cm)
+
     def build_manifest(self, cm: CatalogModel, model_id: str, answers: dict, modeler: str) -> ModelManifest:
         manifest = super().build_manifest(cm, model_id, answers, modeler)
         if manifest.provider.params.get("auth_variant") == "sigv4" and manifest.kind == "llm":
