@@ -13,3 +13,4 @@ bge_base_en_v15,BGE Base EN v1.5,BAAI,bge is short for BAAI general embedding,10
 bge_small_en_v15,BGE Small EN v1.5,BAAI,bge is short for BAAI general embedding,33400000,SCR,MIT,Seconds,.,0.000039178,512,384
 bge_large_en_v15,BGE Large EN v1.5,BAAI,bge is short for BAAI general embedding,335000000,SCR,MIT,Seconds,.,0.000039178,512,1024
 "titan_embed_text_v2","Titan Text Embeddings V2","AWS Bedrock","Titan Text Embeddings V2 by AWS Bedrock, served through the AWS Bedrock API.",.,"API","Proprietary","Tokens",0.00000002,.,8192,1024
+"voyage_code_3","Voyage Code 3","Voyage","Voyage Code 3 by Voyage, served through the Voyage AI API.",.,"API","Proprietary","Tokens",0.00000018,.,32000,1024

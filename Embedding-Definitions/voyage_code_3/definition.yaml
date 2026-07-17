@@ -1,0 +1,41 @@
+schema: 1
+kind: embedding
+model_id: voyage_code_3
+display_name: Voyage Code 3
+provider:
+  adapter: voyage
+  model_version: voyage-code-3
+  endpoint: https://api.voyageai.com/v1/embeddings
+  params: {}
+  auth:
+    mode: api_key
+    key_name: Voyage
+runtime:
+  template: emb_voyage
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  input_type:
+    default: document
+  Embedding_Length:
+    default: 1024
+  Input_Token_Limit:
+    default: 32000
+tags:
+  size_class: Embedding
+  license_class: Proprietary
+  provider_tag: Voyage
+  scr_sizing: small
+  extra: []
+metadata:
+  description: Voyage Code 3 by Voyage, served through the Voyage AI API.
+  release_date: '2024-12-04'
+  context_length: 32000
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 1.8e-07
+modeler: david.weik@sas.com
+generation:
+  overrides: []
+  catalog_provenance: voyage (static snapshot 2026-01-15)
