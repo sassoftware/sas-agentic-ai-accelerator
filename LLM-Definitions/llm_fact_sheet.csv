@@ -32,3 +32,5 @@ model_id,model,provider,description,release_date,size,deployment_type,license,co
 "gpt_41_mini","GPT-4.1 Mini","OpenAI","GPT-4.1 Mini by OpenAI, served through the OpenAI API.",2025-04-14,.,"API","Proprietary","Tokens",0.0000004,0.0000016,.,1047576,1,1,.,1000,2024-06-01
 "gpt_5_mini","GPT-5 Mini","OpenAI","GPT-5 Mini by OpenAI, served through the OpenAI API.",2025-08-07,.,"API","Proprietary","Tokens",0.00000025,0.000002,.,400000,.,.,.,.,2024-05-30
 "claude_haiku_4_5_bedrock","us.anthropic.claude-haiku-4-5-20251001-v1:0","AWS Bedrock","us.anthropic.claude-haiku-4-5-20251001-v1:0 by AWS Bedrock, served through the AWS Bedrock API.",.,.,"API","Proprietary","Tokens",.,.,.,.,1,1,.,1000,.
+"mistral_small_32","mistral-small-2603","Mistral","mistral-small-2603 by Mistral, served through the Mistral API.",2025-06-20,.,"API","Proprietary","Tokens",0.0000001,0.0000003,.,131072,1,1,.,1000,2024-10-01
+"llama_33_70b","Meta: Llama 3.3 70B Instruct","OpenRouter","Meta: Llama 3.3 70B Instruct by OpenRouter, served through the OpenRouter API.",.,.,"API","Proprietary","Tokens",0.00000013,0.0000004,.,131072,1,1,.,1000,.

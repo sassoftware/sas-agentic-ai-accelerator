@@ -1,0 +1,42 @@
+schema: 1
+kind: llm
+model_id: llama_33_70b
+display_name: 'Meta: Llama 3.3 70B Instruct'
+provider:
+  adapter: openrouter
+  model_version: meta-llama/llama-3.3-70b-instruct
+  endpoint: https://openrouter.ai/api/v1/chat/completions
+  params: {}
+  auth:
+    mode: api_key
+    key_name: OpenRouter
+runtime:
+  template: openai_chat
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  temperature:
+    default: 1
+  top_p:
+    default: 1
+  max_tokens:
+    default: 1000
+    max: 128000.0
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: OpenRouter
+  scr_sizing: small
+  extra: []
+metadata:
+  description: 'Meta: Llama 3.3 70B Instruct by OpenRouter, served through the OpenRouter API.'
+  context_length: 131072
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 1.3e-07
+    output_token_price: 4.0e-07
+modeler: david.weik@sas.com
+generation:
+  overrides: []
+  catalog_provenance: openrouter (live)
