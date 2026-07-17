@@ -4,7 +4,7 @@ model_id: gemini_flash_25
 display_name: Gemini Flash 2.5
 provider:
   adapter: google
-  model_version: gemini_flash_25
+  model_version: gemini-2.5-flash
   params: {}
   auth:
     mode: api_key

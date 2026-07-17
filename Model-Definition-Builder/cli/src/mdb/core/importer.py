@@ -112,6 +112,8 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
 
     model_version = ""
     match = re.search(r"modelVersion\s*=\s*'([^']+)'", score_text)
+    if not match:  # legacy Gemini scorers name the variable 'model'
+        match = re.search(r"^model\s*=\s*'([^']+)'", score_text, re.MULTILINE)
     if match:
         model_version = match.group(1)
     endpoint = None

@@ -699,6 +699,75 @@ def endpoints(
 
 
 @app.command()
+def radar(
+    ids: Optional[list[str]] = typer.Argument(None),
+    all_: bool = typer.Option(False, "--all"),
+    probe: bool = typer.Option(False, "--probe", help="One real 1-token call per model (definitive, uses credits)"),
+    as_json: bool = typer.Option(False, "--json"),
+    verify_ssl: bool = typer.Option(True, "--verify-ssl/--no-verify-ssl"),
+):
+    """Deprecation radar: check every managed model against its provider's live surface."""
+    from .core.radar import check_model, env_key_for
+    ctx = Context()
+    adapters = load_adapters()
+    session = make_session(verify_ssl)
+    results = []
+    for folder in ctx.resolve_targets(ids or [], all_):
+        if not (folder / MANIFEST_FILENAME).is_file():
+            continue
+        manifest = load_manifest(folder)
+        if effective_score_file(manifest) in manifest.generation.overrides:
+            from .core.radar import RadarResult
+            results.append(RadarResult(manifest.model_id, manifest.provider.adapter,
+                                       manifest.provider.model_version, "skipped",
+                                       "hand-maintained scorer - no provider surface to check"))
+            continue
+        adapter = adapters.get(manifest.provider.adapter)
+        results.append(check_model(manifest, adapter, session, env_key_for(adapter) if adapter else None, probe))
+    if as_json:
+        console.print_json(json.dumps([r.__dict__ for r in results]))
+    else:
+        table = Table()
+        for col in ("model_id", "provider", "status", "detail"):
+            table.add_column(col)
+        for r in results:
+            color = {"ok": "green", "missing": "red", "not-serving": "red", "skipped": "dim"}[r.status]
+            table.add_row(r.model_id, r.provider, f"[{color}]{r.status}[/{color}]", r.detail)
+        console.print(table)
+    dead = [r for r in results if r.status in ("missing", "not-serving")]
+    if dead:
+        console.print(f"[red]{len(dead)} model(s) look retired at the provider.[/red] "
+                      "Mark them with: mdb retire <model_id>")
+    raise typer.Exit(1 if dead else 0)
+
+
+@app.command()
+def retire(
+    model_id: str = typer.Argument(...),
+):
+    """Tag a definition as deprecated (hides it from the Prompt Builder) and regenerate."""
+    import yaml as _yaml
+    ctx = Context()
+    folder = ctx.find_folder(model_id)
+    if folder is None or not (folder / MANIFEST_FILENAME).is_file():
+        console.print(f"[red]{model_id}: no managed definition found.[/red]")
+        raise typer.Exit(2)
+    manifest = load_manifest(folder)
+    if "deprecated" in manifest.tags.extra:
+        console.print(f"{model_id}: already deprecated.")
+        raise typer.Exit(0)
+    manifest.tags.extra.append("deprecated")
+    manifest.save(folder)
+    rendered = render_assets(manifest, ctx.core)
+    for name, content in rendered.items():
+        (folder / name).write_bytes(content)
+    drift.write_lock(folder, (folder / MANIFEST_FILENAME).read_bytes(), rendered)
+    facts.upsert_row(ctx.fact_sheet(manifest.kind), manifest)
+    console.print(f"[green]{model_id}: tagged deprecated and regenerated.[/green]")
+    console.print(f"Push it to the registered model with: mdb register {model_id} --update")
+
+
+@app.command()
 def providers():
     """List the available provider adapters."""
     table = Table()

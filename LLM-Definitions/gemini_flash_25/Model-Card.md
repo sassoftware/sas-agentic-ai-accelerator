@@ -2,7 +2,7 @@
 
 ## Model Details
 
-- **Model:** Gemini Flash 2.5 (`gemini_flash_25`)
+- **Model:** Gemini Flash 2.5 (`gemini-2.5-flash`)
 - **Provider:** Google
 - **Release date:** 2025-06-01
 - **License:** Proprietary

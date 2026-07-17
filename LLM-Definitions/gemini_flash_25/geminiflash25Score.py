@@ -5,7 +5,7 @@ import logging
 import sys
 import requests
 
-modelVersion = 'gemini_flash_25'
+modelVersion = 'gemini-2.5-flash'
 modelEndpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{modelVersion}:generateContent"
 
 # Initiate the logger to write output information to the log
