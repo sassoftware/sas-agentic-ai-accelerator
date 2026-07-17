@@ -2,7 +2,7 @@
     "name": "text_embedding_3_large",
     "scoreCodeFile": "textEmbedding3Large.py",
     "description": "text-embedding-3-large is OpenAIs most capable embedding model for both english and non-english tasks. Embeddings are a numerical representation of text that can be used to measure the relatedness between two pieces of text. Embeddings are useful for search, clustering, recommendations, anomaly detection, and classification tasks.",
-    "toolVersion": "3.11-5",
+    "toolVersion": "3.11",
     "targetVariable": "embedding",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",
@@ -12,10 +12,15 @@
     "tool": "Python 3",
     "scoreCodeType": "Python",
     "champion": false,
-    "tags": ["Embedding", "Proprietary", "OpenAI", "small"],
-    "modelPurpose": "Embedding models serve the core purpose of converting complex data types like text, images, and audio into a numerical format, specifically vectors, which are easily processed by machine learning algorithms.",
-    "intendedUse": "Their intended use is to capture the semantic relationships and meaning within this data. For instance, in a text embedding model, words with similar meanings, like car and automobile, would be represented by vectors that are close to each other in a multi-dimensional space. This vector-based representation is fundamental for tasks like semantic search, where the goal is to find information based on its meaning rather than just keyword matches, and for recommendation systems that suggest similar items to a user.",
-    "expectedBenefit": "The expected benefit is a more intuitive and powerful way to handle unstructured data, leading to more accurate and context-aware applications.  This process essentially translates human-understandable concepts into a language that machines can work with, enabling a wide range of advanced AI applications.",
-    "outOfScopeUseCases": "They are not designed for generating new content from scratch; that's the job of generative models. They also cannot perform complex logical reasoning or precise mathematical calculations.",
-    "limitations": "While they are great at capturing relationships, they struggle with polysemy, where a single word has multiple meanings. A simple embedding might place the word bank in a single location in vector space, failing to distinguish between a financial institution and the side of a river. This limitation is somewhat addressed by more advanced, contextual models. Finally, training effective embedding models often requires massive datasets and significant computational resources, making them expensive to develop from scratch."
+    "tags": [
+        "Embedding",
+        "Proprietary",
+        "OpenAI",
+        "small"
+    ],
+    "modelPurpose": "To serve as a bridge of understanding, enabling seamless interaction between humans and machines by harnessing the power of natural language. LLMs decode the complexities of human thought, transforming them into actionable insights, creative solutions, and tailored knowledge while fostering accessibility, inclusivity, and empowerment in communication and decision-making.",
+    "intendedUse": "Large Language Models (LLMs) are designed to process and generate human-like text, enabling a wide range of applications across domains. These models support tasks such as text summarization, question answering, content generation, translation, and conversational interactions. LLMs aim to facilitate understanding, streamline workflows, and provide accessible tools for creativity, education, and decision-making. They are built to serve diverse user needs while emphasizing usability, adaptability, and ethical considerations in deployment.",
+    "expectedBenefit": "Large Language Models (LLMs) provide significant utility across various domains by enabling efficient processing and generation of human-like text. Key benefits include enhanced productivity through automation of repetitive tasks, improved accessibility via natural language interfaces, and support for creativity in content generation and ideation. These models contribute to knowledge dissemination by simplifying complex information and tailoring it to diverse audiences. Additionally, they foster inclusivity by enabling multilingual communication and supporting underrepresented languages. When responsibly deployed, LLMs offer scalable solutions that enhance both individual and organizational capabilities.",
+    "outOfScopeUseCases": "Large Language Models (LLMs) are not designed for use in high-stakes decision-making contexts, such as medical diagnosis, legal advice, or financial planning, where expert oversight is required. They should not be employed to generate or propagate false, harmful, or misleading information, nor in unmoderated settings where their output could be misused or misinterpreted. These models are unsuitable for real-time systems with safety-critical implications, such as autonomous vehicles or emergency response systems, and should not be used in applications that violate privacy, such as unauthorized surveillance or data scraping. Additionally, LLMs must not be used in ways that reinforce bias, discrimination, or unethical practices, underscoring the need for careful and responsible deployment.",
+    "limitations": "Large Language Models (LLMs) have several inherent limitations. They may produce outputs that are factually incorrect, outdated, or lack context, as they do not possess real-time knowledge or a true understanding of the information they generate. LLMs are sensitive to the quality of input prompts, and vague or poorly structured inputs can lead to irrelevant or nonsensical responses. They may inadvertently reinforce biases present in their training data or reflect inappropriate content. Additionally, LLMs cannot provide subjective judgment, emotional awareness, or ethical reasoning, which limits their reliability in nuanced or sensitive situations. Their computational demands can also pose challenges for deployment, particularly in resource-constrained environments. Regular monitoring, context-aware use, and human oversight are essential to mitigate these limitations."
 }

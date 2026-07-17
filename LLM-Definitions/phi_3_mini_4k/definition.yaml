@@ -1,0 +1,42 @@
+schema: 1
+kind: llm
+model_id: phi_3_mini_4k
+display_name: Phi 3 Mini 4k
+provider:
+  adapter: openai
+  model_version: phi_3_mini_4k
+  params: {}
+  auth:
+    mode: none
+runtime:
+  template: openai_chat
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  max_tokens:
+    default: 2048
+tags:
+  size_class: SLM
+  license_class: Open-Source
+  provider_tag: MIT-License
+  scr_sizing: medium
+  extra:
+  - Microsoft
+metadata:
+  description: Phi 3 Mini with a context of 4k. Provides a user and system prompt input and returns the
+    generated text and key performance metrics
+  release_date: '2024-04-23'
+  knowledge_cutoff: '2023-10-01'
+  context_length: 4000
+  size: 3800000000
+  deployment_type: SCR
+  pricing:
+    cost_type: Seconds
+    second_cost: 3.9178e-05
+modeler: gerdaw
+generation:
+  overrides:
+  - phi3Score.py
+  - requirements.json
+  score_code_file: phi3Score.py
+  catalog_provenance: mdb import of hand-written folder

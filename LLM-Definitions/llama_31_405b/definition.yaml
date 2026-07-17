@@ -1,0 +1,44 @@
+schema: 1
+kind: llm
+model_id: llama_31_405b
+display_name: Llama 3.1 405B
+provider:
+  adapter: openai
+  model_version: llama_31_405b
+  params: {}
+  auth:
+    mode: none
+runtime:
+  template: openai_chat
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  temperature:
+    default: 0.6
+  max_tokens:
+    default: 1024
+tags:
+  size_class: LLM
+  license_class: Open-Source
+  provider_tag: LLAMA-3.1-COMMUNITY-LICENSE
+  scr_sizing: small
+  extra:
+  - Meta
+metadata:
+  description: Llama-3.1-405B-Instruct is a gigantic model that is hard to run.
+  release_date: '2024-07-23'
+  knowledge_cutoff: '2023-12-01'
+  context_length: 128000
+  size: 405000000000
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 3.0e-06
+    output_token_price: 3.0e-06
+modeler: ''
+generation:
+  overrides:
+  - llama31405bScore.py
+  - requirements.json
+  score_code_file: llama31405bScore.py
+  catalog_provenance: mdb import of hand-written folder

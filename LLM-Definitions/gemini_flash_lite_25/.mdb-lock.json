@@ -1,0 +1,14 @@
+{
+    "generator": "mdb 0.1.0",
+    "manifest_sha256": "73768d706d96b6cef76ffc58bff9857b1e2a0b73b853504480f517e34e3d02a0",
+    "files": {
+        "Model-Card.md": "f057d54e5cddac18f7c5339c9c5d71ed7d2950df384e4a3e99adb35e8af06a82",
+        "README.md": "8bc81012abce228634bdcab651f1a4a809d48a3f422f261c5fd70bc3fd541001",
+        "geminiflashlite25Score.py": "300261eb1116ed28b8ee64749fb6054a90dd4d7b4e9c6e4e27e2e08a2caaa4e5",
+        "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
+        "modelConfiguration.json": "2fe2bc6078ccec6fa84e19363b71e2c8c0c986e40429e1b12f67653d23409a08",
+        "options.json": "5d096872ff19afc50cacfe2ce8b2a372d6911eca60f6824f77e87891923864f3",
+        "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
+        "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"
+    }
+}

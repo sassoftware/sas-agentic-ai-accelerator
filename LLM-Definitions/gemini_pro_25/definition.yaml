@@ -1,0 +1,48 @@
+schema: 1
+kind: llm
+model_id: gemini_pro_25
+display_name: Gemini Pro 2.5
+provider:
+  adapter: google
+  model_version: gemini_pro_25
+  params: {}
+  auth:
+    mode: api_key
+    key_name: Google
+runtime:
+  template: gemini_generate
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  temperature:
+    default: 1
+  top_k:
+    default: 40
+  top_p:
+    default: 0.95
+  max_tokens:
+    default: 256
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: Google
+  scr_sizing: small
+  extra: []
+metadata:
+  description: Gemini 2.5 Pro is our state-of-the-art thinking model, capable of reasoning over complex
+    problems in code, math, and STEM, as well as analyzing large datasets, codebases, and documents using
+    long context.
+  release_date: '2025-06-01'
+  knowledge_cutoff: '2025-01-01'
+  context_length: 1048576
+  size: 200000000000
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 1.25e-06
+    output_token_price: 1.0e-05
+modeler: gerdaw
+generation:
+  overrides: []
+  score_code_file: geminipro25Score.py
+  catalog_provenance: mdb import of hand-written folder

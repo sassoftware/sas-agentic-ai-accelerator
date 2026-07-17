@@ -153,6 +153,14 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
     # Options: keep the folder's defaults; API_KEY becomes auth.key_name
     api_key_entry = options_doc.pop("API_KEY", None)
     key_name = (api_key_entry or {}).get("default")
+    if key_name in ("ProviderName", "Provider"):
+        # The base template's placeholder leaked into some folders (PR #6 finding);
+        # normalize to the provider's LLM_API_KEYS KeyName
+        replacement = {"azure-foundry": "AzureOpenAI", "openai": "OpenAI", "anthropic": "Anthropic",
+                       "google": "Google", "voyage": "VoyageAI"}.get(adapter_id, key_name)
+        notes.append(f"API_KEY default was the '{key_name}' placeholder - normalized to '{replacement}' "
+                     "(must match the LLM_API_KEYS KeyName).")
+        key_name = replacement
     option_specs: dict[str, OptionSpec] = {}
     for name, meta in options_doc.items():
         if name in ("azure_openai_resource", "endpoint_url", "api_version"):
@@ -168,6 +176,41 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
     if kind == "embedding" and template in ("emb_openai", "emb_voyage"):
         notes.append("Embedding normalization: the generated scorer returns all three declared outputs "
                      "(embedding, run_time, tokens) - several legacy scorers only returned two.")
+
+    from .generator import score_file_name
+    generated_score = score_file_name(model_id)
+    score_code_file: str | None = None
+    extra_overrides: list[str] = []
+    if config.get("scoreCodeFile") and config["scoreCodeFile"] != generated_score:
+        # Keep the legacy filename - no renames, no stray files, registered
+        # models keep pointing at the same scoreCodeFile
+        score_code_file = config["scoreCodeFile"]
+        notes.append(f"Keeping the legacy score filename {config['scoreCodeFile']} "
+                     "(generation.score_code_file).")
+
+    # Hand-written runtimes the template families cannot reproduce: keep the
+    # scorer (and, for custom runtimes, requirements.json) hand-maintained via
+    # generation.overrides - the folder still gains managed metadata, docs,
+    # the fact-sheet row and the toolVersion publish fix.
+    UNRECONSTRUCTABLE = [
+        ("og.Model(", "onnxruntime-genai runtime", True),
+        ("MistralTokenizer", "mistral-inference runtime", True),
+        ("pipeline(", "transformers pipeline runtime", False),
+        ('AutoTokenizer.from_pretrained("./")', "hosted-endpoint hybrid scorer", True),
+    ]
+    for marker, why, custom_requirements in UNRECONSTRUCTABLE:
+        if marker in score_text:
+            scorer_name = config.get("scoreCodeFile", generated_score)
+            score_code_file = scorer_name
+            extra_overrides.append(scorer_name)
+            if custom_requirements:
+                extra_overrides.append("requirements.json")
+            notes.append(
+                f"Score code uses a {why} that no template family reproduces - the scorer"
+                f"{' and requirements.json' if custom_requirements else ''} stay hand-maintained "
+                "(generation.overrides); everything else becomes managed."
+            )
+            break
 
     tags = _parse_tags(list(config.get("tags", [])), notes)
     manifest = ModelManifest(
@@ -200,16 +243,12 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
             ),
         ),
         modeler=config.get("modeler", ""),
-        generation=GenerationBlock(catalog_provenance=f"mdb import of hand-written folder"),
+        generation=GenerationBlock(
+            overrides=extra_overrides,
+            score_code_file=score_code_file,
+            catalog_provenance="mdb import of hand-written folder",
+        ),
     )
-
-    from .generator import score_file_name
-    generated_score = score_file_name(model_id)
-    if config.get("scoreCodeFile") and config["scoreCodeFile"] != generated_score:
-        notes.append(
-            f"Legacy score file {config['scoreCodeFile']} will be superseded by {generated_score} "
-            f"on converge - delete {config['scoreCodeFile']} afterwards so only one scorer remains."
-        )
 
     # Preserve an existing PDF model card - the generator only writes Markdown
     if (folder / "Model-Card.pdf").is_file():

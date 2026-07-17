@@ -8,7 +8,7 @@
     },
     {
         "name": "systemPrompt",
-        "description": "Contains the the behavior on how the LLM should act and respond",
+        "description": "Contains the behavior on how the LLM should act and respond",
         "level": "nominal",
         "type": "string",
         "length": 1000

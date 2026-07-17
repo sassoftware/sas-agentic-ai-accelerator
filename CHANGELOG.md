@@ -25,7 +25,10 @@ The new **Model Definition Builder** (`Model-Definition-Builder/`) takes the cho
 
 ### Changed
 
-- The generator emits `toolVersion: "3.11"` — newer SAS Viya releases reject the legacy `3.11-5` format when publishing (hand-written definitions still carry `3.11-5` and will hit the same publish error on current Viya until they are migrated)
+- **The entire definition fleet (42 legacy folders) is migrated onto `definition.yaml` manifests.** Every folder regenerates deterministically; the CI drift gate now covers all 48 definitions. The migration applies these normalizations uniformly: the canonical options parser (fixing the `isinstance(options, str)` bug that silently ignored user options in several scorers), provider usage-based token counting where the API reports it (Anthropic, OpenAI, Gemini), the embedding return-arity and full-vector fixes, the `requirements.json` standardization from PR #6 (pip upgrade step first, `huggingface-hub>=0.18.0`), `toolVersion: "3.11"` (fixes the publish 400 on current SAS Viya releases), and the central `inputVar.json` typo fix. Legacy score filenames are preserved (`generation.score_code_file`) so registered models keep their scoreCodeFile. Six definitions with hand-written runtimes (`llama_31_405b`, `llama_32_1b/3b`, `mistral_nemo`, `phi_3_mini_4k`, `phi_35_mini` — onnxruntime-genai, mistral-inference, pipeline and hosted-endpoint scorers) keep their scorers hand-maintained via `generation.overrides` while gaining managed metadata and the publish fix
+- **Re-publish guidance:** deployed SCR containers of migrated models still run the old score code until re-published — republish with `mdb publish <id>` (or the classic scripts) when you want the fixes in production; `mdb register --update` refreshes registered model contents first
+- The Azure OpenAI definition's `API_KEY` default is normalized from the `ProviderName` placeholder to `AzureOpenAI`, and the Voyage adapter uses the fleet's established `VoyageAI` KeyName
+- The generator emits `toolVersion: "3.11"` — newer SAS Viya releases reject the legacy `3.11-5` format when publishing; the `_Base_Definition` templates are updated as well
 
 ### Fixed
 

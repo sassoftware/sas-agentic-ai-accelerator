@@ -1,0 +1,46 @@
+schema: 1
+kind: llm
+model_id: gemini_flash_15_8b
+display_name: Gemini Flash 1.5 8B
+provider:
+  adapter: google
+  model_version: gemini_flash_15_8b
+  params: {}
+  auth:
+    mode: api_key
+    key_name: Google
+runtime:
+  template: gemini_generate
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  temperature:
+    default: 1
+  top_k:
+    default: 40
+  top_p:
+    default: 0.95
+  max_tokens:
+    default: 256
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: Google
+  scr_sizing: small
+  extra: []
+metadata:
+  description: Gemini 1.5 Flash-8B is a small model designed for lower intelligence tasks.
+  release_date: '2024-09-24'
+  knowledge_cutoff: '2024-05-01'
+  context_length: 1048576
+  size: 8000000000
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 3.75e-08
+    output_token_price: 7.5e-08
+modeler: gerdaw
+generation:
+  overrides: []
+  score_code_file: geminiflash158bScore.py
+  catalog_provenance: mdb import of hand-written folder

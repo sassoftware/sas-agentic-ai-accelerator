@@ -1,0 +1,45 @@
+schema: 1
+kind: llm
+model_id: claude_haiku_3
+display_name: Claude Haiku 3
+provider:
+  adapter: anthropic
+  model_version: claude-3-haiku-20240307
+  endpoint: https://api.anthropic.com/v1/messages
+  params: {}
+  auth:
+    mode: api_key
+    key_name: Anthropic
+runtime:
+  template: anthropic_messages
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  temperature:
+    default: 1
+  top_p:
+    default: 1
+  max_tokens:
+    default: 1000
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: Anthropic
+  scr_sizing: small
+  extra: []
+metadata:
+  description: Claude is a family of state-of-the-art large language models developed by Anthropic. Claude
+    3 Haiku currently the best Haiku model.
+  release_date: '2024-03-13'
+  knowledge_cutoff: '2023-08-01'
+  context_length: 200000
+  size: 20000000000
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 2.5e-07
+    output_token_price: 1.25e-06
+modeler: gerdaw
+generation:
+  overrides: []
+  catalog_provenance: mdb import of hand-written folder

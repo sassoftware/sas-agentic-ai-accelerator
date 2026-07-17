@@ -1,0 +1,14 @@
+{
+    "generator": "mdb 0.1.0",
+    "manifest_sha256": "5eb38d52cf48760395f28f4c8d1d2eebfa31f9868ae31566ab263bb745cfe12f",
+    "files": {
+        "Model-Card.md": "61f6e3b8adb2130da02eb4ccb5de68b4519ccb8c65c67ad30d6ee4d0d69ff647",
+        "README.md": "ba8e2f5c7c24453635cd68523e406e06c175e980d6e693443be401c7815ff527",
+        "geminiflash158bScore.py": "a19a0d99d9f35427e1aaf1374b9637fb99877a14ba01a1352e4b6401afb95c77",
+        "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
+        "modelConfiguration.json": "f3cd73d684fff838fec6a6a5f03835480b18abdf3e036a9ca872d8d998a5d504",
+        "options.json": "5d096872ff19afc50cacfe2ce8b2a372d6911eca60f6824f77e87891923864f3",
+        "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
+        "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"
+    }
+}

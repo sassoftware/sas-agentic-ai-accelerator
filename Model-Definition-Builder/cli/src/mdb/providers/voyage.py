@@ -15,7 +15,7 @@ class VoyageAdapter(ProviderAdapter):
     id = "voyage"
     display_name = "Voyage AI"
     provider_tag = "Voyage"
-    key_name = "Voyage"
+    key_name = "VoyageAI"  # matches the LLM_API_KEYS KeyName the legacy fleet established
     env_key_var = "VOYAGE_API_KEY"
     docs_url = "https://dashboard.voyageai.com/api-keys"
     template = "emb_voyage"  # embeddings only - both slots point at the same template

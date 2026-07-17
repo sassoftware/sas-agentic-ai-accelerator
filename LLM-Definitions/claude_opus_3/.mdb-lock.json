@@ -1,0 +1,14 @@
+{
+    "generator": "mdb 0.1.0",
+    "manifest_sha256": "f9728b1deddb7c76bd2710330c930f8402c9b3edc932f598c94e99b5ecd29c3f",
+    "files": {
+        "Model-Card.md": "8af66aca06cc379d3f3544974483ad17c135ca5506bdeda847015f26888f1dc0",
+        "README.md": "c7876feeccc21d131d340acf527a86c0d718d3c801322e7d4f0143f2d4d25265",
+        "claudeOpus3Score.py": "8cbd7048f7c08da8195804a752b96fb90fee57d2ed041275e1a5ef7ac5ce660a",
+        "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
+        "modelConfiguration.json": "6f0af067eb38a1e47ec0135957e185985204c631578a76b1ce64605095f41deb",
+        "options.json": "cea6a82de33207784c98575df9a03ef3e9de4d9b8cacdd0a49b5c100d30761fe",
+        "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
+        "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"
+    }
+}

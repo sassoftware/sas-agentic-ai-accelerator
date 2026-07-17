@@ -1,0 +1,14 @@
+{
+    "generator": "mdb 0.1.0",
+    "manifest_sha256": "7606dd394cdbf46644f3e58c2a65e5ae03b9ff090bf854494d32a795a120b9ad",
+    "files": {
+        "Model-Card.md": "e92bf35a51a39b80e458262730e58f629a7fb07e0c4d4b0574265b702b16d450",
+        "README.md": "77c432a82835b2ce8b0c151c010fb91e6163c1dcc067e90ed5fb665322bee676",
+        "geminipro25Score.py": "51ca9a01d814a1ad497da05d86d2024650e119854ea3991fa3c38309b4dc0c05",
+        "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
+        "modelConfiguration.json": "c507176ccfad5a29b02ea0e7e47442c9e2b7c72bfaaf55621ba994ea89a52e5e",
+        "options.json": "5d096872ff19afc50cacfe2ce8b2a372d6911eca60f6824f77e87891923864f3",
+        "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
+        "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"
+    }
+}

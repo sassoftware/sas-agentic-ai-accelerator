@@ -22,7 +22,9 @@ from rich.table import Table
 
 from . import __version__
 from .core import drift, facts
-from .core.generator import CoreAssets, GenerationError, list_custom_options, render_assets, score_file_name
+from .core.generator import (
+    CoreAssets, GenerationError, effective_score_file, list_custom_options, render_assets,
+)
 from .core.importer import import_folder
 from .core.manifest import MANIFEST_FILENAME, ModelManifest, export_json_schema, load_manifest
 from .core.netutil import env_flag, make_session
@@ -515,7 +517,7 @@ def test(
                           "set it in the environment or .env.[/red]")
             raise typer.Exit(2)
         options["API_KEY"] = key
-    score_path = folder / score_file_name(model_id)
+    score_path = folder / effective_score_file(manifest)
     import importlib.util
     spec = importlib.util.spec_from_file_location(f"mdb_score_{model_id}", score_path)
     module = importlib.util.module_from_spec(spec)

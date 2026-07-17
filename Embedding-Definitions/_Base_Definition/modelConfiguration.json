@@ -2,7 +2,7 @@
     "name": "base_embedding",
     "scoreCodeFile": "baseScore.py",
     "description": "",
-    "toolVersion": "3.11-5",
+    "toolVersion": "3.11",
     "targetVariable": "embedding",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",

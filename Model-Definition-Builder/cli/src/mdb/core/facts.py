@@ -130,7 +130,16 @@ def upsert_row(fact_sheet: Path, manifest: ModelManifest) -> str:
     if trailing_empty or not replaced:
         content += newline
     if content != raw:
-        fact_sheet.write_bytes(content.encode("utf-8"))
+        # Windows indexers/AV can hold the file briefly - retry transient errors
+        import time
+        for attempt in range(5):
+            try:
+                fact_sheet.write_bytes(content.encode("utf-8"))
+                break
+            except OSError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.5)
     return result
 
 

@@ -23,8 +23,8 @@
         "label": "Input Token Limit"
     },
     "API_KEY": {
-        "default": "Voyage",
+        "default": "VoyageAI",
         "range": "sk-****",
-        "description": "This is the Voyage key that is used to make the actual request."
+        "description": "This is the VoyageAI key that is used to make the actual request."
     }
 }

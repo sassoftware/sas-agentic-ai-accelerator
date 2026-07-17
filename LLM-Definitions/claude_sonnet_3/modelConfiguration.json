@@ -2,7 +2,7 @@
     "name": "claude_sonnet_3",
     "scoreCodeFile": "claudeSonnet3Score.py",
     "description": "Claude is a family of state-of-the-art large language models developed by Anthropic. Claude 3 Sonnet currently the second best Sonnet model.",
-    "toolVersion": "3.11-5",
+    "toolVersion": "3.11",
     "targetVariable": "response",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",
@@ -12,7 +12,12 @@
     "tool": "Python 3",
     "scoreCodeType": "Python",
     "champion": false,
-    "tags": ["LLM", "Proprietary", "Anthropic", "small"],
+    "tags": [
+        "LLM",
+        "Proprietary",
+        "Anthropic",
+        "small"
+    ],
     "modelPurpose": "To serve as a bridge of understanding, enabling seamless interaction between humans and machines by harnessing the power of natural language. LLMs decode the complexities of human thought, transforming them into actionable insights, creative solutions, and tailored knowledge while fostering accessibility, inclusivity, and empowerment in communication and decision-making.",
     "intendedUse": "Large Language Models (LLMs) are designed to process and generate human-like text, enabling a wide range of applications across domains. These models support tasks such as text summarization, question answering, content generation, translation, and conversational interactions. LLMs aim to facilitate understanding, streamline workflows, and provide accessible tools for creativity, education, and decision-making. They are built to serve diverse user needs while emphasizing usability, adaptability, and ethical considerations in deployment.",
     "expectedBenefit": "Large Language Models (LLMs) provide significant utility across various domains by enabling efficient processing and generation of human-like text. Key benefits include enhanced productivity through automation of repetitive tasks, improved accessibility via natural language interfaces, and support for creativity in content generation and ideation. These models contribute to knowledge dissemination by simplifying complex information and tailoring it to diverse audiences. Additionally, they foster inclusivity by enabling multilingual communication and supporting underrepresented languages. When responsibly deployed, LLMs offer scalable solutions that enhance both individual and organizational capabilities.",

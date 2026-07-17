@@ -24,7 +24,7 @@ The following options can be supplied at scoring time through the `options` inpu
 | `input_type` | document | document | query | Whether the text is embedded as a document (for storage/indexing) or as a query (for retrieval). Using the matching type on both sides improves retrieval quality. |
 | `Embedding_Length` | 1024 | 1024 | The length of the returned embedding vector. |
 | `Input_Token_Limit` | 32000 | 32000 | The limit of input tokens for the embedding model. |
-| `API_KEY` | Voyage | sk-**** | This is the Voyage key that is used to make the actual request. |
+| `API_KEY` | VoyageAI | sk-**** | This is the VoyageAI key that is used to make the actual request. |
 
 ## Register and publish
 

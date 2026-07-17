@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from ..core.generator import score_file_name
+from ..core.generator import effective_score_file
 from ..core.manifest import MANIFEST_FILENAME, ModelManifest
 
 KIND_PROJECT = {"llm": "LLM Model Project", "embedding": "Embedding Model Project"}
@@ -64,7 +64,7 @@ def build_model_attributes(manifest: ModelManifest, folder: Path,
 def content_files(manifest: ModelManifest, folder: Path) -> list[tuple[Path, str, Optional[str]]]:
     """(path, upload name, role) for every model content, in upload order."""
     files: list[tuple[Path, str, Optional[str]]] = [
-        (folder / score_file_name(manifest.model_id), f"{manifest.model_id}.py", "score"),
+        (folder / effective_score_file(manifest), f"{manifest.model_id}.py", "score"),
         (folder / "requirements.json", "requirements.json", "python pickle"),
         (folder / "outputVar.json", "outputVar.json", None),
         (folder / "inputVar.json", "inputVar.json", None),

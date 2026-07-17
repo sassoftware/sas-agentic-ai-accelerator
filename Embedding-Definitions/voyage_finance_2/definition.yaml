@@ -1,0 +1,38 @@
+schema: 1
+kind: embedding
+model_id: voyage_finance_2
+display_name: Voyage Finance 2
+provider:
+  adapter: voyage
+  model_version: voyage-finance-2
+  endpoint: https://api.voyageai.com/v1/embeddings
+  params: {}
+  auth:
+    mode: api_key
+    key_name: VoyageAI
+runtime:
+  template: emb_voyage
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  Embedding_Length:
+    default: 1024
+  Input_Token_Limit:
+    default: 32000
+tags:
+  size_class: Embedding
+  license_class: Proprietary
+  provider_tag: Voyage.ai
+  scr_sizing: small
+  extra: []
+metadata:
+  description: Voyage.ai introduces voyage-finance-2, Optimized for legal retrieval and RAG.
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 1.2e-07
+modeler: gerdaw
+generation:
+  overrides: []
+  score_code_file: voyageFinance2.py
+  catalog_provenance: mdb import of hand-written folder

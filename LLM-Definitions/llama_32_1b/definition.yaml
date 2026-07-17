@@ -1,0 +1,44 @@
+schema: 1
+kind: llm
+model_id: llama_32_1b
+display_name: Llama 3.2 1B
+provider:
+  adapter: openai
+  model_version: llama_32_1b
+  params: {}
+  auth:
+    mode: none
+runtime:
+  template: openai_chat
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  temperature:
+    default: 0.6
+  top_p:
+    default: 1
+  max_tokens:
+    default: 256
+tags:
+  size_class: LLM
+  license_class: Open-Source
+  provider_tag: LLAMA-3.2-COMMUNITY-LICENSE
+  scr_sizing: medium
+  extra:
+  - Meta
+metadata:
+  description: Llama-3.2-1B-Instruct is a small language model.
+  release_date: '2024-09-24'
+  knowledge_cutoff: '2023-12-01'
+  context_length: 128000
+  size: 1230000000
+  deployment_type: SCR
+  pricing:
+    cost_type: Seconds
+    second_cost: 3.9178e-05
+modeler: gerdaw
+generation:
+  overrides:
+  - llama321bScore.py
+  score_code_file: llama321bScore.py
+  catalog_provenance: mdb import of hand-written folder

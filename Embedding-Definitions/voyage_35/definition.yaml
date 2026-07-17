@@ -1,0 +1,40 @@
+schema: 1
+kind: embedding
+model_id: voyage_35
+display_name: Voyage 3.5
+provider:
+  adapter: voyage
+  model_version: voyage-3.5
+  endpoint: https://api.voyageai.com/v1/embeddings
+  params: {}
+  auth:
+    mode: api_key
+    key_name: VoyageAI
+runtime:
+  template: emb_voyage
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  Embedding_Length:
+    default: 1024
+  Input_Token_Limit:
+    default: 32000
+tags:
+  size_class: Embedding
+  license_class: Proprietary
+  provider_tag: Voyage.ai
+  scr_sizing: small
+  extra: []
+metadata:
+  description: Voyage.ai introduces voyage-3.5, the latest generation of their embedding models. This
+    model offers improved retrieval quality over voyage-3 at the same price, setting a new frontier for
+    price-performance.
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 6.0e-08
+modeler: gerdaw
+generation:
+  overrides: []
+  score_code_file: voyage35.py
+  catalog_provenance: mdb import of hand-written folder

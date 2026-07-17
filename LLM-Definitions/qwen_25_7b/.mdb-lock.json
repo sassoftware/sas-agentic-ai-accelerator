@@ -1,0 +1,14 @@
+{
+    "generator": "mdb 0.1.0",
+    "manifest_sha256": "1cf7425ed561ce4f06af8693352b1911df844818191e43ebc8b9e3a212891df2",
+    "files": {
+        "Model-Card.md": "60bfd0d78764492998b6fcc8a37fe7fd7b6772ad9d845231c0017833ad2e1494",
+        "README.md": "1849ef69f80625b8737960c97762909e786c7c1f672bbc01579f639a7bdd2e4f",
+        "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
+        "modelConfiguration.json": "0a70a0231c8f57d70d70e6ff7eeba69a2d630f0f72da2c677cfd7c1c8829a60f",
+        "options.json": "f3a66a3248f4f1dddc032522728bdc51a7cc471d48fbca69d9986d50669434be",
+        "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
+        "qwen257bScore.py": "d05ca6f668b2e0ae54b3007da2616d7cfeabc4a9456d0e69ee1b3334b985511a",
+        "requirements.json": "13b3654704b185e356f80d22863a73303e97e20cce395ec492fa53ac6e284863"
+    }
+}

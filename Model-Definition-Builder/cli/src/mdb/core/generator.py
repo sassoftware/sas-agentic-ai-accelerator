@@ -72,6 +72,12 @@ def score_file_name(model_id: str) -> str:
     return f"{camel}Score.py"
 
 
+def effective_score_file(manifest: ModelManifest) -> str:
+    """The score filename this definition actually uses (migrated folders keep
+    their legacy name via generation.score_code_file)."""
+    return manifest.generation.score_code_file or score_file_name(manifest.model_id)
+
+
 def _py_literal(value: Any) -> str:
     if isinstance(value, bool):
         return "True" if value else "False"
@@ -286,7 +292,7 @@ def _render_options_json(manifest: ModelManifest, core: CoreAssets) -> str:
 def _render_model_configuration(manifest: ModelManifest, core: CoreAssets) -> str:
     values: dict[str, Any] = {
         "name": manifest.model_id,
-        "scoreCodeFile": score_file_name(manifest.model_id),
+        "scoreCodeFile": effective_score_file(manifest),
         "description": manifest.metadata.description,
         "modeler": manifest.modeler,
         "tags": manifest.tags.as_list(),
@@ -406,7 +412,7 @@ def render_assets(manifest: ModelManifest, core: CoreAssets) -> dict[str, bytes]
     options_json = _render_options_json(manifest, core)
     input_var, output_var = core.var_files[manifest.kind]
     text_assets: dict[str, str] = {
-        score_file_name(manifest.model_id): _render_score(manifest, core),
+        effective_score_file(manifest): _render_score(manifest, core),
         "inputVar.json": input_var,
         "outputVar.json": output_var,
         "modelConfiguration.json": _render_model_configuration(manifest, core),

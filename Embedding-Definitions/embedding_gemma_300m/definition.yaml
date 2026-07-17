@@ -1,0 +1,46 @@
+schema: 1
+kind: embedding
+model_id: embedding_gemma_300m
+display_name: Embedding Gemma 300M
+provider:
+  adapter: hf-selfhosted
+  model_version: google/embeddinggemma-300m
+  params:
+    hf:
+      repo: google/embeddinggemma-300m
+      gated: false
+  auth:
+    mode: none
+runtime:
+  template: emb_sentence_transformers
+  requirements_profile: hf-sentence-transformers
+  timeout_s: 60
+options:
+  Embedding_Mode:
+    default: query
+  Embedding_Length:
+    default: 384
+  Input_Token_Limit:
+    default: 256
+tags:
+  size_class: Embedding
+  license_class: Open-Source
+  provider_tag: gemma
+  scr_sizing: medium
+  extra: []
+metadata:
+  description: EmbeddingGemma is a 300M parameter, state-of-the-art for its size, open embedding model
+    from Google, built from Gemma 3 (with T5Gemma initialization) and the same research and technology
+    used to create Gemini models. EmbeddingGemma produces vector representations of text, making it well-suited
+    for search and retrieval tasks, including classification, clustering, and semantic similarity search.
+    This model was trained with data in 100+ spoken languages.
+  size: 303000000
+  deployment_type: SCR
+  pricing:
+    cost_type: Seconds
+    second_cost: 3.9178e-05
+modeler: gerdaw
+generation:
+  overrides: []
+  score_code_file: embeddingGemma300m.py
+  catalog_provenance: mdb import of hand-written folder

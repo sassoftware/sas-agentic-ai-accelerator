@@ -9,7 +9,7 @@ provider:
   params: {}
   auth:
     mode: api_key
-    key_name: Voyage
+    key_name: VoyageAI
 runtime:
   template: emb_voyage
   requirements_profile: api-wrapper

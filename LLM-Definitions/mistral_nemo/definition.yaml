@@ -1,0 +1,46 @@
+schema: 1
+kind: llm
+model_id: mistral_nemo
+display_name: Mistral Nemo
+provider:
+  adapter: openai
+  model_version: mistral_nemo
+  params: {}
+  auth:
+    mode: none
+runtime:
+  template: openai_chat
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  temperature:
+    default: 0.3
+  max_tokens:
+    default: 256
+tags:
+  size_class: LLM
+  license_class: Open-Source
+  provider_tag: Apache-2
+  scr_sizing: large
+  extra:
+  - Mistral
+  - NVIDIA
+metadata:
+  description: The Mistral-Nemo-Instruct-2407 Large Language Model (LLM) is an instruct fine-tuned version
+    of the Mistral-Nemo-Base-2407. Trained jointly by Mistral AI and NVIDIA, it significantly outperforms
+    existing models smaller or similar in size.
+  release_date: '2024-07-18'
+  knowledge_cutoff: '2024-04-01'
+  context_length: 128000
+  size: 12000000000
+  deployment_type: SCR
+  pricing:
+    cost_type: Seconds
+    second_cost: 6.9178e-05
+modeler: gerdaw
+generation:
+  overrides:
+  - mistralNemoScore.py
+  - requirements.json
+  score_code_file: mistralNemoScore.py
+  catalog_provenance: mdb import of hand-written folder

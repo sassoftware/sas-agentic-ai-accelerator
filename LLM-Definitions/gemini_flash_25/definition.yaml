@@ -1,0 +1,48 @@
+schema: 1
+kind: llm
+model_id: gemini_flash_25
+display_name: Gemini Flash 2.5
+provider:
+  adapter: google
+  model_version: gemini_flash_25
+  params: {}
+  auth:
+    mode: api_key
+    key_name: Google
+runtime:
+  template: gemini_generate
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  temperature:
+    default: 1
+  top_k:
+    default: 40
+  top_p:
+    default: 0.95
+  max_tokens:
+    default: 256
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: Google
+  scr_sizing: small
+  extra: []
+metadata:
+  description: Our best model in terms of price-performance, offering well-rounded capabilities. 2.5 Flash
+    is best for large scale processing, low-latency, high volume tasks that require thinking, and agentic
+    use cases.
+  release_date: '2025-06-01'
+  knowledge_cutoff: '2025-01-01'
+  context_length: 1048576
+  size: 20000000000
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 3.0e-07
+    output_token_price: 2.5e-06
+modeler: gerdaw
+generation:
+  overrides: []
+  score_code_file: geminiflash25Score.py
+  catalog_provenance: mdb import of hand-written folder

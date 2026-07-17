@@ -1,0 +1,45 @@
+schema: 1
+kind: llm
+model_id: claude_sonnet_3
+display_name: Claude Sonnet 3
+provider:
+  adapter: anthropic
+  model_version: claude-3-sonnet-20240229
+  endpoint: https://api.anthropic.com/v1/messages
+  params: {}
+  auth:
+    mode: api_key
+    key_name: Anthropic
+runtime:
+  template: anthropic_messages
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  temperature:
+    default: 1
+  top_p:
+    default: 1
+  max_tokens:
+    default: 1000
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: Anthropic
+  scr_sizing: small
+  extra: []
+metadata:
+  description: Claude is a family of state-of-the-art large language models developed by Anthropic. Claude
+    3 Sonnet currently the second best Sonnet model.
+  release_date: '2024-03-04'
+  knowledge_cutoff: '2023-08-01'
+  context_length: 200000
+  size: 70000000000
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 3.0e-06
+    output_token_price: 1.5e-05
+modeler: gerdaw
+generation:
+  overrides: []
+  catalog_provenance: mdb import of hand-written folder

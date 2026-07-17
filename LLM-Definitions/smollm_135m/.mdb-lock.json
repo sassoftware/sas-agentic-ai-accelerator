@@ -1,0 +1,14 @@
+{
+    "generator": "mdb 0.1.0",
+    "manifest_sha256": "345df1d279dcc5f56aa14b67674c0db048053c17456beebe0da076bdea8ef4c6",
+    "files": {
+        "Model-Card.md": "e85e06be38f0562c97683ea84fd47742829d6a097b106a76cb90b0597c8dd695",
+        "README.md": "281cc13c39add1a9ce1ab07bf6425070c5204075e4759f84dfa834c4def37b7d",
+        "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
+        "modelConfiguration.json": "b73c230ed30d4ca834d683dc9aad4627dca154906424479f69ce2544204dc485",
+        "options.json": "b42fd1640daf97f1a330c36619ee81c552a98af0b4d61a4088e97b1c8a3b3809",
+        "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
+        "requirements.json": "68ed92882497af99608b2b93294822e562dc234d0baf9bda2ad825c30c2d98e6",
+        "smollm135mScore.py": "7f0f853f423f940c1775b57c0c2dd9b41ba77bf03740a72e5d3c40916738128e"
+    }
+}

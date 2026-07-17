@@ -119,6 +119,8 @@ class GenerationBlock(BaseModel):
 
     # Files the user owns by hand; mdb generate skips and reports them
     overrides: list[str] = Field(default_factory=list)
+    # Keeps a legacy score filename on migrated folders (default: <camelCase>Score.py)
+    score_code_file: Optional[str] = None
     catalog_provenance: str = "manual entry"
 
 
