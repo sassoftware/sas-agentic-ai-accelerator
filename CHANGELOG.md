@@ -28,7 +28,7 @@ The new **Model Definition Builder** (`Model-Definition-Builder/`) takes the cho
 
 ### Fixed
 
-- None
+- Fact-sheet corrections adopted from PR #6 (thanks @bteleuca): the `gemini_falsh_15_002` model_id typo that broke the fact-sheet join for that model, `Propietary` → `Proprietary` (16 LLM + 8 embedding rows), `GPT-4ois` → `GPT-4o is` (3 rows), one grammar fix, and the missing `gpt_4o_mini_az_2024_07_18` row
 
 ## [1.0.0] - 2026-07-15
 
