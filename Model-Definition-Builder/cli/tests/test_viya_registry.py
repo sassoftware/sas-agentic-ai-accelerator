@@ -1,7 +1,13 @@
 # Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Pure (no-network) parts of the register/publish path: attribute enrichment
-and the content manifest with its load-bearing roles."""
+and the content manifest with its load-bearing roles.
+
+The tests that monkeypatch sasctl are skipped when the optional [viya] extra
+is not installed (e.g. the base CI job) - the registry module itself imports
+sasctl lazily, so the non-sasctl tests here still run everywhere."""
+import pytest
+
 from mdb.core.manifest import load_manifest
 from mdb.viya.registry import (
     PROJECT_META, REPOSITORY, build_model_attributes, content_files,
@@ -86,6 +92,7 @@ class _FakeSession:
 
 
 def _patch_mr(monkeypatch, *, repo, project, sink):
+    pytest.importorskip("sasctl")
     from sasctl.services import model_repository as mr
     monkeypatch.setattr(mr, "get_repository", lambda *a, **k: repo)
     monkeypatch.setattr(mr, "get_project", lambda *a, **k: project)
@@ -116,6 +123,7 @@ def test_ensure_is_noop_when_everything_exists(core, monkeypatch):
 
 
 def test_unregister_deletes_when_present(monkeypatch):
+    pytest.importorskip("sasctl")
     from sasctl.services import model_repository as mr
     deleted = []
     monkeypatch.setattr(mr, "get_model", lambda mid: type("M", (), {"id": "abc123"})())
@@ -125,6 +133,7 @@ def test_unregister_deletes_when_present(monkeypatch):
 
 
 def test_unregister_absent_when_missing(monkeypatch):
+    pytest.importorskip("sasctl")
     from sasctl.services import model_repository as mr
     monkeypatch.setattr(mr, "get_model", lambda mid: None)
     monkeypatch.setattr(mr, "delete_model",
