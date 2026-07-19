@@ -80,7 +80,13 @@ def test_sentence_transformers_bug_fixes(core):
     assert "model.preprocess([document[0]])" in score
     assert "return embedding, run_time, tokens" in score
     steps = json.loads(rendered["requirements.json"])
-    assert any("sentence-transformers" in s["command"] for s in steps)
+    commands = [s["command"] for s in steps]
+    assert any("sentence-transformers" in c for c in commands)
+    # Regression guard for the proven lean SCR image (published all_minilm in 139s
+    # vs the 1800s timeout): CPU-only torch and no vestigial git-lfs install.
+    assert any("--extra-index-url https://download.pytorch.org/whl/cpu torch" in c for c in commands)
+    assert not any("git-lfs" in c or "git lfs" in c for c in commands)
+    assert any("sentence-transformers>=5.1" in c for c in commands)
 
 
 def test_bedrock_converse_render(core):

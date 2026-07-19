@@ -5,7 +5,7 @@
     },
     {
         "step": "install CPU-only PyTorch (SCR runs on CPU - the default wheel bundles ~2GB of unused CUDA libraries)",
-        "command": "pip3 -q install --index-url https://download.pytorch.org/whl/cpu torch"
+        "command": "pip3 -q install --extra-index-url https://download.pytorch.org/whl/cpu torch"
     },
     {
         "step": "install huggingface CLI and other packages",

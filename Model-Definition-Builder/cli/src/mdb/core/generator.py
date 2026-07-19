@@ -348,9 +348,12 @@ def _render_requirements(manifest: ModelManifest) -> str:
     }
     # SCR containers run on CPU; the default torch wheel bundles ~2GB of unused
     # CUDA libraries, which pushes the image build past the publish timeout.
+    # --extra-index-url keeps PyPI as the primary index (so torch's transitive
+    # deps still resolve there) while the CPU-only torch wheel (the +cpu local
+    # version, which sorts higher) is preferred from the PyTorch index.
     torch_cpu_step = {
         "step": "install CPU-only PyTorch (SCR runs on CPU - the default wheel bundles ~2GB of unused CUDA libraries)",
-        "command": "pip3 -q install --index-url https://download.pytorch.org/whl/cpu torch",
+        "command": "pip3 -q install --extra-index-url https://download.pytorch.org/whl/cpu torch",
     }
     if profile == "api-wrapper":
         steps = [
@@ -409,7 +412,9 @@ def _render_requirements(manifest: ModelManifest) -> str:
             torch_cpu_step,
             {
                 "step": "install huggingface CLI and other packages",
-                "command": "pip3 -q install 'huggingface-hub>=0.18.0' sentence-transformers numpy==1.26.4",
+                # Floor matches the 5.x APIs the generated scorer calls (preprocess,
+                # encode_query, encode_document).
+                "command": "pip3 -q install 'huggingface-hub>=0.18.0' 'sentence-transformers>=5.1' numpy==1.26.4",
             },
         ]
         if hf.get("gated"):

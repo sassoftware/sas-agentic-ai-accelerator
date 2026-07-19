@@ -151,7 +151,7 @@ def test_hf_requirements_profile(core):
     # hf download uses the huggingface_hub HTTP API - no git-lfs step needed
     assert not any("git-lfs" in c or "git lfs" in c for c in commands)
     # CPU-only torch keeps the SCR image lean (no bundled CUDA)
-    assert any("--index-url https://download.pytorch.org/whl/cpu torch" in c for c in commands)
+    assert any("--extra-index-url https://download.pytorch.org/whl/cpu torch" in c for c in commands)
     assert any("huggingface-hub>=0.18.0" in c for c in commands)
     assert any("hf login --token $(cat /etc/secret-volume/huggingfacetoken)" == c for c in commands)
     assert commands[-1] == "hf download --quiet Qwen/Qwen2.5-0.5B-Instruct --local-dir /pybox/model/test_model_1"

@@ -226,6 +226,7 @@ def add(
     params_billions: Optional[float] = typer.Option(None, help="Parameter count in billions (hf-selfhosted)"),
     base_url: Optional[str] = typer.Option(None, help="Server base URL (ollama/vllm self-hosted)"),
     kind: Optional[str] = typer.Option(None, help="Model kind: llm or embedding (ollama/vllm self-hosted)"),
+    license_: Optional[str] = typer.Option(None, "--license", help="License class for self-hosted models (Open-Source/Proprietary)"),
     description: Optional[str] = typer.Option(None, help="Model description for Model Manager and the fact sheet"),
 ):
     """Add a new model definition: pick a provider and model, answer a few questions,
@@ -255,10 +256,11 @@ def add(
         "resource": resource, "deployment": deployment, "repo": repo,
         "gated": {True: "y", False: "n"}.get(gated), "runtime": runtime,
         "params_billions": str(params_billions) if params_billions is not None else None,
-        "base_url": base_url, "kind": kind,
+        "base_url": base_url, "kind": kind, "license": license_,
         "description": description,
     }
     answers: dict[str, str] = {}
+    question_params = {question.param for question in adapter.questions()}
     for question in adapter.questions():
         supplied = flag_answers.get(question.param)
         if supplied is not None:
@@ -270,6 +272,12 @@ def add(
             answers[question.param] = question.default
         else:
             answers[question.param] = Prompt.ask(question.prompt, default=question.default or None)
+    # Surface flags that this provider does not consume, so a misdirected flag
+    # (e.g. --kind on a hosted provider) is not silently ignored.
+    for flag_name, flag_value in flag_answers.items():
+        if flag_value is not None and flag_name != "description" and flag_name not in question_params:
+            console.print(f"[yellow]--{flag_name.replace('_', '-')} is not used by provider "
+                          f"'{provider}' - ignored.[/yellow]")
     if description:
         answers["description"] = description
     if answers.get("resource"):
@@ -576,23 +584,59 @@ def _viya_session():
 
 
 @app.command()
-def setup():
-    """Create the SAS Model Manager repository and the LLM/Embedding Model Projects if missing.
+def setup(
+    out: str = typer.Option(".", "--out", help="Directory for the authorization-rules and builder seed files"),
+    no_files: bool = typer.Option(False, "--no-files", help="Only create the repository/projects; skip the seed files"),
+):
+    """Create the SAS Model Manager repository and the LLM/Embedding Model Projects if missing,
+    and write the authorization-group rules and Prompt/RAG Builder seed files.
 
-    Idempotent: existing objects are left untouched. `mdb register` runs this
-    automatically for the kind it registers, so a separate call is optional -
-    use it to bootstrap a fresh environment up front."""
-    from .viya.registry import ensure_repository_and_project
+    Idempotent: existing objects are left untouched. `mdb register` runs the
+    repository/project check automatically for the kind it registers, so calling
+    setup is optional - use it to bootstrap a fresh environment up front. This
+    matches Model-Manager-Setup.py: it also writes sas-viya-cli-commands.txt (the
+    LLM Consumers / Prompt Engineers groups and folder/repository authorization
+    rules) and the llm-prompt-builder.json / rag-builder.json builder seeds."""
+    from .viya.registry import (
+        authorization_rules_text, builder_seed, ensure_repository_and_project,
+    )
     ctx = Context()
     responsible_party = os.environ.get("SAS_RESPONSIBLE_PARTY", "")
+    deployment_type = os.environ.get("SAS_DEPLOYMENT_TYPE", "k8s")
+    scr_endpoint = _scr_endpoint()
     created_any = False
+    repo_id = repo_folder = None
+    project_ids: dict[str, Optional[str]] = {}
     with _viya_session() as session:
         for kind in KINDS:
-            for created in ensure_repository_and_project(session, kind, ctx.core, responsible_party):
+            try:
+                ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
+            except Exception as exc:
+                console.print(f"[red]{kind}: {exc}[/red]")
+                raise typer.Exit(1)
+            for created in ensured.created:
                 console.print(f"[green]created {created}.[/green]")
                 created_any = True
+            repo_id = repo_id or ensured.repository_id
+            repo_folder = repo_folder or ensured.repository_folder_id
+            project_ids[kind] = ensured.project_id
     if not created_any:
-        console.print("[green]Repository and projects already exist - nothing to do.[/green]")
+        console.print("[green]Repository and projects already exist.[/green]")
+    if no_files:
+        raise typer.Exit(0)
+    out_dir = Path(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "sas-viya-cli-commands.txt").write_text(
+        authorization_rules_text(repo_id, repo_folder), encoding="utf-8")
+    (out_dir / "llm-prompt-builder.json").write_text(
+        json.dumps(builder_seed("llm", repo_id, project_ids.get("llm"), scr_endpoint, deployment_type), indent=4),
+        encoding="utf-8")
+    (out_dir / "rag-builder.json").write_text(
+        json.dumps(builder_seed("embedding", repo_id, project_ids.get("embedding"), scr_endpoint, deployment_type), indent=4),
+        encoding="utf-8")
+    console.print(f"[green]Wrote sas-viya-cli-commands.txt (authorization rules), llm-prompt-builder.json "
+                  f"and rag-builder.json to {out_dir}/.[/green]")
+    console.print("Review sas-viya-cli-commands.txt before running it - it creates access groups and rules.")
 
 
 @app.command()
@@ -605,26 +649,36 @@ def register(
     """Register managed definitions in SAS Model Manager (both kinds, one path)."""
     from .viya.registry import ensure_repository_and_project, register_model
     ctx = Context()
-    targets = [f for f in ctx.resolve_targets(ids or [], all_) if (f / MANIFEST_FILENAME).is_file()]
+    all_targets = ctx.resolve_targets(ids or [], all_)
+    targets = [f for f in all_targets if (f / MANIFEST_FILENAME).is_file()]
     scr = _scr_endpoint()
     responsible_party = os.environ.get("SAS_RESPONSIBLE_PARTY", "")
     ensured_kinds: set[str] = set()
     failed = False
+    # An explicitly named folder without a manifest is a hand-maintained folder;
+    # make the skip visible instead of silently succeeding.
+    if not all_ and ids:
+        for folder in all_targets:
+            if not (folder / MANIFEST_FILENAME).is_file():
+                console.print(f"[yellow]{folder.name}: no {MANIFEST_FILENAME} - adopt it with "
+                              "'mdb import' first, or it stays hand-maintained. Skipped.[/yellow]")
+                failed = True
     with _viya_session() as session:
         for folder in targets:
-            manifest = load_manifest(folder)
-            if manifest.kind not in ensured_kinds:
-                for created in ensure_repository_and_project(session, manifest.kind, ctx.core, responsible_party):
-                    console.print(f"[green]setup: created {created}.[/green]")
-                ensured_kinds.add(manifest.kind)
-            row = facts.read_row(ctx.fact_sheet(manifest.kind), manifest.model_id)
-            if row is None:
-                console.print(f"[yellow]{manifest.model_id}: no fact-sheet row - run mdb sync first "
-                              "(cost monitoring metadata will be incomplete).[/yellow]")
             try:
+                manifest = load_manifest(folder)
+                if manifest.kind not in ensured_kinds:
+                    ensured = ensure_repository_and_project(session, manifest.kind, ctx.core, responsible_party)
+                    for created in ensured.created:
+                        console.print(f"[green]setup: created {created}.[/green]")
+                    ensured_kinds.add(manifest.kind)
+                row = facts.read_row(ctx.fact_sheet(manifest.kind), manifest.model_id)
+                if row is None:
+                    console.print(f"[yellow]{manifest.model_id}: no fact-sheet row - run mdb sync first "
+                                  "(cost monitoring metadata will be incomplete).[/yellow]")
                 result = register_model(session, manifest, folder, row, scr, update=update)
             except Exception as exc:
-                console.print(f"[red]{manifest.model_id}: {exc}[/red]")
+                console.print(f"[red]{folder.name}: {exc}[/red]")
                 failed = True
                 continue
             color = {"created": "green", "updated": "green", "skipped": "yellow"}[result.action]
@@ -660,6 +714,8 @@ def unregister(
                 continue
             if result == "deleted":
                 console.print(f"[green]{model_id}: deleted from SAS Model Manager.[/green]")
+                console.print("[dim]  Note: a container already published to an SCR destination is not "
+                              "removed by this - delete it at the publishing destination if needed.[/dim]")
             else:
                 console.print(f"[yellow]{model_id}: not registered - nothing to delete.[/yellow]")
     raise typer.Exit(1 if failed else 0)

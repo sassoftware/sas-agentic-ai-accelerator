@@ -102,6 +102,10 @@
                     "body_key": "top_k",
                     "cast": "int"
                 },
+                "openai_compat_selfhosted": {
+                    "body_key": "top_k",
+                    "cast": "int"
+                },
                 "hf_transformers": {
                     "generate_key": "top_k",
                     "cast": "int"

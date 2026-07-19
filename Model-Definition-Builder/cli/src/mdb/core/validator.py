@@ -155,6 +155,18 @@ def validate_folder(folder: Path, core: CoreAssets, fact_sheet: Path) -> list[Is
             "entry to definition-core/static/option-vocabulary.json (label, type, per-family mapping).",
         ))
 
+    # V011 - self-hosted OpenAI-compatible definition with no base URL: the score
+    # script has no endpoint to call unless the env var is set in the deployment.
+    if manifest.runtime.template in ("openai_compat_selfhosted", "emb_openai_compat_selfhosted") \
+            and not (params.get("base_url") or "").strip():
+        env_var = params.get("base_url_env", "the base-URL environment variable")
+        issues.append(Issue(
+            "V011", "warning", model_id,
+            "No base_url is set for this self-hosted OpenAI-compatible definition.",
+            f"Set provider.params.base_url, or ensure {env_var} is set in every deployment - "
+            "otherwise scoring fails with a missing-URL error.",
+        ))
+
     # V008 - pricing placeholders that would silently corrupt cost monitoring
     pricing = manifest.metadata.pricing
     if pricing.cost_type == "Tokens" and not (pricing.input_token_price or pricing.output_token_price):

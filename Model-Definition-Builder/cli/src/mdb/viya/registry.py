@@ -33,6 +33,8 @@ PROJECT_META = {
     "llm": {
         "project": "LLM Model Project",
         "function": "LLM",
+        # The LLM scorer's primary output variable.
+        "target_variable": "response",
         "description": (
             "This project stores all LLMs that are available to be used in use cases. "
             "It is possible to grant access to these models on a per model basis. Along "
@@ -43,6 +45,10 @@ PROJECT_META = {
     "embedding": {
         "project": "Embedding Model Project",
         "function": "Embedding",
+        # Embedding models emit 'embedding', not 'response' (which does not exist
+        # in the embedding variable set); pointing the project target at a real
+        # variable keeps project-level monitoring/KPIs coherent.
+        "target_variable": "embedding",
         "description": (
             "This project stores all Embedding models that are available to be used in "
             "use cases. It is possible to grant access to these models on a per model "
@@ -65,15 +71,42 @@ def project_variables(core, kind: str) -> list[dict]:
     return variables
 
 
-def ensure_repository_and_project(session, kind: str, core, responsible_party: str) -> list[str]:
+@dataclass
+class EnsureResult:
+    created: list[str]  # human-readable labels of what was created (empty if all existed)
+    repository_id: Optional[str] = None
+    repository_folder_id: Optional[str] = None
+    project_id: Optional[str] = None  # the project for the requested kind
+
+
+def _attr(obj, name):
+    """RestObj supports attribute and dict access; try both."""
+    if obj is None:
+        return None
+    value = getattr(obj, name, None)
+    if value is None and hasattr(obj, "get"):
+        try:
+            return obj.get(name)
+        except Exception:
+            return None
+    return value
+
+
+def ensure_repository_and_project(session, kind: str, core, responsible_party: str) -> EnsureResult:
     """Create the LLM Repository and the kind's Model Project if they do not
-    exist yet. Idempotent - returns the labels of whatever was created (empty
-    when everything already existed). Mirrors Model-Manager-Setup.py so a fresh
-    environment can be bootstrapped straight from mdb."""
+    exist yet. Idempotent - the returned EnsureResult.created lists whatever was
+    created (empty when everything already existed) and carries the repository
+    and project ids for the bootstrap-file generation in mdb setup.
+
+    Mirrors the repository/project creation of Model-Manager-Setup.py; the
+    authorization-group rules and builder seed files are produced separately by
+    mdb setup (see authorization_rules_text / builder_seed)."""
     from sasctl.services import model_repository as mr
 
     created: list[str] = []
-    if mr.get_repository(REPOSITORY) is None:
+    repo_id = repo_folder = None
+    existing_repo = mr.get_repository(REPOSITORY)
+    if existing_repo is None:
         response = session.post(
             "/modelRepository/repositories",
             data=json.dumps({
@@ -88,27 +121,86 @@ def ensure_repository_and_project(session, kind: str, core, responsible_party: s
             },
         )
         if response.status_code >= 300:
-            raise RuntimeError(
-                f"Could not create the '{REPOSITORY}' repository: HTTP {response.status_code} "
-                f"{response.text[:200]} - you may need a SAS administrator to grant repository rights."
-            )
-        created.append(f"repository '{REPOSITORY}'")
+            # Lost a create race, or a genuine rights problem - re-fetch to tell
+            # them apart before blaming permissions.
+            existing_repo = mr.get_repository(REPOSITORY)
+            if existing_repo is None:
+                raise RuntimeError(
+                    f"Could not create the '{REPOSITORY}' repository: HTTP {response.status_code} "
+                    f"{response.text[:200]} - you may need a SAS administrator to grant repository rights."
+                )
+        else:
+            created.append(f"repository '{REPOSITORY}'")
+            body = response.json()
+            repo_id, repo_folder = body.get("id"), body.get("folderId")
+    if repo_id is None:
+        repo_id, repo_folder = _attr(existing_repo, "id"), _attr(existing_repo, "folderId")
 
     meta = PROJECT_META[kind]
-    if mr.get_project(meta["project"]) is None:
-        mr.create_project(
+    existing_project = mr.get_project(meta["project"])
+    if existing_project is None:
+        project = mr.create_project(
             project=meta["project"],
             description=meta["description"],
             repository=REPOSITORY,
             variables=project_variables(core, kind),
             targetLevel="NOMINAL",
-            targetVariable="response",
+            targetVariable=meta["target_variable"],
             function=meta["function"],
             modelResponsibleParty=responsible_party,
             tags=meta["tags"],
         )
         created.append(f"project '{meta['project']}'")
-    return created
+        project_id = _attr(project, "id")
+    else:
+        project_id = _attr(existing_project, "id")
+    return EnsureResult(created=created, repository_id=repo_id,
+                        repository_folder_id=repo_folder, project_id=project_id)
+
+
+def authorization_rules_text(repository_id: Optional[str], repository_folder_id: Optional[str]) -> str:
+    """The sas-viya-cli-commands.txt content (LLM Consumers / Prompt Engineers
+    groups plus the folder/repository authorization rules), matching
+    Model-Manager-Setup.py. The ids are filled in when known."""
+    folder = repository_folder_id or "<repository-folder-id>"
+    repo = repository_id or "<repository-id>"
+    return (
+        "# This script is written for Windows, update the commands accordingly\n"
+        "# Each command comes with a description, please read it and the documentation before running anything\n\n"
+        "# First a Custom Group is created called LLM Consumers - if you do not want use this group, skip this step and replace the name in subsequent commands\n"
+        'sas-viya identities create-group --id LLMConsumers --name "LLM Consumers" --description "This group enables a general access to the LLM repository. This group is meant for anybody that requires access to it."\n'
+        "# Add members to the LLM Consumers group\n"
+        "sas-viya identities add-member --group-id LLMConsumers --group-member-id GroupYouWantToAdd\n\n"
+        "# Second a Custom Group is created called Prompt Engineers - if you do not want use this group, skip this step and replace the name in subsequent commands\n"
+        'sas-viya identities create-group --id PromptEngineers --name "Prompt Engineers" --description "This group enables its members to create, update and delete Prompt Engineering projects in the LLM repository"\n'
+        "# Add members to the Prompt Engineers group\n"
+        "sas-viya identities add-member --group-id PromptEngineers --group-member-id GroupYouWantToAdd\n\n"
+        "# Create two rules that open up access to the LLM Repository for the LLM Consumers\n"
+        f'sas-viya authorization create-rule -o /folders/folders/{folder} -g LLMConsumers -p Read,Add,Remove -d "Enables the LLM Consumers to interact with the LLM repository" --reason "You are not part of the LLM Consumers group"\n'
+        f'sas-viya authorization create-rule --container-uri /folders/folders/{folder} -g LLMConsumers -p Read,Add,Update,Remove,Delete -d "Enables the LLM Consumers to interact with the LLM repository" --reason "You are not part of the LLM Consumers group"\n\n'
+        "# Create a rule to enable the Prompt Engineers to create new projects in the LLM repository\n"
+        f'sas-viya authorization create-rule -o /modelRepository/repositories/{repo} -g PromptEngineers -p Read,Add,Create,Update,Remove,Delete -d "Enables the group to create prompt engineering projects in the LLM repository" --reason "You are not part of the prompt engineering group"\n'
+    )
+
+
+def builder_seed(kind: str, repository_id: Optional[str], project_id: Optional[str],
+                 scr_endpoint: str, deployment_type: str) -> dict:
+    """The Prompt Builder / RAG Builder quick-start seed JSON, matching
+    Model-Manager-Setup.py (llm-prompt-builder.json for llm, rag-builder.json
+    for embedding)."""
+    if kind == "llm":
+        return {
+            "name": "LLM Prompt Builder", "id": "LPB", "width": 0, "type": "promptBuilder",
+            "modelRepositoryID": repository_id or "", "llmProjectID": project_id or "",
+            "SCREndpoint": scr_endpoint,
+            "API_KEYS": {"Anthropic": "key-value", "OpenAI": "key-value", "Google": "key-value"},
+            "deploymentType": deployment_type,
+        }
+    return {
+        "name": "RAG Builder", "id": "RBO", "width": 0, "type": "ragBuilder",
+        "modelRepositoryID": repository_id or "", "embeddingProjectID": project_id or "",
+        "SCREndpoint": scr_endpoint, "deploymentType": deployment_type,
+    }
 
 
 @dataclass
@@ -254,7 +346,11 @@ def register_model(session, manifest: ModelManifest, folder: Path, fact_row: dic
 
 def unregister_model(session, model_id: str) -> str:
     """Delete a registered model from SAS Model Manager. Returns 'deleted' or
-    'absent' (nothing registered). The local definition folder is untouched."""
+    'absent' (nothing registered). The local definition folder is untouched.
+
+    Note: this removes only the Model Manager registration. A container image
+    already published to an SCR destination is NOT removed and must be deleted
+    separately at the publishing destination."""
     from sasctl.services import model_repository as mr
 
     existing = mr.get_model(model_id)

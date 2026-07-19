@@ -52,6 +52,10 @@ class HuggingFaceAdapter(ProviderAdapter):
         repo = answers.get("repo", cm.ref)
         gated = str(answers.get("gated", "n")).strip().lower() in ("y", "yes", "true", "1")
         runtime = (answers.get("runtime") or "transformers").strip().lower()
+        if runtime not in ("transformers", "onnx", "sentence-transformers"):
+            raise ValueError(
+                f"runtime must be transformers, onnx or sentence-transformers, got {runtime!r}."
+            )
         is_embedding = runtime.startswith("sentence")
         kind = "embedding" if is_embedding else "llm"
         try:

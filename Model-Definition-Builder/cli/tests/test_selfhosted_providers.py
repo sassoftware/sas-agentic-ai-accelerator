@@ -9,6 +9,8 @@ on the server, so the container only needs the thin api-wrapper requirements.
 """
 import json
 
+import pytest
+
 from mdb.core.generator import effective_score_file, render_assets
 from mdb.providers import load_adapters
 from mdb.providers.base import CatalogModel
@@ -86,3 +88,95 @@ def test_vllm_default_base_url_stays_localhost(core):
     manifest = vllm.build_manifest(cm, "qwen_vllm", {"kind": "llm"}, "tester")
     score = render_assets(manifest, core)[effective_score_file(manifest)].decode()
     assert 'os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1")' in score
+
+
+def test_invalid_kind_is_rejected(core):
+    ollama = _adapter("ollama")
+    cm = CatalogModel(ref="nomic-embed-text", display_name="Nomic", source="manual")
+    with pytest.raises(ValueError, match="kind must be"):
+        ollama.build_manifest(cm, "nomic_bad", {"kind": "embeddings"}, "tester")  # plural typo
+
+
+# --- behavioral: compile and run the generated self-hosted scorers ------------
+
+def _render_score(adapter, model_id, answers):
+    cm = CatalogModel(ref=answers.get("ref", "m"), display_name="M", source="manual")
+    manifest = adapter.build_manifest(cm, model_id, answers, "tester")
+    src = render_assets(manifest, core_assets())[effective_score_file(manifest)].decode()
+    compile(src, f"{model_id}.py", "exec")  # never a SyntaxError, for any option combo
+    return src
+
+
+def core_assets():
+    from mdb.core.generator import CoreAssets
+    from mdb.core.paths import core_dir
+    from pathlib import Path
+    return CoreAssets.load(core_dir(Path(__file__).resolve().parents[3]))
+
+
+def test_selfhosted_chat_scorer_resolves_env_url_and_tolerates_empty_usage(monkeypatch):
+    import requests
+    src = _render_score(_adapter("ollama"), "llama31_8b_ollama", {"kind": "llm"})
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {"choices": [{"message": {"content": "hi"}}]}  # NO 'usage' key
+
+    monkeypatch.setattr(requests, "post",
+                        lambda url, headers=None, json=None, timeout=None:
+                        captured.update(url=url, auth=(headers or {}).get("Authorization")) or _Resp())
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://envhost:1234/v1/")  # trailing slash
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+    ns: dict = {}
+    exec(src, ns)
+    resp, run_time, prompt_length, output_length = ns["scoreModel"](["hi"], ["sys"], [""])
+    assert resp == "hi"
+    assert prompt_length == 0 and output_length == 0  # empty-usage tolerance (hosted openai_chat would KeyError)
+    assert captured["url"] == "http://envhost:1234/v1/chat/completions"  # env wins, trailing slash stripped
+    assert captured["auth"] is None  # no token env set -> no Authorization header
+
+
+def test_selfhosted_embedding_scorer_runs_and_counts_tokens(monkeypatch):
+    import requests
+    src = _render_score(_adapter("ollama"), "emb_ollama",
+                        {"kind": "embedding", "embedding_length": "8", "context_length": "512"})
+
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {"data": [{"embedding": [0.1] * 8}], "usage": {"prompt_tokens": 3}}
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp())
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://envhost:9/v1")
+    ns: dict = {}
+    exec(src, ns)
+    embedding, run_time, tokens = ns["scoreModel"](["doc"], ["proj"], [""])
+    assert json.loads(embedding) == [0.1] * 8
+    assert tokens == 3
+
+
+def test_selfhosted_percall_base_url_overrides_env_and_sends_bearer(monkeypatch):
+    import requests
+    src = _render_score(_adapter("vllm"), "llama_vllm", {"kind": "llm"})
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+    monkeypatch.setattr(requests, "post",
+                        lambda url, headers=None, json=None, timeout=None:
+                        captured.update(url=url, auth=(headers or {}).get("Authorization")) or _Resp())
+    monkeypatch.setenv("VLLM_BASE_URL", "http://envhost:8000/v1")
+    monkeypatch.setenv("VLLM_API_KEY", "tok-123")
+
+    ns: dict = {}
+    exec(src, ns)
+    # a per-call base_url option must win over the env var (runtime precedence: option > env > default)
+    ns["scoreModel"](["hi"], ["sys"], ['{"base_url": "http://percall:5000/v1"}'])
+    assert captured["url"] == "http://percall:5000/v1/chat/completions"
+    assert captured["auth"] == "Bearer tok-123"

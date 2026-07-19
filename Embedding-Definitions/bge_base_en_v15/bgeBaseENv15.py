@@ -74,7 +74,7 @@ def scoreModel(document, project, options):
     else:
         embeddingObject = model.encode_query(document[0])
     embedding = json.dumps(embeddingObject.tolist())
-    tokens = model.preprocess([document[0]])['input_ids'].size(dim=1) - 2
+    tokens = model.preprocess([document[0]])['input_ids'].size(dim=1) - model.tokenizer.num_special_tokens_to_add()
     run_time = time.time() - started_timestamp
     # Logging the response
     logger.info(f"project: {project[0]}")

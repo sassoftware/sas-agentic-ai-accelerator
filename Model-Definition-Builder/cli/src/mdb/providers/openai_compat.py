@@ -136,8 +136,13 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
         self.token_env = token_env
 
     def _resolved_base(self, answers: Optional[dict] = None) -> str:
-        override = (answers or {}).get("base_url")
-        base = override or os.environ.get(self.base_url_env) or self.base_url_default
+        # For CLI-side operations (smoke test, catalog browse) the environment
+        # variable wins: it points at the operator's real server. A per-call
+        # base_url or the baked localhost default is the fallback. (The deployed
+        # score script uses the runtime precedence: option > env var > default.)
+        base = (os.environ.get(self.base_url_env)
+                or (answers or {}).get("base_url")
+                or self.base_url_default)
         return base.rstrip("/")
 
     def questions(self) -> list[Question]:
@@ -146,6 +151,8 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
             Question("base_url", f"Server base URL (blank = {self.base_url_default}, "
                                  f"overridable at runtime via {self.base_url_env})",
                      default=self.base_url_default, required=False),
+            Question("license", "License class (Open-Source or Proprietary)",
+                     default="Open-Source", required=False),
             Question("embedding_length", "Embedding vector length (embedding kind only)",
                      default="", required=False),
             Question("context_length", "Input token limit / context length",
@@ -156,6 +163,9 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
         return (answers.get("kind") or cm.kind or "llm").strip().lower() == "embedding"
 
     def build_manifest(self, cm: CatalogModel, model_id: str, answers: dict, modeler: str) -> ModelManifest:
+        kind_answer = (answers.get("kind") or "").strip().lower()
+        if kind_answer and kind_answer not in ("llm", "embedding"):
+            raise ValueError(f"kind must be 'llm' or 'embedding', got {answers.get('kind')!r}.")
         is_embedding = self._wants_embedding(cm, answers)
         kind = "embedding" if is_embedding else "llm"
         # Only bake a non-default base URL; a blank/default keeps the localhost
@@ -183,10 +193,13 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
             }
             template = self.embedding_template
             size_class = "Embedding"
+            # Keep the Model Card / metadata context in step with the option default.
+            context_for_meta = ctx_len
         else:
             options = self.default_options(cm)
             template = self.template
             size_class = "LLM"
+            context_for_meta = _int(answers.get("context_length"), cm.context_length) or None
 
         return ModelManifest(
             kind=kind,
@@ -202,14 +215,14 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
             options=options,
             tags=TagsBlock(
                 size_class=size_class,
-                license_class="Open-Source",
+                license_class=(answers.get("license") or "Open-Source").strip() or "Open-Source",
                 provider_tag=self.provider_tag,
                 scr_sizing="small",
             ),
             metadata=MetadataBlock(
                 description=answers.get("description")
                 or f"{cm.display_name}, served from a self-hosted {self.display_name} server.",
-                context_length=_int(answers.get("context_length"), cm.context_length) or None,
+                context_length=context_for_meta,
                 deployment_type="API",
                 pricing=PricingBlock(cost_type="Seconds"),
             ),
@@ -262,8 +275,11 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
                 return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
             text = body["choices"][0]["message"]["content"]
             return SmokeResult(ok=True, detail=f"Server responded from {base}: {text[:60]!r}")
-        except Exception as exc:
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
             return SmokeResult(ok=False, detail=f"{exc} (is the server reachable at {base}?)")
+        except Exception as exc:
+            # Reached the server but got an unexpected response shape/body.
+            return SmokeResult(ok=False, detail=f"{exc} (unexpected response from {base})")
 
 
 class AzureFoundryAdapter(OpenAICompatAdapter):
