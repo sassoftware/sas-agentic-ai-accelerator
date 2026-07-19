@@ -77,7 +77,7 @@ def test_sentence_transformers_bug_fixes(core):
     score = rendered["testEmbed1Score.py"].decode()
     # dumps the FULL vector (not element [0]) and tokenizes the DOCUMENT (not the vector)
     assert "json.dumps(embeddingObject.tolist())" in score
-    assert "model.tokenize([document[0]])" in score
+    assert "model.preprocess([document[0]])" in score
     assert "return embedding, run_time, tokens" in score
     steps = json.loads(rendered["requirements.json"])
     assert any("sentence-transformers" in s["command"] for s in steps)
