@@ -128,7 +128,9 @@ mdb register gpt_4o_mini       # create it in SAS Model Manager
 mdb publish gpt_4o_mini --wait # publish to SCR and wait for the image build
 ```
 
-On a brand-new environment you do not need any manual setup first — `mdb register` creates the model repository and the LLM/Embedding project if they do not exist yet (or run `mdb setup` up front). To update a model you already registered, edit `definition.yaml`, `mdb generate`, then `mdb register gpt_4o_mini --update` to replace it in place with a new version. `mdb ship gpt_4o_mini` does validate → register → publish in one step. The details are in [Register, update and publish from the CLI](../Administration-Guide/Model-Definition-Builder.md#register-update-and-publish-from-the-cli); the classic `register-*.py` / `publish-*.py` scripts also keep working.
+On a brand-new environment you do not need any manual setup first — `mdb register` creates the model repository and the LLM/Embedding project if they do not exist yet (or run `mdb setup` up front). To update a model you already registered, edit `definition.yaml`, `mdb generate`, then `mdb register gpt_4o_mini --update` to replace it in place with a new version. `mdb ship gpt_4o_mini` does validate → register → publish in one step, and `mdb unregister gpt_4o_mini` removes a model from Model Manager again (the local folder is kept). The details are in [Register, update and publish from the CLI](../Administration-Guide/Model-Definition-Builder.md#register-update-and-publish-from-the-cli); the classic `register-*.py` / `publish-*.py` scripts also keep working.
+
+Publishing builds an SCR container image. Hosted-API, Ollama and vLLM models build in seconds (their image only needs `requests`). A self-hosted Hugging Face model bakes its weights into the image and installs PyTorch, so its build is heavier — `mdb` keeps it as lean as possible by installing the CPU-only PyTorch build (SCR runs on CPU) and downloading weights over HTTP, but very large models can still take a while. If a publish fails on a build timeout, that is the signal the image is too heavy for your environment's build limit.
 
 ## Keep everything in sync
 

@@ -5,7 +5,7 @@ and the content manifest with its load-bearing roles."""
 from mdb.core.manifest import load_manifest
 from mdb.viya.registry import (
     PROJECT_META, REPOSITORY, build_model_attributes, content_files,
-    ensure_repository_and_project, project_variables,
+    ensure_repository_and_project, project_variables, unregister_model,
 )
 
 
@@ -113,3 +113,20 @@ def test_ensure_is_noop_when_everything_exists(core, monkeypatch):
     assert created == []
     assert session.posts == []
     assert created_projects == []
+
+
+def test_unregister_deletes_when_present(monkeypatch):
+    from sasctl.services import model_repository as mr
+    deleted = []
+    monkeypatch.setattr(mr, "get_model", lambda mid: type("M", (), {"id": "abc123"})())
+    monkeypatch.setattr(mr, "delete_model", lambda mid: deleted.append(mid))
+    assert unregister_model(None, "all_minilm_l6_v2") == "deleted"
+    assert deleted == ["abc123"]
+
+
+def test_unregister_absent_when_missing(monkeypatch):
+    from sasctl.services import model_repository as mr
+    monkeypatch.setattr(mr, "get_model", lambda mid: None)
+    monkeypatch.setattr(mr, "delete_model",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("should not delete")))
+    assert unregister_model(None, "nope") == "absent"

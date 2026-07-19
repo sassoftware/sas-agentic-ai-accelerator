@@ -346,6 +346,12 @@ def _render_requirements(manifest: ModelManifest) -> str:
         "step": "upgrade pip before pip install",
         "command": "pip3 -q install --upgrade pip setuptools wheel",
     }
+    # SCR containers run on CPU; the default torch wheel bundles ~2GB of unused
+    # CUDA libraries, which pushes the image build past the publish timeout.
+    torch_cpu_step = {
+        "step": "install CPU-only PyTorch (SCR runs on CPU - the default wheel bundles ~2GB of unused CUDA libraries)",
+        "command": "pip3 -q install --index-url https://download.pytorch.org/whl/cpu torch",
+    }
     if profile == "api-wrapper":
         steps = [
             upgrade_step,
@@ -354,13 +360,14 @@ def _render_requirements(manifest: ModelManifest) -> str:
     elif profile == "hf-transformers":
         hf = manifest.provider.params.get("hf", {})
         repo = hf.get("repo") or manifest.provider.model_version
+        # hf download uses the huggingface_hub HTTP API (snapshot_download); git-lfs
+        # is not involved, so no git-lfs install step is needed.
         steps = [
-            {"step": "install git-lfs", "command": "microdnf install git-lfs"},
-            {"step": "Verify git-lfs install", "command": "git lfs install"},
             upgrade_step,
+            torch_cpu_step,
             {
                 "step": "install huggingface CLI and other packages",
-                "command": "pip3 -q install 'huggingface-hub>=0.18.0' transformers torch accelerate numpy==1.26.4",
+                "command": "pip3 -q install 'huggingface-hub>=0.18.0' transformers accelerate numpy==1.26.4",
             },
         ]
         if hf.get("gated"):
@@ -375,9 +382,8 @@ def _render_requirements(manifest: ModelManifest) -> str:
     elif profile == "hf-onnx":
         hf = manifest.provider.params.get("hf", {})
         repo = hf.get("repo") or manifest.provider.model_version
+        # onnxruntime-genai does not use torch; hf download needs no git-lfs.
         steps = [
-            {"step": "install git-lfs", "command": "microdnf install git-lfs"},
-            {"step": "Verify git-lfs install", "command": "git lfs install"},
             upgrade_step,
             {
                 "step": "install huggingface CLI and other packages",
@@ -396,10 +402,11 @@ def _render_requirements(manifest: ModelManifest) -> str:
     elif profile == "hf-sentence-transformers":
         hf = manifest.provider.params.get("hf", {})
         repo = hf.get("repo") or manifest.provider.model_version
+        # sentence-transformers pulls in torch; install the CPU build explicitly.
+        # hf download uses the huggingface_hub HTTP API, so no git-lfs is needed.
         steps = [
-            {"step": "install git-lfs", "command": "microdnf install git-lfs"},
-            {"step": "Verify git-lfs install", "command": "git lfs install"},
             upgrade_step,
+            torch_cpu_step,
             {
                 "step": "install huggingface CLI and other packages",
                 "command": "pip3 -q install 'huggingface-hub>=0.18.0' sentence-transformers numpy==1.26.4",

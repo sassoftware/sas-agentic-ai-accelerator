@@ -637,6 +637,35 @@ def register(
 
 
 @app.command()
+def unregister(
+    ids: list[str] = typer.Argument(..., help="Registered model_id(s) to delete from SAS Model Manager"),
+    yes: bool = typer.Option(False, "--yes", help="Delete without the confirmation prompt"),
+):
+    """Delete registered model(s) from SAS Model Manager. The local definition
+    folder is left untouched - re-register any time with mdb register."""
+    from .viya.registry import unregister_model
+    failed = False
+    with _viya_session() as session:
+        for model_id in ids:
+            if not yes and not Confirm.ask(
+                f"Delete registered model '{model_id}' from SAS Model Manager?", default=False
+            ):
+                console.print(f"[yellow]{model_id}: skipped.[/yellow]")
+                continue
+            try:
+                result = unregister_model(session, model_id)
+            except Exception as exc:
+                console.print(f"[red]{model_id}: {exc}[/red]")
+                failed = True
+                continue
+            if result == "deleted":
+                console.print(f"[green]{model_id}: deleted from SAS Model Manager.[/green]")
+            else:
+                console.print(f"[yellow]{model_id}: not registered - nothing to delete.[/yellow]")
+    raise typer.Exit(1 if failed else 0)
+
+
+@app.command()
 def publish(
     ids: Optional[list[str]] = typer.Argument(None),
     all_: bool = typer.Option(False, "--all"),

@@ -252,6 +252,18 @@ def register_model(session, manifest: ModelManifest, folder: Path, fact_row: dic
     return RegisterResult("updated", manifest.model_id, _link(model_id))
 
 
+def unregister_model(session, model_id: str) -> str:
+    """Delete a registered model from SAS Model Manager. Returns 'deleted' or
+    'absent' (nothing registered). The local definition folder is untouched."""
+    from sasctl.services import model_repository as mr
+
+    existing = mr.get_model(model_id)
+    if existing is None:
+        return "absent"
+    mr.delete_model(existing.id)
+    return "deleted"
+
+
 SCR_DESTINATION_TYPES = {"azure", "aws", "gcp", "privatedocker", "AWS", "GCP", "privateDocker"}
 
 

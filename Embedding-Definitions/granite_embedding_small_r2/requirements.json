@@ -1,15 +1,11 @@
 [
     {
-        "step": "install git-lfs",
-        "command": "microdnf install git-lfs"
-    },
-    {
-        "step": "Verify git-lfs install",
-        "command": "git lfs install"
-    },
-    {
         "step": "upgrade pip before pip install",
         "command": "pip3 -q install --upgrade pip setuptools wheel"
+    },
+    {
+        "step": "install CPU-only PyTorch (SCR runs on CPU - the default wheel bundles ~2GB of unused CUDA libraries)",
+        "command": "pip3 -q install --index-url https://download.pytorch.org/whl/cpu torch"
     },
     {
         "step": "install huggingface CLI and other packages",

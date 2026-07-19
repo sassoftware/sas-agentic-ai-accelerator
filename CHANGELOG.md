@@ -30,6 +30,7 @@ The new **Model Definition Builder** (`Model-Definition-Builder/`) takes the cho
 - Fleet curation backed by radar evidence: 13 provider-retired definitions removed (Claude 2.x/3.x, the Gemini 1.5 family, Gemini 2.5 Pro/Flash-Lite, `text-embedding-ada-002`); `gemini-2.5-flash` verified still serving and kept — every removed definition remains in git history and is a quick `mdb add` away if a provider revives it
 - Viya lifecycle verbs (`pip install sas-mdb[viya]`): `mdb register [--update]` creates or replaces a registered model in place (new minor version, content replacement via `contents?onConflict=update`, refreshed attributes and tags — no more delete-and-re-register), `mdb publish --wait` polls the SCR image build to completion, `mdb ship` chains validate/register/publish, and `mdb endpoints` emits the SCR endpoint manifest; one implementation covers LLM and Embedding models, and every registered model stores its `definition.yaml` as model content
 - `mdb setup` creates the SAS Model Manager repository (`LLM Repository`) and the LLM/Embedding Model Projects if they do not exist yet (idempotent, matching `Model-Manager-Setup.py`), and `mdb register` runs the same check automatically for the kind it registers — so a fresh environment can be bootstrapped entirely from the CLI without a separate setup step
+- `mdb unregister <model_id>` deletes a registered model from SAS Model Manager (confirmation prompt, `--yes` to skip); the local definition folder is left untouched, so it can be re-registered any time
 
 ### Changed
 
@@ -37,6 +38,7 @@ The new **Model Definition Builder** (`Model-Definition-Builder/`) takes the cho
 - **Re-publish guidance:** deployed SCR containers of migrated models still run the old score code until re-published — republish with `mdb publish <id>` (or the classic scripts) when you want the fixes in production; `mdb register --update` refreshes registered model contents first
 - The Azure OpenAI definition's `API_KEY` default is normalized from the `ProviderName` placeholder to `AzureOpenAI`, and the Voyage adapter uses the fleet's established `VoyageAI` KeyName
 - The generator emits `toolVersion: "3.11"` — newer SAS Viya releases reject the legacy `3.11-5` format when publishing; the `_Base_Definition` templates are updated as well
+- Self-hosted Hugging Face requirements are much leaner so the SCR image builds stay under the publish timeout: PyTorch installs from the CPU-only index (`--index-url https://download.pytorch.org/whl/cpu`) instead of the default wheel that bundles ~2 GB of unused CUDA libraries, and the vestigial `git-lfs` install steps are removed because `hf download` uses the huggingface-hub HTTP API rather than git. Applies to the `transformers`, `sentence-transformers` and `onnx` requirements profiles (the `onnx` profile already used no torch); the six hand-maintained runtime folders keep their own requirements. Re-register (`mdb register --update`) and re-publish affected self-hosted models to pick this up
 
 ### Fixed
 

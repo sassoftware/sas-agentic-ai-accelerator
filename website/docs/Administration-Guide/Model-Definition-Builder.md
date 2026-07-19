@@ -79,6 +79,7 @@ mdb register <model_id> --update     # replace a registered model IN PLACE: new 
                                      # version + content replacement + refreshed attributes
 mdb publish <model_id> --wait        # publish to SCR and poll until the image build finishes
 mdb ship <model_id>                  # validate --live -> register --update -> publish --wait
+mdb unregister <model_id>            # delete a registered model from Model Manager
 mdb endpoints --json                 # SCR endpoint manifest for CI and testing
 ```
 
