@@ -29,6 +29,7 @@ The new **Model Definition Builder** (`Model-Definition-Builder/`) takes the cho
 - Third-party adapter kit: `mdb provider scaffold <name>` generates an entry-point-wired pip package skeleton and `mdb provider check <id>` runs the conformance suite against any installed adapter
 - Fleet curation backed by radar evidence: 13 provider-retired definitions removed (Claude 2.x/3.x, the Gemini 1.5 family, Gemini 2.5 Pro/Flash-Lite, `text-embedding-ada-002`); `gemini-2.5-flash` verified still serving and kept — every removed definition remains in git history and is a quick `mdb add` away if a provider revives it
 - Viya lifecycle verbs (`pip install sas-mdb[viya]`): `mdb register [--update]` creates or replaces a registered model in place (new minor version, content replacement via `contents?onConflict=update`, refreshed attributes and tags — no more delete-and-re-register), `mdb publish --wait` polls the SCR image build to completion, `mdb ship` chains validate/register/publish, and `mdb endpoints` emits the SCR endpoint manifest; one implementation covers LLM and Embedding models, and every registered model stores its `definition.yaml` as model content
+- `mdb setup` creates the SAS Model Manager repository (`LLM Repository`) and the LLM/Embedding Model Projects if they do not exist yet (idempotent, matching `Model-Manager-Setup.py`), and `mdb register` runs the same check automatically for the kind it registers — so a fresh environment can be bootstrapped entirely from the CLI without a separate setup step
 
 ### Changed
 

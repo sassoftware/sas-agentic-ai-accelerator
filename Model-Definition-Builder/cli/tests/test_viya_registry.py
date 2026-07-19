@@ -3,7 +3,10 @@
 """Pure (no-network) parts of the register/publish path: attribute enrichment
 and the content manifest with its load-bearing roles."""
 from mdb.core.manifest import load_manifest
-from mdb.viya.registry import build_model_attributes, content_files
+from mdb.viya.registry import (
+    PROJECT_META, REPOSITORY, build_model_attributes, content_files,
+    ensure_repository_and_project, project_variables,
+)
 
 
 def test_attributes_enrichment_matches_register_script(repo_root, fact_sheet):
@@ -46,3 +49,67 @@ def test_content_files_roles(repo_root):
     assert by_name["Model-Card.md"] == "documentation"
     # every listed file exists on disk
     assert all(path.is_file() for path, _, _ in files)
+
+
+# --- environment bootstrap (mdb setup / auto-ensure on register) -------------
+
+def test_project_meta_matches_setup_script():
+    assert REPOSITORY == "LLM Repository"
+    assert PROJECT_META["llm"]["project"] == "LLM Model Project"
+    assert PROJECT_META["llm"]["function"] == "LLM"
+    assert PROJECT_META["llm"]["tags"] == ["LLM-Models", "SCR-Definitions", "Python"]
+    assert PROJECT_META["embedding"]["project"] == "Embedding Model Project"
+    assert PROJECT_META["embedding"]["function"] == "Embedding"
+    assert PROJECT_META["embedding"]["tags"] == ["Embedding-Models", "SCR-Definitions", "Python"]
+
+
+def test_project_variables_carry_roles(core):
+    for kind in ("llm", "embedding"):
+        variables = project_variables(core, kind)
+        assert {v["role"] for v in variables} == {"input", "output"}
+        assert all(v.get("name") for v in variables)
+
+
+class _FakeResponse:
+    def __init__(self, status_code=201):
+        self.status_code = status_code
+        self.text = ""
+
+
+class _FakeSession:
+    def __init__(self):
+        self.posts = []
+
+    def post(self, url, data=None, headers=None):
+        self.posts.append(url)
+        return _FakeResponse(201)
+
+
+def _patch_mr(monkeypatch, *, repo, project, sink):
+    from sasctl.services import model_repository as mr
+    monkeypatch.setattr(mr, "get_repository", lambda *a, **k: repo)
+    monkeypatch.setattr(mr, "get_project", lambda *a, **k: project)
+    monkeypatch.setattr(mr, "create_project",
+                        lambda **kw: sink.append(kw) or type("P", (), {"id": "pid"})())
+
+
+def test_ensure_creates_missing_repository_and_project(core, monkeypatch):
+    created_projects = []
+    _patch_mr(monkeypatch, repo=None, project=None, sink=created_projects)
+    session = _FakeSession()
+    created = ensure_repository_and_project(session, "embedding", core, "me@example.com")
+    assert created == ["repository 'LLM Repository'", "project 'Embedding Model Project'"]
+    assert session.posts == ["/modelRepository/repositories"]
+    assert created_projects[0]["function"] == "Embedding"
+    assert created_projects[0]["targetVariable"] == "response"
+    assert created_projects[0]["modelResponsibleParty"] == "me@example.com"
+
+
+def test_ensure_is_noop_when_everything_exists(core, monkeypatch):
+    created_projects = []
+    _patch_mr(monkeypatch, repo=object(), project=object(), sink=created_projects)
+    session = _FakeSession()
+    created = ensure_repository_and_project(session, "llm", core, "me")
+    assert created == []
+    assert session.posts == []
+    assert created_projects == []

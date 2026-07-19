@@ -20,6 +20,8 @@ Requires Python 3.10 or newer. For air-gapped environments, download the depende
 
 ## Adding a model
 
+New to `mdb`? The [Model Definition Builder user guide](../User-Guide/Model-Definition-Builder.md) is a step-by-step walkthrough of creating, checking, iterating on and registering a model (including embeddings and self-hosted Ollama/vLLM servers). This section is the reference summary.
+
 Run `mdb add` from anywhere inside the repository for the interactive wizard, or use the non-interactive form in scripts and pipelines:
 
 ```bash
@@ -69,6 +71,9 @@ cd LLM-Definitions && python register-LLMs.py -l <model_id>
 `mdb` now owns the full Viya lifecycle for managed definitions (install the extra: `pip install -e Model-Definition-Builder/cli[viya]`):
 
 ```bash
+mdb setup                            # create the LLM Repository + LLM/Embedding
+                                     # projects if missing (idempotent; register
+                                     # runs this automatically for its kind)
 mdb register <model_id>              # create in SAS Model Manager (skips if it exists)
 mdb register <model_id> --update     # replace a registered model IN PLACE: new minor
                                      # version + content replacement + refreshed attributes
@@ -76,6 +81,8 @@ mdb publish <model_id> --wait        # publish to SCR and poll until the image b
 mdb ship <model_id>                  # validate --live -> register --update -> publish --wait
 mdb endpoints --json                 # SCR endpoint manifest for CI and testing
 ```
+
+On a fresh environment you do not need to run `Model-Manager-Setup.py` first: `mdb setup` creates the `LLM Repository` and the LLM/Embedding Model Projects (idempotent — existing objects are left untouched), and `mdb register` performs the same check automatically for the kind it registers. The projects are created with the same attributes as the setup script, so the two approaches are interchangeable.
 
 `--update` removes the old delete-and-re-register workaround: after `mdb generate`, one command refreshes the registered model while keeping its ID, history (a new model version is created) and project placement. Both kinds use one implementation — embedding models register into the Embedding Model Project with the same content roles and fact-sheet enrichment. Each registered model also stores its `definition.yaml` as model content, so the source of truth travels with the model. The classic `register-LLMs.py` / `publish-LLMs.py` scripts keep working unchanged for hand-written definitions.
 

@@ -576,6 +576,26 @@ def _viya_session():
 
 
 @app.command()
+def setup():
+    """Create the SAS Model Manager repository and the LLM/Embedding Model Projects if missing.
+
+    Idempotent: existing objects are left untouched. `mdb register` runs this
+    automatically for the kind it registers, so a separate call is optional -
+    use it to bootstrap a fresh environment up front."""
+    from .viya.registry import ensure_repository_and_project
+    ctx = Context()
+    responsible_party = os.environ.get("SAS_RESPONSIBLE_PARTY", "")
+    created_any = False
+    with _viya_session() as session:
+        for kind in KINDS:
+            for created in ensure_repository_and_project(session, kind, ctx.core, responsible_party):
+                console.print(f"[green]created {created}.[/green]")
+                created_any = True
+    if not created_any:
+        console.print("[green]Repository and projects already exist - nothing to do.[/green]")
+
+
+@app.command()
 def register(
     ids: Optional[list[str]] = typer.Argument(None),
     all_: bool = typer.Option(False, "--all"),
@@ -583,14 +603,20 @@ def register(
                                                         "(new minor version + content replacement)"),
 ):
     """Register managed definitions in SAS Model Manager (both kinds, one path)."""
-    from .viya.registry import register_model
+    from .viya.registry import ensure_repository_and_project, register_model
     ctx = Context()
     targets = [f for f in ctx.resolve_targets(ids or [], all_) if (f / MANIFEST_FILENAME).is_file()]
     scr = _scr_endpoint()
+    responsible_party = os.environ.get("SAS_RESPONSIBLE_PARTY", "")
+    ensured_kinds: set[str] = set()
     failed = False
     with _viya_session() as session:
         for folder in targets:
             manifest = load_manifest(folder)
+            if manifest.kind not in ensured_kinds:
+                for created in ensure_repository_and_project(session, manifest.kind, ctx.core, responsible_party):
+                    console.print(f"[green]setup: created {created}.[/green]")
+                ensured_kinds.add(manifest.kind)
             row = facts.read_row(ctx.fact_sheet(manifest.kind), manifest.model_id)
             if row is None:
                 console.print(f"[yellow]{manifest.model_id}: no fact-sheet row - run mdb sync first "

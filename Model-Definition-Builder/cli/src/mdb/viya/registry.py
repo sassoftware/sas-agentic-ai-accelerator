@@ -23,7 +23,92 @@ from ..core.manifest import MANIFEST_FILENAME, ModelManifest
 
 KIND_PROJECT = {"llm": "LLM Model Project", "embedding": "Embedding Model Project"}
 REPOSITORY = "LLM Repository"
+REPOSITORY_DESCRIPTION = (
+    "This repository is used to register LLM deployment instructions to, build, "
+    "monitor and deploy use cases that take advantage of LLMs"
+)
+# Per-kind project metadata, matching Model-Manager-Setup.py byte-for-byte so a
+# project created by mdb is indistinguishable from one created by the setup script.
+PROJECT_META = {
+    "llm": {
+        "project": "LLM Model Project",
+        "function": "LLM",
+        "description": (
+            "This project stores all LLMs that are available to be used in use cases. "
+            "It is possible to grant access to these models on a per model basis. Along "
+            "side the availability this also documents on how to deploy/call the models."
+        ),
+        "tags": ["LLM-Models", "SCR-Definitions", "Python"],
+    },
+    "embedding": {
+        "project": "Embedding Model Project",
+        "function": "Embedding",
+        "description": (
+            "This project stores all Embedding models that are available to be used in "
+            "use cases. It is possible to grant access to these models on a per model "
+            "basis. Along side the availability this also documents on how to deploy/call "
+            "the models."
+        ),
+        "tags": ["Embedding-Models", "SCR-Definitions", "Python"],
+    },
+}
 TOKENIZER_FILES = ("tokenizer_config.json", "special_tokens_map.json", "tokenizer.json")
+
+
+def project_variables(core, kind: str) -> list[dict]:
+    """Project input/output variables for a kind, built from the shared
+    definition-core var files (the setup script reads them from a _Base_Definition
+    folder; mdb owns the same JSON centrally)."""
+    input_json, output_json = core.var_files[kind]
+    variables = [dict(var, role="input") for var in json.loads(input_json)]
+    variables += [dict(var, role="output") for var in json.loads(output_json)]
+    return variables
+
+
+def ensure_repository_and_project(session, kind: str, core, responsible_party: str) -> list[str]:
+    """Create the LLM Repository and the kind's Model Project if they do not
+    exist yet. Idempotent - returns the labels of whatever was created (empty
+    when everything already existed). Mirrors Model-Manager-Setup.py so a fresh
+    environment can be bootstrapped straight from mdb."""
+    from sasctl.services import model_repository as mr
+
+    created: list[str] = []
+    if mr.get_repository(REPOSITORY) is None:
+        response = session.post(
+            "/modelRepository/repositories",
+            data=json.dumps({
+                "name": REPOSITORY,
+                "description": REPOSITORY_DESCRIPTION,
+                "defaultRepository": False,
+                "version": 2,
+            }),
+            headers={
+                "Content-Type": "application/vnd.sas.models.repository+json",
+                "Accept": "application/vnd.sas.models.repository+json",
+            },
+        )
+        if response.status_code >= 300:
+            raise RuntimeError(
+                f"Could not create the '{REPOSITORY}' repository: HTTP {response.status_code} "
+                f"{response.text[:200]} - you may need a SAS administrator to grant repository rights."
+            )
+        created.append(f"repository '{REPOSITORY}'")
+
+    meta = PROJECT_META[kind]
+    if mr.get_project(meta["project"]) is None:
+        mr.create_project(
+            project=meta["project"],
+            description=meta["description"],
+            repository=REPOSITORY,
+            variables=project_variables(core, kind),
+            targetLevel="NOMINAL",
+            targetVariable="response",
+            function=meta["function"],
+            modelResponsibleParty=responsible_party,
+            tags=meta["tags"],
+        )
+        created.append(f"project '{meta['project']}'")
+    return created
 
 
 @dataclass
@@ -103,10 +188,12 @@ def register_model(session, manifest: ModelManifest, folder: Path, fact_row: dic
     from sasctl.services import model_repository as mr
 
     project = KIND_PROJECT[manifest.kind]
+    # The repository and project are ensured by the caller (mdb register/setup run
+    # ensure_repository_and_project first); this stays a safety net for direct callers.
     if mr.get_repository(REPOSITORY) is None:
-        raise RuntimeError(f"SAS Model Manager repository '{REPOSITORY}' does not exist - run the setup first.")
+        raise RuntimeError(f"SAS Model Manager repository '{REPOSITORY}' does not exist - run 'mdb setup' first.")
     if mr.get_project(project) is None:
-        raise RuntimeError(f"SAS Model Manager project '{project}' does not exist - run the setup first.")
+        raise RuntimeError(f"SAS Model Manager project '{project}' does not exist - run 'mdb setup' first.")
 
     attributes = build_model_attributes(manifest, folder, fact_row, scr_endpoint)
     existing = mr.get_model(manifest.model_id)
