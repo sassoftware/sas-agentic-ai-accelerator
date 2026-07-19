@@ -1,0 +1,69 @@
+{{ generated_header }}import time
+import json
+import logging
+import os
+import sys
+import requests
+
+# Self-hosted OpenAI-compatible server (Ollama, vLLM, or any endpoint that
+# speaks the Chat Completions wire format). The base URL resolves per call:
+# options override > {{ base_url_env }} container environment variable > the
+# default baked into this file - so one published image can point at different
+# inference servers without a rebuild. An optional bearer token is read from
+# the {{ token_env }} environment variable (leave unset for an open server).
+modelVersion = '{{ model_version }}'
+
+# Initiate the logger to write output information to the log
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+    format='%(levelname)s - %(message)s'
+)
+logger = logging.getLogger("scoreModel")
+
+{% include "partials/_options_parser.py.j2" %}
+
+def scoreModel(userPrompt, systemPrompt, options):
+    "Output: response, run_time, prompt_length, output_length"
+    started_timestamp = time.time()
+    optionsDefaults = {
+{{ options_defaults_block }}
+        "base_url": os.environ.get("{{ base_url_env }}", "{{ base_url_default }}"),
+    }
+    options = {**optionsDefaults, **_parse_options(options)}
+    modelEndpoint = (options.get('base_url') or '').rstrip('/') + '/chat/completions'
+    headers = {"Content-Type": "application/json"}
+    api_token = os.environ.get("{{ token_env }}", "")
+    if api_token:
+        headers["Authorization"] = f"Bearer {api_token}"
+    payload = {
+        "model": modelVersion,
+        "messages": [{"role": "system", "content": systemPrompt[0]},
+            {"role": "user", "content": userPrompt[0]}],
+{{ body_options_block }}
+    }
+    responseObject = requests.post(
+        modelEndpoint,
+        headers=headers,
+        json=payload,
+        timeout={{ timeout_s }},
+    )
+    try:
+        responseJson = responseObject.json()
+    except Exception:
+        logger.error(f"Non-JSON response: {responseObject.status_code} - {responseObject.text}")
+        raise
+    if responseObject.status_code < 200 or responseObject.status_code >= 300:
+        logger.error(f"HTTP {responseObject.status_code}: {json.dumps(responseJson)}")
+        raise RuntimeError(f"Request failed: {responseObject.status_code}")
+    response = responseJson['choices'][0]['message']['content']
+    usage = responseJson.get('usage', {}) or {}
+    prompt_length = usage.get('prompt_tokens', 0)
+    output_length = usage.get('completion_tokens', 0)
+    run_time = time.time() - started_timestamp
+    # Logging the response
+    logger.info(f"prompt_length: {prompt_length}")
+    logger.info(f"output_length: {output_length}")
+    logger.info(f"run_time: {run_time}")
+    logger.info(f"response: {response}")
+    return response, run_time, prompt_length, output_length

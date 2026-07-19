@@ -1,0 +1,25 @@
+{
+    "Embedding_Mode": {
+        "default": "query",
+        "range": "query | document",
+        "description": "Whether the text is embedded as a query (for retrieval) or as a document (for storage/indexing). Using the matching mode on both sides improves retrieval quality.",
+        "type": "enum",
+        "values": [
+            "query",
+            "document"
+        ],
+        "label": "Embedding Mode"
+    },
+    "Embedding_Length": {
+        "default": 384,
+        "range": "384",
+        "description": "The length of the returned embedding vector.",
+        "label": "Embedding Length"
+    },
+    "Input_Token_Limit": {
+        "default": 8192,
+        "range": "8192",
+        "description": "The limit of input tokens for the embedding model.",
+        "label": "Input Token Limit"
+    }
+}

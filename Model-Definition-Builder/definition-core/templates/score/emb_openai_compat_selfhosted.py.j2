@@ -1,0 +1,66 @@
+{{ generated_header }}import time
+import json
+import logging
+import os
+import sys
+import requests
+
+# Self-hosted OpenAI-compatible embedding server (Ollama, vLLM, or any endpoint
+# that speaks the /embeddings wire format). The base URL resolves per call:
+# options override > {{ base_url_env }} container environment variable > the
+# default baked into this file - so one published image can point at different
+# inference servers without a rebuild. An optional bearer token is read from
+# the {{ token_env }} environment variable (leave unset for an open server).
+modelVersion = '{{ model_version }}'
+
+# Initiate the logger to write output information to the log
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+    format='%(levelname)s - %(message)s'
+)
+logger = logging.getLogger("scoreModel")
+
+{% include "partials/_options_parser.py.j2" %}
+
+def scoreModel(document, project, options):
+    "Output: embedding, run_time, tokens"
+    started_timestamp = time.time()
+    optionsDefaults = {
+{{ options_defaults_block }}
+        "base_url": os.environ.get("{{ base_url_env }}", "{{ base_url_default }}"),
+    }
+    options = {**optionsDefaults, **_parse_options(options)}
+    modelEndpoint = (options.get('base_url') or '').rstrip('/') + '/embeddings'
+    headers = {"Content-Type": "application/json"}
+    api_token = os.environ.get("{{ token_env }}", "")
+    if api_token:
+        headers["Authorization"] = f"Bearer {api_token}"
+    payload = {
+        "input": document[0],
+        "model": modelVersion,
+        "encoding_format": "float",
+{{ body_options_block }}
+    }
+    responseObject = requests.post(
+        modelEndpoint,
+        headers=headers,
+        json=payload,
+        timeout={{ timeout_s }},
+    )
+    try:
+        responseJson = responseObject.json()
+    except Exception:
+        logger.error(f"Non-JSON response: {responseObject.status_code} - {responseObject.text}")
+        raise
+    if responseObject.status_code < 200 or responseObject.status_code >= 300:
+        logger.error(f"HTTP {responseObject.status_code}: {json.dumps(responseJson)}")
+        raise RuntimeError(f"Request failed: {responseObject.status_code}")
+    embedding = json.dumps(responseJson['data'][0]['embedding'])
+    tokens = (responseJson.get('usage', {}) or {}).get('prompt_tokens', 0)
+    run_time = time.time() - started_timestamp
+    # Logging the response
+    logger.info(f"project: {project[0]}")
+    logger.info(f"tokens: {tokens}")
+    logger.info(f"run_time: {run_time}")
+    return embedding, run_time, tokens

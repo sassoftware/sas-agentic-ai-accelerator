@@ -239,6 +239,14 @@ def _render_score(manifest: ModelManifest, core: CoreAssets) -> str:
         # per-call option decide at runtime).
         params = manifest.provider.params
         context["azure_resource"] = params.get("resource", "") if params.get("commit_resource") else ""
+    if manifest.runtime.template in ("openai_compat_selfhosted", "emb_openai_compat_selfhosted"):
+        # Self-hosted OpenAI-compatible servers (Ollama, vLLM). The base URL
+        # resolves at runtime from an env var so one image serves any server;
+        # the localhost default is a non-secret convenience, always baked in.
+        params = manifest.provider.params
+        context["base_url_env"] = params.get("base_url_env", "OPENAI_COMPAT_BASE_URL")
+        context["base_url_default"] = params.get("base_url", "")
+        context["token_env"] = params.get("token_env", "OPENAI_COMPAT_API_KEY")
     if manifest.runtime.template == "anthropic_messages":
         context["anthropic_version"] = manifest.provider.params.get("anthropic_version", "2023-06-01")
     if "bedrock" in manifest.runtime.template:
@@ -292,6 +300,20 @@ def _render_options_json(manifest: ModelManifest, core: CoreAssets) -> str:
             "default": "",
             "range": "https://**** (optional)",
             "description": "Optional full chat-completions URL that overrides the resource-based endpoint.",
+            "type": "string",
+        }
+    if manifest.runtime.template in ("openai_compat_selfhosted", "emb_openai_compat_selfhosted"):
+        params = manifest.provider.params
+        env_var = params.get("base_url_env", "OPENAI_COMPAT_BASE_URL")
+        entries["base_url"] = {
+            "default": params.get("base_url", ""),
+            "range": "http://host:port/v1",
+            "description": (
+                "Base URL of the self-hosted OpenAI-compatible server (Ollama, vLLM, ...). "
+                f"Resolution order: this option > the {env_var} environment variable of the "
+                "container > this default - set the environment variable per deployment to point "
+                "at a different inference server from the same image."
+            ),
             "type": "string",
         }
     if manifest.provider.auth.mode == "api_key":

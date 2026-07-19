@@ -33,9 +33,21 @@ mdb add azure-foundry --resource myres --deployment my-gpt41 --id gpt_41_az --ye
 mdb add hf-selfhosted --repo Qwen/Qwen2.5-0.5B-Instruct --id qwen_25_05b --params-billions 0.5 --yes
 ```
 
-Supported providers: OpenRouter, OpenAI, Azure AI Foundry (v1 endpoint, key auth), Mistral, Anthropic, AWS Bedrock (Converse API - Bedrock API key by default, `--auth-variant sigv4` for boto3/IAM shops), Google Gemini, Voyage AI and self-hosted Hugging Face models (`transformers` for LLMs, `sentence-transformers` for embeddings).
+Supported providers: OpenRouter, OpenAI, Azure AI Foundry (v1 endpoint, key auth), Mistral, Anthropic, AWS Bedrock (Converse API - Bedrock API key by default, `--auth-variant sigv4` for boto3/IAM shops), Google Gemini, Voyage AI, self-hosted Hugging Face models (`transformers` for LLMs, `sentence-transformers` for embeddings) and self-hosted OpenAI-compatible servers (**Ollama**, **vLLM**).
 
-**Embedding definitions** work exactly like LLM definitions: the wizard picks the kind from the model you select (or the runtime you choose for self-hosted models), the folder lands in `Embedding-Definitions/`, the row goes to `embedding_fact_sheet.csv`, and registration continues with `register-Embedding.py`. The generated embedding scorers return all three declared outputs (embedding, run_time, tokens) and embed the full vector — two long-standing bugs in several hand-written definitions that the templates fix centrally.
+**Embedding definitions** work exactly like LLM definitions: the wizard picks the kind from the model you select (or the runtime you choose for self-hosted models), the folder lands in `Embedding-Definitions/`, the row goes to `embedding_fact_sheet.csv`, and registration continues with `register-Embedding.py`. The generated embedding scorers return all three declared outputs (embedding, run_time, tokens) and embed the full vector — two long-standing bugs in several hand-written definitions that the templates fix centrally. The bundled open-source embedding models run on CPU: `all_minilm_l6_v2`, the BGE family, `embedding_gemma_300m` and the RTEB-leaderboard IBM Granite models `granite_embedding_small_r2` (47M, 384-dim) and `granite_embedding_r2` (149M, 768-dim), all Apache-2.0/MIT ModernBERT or MiniLM bi-encoders.
+
+### Self-hosted Ollama and vLLM
+
+`mdb add ollama` and `mdb add vllm` create definitions that call a self-hosted OpenAI-compatible server, for either chat (`--kind llm`) or embeddings (`--kind embedding`). Unlike the `hf-selfhosted` path — which downloads weights into the SCR image — these keep the weights on the inference server and the container only carries the thin api-wrapper requirements. The server base URL is environment-neutral, resolving per call as option → `OLLAMA_BASE_URL` / `VLLM_BASE_URL` container environment variable → a localhost default, and an optional bearer token is read from `OLLAMA_API_KEY` / `VLLM_API_KEY` (leave blank for an open server). So one published image can point at a dev, test or production inference server without a rebuild.
+
+```bash
+# chat model served by a local Ollama, addressed by its Ollama tag
+mdb add ollama llama3.1:8b --id llama31_8b_ollama --kind llm --yes
+# embedding model served by vLLM, with the server URL baked as the default
+mdb add vllm intfloat/e5-mistral-7b-instruct --id e5_mistral_vllm --kind embedding \
+  --base-url http://vllm-svc.ml.svc:8000/v1 --yes
+```
 
 AWS Bedrock regions work like Azure resources: the region resolves per call as option → `AWS_BEDROCK_REGION` container environment variable → baked default, so one image can serve multiple regions.
 

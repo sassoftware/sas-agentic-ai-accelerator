@@ -10,7 +10,9 @@ from .base import ProviderAdapter
 from .bedrock import BedrockAdapter
 from .google import GoogleAdapter
 from .hf_selfhosted import HuggingFaceAdapter
-from .openai_compat import AzureFoundryAdapter, OpenAICompatAdapter
+from .openai_compat import (
+    AzureFoundryAdapter, OpenAICompatAdapter, SelfHostedOpenAICompatAdapter,
+)
 from .voyage import VoyageAdapter
 
 
@@ -52,6 +54,24 @@ def _builtin_adapters() -> list[ProviderAdapter]:
         GoogleAdapter(),
         VoyageAdapter(),
         HuggingFaceAdapter(),
+        SelfHostedOpenAICompatAdapter(
+            id="ollama",
+            display_name="Ollama",
+            provider_tag="Ollama",
+            base_url_env="OLLAMA_BASE_URL",
+            base_url_default="http://localhost:11434/v1",
+            token_env="OLLAMA_API_KEY",
+            docs_url="https://ollama.com/search",
+        ),
+        SelfHostedOpenAICompatAdapter(
+            id="vllm",
+            display_name="vLLM",
+            provider_tag="vLLM",
+            base_url_env="VLLM_BASE_URL",
+            base_url_default="http://localhost:8000/v1",
+            token_env="VLLM_API_KEY",
+            docs_url="https://docs.vllm.ai/en/latest/",
+        ),
     ]
 
 

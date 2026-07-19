@@ -222,7 +222,10 @@ def add(
     ),
     repo: Optional[str] = typer.Option(None, help="Hugging Face repo id (hf-selfhosted)"),
     gated: Optional[bool] = typer.Option(None, help="HF repo is gated (hf-selfhosted)"),
+    runtime: Optional[str] = typer.Option(None, help="Runtime family: transformers | onnx | sentence-transformers (hf-selfhosted)"),
     params_billions: Optional[float] = typer.Option(None, help="Parameter count in billions (hf-selfhosted)"),
+    base_url: Optional[str] = typer.Option(None, help="Server base URL (ollama/vllm self-hosted)"),
+    kind: Optional[str] = typer.Option(None, help="Model kind: llm or embedding (ollama/vllm self-hosted)"),
     description: Optional[str] = typer.Option(None, help="Model description for Model Manager and the fact sheet"),
 ):
     """Add a new model definition: pick a provider and model, answer a few questions,
@@ -250,8 +253,9 @@ def add(
 
     flag_answers = {
         "resource": resource, "deployment": deployment, "repo": repo,
-        "gated": {True: "y", False: "n"}.get(gated),
+        "gated": {True: "y", False: "n"}.get(gated), "runtime": runtime,
         "params_billions": str(params_billions) if params_billions is not None else None,
+        "base_url": base_url, "kind": kind,
         "description": description,
     }
     answers: dict[str, str] = {}

@@ -1,0 +1,22 @@
+[
+    {
+        "step": "install git-lfs",
+        "command": "microdnf install git-lfs"
+    },
+    {
+        "step": "Verify git-lfs install",
+        "command": "git lfs install"
+    },
+    {
+        "step": "upgrade pip before pip install",
+        "command": "pip3 -q install --upgrade pip setuptools wheel"
+    },
+    {
+        "step": "install huggingface CLI and other packages",
+        "command": "pip3 -q install 'huggingface-hub>=0.18.0' sentence-transformers numpy==1.26.4"
+    },
+    {
+        "step": "download model",
+        "command": "hf download --quiet ibm-granite/granite-embedding-small-english-r2 --local-dir /pybox/model/granite_embedding_small_r2"
+    }
+]

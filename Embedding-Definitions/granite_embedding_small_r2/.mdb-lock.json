@@ -1,0 +1,14 @@
+{
+    "generator": "mdb 0.1.0",
+    "manifest_sha256": "d62cc842969447bd8a1f7ee03186078869a2b8564466961956641d4f5839470c",
+    "files": {
+        "Model-Card.md": "58b5d8a588ed686af26075f5e9b8025f307650f776a2d5564aa40d603b331029",
+        "README.md": "5cf0752576b2b9b09017621fd1e9a70909d482e4818c3b364b067a9c33602f86",
+        "graniteEmbeddingSmallR2Score.py": "6a29536da50c0fff2d4af48f0d717c871199e5f28088b59fb2666dcd4b5ee3a9",
+        "inputVar.json": "82e63e7108e6dae23feda5fb3e4bcb2242eeec59182a36b6c787339725e0095b",
+        "modelConfiguration.json": "0f3a1fa69875d305534584cb72199e671d5139877605327ce2da434fe7bc404f",
+        "options.json": "475d9006b4b3146090d1999a0d772a3becd742a6bb9d9fdcbac10371937a6b7f",
+        "outputVar.json": "07ac2337d2f5b87016aeb70f3d82b4a40ced010062456edb36eb1725f343babe",
+        "requirements.json": "0a963ddea72431158cce649b2ad3a6fe4f7e38ea8a2239d7bd7e670e3993f8d0"
+    }
+}

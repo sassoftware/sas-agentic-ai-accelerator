@@ -14,7 +14,10 @@ from typing import Optional
 
 import requests
 
-from ..core.manifest import ModelManifest
+from ..core.manifest import (
+    AuthBlock, GenerationBlock, MetadataBlock, ModelManifest, OptionSpec,
+    PricingBlock, ProviderBlock, RuntimeBlock, TagsBlock,
+)
 from ..core.netutil import get_json
 from .base import CatalogModel, ProviderAdapter, Question, SmokeResult
 
@@ -104,6 +107,163 @@ class OpenAICompatAdapter(ProviderAdapter):
             ))
         except Exception as exc:
             return SmokeResult(ok=False, detail=str(exc))
+
+
+class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
+    """Ollama, vLLM, or any self-hosted OpenAI-compatible inference server.
+
+    Serves both chat (LLM) and embedding models over the OpenAI wire format.
+    The definition is environment-neutral: the base URL resolves at scoring
+    time from an environment variable (per deployment) with a localhost default
+    baked in, and an optional bearer token is read from a second env var. The
+    model weights live on the server, not in the SCR image, so the container
+    only needs the thin api-wrapper requirements.
+    """
+
+    template = "openai_compat_selfhosted"
+    embedding_template = "emb_openai_compat_selfhosted"
+
+    def __init__(self, id: str, display_name: str, provider_tag: str,
+                 base_url_env: str, base_url_default: str, token_env: str,
+                 docs_url: str = ""):
+        super().__init__(
+            id=id, display_name=display_name, provider_tag=provider_tag,
+            key_name=None, env_key_var=None, base_url=base_url_default,
+            docs_url=docs_url, listing_needs_key=False,
+        )
+        self.base_url_env = base_url_env
+        self.base_url_default = base_url_default
+        self.token_env = token_env
+
+    def _resolved_base(self, answers: Optional[dict] = None) -> str:
+        override = (answers or {}).get("base_url")
+        base = override or os.environ.get(self.base_url_env) or self.base_url_default
+        return base.rstrip("/")
+
+    def questions(self) -> list[Question]:
+        return [
+            Question("kind", "Model kind: llm or embedding", default="llm", required=False),
+            Question("base_url", f"Server base URL (blank = {self.base_url_default}, "
+                                 f"overridable at runtime via {self.base_url_env})",
+                     default=self.base_url_default, required=False),
+            Question("embedding_length", "Embedding vector length (embedding kind only)",
+                     default="", required=False),
+            Question("context_length", "Input token limit / context length",
+                     default="", required=False),
+        ]
+
+    def _wants_embedding(self, cm: CatalogModel, answers: dict) -> bool:
+        return (answers.get("kind") or cm.kind or "llm").strip().lower() == "embedding"
+
+    def build_manifest(self, cm: CatalogModel, model_id: str, answers: dict, modeler: str) -> ModelManifest:
+        is_embedding = self._wants_embedding(cm, answers)
+        kind = "embedding" if is_embedding else "llm"
+        # Only bake a non-default base URL; a blank/default keeps the localhost
+        # convenience default and stays fully environment-driven.
+        chosen_base = (answers.get("base_url") or "").strip()
+        baked_base = chosen_base if chosen_base and chosen_base != self.base_url_default else self.base_url_default
+        params = {
+            "base_url": baked_base,
+            "base_url_env": self.base_url_env,
+            "token_env": self.token_env,
+        }
+
+        def _int(value, fallback):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return fallback
+
+        if is_embedding:
+            emb_len = _int(answers.get("embedding_length"), cm.embedding_length or 768)
+            ctx_len = _int(answers.get("context_length"), cm.context_length or 8192)
+            options = {
+                "Embedding_Length": OptionSpec(default=emb_len),
+                "Input_Token_Limit": OptionSpec(default=ctx_len),
+            }
+            template = self.embedding_template
+            size_class = "Embedding"
+        else:
+            options = self.default_options(cm)
+            template = self.template
+            size_class = "LLM"
+
+        return ModelManifest(
+            kind=kind,
+            model_id=model_id,
+            display_name=cm.display_name,
+            provider=ProviderBlock(
+                adapter=self.id,
+                model_version=cm.ref,
+                params=params,
+                auth=AuthBlock(mode="none"),
+            ),
+            runtime=RuntimeBlock(template=template, requirements_profile="api-wrapper"),
+            options=options,
+            tags=TagsBlock(
+                size_class=size_class,
+                license_class="Open-Source",
+                provider_tag=self.provider_tag,
+                scr_sizing="small",
+            ),
+            metadata=MetadataBlock(
+                description=answers.get("description")
+                or f"{cm.display_name}, served from a self-hosted {self.display_name} server.",
+                context_length=_int(answers.get("context_length"), cm.context_length) or None,
+                deployment_type="API",
+                pricing=PricingBlock(cost_type="Seconds"),
+            ),
+            modeler=modeler,
+            generation=GenerationBlock(catalog_provenance=f"{self.id} ({cm.source})"),
+        )
+
+    def live_catalog(self, session: requests.Session, api_key: Optional[str]) -> list[CatalogModel]:
+        base = self._resolved_base()
+        headers = {}
+        token = os.environ.get(self.token_env)
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        payload = get_json(session, f"{base}/models", headers=headers)
+        models: list[CatalogModel] = []
+        for entry in payload.get("data", []):
+            ref = entry.get("id", "")
+            if ref:
+                models.append(CatalogModel(ref=ref, display_name=entry.get("name") or ref, source="live"))
+        return models
+
+    def smoke_test(self, manifest: ModelManifest, api_key: Optional[str],
+                   session: requests.Session) -> SmokeResult:
+        base = self._resolved_base(manifest.provider.params)
+        headers = {"Content-Type": "application/json"}
+        token = os.environ.get(self.token_env)
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            if manifest.kind == "embedding":
+                response = session.post(
+                    f"{base}/embeddings", headers=headers,
+                    json={"model": manifest.provider.model_version, "input": "ping",
+                          "encoding_format": "float"},
+                    timeout=60,
+                )
+                body = response.json()
+                if response.status_code >= 300:
+                    return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+                dims = len(body["data"][0]["embedding"])
+                return SmokeResult(ok=True, detail=f"Server returned a {dims}-dim embedding from {base}.")
+            response = session.post(
+                f"{base}/chat/completions", headers=headers,
+                json={"model": manifest.provider.model_version,
+                      "messages": [{"role": "user", "content": "Reply with the single word OK."}]},
+                timeout=60,
+            )
+            body = response.json()
+            if response.status_code >= 300:
+                return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+            text = body["choices"][0]["message"]["content"]
+            return SmokeResult(ok=True, detail=f"Server responded from {base}: {text[:60]!r}")
+        except Exception as exc:
+            return SmokeResult(ok=False, detail=f"{exc} (is the server reachable at {base}?)")
 
 
 class AzureFoundryAdapter(OpenAICompatAdapter):

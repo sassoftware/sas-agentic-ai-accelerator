@@ -12,6 +12,10 @@
                     "body_key": "temperature",
                     "cast": "float"
                 },
+                "openai_compat_selfhosted": {
+                    "body_key": "temperature",
+                    "cast": "float"
+                },
                 "azure_openai_v1": {
                     "body_key": "temperature",
                     "cast": "float"
@@ -50,6 +54,10 @@
             "description": "An alternative to sampling with temperature, called nucleus sampling, where the model considers the results of the tokens with top_p probability mass. So 0.1 means only the tokens comprising the top 10% probability mass are considered.",
             "families": {
                 "openai_chat": {
+                    "body_key": "top_p",
+                    "cast": "float"
+                },
+                "openai_compat_selfhosted": {
                     "body_key": "top_p",
                     "cast": "float"
                 },
@@ -114,6 +122,10 @@
                     "body_key": "max_tokens",
                     "cast": "int"
                 },
+                "openai_compat_selfhosted": {
+                    "body_key": "max_tokens",
+                    "cast": "int"
+                },
                 "azure_openai_v1": {
                     "body_key": "max_tokens",
                     "cast": "int"
@@ -172,6 +184,10 @@
                     "body_key": "seed",
                     "cast": "int"
                 },
+                "openai_compat_selfhosted": {
+                    "body_key": "seed",
+                    "cast": "int"
+                },
                 "azure_openai_v1": {
                     "body_key": "seed",
                     "cast": "int"
@@ -190,6 +206,10 @@
                     "body_key": "frequency_penalty",
                     "cast": "float"
                 },
+                "openai_compat_selfhosted": {
+                    "body_key": "frequency_penalty",
+                    "cast": "float"
+                },
                 "azure_openai_v1": {
                     "body_key": "frequency_penalty",
                     "cast": "float"
@@ -205,6 +225,10 @@
             "description": "Positive values penalize new tokens based on whether they appear in the text so far, increasing the model's likelihood to talk about new topics.",
             "families": {
                 "openai_chat": {
+                    "body_key": "presence_penalty",
+                    "cast": "float"
+                },
+                "openai_compat_selfhosted": {
                     "body_key": "presence_penalty",
                     "cast": "float"
                 },
@@ -319,6 +343,10 @@
                     "cast": "int"
                 },
                 "emb_bedrock_titan": {
+                    "body_key": "dimensions",
+                    "cast": "int"
+                },
+                "emb_openai_compat_selfhosted": {
                     "body_key": "dimensions",
                     "cast": "int"
                 }

@@ -38,7 +38,9 @@ mdb import <model_id>            # adopt an existing hand-written folder
 mdb test <model_id>              # invoke the generated scoreModel() locally
 ```
 
-Provider API keys are read from the environment or a `.env` at the repo root (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `AZURE_OPENAI_API_KEY`, `MISTRAL_API_KEY`, `GEMINI_API_KEY`, `VOYAGE_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`). Keys never enter manifests or generated files — `mdb validate` scans for secret-shaped strings. Environment-specific hosts stay out of definitions by default: Azure resources and Bedrock regions resolve per call via options or the `AZURE_OPENAI_RESOURCE` / `AWS_BEDROCK_REGION` container environment variables.
+Provider API keys are read from the environment or a `.env` at the repo root (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `AZURE_OPENAI_API_KEY`, `MISTRAL_API_KEY`, `GEMINI_API_KEY`, `VOYAGE_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`). Keys never enter manifests or generated files — `mdb validate` scans for secret-shaped strings. Environment-specific hosts stay out of definitions by default: Azure resources, Bedrock regions and self-hosted Ollama/vLLM base URLs resolve per call via options or the `AZURE_OPENAI_RESOURCE` / `AWS_BEDROCK_REGION` / `OLLAMA_BASE_URL` / `VLLM_BASE_URL` container environment variables.
+
+Self-hosted OpenAI-compatible servers are first-class: `mdb add ollama <model>` and `mdb add vllm <model>` create chat (`--kind llm`) or embedding (`--kind embedding`) definitions that call the server at scoring time. The weights stay on the server (only the thin api-wrapper requirements ship in the image), and an optional bearer token comes from `OLLAMA_API_KEY` / `VLLM_API_KEY`.
 
 ## Restricted networks
 
