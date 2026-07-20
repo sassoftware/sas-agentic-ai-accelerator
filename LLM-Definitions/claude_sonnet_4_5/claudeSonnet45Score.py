@@ -67,18 +67,23 @@ def scoreModel(userPrompt, systemPrompt, options):
         "max_tokens": 1000,
         "thinking_budget": 0,
     }
-    options = {**optionsDefaults, **_parse_options(options)}
+    requested = _parse_options(options)
+    options = {**optionsDefaults, **requested}
     payload = {
         "model": modelVersion,
         "system": systemPrompt[0],
         "messages": [{"role": "user", "content": userPrompt[0]}],
-        "temperature": float(options["temperature"]),
-        "top_p": float(options["top_p"]),
         "max_tokens": int(options["max_tokens"]),
     }
+    # The provider accepts only one of sampling: temperature, top_p.
+    if "top_p" in requested and "temperature" not in requested:
+        payload["top_p"] = float(options["top_p"])
+    else:
+        payload["temperature"] = float(options["temperature"])
     if int(options.get("thinking_budget", 0)) > 0:
         payload["thinking"] = {"type": "enabled", "budget_tokens": int(options["thinking_budget"])}
         payload["temperature"] = 1
+        payload.pop("top_p", None)
     responseObject = requests.post(
         modelEndpoint,
         headers={

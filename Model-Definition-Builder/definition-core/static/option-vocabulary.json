@@ -22,7 +22,8 @@
                 },
                 "anthropic_messages": {
                     "body_key": "temperature",
-                    "cast": "float"
+                    "cast": "float",
+                    "exclusive_group": "sampling"
                 },
                 "hf_transformers": {
                     "generate_key": "temperature",
@@ -67,7 +68,8 @@
                 },
                 "anthropic_messages": {
                     "body_key": "top_p",
-                    "cast": "float"
+                    "cast": "float",
+                    "exclusive_group": "sampling"
                 },
                 "hf_transformers": {
                     "generate_key": "top_p",

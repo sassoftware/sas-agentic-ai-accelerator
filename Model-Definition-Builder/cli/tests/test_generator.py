@@ -129,6 +129,50 @@ def test_anthropic_thinking_block(core):
     score = render_assets(manifest, core)["testModel1Score.py"].decode()
     assert 'payload["thinking"]' in score
     assert "x-api-key" in score
+    # extended thinking pins temperature and forbids top_p outright
+    assert 'payload["temperature"] = 1' in score
+    assert 'payload.pop("top_p", None)' in score
+
+
+def _anthropic_manifest(**options):
+    return _manifest(
+        provider=ProviderBlock(
+            adapter="anthropic", model_version="claude-test",
+            endpoint="https://api.anthropic.com/v1/messages",
+            params={"anthropic_version": "2023-06-01"},
+            auth=AuthBlock(mode="api_key", key_name="Anthropic"),
+        ),
+        runtime=RuntimeBlock(template="anthropic_messages", requirements_profile="api-wrapper"),
+        options=options,
+    )
+
+
+def test_anthropic_never_sends_temperature_and_top_p_together(core):
+    """Claude 4.5+ rejects a request carrying both ("please use only one"), so the
+    payload literal must not contain either - a runtime picker chooses one."""
+    manifest = _anthropic_manifest(
+        temperature=OptionSpec(default=1), top_p=OptionSpec(default=1),
+        max_tokens=OptionSpec(default=1000, max=64000),
+    )
+    score = render_assets(manifest, core)["testModel1Score.py"].decode()
+    # up to the dict's closing brace - not the one inside the messages list
+    payload_literal = score.split("payload = {", 1)[1].split("\n    }", 1)[0]
+    assert '"temperature"' not in payload_literal and '"top_p"' not in payload_literal
+    assert '"max_tokens"' in payload_literal  # unrelated options still render inline
+    assert 'if "top_p" in requested and "temperature" not in requested:' in score
+    assert 'payload["top_p"] = float(options["top_p"])' in score
+    assert 'payload["temperature"] = float(options["temperature"])' in score
+
+
+def test_anthropic_lone_sampling_option_renders_unconditionally(core):
+    """Only one member of the group present: no branch needed, just assign it."""
+    manifest = _anthropic_manifest(
+        top_p=OptionSpec(default=1), max_tokens=OptionSpec(default=1000, max=64000),
+    )
+    score = render_assets(manifest, core)["testModel1Score.py"].decode()
+    assert 'payload["top_p"] = float(options["top_p"])' in score
+    assert "in requested" not in score
+    assert "temperature" not in score
 
 
 def test_hf_requirements_profile(core):

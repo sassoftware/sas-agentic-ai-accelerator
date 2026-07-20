@@ -23,14 +23,15 @@ def scoreModel(userPrompt, systemPrompt, options):
     optionsDefaults = {
 {{ options_defaults_block }}
     }
-    options = {**optionsDefaults, **_parse_options(options)}
+    requested = _parse_options(options)
+    options = {**optionsDefaults, **requested}
     payload = {
         "model": modelVersion,
         "system": systemPrompt[0],
         "messages": [{"role": "user", "content": userPrompt[0]}],
 {{ body_options_block }}
     }
-{{ thinking_block }}    responseObject = requests.post(
+{{ exclusive_options_block }}{{ thinking_block }}    responseObject = requests.post(
         modelEndpoint,
         headers={
             "Content-Type": "application/json",

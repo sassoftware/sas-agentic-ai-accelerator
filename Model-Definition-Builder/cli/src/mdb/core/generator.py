@@ -151,6 +151,9 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
     defaults_lines: list[str] = []
     body_lines: list[str] = []
     generate_lines: list[str] = []
+    # Options the provider refuses to accept together, keyed by group name. The
+    # first member declared in the manifest wins when the caller sets neither.
+    exclusive: dict[str, list[tuple[str, str, str]]] = {}
     thinking_block = ""
 
     for name, spec in manifest.options.items():
@@ -194,11 +197,18 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
         if "body_key" in family_map:
             body_key = family_map["body_key"]
             if body_key == "__thinking__":
+                # Extended thinking pins temperature to 1 and forbids top_p
+                # entirely, so drop whatever the sampling block just decided.
                 thinking_block = (
                     '    if int(options.get("thinking_budget", 0)) > 0:\n'
                     '        payload["thinking"] = {"type": "enabled", '
                     '"budget_tokens": int(options["thinking_budget"])}\n'
                     '        payload["temperature"] = 1\n'
+                    '        payload.pop("top_p", None)\n'
+                )
+            elif "exclusive_group" in family_map:
+                exclusive.setdefault(family_map["exclusive_group"], []).append(
+                    (name, body_key, cast)
                 )
             else:
                 body_lines.append(f'        "{body_key}": {cast}(options["{name}"]),')
@@ -210,8 +220,38 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
         "body_options_block": "\n".join(body_lines),
         "body_options_block_nested": "\n".join("    " + line for line in body_lines),
         "generate_options_block": ",\n".join(generate_lines),
+        "exclusive_options_block": _exclusive_block(exclusive),
         "thinking_block": thinking_block,
     }
+
+
+def _exclusive_block(exclusive: dict[str, list[tuple[str, str, str]]]) -> str:
+    """Render the runtime picker for mutually exclusive options.
+
+    Anthropic rejects `temperature` and `top_p` in the same request ("please use
+    only one"), so the choice cannot be baked into the payload literal - it has
+    to follow what the caller actually asked for on each call.
+    """
+    lines: list[str] = []
+    for group, members in exclusive.items():
+        if not members:
+            continue
+        preferred, preferred_key, preferred_cast = members[0]
+        if len(members) == 1:
+            lines.append(f'    payload["{preferred_key}"] = {preferred_cast}(options["{preferred}"])')
+            continue
+        lines.append(
+            f"    # The provider accepts only one of {group}: "
+            f"{', '.join(name for name, _, _ in members)}."
+        )
+        keyword = "if"
+        for name, body_key, cast in members[1:]:
+            lines.append(f'    {keyword} "{name}" in requested and "{preferred}" not in requested:')
+            lines.append(f'        payload["{body_key}"] = {cast}(options["{name}"])')
+            keyword = "elif"
+        lines.append("    else:")
+        lines.append(f'        payload["{preferred_key}"] = {preferred_cast}(options["{preferred}"])')
+    return "\n".join(lines) + "\n" if lines else ""
 
 
 def _render_score(manifest: ModelManifest, core: CoreAssets) -> str:
