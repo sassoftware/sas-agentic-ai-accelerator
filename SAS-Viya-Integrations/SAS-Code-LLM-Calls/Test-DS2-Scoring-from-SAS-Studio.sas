@@ -24,7 +24,7 @@ proc ds2;
 
     method run();
       url = %tslit(&llmEndpoint.);
-      body = '{"inputs": [{"name": "userPrompt","value": "Make: Volvo, Model:  S60 R 4dr, Price: 35382 $"},{"name": "systemPrompt","value": "Generate an email in English for a car salesman to make an offering for his customer. Provide information about the discounted price, the model and the make. Discount the price of 10% and calculate the new one."}, {"name": "max_options", "value": 2048}]}';
+      body = '{"inputs": [{"name": "userPrompt","value": "Make: Volvo, Model:  S60 R 4dr, Price: 35382 $"},{"name": "systemPrompt","value": "Generate an email in English for a car salesman to make an offering for his customer. Provide information about the discounted price, the model and the make. Discount the price of 10% and calculate the new one."}, {"name": "max_tokens", "value": 2048}]}';
       webreq.createPostMethod(url);
       webreq.setRequestContentType('application/json');
       webreq.setRequestBodyAsString(body);

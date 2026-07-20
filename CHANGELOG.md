@@ -2,6 +2,17 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [Unreleased]
+
+### Removed
+
+- **`Model-Manager-Setup.py` and `utility/prompt-builder-json.py` are removed**, superseded by `mdb setup` (added in 1.1.0). `mdb setup` creates the `LLM Repository` and both model projects, writes the `sas-viya-cli-commands.txt` authorization rules and the `llm-prompt-builder.json` / `rag-builder.json` builder seeds, and is idempotent — everything the two scripts did. Install the CLI with `pip install -e Model-Definition-Builder/cli[viya]` and run `mdb setup`; connection details come from the same `.env` the scripts used. This also retires the unused `-dt/--deployment_type` flag that `prompt-builder-json.py` accepted but never wrote to its output. The Administration Guide's "Setup SAS Model Manager" chapter and the related references now document `mdb setup`. The `register-*.py` / `publish-*.py` scripts are unaffected and remain
+
+### Fixed
+
+- `SAS-Viya-Integrations/SAS-Code-LLM-Calls/Test-DS2-Scoring-from-SAS-Studio.sas` sent an option named `max_options`, which is not part of the scoring vocabulary and was silently ignored, so the smoke test never actually capped output. Corrected to `max_tokens`
+- `SAS-Viya-Integrations/SAS-Code-Model-Manager-Interaction/MM-Get-Models-Information.sas` shipped with a real-looking example model id hardcoded in the `_mgi_model_id` macro variable; it is now an empty placeholder, matching the sibling `MM-Get-*` scripts, so nobody accidentally queries a stale id
+
 ## [1.2.0] - 2026-07-20
 
 Open-weight models can now keep their weights **outside** the container image. A new `runtime.weights_source: mounted` setting stages the weights once into a shared `ReadWriteMany` volume that every model container reads at run time, so a 7B model no longer puts ~14 GB into the image, the registry and every node that pulls it — and one staged copy serves every model, replica and republish instead of the data existing in several places. Publishes get correspondingly faster, because the weight download stops being part of the build. Existing definitions are unaffected until you opt in: the default stays `baked`.

@@ -3,33 +3,31 @@ sidebar_position: 4
 title: Setup SAS Model Manager
 ---
 
-The SAS Agentic AI Accelerator will create an additional model repository in your environment called **LLM Repository**. This repository will be used both to store the project which contains the LLMs, all the different prompting projects, the embedding models and the RAG setups. The project is created using the script `Model-Manager-Setup.py` which is located in the root folder of the repository.
+The SAS Agentic AI Accelerator will create an additional model repository in your environment called **LLM Repository**. This repository will be used both to store the project which contains the LLMs, all the different prompting projects, the embedding models and the RAG setups.
 
-This script creates the new SAS Model Manager repository and the SAS Model Manager projects for you that serve as the home for all LLM and Embedding related models. You need to run the script from within the locally cloned version of this repository. Make sure that the Python environment that was created during the [initial setup](Introduction.md) is still active - check out [Providing credentials without the command line](#envSetup) for how to move things into a `.env` instead of as CLI arguments:
+The repository and its projects are created by **`mdb setup`**, part of the [Model Definition Builder](Model-Definition-Builder.md). It creates the `LLM Repository`, the `LLM Model Project` and the `Embedding Model Project` if they do not already exist, and it is idempotent — running it again on an environment that is already set up changes nothing. (You do not have to run it explicitly at all: `mdb register` performs the same check automatically for the kind it registers. Running `mdb setup` up front is simply the tidiest way to bootstrap a fresh environment.)
+
+Install the CLI once, then run setup from within the locally cloned repository. The connection details are read from a `.env` file — see [Providing credentials without the command line](#envSetup):
 
 ```bash
-# Run the setup script with the help (-h) flag to get more information on each parameter
-# Run the setup script - make sure to update the parameter values that are passed into the script
-# If you are planning on deploying your LLM containers not in kubernetes but rather as Azure Container Apps/Instances use -dt aca
-python ./Model-Manager-Setup.py -vs sas-viya-url -u username -p password -rp responsible_party -e endpoint_from_scr_deployment
+# Install the CLI with the Viya extra (one time)
+pip install -e Model-Definition-Builder/cli[viya]
+
+# Create the repository and both model projects, and write the seed files
+mdb setup
 ```
 
-Running this script will produce two additional json files as outputs, that are required for the steps on the page [Setup Additional UIs](Setup-Additional-UIs.md):
+`mdb setup` reads the SAS Viya connection from `SAS_VIYA_URL` / `SAS_VIYA_USER` / `SAS_VIYA_PASSWORD`, the point of contact from `SAS_RESPONSIBLE_PARTY`, the SCR base URL from `SAS_SCR_ENDPOINT`, and the deployment type from `SAS_DEPLOYMENT_TYPE` (`k8s` by default, or `aca` for Azure Container Apps/Instances). All of these live in your `.env`.
+
+Running it produces two additional json files as outputs, that are required for the steps on the page [Setup Additional UIs](Setup-Additional-UIs.md):
 - *llm-prompt-builder.json*, this will enable your users to do No-Code Prompt Engineering.
 - *rag-builder.json*, this will enable your users to do No-Code RAG pipeline setups.
 
-Explanation of the different available options:
-- -vs, short for --viya-server, is the URL for your SAS Viya server. The argument is required.
-- -u, short for --username, is the username to authenticate with SAS Viya. The argument is required.
-- -p, short for --password, is the password to authenticate with SAS Viya. The argument is required.
-- -rp, short for --responsible_party, is the person or group that will be listed in SAS Model Manager as a point of contact. The argument is required.
-- -e, short for --scr_endpoint, is the base URL where the LLM containers will be published. The argument is required.
-- -dt, short for --deployment_type, can be set to k8s (default) if you are deploying the LLM containers to kubernetes or aca if you are deploying the LLM containers to Azure Container Apps/Instances. This argument is optional as it defaults to k8s. For k8s please paste the full link e.g. https://base-url/llm and for Azure Container Apps please only provide the following *randomString.region.azurecontainerapps.io* from the https://model.randomString.region.azurecontainerapps.io/model URL.
-- -k, short for --verify_ssl, should only be changed to false if you have a self-signed certificat on SAS Viya that your machine doesn't recognize. This argument is optional as it defaults to true.
+Use `--out <dir>` to write those files somewhere other than the current directory, or `--no-files` to create only the repository and projects. Run `mdb setup --help` for the full list.
 
 ### Providing credentials without the command line {#envSetup}
 
-Every Python setup script (`Model-Manager-Setup.py`, `register-LLMs.py`, `publish-LLMs.py`, `register-Embedding.py`, `publish-Embedding.py` and `utility/prompt-builder-json.py`) can read any parameter from an **environment variable** or a **`.env` file** instead of the command line. This keeps your credentials out of your shell history and the process list. The order of precedence is: command-line argument, then environment variable, then `.env` file, then the built-in default.
+`mdb` and every Python script that talks to SAS Viya (`register-LLMs.py`, `publish-LLMs.py`, `register-Embedding.py`, `publish-Embedding.py`) can read any parameter from an **environment variable** or a **`.env` file** instead of the command line. This keeps your credentials out of your shell history and the process list. The order of precedence is: command-line argument, then environment variable, then `.env` file, then the built-in default.
 
 To use a `.env` file, install the optional dependency and copy the template:
 
@@ -53,11 +51,7 @@ The available variables (documented in `.env.example`) map to the arguments as f
 | `SAS_RESPONSIBLE_PARTY` | `-rp` / `--responsible_party` |
 | `SAS_PUBLISH_DESTINATION` | `-d` / `--destination` |
 
-The `.env` file is git-ignored, so your credentials are never committed. If the password is not supplied by any source, the scripts prompt for it securely instead of failing. The model lists (`-l` / `--llms`, `-m` / `--embedding_models`) stay on the command line as they change per run. With the connection details in `.env`, the setup command shortens to:
-
-```bash
-python ./Model-Manager-Setup.py
-```
+The `.env` file is git-ignored, so your credentials are never committed. If the password is not supplied by any source, you are prompted for it securely instead of failing. With the connection details in `.env`, `mdb setup` needs no arguments at all.
 
 ### Authorizing the Repository
 
@@ -65,7 +59,7 @@ By default newly created SAS Model Manager repositories are only authorized for 
 
 ![LLM Repository Default Authorization](../../static/LLM-Repository-Default-Authorization.png)
 
-Running the Model Manager setup script will produce a file called *sas-viya-cli-commands.txt* which contains the following groups and rules as a template to apply authorization to your environment. Of course this is just a basic template, please read through it carefully and adjust it to your needs:
+Running `mdb setup` will produce a file called *sas-viya-cli-commands.txt* which contains the following groups and rules as a template to apply authorization to your environment. Of course this is just a basic template, please read through it carefully and adjust it to your needs:
 
 ```bash
 # Each command comes with a description, please read it and the documentation before running anything
