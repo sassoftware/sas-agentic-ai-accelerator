@@ -8,7 +8,7 @@ from sentence_transformers import SentenceTransformer
 # Set the transformer cache directory to a writable directory
 os.environ['TRANSFORMERS_CACHE'] = '/pybox/model'
 
-checkpoint = './{{ model_id }}'
+checkpoint = '{{ model_path }}'
 model = SentenceTransformer(checkpoint)
 
 # Initiate the logger to write output information to the log

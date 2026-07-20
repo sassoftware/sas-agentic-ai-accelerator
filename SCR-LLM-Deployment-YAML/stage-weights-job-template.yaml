@@ -1,0 +1,54 @@
+---
+# One-off Job that downloads an open-weight model into the shared llm-weights
+# volume. Run it once per model; every SCR container then reads the same copy
+# from /pybox/model/mount at run time, so the weights are not baked into any
+# image and do not have to exist in more than one place.
+#
+# Replace before applying:
+#   {{ MODEL-ID }}   - must match model_id in definition.yaml; the scorer looks
+#                      for /pybox/model/mount/{{ MODEL-ID }}
+#   {{ HF-REPO }}    - Hugging Face repository, e.g. Qwen/Qwen2.5-7B-Instruct
+#
+# The Hugging Face token is only needed for GATED repositories. For a public
+# model, delete the HF_TOKEN env block below - no secret is required.
+# For a gated model, accept its license on Hugging Face first, then create:
+#   kubectl create secret generic huggingface-token \
+#     --from-literal=huggingfacetoken='*yourToken*' -n llm
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stage-weights-{{ MODEL-ID }}
+  namespace: llm
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: stage
+          image: python:3.11-slim
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              pip -q install --upgrade pip
+              pip -q install 'huggingface-hub>=0.18.0'
+              hf download --quiet "{{ HF-REPO }}" \
+                --local-dir "/mnt/weights/{{ MODEL-ID }}"
+              echo "staged {{ HF-REPO }} -> /mnt/weights/{{ MODEL-ID }}"
+              ls -la "/mnt/weights/{{ MODEL-ID }}"
+          env:
+            # Delete this block for a public (non-gated) repository.
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: huggingface-token
+                  key: huggingfacetoken
+          volumeMounts:
+            - name: llm-pv
+              mountPath: /mnt/weights
+      volumes:
+        - name: llm-pv
+          persistentVolumeClaim:
+            claimName: llm-weights

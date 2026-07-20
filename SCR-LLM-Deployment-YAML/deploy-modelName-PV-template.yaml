@@ -29,6 +29,15 @@ spec:
         volumeMounts:
         - name: llm-pv
           mountPath: /pybox/model/mount
+          readOnly: true
+      volumes:
+      # Shared weight store - apply llm-weights-pvc-template.yaml once per
+      # namespace first. Every self-hosted model mounts this same claim, so the
+      # weights are staged once and reused by all containers and replicas.
+      - name: llm-pv
+        persistentVolumeClaim:
+          claimName: llm-weights
+          readOnly: true
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:

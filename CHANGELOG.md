@@ -2,9 +2,23 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [1.1.1] - 2026-07-20
+## [1.2.0] - 2026-07-20
 
-A documentation fix for the SAS Viya platform release 2025.10, in which `sas-decisions-runtime` was merged into `sas-model-publish` and the Build Kit customization path changed. No framework assets are affected — nothing needs to be re-registered, re-published or re-uploaded. Note the known issue below: the gated open-weight model workflow is not yet restored, only accurately documented.
+Open-weight models can now keep their weights **outside** the container image. A new `runtime.weights_source: mounted` setting stages the weights once into a shared `ReadWriteMany` volume that every model container reads at run time, so a 7B model no longer puts ~14 GB into the image, the registry and every node that pulls it — and one staged copy serves every model, replica and republish instead of the data existing in several places. Publishes get correspondingly faster, because the weight download stops being part of the build. Existing definitions are unaffected until you opt in: the default stays `baked`.
+
+The Administration Guide is also updated for the SAS Viya platform release 2025.10, in which `sas-decisions-runtime` was merged into `sas-model-publish` and the Build Kit paths moved.
+
+### Added
+
+- `runtime.weights_source` in `definition.yaml` (`baked` | `mounted`, default `baked`). With `mounted`, `mdb generate` drops the weight download from `requirements.json` and points the score code at `/pybox/model/mount/<model_id>`; the published image then carries only score code and Python dependencies
+- `SCR-LLM-Deployment-YAML/llm-weights-pvc-template.yaml` — the shared `ReadWriteMany` weight store, applied once per namespace. Every self-hosted model Deployment mounts this same claim read-only at `/pybox/model/mount`
+- `SCR-LLM-Deployment-YAML/stage-weights-job-template.yaml` — a one-off Job that downloads a model into the shared volume. This is also where a Hugging Face token is supplied for gated repositories, so the token is used by an ordinary Kubernetes Job you control rather than by a container build
+- Administration Guide page "Serving Open-Weight Models" covering both approaches and when staging is worth the extra setup
+
+### Fixed
+
+- **`deploy-modelName-PV-template.yaml` could not be deployed.** It mounted a volume named `llm-pv` but never declared it, so the API server rejected every Deployment rendered from it: `spec.template.spec.containers[0].volumeMounts[0].name: Not found: "llm-pv"`. Since `mdb deploy` selects this template automatically for every self-hosted model, that affected all of them. The template now declares the volume and binds it to the `llm-weights` claim. Note that a client-side `kubectl apply --dry-run` accepts the broken manifest — the schema is valid and only the cross-reference is wrong — so use `--dry-run=server` when validating rendered manifests
+- `mdb generate` no longer emits `hf login --token $(cat /etc/secret-volume/huggingfacetoken)` for gated repositories. That step could not authenticate, so a gated definition now requires `weights_source: mounted` and `mdb generate` reports a clear error instead of producing a definition whose build dies at the download step. No shipped definition is gated, so the fleet is unaffected
 
 ### Changed
 
@@ -12,9 +26,7 @@ A documentation fix for the SAS Viya platform release 2025.10, in which `sas-dec
 - Build Kit resource sizing no longer works by editing a pod template. The page now documents the supported path — `configuration.env` (`buildkitCpuRequest`, `buildkitMemoryRequest`, `buildkitMemoryLimit`, `buildkitMaxReplicas`, storage size/class) plus the `buildkit-transformer.yaml` entry — and notes the `ReadWriteMany` PVC requirement, the transformer ordering needed when HA is enabled, and the `buildkit-remove-limits.yaml` overlay. The YAML snippet the page previously showed was kaniko-era (container `buildkitd` with `--dockerfile`/`--context`/`--ignore-path` args) and no longer matches the shipped templates, which run `buildctl` against a separate daemon
 - The page explains the new two-component build architecture, because it changes what customization is even possible: image builds now execute on the long-lived `sas-buildkitd` Deployment, while the per-publish job only runs a `buildctl` client that ships the build context over `tcp://sas-buildkitd:1234`
 
-### Known issues
-
-- **Mounting a Hugging Face token for gated open-weight models is not currently supported on 2025.10+.** The previously documented secret-volume mount placed the token in the publish job's pod, but Dockerfile `RUN` steps now execute on the `sas-buildkitd` daemon, where that volume does not exist — so `huggingface-cli login --token $(cat /etc/secret-volume/huggingfacetoken)` in `requirements.json` cannot find the file. Mounting onto the daemon is not an equivalent substitute, as BuildKit runs `RUN` steps in isolated build sandboxes; the mechanism intended for this is BuildKit build secrets, but the shipped `buildctl` invocation passes no `--secret` flag and the Dockerfile is generated by the `dockergen` init container. The supported path is being confirmed with SAS R&D and the page carries a warning admonition until then. This analysis is derived from the shipped manifests and has **not** been reproduced on a live 2025.10+ cluster
+- The Build Kit page no longer documents mounting a Hugging Face token into the publish pod. Open-weight models — gated or not — get their weights from the shared volume instead, so the container build needs no Hugging Face credentials
 
 ## [1.1.0] - 2026-07-20
 

@@ -70,6 +70,13 @@ class RuntimeBlock(BaseModel):
     template: str  # score template family, e.g. "openai_chat"
     requirements_profile: str  # e.g. "api-wrapper", "hf-transformers"
     timeout_s: int = 60
+    # Where a self-hosted model's weights come from.
+    #   "baked"   - downloaded during the container build into /pybox/model/<id>
+    #   "mounted" - staged once on the shared llm-weights volume and read from
+    #               /pybox/model/mount/<id> at run time, so the image stays small
+    #               and one copy of the weights serves every container and replica
+    # Ignored for hosted (api-wrapper) models.
+    weights_source: Literal["baked", "mounted"] = "baked"
 
 
 class TagsBlock(BaseModel):
