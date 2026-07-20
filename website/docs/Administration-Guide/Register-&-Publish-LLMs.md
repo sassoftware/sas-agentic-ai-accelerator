@@ -5,36 +5,56 @@ title: Register & Publish LLMs
 
 ## Registering LLM Definitions
 
-The folder *LLM-Definitions* contains information on how to add LLMs to the repository in the SAS Model Manager. Each model is packaged so that it can be deployed using the SAS Container Runtime (SCR).
+The folder *LLM-Definitions* contains a definition per model, each packaged so that it can be deployed using the SAS Container Runtime (SCR). More on the SCR in the [SAS Documentation](https://go.documentation.sas.com/doc/en/mascrtcdc/default/mascrtag/titlepage.htm).
 
-More on the SCR in the [SAS Documentation](https://go.documentation.sas.com/doc/en/mascrtcdc/default/mascrtag/titlepage.htm).
-
-For registering the models to SAS Model Manager please run the script *register-LLMs.py*. Make sure that the Python environment that was created during the initial setup is still active:
+Registering and publishing is done with the **`mdb`** command line, part of the [Model Definition Builder](Model-Definition-Builder.md). If you have not installed it yet:
 
 ```bash
-# Change into the LLM-Definitions subdirectory
-cd ./LLM-Definitions
-# Run the script - make sure to update the parameter values that are passed into the script
-python ./register-LLMs.py -vs sas-viya-url -u username -p password -rp responsible_party -e endpoint_from_scr_deployment -l llm_1 llm_2
+pip install -e Model-Definition-Builder/cli[viya]
 ```
 
-A help function is also available with more information.
+To register one or more models into SAS Model Manager:
 
-:::tip
-Every parameter except the model list can be supplied via an environment variable or a `.env` file instead of the command line — see [Providing credentials without the command line](./Setup-SAS-Model-Manager.md#envSetup). If you omit the password you will be prompted for it securely.
+```bash
+# Register specific models
+mdb register gpt_41_mini claude_sonnet_4_5
+
+# ...or register every managed LLM and Embedding definition
+mdb register --all
+```
+
+`mdb register` reads the SAS Viya connection from your `.env` (see [Providing credentials without the command line](./Setup-SAS-Model-Manager.md#envSetup)); if the password is not supplied you are prompted for it securely. It creates the `LLM Repository` and the model projects on first use if they do not exist yet, so a fresh environment needs no separate setup step.
+
+:::tip Updating an already-registered model
+Re-run with `--update` to refresh a model in place — a new minor version, the content replaced, and the attributes and tags refreshed, without deleting and recreating it:
+
+```bash
+mdb register gpt_41_mini --update
+```
 :::
 
-If you want to add your own LLM to the mix, please use the *_Base_Definition* folder as your template and remember to contribute back! If you are adding a new proprietary model provider please note that the default value for the API_KEY attribute should be set to the name of the provider, and then needs to be added to the LLM Prompt Builder object definition as well.
+If you want to add your own LLM, use `mdb add` (an interactive wizard, or non-interactive flags) rather than editing files by hand, and remember to contribute back. If you are adding a new proprietary model provider, the `API_KEY` option's default should be set to the name of the provider, which also needs to be added to the LLM Prompt Builder object definition.
 
-## Publish the LLMs to the SCR Destination
+## Publishing the LLMs to the SCR Destination
 
-Once you have registered the LLMs, you can now go ahead and publish the LLMs to the SCR publishing destination. For this the script *LLM-Definitions/publish-LLMs.py* is provided. Make sure that the Python environment that was created during the initial setup is still active:
+Once the models are registered, publish them to the SCR publishing destination:
 
 ```bash
-# Change into the LLM-Definitions subdirectory
-cd ./LLM-Definitions
-# Run the script - make sure to update the parameter values that are passed into the script
-python ./publish-LLMs.py -vs sas-viya-url -u username -p password -l llm_1 llm_2 -d publishing_destination
+# Publish specific models and wait for each image build to finish
+mdb publish gpt_41_mini claude_sonnet_4_5 --wait
+
+# ...or publish everything
+mdb publish --all --wait
 ```
 
-A help function is also available with more information.
+The `--destination` (`-d`) can be given on the command line or, more conveniently, set once as `SAS_PUBLISH_DESTINATION` in your `.env`. `--wait` polls the SCR image build to completion so you learn immediately whether it succeeded.
+
+:::tip Register and publish in one step
+`mdb ship <model_id>` runs a live provider smoke test, `register --update` and `publish --wait` in a single, resumable command:
+
+```bash
+mdb ship gpt_41_mini
+```
+:::
+
+Run any command with `--help` for the full set of options.

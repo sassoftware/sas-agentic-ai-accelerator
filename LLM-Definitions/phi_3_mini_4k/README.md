@@ -26,7 +26,8 @@ The following options can be supplied at scoring time through the `options` inpu
 ## Register and publish
 
 ```bash
-cd LLM-Definitions
-python register-LLMs.py -l phi_3_mini_4k
-python publish-LLMs.py -l phi_3_mini_4k -d <your-destination>
+mdb register phi_3_mini_4k
+mdb publish phi_3_mini_4k -d <your-destination>
 ```
+
+Or do both in one step with `mdb ship phi_3_mini_4k`. The publishing destination can also come from `SAS_PUBLISH_DESTINATION` in your `.env`.

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fact-sheet CSV upsert.
 
-The fact sheet is consumed by register-LLMs.py (model metadata enrichment)
+The fact sheet is consumed by `mdb register` (model metadata enrichment)
 and Load-Fact-Sheets.sas (CAS monitoring data). Managed rows are derived
 from the manifest with model_id forced equal to the folder name, which makes
 the historical key-typo class of bug unrepresentable. Legacy rows (models

@@ -28,7 +28,8 @@ The following options can be supplied at scoring time through the `options` inpu
 ## Register and publish
 
 ```bash
-cd LLM-Definitions
-python register-LLMs.py -l text_embedding_3_small
-python publish-LLMs.py -l text_embedding_3_small -d <your-destination>
+mdb register text_embedding_3_small
+mdb publish text_embedding_3_small -d <your-destination>
 ```
+
+Or do both in one step with `mdb ship text_embedding_3_small`. The publishing destination can also come from `SAS_PUBLISH_DESTINATION` in your `.env`.

@@ -28,7 +28,8 @@ The following options can be supplied at scoring time through the `options` inpu
 ## Register and publish
 
 ```bash
-cd LLM-Definitions
-python register-LLMs.py -l voyage_35
-python publish-LLMs.py -l voyage_35 -d <your-destination>
+mdb register voyage_35
+mdb publish voyage_35 -d <your-destination>
 ```
+
+Or do both in one step with `mdb ship voyage_35`. The publishing destination can also come from `SAS_PUBLISH_DESTINATION` in your `.env`.

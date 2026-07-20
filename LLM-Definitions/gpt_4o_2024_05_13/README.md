@@ -28,7 +28,8 @@ The following options can be supplied at scoring time through the `options` inpu
 ## Register and publish
 
 ```bash
-cd LLM-Definitions
-python register-LLMs.py -l gpt_4o_2024_05_13
-python publish-LLMs.py -l gpt_4o_2024_05_13 -d <your-destination>
+mdb register gpt_4o_2024_05_13
+mdb publish gpt_4o_2024_05_13 -d <your-destination>
 ```
+
+Or do both in one step with `mdb ship gpt_4o_2024_05_13`. The publishing destination can also come from `SAS_PUBLISH_DESTINATION` in your `.env`.

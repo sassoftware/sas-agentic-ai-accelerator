@@ -28,7 +28,8 @@ The following options can be supplied at scoring time through the `options` inpu
 ## Register and publish
 
 ```bash
-cd LLM-Definitions
-python register-LLMs.py -l qwen_25_15b
-python publish-LLMs.py -l qwen_25_15b -d <your-destination>
+mdb register qwen_25_15b
+mdb publish qwen_25_15b -d <your-destination>
 ```
+
+Or do both in one step with `mdb ship qwen_25_15b`. The publishing destination can also come from `SAS_PUBLISH_DESTINATION` in your `.env`.

@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """One parametrized register/update/publish path for both definition kinds.
 
-Creation mirrors register-LLMs.py / register-Embedding.py byte-for-byte in
-its load-bearing conventions (content roles incl. requirements.json as
-'python pickle', endPoint = {scr}/{id}/{id}, costPerCall enrichment, tag PUT
-with ETag). The update path uses the Prompt Builder's production-proven
+Creation preserves the load-bearing Model Manager conventions the framework
+has always used (content roles incl. requirements.json as 'python pickle',
+endPoint = {scr}/{id}/{id}, costPerCall enrichment, tag PUT with ETag). The
+update path uses the Prompt Builder's production-proven
 pattern: a new minor model version, then POST contents?onConflict=update per
 file. The definition.yaml manifest is stored as model content so registered
 models carry their source of truth.

@@ -28,7 +28,8 @@ The following options can be supplied at scoring time through the `options` inpu
 ## Register and publish
 
 ```bash
-cd LLM-Definitions
-python register-LLMs.py -l gemini_embedding_001
-python publish-LLMs.py -l gemini_embedding_001 -d <your-destination>
+mdb register gemini_embedding_001
+mdb publish gemini_embedding_001 -d <your-destination>
 ```
+
+Or do both in one step with `mdb ship gemini_embedding_001`. The publishing destination can also come from `SAS_PUBLISH_DESTINATION` in your `.env`.
