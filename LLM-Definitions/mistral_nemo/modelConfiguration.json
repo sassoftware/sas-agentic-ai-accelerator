@@ -15,10 +15,10 @@
     "tags": [
         "LLM",
         "Open-Source",
-        "Apache-2",
-        "large",
         "Mistral",
-        "NVIDIA"
+        "large",
+        "NVIDIA",
+        "Apache-2"
     ],
     "modelPurpose": "To serve as a bridge of understanding, enabling seamless interaction between humans and machines by harnessing the power of natural language. LLMs decode the complexities of human thought, transforming them into actionable insights, creative solutions, and tailored knowledge while fostering accessibility, inclusivity, and empowerment in communication and decision-making.",
     "intendedUse": "Large Language Models (LLMs) are designed to process and generate human-like text, enabling a wide range of applications across domains. These models support tasks such as text summarization, question answering, content generation, translation, and conversational interactions. LLMs aim to facilitate understanding, streamline workflows, and provide accessible tools for creativity, education, and decision-making. They are built to serve diverse user needs while emphasizing usability, adaptability, and ethical considerations in deployment.",

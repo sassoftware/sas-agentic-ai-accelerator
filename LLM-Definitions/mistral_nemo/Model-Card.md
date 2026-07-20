@@ -3,7 +3,7 @@
 ## Model Details
 
 - **Model:** Mistral Nemo (`mistral_nemo`)
-- **Provider:** Apache-2
+- **Provider:** Mistral
 - **Release date:** 2024-07-18
 - **License:** Open-Source
 - **Deployment type:** SCR

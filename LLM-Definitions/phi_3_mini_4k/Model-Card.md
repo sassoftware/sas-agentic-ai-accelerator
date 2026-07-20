@@ -3,7 +3,7 @@
 ## Model Details
 
 - **Model:** Phi 3 Mini 4k (`phi_3_mini_4k`)
-- **Provider:** MIT-License
+- **Provider:** Microsoft
 - **Release date:** 2024-04-23
 - **License:** Open-Source
 - **Deployment type:** SCR

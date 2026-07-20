@@ -3,7 +3,7 @@
 ## Model Details
 
 - **Model:** All MiniLM L6 v2 (`sentence-transformers/all-MiniLM-L6-v2`)
-- **Provider:** Apache-2
+- **Provider:** HuggingFace
 - **Release date:** unknown
 - **License:** Open-Source
 - **Deployment type:** SCR

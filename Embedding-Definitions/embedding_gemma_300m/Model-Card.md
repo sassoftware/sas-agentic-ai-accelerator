@@ -3,7 +3,7 @@
 ## Model Details
 
 - **Model:** Embedding Gemma 300M (`google/embeddinggemma-300m`)
-- **Provider:** gemma
+- **Provider:** Google
 - **Release date:** unknown
 - **License:** Open-Source
 - **Deployment type:** SCR

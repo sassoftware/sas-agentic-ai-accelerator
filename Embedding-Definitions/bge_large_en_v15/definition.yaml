@@ -23,9 +23,10 @@ options:
 tags:
   size_class: Embedding
   license_class: Open-Source
-  provider_tag: MIT
+  provider_tag: BAAI
   scr_sizing: medium
-  extra: []
+  extra:
+  - MIT
 metadata:
   description: BAAI pre-trains the models using retromae and trains them on large-scale pairs data using
     contrastive learning.

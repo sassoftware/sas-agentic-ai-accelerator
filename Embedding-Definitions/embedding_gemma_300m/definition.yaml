@@ -25,9 +25,10 @@ options:
 tags:
   size_class: Embedding
   license_class: Open-Source
-  provider_tag: gemma
+  provider_tag: Google
   scr_sizing: medium
-  extra: []
+  extra:
+  - gemma
 metadata:
   description: EmbeddingGemma is a 300M parameter, state-of-the-art for its size, open embedding model
     from Google, built from Gemma 3 (with T5Gemma initialization) and the same research and technology

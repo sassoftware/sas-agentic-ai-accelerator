@@ -3,7 +3,7 @@
 ## Model Details
 
 - **Model:** SmolLM 1.7B (`HuggingFaceTB/SmolLM-1.7B-Instruct`)
-- **Provider:** Apache-2
+- **Provider:** HuggingFace
 - **Release date:** 2024-07-16
 - **License:** Open-Source
 - **Deployment type:** SCR

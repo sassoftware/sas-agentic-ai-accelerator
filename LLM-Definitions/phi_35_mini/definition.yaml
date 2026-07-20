@@ -18,10 +18,10 @@ options:
 tags:
   size_class: SLM
   license_class: Open-Source
-  provider_tag: MIT-License
+  provider_tag: Microsoft
   scr_sizing: medium
   extra:
-  - Microsoft
+  - MIT-License
 metadata:
   description: Phi 3.5 Mini is an open-source model provided by Microsoft with a 128k token length.
   release_date: '2024-08-22'

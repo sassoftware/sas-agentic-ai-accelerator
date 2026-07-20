@@ -25,10 +25,10 @@ options:
 tags:
   size_class: SLM
   license_class: Open-Source
-  provider_tag: Apache-2
+  provider_tag: Alibaba-Cloud
   scr_sizing: large
   extra:
-  - Alibaba-Cloud
+  - Apache-2
 metadata:
   description: Qwen 2.5 7B Instruct is a small open-source model by Alibaba Cloud
   release_date: '2024-09-19'

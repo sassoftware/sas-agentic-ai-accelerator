@@ -3,7 +3,7 @@
 ## Model Details
 
 - **Model:** Qwen 2.5 7B (`Qwen/Qwen2.5-7B-Instruct`)
-- **Provider:** Apache-2
+- **Provider:** Alibaba-Cloud
 - **Release date:** 2024-09-19
 - **License:** Open-Source
 - **Deployment type:** SCR

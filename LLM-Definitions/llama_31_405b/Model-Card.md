@@ -3,7 +3,7 @@
 ## Model Details
 
 - **Model:** Llama 3.1 405B (`llama_31_405b`)
-- **Provider:** LLAMA-3.1-COMMUNITY-LICENSE
+- **Provider:** Meta
 - **Release date:** 2024-07-23
 - **License:** Open-Source
 - **Deployment type:** API
