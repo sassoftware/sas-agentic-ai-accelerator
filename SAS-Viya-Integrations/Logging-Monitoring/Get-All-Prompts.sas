@@ -211,25 +211,89 @@ run;
 
             libname _gap_pe json;
 
-            data work._gap_all_experiments_temp(drop=systemPromptTEMP userPromptTEMP);
-                length modelID $36. runID 8. systemPrompt systemPromptTEMP userPrompt userPromptTEMP $32767. model $64. options $256. response $32767. run_time prompt_length output_length best_prompt fastest_prompt fewest_tokens_prompt 8.;
-                set _gap_pe.root(drop=ordinal_root);
+            * A run's input variables and its manifest (the integrated-LLM-call
+              flag and the parsed output variables) live on the run's header row
+              as nested JSON. The JSON engine explodes those into side tables
+              keyed by ordinal_root. Count them per run below. Trackers written by
+              an older Prompt Builder have neither, so every read is guarded with
+              exist() - a missing side table simply yields a count of zero and the
+              script keeps working against old prompts;
+            %if %sysfunc(exist(_gap_pe.variables)) %then %do;
+                proc sql;
+                    create table work._gap_var_counts as
+                        select ordinal_root, count(*) as variables_count
+                        from _gap_pe.variables group by ordinal_root;
+                quit;
+            %end;
+            %else %do;
+                data work._gap_var_counts; length ordinal_root variables_count 8.; stop; run;
+            %end;
+
+            %if %sysfunc(exist(_gap_pe.manifest)) %then %do;
+                data work._gap_manifest;
+                    set _gap_pe.manifest(keep=ordinal_root ordinal_manifest integratedLLMCall);
+                run;
+            %end;
+            %else %do;
+                data work._gap_manifest; length ordinal_root ordinal_manifest integratedLLMCall 8.; stop; run;
+            %end;
+
+            %if %sysfunc(exist(_gap_pe.manifest_outputvariables)) %then %do;
+                proc sql;
+                    create table work._gap_out_counts as
+                        select m.ordinal_root, count(*) as output_variables_count
+                        from _gap_pe.manifest_outputvariables as o
+                            inner join work._gap_manifest as m
+                                on o.ordinal_manifest = m.ordinal_manifest
+                        group by m.ordinal_root;
+                quit;
+            %end;
+            %else %do;
+                data work._gap_out_counts; length ordinal_root output_variables_count 8.; stop; run;
+            %end;
+
+            * One row per run header (ordinal_root), with the three metrics;
+            proc sql;
+                create table work._gap_run_meta as
+                    select coalesce(v.ordinal_root, f.ordinal_root, o.ordinal_root) as ordinal_root,
+                           coalesce(v.variables_count, 0)        as variables_count,
+                           coalesce(f.integratedLLMCall, 0)      as integrated_llm_call,
+                           coalesce(o.output_variables_count, 0) as output_variables_count
+                    from work._gap_var_counts as v
+                        full join work._gap_manifest as f on v.ordinal_root = f.ordinal_root
+                        full join work._gap_out_counts as o
+                            on coalesce(v.ordinal_root, f.ordinal_root) = o.ordinal_root
+                    order by ordinal_root;
+            quit;
+
+            data work._gap_all_experiments_temp(drop=systemPromptTEMP userPromptTEMP vcTEMP illcTEMP ovcTEMP ordinal_root);
+                length modelID $36. runID 8. systemPrompt systemPromptTEMP userPrompt userPromptTEMP $32767. model $64. options $256. response $32767. run_time prompt_length output_length best_prompt fastest_prompt fewest_tokens_prompt variables_count integrated_llm_call output_variables_count 8.;
+                * root is emitted in ordinal_root order, matching _gap_run_meta;
+                merge _gap_pe.root _gap_run_meta;
+                by ordinal_root;
 
                 modelID = "&_gap_model_id.";
 
-                * Set system and user prompt;
+                * Set the prompts and carry the run-level metrics from the header
+                  row onto each model result row;
                 if systemPrompt ne '' then do;
                     systemPromptTEMP = systemPrompt;
                     userPromptTEMP = userPrompt;
+                    vcTEMP = coalesce(variables_count, 0);
+                    illcTEMP = coalesce(integrated_llm_call, 0);
+                    ovcTEMP = coalesce(output_variables_count, 0);
                 end;
 
                 if model ne '' then do;
                     systemPrompt = systemPromptTEMP;
                     userPrompt = userPromptTEMP;
+                    variables_count = vcTEMP;
+                    integrated_llm_call = illcTEMP;
+                    output_variables_count = ovcTEMP;
                     output;
                 end;
-                
-                retain systemPromptTEMP userPromptTEMP;
+
+                retain systemPromptTEMP userPromptTEMP vcTEMP illcTEMP ovcTEMP;
             run;
 
             proc append base=work._gap_all_experiments data=work._gap_all_experiments_temp force nowarn;
@@ -257,7 +321,7 @@ run;
 
 * Create base table;
 data work._gap_all_experiments;
-    length modelID $36. runID 8. systemPrompt userPrompt $32767. model $64. options $256. response $32767. run_time prompt_length output_length best_prompt fastest_prompt fewest_tokens_prompt 8.;
+    length modelID $36. runID 8. systemPrompt userPrompt $32767. model $64. options $256. response $32767. run_time prompt_length output_length best_prompt fastest_prompt fewest_tokens_prompt variables_count integrated_llm_call output_variables_count 8.;
 run;
 
 data work._gap_all_models;
@@ -283,7 +347,10 @@ proc sql;
             b.output_length,
             b.best_prompt,
             b.fastest_prompt,
-            b.fewest_tokens_prompt
+            b.fewest_tokens_prompt,
+            b.variables_count,
+            b.integrated_llm_call,
+            b.output_variables_count
             from work._gap_all_models as a
                 left join work._gap_all_experiments as b
                     on a.modelID = b.modelID;
@@ -293,7 +360,9 @@ quit;
 data work._gap_all_data;
     length unique_id 8.;
     set work._gap_all_data(drop=repositoryId);
-    length creationTime modifiedTime temperature top_p top_k max_tokens api_key_required 8.;
+    length creationTime modifiedTime temperature top_p top_k max_tokens
+        thinking_budget max_completion_tokens seed frequency_penalty presence_penalty
+        dimensions api_key_required 8. reasoning_effort input_type $32. normalize $8.;
     format creationTime modifiedTime datetime22.8;
     label unique_id = 'Unique ID'
         name = 'Prompt Name'
@@ -320,6 +389,18 @@ data work._gap_all_data;
         top_p = 'Top P'
         top_k = 'Top K'
         max_tokens = 'Max Tokens'
+        thinking_budget = 'Thinking Budget'
+        max_completion_tokens = 'Max Completion Tokens'
+        seed = 'Seed'
+        frequency_penalty = 'Frequency Penalty'
+        presence_penalty = 'Presence Penalty'
+        reasoning_effort = 'Reasoning Effort'
+        input_type = 'Input Type'
+        dimensions = 'Dimensions'
+        normalize = 'Normalize'
+        variables_count = 'Custom Input Variables (count)'
+        integrated_llm_call = 'Integrated LLM Call'
+        output_variables_count = 'Parsed Output Variables (count)'
         api_key_required = 'API Key Required';
     
     unique_id = _n_;
@@ -342,10 +423,19 @@ data work._gap_all_data;
             value = scan(key_value_pair, 2, ':');
 
             if key = 'temperature' then temperature = input(value, 8.);
-            if key = 'top_k' then top_k = input(value, 8.);
-            if key = 'top_p' then top_p = input(value, 8.);
-            if key = 'max_tokens' then max_tokens = input(value, 8.);
-            if key = 'API_KEY' then api_key_required = 1;
+            else if key = 'top_k' then top_k = input(value, 8.);
+            else if key = 'top_p' then top_p = input(value, 8.);
+            else if key = 'max_tokens' then max_tokens = input(value, 8.);
+            else if key = 'thinking_budget' then thinking_budget = input(value, 8.);
+            else if key = 'max_completion_tokens' then max_completion_tokens = input(value, 8.);
+            else if key = 'seed' then seed = input(value, 8.);
+            else if key = 'frequency_penalty' then frequency_penalty = input(value, 8.);
+            else if key = 'presence_penalty' then presence_penalty = input(value, 8.);
+            else if key = 'dimensions' then dimensions = input(value, 8.);
+            else if key = 'reasoning_effort' then reasoning_effort = value;
+            else if key = 'input_type' then input_type = value;
+            else if key = 'normalize' then normalize = value;
+            else if key = 'API_KEY' then api_key_required = 1;
         end;
     end;
 

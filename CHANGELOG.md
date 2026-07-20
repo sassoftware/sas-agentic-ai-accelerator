@@ -4,6 +4,10 @@ This changelog documents all the different updates that occur for this framework
 
 ## [Unreleased]
 
+### Changed
+
+- **`Get-All-Prompts.sas` now surfaces the newer experiment metadata in the `PROMPT_EXPERIMENTS` table.** Its option parser was a fixed allow-list (`temperature`, `top_p`, `top_k`, `max_tokens`) that silently dropped every other option, so the typed options the Prompt Builder has emitted since 1.1.0 — `reasoning_effort`, `thinking_budget`, `max_completion_tokens`, `seed`, the penalties, and the embedding options `input_type` / `dimensions` / `normalize` — never reached the report. Each now has its own column. The table also gains `variables_count` (how many custom input variables a run used), `integrated_llm_call` (whether the run combined the LLM call into the manifested model) and `output_variables_count` (how many output variables it parses), read from the run's `variables` and `manifest` structures in the tracker. Older trackers that predate these fields are handled gracefully — every nested read is guarded, so a run without them simply reports zero and never breaks the script. Verified end-to-end against a live SAS session across new-style, old-style and partial trackers
+
 ### Removed
 
 - **`Model-Manager-Setup.py` and `utility/prompt-builder-json.py` are removed**, superseded by `mdb setup` (added in 1.1.0). `mdb setup` creates the `LLM Repository` and both model projects, writes the `sas-viya-cli-commands.txt` authorization rules and the `llm-prompt-builder.json` / `rag-builder.json` builder seeds, and is idempotent — everything the two scripts did. Install the CLI with `pip install -e Model-Definition-Builder/cli[viya]` and run `mdb setup`; connection details come from the same `.env` the scripts used. This also retires the unused `-dt/--deployment_type` flag that `prompt-builder-json.py` accepted but never wrote to its output. The Administration Guide's "Setup SAS Model Manager" chapter and the related references now document `mdb setup`. The `register-*.py` / `publish-*.py` scripts are unaffected and remain
