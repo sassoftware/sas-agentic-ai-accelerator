@@ -2,7 +2,13 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [Unreleased]
+## [1.3.0] - 2026-07-20
+
+This release consolidates the framework onto the `mdb` CLI as the single way to register and publish. The standalone `Model-Manager-Setup.py`, `utility/prompt-builder-json.py` and the four `register-*.py` / `publish-*.py` scripts are removed in favour of `mdb setup` / `register` / `publish` / `ship`, which cover both LLM and Embedding definitions from one place and do more besides (`--all` across the fleet, in-place `--update`, build-completion `--wait`). Install the CLI once with `pip install -e Model-Definition-Builder/cli[viya]`; the Administration and User guides are updated throughout.
+
+**Action needed for the provider fix:** every self-hosted definition's `provider` tag previously held the model's *license* rather than its provider. Twenty definitions are corrected — **re-register the affected models with `mdb register --update`** to refresh the provider recorded in SAS Model Manager. No re-publish is required, since no score code changed.
+
+The prompt-monitoring `PROMPT_EXPERIMENTS` table also gains columns for the newer typed scoring options and for per-run variable / output-variable / integrated-call metadata, so nothing the Prompt Builder records is dropped from the report anymore.
 
 ### Changed
 
