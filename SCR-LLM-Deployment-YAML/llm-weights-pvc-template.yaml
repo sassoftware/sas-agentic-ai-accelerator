@@ -1,0 +1,28 @@
+---
+# Shared weight store for self-hosted (open-weight) SCR containers.
+#
+# Apply this ONCE per namespace. Every self-hosted model Deployment mounts this
+# same claim read-only at /pybox/model/mount, so a given set of weights is
+# staged once and reused by every model container and every replica - the data
+# does not have to exist in more than one place.
+#
+# ReadWriteMany is required: several pods mount the claim at the same time.
+# Storage classes that only support ReadWriteOnce (for example Azure
+# managed-csi-premium) will not work; use Azure Files, NFS or similar.
+#
+# Replace {{ WEIGHTS-STORAGE-SIZE }} and {{ WEIGHTS-STORAGE-CLASS }} before
+# applying, then stage the weights into the volume (see the Administration
+# Guide page "Serving Open-Weight Models").
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llm-weights
+  namespace: llm
+spec:
+  accessModes:
+    - ReadWriteMany
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: {{ WEIGHTS-STORAGE-SIZE }}
+  storageClassName: {{ WEIGHTS-STORAGE-CLASS }}

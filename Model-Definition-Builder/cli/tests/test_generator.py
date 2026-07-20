@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from mdb.core.generator import render_assets, score_file_name
+from mdb.core.generator import GenerationError, render_assets, score_file_name
 from mdb.core.importer import import_folder
 from mdb.core.manifest import (
     AuthBlock, MetadataBlock, ModelManifest, OptionSpec, PricingBlock,
@@ -175,21 +175,28 @@ def test_anthropic_lone_sampling_option_renders_unconditionally(core):
     assert "temperature" not in score
 
 
-def test_hf_requirements_profile(core):
-    manifest = _manifest(
+def _hf_manifest(gated: bool = False, weights_source: str = "baked"):
+    return _manifest(
         provider=ProviderBlock(
             adapter="hf-selfhosted", model_version="Qwen/Qwen2.5-0.5B-Instruct",
-            params={"hf": {"repo": "Qwen/Qwen2.5-0.5B-Instruct", "gated": True}},
+            params={"hf": {"repo": "Qwen/Qwen2.5-0.5B-Instruct", "gated": gated}},
             auth=AuthBlock(mode="none"),
         ),
-        runtime=RuntimeBlock(template="hf_transformers", requirements_profile="hf-transformers"),
+        runtime=RuntimeBlock(
+            template="hf_transformers", requirements_profile="hf-transformers",
+            weights_source=weights_source,
+        ),
         options={
             "temperature": OptionSpec(default=0.7),
             "top_p": OptionSpec(default=0.8),
             "max_tokens": OptionSpec(default=512, max=8192),
         },
     )
-    rendered = render_assets(manifest, core)
+
+
+def test_hf_requirements_profile(core):
+    """Default 'baked': weights are downloaded into the image at build time."""
+    rendered = render_assets(_hf_manifest(), core)
     steps = json.loads(rendered["requirements.json"])
     commands = [s["command"] for s in steps]
     # hf download uses the huggingface_hub HTTP API - no git-lfs step needed
@@ -197,11 +204,39 @@ def test_hf_requirements_profile(core):
     # CPU-only torch keeps the SCR image lean (no bundled CUDA)
     assert any("--extra-index-url https://download.pytorch.org/whl/cpu torch" in c for c in commands)
     assert any("huggingface-hub>=0.18.0" in c for c in commands)
-    assert any("hf login --token $(cat /etc/secret-volume/huggingfacetoken)" == c for c in commands)
     assert commands[-1] == "hf download --quiet Qwen/Qwen2.5-0.5B-Instruct --local-dir /pybox/model/test_model_1"
     score = rendered["testModel1Score.py"].decode()
     assert "checkpoint = './test_model_1'" in score
     assert "max_new_tokens=int(options['max_tokens'])" in score
+
+
+def test_hf_mounted_weights_skip_the_build_time_download(core):
+    """'mounted': nothing is downloaded during the build; the scorer reads the
+    shared llm-weights volume, so the image stays small and one staged copy of
+    the weights serves every container and replica."""
+    rendered = render_assets(_hf_manifest(weights_source="mounted"), core)
+    commands = [s["command"] for s in json.loads(rendered["requirements.json"])]
+    assert not any("hf download" in c for c in commands)
+    # The pip steps still run - only the weight download moves out of the build.
+    assert any("huggingface-hub>=0.18.0" in c for c in commands)
+    score = rendered["testModel1Score.py"].decode()
+    assert "checkpoint = '/pybox/model/mount/test_model_1'" in score
+
+
+def test_hf_mounted_weights_work_for_gated_repositories(core):
+    """A gated repository cannot authenticate during the build, so it must be
+    staged on the shared volume - that path generates cleanly."""
+    rendered = render_assets(_hf_manifest(gated=True, weights_source="mounted"), core)
+    commands = [s["command"] for s in json.loads(rendered["requirements.json"])]
+    assert not any("hf download" in c or "hf login" in c for c in commands)
+    assert "checkpoint = '/pybox/model/mount/test_model_1'" in rendered["testModel1Score.py"].decode()
+
+
+def test_hf_gated_baked_is_rejected_with_guidance(core):
+    """Baking a gated repository into the image cannot work - fail loudly rather
+    than emit a definition whose build dies at the download step."""
+    with pytest.raises(GenerationError, match="weights_source: mounted"):
+        render_assets(_hf_manifest(gated=True, weights_source="baked"), core)
 
 
 def test_fleet_fidelity_gpt4o_mini_options_json(core, repo_root, fact_sheet):

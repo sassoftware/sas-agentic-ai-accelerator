@@ -291,9 +291,20 @@ def _render_score(manifest: ModelManifest, core: CoreAssets) -> str:
         context["anthropic_version"] = manifest.provider.params.get("anthropic_version", "2023-06-01")
     if "bedrock" in manifest.runtime.template:
         context["region"] = manifest.provider.params.get("region", "")
+    # Where the scorer loads a self-hosted model's weights from. "baked" keeps the
+    # historical relative path next to the score code; "mounted" reads them from the
+    # shared llm-weights volume, which every model container mounts at the same
+    # place, so one staged copy serves them all.
+    mounted = manifest.runtime.weights_source == "mounted"
+    model_path = f"/pybox/model/mount/{manifest.model_id}" if mounted else f"./{manifest.model_id}"
+    context["model_path"] = model_path
     if manifest.runtime.template == "hf_onnx":
         hf = manifest.provider.params.get("hf", {})
-        context["onnx_dir"] = hf.get("onnx_dir", ".")
+        # onnx_dir is a subdirectory of the model, so it follows the weights.
+        onnx_dir = hf.get("onnx_dir", ".")
+        context["onnx_dir"] = (
+            model_path if onnx_dir == "." else f"{model_path}/{onnx_dir.lstrip('./')}"
+        ) if mounted else onnx_dir
         context["chat_template"] = hf.get(
             "chat_template", "<|system|>\\n{systemPrompt}<|end|><|user|>\\n{userPrompt} <|end|>\\n<|assistant|>"
         )
@@ -380,6 +391,37 @@ def _render_model_configuration(manifest: ModelManifest, core: CoreAssets) -> st
     return json.dumps(ordered, indent=4, ensure_ascii=False)
 
 
+def _hf_weight_steps(
+    manifest: ModelManifest, hf: dict[str, Any], repo: str
+) -> list[dict[str, str]]:
+    """Build steps that put a self-hosted model's weights in place.
+
+    With ``weights_source: mounted`` the weights are staged once on the shared
+    ``llm-weights`` volume and read from ``/pybox/model/mount/<id>`` at run time,
+    so nothing is downloaded during the build: the image stays small and one copy
+    of the weights serves every container and replica. See the Administration
+    Guide page "Serving Open-Weight Models".
+
+    With the default ``baked`` the weights are downloaded into the image at build
+    time. That path cannot authenticate to Hugging Face, so a gated repository
+    has to use ``mounted``.
+    """
+    if manifest.runtime.weights_source == "mounted":
+        return []
+    if hf.get("gated"):
+        raise GenerationError(
+            f"{manifest.model_id}: '{repo}' is a gated Hugging Face repository, which "
+            f"cannot be downloaded during the container build. Set "
+            f"'runtime.weights_source: mounted' in definition.yaml and stage the "
+            f"weights on the shared llm-weights volume instead - see the "
+            f"Administration Guide page 'Serving Open-Weight Models'."
+        )
+    return [{
+        "step": "download model",
+        "command": f"hf download --quiet {repo} --local-dir /pybox/model/{manifest.model_id}",
+    }]
+
+
 def _render_requirements(manifest: ModelManifest) -> str:
     profile = manifest.runtime.requirements_profile
     upgrade_step = {
@@ -413,15 +455,7 @@ def _render_requirements(manifest: ModelManifest) -> str:
                 "command": "pip3 -q install 'huggingface-hub>=0.18.0' transformers accelerate numpy==1.26.4",
             },
         ]
-        if hf.get("gated"):
-            steps.append({
-                "step": f"Login with huggingface - ensure you have accepted the license: https://huggingface.co/{repo}",
-                "command": "hf login --token $(cat /etc/secret-volume/huggingfacetoken)",
-            })
-        steps.append({
-            "step": "download model",
-            "command": f"hf download --quiet {repo} --local-dir /pybox/model/{manifest.model_id}",
-        })
+        steps.extend(_hf_weight_steps(manifest, hf, repo))
     elif profile == "hf-onnx":
         hf = manifest.provider.params.get("hf", {})
         repo = hf.get("repo") or manifest.provider.model_version
@@ -433,15 +467,7 @@ def _render_requirements(manifest: ModelManifest) -> str:
                 "command": "pip3 -q install 'huggingface-hub>=0.18.0' numpy onnxruntime-genai",
             },
         ]
-        if hf.get("gated"):
-            steps.append({
-                "step": f"Login with huggingface - ensure you have accepted the license: https://huggingface.co/{repo}",
-                "command": "hf login --token $(cat /etc/secret-volume/huggingfacetoken)",
-            })
-        steps.append({
-            "step": "download model",
-            "command": f"hf download --quiet {repo} --local-dir /pybox/model/{manifest.model_id}",
-        })
+        steps.extend(_hf_weight_steps(manifest, hf, repo))
     elif profile == "hf-sentence-transformers":
         hf = manifest.provider.params.get("hf", {})
         repo = hf.get("repo") or manifest.provider.model_version
@@ -457,15 +483,7 @@ def _render_requirements(manifest: ModelManifest) -> str:
                 "command": "pip3 -q install 'huggingface-hub>=0.18.0' 'sentence-transformers>=5.1' numpy==1.26.4",
             },
         ]
-        if hf.get("gated"):
-            steps.append({
-                "step": f"Login with huggingface - ensure you have accepted the license: https://huggingface.co/{repo}",
-                "command": "hf login --token $(cat /etc/secret-volume/huggingfacetoken)",
-            })
-        steps.append({
-            "step": "download model",
-            "command": f"hf download --quiet {repo} --local-dir /pybox/model/{manifest.model_id}",
-        })
+        steps.extend(_hf_weight_steps(manifest, hf, repo))
     else:
         raise GenerationError(f"Unknown requirements profile '{profile}'.")
     return json.dumps(steps, indent=4, ensure_ascii=False)

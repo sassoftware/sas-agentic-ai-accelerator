@@ -15,3 +15,6 @@ __pycache__/
 *.pyc
 # Python build artifacts
 *.egg-info/
+
+# SAS Viya deployment assets — site-specific, order-numbered and large; never commit
+SASViyaV4_*_deploymentAssets_*.tgz

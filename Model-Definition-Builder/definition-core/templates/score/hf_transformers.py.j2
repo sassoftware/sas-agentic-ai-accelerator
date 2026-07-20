@@ -17,7 +17,7 @@ device = get_device()
 # Set the transformer cache directory to a writable directory
 os.environ['TRANSFORMERS_CACHE'] = '/pybox/model'
 
-checkpoint = './{{ model_id }}'
+checkpoint = '{{ model_path }}'
 tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 model = AutoModelForCausalLM.from_pretrained(
     checkpoint,
