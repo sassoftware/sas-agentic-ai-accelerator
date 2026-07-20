@@ -132,7 +132,7 @@ If you imported the SAS-Agentic-AI-Accelerator-Prompt-Builder.json package then 
 
 ### Configuration (Properties panel)
 
-The environment-specific values below are exactly those captured in your `llm-prompt-builder.json` — the file produced in the [Setup SAS Model Manager](./Setup-SAS-Model-Manager.md) chapter (regenerate it with the [`prompt-builder-json.py`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/utility#prompt-builder-json) utility if you have lost it). Copy each value from that file into the object's **Properties** panel:
+The environment-specific values below are exactly those captured in your `llm-prompt-builder.json` — the file produced in the [Setup SAS Model Manager](./Setup-SAS-Model-Manager.md) chapter (regenerate it by re-running `mdb setup` if you have lost it). Copy each value from that file into the object's **Properties** panel:
 
 | Properties-panel field | `llm-prompt-builder.json` key | Meaning |
 |---|---|---|

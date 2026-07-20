@@ -25,9 +25,10 @@ options:
 tags:
   size_class: Embedding
   license_class: Open-Source
-  provider_tag: Apache-2.0
+  provider_tag: IBM
   scr_sizing: small
-  extra: []
+  extra:
+  - Apache-2.0
 metadata:
   description: 'IBM Granite Embedding Small English R2: a 47M-parameter ModernBERT dense bi-encoder producing
     384-dimensional vectors over an 8192-token context, tuned for enterprise retrieval and fast on CPU.

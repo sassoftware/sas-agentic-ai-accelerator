@@ -83,7 +83,7 @@ mdb unregister <model_id>            # delete a registered model from Model Mana
 mdb endpoints --json                 # SCR endpoint manifest for CI and testing
 ```
 
-On a fresh environment you do not need to run `Model-Manager-Setup.py` first: `mdb setup` creates the `LLM Repository` and the LLM/Embedding Model Projects (idempotent — existing objects are left untouched), and `mdb register` performs the same check automatically for the kind it registers. The projects are created with the same attributes as the setup script, so the two approaches are interchangeable.
+On a fresh environment, `mdb setup` creates the `LLM Repository` and the LLM/Embedding Model Projects (idempotent — existing objects are left untouched), and `mdb register` performs the same check automatically for the kind it registers, so you do not have to run setup explicitly. `mdb setup` also writes the authorization-group rules (`sas-viya-cli-commands.txt`) and the `llm-prompt-builder.json` / `rag-builder.json` builder seed files — it is the single entry point for bootstrapping the environment.
 
 `--update` removes the old delete-and-re-register workaround: after `mdb generate`, one command refreshes the registered model while keeping its ID, history (a new model version is created) and project placement. Both kinds use one implementation — embedding models register into the Embedding Model Project with the same content roles and fact-sheet enrichment. Each registered model also stores its `definition.yaml` as model content, so the source of truth travels with the model. The classic `register-LLMs.py` / `publish-LLMs.py` scripts keep working unchanged for hand-written definitions.
 

@@ -18,10 +18,10 @@ options:
 tags:
   size_class: SLM
   license_class: Open-Source
-  provider_tag: MIT-License
+  provider_tag: Microsoft
   scr_sizing: medium
   extra:
-  - Microsoft
+  - MIT-License
 metadata:
   description: Phi 3 Mini with a context of 4k. Provides a user and system prompt input and returns the
     generated text and key performance metrics

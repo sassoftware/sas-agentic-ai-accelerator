@@ -2,6 +2,22 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [Unreleased]
+
+### Changed
+
+- **`Get-All-Prompts.sas` now surfaces the newer experiment metadata in the `PROMPT_EXPERIMENTS` table.** Its option parser was a fixed allow-list (`temperature`, `top_p`, `top_k`, `max_tokens`) that silently dropped every other option, so the typed options the Prompt Builder has emitted since 1.1.0 — `reasoning_effort`, `thinking_budget`, `max_completion_tokens`, `seed`, the penalties, and the embedding options `input_type` / `dimensions` / `normalize` — never reached the report. Each now has its own column. The table also gains `variables_count` (how many custom input variables a run used), `integrated_llm_call` (whether the run combined the LLM call into the manifested model) and `output_variables_count` (how many output variables it parses), read from the run's `variables` and `manifest` structures in the tracker. Older trackers that predate these fields are handled gracefully — every nested read is guarded, so a run without them simply reports zero and never breaks the script. Verified end-to-end against a live SAS session across new-style, old-style and partial trackers
+
+### Removed
+
+- **`Model-Manager-Setup.py` and `utility/prompt-builder-json.py` are removed**, superseded by `mdb setup` (added in 1.1.0). `mdb setup` creates the `LLM Repository` and both model projects, writes the `sas-viya-cli-commands.txt` authorization rules and the `llm-prompt-builder.json` / `rag-builder.json` builder seeds, and is idempotent — everything the two scripts did. Install the CLI with `pip install -e Model-Definition-Builder/cli[viya]` and run `mdb setup`; connection details come from the same `.env` the scripts used. This also retires the unused `-dt/--deployment_type` flag that `prompt-builder-json.py` accepted but never wrote to its output. The Administration Guide's "Setup SAS Model Manager" chapter and the related references now document `mdb setup`. The `register-*.py` / `publish-*.py` scripts are unaffected and remain
+
+### Fixed
+
+- **Every self-hosted definition recorded a license as its provider.** `tags.provider_tag` carried the license and the real provider sat in `tags.extra`, so SAS Model Manager stored `smollm_135m` as provider `Apache-2`, the Qwen models as `Apache-2`, the Phi models as `MIT-License`, and so on — only the hosted API models (OpenAI, Anthropic, Google, Mistral, AWS Bedrock, Voyage.ai) were correct. Twenty definitions are corrected: twelve are straight swaps where the two values trade places (llama → `Meta`, `mistral_nemo` → `Mistral`, phi → `Microsoft`, qwen → `Alibaba-Cloud`, smollm → `HuggingFace`) and keep a byte-identical tag set; seven had no provider tag at all and now gain one (bge → `BAAI`, granite → `IBM`, `all_minilm_l6_v2` → `HuggingFace`, `embedding_gemma_300m` → `Google`), with the license moving to `extra` so nothing is lost; and `voyage_code_3` is normalized from `Voyage` to `Voyage.ai` to match its four siblings. Both fact sheets are synced along with the manifests, because `mdb register` reads `fact_row["provider"]` before falling back to `manifest.tags.provider_tag`. **Re-register with `mdb register --update`** to refresh the attribute on already-registered models — no re-publish is needed, since no score code changed
+- `SAS-Viya-Integrations/SAS-Code-LLM-Calls/Test-DS2-Scoring-from-SAS-Studio.sas` sent an option named `max_options`, which is not part of the scoring vocabulary and was silently ignored, so the smoke test never actually capped output. Corrected to `max_tokens`
+- `SAS-Viya-Integrations/SAS-Code-Model-Manager-Interaction/MM-Get-Models-Information.sas` shipped with a real-looking example model id hardcoded in the `_mgi_model_id` macro variable; it is now an empty placeholder, matching the sibling `MM-Get-*` scripts, so nobody accidentally queries a stale id
+
 ## [1.2.0] - 2026-07-20
 
 Open-weight models can now keep their weights **outside** the container image. A new `runtime.weights_source: mounted` setting stages the weights once into a shared `ReadWriteMany` volume that every model container reads at run time, so a 7B model no longer puts ~14 GB into the image, the registry and every node that pulls it — and one staged copy serves every model, replica and republish instead of the data existing in several places. Publishes get correspondingly faster, because the weight download stops being part of the build. Existing definitions are unaffected until you opt in: the default stays `baked`.

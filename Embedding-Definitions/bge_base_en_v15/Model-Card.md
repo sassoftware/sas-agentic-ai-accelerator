@@ -3,7 +3,7 @@
 ## Model Details
 
 - **Model:** BGE Base EN v1.5 (`BAAI/bge-base-en-v1.5`)
-- **Provider:** MIT
+- **Provider:** BAAI
 - **Release date:** unknown
 - **License:** Open-Source
 - **Deployment type:** SCR

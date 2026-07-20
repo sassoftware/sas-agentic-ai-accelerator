@@ -593,10 +593,10 @@ def setup(
 
     Idempotent: existing objects are left untouched. `mdb register` runs the
     repository/project check automatically for the kind it registers, so calling
-    setup is optional - use it to bootstrap a fresh environment up front. This
-    matches Model-Manager-Setup.py: it also writes sas-viya-cli-commands.txt (the
-    LLM Consumers / Prompt Engineers groups and folder/repository authorization
-    rules) and the llm-prompt-builder.json / rag-builder.json builder seeds."""
+    setup is optional - use it to bootstrap a fresh environment up front. It also
+    writes sas-viya-cli-commands.txt (the LLM Consumers / Prompt Engineers groups
+    and folder/repository authorization rules) and the llm-prompt-builder.json /
+    rag-builder.json builder seeds."""
     from .viya.registry import (
         authorization_rules_text, builder_seed, ensure_repository_and_project,
     )

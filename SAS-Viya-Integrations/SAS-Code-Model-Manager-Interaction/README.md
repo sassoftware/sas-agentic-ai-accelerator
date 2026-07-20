@@ -1,6 +1,6 @@
 ## Create a SAS Model Manager Repository
 
-This step is only an example of how you could set up a repository using SAS code - it is recommended that you use the *Model-Manager-Setup.py* script in the root directory.
+This step is only an example of how you could set up a repository using SAS code - it is recommended that you use `mdb setup` from the [Model Definition Builder](../../Model-Definition-Builder) instead, which creates the repository and both model projects and writes the authorization-group commands for you.
 
 Open up SAS Studio on your target SAS Viya environment and run the *createLLMRepository.sas* script.
 

@@ -27,8 +27,9 @@ REPOSITORY_DESCRIPTION = (
     "This repository is used to register LLM deployment instructions to, build, "
     "monitor and deploy use cases that take advantage of LLMs"
 )
-# Per-kind project metadata, matching Model-Manager-Setup.py byte-for-byte so a
-# project created by mdb is indistinguishable from one created by the setup script.
+# Per-kind project metadata. mdb setup is the canonical way to create these; the
+# values are the framework's project contract (they were previously kept in sync
+# with the retired Model-Manager-Setup.py).
 PROJECT_META = {
     "llm": {
         "project": "LLM Model Project",
@@ -98,8 +99,8 @@ def ensure_repository_and_project(session, kind: str, core, responsible_party: s
     created (empty when everything already existed) and carries the repository
     and project ids for the bootstrap-file generation in mdb setup.
 
-    Mirrors the repository/project creation of Model-Manager-Setup.py; the
-    authorization-group rules and builder seed files are produced separately by
+    Creates the repository and project if absent; the authorization-group rules
+    and builder seed files are produced separately by
     mdb setup (see authorization_rules_text / builder_seed)."""
     from sasctl.services import model_repository as mr
 
@@ -160,8 +161,8 @@ def ensure_repository_and_project(session, kind: str, core, responsible_party: s
 
 def authorization_rules_text(repository_id: Optional[str], repository_folder_id: Optional[str]) -> str:
     """The sas-viya-cli-commands.txt content (LLM Consumers / Prompt Engineers
-    groups plus the folder/repository authorization rules), matching
-    Model-Manager-Setup.py. The ids are filled in when known."""
+    groups plus the folder/repository authorization rules). The ids are filled
+    in when known."""
     folder = repository_folder_id or "<repository-folder-id>"
     repo = repository_id or "<repository-id>"
     return (
@@ -185,9 +186,8 @@ def authorization_rules_text(repository_id: Optional[str], repository_folder_id:
 
 def builder_seed(kind: str, repository_id: Optional[str], project_id: Optional[str],
                  scr_endpoint: str, deployment_type: str) -> dict:
-    """The Prompt Builder / RAG Builder quick-start seed JSON, matching
-    Model-Manager-Setup.py (llm-prompt-builder.json for llm, rag-builder.json
-    for embedding)."""
+    """The Prompt Builder / RAG Builder quick-start seed JSON
+    (llm-prompt-builder.json for llm, rag-builder.json for embedding)."""
     if kind == "llm":
         return {
             "name": "LLM Prompt Builder", "id": "LPB", "width": 0, "type": "promptBuilder",

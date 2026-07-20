@@ -3,7 +3,7 @@
 ## Model Details
 
 - **Model:** Granite Embedding English R2 (`ibm-granite/granite-embedding-english-r2`)
-- **Provider:** Apache-2.0
+- **Provider:** IBM
 - **Release date:** unknown
 - **License:** Open-Source
 - **Deployment type:** SCR

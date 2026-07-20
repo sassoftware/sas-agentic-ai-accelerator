@@ -3,7 +3,7 @@
 ## Model Details
 
 - **Model:** Voyage Code 3 (`voyage-code-3`)
-- **Provider:** Voyage
+- **Provider:** Voyage.ai
 - **Release date:** 2024-12-04
 - **License:** Proprietary
 - **Deployment type:** API

@@ -25,10 +25,10 @@ options:
 tags:
   size_class: SLM
   license_class: Open-Source
-  provider_tag: Apache-2
+  provider_tag: HuggingFace
   scr_sizing: medium
   extra:
-  - HuggingFace
+  - Apache-2
 metadata:
   description: SmolLM is a series of state-of-the-art small language models with 360M parameters
   release_date: '2024-07-16'

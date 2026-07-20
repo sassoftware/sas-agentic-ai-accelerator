@@ -3,7 +3,7 @@
 ## Model Details
 
 - **Model:** Phi 3.5 Mini (`phi_35_mini`)
-- **Provider:** MIT-License
+- **Provider:** Microsoft
 - **Release date:** 2024-08-22
 - **License:** Open-Source
 - **Deployment type:** SCR

@@ -3,7 +3,7 @@
 ## Model Details
 
 - **Model:** Llama 3.2 3B (`llama_32_3b`)
-- **Provider:** LLAMA-3.2-COMMUNITY-LICENSE
+- **Provider:** Meta
 - **Release date:** 2024-09-24
 - **License:** Open-Source
 - **Deployment type:** SCR

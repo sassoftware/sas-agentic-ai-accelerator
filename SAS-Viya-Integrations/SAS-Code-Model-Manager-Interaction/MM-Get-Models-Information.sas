@@ -21,7 +21,7 @@
       Model Manager Get Model Information
 ***************************************************************************/
 * Set the SAS Model Manager project ID;
-%let _mgi_model_id = 8ea896fd-1508-4424-a2e7-8096ca319050;
+%let _mgi_model_id = ;
 
 * Get the Viya Host URL;
 %let _mgi_viyaHost=%sysfunc(getoption(SERVICESBASEURL));
