@@ -1,0 +1,63 @@
+{{ generated_header }}import time
+import json
+import logging
+import sys
+import requests
+
+modelVersion = '{{ model_version }}'
+modelEndpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{modelVersion}:generateContent"
+
+# Initiate the logger to write output information to the log
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+    format='%(levelname)s - %(message)s'
+)
+logger = logging.getLogger("scoreModel")
+
+{% include "partials/_options_parser.py.j2" %}
+
+def scoreModel(userPrompt, systemPrompt, options):
+    "Output: response, run_time, prompt_length, output_length"
+    started_timestamp = time.time()
+    optionsDefaults = {
+{{ options_defaults_block }}
+    }
+    options = {**optionsDefaults, **_parse_options(options)}
+    payload = {
+        "system_instruction": {"parts": [{"text": systemPrompt[0]}]},
+        "contents": [{"parts": [{"text": userPrompt[0]}]}],
+        "generationConfig": {
+{{ body_options_block_nested }}
+        },
+    }
+    responseObject = requests.post(
+        modelEndpoint,
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": options["API_KEY"],
+        },
+        json=payload,
+        timeout={{ timeout_s }},
+    )
+    try:
+        responseJson = responseObject.json()
+    except Exception:
+        logger.error(f"Non-JSON response: {responseObject.status_code} - {responseObject.text}")
+        raise
+    if responseObject.status_code < 200 or responseObject.status_code >= 300:
+        logger.error(f"HTTP {responseObject.status_code}: {json.dumps(responseJson)}")
+        raise RuntimeError(f"Request failed: {responseObject.status_code}")
+    candidateContent = responseJson["candidates"][0].get("content", {})
+    response = "".join(
+        part["text"] for part in candidateContent.get("parts", []) if "text" in part
+    )
+    prompt_length = responseJson['usageMetadata']['promptTokenCount']
+    output_length = responseJson['usageMetadata'].get('candidatesTokenCount', 0)
+    run_time = time.time() - started_timestamp
+    # Logging the response
+    logger.info(f"prompt_length: {prompt_length}")
+    logger.info(f"output_length: {output_length}")
+    logger.info(f"run_time: {run_time}")
+    logger.info(f"response: {response}")
+    return response, run_time, prompt_length, output_length

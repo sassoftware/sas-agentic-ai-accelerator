@@ -1,0 +1,11 @@
+{
+    "_comment": "Tag taxonomy used in modelConfiguration.json 'tags'. Order in generated files: size_class, license_class, provider_tag, scr_sizing, extra. This matches the existing fleet (e.g. ['LLM', 'Proprietary', 'Anthropic', 'small']).",
+    "size_class": ["LLM", "SLM", "Embedding"],
+    "license_class": ["Proprietary", "Open-Source"],
+    "license_detail": ["MIT-License", "Apache-2", "Llama-3.1", "Llama-3.2", "Gemma"],
+    "scr_sizing": ["small", "medium", "large"],
+    "special": {
+        "deprecated": "The model no longer shows up in the Prompt Builder UI",
+        "Python": "Documented as required by LLM-Definitions/README.md but absent from the existing fleet; not emitted by the generator to stay consistent with current models"
+    }
+}

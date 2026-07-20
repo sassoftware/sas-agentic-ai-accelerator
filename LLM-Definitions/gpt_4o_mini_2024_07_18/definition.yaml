@@ -1,0 +1,43 @@
+schema: 1
+kind: llm
+model_id: gpt_4o_mini_2024_07_18
+display_name: GPT 4o mini 2024-07-18
+provider:
+  adapter: openai
+  model_version: gpt-4o-mini-2024-07-18
+  endpoint: https://api.openai.com/v1/chat/completions
+  params: {}
+  auth:
+    mode: api_key
+    key_name: OpenAI
+runtime:
+  template: openai_chat
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  temperature:
+    default: 1
+  top_p:
+    default: 1
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: OpenAI
+  scr_sizing: small
+  extra: []
+metadata:
+  description: GPT-4o (omni) mini is the most advanced small category by OpenAI.
+  release_date: '2024-07-18'
+  knowledge_cutoff: '2023-10-01'
+  context_length: 128000
+  size: 8000000000
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 1.5e-07
+    output_token_price: 6.0e-07
+modeler: gerdaw
+generation:
+  overrides: []
+  score_code_file: gpt4oMiniScore.py
+  catalog_provenance: mdb import of hand-written folder

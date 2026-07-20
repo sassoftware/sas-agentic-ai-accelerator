@@ -1,0 +1,43 @@
+schema: 1
+kind: llm
+model_id: gpt_4o_2024_05_13
+display_name: GPT 4o 2024-05-13
+provider:
+  adapter: openai
+  model_version: gpt-4o
+  endpoint: https://api.openai.com/v1/chat/completions
+  params: {}
+  auth:
+    mode: api_key
+    key_name: OpenAI
+runtime:
+  template: openai_chat
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  temperature:
+    default: 1
+  top_p:
+    default: 1
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: OpenAI
+  scr_sizing: small
+  extra: []
+metadata:
+  description: GPT-4o (omni) is a the most advanced model by OpenAI.
+  release_date: '2024-05-13'
+  knowledge_cutoff: '2023-10-01'
+  context_length: 128000
+  size: 200000000000
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 1.25e-06
+    output_token_price: 1.0e-05
+modeler: gerdaw
+generation:
+  overrides: []
+  score_code_file: gpt4oScore.py
+  catalog_provenance: mdb import of hand-written folder

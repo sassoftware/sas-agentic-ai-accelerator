@@ -1,0 +1,14 @@
+{
+    "generator": "mdb 0.1.0",
+    "manifest_sha256": "9a9c8b9350acc5d9b8a7ecf7b9eefb63577bee7ea04743acbe65a5c689c93220",
+    "files": {
+        "Model-Card.md": "a2cade8a9d9589ef3187ce19256608dfb4c610d175b23b4b21801e0c933575f6",
+        "README.md": "065a44914d8672b7a954bbc0ae2cba824480f44feec24a9dbb1c17941bbadbec",
+        "embeddingGemma300m.py": "cb319e40acbc9d9a98e57975dc45c258d3de734c3b60888354f81f33623abb9f",
+        "inputVar.json": "82e63e7108e6dae23feda5fb3e4bcb2242eeec59182a36b6c787339725e0095b",
+        "modelConfiguration.json": "c033fa443ef75af1e0897669081091551e43d4e7fcca3ac09dc4dc777598f982",
+        "options.json": "b7faf47ee707dc9cc1ae575cd5ac0d330777c9d58de1ef44a7e680fccb781abf",
+        "outputVar.json": "07ac2337d2f5b87016aeb70f3d82b4a40ced010062456edb36eb1725f343babe",
+        "requirements.json": "ed03459d5ddbcfe50188123dc0d355a661d8eca163c2866c85cf9c3f15e726ed"
+    }
+}

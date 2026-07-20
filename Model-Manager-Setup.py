@@ -203,7 +203,9 @@ try:
                 repository = rag_project_attributes['project_repository'],
                 variables = rag_project_attributes['project_variables'],
                 targetLevel = 'NOMINAL',
-                targetVariable = 'response',
+                # Embedding models emit 'embedding', not 'response' (which is not in
+                # the embedding variable set); point the target at a real variable.
+                targetVariable = 'embedding',
                 function = rag_project_attributes['project_model_function'],
                 modelResponsibleParty = rag_project_attributes['project_responsible_party'],
                 tags = rag_project_attributes['project_tags'])

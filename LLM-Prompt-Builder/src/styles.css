@@ -111,6 +111,30 @@ a[role='button'] {
   width: 60px;
   align-self: baseline;
 }
+.model-options select,
+.model-options input[type='text'] {
+  width: auto;
+  max-width: 170px;
+  align-self: baseline;
+}
+/* Keep the checkbox clickable next to the inline-block option label, whose
+   box (20px bottom margin) otherwise overlaps it and swallows pointer events */
+.model-options input[type='checkbox'] {
+  position: relative;
+  z-index: 1;
+  align-self: baseline;
+  margin-top: 5px;
+}
+/* Segmented enum selector (e.g. Reasoning Effort levels) */
+.option-segment-container {
+  align-self: baseline;
+  position: relative;
+  z-index: 1;
+}
+.option-segment .btn {
+  padding: 2px 8px;
+  font-size: 0.8rem;
+}
 
 /* Hover-reveal information tooltips next to each option */
 .info-container {

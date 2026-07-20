@@ -1,0 +1,38 @@
+name: Verify generated model definitions
+
+# Definition folders managed by the Model Definition Builder commit their
+# generated files alongside the definition.yaml manifest. This workflow guards
+# against those assets drifting from their manifest: it re-renders every
+# managed definition and fails if the committed files differ, and it runs the
+# mdb test suite (generation determinism, fleet fidelity, template-subset lint).
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "LLM-Definitions/**"
+      - "Embedding-Definitions/**"
+      - "Model-Definition-Builder/**"
+  pull_request:
+    paths:
+      - "LLM-Definitions/**"
+      - "Embedding-Definitions/**"
+      - "Model-Definition-Builder/**"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install mdb
+        run: pip install -e "./Model-Definition-Builder/cli[dev]"
+      - name: Drift gate - committed assets match their manifests
+        run: mdb generate --all --check
+      - name: Validate managed definitions
+        run: mdb validate --all
+      - name: Test suite
+        run: python -m pytest Model-Definition-Builder/cli/tests -q

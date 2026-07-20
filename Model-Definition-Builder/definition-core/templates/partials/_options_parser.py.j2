@@ -1,0 +1,41 @@
+def _parse_options(opts):
+    """Parse the SCR options argument: pandas Series, list, dict or the
+    pseudo-JSON string format ({key:value,key2:value2}) used by the framework."""
+    if opts is None or (hasattr(opts, '__len__') and len(opts) == 0):
+        return {}
+    if hasattr(opts, 'iloc'):  # pandas Series
+        raw = opts.iloc[0] if len(opts) > 0 else None
+    else:  # list or tuple
+        raw = opts[0] if len(opts) > 0 else None
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        # Try strict JSON first (must be an object - scalars fall through)
+        try:
+            parsed_json = json.loads(raw)
+            if isinstance(parsed_json, dict):
+                return parsed_json
+        except Exception:
+            pass
+        # Fallback: parse simple k:v comma list like {key:value,key2:value2}
+        parsed = {}
+        s = raw.strip()
+        if s.startswith('{') and s.endswith('}'):
+            s = s[1:-1]
+        for piece in [p for p in s.split(',') if p.strip()]:
+            if ':' not in piece:
+                continue
+            k, v = piece.split(':', 1)
+            k = k.strip().strip('"\'')
+            v = v.strip().strip('"\'')
+            if v.lower() in ("true", "false"):
+                parsed[k] = v.lower() == "true"
+            else:
+                try:
+                    parsed[k] = float(v) if '.' in v else int(v)
+                except Exception:
+                    parsed[k] = v
+        return parsed
+    return {}

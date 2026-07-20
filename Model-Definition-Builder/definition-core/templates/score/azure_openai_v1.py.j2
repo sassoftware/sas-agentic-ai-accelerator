@@ -1,0 +1,75 @@
+{{ generated_header }}import time
+import json
+import logging
+import os
+import sys
+import requests
+
+# Requires an Azure OpenAI / Azure AI Foundry deployment.
+# The model is addressed by its DEPLOYMENT NAME, which you choose in Azure.
+# The target resource resolves per call: options override > AZURE_OPENAI_RESOURCE
+# container environment variable > the default baked into this file - so one
+# published image can serve different subscriptions/projects without a rebuild.
+deploymentName = '{{ deployment_name }}'
+
+# Initiate the logger to write output information to the log
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+    format='%(levelname)s - %(message)s'
+)
+logger = logging.getLogger("scoreModel")
+
+{% include "partials/_options_parser.py.j2" %}
+
+def scoreModel(userPrompt, systemPrompt, options):
+    "Output: response, run_time, prompt_length, output_length"
+    started_timestamp = time.time()
+    optionsDefaults = {
+{{ options_defaults_block }}
+        "azure_openai_resource": os.environ.get("AZURE_OPENAI_RESOURCE", "{{ azure_resource }}"),
+        "endpoint_url": "",
+    }
+    options = {**optionsDefaults, **_parse_options(options)}
+    # Build the endpoint (a full endpoint_url option overrides the resource-based URL)
+    if options.get('endpoint_url'):
+        modelEndpoint = options['endpoint_url']
+    else:
+        host = (options.get('azure_openai_resource') or '').strip()
+        # Accept either a short resource name (my-openai-resource) or a full host
+        if host and '.' not in host:
+            host = f"{host}.openai.azure.com"
+        modelEndpoint = f"https://{host}/openai/v1/chat/completions"
+    payload = {
+        "model": deploymentName,
+        "messages": [{"role": "system", "content": systemPrompt[0]},
+            {"role": "user", "content": userPrompt[0]}],
+{{ body_options_block }}
+    }
+    responseObject = requests.post(
+        modelEndpoint,
+        headers={
+            "Content-Type": "application/json",
+            "api-key": options["API_KEY"],
+        },
+        json=payload,
+        timeout={{ timeout_s }},
+    )
+    try:
+        responseJson = responseObject.json()
+    except Exception:
+        logger.error(f"Non-JSON response: {responseObject.status_code} - {responseObject.text}")
+        raise
+    if responseObject.status_code < 200 or responseObject.status_code >= 300:
+        logger.error(f"HTTP {responseObject.status_code}: {json.dumps(responseJson)}")
+        raise RuntimeError(f"Request failed: {responseObject.status_code}")
+    response = responseJson['choices'][0]['message']['content']
+    prompt_length = responseJson['usage']['prompt_tokens']
+    output_length = responseJson['usage']['completion_tokens']
+    run_time = time.time() - started_timestamp
+    # Logging the response
+    logger.info(f"prompt_length: {prompt_length}")
+    logger.info(f"output_length: {output_length}")
+    logger.info(f"run_time: {run_time}")
+    logger.info(f"response: {response}")
+    return response, run_time, prompt_length, output_length

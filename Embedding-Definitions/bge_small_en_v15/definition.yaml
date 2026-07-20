@@ -1,0 +1,41 @@
+schema: 1
+kind: embedding
+model_id: bge_small_en_v15
+display_name: BGE Small EN v1.5
+provider:
+  adapter: hf-selfhosted
+  model_version: BAAI/bge-small-en-v1.5
+  params:
+    hf:
+      repo: BAAI/bge-small-en-v1.5
+      gated: false
+  auth:
+    mode: none
+runtime:
+  template: emb_sentence_transformers
+  requirements_profile: hf-sentence-transformers
+  timeout_s: 60
+options:
+  Embedding_Length:
+    default: 384
+  Input_Token_Limit:
+    default: 512
+tags:
+  size_class: Embedding
+  license_class: Open-Source
+  provider_tag: MIT
+  scr_sizing: medium
+  extra: []
+metadata:
+  description: BAAI pre-trains the models using retromae and trains them on large-scale pairs data using
+    contrastive learning.
+  size: 33400000
+  deployment_type: SCR
+  pricing:
+    cost_type: Seconds
+    second_cost: 3.9178e-05
+modeler: gerdaw
+generation:
+  overrides: []
+  score_code_file: bgeSmallENv15.py
+  catalog_provenance: mdb import of hand-written folder

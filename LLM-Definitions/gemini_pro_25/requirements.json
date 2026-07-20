@@ -1,6 +1,0 @@
-[
-    {
-       "step":"install common packages",
-       "command":"pip3 -q install requests numpy==1.26.4"
-    }
-]

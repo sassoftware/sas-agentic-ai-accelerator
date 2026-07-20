@@ -34,11 +34,20 @@ import { showToast } from '../ui/toast';
 import { escapeHtml } from '../ui/dom-helpers';
 import { renderMarkdown } from '../ui/markdown';
 import { isValidDS2VariableName, validateAndCorrectPackageName } from '../util/validation';
+import { createTypedOptionControl, optionDisplayLabel, syncSegmentedControl } from '../ui/option-controls';
 import Modal from 'bootstrap/js/dist/modal';
 import Tooltip from 'bootstrap/js/dist/tooltip';
 
 interface ModelOption {
   default: unknown;
+  /** Optional typed-option fields (Model Definition Builder emits these for
+   *  non-numeric options): 'enum' renders a segmented selector (or dropdown)
+   *  of `values`, 'bool' a checkbox, 'string' a text input. Absent = numeric
+   *  input (legacy shape). `label` overrides the displayed option name. */
+  type?: 'enum' | 'bool' | 'string';
+  values?: string[];
+  label?: string;
+  description?: string;
   [key: string]: unknown;
 }
 
@@ -989,6 +998,22 @@ export async function buildPromptBuilder(
           optionsDiv.appendChild(maxTokensInput);
         }
 
+        // Reasoning models cap output via max_completion_tokens - same user
+        // concept as Max Tokens, so it presents identically.
+        if (model?.options?.max_completion_tokens) {
+          const maxCompletionInput = document.createElement('input');
+          maxCompletionInput.type = 'number';
+          maxCompletionInput.id = `max_completion_tokens${index}`;
+          maxCompletionInput.value = String(model.options.max_completion_tokens.default);
+          maxCompletionInput.step = '1';
+          maxCompletionInput.min = '0';
+          maxCompletionInput.max = '1000000';
+          optionsDiv.appendChild(
+            createOptionLabel('Max Tokens', String(promptBuilderInterfaceText?.promptBuilderMax_LengthInfo))
+          );
+          optionsDiv.appendChild(maxCompletionInput);
+        }
+
         if (model?.options?.max_new_tokens) {
           const maxNewTokensInput = document.createElement('input');
           maxNewTokensInput.type = 'number';
@@ -1002,6 +1027,22 @@ export async function buildPromptBuilder(
           );
           optionsDiv.appendChild(maxNewTokensInput);
         }
+
+        // Every remaining option gets a control from the reusable typed-option
+        // component (segmented selector for small enums, checkbox for bools,
+        // text/number inputs otherwise), so models with e.g. reasoning_effort
+        // or an Azure resource override are fully configurable instead of
+        // silently running on their score-code defaults.
+        const legacyRenderedOptions = new Set([
+          'API_KEY', 'temperature', 'top_p', 'top_k', 'max_length', 'max_tokens',
+          'max_new_tokens', 'max_completion_tokens',
+        ]);
+        Object.entries(model?.options ?? {}).forEach(([optionKey, optionMeta]) => {
+          if (legacyRenderedOptions.has(optionKey)) return;
+          const tooltipText = String(optionMeta?.description ?? optionKey);
+          optionsDiv.appendChild(createOptionLabel(optionDisplayLabel(optionKey, optionMeta), tooltipText));
+          optionsDiv.appendChild(createTypedOptionControl(optionKey, optionMeta, `${optionKey}${index}`));
+        });
 
         modelDiv.appendChild(checkbox);
         modelDiv.appendChild(label);
@@ -1354,16 +1395,23 @@ export async function buildPromptBuilder(
           };
           Object.keys(promptBuilderCurrentLLM.options ?? {}).forEach((key) => {
             if (key !== 'API_KEY') {
-              try {
-                currentlySelectedModel.options[`${key}`] = parseFloat(
-                  (document.getElementById(`${key}${index}`) as HTMLInputElement).value
-                );
-              } catch {
-                promptBuilderRunExperimentTargetButton.disabled = false;
-                console.log(
-                  `The Error was caused by the ${currentlySelectedModel} and the following option which couldn't be resolved ${currentlySelectedModel.options[`${key}`]}`
-                );
-                promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderModelCallFailed}`;
+              const optionMeta = promptBuilderCurrentLLM.options![key];
+              const control = document.getElementById(`${key}${index}`) as
+                | HTMLInputElement
+                | HTMLSelectElement
+                | null;
+              if (!control) return; // no control rendered for this option - the score code default applies
+              if (optionMeta?.type === 'bool') {
+                currentlySelectedModel.options[`${key}`] = (control as HTMLInputElement).checked;
+              } else if (optionMeta?.type === 'enum' || optionMeta?.type === 'string') {
+                // A blank string option is "not set": omitting it lets the score
+                // code fall back to container env vars (AZURE_OPENAI_RESOURCE etc.)
+                if (optionMeta?.type === 'string' && control.value === '') return;
+                currentlySelectedModel.options[`${key}`] = control.value;
+              } else {
+                const numeric = parseFloat(control.value);
+                // A non-numeric value in a legacy-shaped option passes through as text
+                currentlySelectedModel.options[`${key}`] = Number.isNaN(numeric) ? control.value : numeric;
               }
             } else if (key === 'API_KEY') {
               const apiKeys = promptBuilderObject?.API_KEYS as Record<string, string> | undefined;
@@ -1788,8 +1836,17 @@ export async function buildPromptBuilder(
           const modelData = trackerEntry[availableLLM.name] as ModelExperimentData;
           Object.entries(modelData?.options ?? {}).forEach(([optionKey, optionValue]) => {
             if (optionKey === 'API_KEY') return;
-            const optionInput = document.getElementById(`${optionKey}${llmIndex}`) as HTMLInputElement | null;
-            if (optionInput) optionInput.value = String(optionValue);
+            const optionInput = document.getElementById(`${optionKey}${llmIndex}`) as
+              | HTMLInputElement
+              | HTMLSelectElement
+              | null;
+            if (!optionInput) return;
+            if (optionInput instanceof HTMLInputElement && optionInput.type === 'checkbox') {
+              optionInput.checked = optionValue === true || optionValue === 'true';
+            } else {
+              optionInput.value = String(optionValue);
+              if (optionInput instanceof HTMLInputElement) syncSegmentedControl(optionInput);
+            }
           });
         }
       });

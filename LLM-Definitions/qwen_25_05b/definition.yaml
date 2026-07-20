@@ -1,0 +1,45 @@
+schema: 1
+kind: llm
+model_id: qwen_25_05b
+display_name: Qwen 2.5 0.5B
+provider:
+  adapter: hf-selfhosted
+  model_version: Qwen/Qwen2.5-0.5B-Instruct
+  params:
+    hf:
+      repo: Qwen/Qwen2.5-0.5B-Instruct
+      gated: false
+  auth:
+    mode: none
+runtime:
+  template: hf_transformers
+  requirements_profile: hf-transformers
+  timeout_s: 60
+options:
+  temperature:
+    default: 1
+  top_p:
+    default: 1
+  max_tokens:
+    default: 256
+tags:
+  size_class: SLM
+  license_class: Open-Source
+  provider_tag: Apache-2
+  scr_sizing: medium
+  extra:
+  - Alibaba-Cloud
+metadata:
+  description: Qwen 2.5 0.5B Instruct is a small open-source model by Alibaba Cloud
+  release_date: '2024-09-19'
+  knowledge_cutoff: '2024-08-01'
+  context_length: 128000
+  size: 500000000
+  deployment_type: SCR
+  pricing:
+    cost_type: Seconds
+    second_cost: 3.9178e-05
+modeler: gerdaw
+generation:
+  overrides: []
+  catalog_provenance: mdb import of hand-written folder

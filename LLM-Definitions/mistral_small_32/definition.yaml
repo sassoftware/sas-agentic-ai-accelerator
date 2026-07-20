@@ -1,0 +1,44 @@
+schema: 1
+kind: llm
+model_id: mistral_small_32
+display_name: mistral-small-2603
+provider:
+  adapter: mistral
+  model_version: mistral-small-latest
+  endpoint: https://api.mistral.ai/v1/chat/completions
+  params: {}
+  auth:
+    mode: api_key
+    key_name: Mistral
+runtime:
+  template: openai_chat
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  temperature:
+    default: 1
+  top_p:
+    default: 1
+  max_tokens:
+    default: 1000
+    max: 8192.0
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: Mistral
+  scr_sizing: small
+  extra: []
+metadata:
+  description: mistral-small-2603 by Mistral, served through the Mistral API.
+  release_date: '2025-06-20'
+  knowledge_cutoff: '2024-10-01'
+  context_length: 131072
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 1.0000000000000001e-07
+    output_token_price: 3.0e-07
+modeler: david.weik@sas.com
+generation:
+  overrides: []
+  catalog_provenance: mistral (live, enriched from static snapshot 2026-01-15)

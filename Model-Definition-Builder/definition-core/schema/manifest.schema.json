@@ -1,0 +1,499 @@
+{
+    "$defs": {
+        "AuthBlock": {
+            "additionalProperties": false,
+            "properties": {
+                "mode": {
+                    "default": "api_key",
+                    "enum": [
+                        "api_key",
+                        "none"
+                    ],
+                    "title": "Mode",
+                    "type": "string"
+                },
+                "key_name": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Key Name"
+                }
+            },
+            "title": "AuthBlock",
+            "type": "object"
+        },
+        "GenerationBlock": {
+            "additionalProperties": false,
+            "properties": {
+                "overrides": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "title": "Overrides",
+                    "type": "array"
+                },
+                "score_code_file": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Score Code File"
+                },
+                "catalog_provenance": {
+                    "default": "manual entry",
+                    "title": "Catalog Provenance",
+                    "type": "string"
+                }
+            },
+            "title": "GenerationBlock",
+            "type": "object"
+        },
+        "MetadataBlock": {
+            "additionalProperties": false,
+            "properties": {
+                "description": {
+                    "title": "Description",
+                    "type": "string"
+                },
+                "release_date": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Release Date"
+                },
+                "knowledge_cutoff": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Knowledge Cutoff"
+                },
+                "context_length": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Context Length"
+                },
+                "size": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Size"
+                },
+                "deployment_type": {
+                    "default": "API",
+                    "enum": [
+                        "API",
+                        "SCR"
+                    ],
+                    "title": "Deployment Type",
+                    "type": "string"
+                },
+                "pricing": {
+                    "$ref": "#/$defs/PricingBlock"
+                }
+            },
+            "required": [
+                "description"
+            ],
+            "title": "MetadataBlock",
+            "type": "object"
+        },
+        "OptionSpec": {
+            "additionalProperties": false,
+            "description": "A single scoring-time option. Type/UI metadata not set here is\nresolved from the option vocabulary in definition-core.",
+            "properties": {
+                "type": {
+                    "anyOf": [
+                        {
+                            "enum": [
+                                "number",
+                                "int",
+                                "bool",
+                                "enum",
+                                "string"
+                            ],
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Type"
+                },
+                "default": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "string"
+                        }
+                    ],
+                    "title": "Default"
+                },
+                "min": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Min"
+                },
+                "max": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Max"
+                },
+                "values": {
+                    "anyOf": [
+                        {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Values"
+                },
+                "label": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Label"
+                },
+                "description": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Description"
+                },
+                "range": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Range"
+                },
+                "informational": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Informational"
+                }
+            },
+            "required": [
+                "default"
+            ],
+            "title": "OptionSpec",
+            "type": "object"
+        },
+        "PricingBlock": {
+            "additionalProperties": false,
+            "properties": {
+                "cost_type": {
+                    "default": "Tokens",
+                    "enum": [
+                        "Tokens",
+                        "Seconds"
+                    ],
+                    "title": "Cost Type",
+                    "type": "string"
+                },
+                "input_token_price": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Input Token Price"
+                },
+                "output_token_price": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Output Token Price"
+                },
+                "second_cost": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Second Cost"
+                }
+            },
+            "title": "PricingBlock",
+            "type": "object"
+        },
+        "ProviderBlock": {
+            "additionalProperties": false,
+            "properties": {
+                "adapter": {
+                    "title": "Adapter",
+                    "type": "string"
+                },
+                "model_version": {
+                    "title": "Model Version",
+                    "type": "string"
+                },
+                "endpoint": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Endpoint"
+                },
+                "params": {
+                    "additionalProperties": true,
+                    "title": "Params",
+                    "type": "object"
+                },
+                "auth": {
+                    "$ref": "#/$defs/AuthBlock"
+                }
+            },
+            "required": [
+                "adapter",
+                "model_version"
+            ],
+            "title": "ProviderBlock",
+            "type": "object"
+        },
+        "RuntimeBlock": {
+            "additionalProperties": false,
+            "properties": {
+                "template": {
+                    "title": "Template",
+                    "type": "string"
+                },
+                "requirements_profile": {
+                    "title": "Requirements Profile",
+                    "type": "string"
+                },
+                "timeout_s": {
+                    "default": 60,
+                    "title": "Timeout S",
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "template",
+                "requirements_profile"
+            ],
+            "title": "RuntimeBlock",
+            "type": "object"
+        },
+        "TagsBlock": {
+            "additionalProperties": false,
+            "properties": {
+                "size_class": {
+                    "enum": [
+                        "LLM",
+                        "SLM",
+                        "Embedding"
+                    ],
+                    "title": "Size Class",
+                    "type": "string"
+                },
+                "license_class": {
+                    "default": "Proprietary",
+                    "enum": [
+                        "Proprietary",
+                        "Open-Source"
+                    ],
+                    "title": "License Class",
+                    "type": "string"
+                },
+                "provider_tag": {
+                    "title": "Provider Tag",
+                    "type": "string"
+                },
+                "scr_sizing": {
+                    "enum": [
+                        "small",
+                        "medium",
+                        "large"
+                    ],
+                    "title": "Scr Sizing",
+                    "type": "string"
+                },
+                "extra": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "title": "Extra",
+                    "type": "array"
+                }
+            },
+            "required": [
+                "size_class",
+                "provider_tag",
+                "scr_sizing"
+            ],
+            "title": "TagsBlock",
+            "type": "object"
+        }
+    },
+    "additionalProperties": false,
+    "properties": {
+        "schema": {
+            "default": 1,
+            "title": "Schema",
+            "type": "integer"
+        },
+        "kind": {
+            "default": "llm",
+            "enum": [
+                "llm",
+                "embedding"
+            ],
+            "title": "Kind",
+            "type": "string"
+        },
+        "model_id": {
+            "title": "Model Id",
+            "type": "string"
+        },
+        "display_name": {
+            "title": "Display Name",
+            "type": "string"
+        },
+        "provider": {
+            "$ref": "#/$defs/ProviderBlock"
+        },
+        "runtime": {
+            "$ref": "#/$defs/RuntimeBlock"
+        },
+        "options": {
+            "additionalProperties": {
+                "$ref": "#/$defs/OptionSpec"
+            },
+            "title": "Options",
+            "type": "object"
+        },
+        "tags": {
+            "$ref": "#/$defs/TagsBlock"
+        },
+        "metadata": {
+            "$ref": "#/$defs/MetadataBlock"
+        },
+        "modeler": {
+            "default": "",
+            "title": "Modeler",
+            "type": "string"
+        },
+        "generation": {
+            "$ref": "#/$defs/GenerationBlock"
+        }
+    },
+    "required": [
+        "model_id",
+        "display_name",
+        "provider",
+        "runtime",
+        "tags",
+        "metadata"
+    ],
+    "title": "SAS Agentic AI Accelerator model definition manifest",
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

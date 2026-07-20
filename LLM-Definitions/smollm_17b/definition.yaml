@@ -1,0 +1,45 @@
+schema: 1
+kind: llm
+model_id: smollm_17b
+display_name: SmolLM 1.7B
+provider:
+  adapter: hf-selfhosted
+  model_version: HuggingFaceTB/SmolLM-1.7B-Instruct
+  params:
+    hf:
+      repo: HuggingFaceTB/SmolLM-1.7B-Instruct
+      gated: false
+  auth:
+    mode: none
+runtime:
+  template: hf_transformers
+  requirements_profile: hf-transformers
+  timeout_s: 60
+options:
+  temperature:
+    default: 0.6
+  top_p:
+    default: 0.92
+  max_tokens:
+    default: 100
+tags:
+  size_class: SLM
+  license_class: Open-Source
+  provider_tag: Apache-2
+  scr_sizing: medium
+  extra:
+  - HuggingFace
+metadata:
+  description: SmolLM is a series of state-of-the-art small language models with 1.7B parameters
+  release_date: '2024-07-16'
+  knowledge_cutoff: '2024-06-01'
+  context_length: 2048
+  size: 1700000000
+  deployment_type: SCR
+  pricing:
+    cost_type: Seconds
+    second_cost: 3.9178e-05
+modeler: gerdaw
+generation:
+  overrides: []
+  catalog_provenance: mdb import of hand-written folder

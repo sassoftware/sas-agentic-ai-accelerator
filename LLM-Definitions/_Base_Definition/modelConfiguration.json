@@ -2,7 +2,7 @@
     "name": "",
     "scoreCodeFile": "",
     "description": "",
-    "toolVersion": "3.11-5",
+    "toolVersion": "3.11",
     "targetVariable": "response",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",

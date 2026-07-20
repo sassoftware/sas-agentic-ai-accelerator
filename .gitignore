@@ -13,3 +13,5 @@ sas-viya-cli-commands.txt
 # Python bytecode
 __pycache__/
 *.pyc
+# Python build artifacts
+*.egg-info/

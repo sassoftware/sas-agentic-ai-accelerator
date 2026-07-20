@@ -1,18 +1,18 @@
 [
     {
-        "step":"install git-lfs",
-        "command":"microdnf install git-lfs"
+        "step": "upgrade pip before pip install",
+        "command": "pip3 -q install --upgrade pip setuptools wheel"
     },
     {
-        "step":"Verify git-lfs install",
-        "command":"git lfs install"
+        "step": "install CPU-only PyTorch (SCR runs on CPU - the default wheel bundles ~2GB of unused CUDA libraries)",
+        "command": "pip3 -q install --extra-index-url https://download.pytorch.org/whl/cpu torch"
     },
     {
-       "step":"install common packages",
-       "command":"pip3 -q install huggingface-hub[cli] sentence-transformers "
+        "step": "install huggingface CLI and other packages",
+        "command": "pip3 -q install 'huggingface-hub>=0.18.0' 'sentence-transformers>=5.1' numpy==1.26.4"
     },
     {
         "step": "download model",
-        "command": "hf download BAAI/bge-small-en-v1.5 --local-dir /pybox/model/bge_small_en_v15"
+        "command": "hf download --quiet BAAI/bge-small-en-v1.5 --local-dir /pybox/model/bge_small_en_v15"
     }
 ]

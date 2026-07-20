@@ -1,0 +1,38 @@
+schema: 1
+kind: embedding
+model_id: gemini_embedding_001
+display_name: Gemini Embedding 001
+provider:
+  adapter: google
+  model_version: gemini-embedding-001
+  params: {}
+  auth:
+    mode: api_key
+    key_name: Google
+runtime:
+  template: emb_gemini
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  Embedding_Length:
+    default: 3072
+  Input_Token_Limit:
+    default: 2048
+tags:
+  size_class: Embedding
+  license_class: Proprietary
+  provider_tag: Google
+  scr_sizing: small
+  extra: []
+metadata:
+  description: The Gemini API offers text embedding models to generate embeddings for words, phrases,
+    sentences, and code.
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 1.5e-07
+modeler: gerdaw
+generation:
+  overrides: []
+  score_code_file: geminiEmbedding.py
+  catalog_provenance: mdb import of hand-written folder

@@ -1,0 +1,19 @@
+{
+    "Embedding_Length": {
+        "default": 1024,
+        "range": "1024",
+        "description": "The length of the returned embedding vector.",
+        "label": "Embedding Length"
+    },
+    "Input_Token_Limit": {
+        "default": 8192,
+        "range": "8192",
+        "description": "The limit of input tokens for the embedding model.",
+        "label": "Input Token Limit"
+    },
+    "API_KEY": {
+        "default": "AWSBedrock",
+        "range": "sk-****",
+        "description": "This is the AWSBedrock key that is used to make the actual request."
+    }
+}

@@ -1,0 +1,43 @@
+schema: 1
+kind: embedding
+model_id: all_minilm_l6_v2
+display_name: All MiniLM L6 v2
+provider:
+  adapter: hf-selfhosted
+  model_version: sentence-transformers/all-MiniLM-L6-v2
+  params:
+    hf:
+      repo: sentence-transformers/all-MiniLM-L6-v2
+      gated: false
+  auth:
+    mode: none
+runtime:
+  template: emb_sentence_transformers
+  requirements_profile: hf-sentence-transformers
+  timeout_s: 60
+options:
+  Embedding_Mode:
+    default: query
+  Embedding_Length:
+    default: 384
+  Input_Token_Limit:
+    default: 256
+tags:
+  size_class: Embedding
+  license_class: Open-Source
+  provider_tag: Apache-2
+  scr_sizing: medium
+  extra: []
+metadata:
+  description: 'all-MiniLM-L6-v2 - This is a sentence-transformers model: It maps sentences & paragraphs
+    to a 384 dimensional dense vector space and can be used for tasks like clustering or semantic search.'
+  size: 22700000
+  deployment_type: SCR
+  pricing:
+    cost_type: Seconds
+    second_cost: 3.9178e-05
+modeler: gerdaw
+generation:
+  overrides: []
+  score_code_file: allminilml6v2.py
+  catalog_provenance: mdb import of hand-written folder

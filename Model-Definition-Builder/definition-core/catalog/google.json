@@ -1,0 +1,49 @@
+{
+    "provider": "google",
+    "snapshot_date": "2026-01-15",
+    "pricing_note": "Prices in USD per 1M tokens, paid tier. Static snapshot - confirm against https://ai.google.dev/pricing.",
+    "models": [
+        {
+            "ref": "gemini-2.5-flash",
+            "display_name": "Gemini 2.5 Flash",
+            "kind": "llm",
+            "context_length": 1048576,
+            "max_output_tokens": 65536,
+            "input_price_per_m": 0.3,
+            "output_price_per_m": 2.5,
+            "knowledge_cutoff": "2025-01-01",
+            "release_date": "2025-06-17"
+        },
+        {
+            "ref": "gemini-2.5-flash-lite",
+            "display_name": "Gemini 2.5 Flash Lite",
+            "kind": "llm",
+            "context_length": 1048576,
+            "max_output_tokens": 65536,
+            "input_price_per_m": 0.1,
+            "output_price_per_m": 0.4,
+            "knowledge_cutoff": "2025-01-01",
+            "release_date": "2025-07-22"
+        },
+        {
+            "ref": "gemini-2.5-pro",
+            "display_name": "Gemini 2.5 Pro",
+            "kind": "llm",
+            "context_length": 1048576,
+            "max_output_tokens": 65536,
+            "input_price_per_m": 1.25,
+            "output_price_per_m": 10.0,
+            "knowledge_cutoff": "2025-01-01",
+            "release_date": "2025-06-17"
+        },
+        {
+            "ref": "gemini-embedding-001",
+            "display_name": "Gemini Embedding 001",
+            "kind": "embedding",
+            "context_length": 2048,
+            "embedding_length": 3072,
+            "input_price_per_m": 0.15,
+            "release_date": "2025-07-14"
+        }
+    ]
+}

@@ -1,0 +1,41 @@
+schema: 1
+kind: llm
+model_id: phi_35_mini
+display_name: Phi 3.5 Mini
+provider:
+  adapter: openai
+  model_version: phi_35_mini
+  params: {}
+  auth:
+    mode: none
+runtime:
+  template: openai_chat
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  max_tokens:
+    default: 2048
+tags:
+  size_class: SLM
+  license_class: Open-Source
+  provider_tag: MIT-License
+  scr_sizing: medium
+  extra:
+  - Microsoft
+metadata:
+  description: Phi 3.5 Mini is an open-source model provided by Microsoft with a 128k token length.
+  release_date: '2024-08-22'
+  knowledge_cutoff: '2023-10-01'
+  context_length: 128000
+  size: 3800000000
+  deployment_type: SCR
+  pricing:
+    cost_type: Seconds
+    second_cost: 3.9178e-05
+modeler: gerdaw
+generation:
+  overrides:
+  - phi35miniScore.py
+  - requirements.json
+  score_code_file: phi35miniScore.py
+  catalog_provenance: mdb import of hand-written folder

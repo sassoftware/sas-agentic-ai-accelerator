@@ -1,0 +1,14 @@
+{
+    "generator": "mdb 0.1.0",
+    "manifest_sha256": "35f98d5e6d39b7680df7a26ffe8639a09bbcfa86164b0e9f2f6a008978a2f8b9",
+    "files": {
+        "Model-Card.md": "4cef76140f8f5cec2855806e94be32c866a6a52f69c0e8391c00c57a9c4fe740",
+        "README.md": "94755577b34bf57a4dedef548175777161f54d46acef50972add8acdfadea06e",
+        "inputVar.json": "82e63e7108e6dae23feda5fb3e4bcb2242eeec59182a36b6c787339725e0095b",
+        "modelConfiguration.json": "84f03b948618066a216f7bfc7e382ee66a2cf84b51799a0dcfc2239aea58f534",
+        "options.json": "dc28f658cc97c2f44869f08a7694d1db17270195b541f24f2eb82a97701f846d",
+        "outputVar.json": "07ac2337d2f5b87016aeb70f3d82b4a40ced010062456edb36eb1725f343babe",
+        "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483",
+        "textEmbedding3Large.py": "9fcc65d98ae0aeb95a0e1066fe65f5bee7fb69d9008845b35fde1def65e2fb56"
+    }
+}

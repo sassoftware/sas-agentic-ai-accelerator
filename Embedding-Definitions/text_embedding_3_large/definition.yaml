@@ -1,0 +1,41 @@
+schema: 1
+kind: embedding
+model_id: text_embedding_3_large
+display_name: Text Embedding 3 Large
+provider:
+  adapter: openai
+  model_version: text-embedding-3-large
+  endpoint: https://api.openai.com/v1/embeddings
+  params: {}
+  auth:
+    mode: api_key
+    key_name: OpenAI
+runtime:
+  template: emb_openai
+  requirements_profile: api-wrapper
+  timeout_s: 60
+options:
+  Embedding_Length:
+    default: 3072
+  Input_Token_Limit:
+    default: 8192
+tags:
+  size_class: Embedding
+  license_class: Proprietary
+  provider_tag: OpenAI
+  scr_sizing: small
+  extra: []
+metadata:
+  description: text-embedding-3-large is OpenAIs most capable embedding model for both english and non-english
+    tasks. Embeddings are a numerical representation of text that can be used to measure the relatedness
+    between two pieces of text. Embeddings are useful for search, clustering, recommendations, anomaly
+    detection, and classification tasks.
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 1.3e-07
+modeler: gerdaw
+generation:
+  overrides: []
+  score_code_file: textEmbedding3Large.py
+  catalog_provenance: mdb import of hand-written folder

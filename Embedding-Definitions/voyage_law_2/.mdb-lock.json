@@ -1,0 +1,14 @@
+{
+    "generator": "mdb 0.1.0",
+    "manifest_sha256": "d1f53fe41778c7866df94ec2f4171eef68bb267b66ad27adddf35524c81cc9f8",
+    "files": {
+        "Model-Card.md": "e121ecf2ef87e4faf6744d14be7ba070dded0a3d9947255ad22ebd37a6e438da",
+        "README.md": "4c700cb014b5ed31947764c2ba7b2480dc45b7615b7f7f2fdccc80dad10e4ee8",
+        "inputVar.json": "82e63e7108e6dae23feda5fb3e4bcb2242eeec59182a36b6c787339725e0095b",
+        "modelConfiguration.json": "7c38b426123f399485ae4bc8b9452bcdc7681a62f08fd8523e625c70ce54bb88",
+        "options.json": "b69f3506b60ff6325a98573c070309eeb93fa172f489652afe9e2ac5148029f7",
+        "outputVar.json": "07ac2337d2f5b87016aeb70f3d82b4a40ced010062456edb36eb1725f343babe",
+        "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483",
+        "voyageLaw2.py": "980af476e98286bec7792cfa423ad8909a0a1a779c8490ab8c5c189deaebf4ca"
+    }
+}

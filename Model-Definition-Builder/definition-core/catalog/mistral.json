@@ -1,0 +1,43 @@
+{
+    "provider": "mistral",
+    "snapshot_date": "2026-01-15",
+    "pricing_note": "Prices in USD per 1M tokens. Static fallback snapshot - always confirm against https://mistral.ai/pricing before relying on cost monitoring.",
+    "models": [
+        {
+            "ref": "mistral-medium-latest",
+            "display_name": "Mistral Medium 3",
+            "kind": "llm",
+            "context_length": 131072,
+            "max_output_tokens": 8192,
+            "input_price_per_m": 0.4,
+            "output_price_per_m": 2.0,
+            "knowledge_cutoff": "2025-01-01",
+            "release_date": "2025-05-07",
+            "reasoning": false
+        },
+        {
+            "ref": "mistral-small-latest",
+            "display_name": "Mistral Small 3.2",
+            "kind": "llm",
+            "context_length": 131072,
+            "max_output_tokens": 8192,
+            "input_price_per_m": 0.1,
+            "output_price_per_m": 0.3,
+            "knowledge_cutoff": "2024-10-01",
+            "release_date": "2025-06-20",
+            "reasoning": false
+        },
+        {
+            "ref": "open-mistral-nemo",
+            "display_name": "Mistral Nemo",
+            "kind": "llm",
+            "context_length": 131072,
+            "max_output_tokens": 8192,
+            "input_price_per_m": 0.15,
+            "output_price_per_m": 0.15,
+            "knowledge_cutoff": "2024-04-01",
+            "release_date": "2024-07-18",
+            "reasoning": false
+        }
+    ]
+}

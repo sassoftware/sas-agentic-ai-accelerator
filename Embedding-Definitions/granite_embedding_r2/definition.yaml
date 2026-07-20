@@ -1,0 +1,41 @@
+schema: 1
+kind: embedding
+model_id: granite_embedding_r2
+display_name: Granite Embedding English R2
+provider:
+  adapter: hf-selfhosted
+  model_version: ibm-granite/granite-embedding-english-r2
+  params:
+    hf:
+      repo: ibm-granite/granite-embedding-english-r2
+      gated: false
+  auth:
+    mode: none
+runtime:
+  template: emb_sentence_transformers
+  requirements_profile: hf-sentence-transformers
+  timeout_s: 60
+options:
+  Embedding_Mode:
+    default: query
+  Embedding_Length:
+    default: 768
+  Input_Token_Limit:
+    default: 8192
+tags:
+  size_class: Embedding
+  license_class: Open-Source
+  provider_tag: Apache-2.0
+  scr_sizing: small
+  extra: []
+metadata:
+  description: 'IBM Granite Embedding English R2: a 149M-parameter ModernBERT dense bi-encoder producing
+    768-dimensional vectors over an 8192-token context, tuned for enterprise retrieval. Apache-2.0.'
+  size: 149000000
+  deployment_type: SCR
+  pricing:
+    cost_type: Seconds
+modeler: gerdaw
+generation:
+  overrides: []
+  catalog_provenance: manual entry (self-hosted)

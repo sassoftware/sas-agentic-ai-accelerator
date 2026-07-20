@@ -1,0 +1,30 @@
+{
+    "input_type": {
+        "default": "document",
+        "range": "document | query",
+        "description": "Whether the text is embedded as a document (for storage/indexing) or as a query (for retrieval). Using the matching type on both sides improves retrieval quality.",
+        "type": "enum",
+        "values": [
+            "document",
+            "query"
+        ],
+        "label": "Input Type"
+    },
+    "Embedding_Length": {
+        "default": 1024,
+        "range": "1024",
+        "description": "The length of the returned embedding vector.",
+        "label": "Embedding Length"
+    },
+    "Input_Token_Limit": {
+        "default": 32000,
+        "range": "32000",
+        "description": "The limit of input tokens for the embedding model.",
+        "label": "Input Token Limit"
+    },
+    "API_KEY": {
+        "default": "VoyageAI",
+        "range": "sk-****",
+        "description": "This is the VoyageAI key that is used to make the actual request."
+    }
+}
