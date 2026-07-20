@@ -338,11 +338,10 @@ def add(
     drift.write_lock(folder, manifest_path.read_bytes(), rendered)
     facts.upsert_row(fact_sheet, manifest)
 
-    register_script = "register-LLMs.py" if manifest.kind == "llm" else "register-Embedding.py"
     console.print(f"\n[green]Created {final_id} ({len(rendered)} files + fact-sheet row).[/green]")
     console.print("Next steps:")
     console.print(f"  1. mdb validate {final_id} --live     (smoke-test the provider before Viya)")
-    console.print(f"  2. cd {defs_name} && python {register_script} -l {final_id}")
+    console.print(f"  2. mdb register {final_id}            (or mdb ship {final_id} to register + publish)")
 
 
 # ---------------------------------------------------------------------------

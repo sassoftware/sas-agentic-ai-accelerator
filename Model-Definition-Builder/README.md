@@ -10,7 +10,7 @@ The Model Definition Builder takes the chore out of creating and maintaining the
 - `README.md` and `Model-Card.md`
 - the model's row in `llm_fact_sheet.csv` (keyed by the folder name, so key typos cannot happen)
 
-Generated folders are fully compatible with the established `register-LLMs.py` / `publish-LLMs.py` scripts — nothing about registering or publishing changes.
+Registering and publishing is done with the `mdb` CLI itself — `mdb register`, `mdb publish` and `mdb ship` (see below) — one path for both LLM and Embedding definitions.
 
 ## Install
 

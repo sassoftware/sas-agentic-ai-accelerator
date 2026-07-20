@@ -28,7 +28,8 @@ The following options can be supplied at scoring time through the `options` inpu
 ## Register and publish
 
 ```bash
-cd LLM-Definitions
-python register-LLMs.py -l all_minilm_l6_v2
-python publish-LLMs.py -l all_minilm_l6_v2 -d <your-destination>
+mdb register all_minilm_l6_v2
+mdb publish all_minilm_l6_v2 -d <your-destination>
 ```
+
+Or do both in one step with `mdb ship all_minilm_l6_v2`. The publishing destination can also come from `SAS_PUBLISH_DESTINATION` in your `.env`.

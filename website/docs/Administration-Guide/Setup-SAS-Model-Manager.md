@@ -27,7 +27,7 @@ Use `--out <dir>` to write those files somewhere other than the current director
 
 ### Providing credentials without the command line {#envSetup}
 
-`mdb` and every Python script that talks to SAS Viya (`register-LLMs.py`, `publish-LLMs.py`, `register-Embedding.py`, `publish-Embedding.py`) can read any parameter from an **environment variable** or a **`.env` file** instead of the command line. This keeps your credentials out of your shell history and the process list. The order of precedence is: command-line argument, then environment variable, then `.env` file, then the built-in default.
+`mdb` reads any parameter from an **environment variable** or a **`.env` file** instead of the command line. This keeps your credentials out of your shell history and the process list. The order of precedence is: command-line argument, then environment variable, then `.env` file, then the built-in default.
 
 To use a `.env` file, install the optional dependency and copy the template:
 
@@ -40,16 +40,16 @@ cp .env.example .env
 
 The available variables (documented in `.env.example`) map to the arguments as follows:
 
-| Environment variable | Replaces argument |
+| Environment variable | Purpose |
 |---|---|
-| `SAS_VIYA_URL` | `-vs` / `--viya_server` |
-| `SAS_VIYA_USER` | `-u` / `--username` |
-| `SAS_VIYA_PASSWORD` | `-p` / `--password` |
-| `SAS_VIYA_VERIFY_SSL` | `-k` / `--verify_ssl` |
-| `SAS_SCR_ENDPOINT` | `-e` / `--scr_endpoint` |
-| `SAS_DEPLOYMENT_TYPE` | `-dt` / `--deployment_type` |
-| `SAS_RESPONSIBLE_PARTY` | `-rp` / `--responsible_party` |
-| `SAS_PUBLISH_DESTINATION` | `-d` / `--destination` |
+| `SAS_VIYA_URL` | SAS Viya server URL |
+| `SAS_VIYA_USER` | Username to authenticate with |
+| `SAS_VIYA_PASSWORD` | Password (prompted for if omitted) |
+| `SAS_VIYA_VERIFY_SSL` | Set to `false` only for an unrecognized self-signed certificate |
+| `SAS_SCR_ENDPOINT` | Base SCR endpoint URL |
+| `SAS_DEPLOYMENT_TYPE` | `k8s` (default) or `aca` |
+| `SAS_RESPONSIBLE_PARTY` | Point of contact recorded in Model Manager |
+| `SAS_PUBLISH_DESTINATION` | Default SCR publishing destination (`mdb publish`, overridable with `-d`) |
 
 The `.env` file is git-ignored, so your credentials are never committed. If the password is not supplied by any source, you are prompted for it securely instead of failing. With the connection details in `.env`, `mdb setup` needs no arguments at all.
 

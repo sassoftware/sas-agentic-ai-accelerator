@@ -27,7 +27,8 @@ The following options can be supplied at scoring time through the `options` inpu
 ## Register and publish
 
 ```bash
-cd LLM-Definitions
-python register-LLMs.py -l bge_base_en_v15
-python publish-LLMs.py -l bge_base_en_v15 -d <your-destination>
+mdb register bge_base_en_v15
+mdb publish bge_base_en_v15 -d <your-destination>
 ```
+
+Or do both in one step with `mdb ship bge_base_en_v15`. The publishing destination can also come from `SAS_PUBLISH_DESTINATION` in your `.env`.

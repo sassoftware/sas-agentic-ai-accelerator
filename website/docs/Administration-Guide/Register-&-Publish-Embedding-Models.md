@@ -4,37 +4,27 @@ sidebar_position: 7
 
 # Registering Embedding Model Definitions
 
-The folder *Embedding-Definitions* contains information on how to add embedding models to the repository in the SAS Model Manager. Each model is packaged so that it can be deployed using the SAS Container Runtime (SCR).
+The folder *Embedding-Definitions* contains a definition per embedding model, each packaged so that it can be deployed using the SAS Container Runtime (SCR). More on the SCR in the [SAS Documentation](https://go.documentation.sas.com/doc/en/mascrtcdc/default/mascrtag/titlepage.htm).
 
-More on the SCR in the [SAS Documentation](https://go.documentation.sas.com/doc/en/mascrtcdc/default/mascrtag/titlepage.htm).
-
-For registering the models to SAS Model Manager please run the script *register-Embedding.py*. Make sure that the Python environment that was created during the initial setup is still active:
+Embedding models are registered and published with the same **`mdb`** command line as the LLMs — one tool covers both kinds — so this page is short by design. See [Register & Publish LLMs](./Register-&-Publish-LLMs.md) for the full description of `register`, `publish`, `--update`, `--wait` and `ship`. If you have not installed the CLI yet:
 
 ```bash
-# Change into the Embedding-Definitions subdirectory
-cd ./Embedding-Definitions
-# Run the script - make sure to update the parameter values that are passed into the script
-python ./register-Embedding.py -vs sas-viya-url -u username -p password -rp responsible_party -m embedding_1 embedding_2
+pip install -e Model-Definition-Builder/cli[viya]
 ```
 
-A help function is also available with more information.
-
-:::tip
-Every parameter except the model list can be supplied via an environment variable or a `.env` file instead of the command line — see [Providing credentials without the command line](./Setup-SAS-Model-Manager.md#envSetup). If you omit the password you will be prompted for it securely.
-:::
-
-If you want to add your own Embedding to the mix, please use the *_Base_Definition* folder as your template and remember to contribute back! If you are adding a new proprietary model provider please note that the default value for the API_KEY attribute should be set to the name of the provider.
-
-## Publish the Embedding Models to the SCR Destination
-
-Once you have registered the embedding models, you can now go ahead and publish them to the SCR publishing destination. For this the script `Embedding-Definitions/publish-Embedding.py` is provided.
-Ensure that the Python environment that was created during the initial setup is still active:
+Register and publish embedding models by their ids exactly as you would an LLM:
 
 ```bash
-# Change into the Embedding-Definitions subdirectory
-cd ./Embedding-Definitions
-# Run the script - make sure to update the parameter values that are passed into the script
-python ./publish-Embedding.py -vs sas-viya-url -u username -p password -m embedding_1 embedding_2 -d publishing_destination
+# Register
+mdb register titan_embed_text_v2 bge_base_en_v15
+
+# Publish (destination from -d or SAS_PUBLISH_DESTINATION in .env)
+mdb publish titan_embed_text_v2 bge_base_en_v15 --wait
+
+# ...or both at once
+mdb ship titan_embed_text_v2
 ```
 
-A help function is also available with more information.
+`mdb register --all` / `mdb publish --all` cover every managed definition of *both* kinds in one go, so you rarely need to think about LLM versus Embedding when registering.
+
+If you want to add your own embedding model, use `mdb add` and remember to contribute back. If you are adding a new proprietary model provider, the `API_KEY` option's default should be set to the name of the provider.

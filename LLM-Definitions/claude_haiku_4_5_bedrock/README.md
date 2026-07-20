@@ -29,7 +29,8 @@ The following options can be supplied at scoring time through the `options` inpu
 ## Register and publish
 
 ```bash
-cd LLM-Definitions
-python register-LLMs.py -l claude_haiku_4_5_bedrock
-python publish-LLMs.py -l claude_haiku_4_5_bedrock -d <your-destination>
+mdb register claude_haiku_4_5_bedrock
+mdb publish claude_haiku_4_5_bedrock -d <your-destination>
 ```
+
+Or do both in one step with `mdb ship claude_haiku_4_5_bedrock`. The publishing destination can also come from `SAS_PUBLISH_DESTINATION` in your `.env`.

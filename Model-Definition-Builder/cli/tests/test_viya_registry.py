@@ -15,7 +15,7 @@ from mdb.viya.registry import (
 )
 
 
-def test_attributes_enrichment_matches_register_script(repo_root, fact_sheet):
+def test_attributes_enrichment(repo_root, fact_sheet):
     folder = repo_root / "LLM-Definitions" / "gpt_41_mini"
     manifest = load_manifest(folder)
     from mdb.core.facts import read_row
@@ -45,7 +45,7 @@ def test_content_files_roles(repo_root):
     manifest = load_manifest(folder)
     files = content_files(manifest, folder)
     by_name = {name: role for _, name, role in files}
-    # load-bearing conventions from register-LLMs.py
+    # load-bearing Model Manager content-role conventions
     assert by_name["gpt_5_mini.py"] == "score"
     assert by_name["requirements.json"] == "python pickle"
     assert by_name["options.json"] == "documentation"

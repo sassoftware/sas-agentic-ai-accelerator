@@ -80,7 +80,7 @@ def _parse_tags(tags: list[str], notes: list[str]) -> TagsBlock:
         license_class = "Proprietary"
     if sizing is None:
         notes.append("No sizing tag (small/medium/large) found - defaulted to small "
-                     "(publish-LLMs.py silently assumes small today).")
+                     "(mdb publish assumes small when no sizing tag is present).")
         sizing = "small"
     return TagsBlock(
         size_class=size_class, license_class=license_class,
@@ -259,7 +259,7 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
     if (folder / "Model-Card.pdf").is_file():
         manifest.generation.overrides.append("Model-Card.md")
         notes.append("Existing Model-Card.pdf preserved (Model-Card.md added to generation.overrides; "
-                     "register-LLMs.py prefers the PDF).")
+                     "registration prefers the PDF when present).")
 
     notes.append("Known intended normalizations vs legacy files: canonical options parser, "
                  "provider usage-based token counting where available, central inputVar typo fix, "

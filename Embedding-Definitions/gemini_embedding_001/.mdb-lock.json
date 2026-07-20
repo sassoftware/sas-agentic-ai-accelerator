@@ -1,9 +1,9 @@
 {
     "generator": "mdb 0.1.0",
-    "manifest_sha256": "f2c345206a94b91ad28ac058524446c3de26d2c5bce4a2bb4475e6834fb26799",
+    "manifest_sha256": "781e053941aa4277ac3f8dfd6d3247e37fcc0a9f59c5f588ac96245fb2b1d7b7",
     "files": {
         "Model-Card.md": "c5e2d30c5ba561b0edbbef2dfaff8d2dd14d56d8e582a00d714c7167fb5386eb",
-        "README.md": "ff02cd3aa6f0cf251e26aaf36c9052d98c976e295baefe9e858ea42509bb84a2",
+        "README.md": "6fabc7bdef1ea73c57adfc7911b1db34629e45207dd8a942d8c4140ce99c9f25",
         "geminiEmbedding.py": "d184f2815824da540bcdd6dc579154f1c8aa3f76f265711b2f98f58a87b2f541",
         "inputVar.json": "82e63e7108e6dae23feda5fb3e4bcb2242eeec59182a36b6c787339725e0095b",
         "modelConfiguration.json": "4b5a6dbc0082a368197a59a96039124c8bdaadc35611ce6d3545b040cb8e48b0",
