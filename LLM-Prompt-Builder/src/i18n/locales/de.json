@@ -152,6 +152,7 @@
     "promptBuilderCouncilFooter": "Bewertet von einem Gremium aus {n} Modellen (Borda).",
     "promptBuilderCouncilDegraded": "Das Gremium konnte zu keinem Urteil kommen — weniger als zwei Modelle lieferten eine verwertbare Rangfolge.",
     "promptBuilderJudgeCouncilToggleLabel": "Ein Bewertungsgremium einberufen",
+    "promptBuilderJudgeCouncilInfo": "Ein Gremium schickt die Antworten des Laufs an mehrere Bewertungsmodelle gleichzeitig und fasst deren Stimmen zusammen. Ein Gremium aus unterschiedlichen Modellen ist zuverlässiger als ein einzelner Richter — es gleicht die blinden Flecken und Verzerrungen eines einzelnen Modells aus, was besonders bei subjektiver Qualität zählt.<br><br><b>Kosten:</b> ein Modellaufruf pro Richter, ein Gremium aus 3 Modellen kostet also etwa das 3-Fache an Zeit und Aufwand eines einzelnen Richters.<br><br><b>Wann sinnvoll:</b> wenn die Entscheidung wichtig ist oder die Antworten dicht beieinander liegen. Für schnelle Prüfungen genügt ein einzelner Richter.<br><br><b>Warum eine ungerade Anzahl:</b> ein ungerades Gremium (3 ist ein guter Standard) macht ein Unentschieden deutlich unwahrscheinlicher. Wähle Richter von verschiedenen Anbietern, damit sich ihre Fehler nicht häufen; ab etwa fünf kosten weitere Richter mehr, ohne viel Unabhängigkeit hinzuzufügen.",
     "promptBuilderJudgeCouncilMembersLabel": "Gremiumsmitglieder",
     "promptBuilderCouncilRankTied": "(gleichauf)"
   }

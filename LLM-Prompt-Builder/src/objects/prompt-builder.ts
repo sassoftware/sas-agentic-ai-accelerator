@@ -1528,8 +1528,24 @@ export async function buildPromptBuilder(
     judgeCouncilToggleLabel.classList.add('form-check-label');
     judgeCouncilToggleLabel.htmlFor = promptBuilderJudgeCouncilToggle.id;
     judgeCouncilToggleLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeCouncilToggleLabel}`;
+    // Info icon explaining what a council is, its cost, when to use it, and why
+    // an odd number helps — matching the option/include-self tooltips.
+    const judgeCouncilInfo = document.createElement('span');
+    judgeCouncilInfo.classList.add('info-icon');
+    judgeCouncilInfo.style.marginLeft = '4px';
+    judgeCouncilInfo.innerHTML = '&#x2139;&#xFE0F;';
+    judgeCouncilInfo.setAttribute('tabindex', '0');
+    judgeCouncilInfo.setAttribute('role', 'button');
+    judgeCouncilInfo.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderJudgeCouncilToggleLabel}`);
+    judgeCouncilInfo.setAttribute('data-bs-toggle', 'tooltip');
+    new Tooltip(judgeCouncilInfo, {
+      title: String(promptBuilderInterfaceText?.promptBuilderJudgeCouncilInfo),
+      html: true,
+      container: 'body',
+    });
     judgeCouncilToggleDiv.appendChild(promptBuilderJudgeCouncilToggle);
     judgeCouncilToggleDiv.appendChild(judgeCouncilToggleLabel);
+    judgeCouncilToggleDiv.appendChild(judgeCouncilInfo);
 
     // Row 3 — the council members (hidden unless the council question is on),
     // stacked vertically like the model selector above.
