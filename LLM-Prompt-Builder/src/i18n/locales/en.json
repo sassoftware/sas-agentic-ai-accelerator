@@ -136,6 +136,20 @@
     "promptBuilderJudgeSelfIncludedNote": "The judge's own response was included — self-preference bias may inflate it.",
     "promptBuilderJudgedBy": "Judged by",
     "promptBuilderJudgeRankLabel": "Judge Rank:",
-    "promptBuilderJudgeBestPrompt": "This response was judged best by the judge model"
+    "promptBuilderJudgeBestPrompt": "This response was judged best by the judge model",
+    "promptBuilderJudgePanelLabel": "Judge panel",
+    "promptBuilderJudgeUseModelsButton": "Use the experiment's models",
+    "promptBuilderJudgePanelHintNone": "Select at least one judge model to evaluate a run.",
+    "promptBuilderJudgePanelHintSingle": "One judge selected — single-judge mode.",
+    "promptBuilderJudgePanelHintCouncil": "judges — a council. Prefer diverse providers.",
+    "promptBuilderJudgePanelHintEven": "(an odd number avoids ties)",
+    "promptBuilderJudgePanelHintTooMany": "(beyond ~5, extra judges add cost, not much independence)",
+    "promptBuilderCouncilWinner": "Council's best response:",
+    "promptBuilderCouncilDisagreed": "Judges disagreed — tied:",
+    "promptBuilderCouncilAgreement": "{k} of {n} judges ranked {model} first.",
+    "promptBuilderCouncilBallots": "Ballots:",
+    "promptBuilderCouncilBallotFailed": "no verdict",
+    "promptBuilderCouncilFooter": "Judged by a council of {n} models (Borda).",
+    "promptBuilderCouncilDegraded": "The council could not reach a verdict — fewer than two judges returned a usable ranking."
   }
 }

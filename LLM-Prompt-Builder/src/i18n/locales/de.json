@@ -136,6 +136,20 @@
     "promptBuilderJudgeSelfIncludedNote": "Die eigene Antwort des Bewertungsmodells wurde einbezogen — eine Bevorzugung der eigenen Antwort ist möglich.",
     "promptBuilderJudgedBy": "Bewertet von",
     "promptBuilderJudgeRankLabel": "Bewertungsrang:",
-    "promptBuilderJudgeBestPrompt": "Diese Antwort wurde vom Bewertungsmodell als beste bewertet"
+    "promptBuilderJudgeBestPrompt": "Diese Antwort wurde vom Bewertungsmodell als beste bewertet",
+    "promptBuilderJudgePanelLabel": "Bewertungsgremium",
+    "promptBuilderJudgeUseModelsButton": "Modelle des Experiments übernehmen",
+    "promptBuilderJudgePanelHintNone": "Wähle mindestens ein Bewertungsmodell, um einen Lauf zu bewerten.",
+    "promptBuilderJudgePanelHintSingle": "Ein Bewertungsmodell ausgewählt — Einzelbewertung.",
+    "promptBuilderJudgePanelHintCouncil": "Modelle — ein Gremium. Bevorzuge unterschiedliche Anbieter.",
+    "promptBuilderJudgePanelHintEven": "(eine ungerade Anzahl vermeidet Unentschieden)",
+    "promptBuilderJudgePanelHintTooMany": "(ab ~5 kosten zusätzliche Modelle mehr, ohne viel Unabhängigkeit zu gewinnen)",
+    "promptBuilderCouncilWinner": "Beste Antwort laut Gremium:",
+    "promptBuilderCouncilDisagreed": "Das Gremium war uneinig — gleichauf:",
+    "promptBuilderCouncilAgreement": "{k} von {n} Modellen setzten {model} auf Platz eins.",
+    "promptBuilderCouncilBallots": "Stimmen:",
+    "promptBuilderCouncilBallotFailed": "kein Urteil",
+    "promptBuilderCouncilFooter": "Bewertet von einem Gremium aus {n} Modellen (Borda).",
+    "promptBuilderCouncilDegraded": "Das Gremium konnte zu keinem Urteil kommen — weniger als zwei Modelle lieferten eine verwertbare Rangfolge."
   }
 }

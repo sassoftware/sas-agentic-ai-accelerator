@@ -110,6 +110,7 @@ http
           items: [
             { id: 'llm-1', name: 'demo_llm' },
             { id: 'llm-2', name: 'second_llm' },
+            { id: 'llm-3', name: 'contrarian_judge' },
           ],
         });
       }
@@ -132,11 +133,19 @@ http
           items: [{ id: 'c-opt2', name: 'options.json', fileUri: '/files/files/opt-2' }],
         });
       }
+      if (p === '/modelRepository/models/llm-3/contents') {
+        return json(res, 200, {
+          items: [{ id: 'c-opt3', name: 'options.json', fileUri: '/files/files/opt-3' }],
+        });
+      }
       if (p === '/files/files/opt-1/content') {
         return json(res, 200, { temperature: { default: 0.7 } });
       }
       if (p === '/files/files/opt-2/content') {
         return json(res, 200, { temperature: { default: 0.5 } });
+      }
+      if (p === '/files/files/opt-3/content') {
+        return json(res, 200, { temperature: { default: 0.3 } });
       }
       if (p === '/modelRepository/models/model-used/contents' && req.method === 'GET') {
         // The requirements.json entry simulates a leftover from an earlier
@@ -164,19 +173,32 @@ http
       if (p === '/decisions/flows/flow-A') return json(res, 200, { id: 'flow-A', name: 'Loan Approval Decision' });
       if (p === '/decisions/flows/flow-B') return json(res, 200, { id: 'flow-B', name: 'Fraud Check Decision' });
       if (/^\/scr\//.test(p) && req.method === 'POST') {
-        // Detect the LLM-as-a-Judge call by its distinctive system prompt and
-        // return a fenced JSON verdict (labels A..). Any other SCR call gets a
-        // fenced JSON sentiment response, as LLMs often produce, to exercise parsing.
-        let isJudge = false;
-        try {
-          const sys = (JSON.parse(raw).inputs || []).find((i) => i.name === 'systemPrompt');
-          isJudge = Boolean(sys && String(sys.value).includes('impartial evaluator'));
-        } catch {}
+        // Detect the LLM-as-a-Judge call by its distinctive system prompt.
+        let inputs = [];
+        try { inputs = JSON.parse(raw).inputs || []; } catch {}
+        const sys = inputs.find((i) => i.name === 'systemPrompt');
+        const isJudge = Boolean(sys && String(sys.value).includes('impartial evaluator'));
         if (isJudge) {
+          // Deterministic verdict: rank the labelled candidates by response
+          // text. A "contrarian" judge reverses the order, so a council that
+          // includes it splits (used to exercise the tie/disagreement path).
+          const judgeModel = p.split('/')[2] || '';
+          const userInput = String((inputs.find((i) => i.name === 'userPrompt') || {}).value || '');
+          const blocks = [
+            ...userInput.matchAll(/\[([A-Z]+)\]\n([\s\S]*?)(?=\n\n\[[A-Z]+\]|\n\nReturn the JSON object now\.|$)/g),
+          ].map((m) => ({ label: m[1], text: m[2].trim() }));
+          blocks.sort((a, b) => a.text.localeCompare(b.text));
+          if (judgeModel.includes('contrarian')) blocks.reverse();
+          const ranking = blocks.map((b) => b.label);
+          const verdict = {
+            reasoning: `Ranked by response content (${judgeModel}).`,
+            ranking,
+            best: ranking[0],
+            confidence: 'high',
+          };
           return json(res, 200, {
             data: {
-              response:
-                '```json\n{"reasoning": "A is clearer and more complete than B.", "ranking": ["A", "B"], "best": "A", "confidence": "high"}\n```',
+              response: '```json\n' + JSON.stringify(verdict) + '\n```',
               run_time: 0.8, prompt_length: 120, output_length: 30,
             },
           });

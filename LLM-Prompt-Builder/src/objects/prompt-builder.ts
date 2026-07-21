@@ -28,7 +28,7 @@ import {
 } from '../api/models-api';
 import { getModelDependentDecisions } from '../api/relationships-api';
 import { callSCRLLM } from '../api/scr-api';
-import { judgeRun, type JudgeConfidence } from '../api/judge-api';
+import { judgeRun, aggregateBallots, type JudgeConfidence, type JudgeBallot } from '../api/judge-api';
 import { createAccordionItem } from '../ui/accordion';
 import { showConfirmModal } from '../ui/confirm-modal';
 import { showToast } from '../ui/toast';
@@ -91,6 +91,7 @@ interface PromptVariable {
  * confidence but not the full rationale.
  */
 interface JudgeSummary {
+  /** Single-judge mode: the one judge. Council mode: '' (see `panel`). */
   judgeModel: string;
   status: 'ok' | 'error' | 'unparseable';
   best?: string | null;
@@ -102,9 +103,23 @@ interface JudgeSummary {
   /** True when the judge's own response was included (bias possible). */
   includedSelf?: boolean;
   /** Raw judge configuration used for the run, restored onto the controls when
-   *  the run is loaded: the include-self toggle and the auto-judge toggle. */
+   *  the run is loaded: the panel, the include-self toggle and the auto-judge toggle. */
   includeSelf?: boolean;
   autoJudge?: boolean;
+  /** 'single' (one judge) or 'council' (a panel). Absent = single (Phase 1). */
+  mode?: 'single' | 'council';
+  /** Council: the judge model names on the panel. */
+  panel?: string[];
+  /** Council: one ballot per panel member. */
+  ballots?: JudgeBallot[];
+  /** Council aggregation method. */
+  method?: 'borda';
+  /** Council: how many judges ranked the winner first, out of the total counted. */
+  agreement?: { firstChoiceForWinner: number; total: number } | null;
+  /** Council: true when the panel split with no single winner. */
+  tie?: boolean;
+  /** Council: the tied winners when `tie`. */
+  tiedBest?: string[] | null;
   /** Reason text for a non-'ok' status. */
   error?: string | null;
   /** Raw judge reply, kept for display when the verdict was unparseable. */
@@ -189,6 +204,12 @@ interface PETRow {
   /** Run-level judge config (0/1), carried on the header row only. */
   judge_include_self?: boolean | number | null;
   judge_auto?: boolean | number | null;
+  /** Council fields, carried on the header row only. */
+  judge_mode?: string | null;
+  judge_panel?: string | null;
+  judge_agreement?: string | null;
+  /** Council: per-judge ballots, nested on the header row (like variables/manifest). */
+  judge_ballots?: JudgeBallot[] | null;
 }
 
 interface ModalText {
@@ -357,12 +378,15 @@ export async function buildPromptBuilder(
                 };
                 if (Array.isArray(value.variables)) loadedRun.variables = value.variables;
                 if (value.manifest) loadedRun.manifest = value.manifest;
-                // Only 'ok' judgments persist a judge_model on the header row.
-                // best/ranking are reconstructed from the per-model ranks below.
-                if (value.judge_model) {
+                // Only 'ok' judgments persist judge state on the header row
+                // (a single judge sets judge_model; a council sets judge_mode).
+                // best/ranking/tie are reconstructed below.
+                if (value.judge_model || value.judge_mode === 'council') {
+                  const isCouncil = value.judge_mode === 'council';
                   loadedRun.judge = {
-                    judgeModel: value.judge_model,
+                    judgeModel: value.judge_model ?? '',
                     status: 'ok',
+                    mode: isCouncil ? 'council' : 'single',
                     confidence: (value.judge_confidence as JudgeConfidence) ?? 'unknown',
                     reasoning: value.judge_reasoning ?? '',
                     includeSelf: Boolean(value.judge_include_self),
@@ -370,6 +394,14 @@ export async function buildPromptBuilder(
                     ranking: null,
                     best: null,
                   };
+                  if (isCouncil) {
+                    loadedRun.judge.method = 'borda';
+                    loadedRun.judge.panel =
+                      typeof value.judge_panel === 'string' && value.judge_panel
+                        ? value.judge_panel.split(',').map((name) => name.trim()).filter(Boolean)
+                        : [];
+                    loadedRun.judge.ballots = Array.isArray(value.judge_ballots) ? value.judge_ballots : [];
+                  }
                 }
                 promptBuilderPreviousExperiment.push(loadedRun);
                 promptBuilderPreviousRunID = value.runId;
@@ -397,12 +429,26 @@ export async function buildPromptBuilder(
                 };
               }
             });
-            // Reconstruct each judged run's ranking/winner from the per-model
-            // ranks (only judge_model + judge_confidence are persisted at the
-            // run level; the reasoning is not stored with a saved run).
+            // Reconstruct each judged run's aggregate. A council re-runs the
+            // (pure, deterministic) Borda aggregation over its persisted ballots
+            // — restoring winner/ranking/tie/agreement/confidence exactly. A
+            // single judge rebuilds its ranking from the per-model ranks.
             promptBuilderPreviousExperiment.forEach((loadedRun) => {
               if (!loadedRun.judge) return;
               const modelNames = Object.keys(loadedRun).filter((key) => !TRACKER_META_KEYS.includes(key));
+              if (loadedRun.judge.mode === 'council') {
+                const okBallots = (loadedRun.judge.ballots ?? []).filter(
+                  (ballot) => ballot.status === 'ok' && Array.isArray(ballot.ranking) && ballot.ranking.length > 0
+                );
+                const result = aggregateBallots(modelNames, okBallots);
+                loadedRun.judge.ranking = result.ranking;
+                loadedRun.judge.best = result.best;
+                loadedRun.judge.tie = result.tie;
+                loadedRun.judge.tiedBest = result.tiedBest;
+                loadedRun.judge.agreement = result.agreement;
+                loadedRun.judge.confidence = result.confidence;
+                return;
+              }
               const ranked = modelNames
                 .map((modelName) => ({
                   modelName,
@@ -1428,27 +1474,81 @@ export async function buildPromptBuilder(
 
     const judgeModelLabel = document.createElement('label');
     judgeModelLabel.classList.add('form-label', 'mb-0');
-    judgeModelLabel.htmlFor = `${paneID}-obj-${promptBuilderObject?.id}-judge-model`;
-    judgeModelLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeModelLabel}`;
+    judgeModelLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgePanelLabel}`;
 
-    const promptBuilderJudgeModelSelect = document.createElement('select');
-    promptBuilderJudgeModelSelect.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-model`;
-    promptBuilderJudgeModelSelect.classList.add('form-select', 'form-select-sm', 'pb-judge-model');
-    promptBuilderJudgeModelSelect.style.width = 'auto';
-    const judgePlaceholderOption = document.createElement('option');
-    judgePlaceholderOption.value = '';
-    judgePlaceholderOption.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSelectPlaceholder}`;
-    promptBuilderJudgeModelSelect.appendChild(judgePlaceholderOption);
-    promptBuilderAvailableLLMs.forEach((availableLLM) => {
-      const judgeOption = document.createElement('option');
-      judgeOption.value = availableLLM.name;
-      judgeOption.innerText = availableLLM.name;
-      promptBuilderJudgeModelSelect.appendChild(judgeOption);
+    // The judge picker is a checkbox panel: one judge ticked = single-judge
+    // (Phase 1); two or more = a council. No separate mode switch.
+    const promptBuilderJudgePanel = document.createElement('div');
+    promptBuilderJudgePanel.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-panel`;
+    promptBuilderJudgePanel.classList.add('pb-judge-panel', 'd-flex', 'flex-wrap', 'gap-2');
+    promptBuilderAvailableLLMs.forEach((availableLLM, index) => {
+      const judgeItem = document.createElement('div');
+      judgeItem.classList.add('form-check', 'mb-0');
+      const judgeCheckbox = document.createElement('input');
+      judgeCheckbox.type = 'checkbox';
+      judgeCheckbox.classList.add('form-check-input', 'pb-judge-panel-item');
+      judgeCheckbox.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-panel-${index}`;
+      judgeCheckbox.value = availableLLM.name;
+      judgeCheckbox.addEventListener('change', updateJudgePanelHint);
+      const judgeItemLabel = document.createElement('label');
+      judgeItemLabel.classList.add('form-check-label');
+      judgeItemLabel.htmlFor = judgeCheckbox.id;
+      judgeItemLabel.innerText = availableLLM.name;
+      judgeItem.appendChild(judgeCheckbox);
+      judgeItem.appendChild(judgeItemLabel);
+      promptBuilderJudgePanel.appendChild(judgeItem);
     });
-    // Apply the deployment default when it names a currently available LLM.
+    // Seed the deployment default when it names a currently available LLM.
     const configuredJudgeModel = String(promptBuilderObject?.judgeModel ?? '');
-    if (configuredJudgeModel && promptBuilderAvailableLLMs.some((llm) => llm.name === configuredJudgeModel)) {
-      promptBuilderJudgeModelSelect.value = configuredJudgeModel;
+    if (configuredJudgeModel) {
+      const seed = Array.from(promptBuilderJudgePanel.querySelectorAll('.pb-judge-panel-item')).find(
+        (el) => (el as HTMLInputElement).value === configuredJudgeModel
+      ) as HTMLInputElement | undefined;
+      if (seed) seed.checked = true;
+    }
+
+    // The judge models currently ticked in the panel.
+    function getSelectedJudgeModels(): string[] {
+      return Array.from(promptBuilderJudgePanel.querySelectorAll('.pb-judge-panel-item'))
+        .filter((el) => (el as HTMLInputElement).checked)
+        .map((el) => (el as HTMLInputElement).value);
+    }
+
+    // Fill the panel from the LLMs currently selected for the experiment.
+    const judgeUseModelsButton = document.createElement('button');
+    judgeUseModelsButton.type = 'button';
+    judgeUseModelsButton.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-use-models`;
+    judgeUseModelsButton.classList.add('btn', 'btn-outline-secondary', 'btn-sm');
+    judgeUseModelsButton.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeUseModelsButton}`;
+    judgeUseModelsButton.onclick = () => {
+      promptBuilderAvailableLLMs.forEach((_availableLLM, index) => {
+        const experimentCheckbox = document.getElementById(`model${index}`) as HTMLInputElement | null;
+        const panelCheckbox = document.getElementById(
+          `${paneID}-obj-${promptBuilderObject?.id}-judge-panel-${index}`
+        ) as HTMLInputElement | null;
+        if (panelCheckbox) panelCheckbox.checked = Boolean(experimentCheckbox?.checked);
+      });
+      updateJudgePanelHint();
+    };
+
+    // Inline guidance: single vs council, plus odd/too-many nudges.
+    const judgePanelHint = document.createElement('small');
+    judgePanelHint.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-panel-hint`;
+    judgePanelHint.classList.add('text-muted', 'w-100');
+    function updateJudgePanelHint(): void {
+      const count = getSelectedJudgeModels().length;
+      if (count === 0) {
+        judgePanelHint.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgePanelHintNone}`;
+        return;
+      }
+      if (count === 1) {
+        judgePanelHint.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgePanelHintSingle}`;
+        return;
+      }
+      const parts = [`${count} ${promptBuilderInterfaceText?.promptBuilderJudgePanelHintCouncil}`];
+      if (count % 2 === 0) parts.push(`${promptBuilderInterfaceText?.promptBuilderJudgePanelHintEven}`);
+      if (count > 5) parts.push(`${promptBuilderInterfaceText?.promptBuilderJudgePanelHintTooMany}`);
+      judgePanelHint.innerText = parts.join(' ');
     }
 
     const judgeIncludeSelfDiv = document.createElement('div');
@@ -1493,9 +1593,12 @@ export async function buildPromptBuilder(
     judgeAutoDiv.appendChild(judgeAutoLabel);
 
     promptBuilderJudgeControls.appendChild(judgeModelLabel);
-    promptBuilderJudgeControls.appendChild(promptBuilderJudgeModelSelect);
+    promptBuilderJudgeControls.appendChild(promptBuilderJudgePanel);
+    promptBuilderJudgeControls.appendChild(judgeUseModelsButton);
     promptBuilderJudgeControls.appendChild(judgeIncludeSelfDiv);
     promptBuilderJudgeControls.appendChild(judgeAutoDiv);
+    promptBuilderJudgeControls.appendChild(judgePanelHint);
+    updateJudgePanelHint();
 
     const promptBuilderRunExperimentError = document.createElement('p');
     promptBuilderRunExperimentError.style.color = 'red';
@@ -1686,7 +1789,7 @@ export async function buildPromptBuilder(
       // Auto-judge the run just rendered, when the user opted in and a judge
       // model is selected. Silent: preconditions that don't hold (no judge
       // model, < 2 judgeable responses) simply skip without a toast.
-      if (promptBuilderJudgeAuto.checked && promptBuilderJudgeModelSelect.value) {
+      if (promptBuilderJudgeAuto.checked && getSelectedJudgeModels().length > 0) {
         await promptBuilderJudgeRun(promptExperimentTrackerRunID - 1, true);
       }
     }
@@ -1744,6 +1847,7 @@ export async function buildPromptBuilder(
 
     // Build the judge verdict banner shown in a run's body.
     function buildJudgeBanner(judge: JudgeSummary): HTMLElement {
+      if (judge.mode === 'council') return buildCouncilBanner(judge);
       const banner = document.createElement('div');
       banner.classList.add('alert', 'pb-judge-banner', 'mt-2');
       if (judge.status === 'ok') {
@@ -1798,6 +1902,101 @@ export async function buildPromptBuilder(
             : `${promptBuilderInterfaceText.promptBuilderJudgeErrorPrefix} ${judge.error ?? ''}`;
         banner.appendChild(message);
       }
+      return banner;
+    }
+
+    // The per-judge ballot breakdown shown inside a council banner.
+    function buildBallotList(judge: JudgeSummary): HTMLElement {
+      const wrap = document.createElement('div');
+      wrap.classList.add('mt-1');
+      const heading = document.createElement('p');
+      heading.classList.add('mb-1', 'small');
+      heading.innerHTML = `<b>${promptBuilderInterfaceText.promptBuilderCouncilBallots}</b>`;
+      wrap.appendChild(heading);
+      (judge.ballots ?? []).forEach((ballot) => {
+        const item = document.createElement('div');
+        item.classList.add('small', 'mb-1', 'pb-judge-ballot');
+        if (ballot.status === 'ok' && Array.isArray(ballot.ranking) && ballot.ranking.length > 0) {
+          const line = document.createElement('div');
+          line.innerHTML = `<b>${escapeHtml(ballot.judgeModel)}</b>: ${escapeHtml(ballot.ranking[0])} <span class="text-muted">(${escapeHtml(judgeConfidenceText(ballot.confidence))})</span>`;
+          item.appendChild(line);
+          if (ballot.reasoning && ballot.reasoning.trim() !== '') {
+            const details = document.createElement('details');
+            const summary = document.createElement('summary');
+            summary.innerText = `${promptBuilderInterfaceText.promptBuilderJudgeShowReasoning}`;
+            details.appendChild(summary);
+            details.appendChild(renderMarkdown(String(ballot.reasoning)));
+            item.appendChild(details);
+          }
+        } else {
+          const line = document.createElement('div');
+          line.classList.add('text-muted');
+          line.innerText = `${ballot.judgeModel}: ${promptBuilderInterfaceText.promptBuilderCouncilBallotFailed}`;
+          item.appendChild(line);
+        }
+        wrap.appendChild(item);
+      });
+      return wrap;
+    }
+
+    // Council verdict banner: aggregate result (or "judges disagreed" on a tie),
+    // the agreement signal, the ranking, every judge's ballot, and the footer.
+    function buildCouncilBanner(judge: JudgeSummary): HTMLElement {
+      const banner = document.createElement('div');
+      banner.classList.add('alert', 'pb-judge-banner', 'mt-2');
+      if (judge.status !== 'ok') {
+        banner.classList.add('alert-warning');
+        const message = document.createElement('p');
+        message.classList.add('mb-1');
+        message.innerText = `${promptBuilderInterfaceText.promptBuilderJudgeErrorPrefix} ${judge.error ?? ''}`;
+        banner.appendChild(message);
+        banner.appendChild(buildBallotList(judge));
+        return banner;
+      }
+      const tie = Boolean(judge.tie);
+      banner.classList.add(tie ? 'alert-warning' : 'alert-info');
+
+      const header = document.createElement('p');
+      header.classList.add('mb-1');
+      if (tie) {
+        header.innerHTML = `<b>${promptBuilderInterfaceText.promptBuilderCouncilDisagreed}</b> ${escapeHtml((judge.tiedBest ?? []).join(', '))}`;
+      } else {
+        const confidenceBadge = `<span class="badge bg-secondary ms-2">${promptBuilderInterfaceText.promptBuilderJudgeVerdictConfidence} ${escapeHtml(judgeConfidenceText(judge.confidence))}</span>`;
+        header.innerHTML = `<b>${promptBuilderInterfaceText.promptBuilderCouncilWinner}</b> ${escapeHtml(String(judge.best ?? ''))} ${confidenceBadge}`;
+      }
+      banner.appendChild(header);
+
+      if (!tie && judge.agreement && judge.best) {
+        const agreementLine = document.createElement('p');
+        agreementLine.classList.add('mb-1', 'small');
+        agreementLine.innerText = `${promptBuilderInterfaceText.promptBuilderCouncilAgreement}`
+          .replace('{k}', String(judge.agreement.firstChoiceForWinner))
+          .replace('{n}', String(judge.agreement.total))
+          .replace('{model}', String(judge.best));
+        banner.appendChild(agreementLine);
+      }
+
+      if (Array.isArray(judge.ranking) && judge.ranking.length > 0) {
+        const rankingLine = document.createElement('p');
+        rankingLine.classList.add('mb-1', 'small');
+        rankingLine.innerHTML = `<b>${promptBuilderInterfaceText.promptBuilderJudgeVerdictRanking}</b> ${escapeHtml(judge.ranking.join(' > '))}`;
+        banner.appendChild(rankingLine);
+      }
+
+      banner.appendChild(buildBallotList(judge));
+
+      const footer = document.createElement('p');
+      footer.classList.add('mb-1', 'small', 'text-muted');
+      footer.innerText = `${promptBuilderInterfaceText.promptBuilderCouncilFooter}`.replace(
+        '{n}',
+        String((judge.panel ?? []).length)
+      );
+      banner.appendChild(footer);
+
+      const suggestion = document.createElement('p');
+      suggestion.classList.add('mb-0', 'small', 'text-muted');
+      suggestion.innerText = `${promptBuilderInterfaceText.promptBuilderJudgeSuggestionNote}`;
+      banner.appendChild(suggestion);
       return banner;
     }
 
@@ -2162,20 +2361,43 @@ export async function buildPromptBuilder(
       return judgeOptions;
     }
 
-    // Judge a run with the selected judge model (LLM-as-a-Judge). Writes the
-    // per-model ranks + a run-level summary onto the tracker, pre-ticks the
-    // winner's Best Response when the user hasn't chosen one, and re-renders.
-    // `auto` suppresses the precondition toasts (used by auto-judge-on-finish).
+    // Write a verdict ranking (model names, best first) onto the run's per-model
+    // judge_rank/judge_best. On a tie there is no single best.
+    function applyRanksToRun(trackerEntry: ExperimentTrackerEntry, ranking: string[], tie: boolean): void {
+      Object.keys(trackerEntry)
+        .filter((key) => !TRACKER_META_KEYS.includes(key))
+        .forEach((modelName) => {
+          const modelData = trackerEntry[modelName] as ModelExperimentData;
+          if (modelData) {
+            modelData.judge_rank = null;
+            modelData.judge_best = null;
+          }
+        });
+      ranking.forEach((modelName, rankIndex) => {
+        const modelData = trackerEntry[modelName] as ModelExperimentData;
+        if (modelData) {
+          modelData.judge_rank = rankIndex + 1;
+          modelData.judge_best = !tie && rankIndex === 0;
+        }
+      });
+    }
+
+    // Judge a run (LLM-as-a-Judge). One judge on the panel = single-judge mode
+    // (Phase 1); two or more = a council whose ballots are aggregated (Borda).
+    // Writes per-model ranks + a run-level summary and re-renders. The judge is
+    // advisory: it never changes the Best Response. `auto` suppresses the
+    // precondition toasts (used by auto-judge-on-finish).
     async function promptBuilderJudgeRun(index: number, auto = false): Promise<void> {
       if (experimentRunning) return;
       const trackerEntry = promptExperimentTracker[index];
       if (!trackerEntry) return;
-      const judgeModel = promptBuilderJudgeModelSelect.value;
-      if (!judgeModel) {
+      const panel = getSelectedJudgeModels();
+      if (panel.length === 0) {
         if (!auto) showToast(`${promptBuilderInterfaceText?.promptBuilderJudgeSelectModelToast}`);
         return;
       }
       const includeSelf = promptBuilderJudgeIncludeSelf.checked;
+      const autoJudge = promptBuilderJudgeAuto.checked;
       const modelKeys = Object.keys(trackerEntry).filter((key) => !TRACKER_META_KEYS.includes(key));
       const failedText = promptBuilderInterfaceText?.promptBuilderModelInferenceFailed as string;
       const candidates = modelKeys
@@ -2184,10 +2406,16 @@ export async function buildPromptBuilder(
           response: String((trackerEntry[modelName] as ModelExperimentData)?.response ?? ''),
         }))
         .filter((candidate) => candidate.response !== '' && candidate.response !== failedText);
-      const judgeableCount = candidates.filter(
-        (candidate) => includeSelf || candidate.modelName !== judgeModel
-      ).length;
-      if (judgeableCount < 2) {
+      const candidateModels = candidates.map((candidate) => candidate.modelName);
+      if (candidates.length < 2) {
+        if (!auto) showToast(`${promptBuilderInterfaceText?.promptBuilderJudgeNeedsTwoResponses}`);
+        return;
+      }
+      // Single judge that would be self-excluded down to one candidate: bail early.
+      if (
+        panel.length === 1 &&
+        candidates.filter((candidate) => includeSelf || candidate.modelName !== panel[0]).length < 2
+      ) {
         if (!auto) showToast(`${promptBuilderInterfaceText?.promptBuilderJudgeNotEnoughCandidates}`);
         return;
       }
@@ -2202,63 +2430,107 @@ export async function buildPromptBuilder(
       }
 
       const runVariables = Array.isArray(trackerEntry.variables) ? trackerEntry.variables : [];
-      const judgeMeta = promptBuilderAvailableLLMs.find((llm) => llm.name === judgeModel);
-      const verdict = await judgeRun({
-        scrEndpoint: promptBuilderObject.SCREndpoint as string,
-        deploymentType: (promptBuilderObject.deploymentType as string) ?? 'k8s',
-        judgeModel,
-        judgeOptions: resolveJudgeOptions(judgeMeta),
-        systemPrompt: substitutePromptVariables(trackerEntry.systemPrompt, runVariables),
-        userPrompt: substitutePromptVariables(trackerEntry.userPrompt, runVariables),
-        candidates,
-        includeSelf,
-      });
+      const resolvedSystem = substitutePromptVariables(trackerEntry.systemPrompt, runVariables);
+      const resolvedUser = substitutePromptVariables(trackerEntry.userPrompt, runVariables);
+      const runOneJudge = (judgeModel: string) =>
+        judgeRun({
+          scrEndpoint: promptBuilderObject.SCREndpoint as string,
+          deploymentType: (promptBuilderObject.deploymentType as string) ?? 'k8s',
+          judgeModel,
+          judgeOptions: resolveJudgeOptions(promptBuilderAvailableLLMs.find((llm) => llm.name === judgeModel)),
+          systemPrompt: resolvedSystem,
+          userPrompt: resolvedUser,
+          candidates,
+          includeSelf,
+        });
+      const now = new Date().toISOString();
 
-      const judgeSelfPresent = modelKeys.includes(judgeModel);
-      if (verdict.status === 'ok' && verdict.ranking && verdict.best) {
-        // Clear any stale ranks from a previous judging, then apply the new ones.
-        modelKeys.forEach((modelName) => {
-          const modelData = trackerEntry[modelName] as ModelExperimentData;
-          if (modelData) {
-            modelData.judge_rank = null;
-            modelData.judge_best = null;
-          }
-        });
-        verdict.ranking.forEach((modelName, rankIndex) => {
-          const modelData = trackerEntry[modelName] as ModelExperimentData;
-          if (modelData) {
-            modelData.judge_rank = rankIndex + 1;
-            modelData.judge_best = rankIndex === 0;
-          }
-        });
-        trackerEntry.judge = {
-          judgeModel,
-          status: 'ok',
-          best: verdict.best,
-          ranking: verdict.ranking,
-          confidence: verdict.confidence ?? 'unknown',
-          reasoning: verdict.reasoning ?? '',
-          excludedSelf: !includeSelf && judgeSelfPresent,
-          includedSelf: includeSelf && judgeSelfPresent,
-          includeSelf,
-          autoJudge: promptBuilderJudgeAuto.checked,
-          ranAt: new Date().toISOString(),
-        };
-        // The judge is advisory: it sets judge_rank and the banner, but the
-        // Best Response selection is left entirely to the user's checkboxes.
+      if (panel.length === 1) {
+        // ---- Single judge (Phase 1) ----
+        const judgeModel = panel[0];
+        const verdict = await runOneJudge(judgeModel);
+        const judgeSelfPresent = candidateModels.includes(judgeModel);
+        if (verdict.status === 'ok' && verdict.ranking && verdict.best) {
+          applyRanksToRun(trackerEntry, verdict.ranking, false);
+          trackerEntry.judge = {
+            judgeModel,
+            status: 'ok',
+            mode: 'single',
+            best: verdict.best,
+            ranking: verdict.ranking,
+            confidence: verdict.confidence ?? 'unknown',
+            reasoning: verdict.reasoning ?? '',
+            excludedSelf: !includeSelf && judgeSelfPresent,
+            includedSelf: includeSelf && judgeSelfPresent,
+            includeSelf,
+            autoJudge,
+            ranAt: now,
+          };
+        } else {
+          trackerEntry.judge = {
+            judgeModel,
+            status: verdict.status === 'unparseable' ? 'unparseable' : 'error',
+            mode: 'single',
+            error:
+              verdict.error === 'not-enough-candidates'
+                ? `${promptBuilderInterfaceText?.promptBuilderJudgeNotEnoughCandidates}`
+                : verdict.error ?? null,
+            raw: verdict.raw ?? null,
+            includeSelf,
+            autoJudge,
+            ranAt: now,
+          };
+        }
       } else {
-        trackerEntry.judge = {
-          judgeModel,
-          status: verdict.status === 'unparseable' ? 'unparseable' : 'error',
-          error:
-            verdict.error === 'not-enough-candidates'
-              ? `${promptBuilderInterfaceText?.promptBuilderJudgeNotEnoughCandidates}`
-              : verdict.error ?? null,
-          raw: verdict.raw ?? null,
-          includeSelf,
-          autoJudge: promptBuilderJudgeAuto.checked,
-          ranAt: new Date().toISOString(),
-        };
+        // ---- Council: run every judge in parallel, then aggregate ----
+        const verdicts = await Promise.all(panel.map((judgeModel) => runOneJudge(judgeModel)));
+        const ballots: JudgeBallot[] = verdicts.map((verdict, ballotIndex) => ({
+          judgeModel: panel[ballotIndex],
+          status: verdict.status,
+          ranking: verdict.ranking,
+          confidence: verdict.confidence,
+          reasoning: verdict.reasoning,
+          excludedSelf: !includeSelf && candidateModels.includes(panel[ballotIndex]),
+          error: verdict.error,
+        }));
+        const okBallots = ballots.filter(
+          (ballot) => ballot.status === 'ok' && Array.isArray(ballot.ranking) && ballot.ranking.length > 0
+        );
+        if (okBallots.length < 2) {
+          // Not enough ballots to be a council.
+          applyRanksToRun(trackerEntry, [], false);
+          trackerEntry.judge = {
+            judgeModel: '',
+            status: 'error',
+            mode: 'council',
+            panel,
+            ballots,
+            error: `${promptBuilderInterfaceText?.promptBuilderCouncilDegraded}`,
+            includeSelf,
+            autoJudge,
+            ranAt: now,
+          };
+        } else {
+          const result = aggregateBallots(candidateModels, okBallots);
+          applyRanksToRun(trackerEntry, result.ranking, result.tie);
+          trackerEntry.judge = {
+            judgeModel: '',
+            status: 'ok',
+            mode: 'council',
+            panel,
+            ballots,
+            method: 'borda',
+            best: result.best,
+            ranking: result.ranking,
+            confidence: result.confidence,
+            agreement: result.agreement,
+            tie: result.tie,
+            tiedBest: result.tiedBest,
+            includeSelf,
+            autoJudge,
+            ranAt: now,
+          };
+        }
       }
       // Preserve which run/model accordions are open so a judged run the user
       // had expanded doesn't collapse under them on the re-render.
@@ -2282,15 +2554,24 @@ export async function buildPromptBuilder(
       setPromptVariables(Array.isArray(trackerEntry.variables) ? trackerEntry.variables : []);
       applyManifestConfig(trackerEntry.manifest);
       // Restore the judge configuration this run was judged with, if any: the
-      // judge model (when still available), the include-self and auto-judge
+      // judge panel (models still available), the include-self and auto-judge
       // toggles. A run that was never judged leaves the controls untouched.
       if (trackerEntry.judge) {
         const judgeConfig = trackerEntry.judge;
-        if (
-          judgeConfig.judgeModel &&
-          Array.from(promptBuilderJudgeModelSelect.options).some((option) => option.value === judgeConfig.judgeModel)
-        ) {
-          promptBuilderJudgeModelSelect.value = judgeConfig.judgeModel;
+        // The panel is the council's `panel`, or the single judge's model.
+        const runPanel = Array.isArray(judgeConfig.panel) && judgeConfig.panel.length > 0
+          ? judgeConfig.panel
+          : judgeConfig.judgeModel
+            ? [judgeConfig.judgeModel]
+            : [];
+        if (runPanel.length > 0) {
+          promptBuilderAvailableLLMs.forEach((availableLLM, llmIndex) => {
+            const panelCheckbox = document.getElementById(
+              `${paneID}-obj-${promptBuilderObject?.id}-judge-panel-${llmIndex}`
+            ) as HTMLInputElement | null;
+            if (panelCheckbox) panelCheckbox.checked = runPanel.includes(availableLLM.name);
+          });
+          updateJudgePanelHint();
         }
         promptBuilderJudgeIncludeSelf.checked = Boolean(judgeConfig.includeSelf);
         promptBuilderJudgeAuto.checked = Boolean(judgeConfig.autoJudge);
@@ -2385,6 +2666,19 @@ export async function buildPromptBuilder(
                 judge_include_self:
                   entry.judge?.status === 'ok' ? (entry.judge.includeSelf ? 1 : 0) : null,
                 judge_auto: entry.judge?.status === 'ok' ? (entry.judge.autoJudge ? 1 : 0) : null,
+                judge_mode: entry.judge?.status === 'ok' ? (entry.judge.mode ?? 'single') : null,
+                judge_panel:
+                  entry.judge?.status === 'ok' && entry.judge.mode === 'council'
+                    ? (entry.judge.panel ?? []).join(', ')
+                    : null,
+                judge_agreement:
+                  entry.judge?.status === 'ok' && entry.judge.mode === 'council' && entry.judge.agreement
+                    ? `${entry.judge.agreement.firstChoiceForWinner}/${entry.judge.agreement.total}`
+                    : null,
+                judge_ballots:
+                  entry.judge?.status === 'ok' && entry.judge.mode === 'council'
+                    ? (entry.judge.ballots ?? null)
+                    : null,
               });
             }
 

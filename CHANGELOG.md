@@ -2,6 +2,21 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [1.5.0] - 2026-07-21
+
+The Prompt Builder's judging grows from a single judge into an **LLM Council**. The judge picker is now a panel: tick one model for the single-judge experience (as before), or several to convene a council whose members each rank the responses independently and whose ballots are aggregated into one verdict. When the judges genuinely split, the tool says so — it shows every judge's ballot and an explicit "judges disagreed" rather than forcing a winner. Judging stays advisory: you still choose the Best Response.
+
+To pick up the change, re-upload the prebuilt `LLM-Prompt-Builder/dist/index.html` to your SAS Job Execution definition (and re-export the transfer package for new deployments). The `PROMPT_EXPERIMENTS` table gains `judge_mode`, `judge_panel` and `judge_agreement`, so a council verdict is visible in Visual Analytics alongside the existing judge columns.
+
+### Added
+
+- **LLM Council (panel judging) in the Prompt Builder.** The single judge-model dropdown becomes a **judge panel** — a checkbox list of the available LLMs. One judge ticked runs the Phase 1 single-judge path unchanged; two or more convene a council. Each panel member judges the run in parallel (reusing the existing single-judge call, with per-judge self-exclusion), and the ballots are aggregated with a **Borda count** into an overall ranking and winner. The verdict banner shows the winner, an **agreement** signal ("2 of 3 judges ranked it first"), the full ranking, and **every judge's ballot with its own reasoning**; a genuine split renders an explicit **"judges disagreed"** state with no winner icon. A **"Use the experiment's models"** button fills the panel from the LLMs currently selected for the experiment. Inline hints nudge toward an odd, provider-diverse panel of about three and warn past five. Confidence is the agreement tier (unanimous → high, majority → medium, split → low). The council verdict, its ballots (including each judge's reasoning) and the panel are persisted with the run and restored on load — a reloaded council re-derives its aggregate deterministically from the stored ballots. See `LLM-Prompt-Builder/docs/prompt-council-design.md` for the design
+- **`PROMPT_EXPERIMENTS` gains council columns.** `Get-All-Prompts.sas` now surfaces `judge_mode` (`single`/`council`), `judge_panel` (the panel members) and `judge_agreement` (e.g. `2/3`), carried onto each model result row like the existing judge columns and read with the same `exist()`-guarded, backward-compatible approach. `Track-Prompt-Experiments.sas` and the SAS-code result-table scripts carry the same columns so a server-side append round-trips them
+
+### Changed
+
+- The persisted `Prompt-Experiment-Tracker.json` gains council fields on the run header row (`judge_mode`, `judge_panel`, `judge_agreement`, and a nested `judge_ballots` array holding each judge's ranking, confidence and reasoning). A single judge stays exactly as in 1.4.0 (`judge_mode` absent/`single`). All fields are optional and read back with guards, so 1.4.0 trackers load, render and re-save unchanged
+
 ## [1.4.0] - 2026-07-21
 
 The Prompt Builder can now **judge which response is best** with an LLM-as-a-Judge. Pick a judge model, run your prompt across several LLMs as before, and the judge ranks the responses in a single comparative call — reasoning first, candidates shown in randomised order under anonymous labels. The verdict is **advisory**: it sets a judge rank and highlights the strongest response, but you still choose the Best Response yourself. A judge is just another SCR call, so no new infrastructure is needed.
