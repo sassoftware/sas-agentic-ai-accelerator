@@ -154,6 +154,10 @@
     "promptBuilderJudgeCouncilToggleLabel": "Ein Bewertungsgremium einberufen",
     "promptBuilderJudgeCouncilInfo": "Ein Gremium schickt die Antworten des Laufs an mehrere Bewertungsmodelle gleichzeitig und fasst deren Stimmen zusammen. Ein Gremium aus unterschiedlichen Modellen ist zuverlässiger als ein einzelner Richter — es gleicht die blinden Flecken und Verzerrungen eines einzelnen Modells aus, was besonders bei subjektiver Qualität zählt.<br><br><b>Kosten:</b> ein Modellaufruf pro Richter, ein Gremium aus 3 Modellen kostet also etwa das 3-Fache an Zeit und Aufwand eines einzelnen Richters.<br><br><b>Wann sinnvoll:</b> wenn die Entscheidung wichtig ist oder die Antworten dicht beieinander liegen. Für schnelle Prüfungen genügt ein einzelner Richter.<br><br><b>Warum eine ungerade Anzahl:</b> ein ungerades Gremium (3 ist ein guter Standard) macht ein Unentschieden deutlich unwahrscheinlicher. Wähle Richter von verschiedenen Anbietern, damit sich ihre Fehler nicht häufen; ab etwa fünf kosten weitere Richter mehr, ohne viel Unabhängigkeit hinzuzufügen.",
     "promptBuilderJudgeCouncilMembersLabel": "Gremiumsmitglieder",
-    "promptBuilderCouncilRankTied": "(gleichauf)"
+    "promptBuilderCouncilRankTied": "(gleichauf)",
+    "promptBuilderJudgeChairmanToggleLabel": "Unentschieden durch ein Vorsitzmodell auflösen",
+    "promptBuilderJudgeChairmanInfo": "Bei einem Unentschieden löst ein Vorsitzmodell es auf, indem es nur unter den gleichauf liegenden Antworten wählt — anhand der Aufgabe und der Notizen des Gremiums. Das kostet einen zusätzlichen Modellaufruf und nur dann, wenn tatsächlich ein Unentschieden auftritt. Lass es aus, damit Unentschieden als \"Das Gremium war uneinig\" zur eigenen Entscheidung angezeigt werden.",
+    "promptBuilderJudgeChairmanModelLabel": "Vorsitzmodell",
+    "promptBuilderCouncilChairmanNote": "Unentschieden aufgelöst durch Vorsitzmodell {model}."
   }
 }

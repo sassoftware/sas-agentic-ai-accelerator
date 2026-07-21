@@ -13,7 +13,7 @@ filename petfile temp;
 
 * Here is the data structure to create an example prompt experiment tracker json;
 data work.promptExperimentTracker;
-    length runId 8. systemPrompt userPrompt $32767. model $100. options $1000. response $32767. run_time prompt_length output_length best_prompt judge_rank judge_best 8. judge_model $100. judge_confidence $16. judge_mode $16. judge_panel $512. judge_agreement $16.;
+    length runId 8. systemPrompt userPrompt $32767. model $100. options $1000. response $32767. run_time prompt_length output_length best_prompt judge_rank judge_best 8. judge_model $100. judge_confidence $16. judge_mode $16. judge_panel $512. judge_agreement $16. judge_chairman_model $100. judge_chairman_reasoning $32767.;
 	runID=1;
 	systemPrompt="test";
 	userPrompt="test";

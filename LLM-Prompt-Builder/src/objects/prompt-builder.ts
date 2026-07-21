@@ -28,7 +28,7 @@ import {
 } from '../api/models-api';
 import { getModelDependentDecisions } from '../api/relationships-api';
 import { callSCRLLM } from '../api/scr-api';
-import { judgeRun, aggregateBallots, type JudgeConfidence, type JudgeBallot } from '../api/judge-api';
+import { judgeRun, aggregateBallots, chairmanBreakTie, type JudgeConfidence, type JudgeBallot } from '../api/judge-api';
 import { createAccordionItem } from '../ui/accordion';
 import { showConfirmModal } from '../ui/confirm-modal';
 import { showToast } from '../ui/toast';
@@ -116,10 +116,12 @@ interface JudgeSummary {
   method?: 'borda';
   /** Council: how many judges ranked the winner first, out of the total counted. */
   agreement?: { firstChoiceForWinner: number; total: number } | null;
-  /** Council: true when the panel split with no single winner. */
+  /** Council: true when the panel split and the tie was NOT resolved. */
   tie?: boolean;
-  /** Council: the tied winners when `tie`. */
+  /** Council: the models that tied at the top (kept even after a chairman resolves it). */
   tiedBest?: string[] | null;
+  /** Council: set when a chairman broke a tie — the chairman model + its reasoning. */
+  chairman?: { model: string; reasoning?: string | null } | null;
   /** Reason text for a non-'ok' status. */
   error?: string | null;
   /** Raw judge reply, kept for display when the verdict was unparseable. */
@@ -208,6 +210,9 @@ interface PETRow {
   judge_mode?: string | null;
   judge_panel?: string | null;
   judge_agreement?: string | null;
+  /** Chairman that broke a tie (council), on the header row only. */
+  judge_chairman_model?: string | null;
+  judge_chairman_reasoning?: string | null;
   /** Council: per-judge ballots, nested on the header row (like variables/manifest). */
   judge_ballots?: JudgeBallot[] | null;
 }
@@ -425,6 +430,12 @@ export async function buildPromptBuilder(
                         ? value.judge_panel.split(',').map((name) => name.trim()).filter(Boolean)
                         : [];
                     loadedRun.judge.ballots = Array.isArray(value.judge_ballots) ? value.judge_ballots : [];
+                    if (value.judge_chairman_model) {
+                      loadedRun.judge.chairman = {
+                        model: value.judge_chairman_model,
+                        reasoning: value.judge_chairman_reasoning ?? '',
+                      };
+                    }
                   }
                 }
                 promptBuilderPreviousExperiment.push(loadedRun);
@@ -460,11 +471,21 @@ export async function buildPromptBuilder(
                 );
                 const result = aggregateBallots(modelNames, okBallots);
                 loadedRun.judge.ranking = result.ranking;
-                loadedRun.judge.best = result.best;
-                loadedRun.judge.tie = result.tie;
                 loadedRun.judge.tiedBest = result.tiedBest;
                 loadedRun.judge.agreement = result.agreement;
                 loadedRun.judge.confidence = result.confidence;
+                // A chairman-resolved tie: the persisted per-model judge_best is
+                // the chairman's winner, so honour it over the raw aggregate tie.
+                const resolvedWinner = modelNames.find(
+                  (modelName) => (loadedRun[modelName] as ModelExperimentData)?.judge_best
+                );
+                if (result.tie && loadedRun.judge.chairman && resolvedWinner) {
+                  loadedRun.judge.best = resolvedWinner;
+                  loadedRun.judge.tie = false;
+                } else {
+                  loadedRun.judge.best = result.best;
+                  loadedRun.judge.tie = result.tie;
+                }
                 return;
               }
               const ranked = modelNames
@@ -1597,10 +1618,68 @@ export async function buildPromptBuilder(
     const judgePanelHint = document.createElement('small');
     judgePanelHint.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-panel-hint`;
     judgePanelHint.classList.add('text-muted');
+    // Chairman tiebreaker: optional, only fires when the council ties.
+    const judgeChairmanToggleDiv = document.createElement('div');
+    judgeChairmanToggleDiv.classList.add('form-check', 'mb-0', 'mt-1');
+    const promptBuilderJudgeChairmanToggle = document.createElement('input');
+    promptBuilderJudgeChairmanToggle.type = 'checkbox';
+    promptBuilderJudgeChairmanToggle.classList.add('form-check-input');
+    promptBuilderJudgeChairmanToggle.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-chairman-toggle`;
+    const judgeChairmanToggleLabel = document.createElement('label');
+    judgeChairmanToggleLabel.classList.add('form-check-label');
+    judgeChairmanToggleLabel.htmlFor = promptBuilderJudgeChairmanToggle.id;
+    judgeChairmanToggleLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeChairmanToggleLabel}`;
+    const judgeChairmanInfo = document.createElement('span');
+    judgeChairmanInfo.classList.add('info-icon');
+    judgeChairmanInfo.style.marginLeft = '4px';
+    judgeChairmanInfo.innerHTML = '&#x2139;&#xFE0F;';
+    judgeChairmanInfo.setAttribute('tabindex', '0');
+    judgeChairmanInfo.setAttribute('role', 'button');
+    judgeChairmanInfo.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderJudgeChairmanToggleLabel}`);
+    judgeChairmanInfo.setAttribute('data-bs-toggle', 'tooltip');
+    new Tooltip(judgeChairmanInfo, {
+      title: String(promptBuilderInterfaceText?.promptBuilderJudgeChairmanInfo),
+      html: true,
+      container: 'body',
+    });
+    judgeChairmanToggleDiv.appendChild(promptBuilderJudgeChairmanToggle);
+    judgeChairmanToggleDiv.appendChild(judgeChairmanToggleLabel);
+    judgeChairmanToggleDiv.appendChild(judgeChairmanInfo);
+
+    // Chairman model picker, revealed only when the tiebreaker is on.
+    const judgeChairmanModelRow = document.createElement('div');
+    judgeChairmanModelRow.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-chairman-row`;
+    judgeChairmanModelRow.classList.add('d-flex', 'align-items-center', 'gap-2', 'ms-4', 'd-none');
+    const judgeChairmanModelLabel = document.createElement('label');
+    judgeChairmanModelLabel.classList.add('form-label', 'mb-0');
+    judgeChairmanModelLabel.htmlFor = `${paneID}-obj-${promptBuilderObject?.id}-judge-chairman-model`;
+    judgeChairmanModelLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeChairmanModelLabel}`;
+    const promptBuilderJudgeChairmanModel = document.createElement('select');
+    promptBuilderJudgeChairmanModel.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-chairman-model`;
+    promptBuilderJudgeChairmanModel.classList.add('form-select', 'form-select-sm');
+    promptBuilderJudgeChairmanModel.style.width = 'auto';
+    const chairmanPlaceholder = document.createElement('option');
+    chairmanPlaceholder.value = '';
+    chairmanPlaceholder.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSelectPlaceholder}`;
+    promptBuilderJudgeChairmanModel.appendChild(chairmanPlaceholder);
+    promptBuilderAvailableLLMs.forEach((availableLLM) => {
+      const chairmanOption = document.createElement('option');
+      chairmanOption.value = availableLLM.name;
+      chairmanOption.innerText = availableLLM.name;
+      promptBuilderJudgeChairmanModel.appendChild(chairmanOption);
+    });
+    judgeChairmanModelRow.appendChild(judgeChairmanModelLabel);
+    judgeChairmanModelRow.appendChild(promptBuilderJudgeChairmanModel);
+    promptBuilderJudgeChairmanToggle.addEventListener('change', () => {
+      judgeChairmanModelRow.classList.toggle('d-none', !promptBuilderJudgeChairmanToggle.checked);
+    });
+
     judgeCouncilSection.appendChild(judgeCouncilMembersLabel);
     judgeCouncilSection.appendChild(promptBuilderJudgePanel);
     judgeCouncilSection.appendChild(judgeUseModelsButton);
     judgeCouncilSection.appendChild(judgePanelHint);
+    judgeCouncilSection.appendChild(judgeChairmanToggleDiv);
+    judgeCouncilSection.appendChild(judgeChairmanModelRow);
 
     // The judges currently in effect: the panel when a council is on, else the
     // single dropdown selection.
@@ -2063,7 +2142,25 @@ export async function buildPromptBuilder(
       }
       banner.appendChild(header);
 
-      if (!tie && judge.agreement && judge.best) {
+      // A chairman-resolved tie: note who broke it, and offer its reasoning.
+      if (!tie && judge.chairman) {
+        const chairmanNote = document.createElement('p');
+        chairmanNote.classList.add('mb-1', 'small');
+        chairmanNote.innerText = `${promptBuilderInterfaceText.promptBuilderCouncilChairmanNote}`.replace(
+          '{model}',
+          String(judge.chairman.model)
+        );
+        banner.appendChild(chairmanNote);
+        if (judge.chairman.reasoning && judge.chairman.reasoning.trim() !== '') {
+          const details = document.createElement('details');
+          const summary = document.createElement('summary');
+          summary.classList.add('small');
+          summary.innerText = `${promptBuilderInterfaceText.promptBuilderJudgeShowReasoning}`;
+          details.appendChild(summary);
+          details.appendChild(renderMarkdown(String(judge.chairman.reasoning)));
+          banner.appendChild(details);
+        }
+      } else if (!tie && judge.agreement && judge.best) {
         const agreementLine = document.createElement('p');
         agreementLine.classList.add('mb-1', 'small');
         agreementLine.innerText = `${promptBuilderInterfaceText.promptBuilderCouncilAgreement}`
@@ -2335,7 +2432,6 @@ export async function buildPromptBuilder(
                   const runJudge = promptExperimentTrackerRunResult.judge as JudgeSummary | null | undefined;
                   const tiedNote =
                     runJudge?.mode === 'council' &&
-                    runJudge.tie &&
                     Array.isArray(runJudge.tiedBest) &&
                     runJudge.tiedBest.includes(promptExperimentRunModelKey)
                       ? ` ${promptBuilderInterfaceText.promptBuilderCouncilRankTied}`
@@ -2638,7 +2734,40 @@ export async function buildPromptBuilder(
           };
         } else {
           const result = aggregateBallots(candidateModels, okBallots);
-          applyCouncilRanks(trackerEntry, result.ranks, result.best);
+          let councilBest = result.best;
+          let councilTie = result.tie;
+          let chairman: { model: string; reasoning?: string | null } | null = null;
+          // Chairman tiebreaker — only when the panel tied and the user opted in.
+          if (
+            result.tie &&
+            promptBuilderJudgeChairmanToggle.checked &&
+            promptBuilderJudgeChairmanModel.value &&
+            result.tiedBest.length >= 2
+          ) {
+            const chairmanModel = promptBuilderJudgeChairmanModel.value;
+            const chairmanVerdict = await chairmanBreakTie({
+              scrEndpoint: promptBuilderObject.SCREndpoint as string,
+              deploymentType: (promptBuilderObject.deploymentType as string) ?? 'k8s',
+              chairmanModel,
+              chairmanOptions: resolveJudgeOptions(
+                promptBuilderAvailableLLMs.find((llm) => llm.name === chairmanModel)
+              ),
+              systemPrompt: resolvedSystem,
+              userPrompt: resolvedUser,
+              tiedCandidates: candidates.filter((candidate) => result.tiedBest.includes(candidate.modelName)),
+              panelNotes: okBallots.map((ballot) => ballot.reasoning ?? '').filter(Boolean),
+            });
+            if (
+              chairmanVerdict.status === 'ok' &&
+              chairmanVerdict.best &&
+              result.tiedBest.includes(chairmanVerdict.best)
+            ) {
+              councilBest = chairmanVerdict.best;
+              councilTie = false;
+              chairman = { model: chairmanModel, reasoning: chairmanVerdict.reasoning ?? '' };
+            }
+          }
+          applyCouncilRanks(trackerEntry, result.ranks, councilBest);
           trackerEntry.judge = {
             judgeModel: '',
             status: 'ok',
@@ -2646,12 +2775,13 @@ export async function buildPromptBuilder(
             panel,
             ballots,
             method: 'borda',
-            best: result.best,
+            best: councilBest,
             ranking: result.ranking,
             confidence: result.confidence,
             agreement: result.agreement,
-            tie: result.tie,
+            tie: councilTie,
             tiedBest: result.tiedBest,
+            chairman,
             includeSelf,
             autoJudge,
             ranAt: now,
@@ -2708,6 +2838,14 @@ export async function buildPromptBuilder(
         }
         promptBuilderJudgeIncludeSelf.checked = Boolean(judgeConfig.includeSelf);
         promptBuilderJudgeAuto.checked = Boolean(judgeConfig.autoJudge);
+        // Restore the chairman tiebreaker when the run recorded one.
+        const chairmanModel = judgeConfig.chairman?.model ?? '';
+        const chairmanAvailable = Boolean(
+          chairmanModel && promptBuilderAvailableLLMs.some((llm) => llm.name === chairmanModel)
+        );
+        promptBuilderJudgeChairmanToggle.checked = chairmanAvailable;
+        if (chairmanAvailable) promptBuilderJudgeChairmanModel.value = chairmanModel;
+        judgeChairmanModelRow.classList.toggle('d-none', !chairmanAvailable);
       }
       // Reselect the run's LLMs and restore their option values
       const runModels = Object.keys(trackerEntry).filter((key) => !TRACKER_META_KEYS.includes(key));
@@ -2811,6 +2949,14 @@ export async function buildPromptBuilder(
                 judge_ballots:
                   entry.judge?.status === 'ok' && entry.judge.mode === 'council'
                     ? (entry.judge.ballots ?? null)
+                    : null,
+                judge_chairman_model:
+                  entry.judge?.status === 'ok' && entry.judge.mode === 'council'
+                    ? (entry.judge.chairman?.model ?? null)
+                    : null,
+                judge_chairman_reasoning:
+                  entry.judge?.status === 'ok' && entry.judge.mode === 'council'
+                    ? (entry.judge.chairman?.reasoning ?? null)
                     : null,
               });
             }

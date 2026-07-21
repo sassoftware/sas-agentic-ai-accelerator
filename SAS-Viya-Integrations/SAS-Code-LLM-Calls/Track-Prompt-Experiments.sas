@@ -330,7 +330,7 @@ with Session(server, token=token) as s:
     libname _spe_mcc json;
 
     data work._spe_pet_base_table;
-        length runId 8. systemPrompt userPrompt $32767. model $100. options $1000. response $32767. run_time prompt_length output_length best_prompt judge_rank judge_best judge_include_self judge_auto 8. judge_model $100. judge_confidence $16. judge_reasoning $32767. judge_mode $16. judge_panel $512. judge_agreement $16.;
+        length runId 8. systemPrompt userPrompt $32767. model $100. options $1000. response $32767. run_time prompt_length output_length best_prompt judge_rank judge_best judge_include_self judge_auto 8. judge_model $100. judge_confidence $16. judge_reasoning $32767. judge_mode $16. judge_panel $512. judge_agreement $16. judge_chairman_model $100. judge_chairman_reasoning $32767.;
         set _spe_mcc.root(drop=ordinal_root);
     run;
 

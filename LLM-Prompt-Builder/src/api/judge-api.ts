@@ -385,3 +385,102 @@ export async function judgeRun(params: JudgeRunParams): Promise<JudgeVerdict> {
 
   return { status: 'unparseable', raw: lastRaw };
 }
+
+const CHAIRMAN_SYSTEM_PROMPT = [
+  'You are the chairman of a panel of judges that could not agree on the best',
+  'response. You will see the task and only the responses the panel tied on,',
+  'each identified by a letter, plus the panel members’ notes for context.',
+  'Weigh them and pick the single best response for the task. Reason first, then',
+  'decide. Ignore length and formatting except where they affect quality.',
+  '',
+  'Return ONLY a JSON object, no prose outside it, with this exact shape:',
+  '{',
+  '  "reasoning": "<why this one wins the tie-break>",',
+  '  "best": "<the single best letter>"',
+  '}',
+].join('\n');
+
+export interface ChairmanParams {
+  scrEndpoint: string;
+  deploymentType: string;
+  chairmanModel: string;
+  chairmanOptions: Record<string, unknown>;
+  systemPrompt: string;
+  userPrompt: string;
+  /** The tied candidates the chairman chooses between. */
+  tiedCandidates: JudgeCandidate[];
+  /** The panel members' reasonings, shown to the chairman for context. */
+  panelNotes?: string[];
+  shuffle?: (n: number) => number[];
+}
+
+/**
+ * Break a council tie: the chairman model picks the single best among the tied
+ * candidates (shuffled + anonymised), given the task and the panel's notes.
+ * Returns a model-space verdict (its `best` is one of the tied models).
+ */
+export async function chairmanBreakTie(params: ChairmanParams): Promise<JudgeVerdict> {
+  const { tiedCandidates } = params;
+  if (tiedCandidates.length < 2) {
+    return { status: 'error', error: 'not-enough-candidates' };
+  }
+  const shuffle = params.shuffle ?? defaultShuffle;
+  const order = shuffle(tiedCandidates.length);
+  const labelled = order.map((candidateIndex, position) => ({
+    label: candidateLabel(position),
+    modelName: tiedCandidates[candidateIndex].modelName,
+    response: tiedCandidates[candidateIndex].response,
+  }));
+  const labelToModel = new Map(labelled.map((c) => [c.label, c.modelName]));
+  const validLabels = new Set(labelled.map((c) => c.label));
+
+  const notes = (params.panelNotes ?? []).filter((note) => note && note.trim() !== '');
+  const chairmanUserPrompt = [
+    '== TASK: SYSTEM PROMPT ==',
+    params.systemPrompt || '(none)',
+    '',
+    '== TASK: USER PROMPT ==',
+    params.userPrompt || '(none)',
+    '',
+    '== TIED RESPONSES ==',
+    labelled.map((c) => `[${c.label}]\n${c.response}`).join('\n\n'),
+    ...(notes.length > 0
+      ? ['', '== PANEL NOTES (context; the panel used its own letters) ==', notes.map((n) => `- ${n}`).join('\n')]
+      : []),
+    '',
+    'Return the JSON object now.',
+  ].join('\n');
+
+  let lastRaw = '';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = (await callSCRLLM(
+      params.scrEndpoint,
+      params.chairmanModel,
+      CHAIRMAN_SYSTEM_PROMPT,
+      chairmanUserPrompt,
+      params.chairmanOptions,
+      params.deploymentType
+    )) as { response?: string; error?: string };
+    if (result?.error) {
+      return { status: 'error', error: result.error };
+    }
+    lastRaw = String(result?.response ?? '');
+    const jsonText = extractJsonObject(lastRaw);
+    if (jsonText) {
+      try {
+        const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+        const bestLabel = String(parsed.best ?? '').trim().toUpperCase();
+        if (validLabels.has(bestLabel)) {
+          return {
+            status: 'ok',
+            best: labelToModel.get(bestLabel),
+            reasoning: String(parsed.reasoning ?? ''),
+          };
+        }
+      } catch {
+        /* fall through to retry / unparseable */
+      }
+    }
+  }
+  return { status: 'unparseable', raw: lastRaw };
+}

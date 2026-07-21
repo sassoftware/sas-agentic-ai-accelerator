@@ -154,6 +154,10 @@
     "promptBuilderJudgeCouncilToggleLabel": "Convene a council of judges",
     "promptBuilderJudgeCouncilInfo": "A council sends the run's responses to several judge models at once and combines their votes. A panel of diverse models is more reliable than any single judge — it cancels out one model's blind spots and biases, which matters most for subjective quality.<br><br><b>Cost:</b> one model call per judge, so a 3-judge council takes roughly 3× the time and spend of a single judge.<br><br><b>When to use it:</b> when the decision matters or the responses are close. A single judge is cheaper and fine for quick checks.<br><br><b>Why an odd number:</b> an odd panel (3 is a good default) makes a tied vote far less likely. Pick judges from different providers so their mistakes don't correlate; beyond about five, extra judges add cost without adding much independence.",
     "promptBuilderJudgeCouncilMembersLabel": "Council members",
-    "promptBuilderCouncilRankTied": "(tied)"
+    "promptBuilderCouncilRankTied": "(tied)",
+    "promptBuilderJudgeChairmanToggleLabel": "Break ties with a chairman model",
+    "promptBuilderJudgeChairmanInfo": "If the panel ties, a chairman model breaks it by choosing among only the tied responses, given the task and the panel's notes. It runs one extra model call, and only when a tie actually happens. Leave it off to have ties surface as \"judges disagreed\" for you to decide.",
+    "promptBuilderJudgeChairmanModelLabel": "Chairman model",
+    "promptBuilderCouncilChairmanNote": "Tie broken by chairman {model}."
   }
 }

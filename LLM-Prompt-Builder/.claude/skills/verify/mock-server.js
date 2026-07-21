@@ -177,7 +177,25 @@ http
         let inputs = [];
         try { inputs = JSON.parse(raw).inputs || []; } catch {}
         const sys = inputs.find((i) => i.name === 'systemPrompt');
-        const isJudge = Boolean(sys && String(sys.value).includes('impartial evaluator'));
+        const sysText = sys ? String(sys.value) : '';
+        const isChairman = sysText.includes('chairman of a panel');
+        const isJudge = sysText.includes('impartial evaluator') || isChairman;
+        if (isChairman) {
+          // Break the tie deterministically: pick the tied response whose text
+          // sorts first.
+          const userInput = String((inputs.find((i) => i.name === 'userPrompt') || {}).value || '');
+          const blocks = [
+            ...userInput.matchAll(/\[([A-Z]+)\]\n([\s\S]*?)(?=\n\n\[[A-Z]+\]|\n\n==|\n\nReturn the JSON object now\.|$)/g),
+          ].map((m) => ({ label: m[1], text: m[2].trim() }));
+          blocks.sort((a, b) => a.text.localeCompare(b.text));
+          const best = blocks.length ? blocks[0].label : 'A';
+          return json(res, 200, {
+            data: {
+              response: '```json\n' + JSON.stringify({ reasoning: 'Chairman pick by content.', best }) + '\n```',
+              run_time: 0.5, prompt_length: 60, output_length: 15,
+            },
+          });
+        }
         if (isJudge) {
           // Deterministic verdict: rank the labelled candidates by response
           // text. A "contrarian" judge reverses the order, so a council that

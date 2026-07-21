@@ -266,8 +266,8 @@ run;
                     order by ordinal_root;
             quit;
 
-            data work._gap_all_experiments_temp(drop=systemPromptTEMP userPromptTEMP vcTEMP illcTEMP ovcTEMP jmTEMP jcTEMP jmodeTEMP jpanelTEMP jagrTEMP ordinal_root);
-                length modelID $36. runID 8. systemPrompt systemPromptTEMP userPrompt userPromptTEMP $32767. model $64. options $256. response $32767. run_time prompt_length output_length best_prompt fastest_prompt fewest_tokens_prompt judge_rank judge_best variables_count integrated_llm_call output_variables_count 8. judge_model jmTEMP $64. judge_confidence jcTEMP $16. judge_mode jmodeTEMP $16. judge_panel jpanelTEMP $512. judge_agreement jagrTEMP $16.;
+            data work._gap_all_experiments_temp(drop=systemPromptTEMP userPromptTEMP vcTEMP illcTEMP ovcTEMP jmTEMP jcTEMP jmodeTEMP jpanelTEMP jagrTEMP jchairTEMP ordinal_root);
+                length modelID $36. runID 8. systemPrompt systemPromptTEMP userPrompt userPromptTEMP $32767. model $64. options $256. response $32767. run_time prompt_length output_length best_prompt fastest_prompt fewest_tokens_prompt judge_rank judge_best variables_count integrated_llm_call output_variables_count 8. judge_model jmTEMP $64. judge_confidence jcTEMP $16. judge_mode jmodeTEMP $16. judge_panel jpanelTEMP $512. judge_agreement jagrTEMP $16. judge_chairman_model jchairTEMP $64.;
                 * root is emitted in ordinal_root order, matching _gap_run_meta.
                   judge_rank / judge_best sit on the model rows; judge_model /
                   judge_confidence sit on the header row (like the prompts) and
@@ -291,6 +291,7 @@ run;
                     jmodeTEMP = judge_mode;
                     jpanelTEMP = judge_panel;
                     jagrTEMP = judge_agreement;
+                    jchairTEMP = judge_chairman_model;
                 end;
 
                 if model ne '' then do;
@@ -304,10 +305,11 @@ run;
                     judge_mode = jmodeTEMP;
                     judge_panel = jpanelTEMP;
                     judge_agreement = jagrTEMP;
+                    judge_chairman_model = jchairTEMP;
                     output;
                 end;
 
-                retain systemPromptTEMP userPromptTEMP vcTEMP illcTEMP ovcTEMP jmTEMP jcTEMP jmodeTEMP jpanelTEMP jagrTEMP;
+                retain systemPromptTEMP userPromptTEMP vcTEMP illcTEMP ovcTEMP jmTEMP jcTEMP jmodeTEMP jpanelTEMP jagrTEMP jchairTEMP;
             run;
 
             proc append base=work._gap_all_experiments data=work._gap_all_experiments_temp force nowarn;
@@ -335,7 +337,7 @@ run;
 
 * Create base table;
 data work._gap_all_experiments;
-    length modelID $36. runID 8. systemPrompt userPrompt $32767. model $64. options $256. response $32767. run_time prompt_length output_length best_prompt fastest_prompt fewest_tokens_prompt judge_rank judge_best variables_count integrated_llm_call output_variables_count 8. judge_model $64. judge_confidence $16. judge_mode $16. judge_panel $512. judge_agreement $16.;
+    length modelID $36. runID 8. systemPrompt userPrompt $32767. model $64. options $256. response $32767. run_time prompt_length output_length best_prompt fastest_prompt fewest_tokens_prompt judge_rank judge_best variables_count integrated_llm_call output_variables_count 8. judge_model $64. judge_confidence $16. judge_mode $16. judge_panel $512. judge_agreement $16. judge_chairman_model $64.;
 run;
 
 data work._gap_all_models;
@@ -369,6 +371,7 @@ proc sql;
             b.judge_mode,
             b.judge_panel,
             b.judge_agreement,
+            b.judge_chairman_model,
             b.variables_count,
             b.integrated_llm_call,
             b.output_variables_count
@@ -413,6 +416,7 @@ data work._gap_all_data;
         judge_mode = 'Judge Mode'
         judge_panel = 'Judge Panel'
         judge_agreement = 'Judge Agreement'
+        judge_chairman_model = 'Judge Chairman'
         temperature = 'Temperature'
         top_p = 'Top P'
         top_k = 'Top K'

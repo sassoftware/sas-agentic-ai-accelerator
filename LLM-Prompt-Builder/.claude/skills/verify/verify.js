@@ -428,8 +428,14 @@ function multipartJson(body) {
   await resetLog();
   await page.click('#app-obj-LPB-pet-create-model-button');
   await waitUntil(
-    async () => (await getLog()).some((e) => e.method === 'POST' && e.body.includes('def scoreModel(')),
-    'parsing score code uploaded'
+    async () => {
+      const l = await getLog();
+      return (
+        l.some((e) => e.method === 'POST' && e.body.includes('def scoreModel(')) &&
+        l.some((e) => e.method === 'POST' && e.body.includes('filename="outputVar.json"'))
+      );
+    },
+    'parsing score code + outputVar uploaded'
   );
   aLog = await getLog();
   const findPart3 = (name) => aLog.find((e) => e.method === 'POST' && e.body.includes(`filename="${name}"`));
