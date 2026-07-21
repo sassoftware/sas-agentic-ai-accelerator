@@ -24,7 +24,7 @@
 %let _crt_options = %str(%')&options.%str(%');
 
 data work._crt_result_table_&_crt_runID._&_crt_counter.;
-    length runId 8. systemPrompt userPrompt $32767. model $100. options $1000. response $32767. run_time prompt_length output_length best_prompt 8.;
+    length runId 8. systemPrompt userPrompt $32767. model $100. options $1000. response $32767. run_time prompt_length output_length best_prompt judge_rank judge_best 8. judge_model $100. judge_confidence $16.;
     runId = &_crt_runID.;
     systemPrompt = "&systemPrompt.";
     userPrompt = "&userPrompt.";

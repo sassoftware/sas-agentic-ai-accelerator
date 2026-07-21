@@ -64,7 +64,7 @@ function multipartJson(body) {
 
   // ---- UX: heading hierarchy, sections, gated run button, modal copy --------
   assert((await page.$$('h1')).length === 1, 'exactly one h1 on the page');
-  assert((await page.$$('.pb-section')).length === 5, 'page grouped into five visual sections');
+  assert((await page.$$('.pb-section')).length === 6, 'page grouped into six visual sections (incl. Judging)');
   assert(await page.isDisabled('#app-obj-LPB-run-experiment'), 'Run Experiments disabled until an LLM is selected');
   assert(await page.isVisible('#app-obj-LPB-pet-empty'), 'tracker shows an empty-state hint');
   assert(

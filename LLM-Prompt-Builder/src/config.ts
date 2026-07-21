@@ -51,6 +51,9 @@ const DEFAULTS: RuntimeConfig = {
     SCREndpoint: '',
     // 'k8s' (default) or 'aca' (Azure Container Apps).
     deploymentType: 'k8s',
+    // Optional deployment default for the LLM-as-a-Judge model (an LLM name from
+    // llmProjectID). Blank = no default; the in-app judge selector always wins.
+    judgeModel: '',
     // API keys are supplied at runtime from the object's assigned DDC data table
     // (see src/va/ddc.ts), so they start empty here. Map is keyed by the name an
     // LLM's options.json references via API_KEY.default (e.g. "Anthropic").
@@ -64,6 +67,7 @@ const URL_OVERRIDABLE = [
   'llmProjectID',
   'SCREndpoint',
   'deploymentType',
+  'judgeModel',
   'id',
 ] as const;
 

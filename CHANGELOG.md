@@ -2,6 +2,21 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [1.4.0] - 2026-07-21
+
+The Prompt Builder can now **judge which response is best** with an LLM-as-a-Judge. Pick a judge model, run your prompt across several LLMs as before, and the judge ranks the responses in a single comparative call — reasoning first, candidates shown in randomised order under anonymous labels. The verdict is **advisory**: it sets a judge rank and highlights the strongest response, but you still choose the Best Response yourself. A judge is just another SCR call, so no new infrastructure is needed.
+
+To pick up the change, re-upload the prebuilt `LLM-Prompt-Builder/dist/index.html` to your SAS Job Execution definition (and re-export the `SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json` transfer package for new deployments). The prompt-monitoring `PROMPT_EXPERIMENTS` table gains four judge columns, so the judge's verdict is available in Visual Analytics alongside the existing per-run metrics.
+
+### Added
+
+- **LLM-as-a-Judge in the Prompt Builder.** A dedicated "Judge the responses" section (between the workbench and the tracker) holds the judge-model selector, an "Include the judge's own response" toggle (with an info icon explaining self-preference bias), and an "Auto-judge when the experiment finishes" toggle — a clear home that later judging strategies fold into. "Judge this run" (or auto-judge) sends the run's responses to the chosen judge model as a single N-way comparative ranking — the judge reasons step by step, then returns a JSON verdict (winner, ranking, confidence) parsed defensively with one retry. The verdict renders as a banner on the run (winner, ranking, confidence, the judge's reasoning, and — when applicable — a self-preference note), and the judged-best response gets a fourth run icon next to the existing best/fastest/fewest-tokens icons. The judge is **advisory only** — it never changes your Best Response selection; the per-model judge rank is the signal. By default the judge's own response is excluded from the ranking to avoid self-preference bias; the include toggle overrides that with a bias warning. A deployment can set a default judge model through the object's Options pane (`judgeModel`); the in-app selector always wins. See `LLM-Prompt-Builder/docs/prompt-judge-design.md` for the design
+- **`PROMPT_EXPERIMENTS` gains judge columns.** `Get-All-Prompts.sas` now surfaces `judge_rank` and `judge_best` per model result plus the run-level `judge_model` and `judge_confidence`, read from the tracker with the same `exist()`-guarded, backward-compatible approach used for the 1.3.0 metadata — trackers written before judging simply report the columns as missing. `Track-Prompt-Experiments.sas` and the SAS-code result-table scripts carry the judge columns so a server-side append round-trips them
+
+### Changed
+
+- The Prompt Builder's persisted `Prompt-Experiment-Tracker.json` gains optional per-model `judge_rank` / `judge_best` fields and, on the run header row, `judge_model` / `judge_confidence` / `judge_reasoning` plus the judge config (`judge_include_self`, `judge_auto`). The full judge context — verdict, reasoning and the judge settings used — is therefore restored when a run is loaded (via Load or the auto-load of the most recent best run), so nothing about a judged run is lost on reload. All fields are optional and read back with guards, so trackers saved by an earlier Prompt Builder load and re-save unchanged
+
 ## [1.3.0] - 2026-07-20
 
 This release consolidates the framework onto the `mdb` CLI as the single way to register and publish. The standalone `Model-Manager-Setup.py`, `utility/prompt-builder-json.py` and the four `register-*.py` / `publish-*.py` scripts are removed in favour of `mdb setup` / `register` / `publish` / `ship`, which cover both LLM and Embedding definitions from one place and do more besides (`--all` across the fleet, in-place `--update`, build-completion `--wait`). Install the CLI once with `pip install -e Model-Definition-Builder/cli[viya]`; the Administration and User guides are updated throughout.
