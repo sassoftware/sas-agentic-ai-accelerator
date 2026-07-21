@@ -1704,6 +1704,30 @@ export async function buildPromptBuilder(
     const promptExperimentContainer = document.createElement('div');
     promptExperimentContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet`;
 
+    // A disabled <button> does not fire hover events, so its own `title` never
+    // shows as a tooltip. Wrap it in a span that carries the hint and let the
+    // pointer fall through to the span while the button is disabled, so the
+    // "why is this disabled" tooltip appears on hover.
+    function wrapForHint(button: HTMLButtonElement): HTMLSpanElement {
+      const wrapper = document.createElement('span');
+      wrapper.classList.add('d-inline-block');
+      wrapper.appendChild(button);
+      return wrapper;
+    }
+    function setDisabledHint(
+      button: HTMLButtonElement,
+      wrapper: HTMLElement,
+      disabled: boolean,
+      hint: string
+    ): void {
+      button.disabled = disabled;
+      button.style.pointerEvents = disabled ? 'none' : '';
+      // Keep the hint on the button too (harmless, and read by tests); the
+      // wrapper is what actually surfaces it on hover while disabled.
+      button.title = disabled ? hint : '';
+      wrapper.title = disabled ? hint : '';
+    }
+
     // Localised label for a judge confidence level.
     function judgeConfidenceText(confidence?: string | null): string {
       switch (confidence) {
@@ -1840,9 +1864,29 @@ export async function buildPromptBuilder(
               `${promptBuilderInterfaceText.promptBuilderJudgeRunButton} ${index + 1}`
             );
             judgeRunButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText.promptBuilderJudgeRunButton}</title><path d="M480-80v-520q-18-7-31.5-19T427-640H320l120 280q0 50-41 85t-99 35q-58 0-99-35t-41-85l120-280h-40v-80h227q11-19 29-31.5t42-14.5v-38h80v38q24 2 42 14.5t29 31.5h227v80h-40l120 280q0 50-41 85t-99 35q-58 0-99-35t-41-85l120-280H533q-8 9-21.5 21T480-600v520h160v80H320v-80h160ZM212-440h176l-88-205-88 205Zm360 0h176l-88-205-88 205ZM480-680q17 0 28.5-11.5T520-720q0-17-11.5-28.5T480-760q-17 0-28.5 11.5T440-720q0 17 11.5 28.5T480-680Z"/></svg>`;
-            judgeRunButton.disabled = experimentRunning;
             judgeRunButton.onclick = () => promptBuilderJudgeRun(index);
-            promptExperimentRunHeader.appendChild(judgeRunButton);
+            // Judging compares responses, so it needs at least two successful
+            // ones in the run. When it can't (e.g. only one model was included),
+            // disable it with a hint on hover rather than fail silently on click.
+            const judgeFailedText = promptBuilderInterfaceText?.promptBuilderModelInferenceFailed as string;
+            const judgeableResponses = Object.keys(promptExperimentTrackerRunResult)
+              .filter((key) => !TRACKER_META_KEYS.includes(key))
+              .map((key) => promptExperimentTrackerRunResult[key] as ModelExperimentData)
+              .filter(
+                (modelData) =>
+                  modelData &&
+                  typeof modelData.response === 'string' &&
+                  modelData.response !== '' &&
+                  modelData.response !== judgeFailedText
+              ).length;
+            const judgeRunButtonWrapper = wrapForHint(judgeRunButton);
+            setDisabledHint(
+              judgeRunButton,
+              judgeRunButtonWrapper,
+              experimentRunning || judgeableResponses < 2,
+              judgeableResponses < 2 ? `${promptBuilderInterfaceText?.promptBuilderJudgeNeedsTwoResponses}` : ''
+            );
+            promptExperimentRunHeader.appendChild(judgeRunButtonWrapper);
           }
           const promptExperimentRunContainerItemBody = document.createElement('div');
           promptExperimentRunContainerItemBody.className = 'accordion-body';
@@ -2394,6 +2438,9 @@ export async function buildPromptBuilder(
       await promptBuilderSaveExperiments();
       await promptBulderCreateBestPromptModel();
     };
+    // Wrapped so the "select a best response first" hint shows on hover even
+    // while the button is disabled (a disabled button fires no hover events).
+    const promptExperimentCreateModelButtonWrapper = wrapForHint(promptExperimentCreateModelButton);
     // Disabled (with a hint) until a run has a best response selected
     function updateManifestButtonState(): void {
       const hasBestPrompt = promptExperimentTracker.some((trackerEntry) =>
@@ -2401,10 +2448,12 @@ export async function buildPromptBuilder(
           (key) => !TRACKER_META_KEYS.includes(key) && (trackerEntry[key] as ModelExperimentData)?.best_prompt
         )
       );
-      promptExperimentCreateModelButton.disabled = !hasBestPrompt;
-      promptExperimentCreateModelButton.title = hasBestPrompt
-        ? ''
-        : `${promptBuilderInterfaceText?.promptBuilderCreateModelNoBestPrompt}`;
+      setDisabledHint(
+        promptExperimentCreateModelButton,
+        promptExperimentCreateModelButtonWrapper,
+        !hasBestPrompt,
+        `${promptBuilderInterfaceText?.promptBuilderCreateModelNoBestPrompt}`
+      );
     }
     updateManifestButtonState();
     // Manifest section: configure how the best prompt becomes a model, with
@@ -3253,7 +3302,7 @@ ${scoreCodeReturn}`;
     manifestSection.appendChild(promptExperimentIntegratedCallDiv);
     manifestSection.appendChild(promptExperimentManifestOptions);
     manifestSection.appendChild(document.createElement('br'));
-    manifestSection.appendChild(promptExperimentCreateModelButton);
+    manifestSection.appendChild(promptExperimentCreateModelButtonWrapper);
     manifestSection.appendChild(document.createElement('br'));
     manifestSection.appendChild(document.createElement('br'));
     manifestSection.appendChild(promptExperimentResultContainer);

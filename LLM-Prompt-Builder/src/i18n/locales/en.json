@@ -119,6 +119,7 @@
     "promptBuilderJudgeRunButtonStatus": "Judging...",
     "promptBuilderJudgeSelectModelToast": "Select a judge model first.",
     "promptBuilderJudgeNotEnoughCandidates": "Judging needs at least two responses. Tick \"Include the judge's own response\" or pick a different judge model.",
+    "promptBuilderJudgeNeedsTwoResponses": "Judging compares responses, so it needs at least two in this run — include more than one model when you run the experiment.",
     "promptBuilderJudgeErrorPrefix": "The judge could not evaluate this run:",
     "promptBuilderJudgeUnparseable": "The judge returned an unreadable verdict.",
     "promptBuilderJudgeVerdictWinner": "Judge's best response:",

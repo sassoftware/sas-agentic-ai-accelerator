@@ -119,6 +119,7 @@
     "promptBuilderJudgeRunButtonStatus": "Bewerte...",
     "promptBuilderJudgeSelectModelToast": "Wähle zuerst ein Bewertungsmodell.",
     "promptBuilderJudgeNotEnoughCandidates": "Für die Bewertung werden mindestens zwei Antworten benötigt. Aktiviere \"Eigene Antwort des Bewertungsmodells einbeziehen\" oder wähle ein anderes Bewertungsmodell.",
+    "promptBuilderJudgeNeedsTwoResponses": "Die Bewertung vergleicht Antworten und benötigt daher mindestens zwei in diesem Lauf — beziehe beim Ausführen des Experiments mehr als ein Modell ein.",
     "promptBuilderJudgeErrorPrefix": "Das Bewertungsmodell konnte diesen Lauf nicht bewerten:",
     "promptBuilderJudgeUnparseable": "Das Bewertungsmodell hat ein nicht lesbares Urteil zurückgegeben.",
     "promptBuilderJudgeVerdictWinner": "Beste Antwort laut Bewertungsmodell:",
