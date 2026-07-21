@@ -266,9 +266,13 @@ run;
                     order by ordinal_root;
             quit;
 
-            data work._gap_all_experiments_temp(drop=systemPromptTEMP userPromptTEMP vcTEMP illcTEMP ovcTEMP ordinal_root);
-                length modelID $36. runID 8. systemPrompt systemPromptTEMP userPrompt userPromptTEMP $32767. model $64. options $256. response $32767. run_time prompt_length output_length best_prompt fastest_prompt fewest_tokens_prompt variables_count integrated_llm_call output_variables_count 8.;
-                * root is emitted in ordinal_root order, matching _gap_run_meta;
+            data work._gap_all_experiments_temp(drop=systemPromptTEMP userPromptTEMP vcTEMP illcTEMP ovcTEMP jmTEMP jcTEMP ordinal_root);
+                length modelID $36. runID 8. systemPrompt systemPromptTEMP userPrompt userPromptTEMP $32767. model $64. options $256. response $32767. run_time prompt_length output_length best_prompt fastest_prompt fewest_tokens_prompt judge_rank judge_best variables_count integrated_llm_call output_variables_count 8. judge_model jmTEMP $64. judge_confidence jcTEMP $16.;
+                * root is emitted in ordinal_root order, matching _gap_run_meta.
+                  judge_rank / judge_best sit on the model rows; judge_model /
+                  judge_confidence sit on the header row (like the prompts) and
+                  are carried onto each model row below. Trackers written before
+                  judging simply leave every judge_* column missing;
                 merge _gap_pe.root _gap_run_meta;
                 by ordinal_root;
 
@@ -282,6 +286,8 @@ run;
                     vcTEMP = coalesce(variables_count, 0);
                     illcTEMP = coalesce(integrated_llm_call, 0);
                     ovcTEMP = coalesce(output_variables_count, 0);
+                    jmTEMP = judge_model;
+                    jcTEMP = judge_confidence;
                 end;
 
                 if model ne '' then do;
@@ -290,10 +296,12 @@ run;
                     variables_count = vcTEMP;
                     integrated_llm_call = illcTEMP;
                     output_variables_count = ovcTEMP;
+                    judge_model = jmTEMP;
+                    judge_confidence = jcTEMP;
                     output;
                 end;
 
-                retain systemPromptTEMP userPromptTEMP vcTEMP illcTEMP ovcTEMP;
+                retain systemPromptTEMP userPromptTEMP vcTEMP illcTEMP ovcTEMP jmTEMP jcTEMP;
             run;
 
             proc append base=work._gap_all_experiments data=work._gap_all_experiments_temp force nowarn;
@@ -321,7 +329,7 @@ run;
 
 * Create base table;
 data work._gap_all_experiments;
-    length modelID $36. runID 8. systemPrompt userPrompt $32767. model $64. options $256. response $32767. run_time prompt_length output_length best_prompt fastest_prompt fewest_tokens_prompt variables_count integrated_llm_call output_variables_count 8.;
+    length modelID $36. runID 8. systemPrompt userPrompt $32767. model $64. options $256. response $32767. run_time prompt_length output_length best_prompt fastest_prompt fewest_tokens_prompt judge_rank judge_best variables_count integrated_llm_call output_variables_count 8. judge_model $64. judge_confidence $16.;
 run;
 
 data work._gap_all_models;
@@ -348,6 +356,10 @@ proc sql;
             b.best_prompt,
             b.fastest_prompt,
             b.fewest_tokens_prompt,
+            b.judge_rank,
+            b.judge_best,
+            b.judge_model,
+            b.judge_confidence,
             b.variables_count,
             b.integrated_llm_call,
             b.output_variables_count
@@ -385,6 +397,10 @@ data work._gap_all_data;
         best_prompt = 'Best Prompt in Run'
         fastest_prompt = 'Fastest Prompt in Run'
         fewest_tokens_prompt = 'Fewest Tokens Prompt in Run'
+        judge_rank = 'Judge Rank in Run'
+        judge_best = 'Best Prompt per Judge'
+        judge_model = 'Judge Model'
+        judge_confidence = 'Judge Confidence'
         temperature = 'Temperature'
         top_p = 'Top P'
         top_k = 'Top K'

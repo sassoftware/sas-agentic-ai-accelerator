@@ -24,6 +24,13 @@ export interface PromptBuilderConfig {
   SCREndpoint: string;
   /** LLM container deployment type — 'k8s' (default) or 'aca'. */
   deploymentType?: string;
+  /**
+   * Optional deployment default for the LLM-as-a-Judge model, given as an LLM
+   * name from the `llmProjectID` project. Not a secret, so it is delivered via
+   * the VA Options pane / URL like the other IDs. The in-app judge selector
+   * always overrides it.
+   */
+  judgeModel?: string;
   /** Map of API-key name (as referenced by an LLM's options.json) to key value. */
   API_KEYS?: Record<string, string>;
   [key: string]: unknown;

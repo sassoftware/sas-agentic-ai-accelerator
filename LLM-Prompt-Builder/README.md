@@ -21,6 +21,12 @@ SDK is not used.
   length / tokens, …)
 - Run experiments across models in parallel and compare responses side by side
 - Automatic flags for fastest response and fewest output tokens
+- **Judge which response is best with an LLM-as-a-Judge** — pick a judge model
+  and it ranks a run's responses in a single comparative call (reasoning first,
+  candidates anonymised and shuffled), suggests the winner and shows its
+  rationale. Optional auto-judge on run completion; the judge's own response is
+  excluded by default to avoid self-preference bias (override available). The
+  judge only *suggests* — you keep the final "best" choice
 - Mark a "best" response and persist the experiment tracker to Model Manager
 - "Manifest" the best prompt as a Python-scored model (input/output variables +
   score code) ready for use in SAS Intelligent Decisioning
@@ -67,6 +73,7 @@ in the URL or report definition**:
 | `llmProjectID` | VA properties panel | Model Manager project holding the available LLM definitions (each with an `options.json`). |
 | `SCREndpoint` | VA properties panel | Base URL of the SCR endpoint hosting the LLM containers. |
 | `deploymentType` | VA properties panel | `k8s` (default) or `aca` (Azure Container Apps). |
+| `judgeModel` | VA properties panel | Optional default LLM (by name, from `llmProjectID`) used by the LLM-as-a-Judge. Not a secret; the in-app judge selector always overrides it. |
 | **API key(s)** | **Object's assigned data** | A small table mapping key name → key value (see below). |
 
 ### Everything-but-the-key: the VA properties panel

@@ -165,6 +165,12 @@ function buildOptionsConfig(config: RuntimeConfig): Record<string, unknown> {
           { key: 'aca', text: 'Azure Container Apps (aca)' },
         ],
       } as OptionField,
+      textField(
+        'judgeModel',
+        'Default judge model',
+        pb.judgeModel,
+        'Optional default LLM (by name, from the LLM project) used to judge which response is best. Users can override it in the app.'
+      ),
     ],
     groups: [],
   };

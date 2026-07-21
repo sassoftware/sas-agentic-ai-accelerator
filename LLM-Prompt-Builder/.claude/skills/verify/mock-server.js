@@ -39,6 +39,17 @@ const trackerRows = [
 ];
 // Run 2 carries a selected best response so prompt selection auto-loads it.
 trackerRows[3].best_prompt = 1;
+// Run 5 (the two-model run) carries a completed judge verdict + config so the
+// reload path (banner reasoning, ranks, restored judge controls) is exercised.
+trackerRows[4].judge_model = 'demo_llm';
+trackerRows[4].judge_confidence = 'high';
+trackerRows[4].judge_reasoning = 'demo_llm answered more precisely than other_llm.';
+trackerRows[4].judge_include_self = 1;
+trackerRows[4].judge_auto = 1;
+trackerRows[5].judge_rank = 1;
+trackerRows[5].judge_best = 1;
+trackerRows[6].judge_rank = 2;
+trackerRows[6].judge_best = 0;
 
 // model-used: two distinct dependent decision flows, one of them reported
 // twice (flow + revision) to exercise the dedupe. model-free: no dependents.
@@ -95,7 +106,12 @@ http
       if (p === '/modelRepository/projects/llm-proj/models') {
         const filter = u.searchParams.get('filter') || '';
         if (filter.includes('deprecated')) return json(res, 200, { items: [] });
-        return json(res, 200, { items: [{ id: 'llm-1', name: 'demo_llm' }] });
+        return json(res, 200, {
+          items: [
+            { id: 'llm-1', name: 'demo_llm' },
+            { id: 'llm-2', name: 'second_llm' },
+          ],
+        });
       }
       if (p === '/modelRepository/projects/proj-1/models') {
         return json(res, 200, {
@@ -111,8 +127,16 @@ http
           items: [{ id: 'c-opt', name: 'options.json', fileUri: '/files/files/opt-1' }],
         });
       }
+      if (p === '/modelRepository/models/llm-2/contents') {
+        return json(res, 200, {
+          items: [{ id: 'c-opt2', name: 'options.json', fileUri: '/files/files/opt-2' }],
+        });
+      }
       if (p === '/files/files/opt-1/content') {
         return json(res, 200, { temperature: { default: 0.7 } });
+      }
+      if (p === '/files/files/opt-2/content') {
+        return json(res, 200, { temperature: { default: 0.5 } });
       }
       if (p === '/modelRepository/models/model-used/contents' && req.method === 'GET') {
         // The requirements.json entry simulates a leftover from an earlier
@@ -140,7 +164,23 @@ http
       if (p === '/decisions/flows/flow-A') return json(res, 200, { id: 'flow-A', name: 'Loan Approval Decision' });
       if (p === '/decisions/flows/flow-B') return json(res, 200, { id: 'flow-B', name: 'Fraud Check Decision' });
       if (/^\/scr\//.test(p) && req.method === 'POST') {
-        // A fenced JSON response, as LLMs often produce, to exercise parsing
+        // Detect the LLM-as-a-Judge call by its distinctive system prompt and
+        // return a fenced JSON verdict (labels A..). Any other SCR call gets a
+        // fenced JSON sentiment response, as LLMs often produce, to exercise parsing.
+        let isJudge = false;
+        try {
+          const sys = (JSON.parse(raw).inputs || []).find((i) => i.name === 'systemPrompt');
+          isJudge = Boolean(sys && String(sys.value).includes('impartial evaluator'));
+        } catch {}
+        if (isJudge) {
+          return json(res, 200, {
+            data: {
+              response:
+                '```json\n{"reasoning": "A is clearer and more complete than B.", "ranking": ["A", "B"], "best": "A", "confidence": "high"}\n```',
+              run_time: 0.8, prompt_length: 120, output_length: 30,
+            },
+          });
+        }
         return json(res, 200, {
           data: {
             response: '```json\n{"sentiment": "positive", "score": 0.9}\n```',

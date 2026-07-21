@@ -28,6 +28,7 @@ import {
 } from '../api/models-api';
 import { getModelDependentDecisions } from '../api/relationships-api';
 import { callSCRLLM } from '../api/scr-api';
+import { judgeRun, type JudgeConfidence } from '../api/judge-api';
 import { createAccordionItem } from '../ui/accordion';
 import { showConfirmModal } from '../ui/confirm-modal';
 import { showToast } from '../ui/toast';
@@ -82,16 +83,46 @@ interface PromptVariable {
   value: string;
 }
 
+/**
+ * Run-level summary of an LLM-as-a-Judge evaluation. Kept as tracker metadata
+ * (like `manifest`), not a per-model result. `reasoning`/`ranking`/`best` are
+ * held in memory for the session; only `judgeModel` and `confidence` are
+ * persisted (on the header PETRow), so a reloaded run shows the winner and
+ * confidence but not the full rationale.
+ */
+interface JudgeSummary {
+  judgeModel: string;
+  status: 'ok' | 'error' | 'unparseable';
+  best?: string | null;
+  ranking?: string[] | null;
+  confidence?: JudgeConfidence | null;
+  reasoning?: string | null;
+  /** True when the judge's own response was excluded from the ranking. */
+  excludedSelf?: boolean;
+  /** True when the judge's own response was included (bias possible). */
+  includedSelf?: boolean;
+  /** Raw judge configuration used for the run, restored onto the controls when
+   *  the run is loaded: the include-self toggle and the auto-judge toggle. */
+  includeSelf?: boolean;
+  autoJudge?: boolean;
+  /** Reason text for a non-'ok' status. */
+  error?: string | null;
+  /** Raw judge reply, kept for display when the verdict was unparseable. */
+  raw?: string | null;
+  ranAt?: string | null;
+}
+
 interface ExperimentTrackerEntry {
   systemPrompt: string;
   userPrompt: string;
   variables?: PromptVariable[];
   manifest?: ManifestConfig;
+  judge?: JudgeSummary | null;
   [modelName: string]: unknown;
 }
 
 /** Entry keys that are metadata rather than per-model experiment results. */
-const TRACKER_META_KEYS = ['systemPrompt', 'userPrompt', 'author', 'variables', 'manifest'];
+const TRACKER_META_KEYS = ['systemPrompt', 'userPrompt', 'author', 'variables', 'manifest', 'judge'];
 
 /** A user-defined output variable parsed from the LLM's JSON response. */
 interface PromptOutputVariable {
@@ -117,6 +148,10 @@ interface ModelExperimentData {
   best_prompt: boolean | null;
   fastest_prompt: boolean | null;
   fewest_tokens_prompt: boolean | null;
+  /** 1 = judge's best, 2, 3, … ; null = not judged. */
+  judge_rank: number | null;
+  /** Convenience flag for the judge's winner (judge_rank === 1). */
+  judge_best: boolean | null;
   output_length: number | null;
   prompt_length: number | null;
   run_time: number | null;
@@ -141,6 +176,19 @@ interface PETRow {
   best_prompt: boolean | number | null;
   fastest_prompt: boolean | null;
   fewest_tokens_prompt: boolean | null;
+  /** Per-model judge rank (1 = best); null when not judged. */
+  judge_rank?: number | null;
+  /** Per-model judge winner flag (persisted numeric 1/0 like best_prompt). */
+  judge_best?: boolean | number | null;
+  /** Run-level judge model, carried on the header row only. */
+  judge_model?: string | null;
+  /** Run-level judge confidence, carried on the header row only. */
+  judge_confidence?: string | null;
+  /** Run-level judge reasoning, carried on the header row only. */
+  judge_reasoning?: string | null;
+  /** Run-level judge config (0/1), carried on the header row only. */
+  judge_include_self?: boolean | number | null;
+  judge_auto?: boolean | number | null;
 }
 
 interface ModalText {
@@ -309,6 +357,20 @@ export async function buildPromptBuilder(
                 };
                 if (Array.isArray(value.variables)) loadedRun.variables = value.variables;
                 if (value.manifest) loadedRun.manifest = value.manifest;
+                // Only 'ok' judgments persist a judge_model on the header row.
+                // best/ranking are reconstructed from the per-model ranks below.
+                if (value.judge_model) {
+                  loadedRun.judge = {
+                    judgeModel: value.judge_model,
+                    status: 'ok',
+                    confidence: (value.judge_confidence as JudgeConfidence) ?? 'unknown',
+                    reasoning: value.judge_reasoning ?? '',
+                    includeSelf: Boolean(value.judge_include_self),
+                    autoJudge: Boolean(value.judge_auto),
+                    ranking: null,
+                    best: null,
+                  };
+                }
                 promptBuilderPreviousExperiment.push(loadedRun);
                 promptBuilderPreviousRunID = value.runId;
               } else {
@@ -319,6 +381,8 @@ export async function buildPromptBuilder(
                   best_prompt: value?.best_prompt,
                   fastest_prompt: value?.fastest_prompt ?? false,
                   fewest_tokens_prompt: value?.fewest_tokens_prompt ?? false,
+                  judge_rank: value?.judge_rank ?? null,
+                  judge_best: value?.judge_best ?? null,
                   output_length: value?.output_length,
                   prompt_length: value?.prompt_length,
                   run_time: value?.run_time,
@@ -332,6 +396,26 @@ export async function buildPromptBuilder(
                   response: value?.response,
                 };
               }
+            });
+            // Reconstruct each judged run's ranking/winner from the per-model
+            // ranks (only judge_model + judge_confidence are persisted at the
+            // run level; the reasoning is not stored with a saved run).
+            promptBuilderPreviousExperiment.forEach((loadedRun) => {
+              if (!loadedRun.judge) return;
+              const modelNames = Object.keys(loadedRun).filter((key) => !TRACKER_META_KEYS.includes(key));
+              const ranked = modelNames
+                .map((modelName) => ({
+                  modelName,
+                  rank: (loadedRun[modelName] as ModelExperimentData)?.judge_rank,
+                }))
+                .filter((entry): entry is { modelName: string; rank: number } => entry.rank != null)
+                .sort((a, b) => a.rank - b.rank);
+              loadedRun.judge.ranking = ranked.map((entry) => entry.modelName);
+              loadedRun.judge.best = ranked[0]?.modelName ?? null;
+              // Rebuild the self-inclusion note flags from the stored config.
+              const judgeSelfPresent = modelNames.includes(loadedRun.judge.judgeModel);
+              loadedRun.judge.includedSelf = Boolean(loadedRun.judge.includeSelf) && judgeSelfPresent;
+              loadedRun.judge.excludedSelf = !loadedRun.judge.includeSelf && judgeSelfPresent;
             });
             // Assign the tracker before rendering so the saveable rows are rebuilt
             // from the freshly loaded runs (the render reads the closure variable).
@@ -1332,6 +1416,87 @@ export async function buildPromptBuilder(
     }
     updateRunExperimentsButtonState();
 
+    // --- LLM-as-a-Judge controls -------------------------------------------
+    // A judge is just another SCR LLM call. The user picks a judge model
+    // (optionally defaulted per deployment via config.judgeModel), can include
+    // the judge's own response in the ranking, and can have judging fire
+    // automatically when a run finishes.
+    const promptBuilderJudgeControls = document.createElement('div');
+    promptBuilderJudgeControls.classList.add(
+      'pb-judge-controls', 'd-flex', 'flex-wrap', 'align-items-center', 'gap-3', 'mt-2'
+    );
+
+    const judgeModelLabel = document.createElement('label');
+    judgeModelLabel.classList.add('form-label', 'mb-0');
+    judgeModelLabel.htmlFor = `${paneID}-obj-${promptBuilderObject?.id}-judge-model`;
+    judgeModelLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeModelLabel}`;
+
+    const promptBuilderJudgeModelSelect = document.createElement('select');
+    promptBuilderJudgeModelSelect.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-model`;
+    promptBuilderJudgeModelSelect.classList.add('form-select', 'form-select-sm', 'pb-judge-model');
+    promptBuilderJudgeModelSelect.style.width = 'auto';
+    const judgePlaceholderOption = document.createElement('option');
+    judgePlaceholderOption.value = '';
+    judgePlaceholderOption.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSelectPlaceholder}`;
+    promptBuilderJudgeModelSelect.appendChild(judgePlaceholderOption);
+    promptBuilderAvailableLLMs.forEach((availableLLM) => {
+      const judgeOption = document.createElement('option');
+      judgeOption.value = availableLLM.name;
+      judgeOption.innerText = availableLLM.name;
+      promptBuilderJudgeModelSelect.appendChild(judgeOption);
+    });
+    // Apply the deployment default when it names a currently available LLM.
+    const configuredJudgeModel = String(promptBuilderObject?.judgeModel ?? '');
+    if (configuredJudgeModel && promptBuilderAvailableLLMs.some((llm) => llm.name === configuredJudgeModel)) {
+      promptBuilderJudgeModelSelect.value = configuredJudgeModel;
+    }
+
+    const judgeIncludeSelfDiv = document.createElement('div');
+    judgeIncludeSelfDiv.classList.add('form-check', 'mb-0');
+    const promptBuilderJudgeIncludeSelf = document.createElement('input');
+    promptBuilderJudgeIncludeSelf.type = 'checkbox';
+    promptBuilderJudgeIncludeSelf.classList.add('form-check-input');
+    promptBuilderJudgeIncludeSelf.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-include-self`;
+    const judgeIncludeSelfLabel = document.createElement('label');
+    judgeIncludeSelfLabel.classList.add('form-check-label');
+    judgeIncludeSelfLabel.htmlFor = promptBuilderJudgeIncludeSelf.id;
+    judgeIncludeSelfLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeIncludeSelfLabel}`;
+    // Info icon explaining self-preference bias, matching the option tooltips.
+    const judgeIncludeSelfInfo = document.createElement('span');
+    judgeIncludeSelfInfo.classList.add('info-icon');
+    judgeIncludeSelfInfo.style.marginLeft = '4px';
+    judgeIncludeSelfInfo.innerHTML = '&#x2139;&#xFE0F;';
+    judgeIncludeSelfInfo.setAttribute('tabindex', '0');
+    judgeIncludeSelfInfo.setAttribute('role', 'button');
+    judgeIncludeSelfInfo.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderJudgeIncludeSelfLabel}`);
+    judgeIncludeSelfInfo.setAttribute('data-bs-toggle', 'tooltip');
+    new Tooltip(judgeIncludeSelfInfo, {
+      title: String(promptBuilderInterfaceText?.promptBuilderJudgeIncludeSelfInfo),
+      html: true,
+      container: 'body',
+    });
+    judgeIncludeSelfDiv.appendChild(promptBuilderJudgeIncludeSelf);
+    judgeIncludeSelfDiv.appendChild(judgeIncludeSelfLabel);
+    judgeIncludeSelfDiv.appendChild(judgeIncludeSelfInfo);
+
+    const judgeAutoDiv = document.createElement('div');
+    judgeAutoDiv.classList.add('form-check', 'mb-0');
+    const promptBuilderJudgeAuto = document.createElement('input');
+    promptBuilderJudgeAuto.type = 'checkbox';
+    promptBuilderJudgeAuto.classList.add('form-check-input');
+    promptBuilderJudgeAuto.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-auto`;
+    const judgeAutoLabel = document.createElement('label');
+    judgeAutoLabel.classList.add('form-check-label');
+    judgeAutoLabel.htmlFor = promptBuilderJudgeAuto.id;
+    judgeAutoLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeAutoLabel}`;
+    judgeAutoDiv.appendChild(promptBuilderJudgeAuto);
+    judgeAutoDiv.appendChild(judgeAutoLabel);
+
+    promptBuilderJudgeControls.appendChild(judgeModelLabel);
+    promptBuilderJudgeControls.appendChild(promptBuilderJudgeModelSelect);
+    promptBuilderJudgeControls.appendChild(judgeIncludeSelfDiv);
+    promptBuilderJudgeControls.appendChild(judgeAutoDiv);
+
     const promptBuilderRunExperimentError = document.createElement('p');
     promptBuilderRunExperimentError.style.color = 'red';
     promptBuilderRunExperimentError.id = `${paneID}-obj-${promptBuilderObject?.id}-run-error`;
@@ -1486,6 +1651,8 @@ export async function buildPromptBuilder(
               best_prompt: null,
               fastest_prompt: data?.fastest_prompt,
               fewest_tokens_prompt: data?.fewest_tokens_prompt,
+              judge_rank: null,
+              judge_best: null,
               output_length: data?.output_length,
               prompt_length: data?.prompt_length,
               run_time: data?.run_time,
@@ -1498,6 +1665,8 @@ export async function buildPromptBuilder(
               best_prompt: null,
               fastest_prompt: null,
               fewest_tokens_prompt: null,
+              judge_rank: null,
+              judge_best: null,
               output_length: null,
               prompt_length: null,
               run_time: null,
@@ -1513,6 +1682,13 @@ export async function buildPromptBuilder(
       promptBuilderRunExperimentTargetButton.disabled = false;
       promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
       experimentRunning = false;
+
+      // Auto-judge the run just rendered, when the user opted in and a judge
+      // model is selected. Silent: preconditions that don't hold (no judge
+      // model, < 2 judgeable responses) simply skip without a toast.
+      if (promptBuilderJudgeAuto.checked && promptBuilderJudgeModelSelect.value) {
+        await promptBuilderJudgeRun(promptExperimentTrackerRunID - 1, true);
+      }
     }
 
     const promptExperimentTrackerHeader = document.createElement('h2');
@@ -1527,6 +1703,103 @@ export async function buildPromptBuilder(
     }
     const promptExperimentContainer = document.createElement('div');
     promptExperimentContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet`;
+
+    // A disabled <button> does not fire hover events, so its own `title` never
+    // shows as a tooltip. Wrap it in a span that carries the hint and let the
+    // pointer fall through to the span while the button is disabled, so the
+    // "why is this disabled" tooltip appears on hover.
+    function wrapForHint(button: HTMLButtonElement): HTMLSpanElement {
+      const wrapper = document.createElement('span');
+      wrapper.classList.add('d-inline-block');
+      wrapper.appendChild(button);
+      return wrapper;
+    }
+    function setDisabledHint(
+      button: HTMLButtonElement,
+      wrapper: HTMLElement,
+      disabled: boolean,
+      hint: string
+    ): void {
+      button.disabled = disabled;
+      button.style.pointerEvents = disabled ? 'none' : '';
+      // Keep the hint on the button too (harmless, and read by tests); the
+      // wrapper is what actually surfaces it on hover while disabled.
+      button.title = disabled ? hint : '';
+      wrapper.title = disabled ? hint : '';
+    }
+
+    // Localised label for a judge confidence level.
+    function judgeConfidenceText(confidence?: string | null): string {
+      switch (confidence) {
+        case 'high':
+          return `${promptBuilderInterfaceText.promptBuilderJudgeConfidenceHigh}`;
+        case 'medium':
+          return `${promptBuilderInterfaceText.promptBuilderJudgeConfidenceMedium}`;
+        case 'low':
+          return `${promptBuilderInterfaceText.promptBuilderJudgeConfidenceLow}`;
+        default:
+          return `${promptBuilderInterfaceText.promptBuilderJudgeConfidenceUnknown}`;
+      }
+    }
+
+    // Build the judge verdict banner shown in a run's body.
+    function buildJudgeBanner(judge: JudgeSummary): HTMLElement {
+      const banner = document.createElement('div');
+      banner.classList.add('alert', 'pb-judge-banner', 'mt-2');
+      if (judge.status === 'ok') {
+        banner.classList.add('alert-info');
+        const winnerLine = document.createElement('p');
+        winnerLine.classList.add('mb-1');
+        const confidenceBadge = `<span class="badge bg-secondary ms-2">${promptBuilderInterfaceText.promptBuilderJudgeVerdictConfidence} ${escapeHtml(judgeConfidenceText(judge.confidence))}</span>`;
+        winnerLine.innerHTML = `<b>${promptBuilderInterfaceText.promptBuilderJudgeVerdictWinner}</b> ${escapeHtml(String(judge.best ?? ''))} ${confidenceBadge}`;
+        banner.appendChild(winnerLine);
+        if (Array.isArray(judge.ranking) && judge.ranking.length > 0) {
+          const rankingLine = document.createElement('p');
+          rankingLine.classList.add('mb-1', 'small');
+          rankingLine.innerHTML = `<b>${promptBuilderInterfaceText.promptBuilderJudgeVerdictRanking}</b> ${escapeHtml(judge.ranking.join(' > '))}`;
+          banner.appendChild(rankingLine);
+        }
+        const judgedByLine = document.createElement('p');
+        judgedByLine.classList.add('mb-1', 'small', 'text-muted');
+        judgedByLine.innerText = `${promptBuilderInterfaceText.promptBuilderJudgedBy}: ${judge.judgeModel}`;
+        banner.appendChild(judgedByLine);
+        if (judge.excludedSelf || judge.includedSelf) {
+          const selfNote = document.createElement('p');
+          selfNote.classList.add('mb-1', 'small', 'text-muted');
+          selfNote.innerText = judge.includedSelf
+            ? `${promptBuilderInterfaceText.promptBuilderJudgeSelfIncludedNote}`
+            : `${promptBuilderInterfaceText.promptBuilderJudgeSelfExcludedNote}`;
+          banner.appendChild(selfNote);
+        }
+        if (judge.reasoning && judge.reasoning.trim() !== '') {
+          const details = document.createElement('details');
+          const summary = document.createElement('summary');
+          summary.innerText = `${promptBuilderInterfaceText.promptBuilderJudgeShowReasoning}`;
+          details.appendChild(summary);
+          details.appendChild(renderMarkdown(String(judge.reasoning)));
+          banner.appendChild(details);
+        } else {
+          const noReason = document.createElement('p');
+          noReason.classList.add('mb-1', 'small', 'text-muted', 'fst-italic');
+          noReason.innerText = `${promptBuilderInterfaceText.promptBuilderJudgeReasoningUnavailable}`;
+          banner.appendChild(noReason);
+        }
+        const suggestion = document.createElement('p');
+        suggestion.classList.add('mb-0', 'small', 'text-muted');
+        suggestion.innerText = `${promptBuilderInterfaceText.promptBuilderJudgeSuggestionNote}`;
+        banner.appendChild(suggestion);
+      } else {
+        banner.classList.add('alert-warning');
+        const message = document.createElement('p');
+        message.classList.add('mb-0');
+        message.innerText =
+          judge.status === 'unparseable'
+            ? `${promptBuilderInterfaceText.promptBuilderJudgeUnparseable}`
+            : `${promptBuilderInterfaceText.promptBuilderJudgeErrorPrefix} ${judge.error ?? ''}`;
+        banner.appendChild(message);
+      }
+      return banner;
+    }
 
     // Add a prompt experiment tracker to the UI
     function createPromptExperimentTracker(
@@ -1580,6 +1853,40 @@ export async function buildPromptBuilder(
             deleteRunButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText.promptExperimentDeleteRunButton}</title><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>`;
             deleteRunButton.onclick = () => deleteExperimentRun(index);
             promptExperimentRunHeader.appendChild(deleteRunButton);
+            // Judge this run — LLM-as-a-Judge ranks the run's responses
+            const judgeRunButton = document.createElement('button');
+            judgeRunButton.type = 'button';
+            judgeRunButton.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-${index}-judge`;
+            judgeRunButton.classList.add('btn', 'btn-outline-secondary', 'btn-sm', 'pet-run-judge');
+            judgeRunButton.title = `${promptBuilderInterfaceText.promptBuilderJudgeRunButton}`;
+            judgeRunButton.setAttribute(
+              'aria-label',
+              `${promptBuilderInterfaceText.promptBuilderJudgeRunButton} ${index + 1}`
+            );
+            judgeRunButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText.promptBuilderJudgeRunButton}</title><path d="M480-80v-520q-18-7-31.5-19T427-640H320l120 280q0 50-41 85t-99 35q-58 0-99-35t-41-85l120-280h-40v-80h227q11-19 29-31.5t42-14.5v-38h80v38q24 2 42 14.5t29 31.5h227v80h-40l120 280q0 50-41 85t-99 35q-58 0-99-35t-41-85l120-280H533q-8 9-21.5 21T480-600v520h160v80H320v-80h160ZM212-440h176l-88-205-88 205Zm360 0h176l-88-205-88 205ZM480-680q17 0 28.5-11.5T520-720q0-17-11.5-28.5T480-760q-17 0-28.5 11.5T440-720q0 17 11.5 28.5T480-680Z"/></svg>`;
+            judgeRunButton.onclick = () => promptBuilderJudgeRun(index);
+            // Judging compares responses, so it needs at least two successful
+            // ones in the run. When it can't (e.g. only one model was included),
+            // disable it with a hint on hover rather than fail silently on click.
+            const judgeFailedText = promptBuilderInterfaceText?.promptBuilderModelInferenceFailed as string;
+            const judgeableResponses = Object.keys(promptExperimentTrackerRunResult)
+              .filter((key) => !TRACKER_META_KEYS.includes(key))
+              .map((key) => promptExperimentTrackerRunResult[key] as ModelExperimentData)
+              .filter(
+                (modelData) =>
+                  modelData &&
+                  typeof modelData.response === 'string' &&
+                  modelData.response !== '' &&
+                  modelData.response !== judgeFailedText
+              ).length;
+            const judgeRunButtonWrapper = wrapForHint(judgeRunButton);
+            setDisabledHint(
+              judgeRunButton,
+              judgeRunButtonWrapper,
+              experimentRunning || judgeableResponses < 2,
+              judgeableResponses < 2 ? `${promptBuilderInterfaceText?.promptBuilderJudgeNeedsTwoResponses}` : ''
+            );
+            promptExperimentRunHeader.appendChild(judgeRunButtonWrapper);
           }
           const promptExperimentRunContainerItemBody = document.createElement('div');
           promptExperimentRunContainerItemBody.className = 'accordion-body';
@@ -1611,6 +1918,12 @@ export async function buildPromptBuilder(
             });
             variablesLine.appendChild(variablesList);
             promptExperimentRunContainerItemBody.appendChild(variablesLine);
+          }
+          // Judge verdict banner, when this run has been judged
+          if (promptExperimentTrackerRunResult.judge) {
+            promptExperimentRunContainerItemBody.appendChild(
+              buildJudgeBanner(promptExperimentTrackerRunResult.judge as JudgeSummary)
+            );
           }
           (promptExperimentRunContainer.lastChild as HTMLElement)!.lastChild!.appendChild(promptExperimentRunContainerItemBody);
           // Iterate over the models used in the run
@@ -1648,6 +1961,10 @@ export async function buildPromptBuilder(
               }
               if (modelData?.fewest_tokens_prompt) {
                 promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderFewestTokensPrompt}</title><path d="M480-83 240-323l56-56 184 183 184-183 56 56L480-83Zm0-238L240-561l56-56 184 183 184-183 56 56-240 240Zm0-238L240-799l56-56 184 183 184-183 56 56-240 240Z"/></svg> `;
+              }
+              // Judge's best response — a fourth icon, peer to the three above
+              if (modelData?.judge_best) {
+                promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg class="judgeBest" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderJudgeBestPrompt}</title><path d="M280-120v-80h160v-124q-49-11-87.5-41.5T296-442q-75-9-125.5-65.5T120-640v-40q0-33 23.5-56.5T200-760h80v-80h400v80h80q33 0 56.5 23.5T840-680v40q0 76-50.5 132.5T664-442q-18 56-56.5 86.5T520-324v124h160v80H280Zm0-408v-152h-80v40q0 38 22 68.5t58 43.5Zm200 128q50 0 85-35t35-85v-240H360v240q0 50 35 85t85 35Zm200-128q36-13 58-43.5t22-68.5v-40h-80v152Zm-200-52Z"/></svg> `;
               }
               promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `${promptBuilderInterfaceText.promptExperimentModel} ${promptExperimentRunModelKey}`;
               // Create the accordion body container
@@ -1714,6 +2031,13 @@ export async function buildPromptBuilder(
                   promptExperimentContainerModelContainerAccordionItemBodyContainerBodyLine.innerHTML = `<b>${promptBuilderInterfaceText.promptExperimentModelOutputLength}</b> ${escapeHtml(promptExperimentRunModelKeyValue)}`;
                 } else if (promptExperimentRunModelKeyAttribute === 'run_time') {
                   promptExperimentContainerModelContainerAccordionItemBodyContainerBodyLine.innerHTML = `<b>${promptBuilderInterfaceText.promptExperimentModelRunTime}</b> ${escapeHtml(promptExperimentRunModelKeyValue)}`;
+                } else if (promptExperimentRunModelKeyAttribute === 'judge_rank') {
+                  // Skip when this run was never judged; the winner also gets a header icon.
+                  if (promptExperimentRunModelKeyValue == null) continue;
+                  promptExperimentContainerModelContainerAccordionItemBodyContainerBodyLine.innerHTML = `<b>${promptBuilderInterfaceText.promptBuilderJudgeRankLabel}</b> #${escapeHtml(promptExperimentRunModelKeyValue)}`;
+                } else if (promptExperimentRunModelKeyAttribute === 'judge_best') {
+                  // Rendered as the header icon, not a body line.
+                  continue;
                 } else if (promptExperimentRunModelKeyAttribute === 'options') {
                   const optionsVal = promptExperimentRunModelKeyValue as Record<string, unknown> | null;
                   if (optionsVal?.API_KEY !== undefined) {
@@ -1796,13 +2120,149 @@ export async function buildPromptBuilder(
       renderAllExperimentRuns();
     }
 
-    function renderAllExperimentRuns(): void {
+    function renderAllExperimentRuns(preserveOpen = false): void {
       const prommpExperimentTargetContainer = document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-pet`);
+      // Snapshot which accordions (run-level and nested model bodies) are open
+      // so a re-render can restore them — Bootstrap collapse state lives in the
+      // DOM classes, which innerHTML='' would otherwise wipe.
+      const openBodyIds =
+        preserveOpen && prommpExperimentTargetContainer
+          ? Array.from(prommpExperimentTargetContainer.querySelectorAll('.accordion-collapse.show')).map((el) => el.id)
+          : [];
       if (prommpExperimentTargetContainer) prommpExperimentTargetContainer.innerHTML = '';
       // createPromptExperimentTracker only renders the entry whose index equals
       // the run counter and then increments it, so start from 0 to render all
       promptExperimentTrackerRunID = 0;
       createPromptExperimentTracker(promptExperimentTracker);
+      if (openBodyIds.length > 0 && prommpExperimentTargetContainer) {
+        const triggers = Array.from(prommpExperimentTargetContainer.querySelectorAll('[data-bs-target]'));
+        openBodyIds.forEach((bodyId) => {
+          const body = document.getElementById(bodyId);
+          if (body) body.classList.add('show');
+          const trigger = triggers.find((el) => el.getAttribute('data-bs-target') === `#${bodyId}`);
+          if (trigger) {
+            trigger.classList.remove('collapsed');
+            trigger.setAttribute('aria-expanded', 'true');
+          }
+        });
+      }
+    }
+
+    // Resolve the SCR options for the judge call: its API key (when the judge
+    // model requires one) and temperature 0 for reproducibility when supported.
+    function resolveJudgeOptions(judgeMeta?: AvailableLLM): Record<string, unknown> {
+      const judgeOptions: Record<string, unknown> = {};
+      const options = judgeMeta?.options;
+      if (!options) return judgeOptions;
+      if (options.API_KEY) {
+        const apiKeys = promptBuilderObject?.API_KEYS as Record<string, string> | undefined;
+        judgeOptions.API_KEY = apiKeys?.[options.API_KEY.default as string] ?? '';
+      }
+      if (options.temperature) judgeOptions.temperature = 0;
+      return judgeOptions;
+    }
+
+    // Judge a run with the selected judge model (LLM-as-a-Judge). Writes the
+    // per-model ranks + a run-level summary onto the tracker, pre-ticks the
+    // winner's Best Response when the user hasn't chosen one, and re-renders.
+    // `auto` suppresses the precondition toasts (used by auto-judge-on-finish).
+    async function promptBuilderJudgeRun(index: number, auto = false): Promise<void> {
+      if (experimentRunning) return;
+      const trackerEntry = promptExperimentTracker[index];
+      if (!trackerEntry) return;
+      const judgeModel = promptBuilderJudgeModelSelect.value;
+      if (!judgeModel) {
+        if (!auto) showToast(`${promptBuilderInterfaceText?.promptBuilderJudgeSelectModelToast}`);
+        return;
+      }
+      const includeSelf = promptBuilderJudgeIncludeSelf.checked;
+      const modelKeys = Object.keys(trackerEntry).filter((key) => !TRACKER_META_KEYS.includes(key));
+      const failedText = promptBuilderInterfaceText?.promptBuilderModelInferenceFailed as string;
+      const candidates = modelKeys
+        .map((modelName) => ({
+          modelName,
+          response: String((trackerEntry[modelName] as ModelExperimentData)?.response ?? ''),
+        }))
+        .filter((candidate) => candidate.response !== '' && candidate.response !== failedText);
+      const judgeableCount = candidates.filter(
+        (candidate) => includeSelf || candidate.modelName !== judgeModel
+      ).length;
+      if (judgeableCount < 2) {
+        if (!auto) showToast(`${promptBuilderInterfaceText?.promptBuilderJudgeNotEnoughCandidates}`);
+        return;
+      }
+
+      // In-flight state on this run's Judge button.
+      const judgeButton = document.getElementById(
+        `${paneID}-obj-${promptBuilderObject?.id}-pet-${index}-judge`
+      ) as HTMLButtonElement | null;
+      if (judgeButton) {
+        judgeButton.disabled = true;
+        judgeButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>`;
+      }
+
+      const runVariables = Array.isArray(trackerEntry.variables) ? trackerEntry.variables : [];
+      const judgeMeta = promptBuilderAvailableLLMs.find((llm) => llm.name === judgeModel);
+      const verdict = await judgeRun({
+        scrEndpoint: promptBuilderObject.SCREndpoint as string,
+        deploymentType: (promptBuilderObject.deploymentType as string) ?? 'k8s',
+        judgeModel,
+        judgeOptions: resolveJudgeOptions(judgeMeta),
+        systemPrompt: substitutePromptVariables(trackerEntry.systemPrompt, runVariables),
+        userPrompt: substitutePromptVariables(trackerEntry.userPrompt, runVariables),
+        candidates,
+        includeSelf,
+      });
+
+      const judgeSelfPresent = modelKeys.includes(judgeModel);
+      if (verdict.status === 'ok' && verdict.ranking && verdict.best) {
+        // Clear any stale ranks from a previous judging, then apply the new ones.
+        modelKeys.forEach((modelName) => {
+          const modelData = trackerEntry[modelName] as ModelExperimentData;
+          if (modelData) {
+            modelData.judge_rank = null;
+            modelData.judge_best = null;
+          }
+        });
+        verdict.ranking.forEach((modelName, rankIndex) => {
+          const modelData = trackerEntry[modelName] as ModelExperimentData;
+          if (modelData) {
+            modelData.judge_rank = rankIndex + 1;
+            modelData.judge_best = rankIndex === 0;
+          }
+        });
+        trackerEntry.judge = {
+          judgeModel,
+          status: 'ok',
+          best: verdict.best,
+          ranking: verdict.ranking,
+          confidence: verdict.confidence ?? 'unknown',
+          reasoning: verdict.reasoning ?? '',
+          excludedSelf: !includeSelf && judgeSelfPresent,
+          includedSelf: includeSelf && judgeSelfPresent,
+          includeSelf,
+          autoJudge: promptBuilderJudgeAuto.checked,
+          ranAt: new Date().toISOString(),
+        };
+        // The judge is advisory: it sets judge_rank and the banner, but the
+        // Best Response selection is left entirely to the user's checkboxes.
+      } else {
+        trackerEntry.judge = {
+          judgeModel,
+          status: verdict.status === 'unparseable' ? 'unparseable' : 'error',
+          error:
+            verdict.error === 'not-enough-candidates'
+              ? `${promptBuilderInterfaceText?.promptBuilderJudgeNotEnoughCandidates}`
+              : verdict.error ?? null,
+          raw: verdict.raw ?? null,
+          includeSelf,
+          autoJudge: promptBuilderJudgeAuto.checked,
+          ranAt: new Date().toISOString(),
+        };
+      }
+      // Preserve which run/model accordions are open so a judged run the user
+      // had expanded doesn't collapse under them on the re-render.
+      renderAllExperimentRuns(true);
     }
 
     // Restore an experiment run into the workbench: prompts, variables, LLM
@@ -1821,6 +2281,20 @@ export async function buildPromptBuilder(
       if (userPromptInput) userPromptInput.value = trackerEntry.userPrompt ?? '';
       setPromptVariables(Array.isArray(trackerEntry.variables) ? trackerEntry.variables : []);
       applyManifestConfig(trackerEntry.manifest);
+      // Restore the judge configuration this run was judged with, if any: the
+      // judge model (when still available), the include-self and auto-judge
+      // toggles. A run that was never judged leaves the controls untouched.
+      if (trackerEntry.judge) {
+        const judgeConfig = trackerEntry.judge;
+        if (
+          judgeConfig.judgeModel &&
+          Array.from(promptBuilderJudgeModelSelect.options).some((option) => option.value === judgeConfig.judgeModel)
+        ) {
+          promptBuilderJudgeModelSelect.value = judgeConfig.judgeModel;
+        }
+        promptBuilderJudgeIncludeSelf.checked = Boolean(judgeConfig.includeSelf);
+        promptBuilderJudgeAuto.checked = Boolean(judgeConfig.autoJudge);
+      }
       // Reselect the run's LLMs and restore their option values
       const runModels = Object.keys(trackerEntry).filter((key) => !TRACKER_META_KEYS.includes(key));
       promptBuilderAvailableLLMs.forEach((availableLLM, llmIndex) => {
@@ -1900,6 +2374,17 @@ export async function buildPromptBuilder(
                 best_prompt: null,
                 fastest_prompt: null,
                 fewest_tokens_prompt: null,
+                judge_rank: null,
+                judge_best: null,
+                // Only a completed ('ok') judgment is persisted. The reasoning
+                // and the judge config (model, include-self, auto-judge) are
+                // stored so loading the run restores the whole judge context.
+                judge_model: entry.judge?.status === 'ok' ? entry.judge.judgeModel : null,
+                judge_confidence: entry.judge?.status === 'ok' ? (entry.judge.confidence ?? null) : null,
+                judge_reasoning: entry.judge?.status === 'ok' ? (entry.judge.reasoning ?? null) : null,
+                judge_include_self:
+                  entry.judge?.status === 'ok' ? (entry.judge.includeSelf ? 1 : 0) : null,
+                judge_auto: entry.judge?.status === 'ok' ? (entry.judge.autoJudge ? 1 : 0) : null,
               });
             }
 
@@ -1914,9 +2399,14 @@ export async function buildPromptBuilder(
               run_time: modelEntry.run_time,
               prompt_length: modelEntry.prompt_length,
               output_length: modelEntry.output_length,
-              best_prompt: modelEntry.best_prompt,
+              // Coerce the flags to numeric 1/0/null so the SAS reporting layer
+              // (numeric columns) reads them consistently whether they were set
+              // by a checkbox (number) or programmatically (boolean).
+              best_prompt: modelEntry.best_prompt == null ? null : (modelEntry.best_prompt ? 1 : 0),
               fastest_prompt: modelEntry?.fastest_prompt,
               fewest_tokens_prompt: modelEntry?.fewest_tokens_prompt,
+              judge_rank: modelEntry?.judge_rank ?? null,
+              judge_best: modelEntry?.judge_best == null ? null : (modelEntry.judge_best ? 1 : 0),
             });
           });
 
@@ -1948,6 +2438,9 @@ export async function buildPromptBuilder(
       await promptBuilderSaveExperiments();
       await promptBulderCreateBestPromptModel();
     };
+    // Wrapped so the "select a best response first" hint shows on hover even
+    // while the button is disabled (a disabled button fires no hover events).
+    const promptExperimentCreateModelButtonWrapper = wrapForHint(promptExperimentCreateModelButton);
     // Disabled (with a hint) until a run has a best response selected
     function updateManifestButtonState(): void {
       const hasBestPrompt = promptExperimentTracker.some((trackerEntry) =>
@@ -1955,10 +2448,12 @@ export async function buildPromptBuilder(
           (key) => !TRACKER_META_KEYS.includes(key) && (trackerEntry[key] as ModelExperimentData)?.best_prompt
         )
       );
-      promptExperimentCreateModelButton.disabled = !hasBestPrompt;
-      promptExperimentCreateModelButton.title = hasBestPrompt
-        ? ''
-        : `${promptBuilderInterfaceText?.promptBuilderCreateModelNoBestPrompt}`;
+      setDisabledHint(
+        promptExperimentCreateModelButton,
+        promptExperimentCreateModelButtonWrapper,
+        !hasBestPrompt,
+        `${promptBuilderInterfaceText?.promptBuilderCreateModelNoBestPrompt}`
+      );
     }
     updateManifestButtonState();
     // Manifest section: configure how the best prompt becomes a model, with
@@ -2779,6 +3274,19 @@ ${scoreCodeReturn}`;
     workbenchSection.appendChild(promptBuilderRunExperimentError);
     promptBuilderContainer.appendChild(workbenchSection);
 
+    // Judging: its own section between running and the tracker. Configuration
+    // for how responses are judged lives here (future council/jury options fold
+    // in here too); the per-run verdicts and Judge buttons live in the tracker.
+    const judgeSection = createPageSection();
+    const promptBuilderJudgeHeader = document.createElement('h2');
+    promptBuilderJudgeHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSectionHeading}`;
+    const promptBuilderJudgeDescription = document.createElement('p');
+    promptBuilderJudgeDescription.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSectionDescription}`;
+    judgeSection.appendChild(promptBuilderJudgeHeader);
+    judgeSection.appendChild(promptBuilderJudgeDescription);
+    judgeSection.appendChild(promptBuilderJudgeControls);
+    promptBuilderContainer.appendChild(judgeSection);
+
     const trackerSection = createPageSection();
     trackerSection.appendChild(promptExperimentTrackerHeader);
     trackerSection.appendChild(promptExperimentEmptyHint);
@@ -2794,7 +3302,7 @@ ${scoreCodeReturn}`;
     manifestSection.appendChild(promptExperimentIntegratedCallDiv);
     manifestSection.appendChild(promptExperimentManifestOptions);
     manifestSection.appendChild(document.createElement('br'));
-    manifestSection.appendChild(promptExperimentCreateModelButton);
+    manifestSection.appendChild(promptExperimentCreateModelButtonWrapper);
     manifestSection.appendChild(document.createElement('br'));
     manifestSection.appendChild(document.createElement('br'));
     manifestSection.appendChild(promptExperimentResultContainer);

@@ -172,7 +172,7 @@ run; quit;
 libname _gpe_mcc json;
 
 data &_gpe_llm_pte.;
-    length runId 8. systemPrompt userPrompt $32767. model $100. options $1000. response $32767. run_time prompt_length output_length best_prompt 8.;
+    length runId 8. systemPrompt userPrompt $32767. model $100. options $1000. response $32767. run_time prompt_length output_length best_prompt judge_rank judge_best 8. judge_model $100. judge_confidence $16.;
     set _gpe_mcc.root(drop=ordinal_root);
 run;
 
