@@ -150,6 +150,9 @@
     "promptBuilderCouncilBallots": "Stimmen:",
     "promptBuilderCouncilBallotFailed": "kein Urteil",
     "promptBuilderCouncilFooter": "Bewertet von einem Gremium aus {n} Modellen (Borda).",
-    "promptBuilderCouncilDegraded": "Das Gremium konnte zu keinem Urteil kommen — weniger als zwei Modelle lieferten eine verwertbare Rangfolge."
+    "promptBuilderCouncilDegraded": "Das Gremium konnte zu keinem Urteil kommen — weniger als zwei Modelle lieferten eine verwertbare Rangfolge.",
+    "promptBuilderJudgeCouncilToggleLabel": "Ein Bewertungsgremium einberufen",
+    "promptBuilderJudgeCouncilMembersLabel": "Gremiumsmitglieder",
+    "promptBuilderCouncilRankTied": "(gleichauf)"
   }
 }

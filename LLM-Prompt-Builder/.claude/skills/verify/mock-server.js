@@ -34,7 +34,7 @@ function modelRow(runId, response, model = 'demo_llm', options = '{temperature:0
 const trackerRows = [
   headerRow(1, 'Sys 1', 'User 1'), modelRow(1, 'Response one'),
   headerRow(2, 'Sys 2', 'User 2'), modelRow(2, 'Response two'),
-  headerRow(5, 'Sys 3', 'User 3'), modelRow(5, 'Response three', 'demo_llm', '{temperature:0.9}'),
+  headerRow(5, 'Sys 3', 'User 3'), modelRow(5, 'Response three', 'demo_llm', '{temperature:0.9,reasoning_effort:medium}'),
   modelRow(5, 'Response other', 'other_llm'),
 ];
 // Run 2 carries a selected best response so prompt selection auto-loads it.

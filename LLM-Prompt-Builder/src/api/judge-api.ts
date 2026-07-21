@@ -79,6 +79,9 @@ export interface CouncilResult {
   confidence: JudgeConfidence;
   /** Borda score per candidate model (kept for display/debug). */
   scores: Record<string, number>;
+  /** Competition rank per candidate model: equal scores share a rank, so a
+   *  two-way top tie is 1, 1, 3, … (the ranks themselves show the tie). */
+  ranks: Record<string, number>;
 }
 
 /**
@@ -135,6 +138,13 @@ export function aggregateBallots(
   else if (firstChoiceForWinner > total / 2) confidence = 'medium';
   else confidence = 'low';
 
+  // Competition ranking from the scores: models with an equal score share a
+  // rank, so a top tie reads as 1, 1, 3, … rather than a misleading 1, 2, 3.
+  const ranks: Record<string, number> = {};
+  candidateModels.forEach((model) => {
+    ranks[model] = 1 + candidateModels.filter((other) => scores[other] > scores[model]).length;
+  });
+
   return {
     method: 'borda',
     ranking,
@@ -144,6 +154,7 @@ export function aggregateBallots(
     agreement: { firstChoiceForWinner, total },
     confidence,
     scores,
+    ranks,
   };
 }
 

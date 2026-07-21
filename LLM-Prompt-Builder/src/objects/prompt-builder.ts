@@ -279,6 +279,30 @@ function legacyCopyToClipboard(text: string): void {
   document.body.removeChild(textarea);
 }
 
+/**
+ * Parse an SCR options string (`{key:value,key:value}`, unquoted) back into an
+ * object. Values are coerced to number/boolean when they look like one, else
+ * kept as strings — so non-numeric options (`reasoning_effort:medium`,
+ * `API_KEY:OpenAI`, `normalize:true`) round-trip without breaking parsing.
+ */
+function parseScrOptionsString(optionsStr: string | null | undefined): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (!optionsStr) return result;
+  const inner = String(optionsStr).trim().replace(/^\{/, '').replace(/\}$/, '');
+  if (inner.trim() === '') return result;
+  inner.split(',').forEach((pair) => {
+    const sep = pair.indexOf(':');
+    if (sep === -1) return;
+    const key = pair.slice(0, sep).trim();
+    if (!key) return;
+    const rawValue = pair.slice(sep + 1).trim().replace(/^["']|["']$/g, '');
+    if (/^-?\d+(\.\d+)?$/.test(rawValue)) result[key] = Number(rawValue);
+    else if (rawValue === 'true' || rawValue === 'false') result[key] = rawValue === 'true';
+    else result[key] = rawValue;
+  });
+  return result;
+}
+
 export async function buildPromptBuilder(
   definition: PromptBuilderConfig,
   paneID: string,
@@ -418,13 +442,7 @@ export async function buildPromptBuilder(
                   output_length: value?.output_length,
                   prompt_length: value?.prompt_length,
                   run_time: value?.run_time,
-                  options: JSON.parse(
-                    value?.options
-                      .replace(/(\w+):/g, '"$1":')
-                      .replace(/"API_KEY":"?([^",}]+)"?/g, function (_match: string, p1: string) {
-                        return `"API_KEY":"${p1}"`;
-                      })
-                  ),
+                  options: parseScrOptionsString(value?.options),
                   response: value?.response,
                 };
               }
@@ -1463,24 +1481,67 @@ export async function buildPromptBuilder(
     updateRunExperimentsButtonState();
 
     // --- LLM-as-a-Judge controls -------------------------------------------
-    // A judge is just another SCR LLM call. The user picks a judge model
-    // (optionally defaulted per deployment via config.judgeModel), can include
-    // the judge's own response in the ranking, and can have judging fire
-    // automatically when a run finishes.
+    // Progressive disclosure: pick one judge model (single-judge, as in Phase 1).
+    // Once a judge is chosen a "convene a council" question appears; enabling it
+    // reveals a vertical list of models to form the panel. One judge = single;
+    // a panel of two or more = a council.
     const promptBuilderJudgeControls = document.createElement('div');
-    promptBuilderJudgeControls.classList.add(
-      'pb-judge-controls', 'd-flex', 'flex-wrap', 'align-items-center', 'gap-3', 'mt-2'
-    );
+    promptBuilderJudgeControls.classList.add('pb-judge-controls', 'd-flex', 'flex-column', 'gap-2', 'mt-2');
 
+    // Row 1 — the single judge model.
+    const judgeModelRow = document.createElement('div');
+    judgeModelRow.classList.add('d-flex', 'align-items-center', 'gap-2', 'flex-wrap');
     const judgeModelLabel = document.createElement('label');
     judgeModelLabel.classList.add('form-label', 'mb-0');
-    judgeModelLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgePanelLabel}`;
+    judgeModelLabel.htmlFor = `${paneID}-obj-${promptBuilderObject?.id}-judge-model`;
+    judgeModelLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeModelLabel}`;
+    const promptBuilderJudgeModelSelect = document.createElement('select');
+    promptBuilderJudgeModelSelect.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-model`;
+    promptBuilderJudgeModelSelect.classList.add('form-select', 'form-select-sm', 'pb-judge-model');
+    promptBuilderJudgeModelSelect.style.width = 'auto';
+    const judgePlaceholderOption = document.createElement('option');
+    judgePlaceholderOption.value = '';
+    judgePlaceholderOption.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSelectPlaceholder}`;
+    promptBuilderJudgeModelSelect.appendChild(judgePlaceholderOption);
+    promptBuilderAvailableLLMs.forEach((availableLLM) => {
+      const judgeOption = document.createElement('option');
+      judgeOption.value = availableLLM.name;
+      judgeOption.innerText = availableLLM.name;
+      promptBuilderJudgeModelSelect.appendChild(judgeOption);
+    });
+    const configuredJudgeModel = String(promptBuilderObject?.judgeModel ?? '');
+    if (configuredJudgeModel && promptBuilderAvailableLLMs.some((llm) => llm.name === configuredJudgeModel)) {
+      promptBuilderJudgeModelSelect.value = configuredJudgeModel;
+    }
+    promptBuilderJudgeModelSelect.addEventListener('change', updateJudgeControlsVisibility);
+    judgeModelRow.appendChild(judgeModelLabel);
+    judgeModelRow.appendChild(promptBuilderJudgeModelSelect);
 
-    // The judge picker is a checkbox panel: one judge ticked = single-judge
-    // (Phase 1); two or more = a council. No separate mode switch.
+    // Row 2 — the council question (hidden until a judge is chosen).
+    const judgeCouncilToggleDiv = document.createElement('div');
+    judgeCouncilToggleDiv.classList.add('form-check', 'mb-0', 'd-none');
+    const promptBuilderJudgeCouncilToggle = document.createElement('input');
+    promptBuilderJudgeCouncilToggle.type = 'checkbox';
+    promptBuilderJudgeCouncilToggle.classList.add('form-check-input');
+    promptBuilderJudgeCouncilToggle.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-council-toggle`;
+    const judgeCouncilToggleLabel = document.createElement('label');
+    judgeCouncilToggleLabel.classList.add('form-check-label');
+    judgeCouncilToggleLabel.htmlFor = promptBuilderJudgeCouncilToggle.id;
+    judgeCouncilToggleLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeCouncilToggleLabel}`;
+    judgeCouncilToggleDiv.appendChild(promptBuilderJudgeCouncilToggle);
+    judgeCouncilToggleDiv.appendChild(judgeCouncilToggleLabel);
+
+    // Row 3 — the council members (hidden unless the council question is on),
+    // stacked vertically like the model selector above.
+    const judgeCouncilSection = document.createElement('div');
+    judgeCouncilSection.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-council-section`;
+    judgeCouncilSection.classList.add('ms-4', 'd-none', 'd-flex', 'flex-column', 'gap-1');
+    const judgeCouncilMembersLabel = document.createElement('label');
+    judgeCouncilMembersLabel.classList.add('form-label', 'mb-0');
+    judgeCouncilMembersLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeCouncilMembersLabel}`;
     const promptBuilderJudgePanel = document.createElement('div');
     promptBuilderJudgePanel.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-panel`;
-    promptBuilderJudgePanel.classList.add('pb-judge-panel', 'd-flex', 'flex-wrap', 'gap-2');
+    promptBuilderJudgePanel.classList.add('pb-judge-panel', 'd-flex', 'flex-column', 'gap-1');
     promptBuilderAvailableLLMs.forEach((availableLLM, index) => {
       const judgeItem = document.createElement('div');
       judgeItem.classList.add('form-check', 'mb-0');
@@ -1498,27 +1559,12 @@ export async function buildPromptBuilder(
       judgeItem.appendChild(judgeItemLabel);
       promptBuilderJudgePanel.appendChild(judgeItem);
     });
-    // Seed the deployment default when it names a currently available LLM.
-    const configuredJudgeModel = String(promptBuilderObject?.judgeModel ?? '');
-    if (configuredJudgeModel) {
-      const seed = Array.from(promptBuilderJudgePanel.querySelectorAll('.pb-judge-panel-item')).find(
-        (el) => (el as HTMLInputElement).value === configuredJudgeModel
-      ) as HTMLInputElement | undefined;
-      if (seed) seed.checked = true;
-    }
-
-    // The judge models currently ticked in the panel.
-    function getSelectedJudgeModels(): string[] {
-      return Array.from(promptBuilderJudgePanel.querySelectorAll('.pb-judge-panel-item'))
-        .filter((el) => (el as HTMLInputElement).checked)
-        .map((el) => (el as HTMLInputElement).value);
-    }
 
     // Fill the panel from the LLMs currently selected for the experiment.
     const judgeUseModelsButton = document.createElement('button');
     judgeUseModelsButton.type = 'button';
     judgeUseModelsButton.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-use-models`;
-    judgeUseModelsButton.classList.add('btn', 'btn-outline-secondary', 'btn-sm');
+    judgeUseModelsButton.classList.add('btn', 'btn-outline-secondary', 'btn-sm', 'align-self-start');
     judgeUseModelsButton.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeUseModelsButton}`;
     judgeUseModelsButton.onclick = () => {
       promptBuilderAvailableLLMs.forEach((_availableLLM, index) => {
@@ -1531,18 +1577,29 @@ export async function buildPromptBuilder(
       updateJudgePanelHint();
     };
 
-    // Inline guidance: single vs council, plus odd/too-many nudges.
+    // Inline guidance for the panel (odd / diverse / too-many nudges).
     const judgePanelHint = document.createElement('small');
     judgePanelHint.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-panel-hint`;
-    judgePanelHint.classList.add('text-muted', 'w-100');
+    judgePanelHint.classList.add('text-muted');
+    judgeCouncilSection.appendChild(judgeCouncilMembersLabel);
+    judgeCouncilSection.appendChild(promptBuilderJudgePanel);
+    judgeCouncilSection.appendChild(judgeUseModelsButton);
+    judgeCouncilSection.appendChild(judgePanelHint);
+
+    // The judges currently in effect: the panel when a council is on, else the
+    // single dropdown selection.
+    function getSelectedJudgeModels(): string[] {
+      if (promptBuilderJudgeCouncilToggle.checked) {
+        return Array.from(promptBuilderJudgePanel.querySelectorAll('.pb-judge-panel-item'))
+          .filter((el) => (el as HTMLInputElement).checked)
+          .map((el) => (el as HTMLInputElement).value);
+      }
+      return promptBuilderJudgeModelSelect.value ? [promptBuilderJudgeModelSelect.value] : [];
+    }
     function updateJudgePanelHint(): void {
       const count = getSelectedJudgeModels().length;
-      if (count === 0) {
+      if (count < 2) {
         judgePanelHint.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgePanelHintNone}`;
-        return;
-      }
-      if (count === 1) {
-        judgePanelHint.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgePanelHintSingle}`;
         return;
       }
       const parts = [`${count} ${promptBuilderInterfaceText?.promptBuilderJudgePanelHintCouncil}`];
@@ -1550,6 +1607,31 @@ export async function buildPromptBuilder(
       if (count > 5) parts.push(`${promptBuilderInterfaceText?.promptBuilderJudgePanelHintTooMany}`);
       judgePanelHint.innerText = parts.join(' ');
     }
+    // Show the council question only once a judge is chosen; show the member
+    // list only when the council question is on; the dropdown is the single
+    // judge and is disabled while a council governs the selection.
+    function updateJudgeControlsVisibility(): void {
+      const hasJudge = Boolean(promptBuilderJudgeModelSelect.value);
+      judgeCouncilToggleDiv.classList.toggle('d-none', !hasJudge);
+      if (!hasJudge) promptBuilderJudgeCouncilToggle.checked = false;
+      const councilOn = hasJudge && promptBuilderJudgeCouncilToggle.checked;
+      judgeCouncilSection.classList.toggle('d-none', !councilOn);
+      promptBuilderJudgeModelSelect.disabled = councilOn;
+      updateJudgePanelHint();
+    }
+    // Turning the council on seeds the panel with the chosen single judge.
+    promptBuilderJudgeCouncilToggle.addEventListener('change', () => {
+      if (promptBuilderJudgeCouncilToggle.checked) {
+        const primary = promptBuilderJudgeModelSelect.value;
+        promptBuilderAvailableLLMs.forEach((availableLLM, index) => {
+          const panelCheckbox = document.getElementById(
+            `${paneID}-obj-${promptBuilderObject?.id}-judge-panel-${index}`
+          ) as HTMLInputElement | null;
+          if (panelCheckbox && availableLLM.name === primary) panelCheckbox.checked = true;
+        });
+      }
+      updateJudgeControlsVisibility();
+    });
 
     const judgeIncludeSelfDiv = document.createElement('div');
     judgeIncludeSelfDiv.classList.add('form-check', 'mb-0');
@@ -1592,13 +1674,12 @@ export async function buildPromptBuilder(
     judgeAutoDiv.appendChild(promptBuilderJudgeAuto);
     judgeAutoDiv.appendChild(judgeAutoLabel);
 
-    promptBuilderJudgeControls.appendChild(judgeModelLabel);
-    promptBuilderJudgeControls.appendChild(promptBuilderJudgePanel);
-    promptBuilderJudgeControls.appendChild(judgeUseModelsButton);
+    promptBuilderJudgeControls.appendChild(judgeModelRow);
+    promptBuilderJudgeControls.appendChild(judgeCouncilToggleDiv);
+    promptBuilderJudgeControls.appendChild(judgeCouncilSection);
     promptBuilderJudgeControls.appendChild(judgeIncludeSelfDiv);
     promptBuilderJudgeControls.appendChild(judgeAutoDiv);
-    promptBuilderJudgeControls.appendChild(judgePanelHint);
-    updateJudgePanelHint();
+    updateJudgeControlsVisibility();
 
     const promptBuilderRunExperimentError = document.createElement('p');
     promptBuilderRunExperimentError.style.color = 'red';
@@ -2233,7 +2314,17 @@ export async function buildPromptBuilder(
                 } else if (promptExperimentRunModelKeyAttribute === 'judge_rank') {
                   // Skip when this run was never judged; the winner also gets a header icon.
                   if (promptExperimentRunModelKeyValue == null) continue;
-                  promptExperimentContainerModelContainerAccordionItemBodyContainerBodyLine.innerHTML = `<b>${promptBuilderInterfaceText.promptBuilderJudgeRankLabel}</b> #${escapeHtml(promptExperimentRunModelKeyValue)}`;
+                  // On a council tie, the tied-top models share the rank — flag
+                  // them so the shared number reads as a tie, not an ordering.
+                  const runJudge = promptExperimentTrackerRunResult.judge as JudgeSummary | null | undefined;
+                  const tiedNote =
+                    runJudge?.mode === 'council' &&
+                    runJudge.tie &&
+                    Array.isArray(runJudge.tiedBest) &&
+                    runJudge.tiedBest.includes(promptExperimentRunModelKey)
+                      ? ` ${promptBuilderInterfaceText.promptBuilderCouncilRankTied}`
+                      : '';
+                  promptExperimentContainerModelContainerAccordionItemBodyContainerBodyLine.innerHTML = `<b>${promptBuilderInterfaceText.promptBuilderJudgeRankLabel}</b> #${escapeHtml(promptExperimentRunModelKeyValue)}${escapeHtml(tiedNote)}`;
                 } else if (promptExperimentRunModelKeyAttribute === 'judge_best') {
                   // Rendered as the header icon, not a body line.
                   continue;
@@ -2382,6 +2473,25 @@ export async function buildPromptBuilder(
       });
     }
 
+    // Council ranks come from the Borda scores (competition ranking): equal
+    // scores share a rank, so a top tie shows as 1, 1, 3, … The winner icon is
+    // set only when there is a single winner (no tie).
+    function applyCouncilRanks(
+      trackerEntry: ExperimentTrackerEntry,
+      ranks: Record<string, number>,
+      best: string | null
+    ): void {
+      Object.keys(trackerEntry)
+        .filter((key) => !TRACKER_META_KEYS.includes(key))
+        .forEach((modelName) => {
+          const modelData = trackerEntry[modelName] as ModelExperimentData;
+          if (modelData) {
+            modelData.judge_rank = ranks[modelName] ?? null;
+            modelData.judge_best = best != null && modelName === best;
+          }
+        });
+    }
+
     // Judge a run (LLM-as-a-Judge). One judge on the panel = single-judge mode
     // (Phase 1); two or more = a council whose ballots are aggregated (Borda).
     // Writes per-model ranks + a run-level summary and re-renders. The judge is
@@ -2512,7 +2622,7 @@ export async function buildPromptBuilder(
           };
         } else {
           const result = aggregateBallots(candidateModels, okBallots);
-          applyRanksToRun(trackerEntry, result.ranking, result.tie);
+          applyCouncilRanks(trackerEntry, result.ranks, result.best);
           trackerEntry.judge = {
             judgeModel: '',
             status: 'ok',
@@ -2564,14 +2674,21 @@ export async function buildPromptBuilder(
           : judgeConfig.judgeModel
             ? [judgeConfig.judgeModel]
             : [];
-        if (runPanel.length > 0) {
+        const availableRunPanel = runPanel.filter((name) =>
+          promptBuilderAvailableLLMs.some((llm) => llm.name === name)
+        );
+        if (availableRunPanel.length > 0) {
+          // Single judge → the dropdown; a panel → the council toggle + list.
+          promptBuilderJudgeModelSelect.value = availableRunPanel[0];
+          const isCouncil = availableRunPanel.length >= 2;
+          promptBuilderJudgeCouncilToggle.checked = isCouncil;
           promptBuilderAvailableLLMs.forEach((availableLLM, llmIndex) => {
             const panelCheckbox = document.getElementById(
               `${paneID}-obj-${promptBuilderObject?.id}-judge-panel-${llmIndex}`
             ) as HTMLInputElement | null;
-            if (panelCheckbox) panelCheckbox.checked = runPanel.includes(availableLLM.name);
+            if (panelCheckbox) panelCheckbox.checked = availableRunPanel.includes(availableLLM.name);
           });
-          updateJudgePanelHint();
+          updateJudgeControlsVisibility();
         }
         promptBuilderJudgeIncludeSelf.checked = Boolean(judgeConfig.includeSelf);
         promptBuilderJudgeAuto.checked = Boolean(judgeConfig.autoJudge);

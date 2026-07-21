@@ -150,6 +150,9 @@
     "promptBuilderCouncilBallots": "Ballots:",
     "promptBuilderCouncilBallotFailed": "no verdict",
     "promptBuilderCouncilFooter": "Judged by a council of {n} models (Borda).",
-    "promptBuilderCouncilDegraded": "The council could not reach a verdict — fewer than two judges returned a usable ranking."
+    "promptBuilderCouncilDegraded": "The council could not reach a verdict — fewer than two judges returned a usable ranking.",
+    "promptBuilderJudgeCouncilToggleLabel": "Convene a council of judges",
+    "promptBuilderJudgeCouncilMembersLabel": "Council members",
+    "promptBuilderCouncilRankTied": "(tied)"
   }
 }
