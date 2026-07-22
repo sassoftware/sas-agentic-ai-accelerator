@@ -48,6 +48,12 @@ def definitions_dir(repo_root: Path, kind: str) -> Path:
     return repo_root / ("LLM-Definitions" if kind == "llm" else "Embedding-Definitions")
 
 
+def archive_dir(repo_root: Path) -> Path:
+    """Where `mdb retire` moves retired definitions. Git-ignored, so archiving a
+    model takes it out of the tracked active set without losing a local copy."""
+    return repo_root / "_archive"
+
+
 def fact_sheet_path(repo_root: Path, kind: str) -> Path:
     if kind == "llm":
         return repo_root / "LLM-Definitions" / "llm_fact_sheet.csv"

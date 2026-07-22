@@ -28,7 +28,9 @@ from .core.generator import (
 from .core.importer import import_folder
 from .core.manifest import MANIFEST_FILENAME, ModelManifest, export_json_schema, load_manifest
 from .core.netutil import env_flag, make_session
-from .core.paths import RepoNotFoundError, core_dir, definitions_dir, fact_sheet_path, find_repo_root
+from .core.paths import (
+    RepoNotFoundError, archive_dir, core_dir, definitions_dir, fact_sheet_path, find_repo_root,
+)
 from .core.validator import validate_all, validate_folder
 from .providers import load_adapters
 from .providers.base import CatalogModel, ProviderAdapter, slugify
@@ -38,6 +40,7 @@ app = typer.Typer(
     help="Model Definition Builder for the SAS Agentic AI Accelerator.",
     no_args_is_help=True,
     add_completion=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 console = Console()
 
@@ -721,6 +724,93 @@ def unregister(
 
 
 @app.command()
+def pull(
+    ids: list[str] = typer.Argument(..., help="Registered model_id(s) in SAS Model Manager to recreate locally"),
+    adopt: bool = typer.Option(False, "--import", help="Also reverse-engineer definition.yaml so the folder is mdb-managed"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing local folder"),
+):
+    """Recreate a local definition folder from a model registered in SAS Model
+    Manager (the reverse of register). Downloads the model's content and, for
+    models registered before mdb (no stored definition.yaml), rebuilds
+    modelConfiguration.json from its attributes. With --import it also
+    reverse-engineers a definition.yaml (equivalent to running mdb import)."""
+    from .viya.registry import pull_model
+    ctx = Context()
+    failed = False
+    with _viya_session() as session:
+        for model_id in ids:
+            try:
+                result = pull_model(session, model_id, ctx.defs_dir, force=force)
+            except Exception as exc:
+                console.print(f"[red]{model_id}: {exc}[/red]")
+                failed = True
+                continue
+            defs_name = "LLM-Definitions" if result.kind == "llm" else "Embedding-Definitions"
+            source = ("its stored definition.yaml" if result.had_definition
+                      else "rebuilt modelConfiguration.json from the model's attributes"
+                           if result.reconstructed_config else "its stored files")
+            console.print(f"[green]{model_id}: pulled to {defs_name}/{model_id}/[/green] "
+                          f"({len(result.files)} file(s); {source})")
+            if adopt and not result.had_definition:
+                folder = ctx.defs_dir(result.kind) / model_id
+                fact_sheet = ctx.fact_sheet(result.kind)
+                try:
+                    imported = import_folder(folder, fact_sheet)
+                    imported.manifest.save(folder)
+                    for note in imported.notes:
+                        console.print(f"  [yellow]note:[/yellow] {note}")
+                    console.print(f"[green]{model_id}: wrote definition.yaml - review it, then converge with "
+                                  f"'mdb import {model_id} --apply'.[/green]")
+                except Exception as exc:
+                    console.print(f"[yellow]{model_id}: pulled, but could not reverse-engineer "
+                                  f"definition.yaml ({exc}) - the folder stays hand-maintained.[/yellow]")
+            elif result.had_definition:
+                console.print(f"  Already mdb-managed (definition.yaml pulled). Regenerate with "
+                              f"'mdb generate {model_id}'.")
+            else:
+                console.print(f"  Legacy folder. Adopt it with 'mdb import {model_id}' (or re-run with --import).")
+    raise typer.Exit(1 if failed else 0)
+
+
+@app.command("list")
+def list_(
+    kind: Optional[str] = typer.Option(None, "--kind", help="Only 'llm' or 'embedding' (default: both)"),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+):
+    """List the models registered in SAS Model Manager with their lifecycle
+    status (provider, family, version, modelStatus, approvalState, endpoint)."""
+    from .viya.registry import list_registered_models
+    kinds = (kind,) if kind in KINDS else KINDS
+    if kind is not None and kind not in KINDS:
+        console.print(f"[red]--kind must be one of {', '.join(KINDS)}.[/red]")
+        raise typer.Exit(2)
+    rows: list[dict] = []
+    with _viya_session() as session:
+        for k in kinds:
+            rows.extend(list_registered_models(session, k))
+    if as_json:
+        console.print_json(json.dumps(rows))
+        return
+    if not rows:
+        console.print("[yellow]No registered models found in the LLM/Embedding model projects.[/yellow]")
+        console.print("Register one with [bold]mdb register <model_id>[/bold].")
+        return
+    table = Table()
+    for col in ("model_id", "kind", "provider", "type", "version", "status", "approval", "endpoint"):
+        table.add_column(col)
+    status_color = {"deployed": "green", "ready for validation": "yellow", "retired": "red"}
+    for r in rows:
+        status = r["modelStatus"] or "-"
+        color = status_color.get(status, "dim")
+        table.add_row(
+            r["model_id"], r["kind"], r["provider"] or "-", r["llmModelType"] or "-",
+            r["deploymentId"] or "-", f"[{color}]{status}[/{color}]",
+            r["approvalState"] or "-", r["endPoint"] or "-",
+        )
+    console.print(table)
+
+
+@app.command()
 def publish(
     ids: Optional[list[str]] = typer.Argument(None),
     all_: bool = typer.Option(False, "--all"),
@@ -729,7 +819,7 @@ def publish(
     wait: bool = typer.Option(False, "--wait", help="Poll until the image build completes"),
 ):
     """Publish registered models to an SCR container destination."""
-    from .viya.registry import publish_model
+    from .viya.registry import ensure_model_lifecycle, publish_model
     ctx = Context()
     dest = destination or os.environ.get("SAS_PUBLISH_DESTINATION")
     if not dest:
@@ -747,6 +837,13 @@ def publish(
                 continue
             if state in ("requested", "completed"):
                 console.print(f"[green]{model_id}: publish {state} on {dest}[/green]")
+                # A published model is deployed and approved; advance the lifecycle
+                # attributes if they are not already there (non-fatal).
+                try:
+                    if ensure_model_lifecycle(session, model_id, "deployed", "approved"):
+                        console.print(f"[dim]{model_id}: modelStatus=deployed, approvalState=approved[/dim]")
+                except Exception as exc:
+                    console.print(f"[yellow]{model_id}: could not update lifecycle attributes ({exc}).[/yellow]")
             else:
                 console.print(f"[red]{model_id}: publish {state} on {dest}[/red]")
                 failed = True
@@ -915,8 +1012,18 @@ def radar(
 @app.command()
 def retire(
     model_id: str = typer.Argument(...),
+    archive: bool = typer.Option(
+        False, "--archive",
+        help="Also move the definition to a git-ignored _archive/ folder (and drop its fact-sheet "
+             "row), taking it out of the tracked active set. Recoverable with 'mdb pull'.",
+    ),
 ):
-    """Tag a definition as deprecated (hides it from the Prompt Builder) and regenerate."""
+    """Tag a definition as deprecated (hides it from the Prompt Builder) and regenerate.
+
+    By default the deprecated definition stays in place and tracked. Pass
+    --archive to move it out of the active set into a git-ignored _archive/
+    folder instead (a retired model then no longer ships in the transfer
+    package; recover it any time with 'mdb pull')."""
     import yaml as _yaml
     ctx = Context()
     folder = ctx.find_folder(model_id)
@@ -924,26 +1031,70 @@ def retire(
         console.print(f"[red]{model_id}: no managed definition found.[/red]")
         raise typer.Exit(2)
     manifest = load_manifest(folder)
-    if "deprecated" in manifest.tags.extra:
+    already_deprecated = "deprecated" in manifest.tags.extra
+    if already_deprecated and not archive:
         console.print(f"{model_id}: already deprecated.")
         raise typer.Exit(0)
-    manifest.tags.extra.append("deprecated")
-    manifest.save(folder)
-    rendered = render_assets(manifest, ctx.core)
-    blockers = [c for c in drift.classify(folder, rendered)
-                if c.status in (drift.FileStatus.HAND_EDITED, drift.FileStatus.UNTRACKED)]
-    if blockers:
-        for c in blockers:
-            console.print(f"[red]{model_id}/{c.filename} was edited by hand - retire refuses to overwrite it.[/red]")
-        console.print("Fold the edits into definition.yaml (or generation.overrides), run mdb generate --force, "
-                      "then rerun mdb retire.")
-        raise typer.Exit(1)
-    for name, content in rendered.items():
-        (folder / name).write_bytes(content)
-    drift.write_lock(folder, (folder / MANIFEST_FILENAME).read_bytes(), rendered)
-    facts.upsert_row(ctx.fact_sheet(manifest.kind), manifest)
-    console.print(f"[green]{model_id}: tagged deprecated and regenerated.[/green]")
-    console.print(f"Push it to the registered model with: mdb register {model_id} --update")
+    # Tag + regenerate only when not already deprecated; an already-deprecated
+    # definition passed with --archive proceeds straight to archiving.
+    if already_deprecated:
+        console.print(f"{model_id}: already deprecated - archiving.")
+    else:
+        manifest.tags.extra.append("deprecated")
+        manifest.save(folder)
+        rendered = render_assets(manifest, ctx.core)
+        blockers = [c for c in drift.classify(folder, rendered)
+                    if c.status in (drift.FileStatus.HAND_EDITED, drift.FileStatus.UNTRACKED)]
+        if blockers:
+            for c in blockers:
+                console.print(f"[red]{model_id}/{c.filename} was edited by hand - retire refuses to overwrite it.[/red]")
+            console.print("Fold the edits into definition.yaml (or generation.overrides), run mdb generate --force, "
+                          "then rerun mdb retire.")
+            raise typer.Exit(1)
+        for name, content in rendered.items():
+            (folder / name).write_bytes(content)
+        drift.write_lock(folder, (folder / MANIFEST_FILENAME).read_bytes(), rendered)
+        # In-place retire keeps the model in the fact sheet (tagged deprecated);
+        # --archive drops the row below.
+        if not archive:
+            facts.upsert_row(ctx.fact_sheet(manifest.kind), manifest)
+        console.print(f"[green]{model_id}: tagged deprecated and regenerated.[/green]")
+
+    # Also retire the registered model in SAS Model Manager, if reachable and
+    # registered. Best-effort: retire stays a local tagging op when Viya is not
+    # configured.
+    from .viya.session import ViyaConfigError, create_session
+    try:
+        with create_session() as session:
+            from .viya.registry import ensure_model_lifecycle
+            if ensure_model_lifecycle(session, model_id, "retired", "retired"):
+                console.print(f"[green]{model_id}: modelStatus=retired, approvalState=retired in SAS Model Manager.[/green]")
+            else:
+                console.print(f"[dim]{model_id}: not registered (or already retired) in SAS Model Manager.[/dim]")
+    except ViyaConfigError:
+        console.print("[yellow]SAS Viya is not configured - the registered model's status was not updated.[/yellow]")
+    except Exception as exc:
+        console.print(f"[yellow]Could not update the registered model's status: {exc}[/yellow]")
+
+    if not archive:
+        console.print(f"Push the deprecated flag to the registered model with: mdb register {model_id} --update")
+        console.print(f"[dim]  Move it out of the active set entirely with: mdb retire {model_id} --archive[/dim]")
+        return
+
+    # Archive the definition out of the active, tracked set. _archive/ is
+    # git-ignored, so a retired model stops cluttering the definitions directory
+    # and the transfer package while a local copy is kept for reference - it is
+    # always recoverable with 'mdb pull' or from git history.
+    import shutil
+    removed = facts.remove_row(ctx.fact_sheet(manifest.kind), model_id)
+    destination = archive_dir(ctx.repo) / manifest.kind / model_id
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.move(str(folder), str(destination))
+    fact_note = ", fact-sheet row removed" if removed == "removed" else ""
+    console.print(f"[green]{model_id}: archived to _archive/{manifest.kind}/{model_id}/ (git-ignored){fact_note}.[/green]")
+    console.print(f"[dim]  No longer in the tracked repo. Recover it with 'mdb pull {model_id}' or from git history.[/dim]")
 
 
 @app.command()
@@ -960,7 +1111,10 @@ def providers():
     console.print("Third-party adapters: pip packages exposing the 'mdb.providers' entry-point group.")
 
 
-provider_app = typer.Typer(help="Third-party provider adapter tooling.")
+provider_app = typer.Typer(
+    help="Third-party provider adapter tooling.",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 app.add_typer(provider_app, name="provider")
 
 SCAFFOLD_ADAPTER = '''"""Adapter for {name} - fill in the TODOs, then pip install this package."""

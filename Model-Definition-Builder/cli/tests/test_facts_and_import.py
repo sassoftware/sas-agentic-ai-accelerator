@@ -3,8 +3,24 @@
 """Fact-sheet upsert semantics and the legacy-folder import round-trip."""
 import shutil
 
-from mdb.core.facts import read_row, upsert_row
+from mdb.core.facts import read_row, remove_row, upsert_row
 from mdb.core.importer import import_folder
+
+
+def test_remove_row_deletes_only_the_target(tmp_path, repo_root, fact_sheet):
+    working_copy = tmp_path / "llm_fact_sheet.csv"
+    shutil.copy(fact_sheet, working_copy)
+    before = working_copy.read_text(encoding="utf-8")
+    assert read_row(working_copy, "gemini_flash_25") is not None
+
+    assert remove_row(working_copy, "gemini_flash_25") == "removed"
+    assert read_row(working_copy, "gemini_flash_25") is None
+    # exactly one line gone; every surviving line is byte-identical
+    before_lines = [l for l in before.splitlines() if not l.startswith('"gemini_flash_25"')]
+    after_lines = working_copy.read_text(encoding="utf-8").splitlines()
+    assert before_lines == after_lines
+    # removing an absent model is a no-op
+    assert remove_row(working_copy, "gemini_flash_25") == "absent"
 
 
 def test_upsert_preserves_legacy_rows(tmp_path, repo_root, fact_sheet, core):

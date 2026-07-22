@@ -145,6 +145,48 @@ def upsert_row(fact_sheet: Path, manifest: ModelManifest) -> str:
     return result
 
 
+def remove_row(fact_sheet: Path, model_id: str) -> str:
+    """Delete a model's row from the fact sheet (used when a model is archived
+    out of the active set). Returns 'removed' or 'absent'. Only the matching row
+    is touched; every other line stays byte-verbatim."""
+    raw = fact_sheet.read_bytes().decode("utf-8")
+    newline = "\r\n" if "\r\n" in raw else "\n"
+    lines = raw.split(newline)
+    trailing_empty = lines and lines[-1] == ""
+    if trailing_empty:
+        lines = lines[:-1]
+    out: list[str] = []
+    removed = False
+    for index, line in enumerate(lines):
+        if index == 0 or not line.strip():
+            out.append(line)
+            continue
+        try:
+            first_field = next(csv.reader(io.StringIO(line)))[0]
+        except (StopIteration, IndexError):
+            out.append(line)
+            continue
+        if first_field == model_id:
+            removed = True
+            continue
+        out.append(line)
+    if not removed:
+        return "absent"
+    content = newline.join(out)
+    if trailing_empty:
+        content += newline
+    import time
+    for attempt in range(5):
+        try:
+            fact_sheet.write_bytes(content.encode("utf-8"))
+            break
+        except OSError:
+            if attempt == 4:
+                raise
+            time.sleep(0.5)
+    return "removed"
+
+
 def read_row(fact_sheet: Path, model_id: str) -> dict[str, str] | None:
     with fact_sheet.open(encoding="utf-8", newline="") as handle:
         for record in csv.DictReader(handle):
