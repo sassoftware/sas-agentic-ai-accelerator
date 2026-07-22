@@ -2,6 +2,25 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [1.7.0] - 2026-07-22
+
+The Prompt Builder gains governance documentation and a cost dimension. A prompt can now carry the same model-card fields the mdb-registered models do, the manifested best prompt inherits its winning LLM's provider/cost attributes, and — when the LLMs carry per-token or per-second prices — every response and the judging get an estimated cost, with the cheapest response flagged per run.
+
+To pick up the change, re-upload the prebuilt `LLM-Prompt-Builder/dist/index.html` to your SAS Job Execution definition (and re-export the transfer package for new deployments). The `PROMPT_EXPERIMENTS` table gains `cost`, `cheapest_prompt` and `judge_cost`, so the cost view is available in Visual Analytics alongside the existing metrics. (1.6.0 is the parallel Model Definition Builder release.)
+
+### Added
+
+- **Optional prompt documentation.** A collapsible **Documentation** section under the prompt selector captures Model purpose, Intended use, Expected benefit, Out-of-scope use cases and Limitations — the same governance fields mdb writes on model cards, each with an info icon. The values are stored as the selected prompt's SAS Model Manager attributes (`modelPurpose`, `intendedUse`, `expectedBenefit`, `outOfScopeUseCases`, `limitations`), loaded when a prompt is selected and saved with a **Save documentation** button. Entirely optional
+- **Estimated cost indicators.** When a model carries per-token (`inputTokenCount`/`outputTokenCount`) or per-second (`hostingCosts`) prices in its Model Manager registration, the Prompt Builder estimates the cost of every response (token counts × price, falling back to run-time × hosting cost — mirroring mdb's convention) and of the judging (summed across every council member and the chairman). Each response shows an **est. cost**, the judge/council banner shows an **est. judging cost**, and the lowest-cost response in a run gets a new **cheapest** coin icon next to the fastest / fewest-tokens icons. The per-response `cost`, the `cheapest_prompt` flag and the run-level `judge_cost` are persisted with the run and restored on load. Costs are shown as plain unitless numbers (the unit is whatever the registered prices use). Models without prices simply show no cost
+- **`PROMPT_EXPERIMENTS` gains cost columns.** `Get-All-Prompts.sas` surfaces `cost` and `cheapest_prompt` per model result and the run-level `judge_cost`, carried onto each model row like the existing judge columns and read with the same backward-compatible approach (older trackers leave them blank). `Track-Prompt-Experiments.sas` and the SAS-code result-table scripts carry the same columns so a server-side append round-trips them
+
+### Changed
+
+- **The manifested best prompt inherits its winning LLM's attributes.** Manifesting the best prompt now copies the attributes of the LLM that produced the winning response — `llmodelType`, `provider`, `deploymentId`, `inputTokenCount`, `outputTokenCount`, `hostingCosts`, `endPoint` — onto the prompt model, so a prompt in Model Manager carries the same provider/cost metadata the registered LLMs do (populated from the mdb-enriched attributes; see the 1.6.0 release)
+- **Optional model-card report on the manifested prompt.** A new **Model card report URI** setting in the Options pane (URL/DDC parameter `modelCardReportURI`) takes a SAS Visual Analytics report path (`/reports/reports/<uuid>`). When set, manifesting the best prompt embeds that report on the model card as its custom chart — setting `modelCardCustomChartReport` (`<sas-report url="{viyaHost}" reportUri="{uri}">`) and `modelCardCustomChartEnabled: true`, using the configured SAS Viya host — exactly as mdb populates those attributes. Left blank, the attributes are omitted
+- **Prompt models use `function = "prompt template"`.** New prompts are created with the `prompt template` function value instead of the legacy `Prompting`. Existing prompts are still recognised (the prompt list matches either value) and are migrated to the new value in place the first time they are selected, so the change is transparent
+- The persisted `Prompt-Experiment-Tracker.json` gains `cost`/`cheapest_prompt` per model row and `judge_cost` on the run header. All fields are optional and read back with guards, so pre-1.7.0 trackers load, render and re-save unchanged
+
 ## [1.6.0] - 2026-07-22
 
 Model Definition Builder (`mdb`) improvements: models registered in SAS Model Manager now carry the full set of attributes the platform expects (family, version, per-token/second costs, endpoint) and move through a real lifecycle (register → publish → retire), there is a command to see every registered model and its status at a glance, a command to recreate a local definition from a registered model, and updating a model no longer duplicates its variables. Adds the OpenAI **GPT-5.6 Sol** definition.

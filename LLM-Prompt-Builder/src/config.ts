@@ -54,6 +54,10 @@ const DEFAULTS: RuntimeConfig = {
     // Optional deployment default for the LLM-as-a-Judge model (an LLM name from
     // llmProjectID). Blank = no default; the in-app judge selector always wins.
     judgeModel: '',
+    // Optional SAS Visual Analytics report URI (/reports/reports/<uuid>). When
+    // set, the manifested best prompt embeds that report on its model card as
+    // the custom chart (host = viyaHost). Blank = no chart attributes.
+    modelCardReportURI: '',
     // API keys are supplied at runtime from the object's assigned DDC data table
     // (see src/va/ddc.ts), so they start empty here. Map is keyed by the name an
     // LLM's options.json references via API_KEY.default (e.g. "Anthropic").
@@ -68,6 +72,7 @@ const URL_OVERRIDABLE = [
   'SCREndpoint',
   'deploymentType',
   'judgeModel',
+  'modelCardReportURI',
   'id',
 ] as const;
 

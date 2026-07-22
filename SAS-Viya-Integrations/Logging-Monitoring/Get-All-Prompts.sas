@@ -266,8 +266,8 @@ run;
                     order by ordinal_root;
             quit;
 
-            data work._gap_all_experiments_temp(drop=systemPromptTEMP userPromptTEMP vcTEMP illcTEMP ovcTEMP jmTEMP jcTEMP jmodeTEMP jpanelTEMP jagrTEMP jchairTEMP ordinal_root);
-                length modelID $36. runID 8. systemPrompt systemPromptTEMP userPrompt userPromptTEMP $32767. model $64. options $256. response $32767. run_time prompt_length output_length best_prompt fastest_prompt fewest_tokens_prompt judge_rank judge_best variables_count integrated_llm_call output_variables_count 8. judge_model jmTEMP $64. judge_confidence jcTEMP $16. judge_mode jmodeTEMP $16. judge_panel jpanelTEMP $512. judge_agreement jagrTEMP $16. judge_chairman_model jchairTEMP $64.;
+            data work._gap_all_experiments_temp(drop=systemPromptTEMP userPromptTEMP vcTEMP illcTEMP ovcTEMP jmTEMP jcTEMP jmodeTEMP jpanelTEMP jagrTEMP jchairTEMP jcostTEMP ordinal_root);
+                length modelID $36. runID 8. systemPrompt systemPromptTEMP userPrompt userPromptTEMP $32767. model $64. options $256. response $32767. run_time prompt_length output_length cost cheapest_prompt best_prompt fastest_prompt fewest_tokens_prompt judge_rank judge_best judge_cost jcostTEMP variables_count integrated_llm_call output_variables_count 8. judge_model jmTEMP $64. judge_confidence jcTEMP $16. judge_mode jmodeTEMP $16. judge_panel jpanelTEMP $512. judge_agreement jagrTEMP $16. judge_chairman_model jchairTEMP $64.;
                 * root is emitted in ordinal_root order, matching _gap_run_meta.
                   judge_rank / judge_best sit on the model rows; judge_model /
                   judge_confidence sit on the header row (like the prompts) and
@@ -292,6 +292,7 @@ run;
                     jpanelTEMP = judge_panel;
                     jagrTEMP = judge_agreement;
                     jchairTEMP = judge_chairman_model;
+                    jcostTEMP = judge_cost;
                 end;
 
                 if model ne '' then do;
@@ -306,10 +307,11 @@ run;
                     judge_panel = jpanelTEMP;
                     judge_agreement = jagrTEMP;
                     judge_chairman_model = jchairTEMP;
+                    judge_cost = jcostTEMP;
                     output;
                 end;
 
-                retain systemPromptTEMP userPromptTEMP vcTEMP illcTEMP ovcTEMP jmTEMP jcTEMP jmodeTEMP jpanelTEMP jagrTEMP jchairTEMP;
+                retain systemPromptTEMP userPromptTEMP vcTEMP illcTEMP ovcTEMP jmTEMP jcTEMP jmodeTEMP jpanelTEMP jagrTEMP jchairTEMP jcostTEMP;
             run;
 
             proc append base=work._gap_all_experiments data=work._gap_all_experiments_temp force nowarn;
@@ -337,7 +339,7 @@ run;
 
 * Create base table;
 data work._gap_all_experiments;
-    length modelID $36. runID 8. systemPrompt userPrompt $32767. model $64. options $256. response $32767. run_time prompt_length output_length best_prompt fastest_prompt fewest_tokens_prompt judge_rank judge_best variables_count integrated_llm_call output_variables_count 8. judge_model $64. judge_confidence $16. judge_mode $16. judge_panel $512. judge_agreement $16. judge_chairman_model $64.;
+    length modelID $36. runID 8. systemPrompt userPrompt $32767. model $64. options $256. response $32767. run_time prompt_length output_length cost cheapest_prompt best_prompt fastest_prompt fewest_tokens_prompt judge_rank judge_best judge_cost variables_count integrated_llm_call output_variables_count 8. judge_model $64. judge_confidence $16. judge_mode $16. judge_panel $512. judge_agreement $16. judge_chairman_model $64.;
 run;
 
 data work._gap_all_models;
@@ -361,11 +363,14 @@ proc sql;
             b.run_time,
             b.prompt_length,
             b.output_length,
+            b.cost,
+            b.cheapest_prompt,
             b.best_prompt,
             b.fastest_prompt,
             b.fewest_tokens_prompt,
             b.judge_rank,
             b.judge_best,
+            b.judge_cost,
             b.judge_model,
             b.judge_confidence,
             b.judge_mode,
@@ -406,11 +411,14 @@ data work._gap_all_data;
         run_time = 'Run Time (s)'
         prompt_length = 'Prompt Length (tokens)'
         output_length = 'Output Length (tokens)'
+        cost = 'Estimated Call Cost'
+        cheapest_prompt = 'Cheapest Prompt in Run'
         best_prompt = 'Best Prompt in Run'
         fastest_prompt = 'Fastest Prompt in Run'
         fewest_tokens_prompt = 'Fewest Tokens Prompt in Run'
         judge_rank = 'Judge Rank in Run'
         judge_best = 'Best Prompt per Judge'
+        judge_cost = 'Estimated Judging Cost'
         judge_model = 'Judge Model'
         judge_confidence = 'Judge Confidence'
         judge_mode = 'Judge Mode'
