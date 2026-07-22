@@ -20,6 +20,8 @@ To pick up the change, re-upload the prebuilt `LLM-Prompt-Builder/dist/index.htm
 
 ### Fixed
 
+- **Save vs. manifest link placement.** A plain **Save Experiments** now shows the "open in Model Manager" link next to the Save button, instead of at the bottom of the manifest box; **Manifest Best Prompt** still shows its link in the manifest box. Previously both put the link in the manifest box, which was confusing after a plain save
+- **The per-run Judge button sat slightly below the load/delete buttons.** Its hover-hint wrapper is now a centered flex item, so the three run-header buttons align
 - **Loading an experiment tracker failed when any run used a non-numeric model option.** The loader reconstructed each run's options by regex-quoting keys and running `JSON.parse`, which only handled numeric values (and `API_KEY` as a special case). A string-valued option such as `reasoning_effort:medium` (or `input_type` / `normalize`) produced invalid JSON (`Unexpected token 'm' … "g_effort":medium`), so the whole tracker failed to load and the prompt showed no runs. The options string is now parsed with a proper key/value parser that coerces numbers and booleans and keeps everything else as a string. Present since judging shipped in 1.4.0
 
 ## [1.4.0] - 2026-07-21

@@ -747,6 +747,7 @@ export async function buildPromptBuilder(
       petRows = [];
       experimentsModified = false;
       promptExperimentResultContainer.innerHTML = '';
+      promptExperimentSaveResultContainer.innerHTML = '';
       // Reset the manifest panel to its defaults; loading a run afterwards
       // re-applies that run's stored configuration
       applyManifestConfig(null);
@@ -2273,6 +2274,9 @@ export async function buildPromptBuilder(
                   modelData.response !== judgeFailedText
               ).length;
             const judgeRunButtonWrapper = wrapForHint(judgeRunButton);
+            // Align with the sibling load/delete buttons in the flex header
+            // (the wrapper span would otherwise sit on the text baseline).
+            judgeRunButtonWrapper.classList.add('d-inline-flex', 'align-items-center');
             setDisabledHint(
               judgeRunButton,
               judgeRunButtonWrapper,
@@ -3006,9 +3010,9 @@ export async function buildPromptBuilder(
     promptExperimentCreateModelButton.setAttribute('class', 'btn btn-primary');
     promptExperimentCreateModelButton.onclick = async function () {
       // Persist the manifest configuration with the manifested run so loading
-      // the run later restores it
+      // the run later restores it. The save link goes to the manifest box here.
       stampManifestConfigOnBestRun();
-      await promptBuilderSaveExperiments();
+      await promptBuilderSaveExperiments(promptExperimentResultContainer);
       await promptBulderCreateBestPromptModel();
     };
     // Wrapped so the "select a best response first" hint shows on hover even
@@ -3289,12 +3293,19 @@ export async function buildPromptBuilder(
       return outputVariables;
     }
 
-    // Response for the user about saving
+    // Result message for the manifest action (shown in the manifest box).
     const promptExperimentResultContainer = document.createElement('div');
     promptExperimentResultContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-save-result`;
+    // Result message for a plain Save (shown next to the Save button).
+    const promptExperimentSaveResultContainer = document.createElement('div');
+    promptExperimentSaveResultContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-save-only-result`;
 
-    // Save the experiments to the SAS Model Manager
-    async function promptBuilderSaveExperiments(): Promise<void> {
+    // Save the experiments to the SAS Model Manager. The success/failure
+    // message goes to `resultContainer` — next to Save for a plain save, or the
+    // manifest box when called as the first step of manifesting.
+    async function promptBuilderSaveExperiments(
+      resultContainer: HTMLElement = promptExperimentSaveResultContainer
+    ): Promise<void> {
       // Add spinner to save button
       const promptExperimentSaveTargetButton = document.getElementById(
         `${paneID}-obj-${promptBuilderObject?.id}-pet-save-button`
@@ -3337,10 +3348,10 @@ export async function buildPromptBuilder(
       if (promptExperimentPromptResponseObject.status_code === 201) {
         experimentsModified = false;
         showToast(`${promptBuilderInterfaceText?.promptBuilderSaveToast}`);
-        promptExperimentResultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveSucessResponse} <a target="_blank" rel="noopener noreferrer" href="${VIYA}/SASModelManager/models/${promptExperimentRunModel}">${VIYA}/SASModelManager/models/${promptExperimentRunModel}</a></p>`;
+        resultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveSucessResponse} <a target="_blank" rel="noopener noreferrer" href="${VIYA}/SASModelManager/models/${promptExperimentRunModel}">${VIYA}/SASModelManager/models/${promptExperimentRunModel}</a></p>`;
       } else {
         showToast(`${promptBuilderInterfaceText.promptExperimentSaveFailureResponse}`);
-        promptExperimentResultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveFailureResponse}</p>`;
+        resultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveFailureResponse}</p>`;
       }
 
       // Re-enable the save button
@@ -3866,6 +3877,7 @@ ${scoreCodeReturn}`;
     trackerSection.appendChild(promptExperimentContainer);
     trackerSection.appendChild(document.createElement('br'));
     trackerSection.appendChild(promptExperimentSaveButton);
+    trackerSection.appendChild(promptExperimentSaveResultContainer);
     promptBuilderContainer.appendChild(trackerSection);
 
     // Manifest: configuration first, the action button below it
