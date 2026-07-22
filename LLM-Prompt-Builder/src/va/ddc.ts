@@ -171,6 +171,12 @@ function buildOptionsConfig(config: RuntimeConfig): Record<string, unknown> {
         pb.judgeModel,
         'Optional default LLM (by name, from the LLM project) used to judge which response is best. Users can override it in the app.'
       ),
+      textField(
+        'modelCardReportURI',
+        'Model card report URI',
+        pb.modelCardReportURI,
+        'Optional SAS Visual Analytics report URI (the /reports/reports/<uuid> path). When set, manifesting the best prompt embeds that report on the model card as its custom chart, using the SAS Viya host above.'
+      ),
     ],
     groups: [],
   };

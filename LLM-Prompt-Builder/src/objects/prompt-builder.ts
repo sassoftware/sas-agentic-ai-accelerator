@@ -25,10 +25,12 @@ import {
   deleteModel,
   deleteModelProject,
   updateModelTags,
+  updateModelAttributes,
+  getModelDetails,
 } from '../api/models-api';
 import { getModelDependentDecisions } from '../api/relationships-api';
 import { callSCRLLM } from '../api/scr-api';
-import { judgeRun, aggregateBallots, chairmanBreakTie, type JudgeConfidence, type JudgeBallot } from '../api/judge-api';
+import { judgeRun, aggregateBallots, chairmanBreakTie, type JudgeConfidence, type JudgeBallot, type JudgeUsage } from '../api/judge-api';
 import { createAccordionItem } from '../ui/accordion';
 import { showConfirmModal } from '../ui/confirm-modal';
 import { showToast } from '../ui/toast';
@@ -57,7 +59,29 @@ interface AvailableLLM {
   name: string;
   fileURI?: string;
   options?: Record<string, ModelOption>;
+  /** Cost/governance attributes read from the LLM's Model Manager registration
+   *  (see loadLLMAttributes). Used for per-call cost estimation and copied onto
+   *  the manifested prompt model. Any may be absent (older registrations). */
+  inputTokenCount?: number | null;
+  outputTokenCount?: number | null;
+  hostingCosts?: number | null;
+  llmodelType?: string | null;
+  provider?: string | null;
+  deploymentId?: string | null;
+  endPoint?: string | null;
   [key: string]: unknown;
+}
+
+/** The cost/governance attributes copied from an LLM's Model Manager
+ *  registration. Mirrors the fields mdb writes on registered models. */
+interface LLMCostAttributes {
+  inputTokenCount?: number | null;
+  outputTokenCount?: number | null;
+  hostingCosts?: number | null;
+  llmodelType?: string | null;
+  provider?: string | null;
+  deploymentId?: string | null;
+  endPoint?: string | null;
 }
 
 interface ExperimentResult {
@@ -70,6 +94,9 @@ interface ExperimentResult {
     error?: string;
     fastest_prompt?: boolean;
     fewest_tokens_prompt?: boolean;
+    cheapest_prompt?: boolean;
+    /** Estimated cost of this call; null when the model carries no prices. */
+    cost?: number | null;
     [key: string]: unknown;
   };
   options: Record<string, unknown>;
@@ -127,6 +154,9 @@ interface JudgeSummary {
   /** Raw judge reply, kept for display when the verdict was unparseable. */
   raw?: string | null;
   ranAt?: string | null;
+  /** Estimated total cost of the judging (all panel members + chairman), when
+   *  the judge models carry prices. null when no cost could be computed. */
+  judgeCost?: number | null;
 }
 
 interface ExperimentTrackerEntry {
@@ -158,13 +188,95 @@ interface ManifestConfig {
 
 /** The outputs an integrated LLM call can return (mirroring the SCR contract). */
 const DEFAULT_LLM_OUTPUTS = ['response', 'run_time', 'prompt_length', 'output_length'];
+
+/** The model `function` value for a Prompt Builder prompt. Migrated from the
+ *  legacy 'Prompting' value, which is still recognised when listing prompts. */
+const PROMPT_FUNCTION = 'prompt template';
+const LEGACY_PROMPT_FUNCTION = 'Prompting';
+/** Server-side filter that surfaces prompt models of either function value. */
+const PROMPT_FUNCTION_FILTER = `or(eq(function,'${PROMPT_FUNCTION}'),eq(function,'${LEGACY_PROMPT_FUNCTION}'))`;
+/** Documentation attributes captured per prompt, mirroring mdb model-card keys. */
+const PROMPT_DOC_FIELDS = [
+  'modelPurpose', 'intendedUse', 'expectedBenefit', 'outOfScopeUseCases', 'limitations',
+] as const;
+type PromptDocField = (typeof PROMPT_DOC_FIELDS)[number];
 /** Names an output variable must not use. */
 const RESERVED_OUTPUT_NAMES = [...DEFAULT_LLM_OUTPUTS, 'parse_status'];
+
+/** Coerce an unknown attribute value to a finite number, else null. */
+function numOrNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Pull the cost/governance attributes out of a Model Manager model detail body. */
+function extractCostAttributes(body: Record<string, unknown> | null): LLMCostAttributes {
+  if (!body) return {};
+  const str = (v: unknown) => (v === null || v === undefined || v === '' ? null : String(v));
+  return {
+    inputTokenCount: numOrNull(body.inputTokenCount),
+    outputTokenCount: numOrNull(body.outputTokenCount),
+    hostingCosts: numOrNull(body.hostingCosts),
+    llmodelType: str(body.llmodelType),
+    provider: str(body.provider),
+    deploymentId: str(body.deploymentId),
+    endPoint: str(body.endPoint),
+  };
+}
+
+/**
+ * Estimate the cost of one SCR call. Prefers per-token pricing
+ * (inputTokenCount/outputTokenCount × token counts); falls back to per-second
+ * hosting cost (hostingCosts × run_time), mirroring mdb's costPerCall
+ * convention. Returns null when the model carries no usable prices.
+ */
+function computeCallCost(
+  metrics: { prompt_length?: number | null; output_length?: number | null; run_time?: number | null },
+  attrs?: LLMCostAttributes | null
+): number | null {
+  if (!attrs) return null;
+  const inPrice = attrs.inputTokenCount;
+  const outPrice = attrs.outputTokenCount;
+  if (inPrice != null || outPrice != null) {
+    const inTokens = Number(metrics.prompt_length) || 0;
+    const outTokens = Number(metrics.output_length) || 0;
+    return inTokens * (inPrice || 0) + outTokens * (outPrice || 0);
+  }
+  if (attrs.hostingCosts != null) {
+    return (Number(metrics.run_time) || 0) * attrs.hostingCosts;
+  }
+  return null;
+}
+
+/** Format an estimated cost as a compact, unitless number for display. */
+function formatCost(cost: number | null | undefined): string {
+  if (cost === null || cost === undefined || Number.isNaN(cost)) return '';
+  if (cost === 0) return '0';
+  const abs = Math.abs(cost);
+  const digits = abs >= 1 ? 2 : abs >= 0.01 ? 4 : 6;
+  return cost.toFixed(digits).replace(/\.?0+$/, '');
+}
+
+/**
+ * The `<sas-report>` embed for a model card's custom chart, mirroring mdb's
+ * `_model_card_chart`: the host is the SAS Viya host, the reportUri is the
+ * configured report path. Returns null when no report URI is configured (so
+ * the chart attributes are simply omitted).
+ */
+function buildModelCardChart(viyaHost: string, reportUri: string | null | undefined): string | null {
+  const uri = (reportUri ?? '').trim();
+  if (!uri) return null;
+  const host = (viyaHost || '').replace(/\/+$/, '');
+  return `<sas-report url="${host}" reportUri="${uri}"></sas-report>`;
+}
 
 interface ModelExperimentData {
   best_prompt: boolean | null;
   fastest_prompt: boolean | null;
   fewest_tokens_prompt: boolean | null;
+  /** Cheapest response in the run (lowest estimated cost); null when unknown. */
+  cheapest_prompt: boolean | null;
   /** 1 = judge's best, 2, 3, … ; null = not judged. */
   judge_rank: number | null;
   /** Convenience flag for the judge's winner (judge_rank === 1). */
@@ -172,6 +284,8 @@ interface ModelExperimentData {
   output_length: number | null;
   prompt_length: number | null;
   run_time: number | null;
+  /** Estimated cost of this response; null when the model carries no prices. */
+  cost: number | null;
   options: Record<string, unknown> | null;
   response: string;
 }
@@ -193,6 +307,10 @@ interface PETRow {
   best_prompt: boolean | number | null;
   fastest_prompt: boolean | null;
   fewest_tokens_prompt: boolean | null;
+  /** Cheapest response in the run; per-model. */
+  cheapest_prompt?: boolean | null;
+  /** Estimated cost of this response; per-model. null when unpriced. */
+  cost?: number | null;
   /** Per-model judge rank (1 = best); null when not judged. */
   judge_rank?: number | null;
   /** Per-model judge winner flag (persisted numeric 1/0 like best_prompt). */
@@ -210,6 +328,8 @@ interface PETRow {
   judge_mode?: string | null;
   judge_panel?: string | null;
   judge_agreement?: string | null;
+  /** Run-level estimated judging cost, carried on the header row only. */
+  judge_cost?: number | null;
   /** Chairman that broke a tie (council), on the header row only. */
   judge_chairman_model?: string | null;
   judge_chairman_reasoning?: string | null;
@@ -358,7 +478,7 @@ export async function buildPromptBuilder(
       // Enable project deletion only for a real project selection
       deleteProjectButton.disabled = currentProject === `${promptBuilderInterfaceText?.projectSelect}`;
       try {
-        promptBuilderProjectPrompts = await getModelProjectModels(currentProject);
+        promptBuilderProjectPrompts = await getModelProjectModels(currentProject, PROMPT_FUNCTION_FILTER);
       } catch (error) {
         console.error('Failed to load prompts for the selected project.', error);
         promptBuilderProjectPrompts = [];
@@ -376,11 +496,123 @@ export async function buildPromptBuilder(
     promptBuilderPromptSelectorItem.value = `${promptBuilderInterfaceText?.promptSelect}`;
     promptBuilderPromptSelectorItem.innerHTML = `${promptBuilderInterfaceText?.promptSelect}`;
     promptBuilderPromptSelectorDropdown.append(promptBuilderPromptSelectorItem);
+
+    // --- Optional prompt documentation -------------------------------------
+    // Governance metadata (mirrors the mdb model-card fields), stored as the
+    // selected prompt's SAS Model Manager attributes and editable for any
+    // selected prompt. Collapsed by default; entirely optional.
+    let currentDocPromptId = '';
+    const promptDocSection = document.createElement('details');
+    promptDocSection.classList.add('pb-doc-section', 'mt-2', 'mb-2');
+    const promptDocSummary = document.createElement('summary');
+    promptDocSummary.classList.add('fw-semibold');
+    promptDocSummary.innerText = promptBuilderInterfaceText?.promptBuilderDocSectionLabel as string;
+    promptDocSection.appendChild(promptDocSummary);
+    const promptDocHint = document.createElement('p');
+    promptDocHint.classList.add('small', 'text-muted', 'mt-1', 'mb-2');
+    promptDocHint.innerText = promptBuilderInterfaceText?.promptBuilderDocSectionHint as string;
+    promptDocSection.appendChild(promptDocHint);
+    const DOC_FIELD_I18N: Record<PromptDocField, { label: string; info: string }> = {
+      modelPurpose: {
+        label: promptBuilderInterfaceText?.promptBuilderDocModelPurpose as string,
+        info: promptBuilderInterfaceText?.promptBuilderDocModelPurposeInfo as string,
+      },
+      intendedUse: {
+        label: promptBuilderInterfaceText?.promptBuilderDocIntendedUse as string,
+        info: promptBuilderInterfaceText?.promptBuilderDocIntendedUseInfo as string,
+      },
+      expectedBenefit: {
+        label: promptBuilderInterfaceText?.promptBuilderDocExpectedBenefit as string,
+        info: promptBuilderInterfaceText?.promptBuilderDocExpectedBenefitInfo as string,
+      },
+      outOfScopeUseCases: {
+        label: promptBuilderInterfaceText?.promptBuilderDocOutOfScope as string,
+        info: promptBuilderInterfaceText?.promptBuilderDocOutOfScopeInfo as string,
+      },
+      limitations: {
+        label: promptBuilderInterfaceText?.promptBuilderDocLimitations as string,
+        info: promptBuilderInterfaceText?.promptBuilderDocLimitationsInfo as string,
+      },
+    };
+    const promptDocFieldEls = {} as Record<PromptDocField, HTMLTextAreaElement>;
+    for (const field of PROMPT_DOC_FIELDS) {
+      const wrap = document.createElement('div');
+      wrap.classList.add('mb-2');
+      wrap.appendChild(createOptionLabel(DOC_FIELD_I18N[field].label, DOC_FIELD_I18N[field].info));
+      const textarea = document.createElement('textarea');
+      textarea.classList.add('form-control');
+      textarea.rows = 2;
+      textarea.id = `${promptBuilderObject?.id}-doc-${field}`;
+      promptDocFieldEls[field] = textarea;
+      wrap.appendChild(textarea);
+      promptDocSection.appendChild(wrap);
+    }
+    const promptDocSaveButton = document.createElement('button');
+    promptDocSaveButton.type = 'button';
+    promptDocSaveButton.classList.add('btn', 'btn-outline-primary', 'btn-sm');
+    promptDocSaveButton.innerText = promptBuilderInterfaceText?.promptBuilderSaveDocumentationButton as string;
+    promptDocSaveButton.disabled = true;
+    promptDocSaveButton.onclick = async () => {
+      if (!currentDocPromptId) return;
+      const attrs: Record<string, unknown> = {};
+      for (const field of PROMPT_DOC_FIELDS) attrs[field] = promptDocFieldEls[field].value;
+      const previousLabel = promptDocSaveButton.innerText;
+      promptDocSaveButton.disabled = true;
+      promptDocSaveButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>`;
+      let status = 500;
+      try {
+        status = await updateModelAttributes(currentDocPromptId, attrs);
+      } catch (error) {
+        console.error('Failed to save prompt documentation.', error);
+      }
+      promptDocSaveButton.innerText = previousLabel;
+      promptDocSaveButton.disabled = false;
+      showToast(
+        status < 300
+          ? (promptBuilderInterfaceText?.promptBuilderDocSaved as string)
+          : (promptBuilderInterfaceText?.promptBuilderDocSaveFailed as string)
+      );
+    };
+    promptDocSection.appendChild(promptDocSaveButton);
+
+    // Load the selected prompt's documentation into the fields (and migrate a
+    // legacy `function` value to the current one, for the user). Best-effort:
+    // a fetch failure just leaves the section empty and disabled.
+    async function loadPromptDocumentation(promptId: string): Promise<void> {
+      currentDocPromptId = '';
+      for (const field of PROMPT_DOC_FIELDS) promptDocFieldEls[field].value = '';
+      promptDocSaveButton.disabled = true;
+      if (!promptId || promptId === `${promptBuilderInterfaceText?.promptSelect}`) return;
+      let details: Record<string, unknown> | null = null;
+      try {
+        details = await getModelDetails(promptId);
+      } catch (error) {
+        console.error('Failed to load prompt documentation.', error);
+        return;
+      }
+      if (!details) return;
+      for (const field of PROMPT_DOC_FIELDS) {
+        const value = details[field];
+        promptDocFieldEls[field].value = value == null ? '' : String(value);
+      }
+      currentDocPromptId = promptId;
+      promptDocSaveButton.disabled = false;
+      if (details.function === LEGACY_PROMPT_FUNCTION) {
+        try {
+          await updateModelAttributes(promptId, { function: PROMPT_FUNCTION });
+        } catch {
+          /* best-effort migration */
+        }
+      }
+    }
+
     promptBuilderPromptSelectorDropdown.onchange = async function () {
       const self = this as unknown as HTMLSelectElement;
       // Reset the in-memory experiment state of the previously selected prompt
       resetExperimentTrackerState();
       const promptBuilderPromptSelectedModelID = self.options[self.selectedIndex].value;
+      // Load the prompt's documentation (and migrate a legacy function value)
+      await loadPromptDocumentation(promptBuilderPromptSelectedModelID);
       // Get the ID of a previously created Prompt Experiment Tracker and delete it
       let promptBuilderAvailablePTE: Awaited<ReturnType<typeof getModelContents>> = [];
       try {
@@ -420,6 +652,7 @@ export async function buildPromptBuilder(
                     reasoning: value.judge_reasoning ?? '',
                     includeSelf: Boolean(value.judge_include_self),
                     autoJudge: Boolean(value.judge_auto),
+                    judgeCost: value.judge_cost ?? null,
                     ranking: null,
                     best: null,
                   };
@@ -448,11 +681,13 @@ export async function buildPromptBuilder(
                   best_prompt: value?.best_prompt,
                   fastest_prompt: value?.fastest_prompt ?? false,
                   fewest_tokens_prompt: value?.fewest_tokens_prompt ?? false,
+                  cheapest_prompt: value?.cheapest_prompt ?? false,
                   judge_rank: value?.judge_rank ?? null,
                   judge_best: value?.judge_best ?? null,
                   output_length: value?.output_length,
                   prompt_length: value?.prompt_length,
                   run_time: value?.run_time,
+                  cost: value?.cost ?? null,
                   options: parseScrOptionsString(value?.options),
                   response: value?.response,
                 };
@@ -705,7 +940,7 @@ export async function buildPromptBuilder(
       const promptBuilderNewPromptDefinition = {
         name: (document.getElementById('promptBuilderCreatePromptName') as HTMLInputElement).value,
         description: (document.getElementById('promptBuilderCreatePromptDescription') as HTMLInputElement).value,
-        function: 'Prompting',
+        function: PROMPT_FUNCTION,
         tool: 'Prompt-Builder',
         modelere: getAppState().userName,
         projectId: promptBuilderProjectSelectorDropdown.options[promptBuilderProjectSelectorDropdown.selectedIndex].value,
@@ -1238,16 +1473,41 @@ export async function buildPromptBuilder(
       .filter((obj1) => !promptBuilderDeprecatedLLMs.some((obj2) => obj1.id === obj2.id));
     await Promise.all(
       promptBuilderAvailableLLMs.map(async (availableLLM) => {
-        const availableLLMContents = await getModelContents(availableLLM.id);
-        for (const availableLLMContent of availableLLMContents) {
-          if (availableLLMContent?.name === 'options.json') {
-            availableLLM.fileURI = availableLLMContent.fileUri;
-            const currentOptions = await getFileContent(availableLLM.fileURI!);
-            availableLLM.options = await currentOptions.json();
+        // A single unreachable/slow LLM must not break the whole builder — it
+        // just loads without its options (and, later, without a cost estimate).
+        try {
+          const availableLLMContents = await getModelContents(availableLLM.id);
+          for (const availableLLMContent of availableLLMContents) {
+            if (availableLLMContent?.name === 'options.json') {
+              availableLLM.fileURI = availableLLMContent.fileUri;
+              const currentOptions = await getFileContent(availableLLM.fileURI!);
+              availableLLM.options = await currentOptions.json();
+            }
           }
+        } catch (error) {
+          console.error(`Failed to load options for LLM ${availableLLM.name}.`, error);
         }
       })
     );
+    // Cost/governance attributes of a run's LLM (per-token / per-second prices,
+    // provider, family, endpoint), resolved by model name. Fetched LAZILY — only
+    // for the models actually used (run / judge / manifest) — so the initial load
+    // is a fixed number of requests regardless of how many LLMs are registered.
+    const llmAttributesByName = new Map<string, AvailableLLM>();
+    for (const llm of [...promptBuilderAvailableLLMs, ...promptBuilderDeprecatedLLMs]) {
+      llmAttributesByName.set(llm.name, llm);
+    }
+    const llmAttributesFetched = new Set<string>();
+    async function ensureLLMCostAttributes(modelName: string): Promise<void> {
+      const llm = llmAttributesByName.get(modelName);
+      if (!llm || llmAttributesFetched.has(modelName)) return;
+      llmAttributesFetched.add(modelName);
+      try {
+        Object.assign(llm, extractCostAttributes(await getModelDetails(llm.id)));
+      } catch (error) {
+        console.error(`Failed to load cost attributes for LLM ${modelName}.`, error);
+      }
+    }
     generateModelSelection(promptBuilderAvailableLLMs);
 
     // Add the prompting inputs
@@ -1811,9 +2071,23 @@ export async function buildPromptBuilder(
         }
       }
 
+      // Estimated per-response cost (when the model carries prices) and the
+      // cheapest response — considered only among priced responses.
+      let cheapestIndex = -1;
+      let minCost = Infinity;
+      for (let i = 0; i < arr.length; i++) {
+        const cost = computeCallCost(arr[i].data, llmAttributesByName.get(arr[i].modelName));
+        arr[i].data.cost = cost;
+        if (cost !== null && cost < minCost) {
+          minCost = cost;
+          cheapestIndex = i;
+        }
+      }
+
       for (let i = 0; i < arr.length; i++) {
         arr[i].data.fastest_prompt = i === fastestIndex;
         arr[i].data.fewest_tokens_prompt = i === fewestTokensIndex;
+        arr[i].data.cheapest_prompt = i === cheapestIndex;
       }
     }
 
@@ -1914,6 +2188,9 @@ export async function buildPromptBuilder(
       }
 
       const results = await Promise.all(allPromises);
+      // Load the (cached) cost attributes of just the models that ran, so cost +
+      // cheapest can be computed. Guarded internally — never blocks a run.
+      await Promise.all(results.map((result) => ensureLLMCostAttributes(result.modelName)));
       // Identify fastest prompt and fewest tokens used prompt
       annotatePrompts(results);
       for (const { modelName, data, options } of results) {
@@ -1931,11 +2208,13 @@ export async function buildPromptBuilder(
               best_prompt: null,
               fastest_prompt: data?.fastest_prompt,
               fewest_tokens_prompt: data?.fewest_tokens_prompt,
+              cheapest_prompt: data?.cheapest_prompt ?? null,
               judge_rank: null,
               judge_best: null,
               output_length: data?.output_length,
               prompt_length: data?.prompt_length,
               run_time: data?.run_time,
+              cost: data?.cost ?? null,
               options: options,
               response: data?.response,
             } as ModelExperimentData;
@@ -1945,11 +2224,13 @@ export async function buildPromptBuilder(
               best_prompt: null,
               fastest_prompt: null,
               fewest_tokens_prompt: null,
+              cheapest_prompt: null,
               judge_rank: null,
               judge_best: null,
               output_length: null,
               prompt_length: null,
               run_time: null,
+              cost: null,
               options: null,
               response: promptBuilderInterfaceText?.promptBuilderModelInferenceFailed as string,
             } as ModelExperimentData;
@@ -2023,6 +2304,15 @@ export async function buildPromptBuilder(
     }
 
     // Build the judge verdict banner shown in a run's body.
+    // A muted "est. judging cost: N" line, shown when the judging cost is known.
+    function buildJudgingCostLine(judge: JudgeSummary): HTMLElement | null {
+      if (judge.judgeCost == null) return null;
+      const costLine = document.createElement('p');
+      costLine.classList.add('mb-1', 'small', 'text-muted');
+      costLine.innerText = `${promptBuilderInterfaceText.promptBuilderJudgingCostLabel} ${formatCost(judge.judgeCost)}`;
+      return costLine;
+    }
+
     function buildJudgeBanner(judge: JudgeSummary): HTMLElement {
       if (judge.mode === 'council') return buildCouncilBanner(judge);
       const banner = document.createElement('div');
@@ -2044,6 +2334,8 @@ export async function buildPromptBuilder(
         judgedByLine.classList.add('mb-1', 'small', 'text-muted');
         judgedByLine.innerText = `${promptBuilderInterfaceText.promptBuilderJudgedBy}: ${judge.judgeModel}`;
         banner.appendChild(judgedByLine);
+        const singleCostLine = buildJudgingCostLine(judge);
+        if (singleCostLine) banner.appendChild(singleCostLine);
         if (judge.excludedSelf || judge.includedSelf) {
           const selfNote = document.createElement('p');
           selfNote.classList.add('mb-1', 'small', 'text-muted');
@@ -2128,6 +2420,8 @@ export async function buildPromptBuilder(
         message.innerText = `${promptBuilderInterfaceText.promptBuilderJudgeErrorPrefix} ${judge.error ?? ''}`;
         banner.appendChild(message);
         banner.appendChild(buildBallotList(judge));
+        const degradedCostLine = buildJudgingCostLine(judge);
+        if (degradedCostLine) banner.appendChild(degradedCostLine);
         return banner;
       }
       const tie = Boolean(judge.tie);
@@ -2187,6 +2481,9 @@ export async function buildPromptBuilder(
         String((judge.panel ?? []).length)
       );
       banner.appendChild(footer);
+
+      const councilCostLine = buildJudgingCostLine(judge);
+      if (councilCostLine) banner.appendChild(councilCostLine);
 
       const suggestion = document.createElement('p');
       suggestion.classList.add('mb-0', 'small', 'text-muted');
@@ -2359,7 +2656,11 @@ export async function buildPromptBuilder(
               if (modelData?.fewest_tokens_prompt) {
                 promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderFewestTokensPrompt}</title><path d="M480-83 240-323l56-56 184 183 184-183 56 56L480-83Zm0-238L240-561l56-56 184 183 184-183 56 56-240 240Zm0-238L240-799l56-56 184 183 184-183 56 56-240 240Z"/></svg> `;
               }
-              // Judge's best response — a fourth icon, peer to the three above
+              // Cheapest response — a coin icon, peer to fastest/fewest-tokens
+              if (modelData?.cheapest_prompt) {
+                promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg class="cheapestPrompt" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderCheapestPrompt}</title><path d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm-38-152h68v-42q42-7 72-30t30-66q0-42-24-66t-84-45q-51-18-70.5-32T404-506q0-20 17-33t45-13q26 0 42 12.5t22 32.5l62-25q-9-28-32.5-49T508-611v-41h-68v41q-40 8-63.5 33T353-518q0 39 22.5 61.5T450-416q49 18 68.5 33.5T538-343q0 26-21 40t-49 14q-32 0-56-17.5T379-354l-64 26q13 44 40 69.5t87 33.5v41Z"/></svg> `;
+              }
+              // Judge's best response — a fifth icon, peer to the four above
               if (modelData?.judge_best) {
                 promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg class="judgeBest" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderJudgeBestPrompt}</title><path d="M280-120v-80h160v-124q-49-11-87.5-41.5T296-442q-75-9-125.5-65.5T120-640v-40q0-33 23.5-56.5T200-760h80v-80h400v80h80q33 0 56.5 23.5T840-680v40q0 76-50.5 132.5T664-442q-18 56-56.5 86.5T520-324v124h160v80H280Zm0-408v-152h-80v40q0 38 22 68.5t58 43.5Zm200 128q50 0 85-35t35-85v-240H360v240q0 50 35 85t85 35Zm200-128q36-13 58-43.5t22-68.5v-40h-80v152Zm-200-52Z"/></svg> `;
               }
@@ -2428,6 +2729,13 @@ export async function buildPromptBuilder(
                   promptExperimentContainerModelContainerAccordionItemBodyContainerBodyLine.innerHTML = `<b>${promptBuilderInterfaceText.promptExperimentModelOutputLength}</b> ${escapeHtml(promptExperimentRunModelKeyValue)}`;
                 } else if (promptExperimentRunModelKeyAttribute === 'run_time') {
                   promptExperimentContainerModelContainerAccordionItemBodyContainerBodyLine.innerHTML = `<b>${promptBuilderInterfaceText.promptExperimentModelRunTime}</b> ${escapeHtml(promptExperimentRunModelKeyValue)}`;
+                } else if (promptExperimentRunModelKeyAttribute === 'cost') {
+                  // Only shown when the model carried prices (else the line is skipped).
+                  if (promptExperimentRunModelKeyValue == null) continue;
+                  promptExperimentContainerModelContainerAccordionItemBodyContainerBodyLine.innerHTML = `<b>${promptBuilderInterfaceText.promptBuilderEstCostLabel}</b> ${escapeHtml(formatCost(promptExperimentRunModelKeyValue as number))}`;
+                } else if (promptExperimentRunModelKeyAttribute === 'cheapest_prompt') {
+                  // Rendered as the header icon, not a body line.
+                  continue;
                 } else if (promptExperimentRunModelKeyAttribute === 'judge_rank') {
                   // Skip when this run was never judged; the winner also gets a header icon.
                   if (promptExperimentRunModelKeyValue == null) continue;
@@ -2670,6 +2978,18 @@ export async function buildPromptBuilder(
           includeSelf,
         });
       const now = new Date().toISOString();
+      // Load the (cached) cost attributes of the judge models so judging cost can
+      // be estimated. Guarded internally — never blocks judging.
+      await Promise.all(panel.map(ensureLLMCostAttributes));
+      // Estimated cost of one judge/chairman call from its SCR usage + the
+      // judge model's prices. null when the model carries no prices.
+      const judgeCallCost = (model: string, usage?: JudgeUsage): number | null =>
+        usage ? computeCallCost(usage, llmAttributesByName.get(model)) : null;
+      // Sum a set of call costs, returning null only when none were priced.
+      const sumCosts = (costs: (number | null)[]): number | null => {
+        const priced = costs.filter((c): c is number => c !== null);
+        return priced.length > 0 ? priced.reduce((a, b) => a + b, 0) : null;
+      };
 
       if (panel.length === 1) {
         // ---- Single judge (Phase 1) ----
@@ -2690,6 +3010,7 @@ export async function buildPromptBuilder(
             includedSelf: includeSelf && judgeSelfPresent,
             includeSelf,
             autoJudge,
+            judgeCost: judgeCallCost(judgeModel, verdict.usage),
             ranAt: now,
           };
         } else {
@@ -2704,6 +3025,7 @@ export async function buildPromptBuilder(
             raw: verdict.raw ?? null,
             includeSelf,
             autoJudge,
+            judgeCost: judgeCallCost(judgeModel, verdict.usage),
             ranAt: now,
           };
         }
@@ -2718,7 +3040,10 @@ export async function buildPromptBuilder(
           reasoning: verdict.reasoning,
           excludedSelf: !includeSelf && candidateModels.includes(panel[ballotIndex]),
           error: verdict.error,
+          usage: verdict.usage,
         }));
+        // Estimated cost of the panel's calls (each judge that reached its model).
+        const panelCosts = ballots.map((ballot) => judgeCallCost(ballot.judgeModel, ballot.usage));
         const okBallots = ballots.filter(
           (ballot) => ballot.status === 'ok' && Array.isArray(ballot.ranking) && ballot.ranking.length > 0
         );
@@ -2734,6 +3059,7 @@ export async function buildPromptBuilder(
             error: `${promptBuilderInterfaceText?.promptBuilderCouncilDegraded}`,
             includeSelf,
             autoJudge,
+            judgeCost: sumCosts(panelCosts),
             ranAt: now,
           };
         } else {
@@ -2741,6 +3067,7 @@ export async function buildPromptBuilder(
           let councilBest = result.best;
           let councilTie = result.tie;
           let chairman: { model: string; reasoning?: string | null } | null = null;
+          let chairmanCost: number | null = null;
           // Chairman tiebreaker — only when the panel tied and the user opted in.
           if (
             result.tie &&
@@ -2749,6 +3076,7 @@ export async function buildPromptBuilder(
             result.tiedBest.length >= 2
           ) {
             const chairmanModel = promptBuilderJudgeChairmanModel.value;
+            await ensureLLMCostAttributes(chairmanModel);
             const chairmanVerdict = await chairmanBreakTie({
               scrEndpoint: promptBuilderObject.SCREndpoint as string,
               deploymentType: (promptBuilderObject.deploymentType as string) ?? 'k8s',
@@ -2761,6 +3089,7 @@ export async function buildPromptBuilder(
               tiedCandidates: candidates.filter((candidate) => result.tiedBest.includes(candidate.modelName)),
               panelNotes: okBallots.map((ballot) => ballot.reasoning ?? '').filter(Boolean),
             });
+            chairmanCost = judgeCallCost(chairmanModel, chairmanVerdict.usage);
             if (
               chairmanVerdict.status === 'ok' &&
               chairmanVerdict.best &&
@@ -2788,6 +3117,7 @@ export async function buildPromptBuilder(
             chairman,
             includeSelf,
             autoJudge,
+            judgeCost: sumCosts([...panelCosts, chairmanCost]),
             ranAt: now,
           };
         }
@@ -2941,6 +3271,7 @@ export async function buildPromptBuilder(
                 judge_include_self:
                   entry.judge?.status === 'ok' ? (entry.judge.includeSelf ? 1 : 0) : null,
                 judge_auto: entry.judge?.status === 'ok' ? (entry.judge.autoJudge ? 1 : 0) : null,
+                judge_cost: entry.judge?.status === 'ok' ? (entry.judge.judgeCost ?? null) : null,
                 judge_mode: entry.judge?.status === 'ok' ? (entry.judge.mode ?? 'single') : null,
                 judge_panel:
                   entry.judge?.status === 'ok' && entry.judge.mode === 'council'
@@ -2982,6 +3313,8 @@ export async function buildPromptBuilder(
               best_prompt: modelEntry.best_prompt == null ? null : (modelEntry.best_prompt ? 1 : 0),
               fastest_prompt: modelEntry?.fastest_prompt,
               fewest_tokens_prompt: modelEntry?.fewest_tokens_prompt,
+              cheapest_prompt: modelEntry?.cheapest_prompt ?? null,
+              cost: modelEntry?.cost ?? null,
               judge_rank: modelEntry?.judge_rank ?? null,
               judge_best: modelEntry?.judge_best == null ? null : (modelEntry.judge_best ? 1 : 0),
             });
@@ -3802,6 +4135,36 @@ ${scoreCodeReturn}`;
         } catch (error) {
           console.error('Failed to update the tags of the manifested model.', error);
         }
+        // Copy the winning LLM's governance/cost attributes onto the manifested
+        // prompt model (so a prompt carries the same metadata the mdb-registered
+        // LLMs do) and (re)assert the current function value. Best-effort.
+        await ensureLLMCostAttributes((bestPromptItem as PETRow).model);
+        const bestLLM = llmAttributesByName.get((bestPromptItem as PETRow).model);
+        const manifestAttributes: Record<string, unknown> = { function: PROMPT_FUNCTION };
+        if (bestLLM) {
+          for (const key of [
+            'llmodelType', 'provider', 'deploymentId',
+            'inputTokenCount', 'outputTokenCount', 'hostingCosts', 'endPoint',
+          ] as const) {
+            const value = bestLLM[key];
+            if (value !== null && value !== undefined) manifestAttributes[key] = value;
+          }
+        }
+        // When a model-card report URI is configured (Options pane), embed it as
+        // the model card's custom chart — same attributes/shape mdb writes.
+        const modelCardChart = buildModelCardChart(
+          getAppState().config.viyaHost,
+          promptBuilderObject?.modelCardReportURI as string | undefined
+        );
+        if (modelCardChart) {
+          manifestAttributes.modelCardCustomChartReport = modelCardChart;
+          manifestAttributes.modelCardCustomChartEnabled = true;
+        }
+        try {
+          await updateModelAttributes(promptExperimentRunModel, manifestAttributes);
+        } catch (error) {
+          console.error('Failed to copy the LLM attributes onto the manifested model.', error);
+        }
         showToast(`${promptBuilderInterfaceText?.promptBuilderManifestToast}`);
       } else {
         if (promptExperimentResultTargetContainer) {
@@ -3834,6 +4197,7 @@ ${scoreCodeReturn}`;
     projectSection.appendChild(promptBuilderPromptHeader);
     projectSection.appendChild(promptFilter.filterRow);
     projectSection.appendChild(promptBuilderPromptSelectorDropdown);
+    projectSection.appendChild(promptDocSection);
     projectSection.appendChild(document.createElement('br'));
     projectSection.appendChild(promptBuilderModalButtonContainer);
     promptBuilderContainer.appendChild(projectSection);

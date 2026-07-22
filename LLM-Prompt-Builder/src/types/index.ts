@@ -31,6 +31,14 @@ export interface PromptBuilderConfig {
    * always overrides it.
    */
   judgeModel?: string;
+  /**
+   * Optional SAS Visual Analytics report URI (the `/reports/reports/<uuid>`
+   * path). When set, manifesting the best prompt embeds that report on the
+   * model card as its custom chart (`modelCardCustomChartReport` +
+   * `modelCardCustomChartEnabled`), using the configured `viyaHost` as the
+   * report host — mirroring how mdb populates the same attributes.
+   */
+  modelCardReportURI?: string;
   /** Map of API-key name (as referenced by an LLM's options.json) to key value. */
   API_KEYS?: Record<string, string>;
   [key: string]: unknown;

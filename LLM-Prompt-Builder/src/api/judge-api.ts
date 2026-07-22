@@ -42,6 +42,16 @@ export interface JudgeVerdict {
   error?: string;
   /** Raw judge response, kept for display when the verdict was unparseable. */
   raw?: string;
+  /** Token/time usage of the judge call (from the SCR contract), used to
+   *  estimate the judging cost. Present whenever the call reached the model. */
+  usage?: JudgeUsage;
+}
+
+/** The SCR call metrics needed to estimate a judge call's cost. */
+export interface JudgeUsage {
+  run_time?: number | null;
+  prompt_length?: number | null;
+  output_length?: number | null;
 }
 
 /**
@@ -56,6 +66,8 @@ export interface JudgeBallot {
   reasoning?: string;
   excludedSelf?: boolean;
   error?: string;
+  /** Token/time usage of this judge's call, used to estimate the judging cost. */
+  usage?: JudgeUsage;
 }
 
 export interface CouncilAgreement {
@@ -355,6 +367,7 @@ export async function judgeRun(params: JudgeRunParams): Promise<JudgeVerdict> {
   const judgeUserPrompt = buildJudgeUserPrompt(systemPrompt, userPrompt, labelled);
 
   let lastRaw = '';
+  let lastUsage: JudgeUsage | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
     const result = (await callSCRLLM(
       scrEndpoint,
@@ -363,11 +376,22 @@ export async function judgeRun(params: JudgeRunParams): Promise<JudgeVerdict> {
       judgeUserPrompt,
       judgeOptions,
       deploymentType
-    )) as { response?: string; error?: string };
+    )) as {
+      response?: string;
+      error?: string;
+      run_time?: number;
+      prompt_length?: number;
+      output_length?: number;
+    };
 
     if (result?.error) {
       return { status: 'error', error: result.error };
     }
+    const usage: JudgeUsage = {
+      run_time: result?.run_time ?? null,
+      prompt_length: result?.prompt_length ?? null,
+      output_length: result?.output_length ?? null,
+    };
     lastRaw = String(result?.response ?? '');
     const verdict = parseVerdict(lastRaw, validLabels);
     if (verdict) {
@@ -379,11 +403,15 @@ export async function judgeRun(params: JudgeRunParams): Promise<JudgeVerdict> {
           .filter((m): m is string => Boolean(m)),
         confidence: verdict.confidence,
         reasoning: verdict.reasoning,
+        usage,
       };
     }
+    // Keep the usage from the last attempt so an unparseable verdict still
+    // contributes its call cost.
+    lastUsage = usage;
   }
 
-  return { status: 'unparseable', raw: lastRaw };
+  return { status: 'unparseable', raw: lastRaw, usage: lastUsage };
 }
 
 const CHAIRMAN_SYSTEM_PROMPT = [
@@ -452,6 +480,7 @@ export async function chairmanBreakTie(params: ChairmanParams): Promise<JudgeVer
   ].join('\n');
 
   let lastRaw = '';
+  let lastUsage: JudgeUsage | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
     const result = (await callSCRLLM(
       params.scrEndpoint,
@@ -460,10 +489,21 @@ export async function chairmanBreakTie(params: ChairmanParams): Promise<JudgeVer
       chairmanUserPrompt,
       params.chairmanOptions,
       params.deploymentType
-    )) as { response?: string; error?: string };
+    )) as {
+      response?: string;
+      error?: string;
+      run_time?: number;
+      prompt_length?: number;
+      output_length?: number;
+    };
     if (result?.error) {
       return { status: 'error', error: result.error };
     }
+    lastUsage = {
+      run_time: result?.run_time ?? null,
+      prompt_length: result?.prompt_length ?? null,
+      output_length: result?.output_length ?? null,
+    };
     lastRaw = String(result?.response ?? '');
     const jsonText = extractJsonObject(lastRaw);
     if (jsonText) {
@@ -475,6 +515,7 @@ export async function chairmanBreakTie(params: ChairmanParams): Promise<JudgeVer
             status: 'ok',
             best: labelToModel.get(bestLabel),
             reasoning: String(parsed.reasoning ?? ''),
+            usage: lastUsage,
           };
         }
       } catch {
@@ -482,5 +523,5 @@ export async function chairmanBreakTie(params: ChairmanParams): Promise<JudgeVer
       }
     }
   }
-  return { status: 'unparseable', raw: lastRaw };
+  return { status: 'unparseable', raw: lastRaw, usage: lastUsage };
 }

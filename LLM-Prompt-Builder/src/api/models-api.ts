@@ -259,14 +259,29 @@ export async function deleteModelVariable(
 }
 
 /**
- * Update a model's tags: reads the model (for its ETag and current tags),
- * removes the given tags, appends the new ones and PUTs the model back.
- * Returns the HTTP status of the failing GET or of the PUT.
+ * Get a model's full detail (all top-level attributes, e.g. function,
+ * llmodelType, provider, deploymentId, inputTokenCount, outputTokenCount,
+ * hostingCosts, endPoint, modelPurpose, …). Returns null when the model
+ * cannot be read.
  */
-export async function updateModelTags(
+export async function getModelDetails(
+  modelID: string
+): Promise<Record<string, unknown> | null> {
+  const response = await viyaFetch(`/modelRepository/models/${modelID}`, {
+    accept: 'application/vnd.sas.models.model+json',
+  });
+  if (!response.ok) return null;
+  return (await response.json()) as Record<string, unknown>;
+}
+
+/**
+ * Read a model (for its ETag + body), apply `mutate` to the body in place, then
+ * PUT it back with If-Match. Returns the status of the failing GET or of the PUT.
+ * Shared by updateModelTags and updateModelAttributes.
+ */
+async function patchModel(
   modelID: string,
-  removeTags: string[],
-  addTags: string[]
+  mutate: (model: Record<string, unknown>) => void
 ): Promise<number> {
   const getResponse = await viyaFetch(`/modelRepository/models/${modelID}`, {
     accept: 'application/vnd.sas.models.model+json',
@@ -274,11 +289,7 @@ export async function updateModelTags(
   if (!getResponse.ok) return getResponse.status;
   const model = (await getResponse.json()) as Record<string, unknown>;
   const etag = getResponse.headers.get('ETag');
-  const currentTags = Array.isArray(model.tags) ? (model.tags as string[]) : [];
-  model.tags = [
-    ...currentTags.filter((tag) => !removeTags.includes(tag) && !addTags.includes(tag)),
-    ...addTags,
-  ];
+  mutate(model);
   const headers: Record<string, string> = {};
   if (etag) headers['If-Match'] = etag;
   const putResponse = await viyaFetch(`/modelRepository/models/${modelID}`, {
@@ -288,6 +299,41 @@ export async function updateModelTags(
     headers,
   });
   return putResponse.status;
+}
+
+/**
+ * Update a model's tags: reads the model (for its ETag and current tags),
+ * removes the given tags, appends the new ones and PUTs the model back.
+ * Returns the HTTP status of the failing GET or of the PUT.
+ */
+export async function updateModelTags(
+  modelID: string,
+  removeTags: string[],
+  addTags: string[]
+): Promise<number> {
+  return patchModel(modelID, (model) => {
+    const currentTags = Array.isArray(model.tags) ? (model.tags as string[]) : [];
+    model.tags = [
+      ...currentTags.filter((tag) => !removeTags.includes(tag) && !addTags.includes(tag)),
+      ...addTags,
+    ];
+  });
+}
+
+/**
+ * Shallow-merge a set of top-level attributes onto a model and PUT it back
+ * (ETag-guarded). Skips keys whose value is undefined so callers can pass a
+ * partial object built from optional fields. Returns the GET/PUT status.
+ */
+export async function updateModelAttributes(
+  modelID: string,
+  attributes: Record<string, unknown>
+): Promise<number> {
+  return patchModel(modelID, (model) => {
+    for (const [key, value] of Object.entries(attributes)) {
+      if (value !== undefined) model[key] = value;
+    }
+  });
 }
 
 /**
