@@ -276,13 +276,20 @@ def _llm_model_type(manifest: ModelManifest) -> str:
     return manifest.tags.provider_tag or "Other"
 
 
-def _model_card_chart() -> Optional[str]:
+def _model_card_chart(kind: str) -> Optional[str]:
     """The <sas-report> embed for the model card's custom chart, when configured.
-    The report URI is environment-specific, so it comes from the environment
-    (SAS_MODEL_CARD_REPORT_URI); the host defaults to SAS_VIYA_URL."""
+    The report URI is environment-specific and per-kind, so it comes from the
+    environment: SAS_LLM_MODEL_CARD_REPORT_URI for llm models and
+    SAS_EMBEDDING_MODEL_CARD_REPORT_URI for embedding models (the legacy
+    SAS_MODEL_CARD_REPORT_URI is still honored as a fallback). The host defaults
+    to SAS_VIYA_URL."""
     import os
 
-    uri = os.environ.get("SAS_MODEL_CARD_REPORT_URI")
+    kind_var = {
+        "llm": "SAS_LLM_MODEL_CARD_REPORT_URI",
+        "embedding": "SAS_EMBEDDING_MODEL_CARD_REPORT_URI",
+    }.get(kind)
+    uri = (os.environ.get(kind_var) if kind_var else None) or os.environ.get("SAS_MODEL_CARD_REPORT_URI")
     if not uri:
         return None
     host = (os.environ.get("SAS_VIYA_URL", "") or "https://<sas-viya-host>").rstrip("/")
@@ -312,7 +319,9 @@ def build_model_attributes(manifest: ModelManifest, folder: Path,
     attributes = json.loads((folder / "modelConfiguration.json").read_text(encoding="utf-8"))
     row = fact_row or {}
     pricing = manifest.metadata.pricing
-    attributes["llmModelType"] = _llm_model_type(manifest)
+    # SAS Model Manager's field is spelled "llmodelType" (lowercase m); writing
+    # the camelCase "llmModelType" is silently dropped on the model PUT.
+    attributes["llmodelType"] = _llm_model_type(manifest)
     attributes["provider"] = row.get("provider", manifest.tags.provider_tag)
     attributes["deploymentId"] = manifest.provider.model_version
     attributes["endPoint"] = f"{scr_endpoint}/{manifest.model_id}/{manifest.model_id}"
@@ -331,7 +340,7 @@ def build_model_attributes(manifest: ModelManifest, folder: Path,
         ) / 2
     # The event/probability output variable mirrors the model's target variable.
     attributes["eventProbVar"] = attributes.get("targetVariable", "response")
-    chart = _model_card_chart()
+    chart = _model_card_chart(manifest.kind)
     if chart:
         attributes["modelCardCustomChartReport"] = chart
         attributes["modelCardCustomChartEnabled"] = True
@@ -425,7 +434,12 @@ def ensure_model_lifecycle(session, model_name: str,
 
 def list_registered_models(session, kind: str) -> list[dict]:
     """Registered models in a kind's project, with the lifecycle/enrichment
-    attributes for a status overview. Returns [] when the project is absent."""
+    attributes for a status overview. Returns [] when the project is absent.
+
+    The model-list summary is inconsistent about custom attributes (it omits
+    llmodelType entirely and returns deploymentId/endPoint only for some
+    models), so each model's full detail is fetched to populate the columns
+    reliably."""
     from sasctl.services import model_repository as mr
 
     project = mr.get_project(KIND_PROJECT[kind])
@@ -439,17 +453,106 @@ def list_registered_models(session, kind: str) -> list[dict]:
         return []
     rows: list[dict] = []
     for item in response.json().get("items", []):
+        model_id = item.get("id")
+        detail = item
+        if model_id:
+            got = session.get(f"/modelRepository/models/{model_id}")
+            if got.status_code < 300:
+                detail = got.json()
         rows.append({
-            "model_id": item.get("name", ""),
+            "model_id": detail.get("name", item.get("name", "")),
             "kind": kind,
-            "provider": item.get("provider", ""),
-            "llmModelType": item.get("llmModelType", ""),
-            "deploymentId": item.get("deploymentId", ""),
-            "modelStatus": item.get("modelStatus", ""),
-            "approvalState": item.get("approvalState", ""),
-            "endPoint": item.get("endPoint", ""),
+            "provider": detail.get("provider", ""),
+            "llmModelType": detail.get("llmodelType", ""),
+            "deploymentId": detail.get("deploymentId", ""),
+            "modelStatus": detail.get("modelStatus", ""),
+            "approvalState": detail.get("approvalState", ""),
+            "endPoint": detail.get("endPoint", ""),
         })
     return rows
+
+
+# The modelConfiguration.json fields, all of which are stored as top-level model
+# attributes in SAS Model Manager (so a pulled model can rebuild the file from
+# its attributes). scoreCodeFile is derived from the score-role content instead.
+_MODEL_CONFIG_KEYS = (
+    "name", "description", "toolVersion", "targetVariable", "targetLevel",
+    "trainCodeType", "modeler", "function", "algorithm", "tool", "scoreCodeType",
+    "tags", "modelPurpose", "intendedUse", "expectedBenefit", "outOfScopeUseCases",
+    "limitations",
+)
+
+
+@dataclass
+class PullResult:
+    model_id: str
+    kind: str
+    files: list[str]
+    had_definition: bool       # definition.yaml was stored as model content
+    reconstructed_config: bool  # modelConfiguration.json rebuilt from attributes
+
+
+def _model_config_from_attributes(body: dict, score_file: str) -> dict:
+    """Rebuild modelConfiguration.json from a registered model's attributes."""
+    config: dict = {"name": body.get("name"), "scoreCodeFile": score_file}
+    for key in _MODEL_CONFIG_KEYS:
+        if key == "name":
+            continue
+        value = body.get(key)
+        if value not in (None, ""):
+            config[key] = value
+    config.setdefault("champion", bool(body.get("champion") or False))
+    return config
+
+
+def pull_model(session, model_id: str, defs_dir_for, force: bool = False) -> PullResult:
+    """Recreate a local definition folder from a model registered in SAS Model
+    Manager (the reverse of register): download its content and, when the model
+    predates mdb (no stored definition.yaml), rebuild modelConfiguration.json
+    from its attributes so the folder matches a legacy hand-written definition.
+    `defs_dir_for(kind)` returns the definitions directory for the model's kind."""
+    from sasctl.services import model_repository as mr
+
+    existing = mr.get_model(model_id)
+    if existing is None:
+        raise RuntimeError(f"'{model_id}' is not registered in SAS Model Manager.")
+    model_ref = _attr(existing, "id")
+    body = dict(mr.get_model_details(model_ref).items())
+    kind = "embedding" if body.get("function") == "embedding" else "llm"
+    folder = defs_dir_for(kind) / model_id
+
+    listing = session.get(f"/modelRepository/models/{model_ref}/contents")
+    items = listing.json().get("items", []) if listing.status_code < 300 else []
+
+    if folder.exists() and any(folder.iterdir()) and not force:
+        raise RuntimeError(f"{folder} already exists and is not empty - pass --force to overwrite.")
+    folder.mkdir(parents=True, exist_ok=True)
+
+    files: list[str] = []
+    score_file = None
+    had_definition = False
+    for item in items:
+        name, content_id = item.get("name"), item.get("id")
+        if not name or not content_id:
+            continue
+        if item.get("role") == "score":
+            score_file = name
+        if name == MANIFEST_FILENAME:
+            had_definition = True
+        response = session.get(f"/modelRepository/models/{model_ref}/contents/{content_id}/content")
+        if response.status_code >= 300:
+            continue
+        (folder / name).write_bytes(response.content)
+        files.append(name)
+
+    reconstructed = False
+    if not (folder / "modelConfiguration.json").is_file():
+        config = _model_config_from_attributes(body, score_file or f"{model_id}.py")
+        (folder / "modelConfiguration.json").write_text(
+            json.dumps(config, indent=4) + "\n", encoding="utf-8")
+        files.append("modelConfiguration.json")
+        reconstructed = True
+    return PullResult(model_id, kind, sorted(files), had_definition, reconstructed)
 
 
 def register_model(session, manifest: ModelManifest, folder: Path, fact_row: dict | None,
@@ -517,6 +620,14 @@ def register_model(session, manifest: ModelManifest, folder: Path, fact_row: dic
     details = mr.get_model_details(model_id)
     body = dict(details.items())
     body.update(attributes)
+    # Backfill the lifecycle for models registered before it existed (notably the
+    # embedding models, which never carried modelStatus/approvalState). Fill only
+    # when absent so an --update never resets a model that is already deployed or
+    # retired; publish/retire advance these from the register defaults.
+    if not body.get("modelStatus"):
+        body["modelStatus"] = "ready for validation"
+    if not body.get("approvalState"):
+        body["approvalState"] = "awaiting approval"
     response = session.put(
         f"/modelRepository/models/{model_id}",
         data=json.dumps(body),

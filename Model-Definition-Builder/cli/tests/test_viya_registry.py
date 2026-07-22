@@ -23,7 +23,8 @@ def test_attributes_enrichment(repo_root, fact_sheet):
     attrs = build_model_attributes(manifest, folder, row, "https://viya-host/llm")
     assert attrs["name"] == "gpt_41_mini"
     assert attrs["endPoint"] == "https://viya-host/llm/gpt_41_mini/gpt_41_mini"
-    assert attrs["llmModelType"] == "GPT"  # derived from the model id, no longer hardcoded
+    # SAS Model Manager's field is "llmodelType" (lowercase m); derived, not hardcoded
+    assert attrs["llmodelType"] == "GPT"
     assert attrs["provider"] == "OpenAI"
     assert attrs["deploymentId"] == manifest.provider.model_version
     assert attrs["eventProbVar"] == "response"
@@ -58,6 +59,57 @@ def test_seconds_cost_type(repo_root):
         "https://viya-host/llm",
     )
     assert attrs["costPerCall"] == 0.00004
+
+
+def test_model_card_chart_is_per_kind(repo_root, monkeypatch):
+    """The model-card report URI is selected per kind, with the legacy variable
+    as a shared fallback; the attribute is spelled modelCardCustomChartReport."""
+    llm = load_manifest(repo_root / "LLM-Definitions" / "gpt_41_mini")
+    emb = load_manifest(repo_root / "Embedding-Definitions" / "titan_embed_text_v2")
+    for var in ("SAS_MODEL_CARD_REPORT_URI", "SAS_LLM_MODEL_CARD_REPORT_URI",
+                "SAS_EMBEDDING_MODEL_CARD_REPORT_URI"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("SAS_VIYA_URL", "https://viya-host")
+
+    # No variable set -> no chart attributes at all.
+    assert "modelCardCustomChartReport" not in build_model_attributes(
+        llm, repo_root / "LLM-Definitions" / "gpt_41_mini", None, "https://viya-host/llm")
+
+    # Per-kind variables select independently.
+    monkeypatch.setenv("SAS_LLM_MODEL_CARD_REPORT_URI", "/reports/reports/llm-uuid")
+    monkeypatch.setenv("SAS_EMBEDDING_MODEL_CARD_REPORT_URI", "/reports/reports/emb-uuid")
+    llm_attrs = build_model_attributes(llm, repo_root / "LLM-Definitions" / "gpt_41_mini", None, "https://viya-host/llm")
+    emb_attrs = build_model_attributes(emb, repo_root / "Embedding-Definitions" / "titan_embed_text_v2", None, "https://viya-host/llm")
+    assert "llm-uuid" in llm_attrs["modelCardCustomChartReport"]
+    assert "emb-uuid" in emb_attrs["modelCardCustomChartReport"]
+    assert llm_attrs["modelCardCustomChartEnabled"] is True
+
+    # Legacy variable is the shared fallback when a kind-specific one is absent.
+    monkeypatch.delenv("SAS_LLM_MODEL_CARD_REPORT_URI")
+    monkeypatch.setenv("SAS_MODEL_CARD_REPORT_URI", "/reports/reports/legacy-uuid")
+    fallback = build_model_attributes(llm, repo_root / "LLM-Definitions" / "gpt_41_mini", None, "https://viya-host/llm")
+    assert "legacy-uuid" in fallback["modelCardCustomChartReport"]
+
+
+def test_model_config_reconstruction_from_attributes():
+    """pull rebuilds modelConfiguration.json from a registered model's
+    attributes: scoreCodeFile comes from the score content, empty values are
+    dropped, and champion defaults to False."""
+    from mdb.viya.registry import _model_config_from_attributes
+    body = {
+        "name": "gemini_flash_15_8b", "description": "Gemini.", "function": "text generation",
+        "targetVariable": "response", "tool": "Python 3", "tags": ["Google", "LLM", "deprecated"],
+        "modeler": "gerdaw", "expectedBenefit": "", "id": "abc", "links": [], "champion": None,
+    }
+    config = _model_config_from_attributes(body, "gemini_flash_15_8b.py")
+    assert config["name"] == "gemini_flash_15_8b"
+    assert config["scoreCodeFile"] == "gemini_flash_15_8b.py"
+    assert config["function"] == "text generation"
+    assert config["tags"] == ["Google", "LLM", "deprecated"]
+    assert config["champion"] is False
+    # empty and Model-Manager-internal fields are not carried into the file
+    assert "expectedBenefit" not in config
+    assert "id" not in config and "links" not in config
 
 
 def test_content_files_roles(repo_root):
