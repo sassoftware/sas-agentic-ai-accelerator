@@ -2,6 +2,19 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [1.8.0] - 2026-07-22
+
+An admin migration guide for the move from the retired standalone Python scripts to the Model Definition Builder (`mdb`), and a skill to find registered models that predate the 1.6.0 attribute/lifecycle improvements.
+
+### Added
+
+- **`Model-Definition-Builder/MIGRATION.md`** — an administrator migration guide from the legacy Python scripts (`Model-Manager-Setup.py`, `utility/prompt-builder-json.py`, `register-*.py`, `publish-*.py`, removed in 1.3.0) to `mdb`. It maps each old script to its `mdb` command, walks install/configure → `mdb setup` → `mdb register`/`publish`/`ship`, and — the main task for an existing deployment — how to **backfill models registered before 1.6.0** (`mdb register --update`, or `mdb pull --import` first for models that have no local `definition.yaml`)
+- **`model-audit` skill** (`Model-Definition-Builder/.claude/skills/model-audit/`) — a read-only Claude Code skill that audits every model registered in SAS Model Manager: it fetches each model's full detail and variables and reports which of the 1.6.0 attributes are missing (family `llmodelType`, `deploymentId`, per-token/second costs, `endPoint`, `modelStatus`/`approvalState`) and whether its input/output variables are duplicated, printing the exact `mdb register --update` (or `mdb pull`) remediation per model. Its companion `audit-models.py` runs standalone too
+
+### Changed
+
+- **`.env.example`** wording no longer refers to "the Python setup scripts" — the connection block is used by the `mdb` Viya commands (the last copy that predated the mdb consolidation)
+
 ## [1.7.0] - 2026-07-22
 
 The Prompt Builder gains governance documentation and a cost dimension. A prompt can now carry the same model-card fields the mdb-registered models do, the manifested best prompt inherits its winning LLM's provider/cost attributes, and — when the LLMs carry per-token or per-second prices — every response and the judging get an estimated cost, with the cheapest response flagged per run.
