@@ -44,6 +44,120 @@ export interface JudgeVerdict {
   raw?: string;
 }
 
+/**
+ * One council member's ballot: a JudgeVerdict tagged with the judge that
+ * produced it, plus whether that judge's own response was excluded from it.
+ */
+export interface JudgeBallot {
+  judgeModel: string;
+  status: 'ok' | 'error' | 'unparseable';
+  ranking?: string[];
+  confidence?: JudgeConfidence;
+  reasoning?: string;
+  excludedSelf?: boolean;
+  error?: string;
+}
+
+export interface CouncilAgreement {
+  /** How many successful ballots ranked the aggregate winner first. */
+  firstChoiceForWinner: number;
+  /** Successful ballots counted in the aggregate. */
+  total: number;
+}
+
+export interface CouncilResult {
+  method: 'borda';
+  /** Aggregate ranking, best first. */
+  ranking: string[];
+  /** Aggregate winner, or null on a tie. */
+  best: string | null;
+  tie: boolean;
+  /** The tied winners (length > 1) when `tie`; empty otherwise. */
+  tiedBest: string[];
+  agreement: CouncilAgreement;
+  /** Agreement-tier confidence: unanimous → high, majority → medium, else low. */
+  confidence: JudgeConfidence;
+  /** Borda score per candidate model (kept for display/debug). */
+  scores: Record<string, number>;
+  /** Competition rank per candidate model: equal scores share a rank, so a
+   *  two-way top tie is 1, 1, 3, … (the ranks themselves show the tie). */
+  ranks: Record<string, number>;
+}
+
+/**
+ * Aggregate a panel's ballots into a council result with a Borda count.
+ *
+ * Each ballot ranks the candidates that judge was eligible to judge (after
+ * self-exclusion), so ballots can be partial. For a ballot ranking `m`
+ * candidates, the candidate at 0-indexed position `p` scores `m - 1 - p`
+ * (top gets `m-1`, last gets 0); a candidate a ballot didn't rank scores
+ * nothing from it. The winner is the highest total; equal top totals are a
+ * tie (no winner). Confidence is the agreement tier (how many judges ranked
+ * the winner first). Pure and deterministic — no LLM calls, no randomness.
+ */
+export function aggregateBallots(
+  candidateModels: string[],
+  ballots: JudgeBallot[]
+): CouncilResult {
+  const scores: Record<string, number> = {};
+  const firstChoice: Record<string, number> = {};
+  candidateModels.forEach((model) => {
+    scores[model] = 0;
+    firstChoice[model] = 0;
+  });
+
+  const okBallots = ballots.filter(
+    (ballot) => ballot.status === 'ok' && Array.isArray(ballot.ranking) && ballot.ranking.length > 0
+  );
+
+  for (const ballot of okBallots) {
+    const ranking = ballot.ranking!.filter((model) => candidateModels.includes(model));
+    const m = ranking.length;
+    ranking.forEach((model, position) => {
+      scores[model] += m - 1 - position;
+    });
+    if (ranking.length > 0) firstChoice[ranking[0]] += 1;
+  }
+
+  // Aggregate ranking: score desc, then model name asc for a stable order.
+  const ranking = [...candidateModels].sort((a, b) => {
+    const delta = scores[b] - scores[a];
+    return delta !== 0 ? delta : a.localeCompare(b);
+  });
+
+  const total = okBallots.length;
+  const topScore = ranking.length ? scores[ranking[0]] : 0;
+  const tiedTop = candidateModels.filter((model) => scores[model] === topScore);
+  const tie = total > 0 && tiedTop.length > 1;
+  const best = total > 0 && !tie ? ranking[0] : null;
+  const firstChoiceForWinner = best ? firstChoice[best] : 0;
+
+  let confidence: JudgeConfidence;
+  if (!best) confidence = 'low';
+  else if (firstChoiceForWinner === total) confidence = 'high';
+  else if (firstChoiceForWinner > total / 2) confidence = 'medium';
+  else confidence = 'low';
+
+  // Competition ranking from the scores: models with an equal score share a
+  // rank, so a top tie reads as 1, 1, 3, … rather than a misleading 1, 2, 3.
+  const ranks: Record<string, number> = {};
+  candidateModels.forEach((model) => {
+    ranks[model] = 1 + candidateModels.filter((other) => scores[other] > scores[model]).length;
+  });
+
+  return {
+    method: 'borda',
+    ranking,
+    best,
+    tie,
+    tiedBest: tie ? tiedTop : [],
+    agreement: { firstChoiceForWinner, total },
+    confidence,
+    scores,
+    ranks,
+  };
+}
+
 export interface JudgeRunParams {
   scrEndpoint: string;
   deploymentType: string;
@@ -269,5 +383,104 @@ export async function judgeRun(params: JudgeRunParams): Promise<JudgeVerdict> {
     }
   }
 
+  return { status: 'unparseable', raw: lastRaw };
+}
+
+const CHAIRMAN_SYSTEM_PROMPT = [
+  'You are the chairman of a panel of judges that could not agree on the best',
+  'response. You will see the task and only the responses the panel tied on,',
+  'each identified by a letter, plus the panel members’ notes for context.',
+  'Weigh them and pick the single best response for the task. Reason first, then',
+  'decide. Ignore length and formatting except where they affect quality.',
+  '',
+  'Return ONLY a JSON object, no prose outside it, with this exact shape:',
+  '{',
+  '  "reasoning": "<why this one wins the tie-break>",',
+  '  "best": "<the single best letter>"',
+  '}',
+].join('\n');
+
+export interface ChairmanParams {
+  scrEndpoint: string;
+  deploymentType: string;
+  chairmanModel: string;
+  chairmanOptions: Record<string, unknown>;
+  systemPrompt: string;
+  userPrompt: string;
+  /** The tied candidates the chairman chooses between. */
+  tiedCandidates: JudgeCandidate[];
+  /** The panel members' reasonings, shown to the chairman for context. */
+  panelNotes?: string[];
+  shuffle?: (n: number) => number[];
+}
+
+/**
+ * Break a council tie: the chairman model picks the single best among the tied
+ * candidates (shuffled + anonymised), given the task and the panel's notes.
+ * Returns a model-space verdict (its `best` is one of the tied models).
+ */
+export async function chairmanBreakTie(params: ChairmanParams): Promise<JudgeVerdict> {
+  const { tiedCandidates } = params;
+  if (tiedCandidates.length < 2) {
+    return { status: 'error', error: 'not-enough-candidates' };
+  }
+  const shuffle = params.shuffle ?? defaultShuffle;
+  const order = shuffle(tiedCandidates.length);
+  const labelled = order.map((candidateIndex, position) => ({
+    label: candidateLabel(position),
+    modelName: tiedCandidates[candidateIndex].modelName,
+    response: tiedCandidates[candidateIndex].response,
+  }));
+  const labelToModel = new Map(labelled.map((c) => [c.label, c.modelName]));
+  const validLabels = new Set(labelled.map((c) => c.label));
+
+  const notes = (params.panelNotes ?? []).filter((note) => note && note.trim() !== '');
+  const chairmanUserPrompt = [
+    '== TASK: SYSTEM PROMPT ==',
+    params.systemPrompt || '(none)',
+    '',
+    '== TASK: USER PROMPT ==',
+    params.userPrompt || '(none)',
+    '',
+    '== TIED RESPONSES ==',
+    labelled.map((c) => `[${c.label}]\n${c.response}`).join('\n\n'),
+    ...(notes.length > 0
+      ? ['', '== PANEL NOTES (context; the panel used its own letters) ==', notes.map((n) => `- ${n}`).join('\n')]
+      : []),
+    '',
+    'Return the JSON object now.',
+  ].join('\n');
+
+  let lastRaw = '';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = (await callSCRLLM(
+      params.scrEndpoint,
+      params.chairmanModel,
+      CHAIRMAN_SYSTEM_PROMPT,
+      chairmanUserPrompt,
+      params.chairmanOptions,
+      params.deploymentType
+    )) as { response?: string; error?: string };
+    if (result?.error) {
+      return { status: 'error', error: result.error };
+    }
+    lastRaw = String(result?.response ?? '');
+    const jsonText = extractJsonObject(lastRaw);
+    if (jsonText) {
+      try {
+        const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+        const bestLabel = String(parsed.best ?? '').trim().toUpperCase();
+        if (validLabels.has(bestLabel)) {
+          return {
+            status: 'ok',
+            best: labelToModel.get(bestLabel),
+            reasoning: String(parsed.reasoning ?? ''),
+          };
+        }
+      } catch {
+        /* fall through to retry / unparseable */
+      }
+    }
+  }
   return { status: 'unparseable', raw: lastRaw };
 }

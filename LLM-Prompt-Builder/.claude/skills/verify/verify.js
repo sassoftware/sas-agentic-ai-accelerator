@@ -276,6 +276,9 @@ function multipartJson(body) {
     return toastTexts.some((t) => t.includes('manifested')) && toastTexts.some((t) => t.includes('saved'));
   }, 'save + manifest toasts');
   step(true, 'save and manifest success reported via toasts');
+  // Manifesting shows the link in the manifest box (not next to Save).
+  await waitUntil(async () => Boolean(await page.$('#app-obj-LPB-pet-save-result a')), 'manifest link in the manifest box');
+  step(true, 'manifest shows the Model Manager link in the manifest box');
   aLog = await getLog();
   const findPart = (name) => aLog.find((e) => e.method === 'POST' && e.body.includes(`filename="${name}"`));
   const savedTracker = multipartJson(findPart('Prompt-Experiment-Tracker.json').body);
@@ -428,8 +431,14 @@ function multipartJson(body) {
   await resetLog();
   await page.click('#app-obj-LPB-pet-create-model-button');
   await waitUntil(
-    async () => (await getLog()).some((e) => e.method === 'POST' && e.body.includes('def scoreModel(')),
-    'parsing score code uploaded'
+    async () => {
+      const l = await getLog();
+      return (
+        l.some((e) => e.method === 'POST' && e.body.includes('def scoreModel(')) &&
+        l.some((e) => e.method === 'POST' && e.body.includes('filename="outputVar.json"'))
+      );
+    },
+    'parsing score code + outputVar uploaded'
   );
   aLog = await getLog();
   const findPart3 = (name) => aLog.find((e) => e.method === 'POST' && e.body.includes(`filename="${name}"`));
@@ -598,6 +607,14 @@ function multipartJson(body) {
   );
   assert(savedRows[1].best_prompt === true || savedRows[1].best_prompt === 1, 'saved run #1 row carries best_prompt');
   assert(savedRows[2].systemPrompt === 'Sys 3', 'saved run #2 header row holds the former run-3 prompt');
+  // A plain Save shows the Model Manager link next to the Save button, not in
+  // the manifest box.
+  const saveOnlyLink = await page.$('#app-obj-LPB-pet-save-only-result a');
+  assert(saveOnlyLink, 'plain Save shows the link next to the Save button');
+  assert(
+    !(await page.$('#app-obj-LPB-pet-save-result a')),
+    'plain Save does not put the link in the manifest box'
+  );
 
   // ---- delete ALL runs, then save an empty tracker --------------------------
   await page.click('#app-obj-LPB-pet-0 .pet-run-delete'); // DOM order: pet-1 first, but ids are stable per index
