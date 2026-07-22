@@ -93,6 +93,30 @@ def _attr(obj, name):
     return value
 
 
+def _refresh_project_responsible(session, project, responsible_party: str) -> None:
+    """Set an existing project's responsible party (create_project only sets it
+    at creation). Best-effort: a failure here never blocks register/setup."""
+    project_id = _attr(project, "id")
+    if not project_id:
+        return
+    got = session.get(f"/modelRepository/projects/{project_id}")
+    if got.status_code >= 300:
+        return
+    body = got.json()
+    if body.get("modelResponsibleParty") == responsible_party:
+        return
+    body["modelResponsibleParty"] = responsible_party
+    session.put(
+        f"/modelRepository/projects/{project_id}",
+        data=json.dumps(body),
+        headers={
+            "Content-Type": "application/vnd.sas.models.project+json",
+            "Accept": "application/vnd.sas.models.project+json",
+            "If-Match": got.headers.get("ETag", ""),
+        },
+    )
+
+
 def ensure_repository_and_project(session, kind: str, core, responsible_party: str) -> EnsureResult:
     """Create the LLM Repository and the kind's Model Project if they do not
     exist yet. Idempotent - the returned EnsureResult.created lists whatever was
@@ -155,6 +179,13 @@ def ensure_repository_and_project(session, kind: str, core, responsible_party: s
         project_id = _attr(project, "id")
     else:
         project_id = _attr(existing_project, "id")
+        # The responsible party is the project-level owner that actually takes
+        # effect; refresh it on an already-existing project too (best-effort).
+        if responsible_party:
+            try:
+                _refresh_project_responsible(session, existing_project, responsible_party)
+            except Exception:
+                pass
     return EnsureResult(created=created, repository_id=repo_id,
                         repository_folder_id=repo_folder, project_id=project_id)
 
@@ -219,22 +250,91 @@ def _num(value, default=0.0) -> float:
         return default
 
 
+# Substrings (checked in order) that map a model to its LLM family. First match
+# wins; falls back to the provider tag. Covers the shipped fleet and is easy to
+# extend as new families are added.
+_FAMILY_TOKENS: list[tuple[str, str]] = [
+    ("claude", "Claude"), ("gpt", "GPT"), ("gemini", "Gemini"), ("gemma", "Gemma"),
+    ("phi", "Phi"), ("qwen", "Qwen"), ("llama", "Llama"), ("mixtral", "Mistral"),
+    ("mistral", "Mistral"), ("nemo", "Mistral"), ("smollm", "SmolLM"),
+    ("granite", "Granite"), ("bge", "BGE"), ("minilm", "MiniLM"), ("voyage", "Voyage"),
+    ("titan", "Titan"), ("nova", "Nova"), ("text-embedding", "OpenAI"),
+    ("text_embedding", "OpenAI"),
+]
+
+
+def _llm_model_type(manifest: ModelManifest) -> str:
+    """The model family (Claude/GPT/Gemini/Phi/…), derived from the model id and
+    provider model string; falls back to the provider tag."""
+    haystack = " ".join(
+        part for part in (manifest.model_id, manifest.provider.model_version, manifest.display_name)
+        if part
+    ).lower()
+    for token, family in _FAMILY_TOKENS:
+        if token in haystack:
+            return family
+    return manifest.tags.provider_tag or "Other"
+
+
+def _model_card_chart() -> Optional[str]:
+    """The <sas-report> embed for the model card's custom chart, when configured.
+    The report URI is environment-specific, so it comes from the environment
+    (SAS_MODEL_CARD_REPORT_URI); the host defaults to SAS_VIYA_URL."""
+    import os
+
+    uri = os.environ.get("SAS_MODEL_CARD_REPORT_URI")
+    if not uri:
+        return None
+    host = (os.environ.get("SAS_VIYA_URL", "") or "https://<sas-viya-host>").rstrip("/")
+    return f'<sas-report url="{host}" reportUri="{uri}"></sas-report>'
+
+
+def _price(preferred: Optional[float], raw) -> Optional[float]:
+    """Prefer the manifest's per-token/second price; fall back to the fact-sheet
+    value; None when neither is set (so the attribute is simply absent-of-value)."""
+    if preferred is not None:
+        return preferred
+    if raw in (None, "", "."):
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_model_attributes(manifest: ModelManifest, folder: Path,
                            fact_row: dict | None, scr_endpoint: str) -> dict:
-    """Model attributes: modelConfiguration.json plus the enrichment the
-    register scripts add (llmModelType, provider, endPoint, costPerCall)."""
+    """Model attributes: modelConfiguration.json plus the register-time
+    enrichment (family, provider, deployment id, SCR endpoint, per-token/second
+    costs, the response probability variable, and the optional model-card chart).
+    Lifecycle attributes (modelStatus/approvalState) are set by the caller so an
+    --update does not reset a model that is already deployed."""
     attributes = json.loads((folder / "modelConfiguration.json").read_text(encoding="utf-8"))
     row = fact_row or {}
-    attributes["llmModelType"] = attributes.get("llmModelType", "GPT")
+    pricing = manifest.metadata.pricing
+    attributes["llmModelType"] = _llm_model_type(manifest)
     attributes["provider"] = row.get("provider", manifest.tags.provider_tag)
+    attributes["deploymentId"] = manifest.provider.model_version
     attributes["endPoint"] = f"{scr_endpoint}/{manifest.model_id}/{manifest.model_id}"
-    cost_type = row.get("cost_type", manifest.metadata.pricing.cost_type)
+    # Precise per-token / per-second costs (the lossy averaged costPerCall is kept
+    # for continuity with existing cost-monitoring reports).
+    attributes["inputTokenCount"] = _price(pricing.input_token_price, row.get("input_token_price"))
+    attributes["outputTokenCount"] = _price(pricing.output_token_price, row.get("output_token_price"))
+    attributes["hostingCosts"] = _price(pricing.second_cost, row.get("second_cost"))
+    cost_type = row.get("cost_type", pricing.cost_type)
     if cost_type == "Seconds":
-        attributes["costPerCall"] = _num(row.get("second_cost"))
+        attributes["costPerCall"] = _num(row.get("second_cost"), pricing.second_cost or 0.0)
     else:
         attributes["costPerCall"] = (
-            _num(row.get("input_token_price")) + _num(row.get("output_token_price"))
+            _num(row.get("input_token_price"), pricing.input_token_price or 0.0)
+            + _num(row.get("output_token_price"), pricing.output_token_price or 0.0)
         ) / 2
+    # The event/probability output variable mirrors the model's target variable.
+    attributes["eventProbVar"] = attributes.get("targetVariable", "response")
+    chart = _model_card_chart()
+    if chart:
+        attributes["modelCardCustomChartReport"] = chart
+        attributes["modelCardCustomChartEnabled"] = True
     return attributes
 
 
@@ -275,6 +375,83 @@ def _put_tags(session, model_id: str, tags: list[str]) -> None:
     )
 
 
+def _delete_model_variables(session, model_id: str) -> None:
+    """Delete every input/output variable currently on a model, so a subsequent
+    inputVar/outputVar re-import does not duplicate them."""
+    response = session.get(f"/modelRepository/models/{model_id}/variables?start=0&limit=10000")
+    if response.status_code >= 300:
+        return
+    for variable in response.json().get("items", []):
+        variable_id = variable.get("id")
+        if variable_id:
+            session.delete(f"/modelRepository/models/{model_id}/variables/{variable_id}")
+
+
+def ensure_model_lifecycle(session, model_name: str,
+                           model_status: Optional[str] = None,
+                           approval_state: Optional[str] = None) -> bool:
+    """Set a registered model's modelStatus / approvalState if they differ.
+    Returns True when a change was written, False when the model is not
+    registered or already in the requested state."""
+    from sasctl.services import model_repository as mr
+
+    existing = mr.get_model(model_name)
+    if existing is None:
+        return False
+    details = mr.get_model_details(_attr(existing, "id"))
+    body = dict(details.items())
+    changed = False
+    if model_status and body.get("modelStatus") != model_status:
+        body["modelStatus"] = model_status
+        changed = True
+    if approval_state and body.get("approvalState") != approval_state:
+        body["approvalState"] = approval_state
+        changed = True
+    if not changed:
+        return False
+    response = session.put(
+        f"/modelRepository/models/{_attr(details, 'id')}",
+        data=json.dumps(body),
+        headers={
+            "Content-Type": "application/vnd.sas.models.model+json",
+            "Accept": "application/vnd.sas.models.model+json",
+            "If-Match": details._headers["ETag"],
+        },
+    )
+    if response.status_code >= 300:
+        raise RuntimeError(f"Updating model lifecycle failed: HTTP {response.status_code} {response.text[:200]}")
+    return True
+
+
+def list_registered_models(session, kind: str) -> list[dict]:
+    """Registered models in a kind's project, with the lifecycle/enrichment
+    attributes for a status overview. Returns [] when the project is absent."""
+    from sasctl.services import model_repository as mr
+
+    project = mr.get_project(KIND_PROJECT[kind])
+    if project is None:
+        return []
+    project_id = _attr(project, "id")
+    response = session.get(
+        f"/modelRepository/models?filter=eq(projectId,'{project_id}')&limit=1000"
+    )
+    if response.status_code >= 300:
+        return []
+    rows: list[dict] = []
+    for item in response.json().get("items", []):
+        rows.append({
+            "model_id": item.get("name", ""),
+            "kind": kind,
+            "provider": item.get("provider", ""),
+            "llmModelType": item.get("llmModelType", ""),
+            "deploymentId": item.get("deploymentId", ""),
+            "modelStatus": item.get("modelStatus", ""),
+            "approvalState": item.get("approvalState", ""),
+            "endPoint": item.get("endPoint", ""),
+        })
+    return rows
+
+
 def register_model(session, manifest: ModelManifest, folder: Path, fact_row: dict | None,
                    scr_endpoint: str, update: bool = False) -> RegisterResult:
     from sasctl.services import model_repository as mr
@@ -294,6 +471,11 @@ def register_model(session, manifest: ModelManifest, folder: Path, fact_row: dic
         return f"/SASModelManager/models/{model_id}"
 
     if existing is None:
+        # A freshly registered model enters the lifecycle awaiting validation and
+        # approval; publish/retire advance these (build_model_attributes leaves
+        # them out so an --update never resets an already-deployed model).
+        attributes["modelStatus"] = "ready for validation"
+        attributes["approvalState"] = "awaiting approval"
         model = mr.create_model(model=attributes, project=project)
         time.sleep(1)
         for path, name, role in content_files(manifest, folder):
@@ -319,6 +501,11 @@ def register_model(session, manifest: ModelManifest, folder: Path, fact_row: dic
     if version.status_code >= 300:
         # Non-fatal: some releases version implicitly on content change
         print(f"note: model version bump returned HTTP {version.status_code} - continuing")
+    # Re-uploading inputVar.json/outputVar.json makes Model Manager re-import the
+    # variables; without clearing the existing ones first they accumulate as
+    # duplicates on every --update. Delete them before the content upload
+    # re-creates them (the Prompt Builder's manifest flow does the same).
+    _delete_model_variables(session, model_id)
     for path, name, role in content_files(manifest, folder):
         query = f"name={name}&onConflict=update" + (f"&role={role}" if role else "")
         response = session.post(

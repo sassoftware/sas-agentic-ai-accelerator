@@ -38,6 +38,7 @@ app = typer.Typer(
     help="Model Definition Builder for the SAS Agentic AI Accelerator.",
     no_args_is_help=True,
     add_completion=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 console = Console()
 
@@ -720,6 +721,44 @@ def unregister(
     raise typer.Exit(1 if failed else 0)
 
 
+@app.command("list")
+def list_(
+    kind: Optional[str] = typer.Option(None, "--kind", help="Only 'llm' or 'embedding' (default: both)"),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+):
+    """List the models registered in SAS Model Manager with their lifecycle
+    status (provider, family, version, modelStatus, approvalState, endpoint)."""
+    from .viya.registry import list_registered_models
+    kinds = (kind,) if kind in KINDS else KINDS
+    if kind is not None and kind not in KINDS:
+        console.print(f"[red]--kind must be one of {', '.join(KINDS)}.[/red]")
+        raise typer.Exit(2)
+    rows: list[dict] = []
+    with _viya_session() as session:
+        for k in kinds:
+            rows.extend(list_registered_models(session, k))
+    if as_json:
+        console.print_json(json.dumps(rows))
+        return
+    if not rows:
+        console.print("[yellow]No registered models found in the LLM/Embedding model projects.[/yellow]")
+        console.print("Register one with [bold]mdb register <model_id>[/bold].")
+        return
+    table = Table()
+    for col in ("model_id", "kind", "provider", "type", "version", "status", "approval", "endpoint"):
+        table.add_column(col)
+    status_color = {"deployed": "green", "ready for validation": "yellow", "retired": "red"}
+    for r in rows:
+        status = r["modelStatus"] or "-"
+        color = status_color.get(status, "dim")
+        table.add_row(
+            r["model_id"], r["kind"], r["provider"] or "-", r["llmModelType"] or "-",
+            r["deploymentId"] or "-", f"[{color}]{status}[/{color}]",
+            r["approvalState"] or "-", r["endPoint"] or "-",
+        )
+    console.print(table)
+
+
 @app.command()
 def publish(
     ids: Optional[list[str]] = typer.Argument(None),
@@ -729,7 +768,7 @@ def publish(
     wait: bool = typer.Option(False, "--wait", help="Poll until the image build completes"),
 ):
     """Publish registered models to an SCR container destination."""
-    from .viya.registry import publish_model
+    from .viya.registry import ensure_model_lifecycle, publish_model
     ctx = Context()
     dest = destination or os.environ.get("SAS_PUBLISH_DESTINATION")
     if not dest:
@@ -747,6 +786,13 @@ def publish(
                 continue
             if state in ("requested", "completed"):
                 console.print(f"[green]{model_id}: publish {state} on {dest}[/green]")
+                # A published model is deployed and approved; advance the lifecycle
+                # attributes if they are not already there (non-fatal).
+                try:
+                    if ensure_model_lifecycle(session, model_id, "deployed", "approved"):
+                        console.print(f"[dim]{model_id}: modelStatus=deployed, approvalState=approved[/dim]")
+                except Exception as exc:
+                    console.print(f"[yellow]{model_id}: could not update lifecycle attributes ({exc}).[/yellow]")
             else:
                 console.print(f"[red]{model_id}: publish {state} on {dest}[/red]")
                 failed = True
@@ -943,7 +989,23 @@ def retire(
     drift.write_lock(folder, (folder / MANIFEST_FILENAME).read_bytes(), rendered)
     facts.upsert_row(ctx.fact_sheet(manifest.kind), manifest)
     console.print(f"[green]{model_id}: tagged deprecated and regenerated.[/green]")
-    console.print(f"Push it to the registered model with: mdb register {model_id} --update")
+
+    # Also retire the registered model in SAS Model Manager, if reachable and
+    # registered. Best-effort: retire stays a local tagging op when Viya is not
+    # configured, with a hint to push the change later.
+    from .viya.session import ViyaConfigError, create_session
+    try:
+        with create_session() as session:
+            from .viya.registry import ensure_model_lifecycle
+            if ensure_model_lifecycle(session, model_id, "retired", "retired"):
+                console.print(f"[green]{model_id}: modelStatus=retired, approvalState=retired in SAS Model Manager.[/green]")
+            else:
+                console.print(f"[dim]{model_id}: not registered (or already retired) in SAS Model Manager.[/dim]")
+    except ViyaConfigError:
+        console.print("[yellow]SAS Viya is not configured - the registered model's status was not updated.[/yellow]")
+    except Exception as exc:
+        console.print(f"[yellow]Could not update the registered model's status: {exc}[/yellow]")
+    console.print(f"Push the deprecated flag to the registered model with: mdb register {model_id} --update")
 
 
 @app.command()
@@ -960,7 +1022,10 @@ def providers():
     console.print("Third-party adapters: pip packages exposing the 'mdb.providers' entry-point group.")
 
 
-provider_app = typer.Typer(help="Third-party provider adapter tooling.")
+provider_app = typer.Typer(
+    help="Third-party provider adapter tooling.",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 app.add_typer(provider_app, name="provider")
 
 SCAFFOLD_ADAPTER = '''"""Adapter for {name} - fill in the TODOs, then pip install this package."""

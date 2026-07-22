@@ -23,11 +23,31 @@ def test_attributes_enrichment(repo_root, fact_sheet):
     attrs = build_model_attributes(manifest, folder, row, "https://viya-host/llm")
     assert attrs["name"] == "gpt_41_mini"
     assert attrs["endPoint"] == "https://viya-host/llm/gpt_41_mini/gpt_41_mini"
-    assert attrs["llmModelType"] == "GPT"
+    assert attrs["llmModelType"] == "GPT"  # derived from the model id, no longer hardcoded
     assert attrs["provider"] == "OpenAI"
+    assert attrs["deploymentId"] == manifest.provider.model_version
+    assert attrs["eventProbVar"] == "response"
+    # per-token costs are carried precisely (not just the averaged costPerCall)
+    assert abs(attrs["inputTokenCount"] - 4e-07) < 1e-12
+    assert abs(attrs["outputTokenCount"] - 1.6e-06) < 1e-12
     # (input 0.0000004 + output 0.0000016) / 2
     assert abs(attrs["costPerCall"] - 1e-06) < 1e-12
     assert attrs["toolVersion"] == "3.11"
+
+
+def test_family_derivation_covers_the_fleet(repo_root):
+    from mdb.viya.registry import _llm_model_type
+    cases = {
+        ("LLM-Definitions", "claude_sonnet_4_5"): "Claude",
+        ("LLM-Definitions", "gpt_41_mini"): "GPT",
+        ("LLM-Definitions", "phi_35_mini"): "Phi",
+        ("LLM-Definitions", "qwen_25_7b"): "Qwen",
+    }
+    for (kinddir, model_id), expected in cases.items():
+        folder = repo_root / kinddir / model_id
+        if not (folder / "definition.yaml").is_file():
+            continue
+        assert _llm_model_type(load_manifest(folder)) == expected
 
 
 def test_seconds_cost_type(repo_root):
@@ -226,6 +246,16 @@ class _UpdateSession:
     def __init__(self):
         self.content_posts = []
         self.puts = []
+        self.deleted_vars = []
+
+    def get(self, url, data=None, headers=None):
+        if "variables" in url:
+            return _FakeResponse(200, {"items": [{"id": "v1"}, {"id": "v2"}]})
+        return _FakeResponse(200, {})
+
+    def delete(self, url, data=None, headers=None):
+        self.deleted_vars.append(url)
+        return _FakeResponse(204)
 
     def post(self, url, data=None, headers=None, files=None):
         if "contents" in url:
@@ -254,3 +284,6 @@ def test_register_model_update_replaces_content_in_place(repo_root, fact_sheet, 
     assert "gpt_41_mini.py" in session.content_posts
     assert "requirements.json" in session.content_posts
     assert session.puts == ["etag-1"]
+    # existing variables are cleared before the inputVar/outputVar re-import, so
+    # an --update does not duplicate them
+    assert len(session.deleted_vars) == 2

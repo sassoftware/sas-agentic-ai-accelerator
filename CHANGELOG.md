@@ -2,6 +2,25 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [1.6.0] - 2026-07-22
+
+Model Definition Builder (`mdb`) improvements: models registered in SAS Model Manager now carry the full set of attributes the platform expects (family, version, per-token/second costs, endpoint) and move through a real lifecycle (register → publish → retire), there is a command to see every registered model and its status at a glance, and updating a model no longer duplicates its variables.
+
+### Added
+
+- **`mdb list`** — lists the models registered in SAS Model Manager across the LLM and Embedding projects with their provider, family, version (deploymentId), `modelStatus`, `approvalState` and SCR endpoint. `--kind llm|embedding` narrows it; `--json` for machine-readable output. Fills the gap where there was no way to see what's registered and in what state without opening Model Manager
+- **`-h` as a shorthand for `--help`** on `mdb` and its subcommands
+- **Richer model attributes on register.** In addition to what was already set (`function`, `targetVariable`, `provider`, `endPoint`), a registered model now carries: `llmModelType` (the model family — Claude/GPT/Gemini/Phi/Qwen/…, derived from the model id instead of the previous hardcoded "GPT"), `deploymentId` (the provider model/version string), `inputTokenCount` / `outputTokenCount` / `hostingCosts` (precise per-token and per-second costs from the definition's pricing, alongside the existing averaged `costPerCall`), and `eventProbVar`. When `SAS_MODEL_CARD_REPORT_URI` is set, `modelCardCustomChartReport` + `modelCardCustomChartEnabled` embed a custom SAS Visual Analytics report on the model card (host from `SAS_VIYA_URL`)
+- **A model lifecycle across the commands.** `mdb register` sets `modelStatus` = "ready for validation" and `approvalState` = "awaiting approval" on a new model (and no longer resets them on `--update`); `mdb publish` advances a published model to `modelStatus` = "deployed" / `approvalState` = "approved"; `mdb retire` now also sets the registered model to "retired"/"retired" in SAS Model Manager (best-effort — it stays a local tagging operation when Viya is not configured), in addition to tagging the definition deprecated
+
+### Fixed
+
+- **`mdb register --update` duplicated a model's input/output variables.** Re-uploading `inputVar.json`/`outputVar.json` makes Model Manager re-import the variables; without clearing the existing ones first they accumulated on every update. The update path now deletes the model's variables before the re-import, mirroring the Prompt Builder's manifest flow
+
+### Changed
+
+- **The responsible party is set at the project level, where it takes effect.** `mdb setup`/`register` set the project's `modelResponsibleParty` on creation and now also refresh it on an already-existing project (best-effort). The per-model `modeler` field is kept as informational metadata
+
 ## [1.5.0] - 2026-07-21
 
 The Prompt Builder's judging grows from a single judge into an **LLM Council**. The judge picker is now a panel: tick one model for the single-judge experience (as before), or several to convene a council whose members each rank the responses independently and whose ballots are aggregated into one verdict. When the judges genuinely split, the tool says so — it shows every judge's ballot and an explicit "judges disagreed" rather than forcing a winner. Judging stays advisory: you still choose the Best Response.
