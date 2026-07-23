@@ -1,10 +1,29 @@
 # Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Fact-sheet upsert semantics and the legacy-folder import round-trip."""
+import csv
+import io
 import shutil
 
-from mdb.core.facts import read_row, remove_row, upsert_row
+import pytest
+
+from mdb.core.facts import read_row, rebuild_sheet, remove_row, upsert_row
 from mdb.core.importer import import_folder
+from mdb.core.manifest import MANIFEST_FILENAME, load_manifest
+from mdb.core.paths import definitions_dir, fact_sheet_path
+
+
+def _managed_manifests(repo_root, kind):
+    folder = definitions_dir(repo_root, kind)
+    return [
+        load_manifest(f)
+        for f in sorted(folder.iterdir())
+        if f.is_dir() and (f / MANIFEST_FILENAME).is_file()
+    ]
+
+
+def _first_field(line):
+    return next(csv.reader(io.StringIO(line)))[0]
 
 
 def test_remove_row_deletes_only_the_target(tmp_path, repo_root, fact_sheet):
@@ -45,6 +64,47 @@ def test_upsert_preserves_legacy_rows(tmp_path, repo_root, fact_sheet, core):
 
     # Idempotency: a second upsert changes nothing
     assert upsert_row(working_copy, manifest) == "unchanged"
+
+
+@pytest.mark.parametrize("kind", ["llm", "embedding"])
+def test_rebuild_matches_committed_sheet(tmp_path, repo_root, kind):
+    """The committed fact sheet must be exactly what a rebuild produces, so the
+    sheet stays a pure function of the definitions (sorted, no stale rows)."""
+    committed = fact_sheet_path(repo_root, kind)
+    working = tmp_path / committed.name
+    shutil.copy(committed, working)
+    summary = rebuild_sheet(working, _managed_manifests(repo_root, kind))
+    assert summary["created"] is False
+    assert summary["legacy_kept"] == 0  # every committed row maps to a definition
+    assert working.read_bytes() == committed.read_bytes()
+
+
+def test_rebuild_sorts_creates_and_handles_legacy(tmp_path, repo_root):
+    manifests = _managed_manifests(repo_root, "llm")
+    sheet = tmp_path / "llm_fact_sheet.csv"
+
+    # create-if-absent, and managed rows come out sorted by model_id
+    summary = rebuild_sheet(sheet, manifests)
+    assert summary["created"] is True
+    rows = sheet.read_text(encoding="utf-8").splitlines()[1:]
+    ids = [_first_field(r) for r in rows]
+    assert ids == sorted(ids)
+    assert len(ids) == len(manifests)
+
+    # a legacy row (no matching definition) is kept verbatim after managed rows
+    legacy = '"zzz_legacy_model","Legacy","X","desc",.,.,"API","Proprietary","Tokens",.,.,.,.,.,.,.,.,.'
+    with sheet.open("ab") as handle:  # binary: no newline translation on Windows
+        handle.write((legacy + "\n").encode("utf-8"))
+    summary = rebuild_sheet(sheet, manifests, keep_legacy=True)
+    assert summary["legacy_kept"] == 1
+    body = sheet.read_text(encoding="utf-8").splitlines()
+    assert body[-1] == legacy  # appended at the end, byte-verbatim
+    assert read_row(sheet, "zzz_legacy_model") is not None
+
+    # --prune drops it
+    summary = rebuild_sheet(sheet, manifests, keep_legacy=False)
+    assert summary["legacy_dropped"] == 1
+    assert read_row(sheet, "zzz_legacy_model") is None
 
 
 LEGACY_SCORE = """import requests

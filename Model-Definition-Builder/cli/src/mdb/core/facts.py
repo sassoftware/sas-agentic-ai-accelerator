@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import io
+import time
 from pathlib import Path
 
 from .manifest import ModelManifest
@@ -84,6 +85,42 @@ def row_values(manifest: ModelManifest) -> dict[str, str]:
     }
 
 
+def _write_bytes_retrying(path: Path, data: bytes) -> None:
+    # Windows indexers/AV can hold the file briefly - retry transient errors
+    for attempt in range(5):
+        try:
+            path.write_bytes(data)
+            return
+        except OSError:
+            if attempt == 4:
+                raise
+            time.sleep(0.5)
+
+
+def _legacy_lines(fact_sheet: Path, managed_ids: set[str]) -> tuple[list[str], str, bool]:
+    """Return (rows whose model_id is not managed, newline convention, existed).
+
+    Used to preserve hand-maintained rows that have no definition folder. When
+    the sheet does not exist yet, returns ([], "\\n", False).
+    """
+    if not fact_sheet.exists():
+        return [], "\n", False
+    raw = fact_sheet.read_bytes().decode("utf-8")
+    newline = "\r\n" if "\r\n" in raw else "\n"
+    kept: list[str] = []
+    # splitlines() tolerates a sheet with mixed \n / \r\n line endings
+    for index, line in enumerate(raw.splitlines()):
+        if index == 0 or not line.strip():
+            continue
+        try:
+            first_field = next(csv.reader(io.StringIO(line)))[0]
+        except (StopIteration, IndexError):
+            continue
+        if first_field not in managed_ids:
+            kept.append(line)
+    return kept, newline, True
+
+
 def _format_row(values: dict[str, str], kind: str) -> str:
     fields = []
     for column in COLUMNS_BY_KIND[kind]:
@@ -132,16 +169,7 @@ def upsert_row(fact_sheet: Path, manifest: ModelManifest) -> str:
     if trailing_empty or not replaced:
         content += newline
     if content != raw:
-        # Windows indexers/AV can hold the file briefly - retry transient errors
-        import time
-        for attempt in range(5):
-            try:
-                fact_sheet.write_bytes(content.encode("utf-8"))
-                break
-            except OSError:
-                if attempt == 4:
-                    raise
-                time.sleep(0.5)
+        _write_bytes_retrying(fact_sheet, content.encode("utf-8"))
     return result
 
 
@@ -175,16 +203,42 @@ def remove_row(fact_sheet: Path, model_id: str) -> str:
     content = newline.join(out)
     if trailing_empty:
         content += newline
-    import time
-    for attempt in range(5):
-        try:
-            fact_sheet.write_bytes(content.encode("utf-8"))
-            break
-        except OSError:
-            if attempt == 4:
-                raise
-            time.sleep(0.5)
+    _write_bytes_retrying(fact_sheet, content.encode("utf-8"))
     return "removed"
+
+
+def rebuild_sheet(
+    fact_sheet: Path, manifests: list[ModelManifest], keep_legacy: bool = True
+) -> dict[str, int | bool]:
+    """Regenerate the whole fact sheet from ``manifests`` (all of one kind).
+
+    Managed rows are derived fresh from each manifest and sorted by model_id, so
+    the sheet becomes a pure function of the definitions - no hand editing needed.
+    Rows in the existing sheet whose model_id has no manifest ("legacy" models,
+    hand-maintained without a definition folder) are kept verbatim after the
+    managed rows when ``keep_legacy`` is True, otherwise dropped. The file is
+    created if it does not exist. Returns a summary dict with the counts.
+    """
+    if not manifests:
+        raise ValueError("rebuild_sheet requires at least one manifest")
+    kind = manifests[0].kind
+    header = ",".join(COLUMNS_BY_KIND[kind])
+    managed_ids = {m.model_id for m in manifests}
+    managed_lines = [
+        _format_row(row_values(m), kind)
+        for m in sorted(manifests, key=lambda m: m.model_id)
+    ]
+
+    legacy, newline, existed = _legacy_lines(fact_sheet, managed_ids)
+    kept = legacy if keep_legacy else []
+    content = newline.join([header, *managed_lines, *kept]) + newline
+    _write_bytes_retrying(fact_sheet, content.encode("utf-8"))
+    return {
+        "written": len(managed_lines),
+        "legacy_kept": len(kept),
+        "legacy_dropped": 0 if keep_legacy else len(legacy),
+        "created": not existed,
+    }
 
 
 def read_row(fact_sheet: Path, model_id: str) -> dict[str, str] | None:

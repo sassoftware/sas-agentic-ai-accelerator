@@ -105,6 +105,39 @@ mdb sync <model_id>           # update the fact-sheet row
 mdb validate <model_id>       # cross-file coherence rules with fix-it hints
 ```
 
+The `*_fact_sheet.csv` files (`LLM-Definitions/llm_fact_sheet.csv`,
+`Embedding-Definitions/embedding_fact_sheet.csv`) are a **generated artifact** —
+you never edit them by hand. `mdb sync <model_id>` refreshes a single row;
+`mdb sync --rebuild` regenerates each sheet in full from every managed
+definition (sorted by `model_id`), creating the file if it does not exist yet:
+
+```bash
+mdb sync --rebuild            # rebuild both sheets from the definitions
+mdb sync --rebuild --prune    # also drop rows for models with no definition folder
+```
+
+Rebuilding is idempotent (an unchanged fleet produces a byte-identical sheet) and
+preserves any hand-maintained rows that have no definition folder unless you pass
+`--prune`. This is the quickest way to bring the fact sheets in line after a bulk
+migration instead of syncing each model one by one.
+
+To make the sheets available to the SAS Visual Analytics monitoring report,
+`mdb load-facts` uploads them to CAS — the Python equivalent of
+`Load-Fact-Sheets.sas`. Each sheet is loaded with **global scope** (promoted, so
+every session sees it) and **saved to the caslib's data source on disk** (so it
+survives a CAS restart), as the tables `LLM_FACT_SHEET` and `EMBEDDING_FACT_SHEET`.
+An existing table of the same name is unloaded first and its saved copy replaced:
+
+```bash
+mdb load-facts                       # load into the Public library (default)
+mdb load-facts --caslib MyLib        # a different CAS library (env: SAS_CAS_LIBRARY)
+mdb load-facts --rebuild             # regenerate the sheets from the definitions, then load
+```
+
+The CAS server defaults to `cas-shared-default` (auto-detected; override with
+`--server` or `SAS_CAS_SERVER`). This uses the casManagement REST API over the
+same session the register/publish commands use — no separate CAS connection.
+
 `mdb generate --all --check` verifies that every generated file matches its manifest and is intended as a CI gate. Files you edited by hand are never overwritten silently — the command tells you to either fold the change into the manifest, declare the file as hand-maintained under `generation.overrides`, or pass `--force`.
 
 ## Adopting existing definitions

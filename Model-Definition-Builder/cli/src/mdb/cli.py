@@ -454,15 +454,113 @@ def validate(
 def sync(
     ids: Optional[list[str]] = typer.Argument(None),
     all_: bool = typer.Option(False, "--all"),
+    rebuild: bool = typer.Option(
+        False, "--rebuild",
+        help="Regenerate each kind's whole fact sheet from all managed definitions "
+             "(sorted by model_id), creating it if absent. Ignores model ids / --all.",
+    ),
+    prune: bool = typer.Option(
+        False, "--prune",
+        help="With --rebuild, also drop rows for models that no longer have a "
+             "definition folder (default keeps such legacy rows).",
+    ),
 ):
-    """Upsert the fact-sheet rows of managed definitions (legacy rows stay untouched)."""
+    """Upsert the fact-sheet rows of managed definitions (legacy rows stay untouched).
+
+    With --rebuild the sheet becomes a pure function of the definitions: every
+    managed row is regenerated and the file is rewritten from scratch, so you no
+    longer maintain the CSV by hand alongside the definitions.
+    """
     ctx = Context()
+    if rebuild:
+        if ids or all_:
+            console.print("[yellow]--rebuild regenerates the entire sheet for each kind; ignoring model ids / --all.[/yellow]")
+        rebuilt_any = False
+        for kind in KINDS:
+            manifests = [
+                load_manifest(f)
+                for f in sorted(ctx.defs_dir(kind).iterdir())
+                if f.is_dir() and (f / MANIFEST_FILENAME).is_file()
+            ]
+            if not manifests:
+                continue
+            rebuilt_any = True
+            sheet = ctx.fact_sheet(kind)
+            summary = facts.rebuild_sheet(sheet, manifests, keep_legacy=not prune)
+            verb = "created" if summary["created"] else "rebuilt"
+            message = f"{sheet.name}: {verb} from {summary['written']} definition(s)"
+            if summary["legacy_kept"]:
+                message += f", kept {summary['legacy_kept']} legacy row(s)"
+            if summary["legacy_dropped"]:
+                message += f", dropped {summary['legacy_dropped']} legacy row(s)"
+            console.print(message)
+        if not rebuilt_any:
+            console.print("[yellow]No managed definitions found (no folder has a definition.yaml yet).[/yellow]")
+        return
     for folder in ctx.resolve_targets(ids or [], all_):
         if not (folder / MANIFEST_FILENAME).is_file():
             continue
         manifest = load_manifest(folder)
         result = facts.upsert_row(ctx.fact_sheet(manifest.kind), manifest)
         console.print(f"{folder.name}: fact-sheet row {result}")
+
+
+@app.command("load-facts")
+def load_facts(
+    caslib: Optional[str] = typer.Option(
+        None, "--caslib", "-l",
+        help="Target CAS library (env: SAS_CAS_LIBRARY; default: Public).",
+    ),
+    server: Optional[str] = typer.Option(
+        None, "--server",
+        help="CAS server name (env: SAS_CAS_SERVER; default: auto-detect cas-shared-default).",
+    ),
+    rebuild: bool = typer.Option(
+        False, "--rebuild",
+        help="Regenerate the sheets from the definitions before loading.",
+    ),
+):
+    """Upload, promote and save the fact-sheet CSVs to CAS (drops any existing table first).
+
+    The Python equivalent of Load-Fact-Sheets.sas: each sheet is loaded with
+    global scope (promoted) and saved to the caslib's data source on disk, so the
+    SAS Visual Analytics monitoring report can bind to LLM_FACT_SHEET /
+    EMBEDDING_FACT_SHEET across sessions and restarts.
+    """
+    from .viya.cas import load_fact_sheet, resolve_server
+    ctx = Context()
+    if rebuild:
+        for kind in KINDS:
+            manifests = [
+                load_manifest(f)
+                for f in sorted(ctx.defs_dir(kind).iterdir())
+                if f.is_dir() and (f / MANIFEST_FILENAME).is_file()
+            ]
+            if manifests:
+                facts.rebuild_sheet(ctx.fact_sheet(kind), manifests)
+    caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
+    server_choice = server or os.environ.get("SAS_CAS_SERVER")
+    with _viya_session() as session:
+        server_name = resolve_server(session, server_choice)
+        console.print(
+            f"Loading fact sheets into CAS library [bold]{caslib}[/bold] on [bold]{server_name}[/bold]:"
+        )
+        loaded = 0
+        for kind in KINDS:
+            sheet = ctx.fact_sheet(kind)
+            if not sheet.is_file():
+                console.print(f"  [yellow]{sheet.name} not found - run 'mdb sync --rebuild' first, skipping.[/yellow]")
+                continue
+            try:
+                result = load_fact_sheet(session, sheet, kind, caslib, server_name)
+            except RuntimeError as exc:
+                console.print(f"  [red]{exc}[/red]")
+                raise typer.Exit(1)
+            loaded += 1
+            action = "replaced existing" if result["dropped"] else "created"
+            console.print(f"  {result['table']}: {action} - uploaded, promoted (global) and saved to disk")
+    if loaded:
+        console.print("[green]Done. The tables are promoted and persisted; the monitoring report can bind to them.[/green]")
 
 
 # ---------------------------------------------------------------------------
