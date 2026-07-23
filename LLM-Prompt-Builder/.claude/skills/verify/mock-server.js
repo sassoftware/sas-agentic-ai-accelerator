@@ -72,6 +72,41 @@ const relationshipsFor = {
   },
 };
 
+// --- Prompt optimization (Phase 3) -----------------------------------------
+// The Optimize flow resolves the job definition path, launches a Job Execution
+// job and polls it. The mock job runs for one poll cycle, then completes; on
+// completion the source model gains a Prompt-Optimization-Tracker.json whose
+// entry the app renders (metrics, produced model link, load button).
+let jobPolls = 0;
+let jobLaunched = false;
+const optimizedPrompt = {
+  systemPrompt: 'Optimised system prompt.\n\nFollow the pattern of these examples:\n\nuserPrompt: User 2\nresponse: Response two',
+  userPrompt: 'User 2',
+  variables: [],
+};
+const optimizationTracker = [
+  {
+    optimizationId: 1,
+    startedAt: '2026-07-23T09:00:00Z',
+    finishedAt: '2026-07-23T09:05:00Z',
+    status: 'succeeded',
+    jobId: 'job-1',
+    targetModel: 'demo_llm',
+    datasetSource: 'tracker',
+    datasetRef: 'Prompt-Experiment-Tracker.json',
+    sampleCount: 1,
+    optimizer: 'bootstrap',
+    metric: 'exact',
+    judgeModel: null,
+    metricBefore: 0.5,
+    metricAfter: 0.833,
+    optimizedPrompt,
+    producedPromptModelId: 'model-opt-1',
+    datasetSnapshot: 'Prompt-Optimization-Dataset-1.json',
+    error: null,
+  },
+];
+
 function json(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
@@ -150,14 +185,47 @@ http
       if (p === '/modelRepository/models/model-used/contents' && req.method === 'GET') {
         // The requirements.json entry simulates a leftover from an earlier
         // integrated-call manifest: a manifest without the LLM call must
-        // remove it.
-        return json(res, 200, {
-          items: [
-            { id: 'c-trk', name: 'Prompt-Experiment-Tracker.json', fileUri: '/files/files/trk-1' },
-            { id: 'c-req', name: 'requirements.json', fileUri: '/files/files/req-1' },
-          ],
-        });
+        // remove it. After the mock optimize job completed, the job-written
+        // optimization tracker appears alongside.
+        const items = [
+          { id: 'c-trk', name: 'Prompt-Experiment-Tracker.json', fileUri: '/files/files/trk-1' },
+          { id: 'c-req', name: 'requirements.json', fileUri: '/files/files/req-1' },
+        ];
+        if (jobLaunched && jobPolls >= 2) {
+          items.push({ id: 'c-opttrk', name: 'Prompt-Optimization-Tracker.json', fileUri: '/files/files/opttrk-1' });
+        }
+        return json(res, 200, { items });
       }
+      if (p === '/folders/folders/@item') {
+        const path = u.searchParams.get('path') || '';
+        if (path === '/Public/Jobs/Optimize-Prompt-DSPy') {
+          return json(res, 200, { uri: '/jobDefinitions/definitions/jobdef-1' });
+        }
+        return json(res, 404, { message: 'no such content item: ' + path });
+      }
+      if (p === '/jobExecution/jobs' && req.method === 'POST') {
+        jobLaunched = true;
+        jobPolls = 0;
+        return json(res, 201, { id: 'job-1', state: 'pending' });
+      }
+      if (p === '/jobExecution/jobs/job-1' && req.method === 'GET') {
+        jobPolls += 1;
+        if (jobPolls < 2) return json(res, 200, { id: 'job-1', state: 'running' });
+        return json(res, 200, { id: 'job-1', state: 'completed', logLocation: '/files/files/joblog-1' });
+      }
+      if (p === '/files/files/joblog-1/content') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        return res.end(
+          [
+            'NOTE: PROC PYTHON started.',
+            'NOTE: Python-Subprocess - Dataset loaded (1 examples)',
+            'NOTE: Python-Subprocess - Baseline metric: 0.500',
+            'NOTE: Python-Subprocess - Done - optimised prompt model model-opt-1, metric 0.500 -> 0.833',
+            'NOTE: PROC PYTHON ended.',
+          ].join('\n')
+        );
+      }
+      if (p === '/files/files/opttrk-1/content') return json(res, 200, optimizationTracker);
       if (/^\/modelRepository\/models\/(model-free|model-err)\/contents$/.test(p) && req.method === 'GET') {
         return json(res, 200, { items: [] });
       }

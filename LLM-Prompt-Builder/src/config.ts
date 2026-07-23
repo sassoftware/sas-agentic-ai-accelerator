@@ -62,6 +62,19 @@ const DEFAULTS: RuntimeConfig = {
     // (see src/va/ddc.ts), so they start empty here. Map is keyed by the name an
     // LLM's options.json references via API_KEY.default (e.g. "Anthropic").
     API_KEYS: {},
+    // DSPy prompt optimization (all off/blank by default). enableOptimization
+    // is the master toggle — the Optimize section only appears when it is
+    // 'true', and only then do the settings below matter.
+    enableOptimization: '',
+    // Compute context the optimize job runs in (its Python needs dspy).
+    computeContext: '',
+    // SAS Content path of the deployed optimize Job Definition.
+    optimizeJobProgram: '',
+    // Minimum dataset rows before an optimization run is allowed.
+    minOptimizeSamples: '30',
+    // Governed SAS library.table the job reads provider API keys from.
+    optimizeKeyLibrary: '',
+    optimizeKeyTable: '',
   },
 };
 
@@ -73,6 +86,12 @@ const URL_OVERRIDABLE = [
   'deploymentType',
   'judgeModel',
   'modelCardReportURI',
+  'enableOptimization',
+  'computeContext',
+  'optimizeJobProgram',
+  'minOptimizeSamples',
+  'optimizeKeyLibrary',
+  'optimizeKeyTable',
   'id',
 ] as const;
 

@@ -177,6 +177,55 @@ function buildOptionsConfig(config: RuntimeConfig): Record<string, unknown> {
         pb.modelCardReportURI,
         'Optional SAS Visual Analytics report URI (the /reports/reports/<uuid> path). When set, manifesting the best prompt embeds that report on the model card as its custom chart, using the SAS Viya host above.'
       ),
+      // Progressive disclosure: the optimization master toggle is always shown;
+      // its settings only join the panel once it is on (VA mirrors the changed
+      // value into the URL and reloads the iframe, which rebuilds this group).
+      {
+        name: 'enableOptimization',
+        label: 'Enable prompt optimization (DSPy)',
+        type: 'String',
+        value: pb.enableOptimization === 'true' ? 'true' : 'false',
+        tooltip:
+          'Adds an Optimize section that improves the selected prompt with DSPy in a SAS Job Execution job. Requires the settings that appear when this is enabled — see the "Enabling Prompt Optimization" administration guide.',
+        dataProvider: [
+          { key: 'false', text: 'Disabled' },
+          { key: 'true', text: 'Enabled' },
+        ],
+      } as OptionField,
+      ...(pb.enableOptimization === 'true'
+        ? [
+            textField(
+              'computeContext',
+              'Optimization compute context',
+              pb.computeContext,
+              'SAS Compute context the optimization job runs in (passed to Job Execution as _contextName). Its Python environment must have dspy installed.'
+            ),
+            textField(
+              'optimizeJobProgram',
+              'Optimize job path',
+              pb.optimizeJobProgram,
+              'SAS Content path of the deployed optimize Job Definition, e.g. /Public/Jobs/Optimize-Prompt-DSPy.'
+            ),
+            textField(
+              'minOptimizeSamples',
+              'Minimum optimization samples',
+              pb.minOptimizeSamples ?? '30',
+              'Minimum dataset rows before an optimization run is allowed. Default 30; the Optimize panel warns below 50.'
+            ),
+            textField(
+              'optimizeKeyLibrary',
+              'API-key library',
+              pb.optimizeKeyLibrary,
+              'SAS library holding the governed provider API-key table the job reads. Only the library and table names are sent to the job — never the keys.'
+            ),
+            textField(
+              'optimizeKeyTable',
+              'API-key table',
+              pb.optimizeKeyTable,
+              'Table in the API-key library mapping provider name to key value (same names the LLM options.json files reference).'
+            ),
+          ]
+        : []),
     ],
     groups: [],
   };

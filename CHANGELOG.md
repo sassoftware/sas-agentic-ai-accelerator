@@ -2,7 +2,24 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [1.8.1] - 2026-07-23
+## [1.9.0] - 2026-07-23
+
+The Prompt Builder learns to **optimize prompts with DSPy** (Phase 3a of the judging roadmap — the thin end-to-end slice). An opt-in **Optimize** section saves the prompt and launches a SAS Job Execution job that runs DSPy inside `proc python` in a configurable compute context: the runs marked as Best Response become the training examples, models are called through the governed SCR endpoints, a bootstrap few-shot optimizer maximises the chosen metric (exact match or an LLM judge), and the result comes back as a **new prompt-test** for the user to review, judge and accept — completing the loop *judge → optimise → judge again*. Nothing is ever applied automatically.
+
+To pick up the change, re-upload the prebuilt `LLM-Prompt-Builder/dist/index.html` to your SAS Job Execution definition. The feature itself is **off by default** — enabling it additionally requires importing the new optimize job and preparing a compute context, per the new Administration Guide page.
+
+### Added
+
+- **An Optimize section in the Prompt Builder** (only when the deployment enables it): pick the target LLM, see how many usable runs the prompt has (runs with a Best Response; a configurable minimum of 30 gates the run, with a warning below 50 and an explicit "assumed correct" notice), choose the metric (exact match, or an LLM judge with a self-preference warning when the judge equals the target) and the max few-shot examples, and launch. The panel shows a rough call estimate up front and, while the job runs, **live progress** polled from the job log (the milestones the job emits via `SAS.logMessage`). On completion it shows the metric before → after, links the produced prompt-test in SAS Model Manager, and offers to **load the optimised prompt into the workbench**
+- **The shipped optimize job** (`SAS-Viya-Integrations/Prompt-Optimization/Optimize-Prompt-DSPy.sas` + `requirements.txt`): a Job Execution job definition whose `proc python` reads the prompt's experiment tracker from Model Manager, calls the target/judge models through the **SCR endpoints** with a small `SCRLM` DSPy adapter (the SAS 3-input contract, k8s and aca URL forms, smoke-tested before spending calls), runs `BootstrapFewShot`, bakes the compiled program back into a Prompt-Builder-shaped prompt (instructions → system prompt, selected demos → an examples block; user template and variables preserved), and writes back: a new prompt-test `<prompt> (optimised <date>)` (tagged `Optimized-Prompt`, linked to its source) whose tracker opens in the Builder, a **`Prompt-Optimization-Tracker.json`** entry on the source prompt (the job is that file's only writer; failures are recorded too) and a **dataset snapshot** (`Prompt-Optimization-Dataset-<n>.json`) for provenance
+- **New Prompt Builder Options** with progressive disclosure: the `enableOptimization` master toggle is always shown, and only when enabled does the pane reveal `computeContext` (passed to Job Execution as `_contextName`), `optimizeJobProgram` (the job's SAS Content path), `minOptimizeSamples`, and `optimizeKeyLibrary`/`optimizeKeyTable` — the governed SAS library.table the **job** reads provider API keys from. Only the names travel in the job request; keys never appear in the request, the log, the tracker or the produced prompt
+- **A new Administration Guide page, "Enabling Prompt Optimization"**: preparing a compute context whose Python has the `requirements.txt` packages (`dspy`, `requests` — called out as the most common failure), importing the job definition, creating the governed key table, setting the Options, and a troubleshooting table. The user guide gains an "Optimize the prompt" section covering the workflow and its advisory nature
+
+### Changed
+
+- The Prompt Builder launches and monitors the job through the **Job Execution REST API** (`/jobExecution/jobs` with the definition resolved from its Content path) rather than the JES web-app form endpoint, reusing the app's CSRF-aware HTTP client; state is polled and the `NOTE: Python-Subprocess - …` log lines are surfaced as the live status
+
+
 
 Robustness follow-ups to the 1.8.0 code review — no functional changes to what the commands do on the happy path.
 

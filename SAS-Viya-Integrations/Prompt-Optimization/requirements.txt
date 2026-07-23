@@ -1,0 +1,6 @@
+# Python packages the compute context running Optimize-Prompt-DSPy.sas needs.
+# Install them into the context's Python environment (see the "Enabling Prompt
+# Optimization" page of the Administration Guide). dspy pulls in litellm,
+# openai, pydantic and friends as its own dependencies.
+dspy>=2.6
+requests>=2.31

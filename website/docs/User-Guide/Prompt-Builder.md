@@ -108,6 +108,17 @@ Two options shape what you get:
 
 From here the manifested model behaves like any other model on the platform — see [Deployment of Decisions](../Administration-Guide/Deployment-of-Decisions.md) for using it in a decision flow.
 
+## Optimize the prompt (optional)
+
+When your administrator has [enabled prompt optimization](../Administration-Guide/Enabling-Prompt-Optimization.md), an **Optimize the prompt** section appears after the manifest. It closes the loop *judge → optimise → judge again*: instead of you rewriting the prompt by hand, [DSPy](https://dspy.ai) searches for a better version automatically — using the runs you marked as **Best Response** as the examples of what a correct answer looks like.
+
+1. Pick the **target LLM** the prompt should be optimised for.
+2. The **dataset** is this prompt's experiments: every saved run with a Best Response becomes one training example. The panel shows how many usable runs you have and requires a minimum (30 by default) — the responses you vouched for are treated as *correct*, so make sure they are.
+3. Choose the **metric**: *exact match* (the optimised prompt must reproduce your Best Responses) or an *LLM judge* that scores whether a response conveys the same answer. Pick a judge that differs from the target LLM.
+4. Press **Run optimization**. The prompt is saved first, then the work runs as a SAS job on the server — the panel shows live progress (dataset loaded, baseline scored, optimising, writing back). A run makes many model calls and takes several minutes.
+
+When the job finishes you see the metric **before → after** and get two things: a **new prompt-test** named `<prompt> (optimised <date>)` next to the original in Model Manager, and a **Load the optimised prompt into the workbench** button. Load it, run it against your models, judge it against the original — and only manifest it if it actually wins. Like judging, optimization is advisory: it never changes your prompt or your Best Response choices by itself.
+
 ## Where your experiments show up for reporting
 
 Everything you save lands in Model Manager as a `Prompt-Experiment-Tracker.json` on the prompt-test. Administrators can roll all of it up into a single `PROMPT_EXPERIMENTS` table for Visual Analytics reporting — including the option values used, the per-run metrics, your best-response choices and the judge's verdict (rank, chosen model and confidence). The tracker files are the source of truth; the report is a convenience view over them.
