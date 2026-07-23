@@ -137,6 +137,8 @@ mdb load-facts --rebuild             # regenerate the sheets from the definition
 The CAS server defaults to `cas-shared-default` (auto-detected; override with
 `--server` or `SAS_CAS_SERVER`). This uses the casManagement REST API over the
 same session the register/publish commands use — no separate CAS connection.
+The save step writes a `.sashdat`, so target a **path-based** caslib (like
+`Public`); a database-backed caslib would reject the save.
 
 `mdb generate --all --check` verifies that every generated file matches its manifest and is intended as a CI gate. Files you edited by hand are never overwritten silently — the command tells you to either fold the change into the manifest, declare the file as hand-maintained under `generation.overrides`, or pass `--force`.
 

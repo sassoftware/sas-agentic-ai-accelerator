@@ -107,6 +107,12 @@ def test_rebuild_sorts_creates_and_handles_legacy(tmp_path, repo_root):
     assert read_row(sheet, "zzz_legacy_model") is None
 
 
+def test_rebuild_rejects_mixed_kinds(tmp_path, repo_root):
+    mixed = _managed_manifests(repo_root, "llm")[:1] + _managed_manifests(repo_root, "embedding")[:1]
+    with pytest.raises(ValueError, match="single kind"):
+        rebuild_sheet(tmp_path / "sheet.csv", mixed)
+
+
 LEGACY_SCORE = """import requests
 modelVersion = 'claude-3-5-sonnet-20240620'
 modelEndpoint = 'https://api.anthropic.com/v1/messages'

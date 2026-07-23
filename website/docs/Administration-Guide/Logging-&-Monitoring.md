@@ -71,9 +71,12 @@ the **SAS Environment Manager → Content → Import** page, or with the `sas-vi
 CLI `transfer` plugin:
 
 ```bash
-sas-viya transfer upload --file "LLM Usage Report.json"   # prints the package id
-sas-viya transfer import --id <package-id>
+sas-viya transfer packages upload --file "LLM Usage Report.json"   # prints the package id
+sas-viya transfer packages import --id <package-id>
 ```
+
+(On older `transfer` plugin versions the same commands are `sas-viya transfer
+upload` / `sas-viya transfer import` — they still work, marked deprecated.)
 
 The CLI must be installed with the `transfer` plugin and a signed-in profile —
 see [Introduction — SAS Viya CLI Setup](./Introduction.md#sas-viya-cli-setup).

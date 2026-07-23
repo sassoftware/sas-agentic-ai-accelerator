@@ -75,6 +75,13 @@ class Context:
             )
         return folders
 
+    def managed_manifests(self, kind: str) -> list[ModelManifest]:
+        return [
+            load_manifest(f)
+            for f in sorted(self.defs_dir(kind).iterdir())
+            if f.is_dir() and (f / MANIFEST_FILENAME).is_file()
+        ]
+
     def find_folder(self, model_id: str) -> Path | None:
         for kind in KINDS:
             folder = self.defs_dir(kind) / model_id
@@ -450,6 +457,28 @@ def validate(
     raise typer.Exit(1 if has_error else 0)
 
 
+def _rebuild_sheets(ctx: Context, prune: bool = False) -> bool:
+    """Regenerate each kind's fact sheet from its managed definitions (shared by
+    `sync --rebuild` and `load-facts --rebuild`). Returns False when there are no
+    managed definitions at all."""
+    rebuilt_any = False
+    for kind in KINDS:
+        manifests = ctx.managed_manifests(kind)
+        if not manifests:
+            continue
+        rebuilt_any = True
+        sheet = ctx.fact_sheet(kind)
+        summary = facts.rebuild_sheet(sheet, manifests, keep_legacy=not prune)
+        verb = "created" if summary["created"] else "rebuilt"
+        message = f"{sheet.name}: {verb} from {summary['written']} definition(s)"
+        if summary["legacy_kept"]:
+            message += f", kept {summary['legacy_kept']} legacy row(s)"
+        if summary["legacy_dropped"]:
+            message += f", dropped {summary['legacy_dropped']} legacy row(s)"
+        console.print(message)
+    return rebuilt_any
+
+
 @app.command()
 def sync(
     ids: Optional[list[str]] = typer.Argument(None),
@@ -472,29 +501,13 @@ def sync(
     longer maintain the CSV by hand alongside the definitions.
     """
     ctx = Context()
+    if prune and not rebuild:
+        console.print("[red]--prune only applies together with --rebuild.[/red]")
+        raise typer.Exit(2)
     if rebuild:
         if ids or all_:
             console.print("[yellow]--rebuild regenerates the entire sheet for each kind; ignoring model ids / --all.[/yellow]")
-        rebuilt_any = False
-        for kind in KINDS:
-            manifests = [
-                load_manifest(f)
-                for f in sorted(ctx.defs_dir(kind).iterdir())
-                if f.is_dir() and (f / MANIFEST_FILENAME).is_file()
-            ]
-            if not manifests:
-                continue
-            rebuilt_any = True
-            sheet = ctx.fact_sheet(kind)
-            summary = facts.rebuild_sheet(sheet, manifests, keep_legacy=not prune)
-            verb = "created" if summary["created"] else "rebuilt"
-            message = f"{sheet.name}: {verb} from {summary['written']} definition(s)"
-            if summary["legacy_kept"]:
-                message += f", kept {summary['legacy_kept']} legacy row(s)"
-            if summary["legacy_dropped"]:
-                message += f", dropped {summary['legacy_dropped']} legacy row(s)"
-            console.print(message)
-        if not rebuilt_any:
+        if not _rebuild_sheets(ctx, prune=prune):
             console.print("[yellow]No managed definitions found (no folder has a definition.yaml yet).[/yellow]")
         return
     for folder in ctx.resolve_targets(ids or [], all_):
@@ -519,6 +532,11 @@ def load_facts(
         False, "--rebuild",
         help="Regenerate the sheets from the definitions before loading.",
     ),
+    prune: bool = typer.Option(
+        False, "--prune",
+        help="With --rebuild, also drop rows for models that no longer have a "
+             "definition folder (default keeps such legacy rows).",
+    ),
 ):
     """Upload, promote and save the fact-sheet CSVs to CAS (drops any existing table first).
 
@@ -529,15 +547,11 @@ def load_facts(
     """
     from .viya.cas import load_fact_sheet, resolve_server
     ctx = Context()
+    if prune and not rebuild:
+        console.print("[red]--prune only applies together with --rebuild.[/red]")
+        raise typer.Exit(2)
     if rebuild:
-        for kind in KINDS:
-            manifests = [
-                load_manifest(f)
-                for f in sorted(ctx.defs_dir(kind).iterdir())
-                if f.is_dir() and (f / MANIFEST_FILENAME).is_file()
-            ]
-            if manifests:
-                facts.rebuild_sheet(ctx.fact_sheet(kind), manifests)
+        _rebuild_sheets(ctx, prune=prune)
     caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
     server_choice = server or os.environ.get("SAS_CAS_SERVER")
     with _viya_session() as session:
@@ -557,10 +571,13 @@ def load_facts(
                 console.print(f"  [red]{exc}[/red]")
                 raise typer.Exit(1)
             loaded += 1
-            action = "replaced existing" if result["dropped"] else "created"
-            console.print(f"  {result['table']}: {action} - uploaded, promoted (global) and saved to disk")
-    if loaded:
-        console.print("[green]Done. The tables are promoted and persisted; the monitoring report can bind to them.[/green]")
+            # "dropped" reflects the loaded copy; the save step replaces any saved one
+            suffix = " (replaced a loaded copy)" if result["dropped"] else ""
+            console.print(f"  {result['table']}: uploaded, promoted (global) and saved to disk{suffix}")
+    if not loaded:
+        console.print("[red]No fact sheet was loaded - generate them first with 'mdb sync --rebuild'.[/red]")
+        raise typer.Exit(1)
+    console.print("[green]Done. The tables are promoted and persisted; the monitoring report can bind to them.[/green]")
 
 
 # ---------------------------------------------------------------------------
