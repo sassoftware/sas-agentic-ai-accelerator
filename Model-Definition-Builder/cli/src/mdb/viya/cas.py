@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import quote
 
 DEFAULT_SERVER = "cas-shared-default"
 DEFAULT_CASLIB = "Public"
@@ -38,7 +39,8 @@ def resolve_server(session, server: str | None) -> str:
 
 
 def _base(server: str, caslib: str) -> str:
-    return f"/casManagement/servers/{server}/caslibs/{caslib}/tables"
+    # Encode each path segment - a caslib like "My Lib" must not break the URL
+    return f"/casManagement/servers/{quote(server, safe='')}/caslibs/{quote(caslib, safe='')}/tables"
 
 
 def _drop_table(session, server: str, caslib: str, table: str) -> bool:
@@ -46,9 +48,17 @@ def _drop_table(session, server: str, caslib: str, table: str) -> bool:
     "table already exists" (LOADTABLE_EXISTS) conflict. The saved source on disk,
     if any, is overwritten by the later save-with-replace - so a plain unload is
     the right "drop". Returns True if a loaded table was unloaded, False if there
-    was nothing loaded (a 404 from state update is not an error)."""
-    response = session.put(f"{_base(server, caslib)}/{table}/state?value=unloaded")
-    return response.status_code < 300
+    was nothing loaded (404). Anything else (e.g. a 403 permission failure) raises
+    here, where the cause is clear, instead of surfacing later as an opaque
+    LOADTABLE_EXISTS conflict on the upload."""
+    response = session.put(f"{_base(server, caslib)}/{quote(table, safe='')}/state?value=unloaded")
+    if response.status_code < 300:
+        return True
+    if response.status_code == 404:
+        return False
+    raise RuntimeError(
+        f"Unloading {table} failed: HTTP {response.status_code} {response.text[:300]}"
+    )
 
 
 def _upload_table(session, server: str, caslib: str, table: str, csv_path: Path) -> None:
@@ -72,9 +82,11 @@ def _upload_table(session, server: str, caslib: str, table: str, csv_path: Path)
 
 
 def _save_table(session, server: str, caslib: str, table: str) -> None:
-    """Persist the loaded table to the caslib's data source on disk (replace)."""
+    """Persist the loaded table to the caslib's data source (replace). The
+    sashdat format assumes a path-based caslib (like Public); a database-backed
+    caslib would reject it - target a path caslib for the fact sheets."""
     response = session.post(
-        f"{_base(server, caslib)}/{table}",
+        f"{_base(server, caslib)}/{quote(table, safe='')}",
         data=json.dumps({"replace": True, "format": "sashdat"}),
         headers={
             "Content-Type": "application/vnd.sas.cas.table.save.request+json",

@@ -24,10 +24,11 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self, servers=None, upload_status=201):
+    def __init__(self, servers=None, upload_status=201, unload_status=200):
         self.calls = []
         self._servers = servers if servers is not None else [{"name": "cas-shared-default"}]
         self._upload_status = upload_status
+        self._unload_status = unload_status
 
     def get(self, path, **kw):
         self.calls.append(("GET", path, kw))
@@ -37,7 +38,7 @@ class FakeSession:
 
     def put(self, path, **kw):
         self.calls.append(("PUT", path, kw))
-        return FakeResponse(200)
+        return FakeResponse(self._unload_status)
 
     def post(self, path, **kw):
         self.calls.append(("POST", path, kw))
@@ -45,10 +46,6 @@ class FakeSession:
         if path.endswith("/tables"):
             return FakeResponse(self._upload_status, {"name": "T"})
         return FakeResponse(200, {})
-
-    def delete(self, path, **kw):
-        self.calls.append(("DELETE", path, kw))
-        return FakeResponse(204)
 
 
 def _csv(tmp_path):
@@ -99,3 +96,24 @@ def test_embedding_table_name_and_upload_failure(tmp_path):
     session = FakeSession(upload_status=409)
     with pytest.raises(RuntimeError, match="Uploading EMBEDDING_FACT_SHEET"):
         cas.load_fact_sheet(session, _csv(tmp_path), "embedding", "Public", "cas-shared-default")
+
+
+def test_unload_404_means_nothing_loaded_but_403_raises(tmp_path):
+    # 404 on the state update = no loaded table -> not dropped, load proceeds
+    session = FakeSession(unload_status=404)
+    result = cas.load_fact_sheet(session, _csv(tmp_path), "llm", "Public", "cas-shared-default")
+    assert result["dropped"] is False
+    assert len(session.calls) == 3  # unload attempt, upload, save
+
+    # a permission failure must surface at the unload, not as a later 409
+    session = FakeSession(unload_status=403)
+    with pytest.raises(RuntimeError, match="Unloading LLM_FACT_SHEET"):
+        cas.load_fact_sheet(session, _csv(tmp_path), "llm", "Public", "cas-shared-default")
+    assert len(session.calls) == 1  # stopped at the unload
+
+
+def test_path_segments_are_url_encoded(tmp_path):
+    session = FakeSession()
+    cas.load_fact_sheet(session, _csv(tmp_path), "llm", "My Lib", "cas server")
+    unload_path = session.calls[0][1]
+    assert "/servers/cas%20server/caslibs/My%20Lib/tables/LLM_FACT_SHEET/state" in unload_path

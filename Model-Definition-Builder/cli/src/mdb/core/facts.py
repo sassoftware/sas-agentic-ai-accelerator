@@ -221,6 +221,10 @@ def rebuild_sheet(
     """
     if not manifests:
         raise ValueError("rebuild_sheet requires at least one manifest")
+    kinds = {m.kind for m in manifests}
+    if len(kinds) != 1:
+        # A mixed list would silently render one kind against the other's columns
+        raise ValueError(f"rebuild_sheet requires manifests of a single kind, got: {sorted(kinds)}")
     kind = manifests[0].kind
     header = ",".join(COLUMNS_BY_KIND[kind])
     managed_ids = {m.model_id for m in manifests}

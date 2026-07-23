@@ -41,25 +41,36 @@ Use the `sas-viya` command-line interface's `transfer` plugin. This assumes you 
 2. **Upload** the package — the command prints the new package's `id`:
 
    ```bash
-   sas-viya transfer upload --file SAS-Agentic-AI-Accelerator-Prompt-Builder.json
+   sas-viya transfer packages upload --file SAS-Agentic-AI-Accelerator-Prompt-Builder.json
    ```
 
 3. **Import** it by that id:
 
    ```bash
-   sas-viya transfer import --id <package-id>
+   sas-viya transfer packages import --id <package-id>
    ```
 
    Or do both in one go, capturing the id (requires [`jq`](https://jqlang.github.io/jq/)):
 
    ```bash
-   pkg=$(sas-viya --output json transfer upload \
+   pkg=$(sas-viya --output json transfer packages upload \
      --file SAS-Agentic-AI-Accelerator-Prompt-Builder.json | jq -r '.id')
-   sas-viya --output text transfer import --id "$pkg"
+   sas-viya --output text transfer packages import --id "$pkg"
    ```
 
+   (On older `transfer` plugin versions the same commands are `sas-viya transfer
+   upload` / `sas-viya transfer import` — they still work, marked deprecated.)
+
 :::note The host is a transfer substitution
-The placeholder lives in the package's `substitutions` block (the `VisualElement:ve9` value), which is exactly what SAS's import machinery is designed to remap. Editing the string before upload (step 1 above) is the simplest fix. Alternatively, generate a mapping file when you upload with `--mapping mapping.json`, set the substitution value in it, and pass the same `--mapping mapping.json` to `transfer import` — the `sas-viya` transfer plugin accepts JSON mapping files. If you do neither, the report still imports; you then correct the object's base URL in [step 5](#5-add-the-object-to-a-visual-analytics-report).
+The placeholder lives in the package's `substitutions` block (the `VisualElement:ve9` value), which is exactly what SAS's import machinery is designed to remap. Editing the string before upload (step 1 above) is the simplest fix. Alternatively, remap it at import time with a **mapping file**: pass `--mapping mapping.json` to the upload and the CLI writes a JSON file whose `substitutions` block contains the `VisualElement:ve9` entry with the placeholder URL — edit that value to your host, then pass the same file to the import:
+
+```bash
+sas-viya transfer packages upload --file SAS-Agentic-AI-Accelerator-Prompt-Builder.json --mapping mapping.json
+# edit mapping.json: replace https://your-sas-viya-host in the VisualElement:ve9 value
+sas-viya transfer packages import --id <package-id> --mapping mapping.json
+```
+
+(The mapping file also lists the package's data-table connector, so the API-key CAS table can be remapped the same way. `sas-viya transfer get-mapping --id <package-id>` regenerates the file for an already-uploaded package.) If you do neither, the report still imports; you then correct the object's base URL in [step 5](#5-add-the-object-to-a-visual-analytics-report).
 :::
 
 After import, continue at [step 3](#3-create-the-api-key-data-source) — the Job Execution definition and report already exist under **SAS Content > SAS Agentic AI Accelerator > Prompt Builder**.

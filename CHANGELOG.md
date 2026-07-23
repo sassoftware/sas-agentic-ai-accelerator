@@ -2,7 +2,21 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [1.8.0] - 2026-07-22
+## [1.8.1] - 2026-07-23
+
+Robustness follow-ups to the 1.8.0 code review — no functional changes to what the commands do on the happy path.
+
+### Fixed
+
+- **`mdb load-facts` hardening.** CAS URL path segments (server, caslib, table) are now URL-encoded, so a caslib name with a space no longer produces a malformed request. An unload failure that is not "nothing loaded" (e.g. a 403 permission error) now raises immediately with a clear message instead of surfacing later as an opaque `LOADTABLE_EXISTS` conflict on the upload. When neither fact sheet exists the command exits non-zero instead of silently succeeding, and the per-table message no longer claims "created" when only the loaded copy was absent
+- **CLI consistency.** `--prune` without `--rebuild` is now an error (both `mdb sync` and `mdb load-facts`) instead of being silently ignored, and `mdb load-facts --rebuild` gained the same `--prune` option `mdb sync --rebuild` has. The duplicated rebuild loop is factored into one shared helper
+- **`rebuild_sheet` rejects a mixed llm/embedding manifest list** instead of silently rendering one kind against the other kind's columns (the CLI never did this; the guard protects future callers)
+
+### Changed
+
+- **Transfer-package import docs use the current CLI form and a verified mapping workflow.** The import guides now use `sas-viya transfer packages upload` / `import` (the plugin marks the old `transfer upload` / `import` as deprecated aliases, noted for older versions), and the mapping-file alternative is documented as validated live: `upload --mapping mapping.json` writes the file with the `VisualElement:ve9` substitution to edit, which `import --mapping` then applies (`transfer get-mapping` regenerates it)
+
+## [1.8.0] - 2026-07-23
 
 An admin migration guide for the move from the retired standalone Python scripts to the Model Definition Builder (`mdb`), and a skill to find registered models that predate the 1.6.0 attribute/lifecycle improvements.
 
