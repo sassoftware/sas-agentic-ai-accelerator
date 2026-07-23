@@ -56,7 +56,8 @@ operation settings (CLI arguments override these; precedence is
 | `SAS_DEPLOYMENT_TYPE` | `setup` | `k8s` (default) or `aca` |
 | `SAS_RESPONSIBLE_PARTY` | `setup`, `register` | project-level responsible party |
 | `SAS_PUBLISH_DESTINATION` | `publish`, `ship` | SCR destination (e.g. `llmACR`) |
-| `SAS_LLM_MODEL_CARD_REPORT_URI` / `SAS_EMBEDDING_MODEL_CARD_REPORT_URI` | `register` | optional per-kind model-card custom chart (host = `SAS_VIYA_URL`) |
+| `SAS_CAS_LIBRARY` / `SAS_CAS_SERVER` | `load-facts` | CAS library (default `Public`) / server (default `cas-shared-default`) for the fact-sheet tables |
+| `SAS_LLM_MODEL_CARD_REPORT_URI` / `SAS_EMBEDDING_MODEL_CARD_REPORT_URI` | `register` | optional per-kind model-card custom chart (host = `SAS_VIYA_URL`); the example is the [LLM Usage Report](../website/docs/Administration-Guide/Logging-&-Monitoring.md) |
 
 ## 2. Bootstrap the environment (replaces `Model-Manager-Setup.py`)
 

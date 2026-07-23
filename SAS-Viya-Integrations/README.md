@@ -44,12 +44,13 @@ Here you can find everything to setup the logging and monitoring for this framew
 
 - *README.md*, explains how to set everything up and how to configure things
 - *Get-All-Prompts*, collects all prompting related assets and turns it into a table for reporting
-- *Load-Fact-Sheets*, loads the fact sheets into CAS for reporting.
+- *Load-Fact-Sheets*, loads the fact sheets into CAS for reporting (or use `mdb load-facts`).
 - *Log-Parser-Code.sas*, if you prefer to run the log parsing as a code file
+- *LLM Usage Report.json*, a transfer package with the recommended SAS Visual Analytics monitoring report - see below.
 
-#### The Monitoring Baseline Report [Under Construction - Ignore for now]
+#### The LLM Usage Report
 
-If you have important the baseline package of this framework than you have a SAS Visual Analytics report available to you which is located under *SAS Agentic AI Accelerator > Logging and Monitoring > Monitoring Baseline* if you changed the parsed log data source from *Public.LLM_LOGS* then you will have to replace the data source accordingly.
+*LLM Usage Report.json* is a transfer package with the recommended SAS Visual Analytics report for monitoring LLM usage and prompt experimentation. It builds on four CAS tables - *LLM_LOGS*, *LLM_FACT_SHEET*, *EMBEDDING_FACT_SHEET* and *PROMPT_EXPERIMENTS* - all in the *Public* caslib by default. See the [Logging & Monitoring administration guide](../website/docs/Administration-Guide/Logging-%26-Monitoring.md) for how to import it (SAS Environment Manager or the `sas-viya transfer` CLI) and how to change the CAS library if your tables are not in *Public*.
 
 A note on prices, the report contains a calculated item called Average Price / Total Price, these two items contain big formulas that calculate the prices of the LLM usage. These formulas can be adjusted as you need it, note that most LLM providers denote their prices in millions of tokens and distinguish between input and output tokens - the data in this report is noted in individual tokens. Per default open-source models which are deployed in the SAS Open-Source Python container are priced as $0. Now you could of course add a price per second and then multiply with the runtime, but that isn't provided by default. The calculated item has a comment at the top that will help you to add additional pricing.
 
