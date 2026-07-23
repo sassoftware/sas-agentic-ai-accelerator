@@ -505,6 +505,64 @@ def sync(
         console.print(f"{folder.name}: fact-sheet row {result}")
 
 
+@app.command("load-facts")
+def load_facts(
+    caslib: Optional[str] = typer.Option(
+        None, "--caslib", "-l",
+        help="Target CAS library (env: SAS_CAS_LIBRARY; default: Public).",
+    ),
+    server: Optional[str] = typer.Option(
+        None, "--server",
+        help="CAS server name (env: SAS_CAS_SERVER; default: auto-detect cas-shared-default).",
+    ),
+    rebuild: bool = typer.Option(
+        False, "--rebuild",
+        help="Regenerate the sheets from the definitions before loading.",
+    ),
+):
+    """Upload, promote and save the fact-sheet CSVs to CAS (drops any existing table first).
+
+    The Python equivalent of Load-Fact-Sheets.sas: each sheet is loaded with
+    global scope (promoted) and saved to the caslib's data source on disk, so the
+    SAS Visual Analytics monitoring report can bind to LLM_FACT_SHEET /
+    EMBEDDING_FACT_SHEET across sessions and restarts.
+    """
+    from .viya.cas import load_fact_sheet, resolve_server
+    ctx = Context()
+    if rebuild:
+        for kind in KINDS:
+            manifests = [
+                load_manifest(f)
+                for f in sorted(ctx.defs_dir(kind).iterdir())
+                if f.is_dir() and (f / MANIFEST_FILENAME).is_file()
+            ]
+            if manifests:
+                facts.rebuild_sheet(ctx.fact_sheet(kind), manifests)
+    caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
+    server_choice = server or os.environ.get("SAS_CAS_SERVER")
+    with _viya_session() as session:
+        server_name = resolve_server(session, server_choice)
+        console.print(
+            f"Loading fact sheets into CAS library [bold]{caslib}[/bold] on [bold]{server_name}[/bold]:"
+        )
+        loaded = 0
+        for kind in KINDS:
+            sheet = ctx.fact_sheet(kind)
+            if not sheet.is_file():
+                console.print(f"  [yellow]{sheet.name} not found - run 'mdb sync --rebuild' first, skipping.[/yellow]")
+                continue
+            try:
+                result = load_fact_sheet(session, sheet, kind, caslib, server_name)
+            except RuntimeError as exc:
+                console.print(f"  [red]{exc}[/red]")
+                raise typer.Exit(1)
+            loaded += 1
+            action = "replaced existing" if result["dropped"] else "created"
+            console.print(f"  {result['table']}: {action} - uploaded, promoted (global) and saved to disk")
+    if loaded:
+        console.print("[green]Done. The tables are promoted and persisted; the monitoring report can bind to them.[/green]")
+
+
 # ---------------------------------------------------------------------------
 # import / test / providers / schema
 # ---------------------------------------------------------------------------

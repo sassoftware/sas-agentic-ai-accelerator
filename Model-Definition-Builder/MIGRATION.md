@@ -157,6 +157,20 @@ Rebuilding sorts rows by `model_id`, creates the file if it is missing, is
 idempotent, and preserves hand-maintained rows without a definition folder
 (unless `--prune`). Commit the regenerated sheets alongside the definitions.
 
+To publish the sheets to CAS for the monitoring report — replacing the manual
+`Load-Fact-Sheets.sas` step — use:
+
+```bash
+mdb load-facts                 # upload/promote/save into the Public library (default)
+mdb load-facts --caslib MyLib  # a different CAS library (env: SAS_CAS_LIBRARY)
+mdb load-facts --rebuild       # regenerate the sheets first, then load
+```
+
+This uploads each sheet with global scope (promoted) and saves it to disk as
+`LLM_FACT_SHEET` / `EMBEDDING_FACT_SHEET`, dropping any existing table first — the
+same result as the SAS script, driven from the CLI over the register/publish
+session.
+
 ## Notes
 
 - The legacy scripts are gone from the working tree; recover one from git
