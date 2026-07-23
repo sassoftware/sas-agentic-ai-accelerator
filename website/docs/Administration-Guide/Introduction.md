@@ -15,7 +15,7 @@ Please follow these steps, step by step - in order to complete this setup you ne
 In order to be able to run this you will need access to a machine with the following tools available:
 - Python with the sasctl>=1.10.3, pandas>=2.1.3 & hugging-face packages installed
 - kubectl
-- SAS Viya CLI with the authorization, models and identities plugin installed
+- SAS Viya CLI with the authorization, identities, models and transfer plugins installed
 
 As a first step clone this repository to the machine and change into the directory:
 ```bash
@@ -47,7 +47,7 @@ sas-viya profile init
 sas-viya auth loginCode
 # If successfull you shoud see a line like: Login succeeded. Token saved.
 ```
-3. Next we need to install a couple of plugins (authorization, identities & models) in order to set everything up correctly - if you want to learn more about the different plugins see the [SAS Documentation](https://go.documentation.sas.com/doc/en/sasadmincdc/default/calcli/n1vth8mtb8ipprn1prz5j26p3nvc.htm):
+3. Next we need to install a couple of plugins (authorization, identities, models & transfer) in order to set everything up correctly - if you want to learn more about the different plugins see the [SAS Documentation](https://go.documentation.sas.com/doc/en/sasadmincdc/default/calcli/n1vth8mtb8ipprn1prz5j26p3nvc.htm):
 ```bash
 # Installing the required plugins - even if you have setup the CLI before I recommend you do this to ensure the plugins are up to date
 # First up is the authorization plugin
@@ -56,5 +56,7 @@ sas-viya plugins install -repo SAS authorization
 sas-viya plugins install -repo SAS identities
 # Then the models plugin
 sas-viya plugins install -repo SAS models
+# Finally the transfer plugin - used to import content packages such as the optional Prompt Builder (see "Deploying the LLM Prompt Builder")
+sas-viya plugins install -repo SAS transfer
 ```
 4. Now the CLI is ready and setup for you to continue on.

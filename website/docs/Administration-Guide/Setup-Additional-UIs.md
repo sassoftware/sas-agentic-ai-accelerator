@@ -6,13 +6,63 @@ sidebar_position: 11
 
 This step is not required, but the LLM Prompt Builder is a no-code tool that lets prompt engineers test new prompts across LLMs, compare the results, version their experiments, and turn the best prompt into a model for further consumption in the platform (for example in SAS Intelligent Decisioning).
 
-:::info Importing the Prompt Builder
-The Prompt Builder can also be imported via the [SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json) transfer package, that you can import using the SAS Environment Manager Import page, if you do you can skip ahead to step 3.
-:::
-
 :::note Standalone build
 The Prompt Builder is shipped as a **standalone application** in the [`LLM-Prompt-Builder`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/LLM-Prompt-Builder) directory of this repository. It has **no longer has any dependency on the SAS Portal Framework for SAS Viya** — it is a single self-contained HTML file that you embed directly in a SAS Visual Analytics report through SAS Job Execution.
 :::
+
+## Shortcut: import the transfer package (optional)
+
+Rather than building the app and wiring it up by hand (steps 1–2), you can import the [`SAS-Agentic-AI-Accelerator-Prompt-Builder.json`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json) transfer package. It bundles the whole UI ready to run — the **Prompt Builder** folder, the **SAS Job Execution** definition that serves the single-file app, the `create-api-key-table.sas` helper, and the **Visual Analytics report** that hosts the object. Import it and you can skip straight to [step 3](#3-create-the-api-key-data-source).
+
+The package ships the report's Prompt Builder object pointing at a **placeholder host, `https://your-sas-viya-host`** — point it at your own environment before or after import.
+
+### Option A — SAS Environment Manager
+
+Import the JSON from **SAS Environment Manager → Content → Import**. Then correct the host in [step 5](#5-add-the-object-to-a-visual-analytics-report): open the report and update the Data-Driven Content object's base URL to your SAS Viya server.
+
+### Option B — SAS Viya CLI
+
+Use the `sas-viya` command-line interface's `transfer` plugin. This assumes you have already installed the CLI, created a connection profile, logged in and installed the `transfer` plugin as described in [Introduction — SAS Viya CLI Setup](./Introduction.md#sas-viya-cli-setup). In the commands below substitute `https://viya.example.com` with your own SAS Viya URL.
+
+1. **Point the package at your host.** Replace the placeholder in the JSON so the imported report loads the app from your server (the percent-encoded program path after the host is left untouched):
+
+   ```bash
+   # bash / Linux / macOS
+   sed -i 's#https://your-sas-viya-host#https://viya.example.com#' SAS-Agentic-AI-Accelerator-Prompt-Builder.json
+   ```
+
+   ```powershell
+   # PowerShell / Windows
+   (Get-Content SAS-Agentic-AI-Accelerator-Prompt-Builder.json) `
+     -replace 'https://your-sas-viya-host','https://viya.example.com' |
+     Set-Content SAS-Agentic-AI-Accelerator-Prompt-Builder.json
+   ```
+
+2. **Upload** the package — the command prints the new package's `id`:
+
+   ```bash
+   sas-viya transfer upload --file SAS-Agentic-AI-Accelerator-Prompt-Builder.json
+   ```
+
+3. **Import** it by that id:
+
+   ```bash
+   sas-viya transfer import --id <package-id>
+   ```
+
+   Or do both in one go, capturing the id (requires [`jq`](https://jqlang.github.io/jq/)):
+
+   ```bash
+   pkg=$(sas-viya --output json transfer upload \
+     --file SAS-Agentic-AI-Accelerator-Prompt-Builder.json | jq -r '.id')
+   sas-viya --output text transfer import --id "$pkg"
+   ```
+
+:::note The host is a transfer substitution
+The placeholder lives in the package's `substitutions` block (the `VisualElement:ve9` value), which is exactly what SAS's import machinery is designed to remap. Editing the string before upload (step 1 above) is the simplest fix. Alternatively, generate a mapping file when you upload with `--mapping mapping.json`, set the substitution value in it, and pass the same `--mapping mapping.json` to `transfer import` — the `sas-viya` transfer plugin accepts JSON mapping files. If you do neither, the report still imports; you then correct the object's base URL in [step 5](#5-add-the-object-to-a-visual-analytics-report).
+:::
+
+After import, continue at [step 3](#3-create-the-api-key-data-source) — the Job Execution definition and report already exist under **SAS Content > SAS Agentic AI Accelerator > Prompt Builder**.
 
 ## 1. Get the single-file app
 
@@ -132,16 +182,18 @@ If you imported the SAS-Agentic-AI-Accelerator-Prompt-Builder.json package then 
 
 ### Configuration (Properties panel)
 
-The environment-specific values below are exactly those captured in your `llm-prompt-builder.json` — the file produced in the [Setup SAS Model Manager](./Setup-SAS-Model-Manager.md) chapter (regenerate it by re-running `mdb setup` if you have lost it). Copy each value from that file into the object's **Properties** panel:
+The core environment-specific values below are exactly those captured in your `llm-prompt-builder.json` — the file produced in the [Setup SAS Model Manager](./Setup-SAS-Model-Manager.md) chapter (regenerate it by re-running `mdb setup` if you have lost it). Copy each value from that file into the object's **Properties** panel. The last two fields are **optional** app settings that are not in that file:
 
-| Properties-panel field | `llm-prompt-builder.json` key | Meaning |
-|---|---|---|
-| SAS Viya host | *(not in the file)* | SAS Viya base URL. Leave blank to default to the embedding origin. |
-| Model Manager repository ID | `modelRepositoryID` | Model Manager repository in which new prompt projects are created. |
-| LLM project ID | `llmProjectID` | Model Manager project holding the available LLM definitions (each with an `options.json`). |
-| SCR endpoint | `SCREndpoint` | Base URL of the SCR endpoint hosting the LLM containers. |
-| Deployment type | `deploymentType` | `k8s` (default) or `aca` (Azure Container Apps / Instances). See [Container Deployment](./Container-Deployment.md). |
+| Properties-panel field | `llm-prompt-builder.json` key | URL parameter | Meaning |
+|---|---|---|---|
+| SAS Viya host | *(not in the file)* | `viyaHost` | SAS Viya base URL. Leave blank to default to the embedding origin. |
+| Model Manager repository ID | `modelRepositoryID` | `modelRepositoryID` | Model Manager repository in which new prompt projects are created. |
+| LLM project ID | `llmProjectID` | `llmProjectID` | Model Manager project holding the available LLM definitions (each with an `options.json`). |
+| SCR endpoint | `SCREndpoint` | `SCREndpoint` | Base URL of the SCR endpoint hosting the LLM containers. |
+| Deployment type | `deploymentType` | `deploymentType` | `k8s` (default) or `aca` (Azure Container Apps / Instances). See [Container Deployment](./Container-Deployment.md). |
+| Default judge model | *(optional — not in the file)* | `judgeModel` | Optional. Name of an LLM in the LLM project used by default for the [LLM-as-a-Judge](../User-Guide/Prompt-Builder.md) comparison; prompt engineers can still override it in the app. Leave blank for no default. |
+| Model card report URI | *(optional — not in the file)* | `modelCardReportURI` | Optional. A SAS Visual Analytics report path (`/reports/reports/<uuid>`). When set, manifesting the best prompt embeds that report on its model card as the custom chart, hosted from the *SAS Viya host* above. Leave blank to omit. |
 
 :::info
-Until these values are supplied the object shows a **"Configuration required"** message and does not call SAS Viya, so it never fails against placeholder IDs. The same parameters can also be appended to the object's URL by hand, which is a reliable fallback if your Visual Analytics version does not render the options panel.
+Until the three required values (repository ID, LLM project ID, SCR endpoint) are supplied the object shows a **"Configuration required"** message and does not call SAS Viya, so it never fails against placeholder IDs. Every field can also be appended to the object's URL by hand using its **URL parameter** name above (for example `&judgeModel=...&modelCardReportURI=/reports/reports/<uuid>`), which is a reliable fallback if your Visual Analytics version does not render the options panel.
 :::
