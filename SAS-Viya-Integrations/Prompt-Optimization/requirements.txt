@@ -2,5 +2,9 @@
 # Install them into the context's Python environment (see the "Enabling Prompt
 # Optimization" page of the Administration Guide). dspy pulls in litellm,
 # openai, pydantic and friends as its own dependencies.
-dspy>=2.6
+#
+# The dspy minimum matches the version the job's SCRLM adapter is validated
+# against (the BaseLM response contract differs in older releases); the job
+# checks it at startup and fails fast with a clear message when it is older.
+dspy>=3.2.1
 requests>=2.31

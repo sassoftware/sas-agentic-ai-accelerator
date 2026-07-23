@@ -4347,16 +4347,66 @@ ${scoreCodeReturn}`;
       const progressMessages = await getJobProgressMessages(job);
       const latestMilestone = progressMessages.length > 0 ? ` — ${progressMessages[progressMessages.length - 1]}` : '';
       optimizeUI.statusLine.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobState} ${job.state}${latestMilestone}`;
-      if (!isTerminalJobState(job.state)) return;
+      if (!isTerminalJobState(job.state)) {
+        // The job records its outcome in the optimization tracker BEFORE Job
+        // Execution's state turns terminal — and a hard-killed compute session
+        // can leave the state 'running' indefinitely (seen live). When this
+        // job's entry exists, finish from it instead of polling forever.
+        const earlyEntry = await readOptimizationEntry(true);
+        if (!earlyEntry) return;
+        stopOptimizePolling();
+        if (earlyEntry.status === 'succeeded') {
+          await showOptimizeResult();
+        } else {
+          const earlyError = earlyEntry.error ? ` ${earlyEntry.error}` : '';
+          optimizeUI.resultBox.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}${earlyError}`;
+          showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}`);
+        }
+        resetOptimizeRunButton();
+        return;
+      }
       stopOptimizePolling();
       if (job.state === 'completed' || job.state === 'completedWithWarnings') {
         await showOptimizeResult();
       } else {
-        const jobError = job.error?.message ? ` ${job.error.message}` : '';
-        optimizeUI.resultBox.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}${jobError}`;
+        // The job records its failure reason in the optimization tracker
+        // (e.g. "the compute context lacks the dspy package") — prefer that
+        // over Job Execution's generic error message.
+        const failedEntry = await readOptimizationEntry();
+        const failureDetail = failedEntry?.error
+          ? ` ${failedEntry.error}`
+          : job.error?.message
+            ? ` ${job.error.message}`
+            : '';
+        optimizeUI.resultBox.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}${failureDetail}`;
         showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}`);
       }
       resetOptimizeRunButton();
+    }
+
+    /**
+     * Read the launched job's entry from the job-written optimization tracker
+     * on the source prompt-test, matched by job id. With `requireJobIdMatch`
+     * only an exact match counts (used while the job still reports running);
+     * otherwise the newest entry is the fallback. Null when the tracker or
+     * entry is not (yet) readable.
+     */
+    async function readOptimizationEntry(requireJobIdMatch = false): Promise<OptimizationTrackerEntry | null> {
+      try {
+        const sourceContents = await getModelContents(optimizeSourceModelId);
+        const trackerContent = sourceContents.find(
+          (modelContent) => modelContent.name === 'Prompt-Optimization-Tracker.json'
+        );
+        if (!trackerContent?.fileUri) return null;
+        const response = await getFileContent(String(trackerContent.fileUri));
+        const trackerEntries = (await response.json()) as OptimizationTrackerEntry[];
+        if (!Array.isArray(trackerEntries)) return null;
+        const matched = trackerEntries.find((candidate) => candidate.jobId === optimizeJobId) ?? null;
+        if (requireJobIdMatch) return matched;
+        return matched ?? trackerEntries[trackerEntries.length - 1] ?? null;
+      } catch {
+        return null;
+      }
     }
 
     /**
@@ -4367,25 +4417,7 @@ ${scoreCodeReturn}`;
     async function showOptimizeResult(): Promise<void> {
       if (!optimizeUI) return;
       optimizeUI.resultBox.innerHTML = '';
-      let entry: OptimizationTrackerEntry | null = null;
-      try {
-        const sourceContents = await getModelContents(optimizeSourceModelId);
-        const trackerContent = sourceContents.find(
-          (modelContent) => modelContent.name === 'Prompt-Optimization-Tracker.json'
-        );
-        if (trackerContent?.fileUri) {
-          const response = await getFileContent(String(trackerContent.fileUri));
-          const trackerEntries = (await response.json()) as OptimizationTrackerEntry[];
-          if (Array.isArray(trackerEntries)) {
-            entry =
-              trackerEntries.find((candidate) => candidate.jobId === optimizeJobId) ??
-              trackerEntries[trackerEntries.length - 1] ??
-              null;
-          }
-        }
-      } catch {
-        entry = null;
-      }
+      const entry = await readOptimizationEntry();
       if (!entry || entry.status !== 'succeeded') {
         // The job completed but its tracker entry is missing/failed — surface
         // whatever error the entry carries.

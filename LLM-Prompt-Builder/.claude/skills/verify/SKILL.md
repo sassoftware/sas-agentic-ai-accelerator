@@ -66,3 +66,7 @@ server that also implements the handful of Viya endpoints the app calls.
   `document.activeElement` to be the modal before pressing it.
 - The run-header system prompt element id contains a pre-existing typo:
   `...-run-systenPrompt`.
+- Run each verify script against a FRESHLY started mock instance: the optimize
+  flow mutates mock state (job polls, the optimization tracker appearing in
+  the model contents) that can break other suites run against the same
+  instance.

@@ -23,9 +23,10 @@
 
     Prerequisites (see the "Enabling Prompt Optimization" administration guide):
       - The compute context this job runs in must have a Python environment
-        with the packages in requirements.txt (dspy, requests) installed.
-        This is the most common failure mode - the job fails fast with a clear
-        message when dspy is missing.
+        with the packages in requirements.txt (dspy >= 3.2.1, requests)
+        installed. This is the most common failure mode - the job checks both
+        the presence AND the version of dspy at startup and fails fast with a
+        clear message (surfaced in the Prompt Builder's Optimize panel).
       - Provider API keys (for hosted models) must be in a governed SAS
         library.table with columns name + value; only the LIBRARY and TABLE
         names are passed to this job, never the keys.
@@ -76,27 +77,17 @@
 %_opt_default(SYS_JES_JOB_URI, );
 %_opt_default(_contextName, );
 
-/* ---- Required parameters ---- */
-%macro _opt_require(name);
-    %if %symexist(&name.) = 0 %then %do;
-        data _null_;
-            putLog "ERROR: The required job parameter &name. was not provided.";
-            abort abend 42;
-        run;
-    %end;
-%mend _opt_require;
-
-%_opt_require(promptModelId);
-%_opt_require(promptName);
-%_opt_require(targetModelId);
-%_opt_require(targetModelName);
-%_opt_require(scrEndpoint);
+/* Required parameters (promptModelId, promptName, targetModelId,
+   targetModelName, scrEndpoint) are validated INSIDE the Python program, so a
+   missing one fails through the same path as every other error - with a clear
+   milestone and a failed tracker entry - instead of a SAS-side ABORT. */
 
 /* Viya host for the Model Manager REST calls made from Python */
 %let _opt_viyaHost = %sysfunc(getoption(SERVICESBASEURL));
 
-/* Overall outcome flag the Python program sets; checked at the end so a failed
-   optimisation fails the Job Execution job (state=failed in the Builder) */
+/* Overall outcome flag the Python program sets; reported at the end. The job
+   itself always completes - the outcome lives in the optimization-tracker
+   entry the Prompt Builder reads (see the note at the end of this program) */
 %let _opt_rc = 1;
 %let _opt_error = The Python program did not run.;
 
@@ -139,10 +130,22 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 
+def sas_safe(text):
+    """Sanitize text that travels through SAS.logMessage/SAS.symput: both embed
+    it into generated SAS statements, where an unbalanced quote or a macro
+    trigger corrupts the code stream - a single apostrophe in an error message
+    left the whole job stuck in 'running' with a compute segfault (verified
+    live). Exception texts routinely contain quotes, so everything is cleaned."""
+    cleaned = str(text)
+    for bad, repl in (("'", "`"), ('"', "`"), ("%", "pct "), ("&", "+"), (";", ",")):
+        cleaned = cleaned.replace(bad, repl)
+    return cleaned
+
+
 def progress(message):
     """Milestones for the Prompt Builder: NOTE: Python-Subprocess - <message>."""
     try:
-        SAS.logMessage(str(message))
+        SAS.logMessage(sas_safe(message))
     except Exception:
         print(str(message))
 
@@ -166,19 +169,39 @@ WORKPATH = SAS.workpath if SAS.workpath.endswith(os.sep) else SAS.workpath + os.
 
 
 def fail(message):
-    SAS.symput("_opt_error", str(message)[:500])
+    SAS.symput("_opt_error", sas_safe(message)[:500])
     raise RuntimeError(str(message))
 
 
-# ---- Fail fast when dspy is missing (the #1 deployment issue) --------------
-try:
-    import requests
-except Exception:
-    fail("The Python environment of this compute context lacks the requests package - install the packages in Prompt-Optimization/requirements.txt.")
-try:
-    import dspy
-except Exception:
-    fail("The Python environment of this compute context lacks the dspy package - install the packages in Prompt-Optimization/requirements.txt into the context's Python, or point the computeContext Option at a prepared context.")
+# ---- Dependency preflight (the #1 deployment issue) ------------------------
+# Imported lazily from inside the main try/except so a missing or outdated
+# package fails the run through the SAME path as every other error: a clear
+# "Optimization failed: ..." milestone (which the Builder shows live), a
+# failed optimization-tracker entry, and a failed Job Execution state.
+# The minimum is the version the SCRLM adapter is validated against - older
+# releases differ in the BaseLM response contract (e.g. how usage is read).
+MIN_DSPY_VERSION = (3, 2, 1)
+requests = None
+dspy = None
+
+
+def import_dependencies():
+    global requests, dspy
+    try:
+        import requests as requests_module
+    except Exception:
+        fail("The Python environment of this compute context lacks the requests package - install the packages in Prompt-Optimization/requirements.txt.")
+    requests = requests_module
+    try:
+        import dspy as dspy_module
+    except Exception:
+        fail("The Python environment of this compute context lacks the dspy package - install the packages in Prompt-Optimization/requirements.txt into that Python environment, or point the computeContext Option at a prepared context.")
+    dspy = dspy_module
+    raw_version = str(getattr(dspy_module, "__version__", "0"))
+    version = tuple(int(part) for part in re.findall(r"\d+", raw_version))[:3]
+    if (version + (0, 0, 0))[:3] < MIN_DSPY_VERSION:
+        minimum = ".".join(str(part) for part in MIN_DSPY_VERSION)
+        fail(f"dspy {raw_version} is too old - the optimization job is validated against dspy >= {minimum}. Update the Python environment of the compute context (see Prompt-Optimization/requirements.txt).")
 
 
 # ---- SAS Viya REST helpers -------------------------------------------------
@@ -277,39 +300,47 @@ def build_model_options(model_id, model_name, key_map):
         provider = str(options["API_KEY"])
         key = key_map.get(provider)
         if not key:
-            fail(f"The model {model_name} needs an API key for provider '{provider}' but the governed key table has none - add it or configure optimizeKeyLibrary/optimizeKeyTable.")
+            fail(f"The model {model_name} needs an API key for provider {provider} but the governed key table has none - add it or configure optimizeKeyLibrary/optimizeKeyTable.")
         options["API_KEY"] = key
     return options
 
 
-class SCRLM(dspy.BaseLM):
-    """DSPy LM adapter for the SAS Container Runtime LLM containers.
+def build_scrlm_class():
+    """Build the SCRLM adapter class. Wrapped in a factory because it
+    subclasses dspy.BaseLM, which only exists after the dependency preflight
+    imported dspy - a module-level class statement would crash before the
+    friendly missing-dspy error could be produced."""
 
-    The SCR API is the SAS 3-input contract (systemPrompt/userPrompt/options),
-    not OpenAI - so forward() folds the chat messages into those two prompts
-    and wraps the container's text answer in the OpenAI-ish shape BaseLM
-    expects. Same URL forms as the browser (k8s path vs aca host).
-    """
+    class SCRLM(dspy.BaseLM):
+        """DSPy LM adapter for the SAS Container Runtime LLM containers.
 
-    def __init__(self, model_name, options):
-        super().__init__(model=model_name)
-        self.scr_options = dict(options)
+        The SCR API is the SAS 3-input contract (systemPrompt/userPrompt/
+        options), not OpenAI - so forward() folds the chat messages into those
+        two prompts and wraps the container's text answer in the OpenAI-ish
+        shape BaseLM expects. Same URL forms as the browser (k8s vs aca).
+        """
 
-    def forward(self, prompt=None, messages=None, **kwargs):
-        chat = messages or [{"role": "user", "content": prompt or ""}]
-        system_prompt = "\n".join(str(m.get("content", "")) for m in chat if m.get("role") == "system")
-        user_prompt = "\n\n".join(str(m.get("content", "")) for m in chat if m.get("role") != "system")
-        text = call_scr(self.model, self.scr_options, system_prompt, user_prompt)
-        # usage must be a plain dict: dspy's BaseLM does dict(response.usage)
-        # (verified against dspy 3.2.1 — a SimpleNamespace raises TypeError).
-        return SimpleNamespace(
-            choices=[SimpleNamespace(
-                message=SimpleNamespace(content=text, tool_calls=None),
-                finish_reason="stop",
-            )],
-            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-            model=self.model,
-        )
+        def __init__(self, model_name, options):
+            super().__init__(model=model_name)
+            self.scr_options = dict(options)
+
+        def forward(self, prompt=None, messages=None, **kwargs):
+            chat = messages or [{"role": "user", "content": prompt or ""}]
+            system_prompt = "\n".join(str(m.get("content", "")) for m in chat if m.get("role") == "system")
+            user_prompt = "\n\n".join(str(m.get("content", "")) for m in chat if m.get("role") != "system")
+            text = call_scr(self.model, self.scr_options, system_prompt, user_prompt)
+            # usage must be a plain dict: dspy's BaseLM does dict(response.usage)
+            # (verified against dspy 3.2.1 — a SimpleNamespace raises TypeError).
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    message=SimpleNamespace(content=text, tool_calls=None),
+                    finish_reason="stop",
+                )],
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                model=self.model,
+            )
+
+    return SCRLM
 
 
 # ---- Dataset: the prompt's experiment tracker ------------------------------
@@ -531,106 +562,133 @@ tracker_entry = {
     "datasetSnapshot": None, "error": None,
 }
 
-try:
-    key_map = load_key_map()
-    progress("Loading the experiment tracker dataset")
-    examples_raw, source_header = load_tracker_dataset(P["promptModelId"])
-    tracker_entry["sampleCount"] = len(examples_raw)
-    if len(examples_raw) < MIN_SAMPLES:
-        fail(f"Only {len(examples_raw)} runs have a Best Response - at least {MIN_SAMPLES} are required.")
-    progress(f"Dataset loaded ({len(examples_raw)} examples)")
-
-    input_names = sorted({name for example in examples_raw for name in example["inputs"]})
-    examples = [
-        dspy.Example(response=example["response"], **example["inputs"]).with_inputs(*example["inputs"].keys())
-        for example in examples_raw
-    ]
-    rng = random.Random(42)
-    rng.shuffle(examples)
-    validation_size = max(1, len(examples) // 5)
-    valset, trainset = examples[:validation_size], examples[validation_size:]
-
-    progress("Preparing the target model")
-    target_options = build_model_options(P["targetModelId"], P["targetModelName"], key_map)
-    target_lm = SCRLM(P["targetModelName"], target_options)
-    # Smoke test - fail fast on a bad endpoint or key before spending calls.
-    call_scr(P["targetModelName"], target_options, "You are a health check.", "Reply with OK.")
-    dspy.configure(lm=target_lm)
-
-    if P["metric"] == "judge":
-        if not P["judgeModelName"]:
-            fail("metric=judge requires judgeModelName.")
-        judge_model = next(
-            (i for i in viya("GET", "/modelRepository/models?filter=eq(name,'" + P["judgeModelName"] + "')").get("items", [])), None)
-        if judge_model is None:
-            fail(f"The judge model {P['judgeModelName']} was not found in Model Manager.")
-        judge_options = build_model_options(judge_model["id"], P["judgeModelName"], key_map)
-        metric = make_judge_metric(judge_options)
-    else:
-        metric = exact_metric
-
-    signature_str = ", ".join(input_names) + " -> response"
-    signature = dspy.Signature(signature_str, str(source_header.get("systemPrompt") or ""))
-    program = dspy.Predict(signature)
-
-    progress("Scoring the baseline prompt")
-    metric_before = evaluate(program, valset, metric)
-    tracker_entry["metricBefore"] = metric_before
-    progress(f"Baseline metric: {metric_before:.3f}")
-
-    progress(f"Optimising with {P['optimizer']} ({len(trainset)} training examples)")
-    optimizer = dspy.BootstrapFewShot(
-        metric=metric, max_bootstrapped_demos=MAX_DEMOS, max_labeled_demos=MAX_DEMOS)
-    compiled = optimizer.compile(program, trainset=trainset)
-
-    progress("Scoring the optimised prompt")
-    metric_after = evaluate(compiled, valset, metric)
-    tracker_entry["metricAfter"] = metric_after
-    progress(f"Optimised metric: {metric_after:.3f}")
-
-    progress("Baking the optimised program into a prompt")
-    baked = bake_out(compiled, source_header, input_names)
-    tracker_entry["optimizedPrompt"] = baked
-
-    progress("Writing the results back to SAS Model Manager")
-    source_model = viya("GET", f"/modelRepository/models/{P['promptModelId']}")
-    produced_id = create_optimised_prompt_model(source_model, baked, {
-        "sourcePromptId": P["promptModelId"],
-        "optimizedBy": f"dspy-{P['optimizer']}",
-    })
-    tracker_entry["producedPromptModelId"] = produced_id
-
-    # Snapshot the exact examples optimised on (provenance) and record the run.
-    tracker_entry["status"] = "succeeded"
-    tracker_entry["finishedAt"] = datetime.now(timezone.utc).isoformat()
-    append_optimization_tracker(tracker_entry, dataset_snapshot=examples_raw)
-
-    progress(f"Done - optimised prompt model {produced_id}, metric {metric_before:.3f} -> {metric_after:.3f}")
-    SAS.symput("_opt_rc", "0")
-except Exception as error:
-    error_text = str(error) or error.__class__.__name__
-    progress(f"Optimization failed: {error_text}")
-    print(traceback.format_exc())
-    tracker_entry["status"] = "failed"
-    tracker_entry["finishedAt"] = datetime.now(timezone.utc).isoformat()
-    tracker_entry["error"] = error_text[:500]
+def main():
+    # The whole flow lives inside ONE function so its try/except is
+    # compiled as a single unit: proc python executes the submit block
+    # incrementally, and a large top-level try/except can be split so the
+    # except never guards the body - an unhandled failure-path exception
+    # then crashed the compute session (verified live: Segmentation
+    # Violation in the log, job stuck in running).
     try:
-        # Best effort: record the failure for the Builder's result panel.
-        append_optimization_tracker(tracker_entry)
-    except Exception:
-        pass
-    SAS.symput("_opt_error", error_text[:500])
+        missing_params = [name for name in
+                          ("promptModelId", "promptName", "targetModelId", "targetModelName", "scrEndpoint")
+                          if not P[name]]
+        if missing_params:
+            fail("Required job parameters missing: " + ", ".join(missing_params))
+        import_dependencies()
+        SCRLM = build_scrlm_class()
+        key_map = load_key_map()
+        progress("Loading the experiment tracker dataset")
+        examples_raw, source_header = load_tracker_dataset(P["promptModelId"])
+        tracker_entry["sampleCount"] = len(examples_raw)
+        if len(examples_raw) < MIN_SAMPLES:
+            fail(f"Only {len(examples_raw)} runs have a Best Response - at least {MIN_SAMPLES} are required.")
+        progress(f"Dataset loaded ({len(examples_raw)} examples)")
+
+        input_names = sorted({name for example in examples_raw for name in example["inputs"]})
+        examples = [
+            dspy.Example(response=example["response"], **example["inputs"]).with_inputs(*example["inputs"].keys())
+            for example in examples_raw
+        ]
+        rng = random.Random(42)
+        rng.shuffle(examples)
+        validation_size = max(1, len(examples) // 5)
+        valset, trainset = examples[:validation_size], examples[validation_size:]
+
+        progress("Preparing the target model")
+        target_options = build_model_options(P["targetModelId"], P["targetModelName"], key_map)
+        target_lm = SCRLM(P["targetModelName"], target_options)
+        # Smoke test - fail fast on a bad endpoint or key before spending calls.
+        call_scr(P["targetModelName"], target_options, "You are a health check.", "Reply with OK.")
+        dspy.configure(lm=target_lm)
+
+        if P["metric"] == "judge":
+            if not P["judgeModelName"]:
+                fail("metric=judge requires judgeModelName.")
+            judge_model = next(
+                (i for i in viya("GET", "/modelRepository/models?filter=eq(name,'" + P["judgeModelName"] + "')").get("items", [])), None)
+            if judge_model is None:
+                fail(f"The judge model {P['judgeModelName']} was not found in Model Manager.")
+            judge_options = build_model_options(judge_model["id"], P["judgeModelName"], key_map)
+            metric = make_judge_metric(judge_options)
+        else:
+            metric = exact_metric
+
+        signature_str = ", ".join(input_names) + " -> response"
+        signature = dspy.Signature(signature_str, str(source_header.get("systemPrompt") or ""))
+        program = dspy.Predict(signature)
+
+        progress("Scoring the baseline prompt")
+        metric_before = evaluate(program, valset, metric)
+        tracker_entry["metricBefore"] = metric_before
+        progress(f"Baseline metric: {metric_before:.3f}")
+
+        progress(f"Optimising with {P['optimizer']} ({len(trainset)} training examples)")
+        optimizer = dspy.BootstrapFewShot(
+            metric=metric, max_bootstrapped_demos=MAX_DEMOS, max_labeled_demos=MAX_DEMOS)
+        compiled = optimizer.compile(program, trainset=trainset)
+
+        progress("Scoring the optimised prompt")
+        metric_after = evaluate(compiled, valset, metric)
+        tracker_entry["metricAfter"] = metric_after
+        progress(f"Optimised metric: {metric_after:.3f}")
+
+        progress("Baking the optimised program into a prompt")
+        baked = bake_out(compiled, source_header, input_names)
+        tracker_entry["optimizedPrompt"] = baked
+
+        progress("Writing the results back to SAS Model Manager")
+        source_model = viya("GET", f"/modelRepository/models/{P['promptModelId']}")
+        produced_id = create_optimised_prompt_model(source_model, baked, {
+            "sourcePromptId": P["promptModelId"],
+            "optimizedBy": f"dspy-{P['optimizer']}",
+        })
+        tracker_entry["producedPromptModelId"] = produced_id
+
+        # Snapshot the exact examples optimised on (provenance) and record the run.
+        tracker_entry["status"] = "succeeded"
+        tracker_entry["finishedAt"] = datetime.now(timezone.utc).isoformat()
+        append_optimization_tracker(tracker_entry, dataset_snapshot=examples_raw)
+
+        progress(f"Done - optimised prompt model {produced_id}, metric {metric_before:.3f} -> {metric_after:.3f}")
+        SAS.symput("_opt_rc", "0")
+    except Exception as error:
+        error_text = str(error) or error.__class__.__name__
+        progress(f"Optimization failed: {error_text}")
+        print(traceback.format_exc())
+        tracker_entry["status"] = "failed"
+        tracker_entry["finishedAt"] = datetime.now(timezone.utc).isoformat()
+        tracker_entry["error"] = error_text[:500]
+        # Best effort: record the failure for the Builder's result panel. Skipped
+        # only when even requests could not be imported (nothing can reach Viya).
+        if requests is not None:
+            try:
+                append_optimization_tracker(tracker_entry)
+            except Exception:
+                pass
+        SAS.symput("_opt_error", sas_safe(error_text)[:500])
+
+
+main()
 endsubmit;
 run; quit;
 
 proc python terminate;
 run; quit;
 
-/* ---- Propagate the outcome to Job Execution ---- */
+/* ---- Propagate the outcome to Job Execution ----
+   The job ALWAYS ends normally: raising a SAS error condition (any ABORT
+   flavor, or a genuine runtime ERROR after proc python has run) leaves the
+   compute session "stopped" without Job Execution ever receiving its
+   completion handshake - the job then shows "running" forever and the dead
+   server keeps counting against the context's server limit until the session
+   is deleted (all verified live). The OUTCOME therefore lives in the
+   Prompt-Optimization-Tracker entry (status succeeded/failed + error), which
+   the Prompt Builder reads when the job completes; the log keeps a plain
+   ERROR line for administrators. */
 data _null_;
-    if "&_opt_rc." ne "0" then do;
+    if "&_opt_rc." ne "0" then
         putLog "ERROR: Prompt optimization failed: %superq(_opt_error)";
-        abort abend 42;
-    end;
-    putLog "NOTE: Prompt optimization succeeded.";
+    else
+        putLog "NOTE: Prompt optimization succeeded.";
 run;

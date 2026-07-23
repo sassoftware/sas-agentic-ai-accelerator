@@ -79,6 +79,13 @@ const relationshipsFor = {
 // entry the app renders (metrics, produced model link, load button).
 let jobPolls = 0;
 let jobLaunched = false;
+// POST /__failjob arms a failure: the NEXT launched job fails after one poll,
+// logging the job's dependency-preflight error (missing dspy) and appending a
+// failed tracker entry — mirroring the shipped job's failure path.
+let failNextJob = false;
+let failJobPolls = 0;
+const DSPY_MISSING_ERROR =
+  'The Python environment of this compute context lacks the dspy package - install the packages in Prompt-Optimization/requirements.txt into that Python environment, or point the computeContext Option at a prepared context.';
 const optimizedPrompt = {
   systemPrompt: 'Optimised system prompt.\n\nFollow the pattern of these examples:\n\nuserPrompt: User 2\nresponse: Response two',
   userPrompt: 'User 2',
@@ -125,6 +132,7 @@ http
 
       if (p === '/__log') return json(res, 200, log);
       if (p === '/__reset') { log.length = 0; return json(res, 200, {}); }
+      if (p === '/__failjob') { failNextJob = true; return json(res, 200, {}); }
 
       if (p === '/' || p === '/index.html') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -214,6 +222,11 @@ http
         return json(res, 200, { items });
       }
       if (p === '/jobExecution/jobs' && req.method === 'POST') {
+        if (failNextJob) {
+          failNextJob = false;
+          failJobPolls = 0;
+          return json(res, 201, { id: 'job-fail', state: 'pending' });
+        }
         jobLaunched = true;
         jobPolls = 0;
         return json(res, 201, { id: 'job-1', state: 'pending' });
@@ -222,6 +235,48 @@ http
         jobPolls += 1;
         if (jobPolls < 2) return json(res, 200, { id: 'job-1', state: 'running' });
         return json(res, 200, { id: 'job-1', state: 'completed', logLocation: '/files/files/joblog-1' });
+      }
+      if (p === '/jobExecution/jobs/job-fail' && req.method === 'GET') {
+        failJobPolls += 1;
+        if (failJobPolls < 2) return json(res, 200, { id: 'job-fail', state: 'running' });
+        // The failed run's tracker entry appears exactly once, like the real job writes it.
+        if (!optimizationTracker.some((entry) => entry.jobId === 'job-fail')) {
+          optimizationTracker.push({
+            optimizationId: optimizationTracker.length + 1,
+            startedAt: '2026-07-23T10:00:00Z',
+            finishedAt: '2026-07-23T10:00:30Z',
+            status: 'failed',
+            jobId: 'job-fail',
+            targetModel: 'demo_llm',
+            datasetSource: 'tracker',
+            sampleCount: 0,
+            optimizer: 'bootstrap',
+            metric: 'exact',
+            metricBefore: null,
+            metricAfter: null,
+            optimizedPrompt: null,
+            producedPromptModelId: null,
+            error: DSPY_MISSING_ERROR,
+          });
+        }
+        return json(res, 200, {
+          id: 'job-fail',
+          state: 'failed',
+          logLocation: '/files/files/joblog-fail',
+          error: { message: 'The job request failed.' },
+        });
+      }
+      if (p === '/files/files/joblog-fail/content') {
+        return json(res, 200, {
+          version: 2,
+          name: 'items',
+          accept: 'application/vnd.sas.compute.log.line',
+          items: [
+            { version: 1, type: 'source', line: '597  %put NOTE: Python-Subprocess - Optimization failed: ' + DSPY_MISSING_ERROR + ';' },
+            { version: 1, type: 'note', line: 'NOTE: Python-Subprocess - Optimization failed: ' + DSPY_MISSING_ERROR },
+            { version: 1, type: 'error', line: 'ERROR: Prompt optimization failed: ' + DSPY_MISSING_ERROR },
+          ],
+        });
       }
       if (p === '/files/files/joblog-1/content') {
         // Real shape (verified live): a vnd.sas.compute.log.line collection —

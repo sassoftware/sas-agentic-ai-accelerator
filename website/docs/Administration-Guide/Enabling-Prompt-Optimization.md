@@ -18,18 +18,18 @@ The feature is off by default and gated behind the `enableOptimization` Option o
 The job runs DSPy inside `proc python`, so the **SAS Compute context** it runs in must have a Python environment with the packages from [`SAS-Viya-Integrations/Prompt-Optimization/requirements.txt`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/Prompt-Optimization/requirements.txt) installed:
 
 ```text
-dspy>=2.6
+dspy>=3.2.1
 requests>=2.31
 ```
 
 Install them into the Python environment your compute contexts use (the same one configured for `proc python` via `PROC_PYPATH`), for example:
 
 ```bash
-pip install "dspy>=2.6" "requests>=2.31"
+pip install "dspy>=3.2.1" "requests>=2.31"
 ```
 
 :::warning The most common failure
-A compute context whose Python lacks `dspy` is the most common reason an optimization fails. The job fails fast with the message *"The Python environment of this compute context lacks the dspy package"* — if you see it, install the requirements into that context's Python or point the Prompt Builder at a context that has them.
+A compute context whose Python lacks `dspy` — or carries one older than **3.2.1**, the version the job's DSPy adapter is validated against — is the most common reason an optimization fails. The job checks both at startup and fails fast; the message (*"…lacks the dspy package"* or *"dspy X is too old"*) appears directly in the Prompt Builder's Optimize panel and in the run's optimization-tracker entry. If you see it, install/upgrade the requirements in that context's Python or point the Prompt Builder at a context that has them.
 :::
 
 Because not every deployment wants DSPy in its default environment, the context is **configurable**: you can prepare a dedicated context (for example `SAS Job Execution — DSPy`) with a Python environment that has the packages, and point the Prompt Builder at it. Size the context generously — an optimization run makes many model calls and runs for several minutes.
@@ -79,6 +79,7 @@ The same values can be supplied as URL parameters (`enableOptimization=true&comp
 | Symptom | Cause / fix |
 | --- | --- |
 | Job fails immediately: *"lacks the dspy package"* | The compute context's Python is missing the requirements — see step 1. |
+| Job fails immediately: *"dspy X is too old"* | The context's dspy predates 3.2.1, which the job's adapter is validated against — upgrade it (`pip install -U "dspy>=3.2.1"`). |
 | Job fails: *"needs an API key for provider …"* | The governed key table has no row for that provider (or the Options don't name the table) — see step 3. |
 | Optimize button disabled: *"not fully configured"* | `computeContext` or `optimizeJobProgram` is blank in the Options pane. |
 | Optimize button disabled: *"At least N runs …"* | The prompt has fewer Best-Response runs than the minimum — run and mark more experiments. |
