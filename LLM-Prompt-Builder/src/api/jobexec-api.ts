@@ -48,7 +48,15 @@ export function isTerminalJobState(state: JobState): boolean {
 }
 
 interface FolderItem {
+  id?: string;
   uri?: string;
+  [key: string]: unknown;
+}
+
+interface FolderMember {
+  name?: string;
+  uri?: string;
+  contentType?: string;
   [key: string]: unknown;
 }
 
@@ -56,16 +64,38 @@ interface FolderItem {
  * Resolve a SAS Content path (e.g. /Public/Jobs/Optimize-Prompt-DSPy) to the
  * job definition URI the Job Execution service accepts. Throws when the path
  * does not exist or is not a job definition.
+ *
+ * `/folders/folders/@item` resolves FOLDERS but returns 404 for jobDefinition
+ * members (verified against a live SAS Viya), so this resolves the parent
+ * folder by path and then finds the definition among its members by name.
  */
 export async function resolveJobDefinitionUri(programPath: string): Promise<string> {
-  const item = await viyaGet<FolderItem>(
-    `/folders/folders/@item?path=${encodeURIComponent(programPath)}`
-  );
-  const uri = String(item?.uri ?? '');
-  if (!uri.startsWith('/jobDefinitions/definitions/')) {
+  const clean = programPath.trim().replace(/\/+$/, '');
+  const slash = clean.lastIndexOf('/');
+  const name = clean.slice(slash + 1);
+  const folderPath = slash > 0 ? clean.slice(0, slash) : '/';
+  if (!name) {
     throw new Error(`The path ${programPath} is not a Job Execution job definition.`);
   }
-  return uri;
+  const folder = await viyaGet<FolderItem>(
+    `/folders/folders/@item?path=${encodeURIComponent(folderPath)}`
+  );
+  const folderId = String(folder?.id ?? '');
+  if (!folderId) {
+    throw new Error(`The folder ${folderPath} was not found.`);
+  }
+  const members = await viyaGet<{ items?: FolderMember[] }>(
+    `/folders/folders/${folderId}/members?filter=${encodeURIComponent(`eq(name,'${name}')`)}&limit=20`
+  );
+  const member = (members.items ?? []).find(
+    (candidate) =>
+      candidate.contentType === 'jobDefinition' &&
+      String(candidate.uri ?? '').startsWith('/jobDefinitions/definitions/')
+  );
+  if (!member) {
+    throw new Error(`The path ${programPath} is not a Job Execution job definition.`);
+  }
+  return String(member.uri);
 }
 
 /**
@@ -111,24 +141,51 @@ export async function getJobProgressMessages(job: JobExecutionJob): Promise<stri
 
 const PROGRESS_PREFIX = /NOTE: Python-Subprocess\s*-\s?(.*)$/;
 
+interface LogLine {
+  line: string;
+  type?: string;
+}
+
 /**
- * Pull the SAS.logMessage() milestone lines out of a SAS log. Handles both the
- * plain-text log and the line-JSON form ({"line":"NOTE: ..."} per line) the
- * file service returns for compute logs.
+ * A compute job log arrives in one of three shapes (all seen in the wild):
+ * a single JSON document ({"items":[{"type":"note","line":"..."}]}, the
+ * vnd.sas.compute.log.line collection — what a live SAS Viya returns), one
+ * JSON object per line, or plain text. Normalise them all to typed lines.
+ */
+function readLogLines(logText: string): LogLine[] {
+  const trimmed = logText.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const doc = JSON.parse(trimmed) as { items?: Array<{ line?: string; type?: string }> };
+      if (Array.isArray(doc.items)) {
+        return doc.items.map((item) => ({ line: String(item.line ?? ''), type: item.type }));
+      }
+    } catch {
+      /* not a single JSON document — fall through to per-line handling */
+    }
+  }
+  return logText.split('\n').map((rawLine) => {
+    if (rawLine.trimStart().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(rawLine) as { line?: string; type?: string };
+        if (typeof parsed.line === 'string') return { line: parsed.line, type: parsed.type };
+      } catch {
+        /* plain text line */
+      }
+    }
+    return { line: rawLine };
+  });
+}
+
+/**
+ * Pull the SAS.logMessage() milestone lines out of a SAS log. Source-echo
+ * lines (the `%put NOTE: Python-Subprocess - ...;` statements the log echoes
+ * before each NOTE) are skipped so every milestone appears exactly once.
  */
 export function extractProgressMessages(logText: string): string[] {
   const messages: string[] = [];
-  for (const rawLine of logText.split('\n')) {
-    let line = rawLine;
-    // Line-JSON compute log: {"type":"note","line":"NOTE: ..."}
-    if (line.trimStart().startsWith('{')) {
-      try {
-        const parsed = JSON.parse(line) as { line?: string };
-        if (typeof parsed.line === 'string') line = parsed.line;
-      } catch {
-        /* not JSON — treat as plain text */
-      }
-    }
+  for (const { line, type } of readLogLines(logText)) {
+    if (type === 'source' || line.includes('%put')) continue;
     const match = PROGRESS_PREFIX.exec(line);
     if (match && match[1].trim() !== '') messages.push(match[1].trim());
   }

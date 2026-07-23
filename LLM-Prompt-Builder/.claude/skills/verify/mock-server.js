@@ -196,12 +196,22 @@ http
         }
         return json(res, 200, { items });
       }
+      // @item resolves FOLDERS only — it 404s for jobDefinition members on a
+      // real SAS Viya, so the app resolves the parent folder, then finds the
+      // definition among the folder's members by name.
       if (p === '/folders/folders/@item') {
         const path = u.searchParams.get('path') || '';
-        if (path === '/Public/Jobs/Optimize-Prompt-DSPy') {
-          return json(res, 200, { uri: '/jobDefinitions/definitions/jobdef-1' });
+        if (path === '/Public/Jobs') {
+          return json(res, 200, { id: 'folder-jobs', uri: '/folders/folders/folder-jobs' });
         }
         return json(res, 404, { message: 'no such content item: ' + path });
+      }
+      if (p === '/folders/folders/folder-jobs/members') {
+        const filter = u.searchParams.get('filter') || '';
+        const items = filter.includes("'Optimize-Prompt-DSPy'")
+          ? [{ name: 'Optimize-Prompt-DSPy', uri: '/jobDefinitions/definitions/jobdef-1', contentType: 'jobDefinition' }]
+          : [];
+        return json(res, 200, { items });
       }
       if (p === '/jobExecution/jobs' && req.method === 'POST') {
         jobLaunched = true;
@@ -214,16 +224,24 @@ http
         return json(res, 200, { id: 'job-1', state: 'completed', logLocation: '/files/files/joblog-1' });
       }
       if (p === '/files/files/joblog-1/content') {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        return res.end(
-          [
-            'NOTE: PROC PYTHON started.',
-            'NOTE: Python-Subprocess - Dataset loaded (1 examples)',
-            'NOTE: Python-Subprocess - Baseline metric: 0.500',
-            'NOTE: Python-Subprocess - Done - optimised prompt model model-opt-1, metric 0.500 -> 0.833',
-            'NOTE: PROC PYTHON ended.',
-          ].join('\n')
-        );
+        // Real shape (verified live): a vnd.sas.compute.log.line collection —
+        // one JSON document with items[].line, each milestone preceded by its
+        // `%put` source-echo line, which the app must NOT show twice.
+        return json(res, 200, {
+          version: 2,
+          name: 'items',
+          accept: 'application/vnd.sas.compute.log.line',
+          items: [
+            { version: 1, type: 'note', line: 'NOTE: PROC PYTHON started.' },
+            { version: 1, type: 'source', line: '597  %put NOTE: Python-Subprocess - Dataset loaded (1 examples);' },
+            { version: 1, type: 'note', line: 'NOTE: Python-Subprocess - Dataset loaded (1 examples)' },
+            { version: 1, type: 'source', line: '601  %put NOTE: Python-Subprocess - Baseline metric: 0.500;' },
+            { version: 1, type: 'note', line: 'NOTE: Python-Subprocess - Baseline metric: 0.500' },
+            { version: 1, type: 'source', line: '607  %put NOTE: Python-Subprocess - Done - optimised prompt model model-opt-1, metric 0.500 -> 0.833;' },
+            { version: 1, type: 'note', line: 'NOTE: Python-Subprocess - Done - optimised prompt model model-opt-1, metric 0.500 -> 0.833' },
+            { version: 1, type: 'note', line: 'NOTE: PROC PYTHON ended.' },
+          ],
+        });
       }
       if (p === '/files/files/opttrk-1/content') return json(res, 200, optimizationTracker);
       if (/^\/modelRepository\/models\/(model-free|model-err)\/contents$/.test(p) && req.method === 'GET') {

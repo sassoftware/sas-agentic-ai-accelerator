@@ -52,8 +52,8 @@
     shows the latest milestone while the job runs.
 *********************************************************************************/
 
-* ---- Defaults for optional parameters (Job Execution only defines macro
-       variables for arguments that were actually sent) ----;
+/* ---- Defaults for optional parameters (Job Execution only defines macro
+       variables for arguments that were actually sent) ---- */
 %macro _opt_default(name, value);
     %if %symexist(&name.) = 0 %then %do;
         %global &name.;
@@ -71,12 +71,12 @@
 %_opt_default(minSamples, 30);
 %_opt_default(keyLibrary, );
 %_opt_default(keyTable, );
-* Set by SAS Job Execution on every job run (/jobExecution/jobs/<id>) and by
-  the Builder-launched request respectively; blank when run interactively;
+/* Set by SAS Job Execution on every job run (/jobExecution/jobs/<id>) and by
+   the Builder-launched request respectively; blank when run interactively */
 %_opt_default(SYS_JES_JOB_URI, );
 %_opt_default(_contextName, );
 
-* ---- Required parameters ----;
+/* ---- Required parameters ---- */
 %macro _opt_require(name);
     %if %symexist(&name.) = 0 %then %do;
         data _null_;
@@ -92,19 +92,19 @@
 %_opt_require(targetModelName);
 %_opt_require(scrEndpoint);
 
-* Viya host for the Model Manager REST calls made from Python;
+/* Viya host for the Model Manager REST calls made from Python */
 %let _opt_viyaHost = %sysfunc(getoption(SERVICESBASEURL));
 
-* Overall outcome flag the Python program sets; checked at the end so a failed
-  optimisation fails the Job Execution job (state=failed in the Builder);
+/* Overall outcome flag the Python program sets; checked at the end so a failed
+   optimisation fails the Job Execution job (state=failed in the Builder) */
 %let _opt_rc = 1;
 %let _opt_error = The Python program did not run.;
 
-* ---- Provider API keys ----
-  When a governed library.table was configured, export it to a JSON file in the
-  job's work directory for the Python program to read. The values never appear
-  in the log (proc json writes to the file only) and the file lives in WORK,
-  which is destroyed with the session.;
+/* ---- Provider API keys ----
+   When a governed library.table was configured, export it to a JSON file in the
+   job's work directory for the Python program to read. The values never appear
+   in the log (proc json writes to the file only) and the file lives in WORK,
+   which is destroyed with the session. */
 %macro _opt_export_keys;
     %if %superq(keyLibrary) ne and %superq(keyTable) ne %then %do;
         %if %sysfunc(exist(&keyLibrary..&keyTable.)) %then %do;
@@ -300,12 +300,14 @@ class SCRLM(dspy.BaseLM):
         system_prompt = "\n".join(str(m.get("content", "")) for m in chat if m.get("role") == "system")
         user_prompt = "\n\n".join(str(m.get("content", "")) for m in chat if m.get("role") != "system")
         text = call_scr(self.model, self.scr_options, system_prompt, user_prompt)
+        # usage must be a plain dict: dspy's BaseLM does dict(response.usage)
+        # (verified against dspy 3.2.1 — a SimpleNamespace raises TypeError).
         return SimpleNamespace(
             choices=[SimpleNamespace(
                 message=SimpleNamespace(content=text, tool_calls=None),
                 finish_reason="stop",
             )],
-            usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             model=self.model,
         )
 
@@ -428,7 +430,6 @@ def create_optimised_prompt_model(source_model, baked, attributes):
         "algorithm": "Prompt-Template",
         "tags": ["LLM", "Prompt-Template", "Optimized-Prompt"],
     }
-    body.update(attributes)
     response = requests.post(
         BASE + "/modelRepository/models",
         headers={
@@ -444,6 +445,35 @@ def create_optimised_prompt_model(source_model, baked, attributes):
     if isinstance(created, dict) and created.get("items"):
         created = created["items"][0]
     new_model_id = created.get("id")
+    # Model Manager DROPS tags and custom attributes on the create POST
+    # (verified live: the created model came back with tags=None), so stamp
+    # them with a follow-up ETag'd PUT - the same pattern the Builder and mdb
+    # use. Custom key-values must go into the model's `properties` array;
+    # arbitrary top-level fields are silently discarded (also verified live).
+    # Best effort: a failure here must not lose the optimisation result.
+    try:
+        detail_response = requests.get(
+            BASE + f"/modelRepository/models/{new_model_id}",
+            headers={"Authorization": "Bearer " + TOKEN, "Accept": "application/vnd.sas.models.model+json"},
+            verify=VERIFY, timeout=120,
+        )
+        if detail_response.status_code < 400:
+            detail = detail_response.json()
+            detail["tags"] = body["tags"]
+            model_properties = [p for p in (detail.get("properties") or [])
+                                if p.get("name") not in attributes]
+            for attr_name, attr_value in attributes.items():
+                model_properties.append({"name": attr_name, "value": str(attr_value), "type": "string"})
+            detail["properties"] = model_properties
+            etag = detail_response.headers.get("ETag")
+            put_headers = {"Authorization": "Bearer " + TOKEN,
+                           "Content-Type": "application/vnd.sas.models.model+json"}
+            if etag:
+                put_headers["If-Match"] = etag
+            requests.put(BASE + f"/modelRepository/models/{new_model_id}",
+                         headers=put_headers, data=json.dumps(detail), verify=VERIFY, timeout=120)
+    except Exception:
+        progress("Warning: could not stamp tags/provenance attributes on the optimised prompt")
     # Seed the tracker with one header row so the Builder opens the new
     # prompt-test showing the optimised prompt (no model results yet).
     header_row = {
@@ -590,13 +620,13 @@ except Exception as error:
     except Exception:
         pass
     SAS.symput("_opt_error", error_text[:500])
-    endsubmit;
+endsubmit;
 run; quit;
 
 proc python terminate;
 run; quit;
 
-* ---- Propagate the outcome to Job Execution ----;
+/* ---- Propagate the outcome to Job Execution ---- */
 data _null_;
     if "&_opt_rc." ne "0" then do;
         putLog "ERROR: Prompt optimization failed: %superq(_opt_error)";
