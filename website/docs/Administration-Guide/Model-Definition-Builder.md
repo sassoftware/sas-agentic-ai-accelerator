@@ -105,6 +105,22 @@ mdb sync <model_id>           # update the fact-sheet row
 mdb validate <model_id>       # cross-file coherence rules with fix-it hints
 ```
 
+The `*_fact_sheet.csv` files (`LLM-Definitions/llm_fact_sheet.csv`,
+`Embedding-Definitions/embedding_fact_sheet.csv`) are a **generated artifact** —
+you never edit them by hand. `mdb sync <model_id>` refreshes a single row;
+`mdb sync --rebuild` regenerates each sheet in full from every managed
+definition (sorted by `model_id`), creating the file if it does not exist yet:
+
+```bash
+mdb sync --rebuild            # rebuild both sheets from the definitions
+mdb sync --rebuild --prune    # also drop rows for models with no definition folder
+```
+
+Rebuilding is idempotent (an unchanged fleet produces a byte-identical sheet) and
+preserves any hand-maintained rows that have no definition folder unless you pass
+`--prune`. This is the quickest way to bring the fact sheets in line after a bulk
+migration instead of syncing each model one by one.
+
 `mdb generate --all --check` verifies that every generated file matches its manifest and is intended as a CI gate. Files you edited by hand are never overwritten silently — the command tells you to either fold the change into the manifest, declare the file as hand-maintained under `generation.overrides`, or pass `--force`.
 
 ## Adopting existing definitions

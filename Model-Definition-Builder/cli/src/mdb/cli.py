@@ -454,9 +454,49 @@ def validate(
 def sync(
     ids: Optional[list[str]] = typer.Argument(None),
     all_: bool = typer.Option(False, "--all"),
+    rebuild: bool = typer.Option(
+        False, "--rebuild",
+        help="Regenerate each kind's whole fact sheet from all managed definitions "
+             "(sorted by model_id), creating it if absent. Ignores model ids / --all.",
+    ),
+    prune: bool = typer.Option(
+        False, "--prune",
+        help="With --rebuild, also drop rows for models that no longer have a "
+             "definition folder (default keeps such legacy rows).",
+    ),
 ):
-    """Upsert the fact-sheet rows of managed definitions (legacy rows stay untouched)."""
+    """Upsert the fact-sheet rows of managed definitions (legacy rows stay untouched).
+
+    With --rebuild the sheet becomes a pure function of the definitions: every
+    managed row is regenerated and the file is rewritten from scratch, so you no
+    longer maintain the CSV by hand alongside the definitions.
+    """
     ctx = Context()
+    if rebuild:
+        if ids or all_:
+            console.print("[yellow]--rebuild regenerates the entire sheet for each kind; ignoring model ids / --all.[/yellow]")
+        rebuilt_any = False
+        for kind in KINDS:
+            manifests = [
+                load_manifest(f)
+                for f in sorted(ctx.defs_dir(kind).iterdir())
+                if f.is_dir() and (f / MANIFEST_FILENAME).is_file()
+            ]
+            if not manifests:
+                continue
+            rebuilt_any = True
+            sheet = ctx.fact_sheet(kind)
+            summary = facts.rebuild_sheet(sheet, manifests, keep_legacy=not prune)
+            verb = "created" if summary["created"] else "rebuilt"
+            message = f"{sheet.name}: {verb} from {summary['written']} definition(s)"
+            if summary["legacy_kept"]:
+                message += f", kept {summary['legacy_kept']} legacy row(s)"
+            if summary["legacy_dropped"]:
+                message += f", dropped {summary['legacy_dropped']} legacy row(s)"
+            console.print(message)
+        if not rebuilt_any:
+            console.print("[yellow]No managed definitions found (no folder has a definition.yaml yet).[/yellow]")
+        return
     for folder in ctx.resolve_targets(ids or [], all_):
         if not (folder / MANIFEST_FILENAME).is_file():
             continue

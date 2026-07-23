@@ -139,6 +139,24 @@ mdb list --kind embedding --json             # machine-readable, per kind
 Re-run the `model-audit` skill; every model should report no missing attributes
 and no duplicated variables.
 
+## Regenerate the fact sheets from the definitions
+
+The `LLM-Definitions/llm_fact_sheet.csv` and
+`Embedding-Definitions/embedding_fact_sheet.csv` files (consumed by
+`mdb register` for metadata enrichment and by `Load-Fact-Sheets.sas` for the
+monitoring reports) are a **generated artifact** — derived entirely from the
+model definitions, never hand-edited. After a bulk migration (many definitions
+adopted or pulled), regenerate them in one step instead of syncing each model:
+
+```bash
+mdb sync --rebuild            # rebuild both sheets from every managed definition
+mdb sync --rebuild --prune    # also drop rows for models that no longer have a definition folder
+```
+
+Rebuilding sorts rows by `model_id`, creates the file if it is missing, is
+idempotent, and preserves hand-maintained rows without a definition folder
+(unless `--prune`). Commit the regenerated sheets alongside the definitions.
+
 ## Notes
 
 - The legacy scripts are gone from the working tree; recover one from git
