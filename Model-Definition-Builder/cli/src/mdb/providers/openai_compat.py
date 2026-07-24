@@ -19,7 +19,7 @@ from ..core.manifest import (
     PricingBlock, ProviderBlock, RuntimeBlock, TagsBlock,
 )
 from ..core.netutil import get_json
-from .base import CatalogModel, ProviderAdapter, Question, SmokeResult
+from .base import CatalogModel, ProviderAdapter, Question, SmokeResult, http_smoke_failure
 
 
 class OpenAICompatAdapter(ProviderAdapter):
@@ -98,7 +98,7 @@ class OpenAICompatAdapter(ProviderAdapter):
             )
             body = response.json()
             if response.status_code >= 300:
-                return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+                return http_smoke_failure(response, body)
             text = body["choices"][0]["message"]["content"]
             usage = body.get("usage", {})
             return SmokeResult(ok=True, detail=(
@@ -261,7 +261,7 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
                 )
                 body = response.json()
                 if response.status_code >= 300:
-                    return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+                    return http_smoke_failure(response, body)
                 dims = len(body["data"][0]["embedding"])
                 return SmokeResult(ok=True, detail=f"Server returned a {dims}-dim embedding from {base}.")
             response = session.post(
@@ -272,7 +272,7 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
             )
             body = response.json()
             if response.status_code >= 300:
-                return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+                return http_smoke_failure(response, body)
             text = body["choices"][0]["message"]["content"]
             return SmokeResult(ok=True, detail=f"Server responded from {base}: {text[:60]!r}")
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
@@ -377,7 +377,7 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
             )
             body = response.json()
             if response.status_code >= 300:
-                return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+                return http_smoke_failure(response, body)
             return SmokeResult(ok=True, detail=f"Deployment responded: {body['choices'][0]['message']['content'][:60]!r}")
         except Exception as exc:
             return SmokeResult(ok=False, detail=str(exc))

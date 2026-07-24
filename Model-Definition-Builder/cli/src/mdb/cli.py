@@ -326,6 +326,31 @@ def add(
     modeler = os.environ.get("SAS_RESPONSIBLE_PARTY", "") or os.environ.get("USERNAME", "") or os.environ.get("USER", "")
     try:
         manifest = adapter.build_manifest(cm, final_id, answers, modeler)
+        # When the catalog carried no token pricing (offline, manual entry, or a
+        # provider without price data), ask instead of writing an unknown that
+        # only surfaces later as a V008 warning. An explicit 0 marks a genuinely
+        # free model and is not asked about.
+        pricing = manifest.metadata.pricing
+        if (manifest.kind == "llm" and pricing.cost_type == "Tokens"
+                and pricing.input_token_price is None and pricing.output_token_price is None):
+            if yes:
+                console.print(
+                    "[yellow]No token pricing available for this model - set metadata.pricing in "
+                    "definition.yaml (0 for a free model); mdb validate reminds you (V008).[/yellow]"
+                )
+            else:
+                console.print(
+                    "No token pricing is available for this model. Enter the per-token prices "
+                    "(e.g. 2.5e-07; 0 for a free model; leave empty to decide later)."
+                )
+                for attribute, label in (("input_token_price", "Input token price"),
+                                         ("output_token_price", "Output token price")):
+                    raw_price = Prompt.ask(label, default="").strip()
+                    if raw_price != "":
+                        try:
+                            setattr(pricing, attribute, float(raw_price))
+                        except ValueError:
+                            console.print(f"[yellow]'{raw_price}' is not a number - leaving {label.lower()} empty.[/yellow]")
         rendered = render_assets(manifest, ctx.core)
     except (GenerationError, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")
@@ -456,6 +481,10 @@ def validate(
                 console.print(f"[dim]{folder.name}: {result.detail}[/dim]")
             elif result.ok:
                 console.print(f"[green]{folder.name}: {result.detail}[/green]")
+            elif result.inconclusive:
+                # Transient upstream state (e.g. rate-limited): says nothing
+                # about the definition - warn without failing the validation.
+                console.print(f"[yellow]{folder.name}: smoke test inconclusive - {result.detail}[/yellow]")
             else:
                 has_error = True
                 console.print(f"[red]{folder.name}: smoke test failed - {result.detail}[/red]")

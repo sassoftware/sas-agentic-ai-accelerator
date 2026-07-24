@@ -64,6 +64,24 @@ class SmokeResult:
     ok: bool
     detail: str
     skipped: bool = False
+    # Inconclusive: the call failed for a transient upstream reason (e.g. a
+    # 429) that says nothing about the definition being wrong - reported as a
+    # warning, not a validation failure.
+    inconclusive: bool = False
+
+
+def http_smoke_failure(response, body) -> "SmokeResult":
+    """Uniform failure classification for provider smoke tests. A 429 proves
+    the endpoint answered and the API key was accepted - the model is just
+    temporarily rate-limited upstream - so it is inconclusive rather than a
+    definition problem."""
+    if response.status_code == 429:
+        return SmokeResult(
+            ok=False, inconclusive=True,
+            detail=("HTTP 429 (rate-limited): the endpoint answered and the API key was accepted - "
+                    f"the model is temporarily rate-limited upstream, retry shortly. {body}"),
+        )
+    return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
 
 
 def slugify(text: str) -> str:

@@ -9,7 +9,7 @@ import requests
 
 from ..core.manifest import ModelManifest
 from ..core.netutil import get_json
-from .base import CatalogModel, ProviderAdapter, SmokeResult
+from .base import CatalogModel, ProviderAdapter, SmokeResult, http_smoke_failure
 
 ANTHROPIC_VERSION = "2023-06-01"
 
@@ -71,7 +71,7 @@ class AnthropicAdapter(ProviderAdapter):
             )
             body = response.json()
             if response.status_code >= 300:
-                return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+                return http_smoke_failure(response, body)
             text = "".join(block["text"] for block in body["content"] if block["type"] == "text")
             usage = body.get("usage", {})
             return SmokeResult(ok=True, detail=(
