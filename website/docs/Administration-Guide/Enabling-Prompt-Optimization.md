@@ -37,23 +37,8 @@ A compute context whose Python lacks `dspy` — or carries one older than **3.2.
 
 Because not every deployment wants DSPy in its default environment, the context is **configurable**: you can prepare a dedicated context (for example `SAS Job Execution — DSPy`) with a Python environment that has the packages, and point the Prompt Builder at it. Size the context generously — an optimization run makes many model calls and runs for several minutes.
 
-:::tip When the context's Python is read-only
-`sas-pyconfig`-managed environments are mounted **read-only** in compute pods, so `pip install` into their site-packages fails. If you cannot (or don't want to) change the managed environment itself, overlay just the missing packages from a writable persistent mount the compute pods share (for example the compute landing zone):
-
-```bash
-# from any compute session (e.g. proc python), install ONLY the missing
-# packages so nothing shadows the environment's own libraries:
-python3 -m pip install --no-deps --target /srv/nfs/kubedata/compute-landingzone/prompt-optimization-pylib \
-    optuna alembic colorlog sqlalchemy mako greenlet
-```
-
-Then add one autoexec line to the compute context (SAS Environment Manager → Contexts → your compute context → Advanced → autoexec):
-
-```sas
-options set=PYTHONPATH "/srv/nfs/kubedata/compute-landingzone/prompt-optimization-pylib";
-```
-
-`proc python` reads `PYTHONPATH` when it starts, so every job session in that context sees the overlay. Because the overlay contains only packages absent from the managed environment, it cannot shadow existing libraries.
+:::note Install centrally — this is an administrator task
+`sas-pyconfig`-managed environments are mounted **read-only** in compute pods, so the packages cannot be (and should not be) installed from a compute session — a user-level `pip install` will fail by design. The packages belong in the **centrally managed Python configuration**: add the entries from `requirements.txt` to the `pip_installed_packages` option of the target environment (e.g. `default_py`) in the `sas-pyconfig` configuration and re-run the `sas-pyconfig` job, following the *SAS Viya Platform: Integration with External Languages* documentation for configuring Python. This keeps every compute pod consistent, survives updates and re-provisioning, and keeps package governance where it belongs. Avoid ad-hoc alternatives such as `PYTHONPATH` overlays on shared storage — they bypass the managed environment and are easy to leave behind unmaintained.
 :::
 
 ## 2. Import the optimize job
