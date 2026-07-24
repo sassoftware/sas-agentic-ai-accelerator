@@ -225,6 +225,9 @@
     "promptBuilderOptimizeHistoryBeforeHeader": "Vorher",
     "promptBuilderOptimizeHistoryAfterHeader": "Nachher",
     "promptBuilderOptimizeLogHeading": "Protokoll des Laufs",
-    "promptBuilderOptimizeRuntime": "Laufzeit:"
+    "promptBuilderOptimizeRuntime": "Laufzeit:",
+    "promptBuilderOptimizeHistoryDeleteButton": "Diesen Optimierungslauf löschen",
+    "promptBuilderOptimizeHistoryDeleteConfirm": "Der Eintrag des Laufs und sein Datensatz-Snapshot werden vom Prompt entfernt (eine Modellversion bewahrt den Prüfpfad). Das lässt sich hier nicht rückgängig machen.",
+    "promptBuilderOptimizeHistoryDeletedToast": "Optimierungslauf gelöscht."
   }
 }

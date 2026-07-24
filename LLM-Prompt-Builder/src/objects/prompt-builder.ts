@@ -4593,6 +4593,38 @@ ${scoreCodeReturn}`;
           summary.appendChild(delta);
         }
       }
+      // Load/delete as icon buttons in the summary line — the same icons the
+      // experiment-run headers use. Clicks inside <summary> toggle the
+      // details, so both stop the event.
+      const summaryActions = document.createElement('span');
+      summaryActions.classList.add('ms-2', 'd-inline-flex', 'gap-1');
+      if (succeeded && entry.optimizedPrompt) {
+        const loadButton = document.createElement('button');
+        loadButton.type = 'button';
+        loadButton.classList.add('btn', 'btn-outline-primary', 'btn-sm', 'pb-optimize-history-load');
+        loadButton.title = `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryLoadButton}`;
+        loadButton.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryLoadButton} #${entry.optimizationId ?? ''}`);
+        loadButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryLoadButton}</title><path d="M440-320v-326L336-542l-56-58 200-200 200 200-56 58-104-104v326h-80ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T680-160H240Z"/></svg>`;
+        loadButton.onclick = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          loadOptimizationAsExperiment(entry);
+        };
+        summaryActions.appendChild(loadButton);
+      }
+      const deleteButton = document.createElement('button');
+      deleteButton.type = 'button';
+      deleteButton.classList.add('btn', 'btn-outline-danger', 'btn-sm', 'pb-optimize-history-delete');
+      deleteButton.title = `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteButton}`;
+      deleteButton.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteButton} #${entry.optimizationId ?? ''}`);
+      deleteButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteButton}</title><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>`;
+      deleteButton.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void deleteOptimizationRun(entry);
+      };
+      summaryActions.appendChild(deleteButton);
+      summary.appendChild(summaryActions);
       row.appendChild(summary);
 
       const body = document.createElement('div');
@@ -4602,14 +4634,6 @@ ${scoreCodeReturn}`;
         errorLine.classList.add('text-danger');
         errorLine.innerText = entry.error;
         body.appendChild(errorLine);
-      }
-      if (succeeded && entry.optimizedPrompt) {
-        const loadButton = document.createElement('button');
-        loadButton.type = 'button';
-        loadButton.classList.add('btn', 'btn-primary', 'btn-sm', 'mb-2', 'pb-optimize-history-load');
-        loadButton.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryLoadButton}`;
-        loadButton.onclick = () => loadOptimizationAsExperiment(entry);
-        body.appendChild(loadButton);
       }
       // Legacy entries (earlier releases created a separate prompt-test).
       if (entry.producedPromptModelId) {
@@ -4696,6 +4720,50 @@ ${scoreCodeReturn}`;
       }
       row.appendChild(body);
       return row;
+    }
+
+    /**
+     * Delete one optimization run from the prompt's tracker (plus its dataset
+     * snapshot), after confirmation. The tracker is normally job-written; the
+     * delete is guarded against a running optimization so the job's
+     * read-append-rewrite cannot race with it. A model version is created
+     * first, like the experiment save flow, so the audit trail survives.
+     */
+    async function deleteOptimizationRun(entry: OptimizationTrackerEntry): Promise<void> {
+      if (optimizeJobActive) {
+        showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeAlreadyRunning}`);
+        return;
+      }
+      const modelId = promptBuilderPromptSelectorDropdown.value;
+      const confirmed = await showConfirmModal({
+        title: `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteButton} #${entry.optimizationId ?? ''}`,
+        body: [`${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteConfirm}`],
+        confirmText: `${promptBuilderInterfaceText?.promptBuilderDeleteConfirmButton}`,
+        cancelText: `${promptBuilderInterfaceText?.promptBuilderDeleteCancelButton}`,
+      });
+      if (!confirmed) return;
+      const trackerEntries = (await readOptimizationEntries(modelId)) ?? [];
+      const remaining = trackerEntries.filter(
+        (candidate) => candidate.optimizationId !== entry.optimizationId
+      );
+      await createModelVersion(modelId);
+      const contents = await getModelContents(modelId);
+      const trackerContent = contents.find(
+        (modelContent) => modelContent.name === 'Prompt-Optimization-Tracker.json'
+      );
+      if (trackerContent?.id) await deleteModelContent(modelId, trackerContent.id);
+      if (remaining.length > 0) {
+        await createModelContent(modelId, remaining, 'Prompt-Optimization-Tracker.json');
+      }
+      // Drop the run's dataset snapshot alongside its entry.
+      if (entry.datasetSnapshot) {
+        const snapshotContent = contents.find(
+          (modelContent) => modelContent.name === entry.datasetSnapshot
+        );
+        if (snapshotContent?.id) await deleteModelContent(modelId, snapshotContent.id);
+      }
+      showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeletedToast}`);
+      await refreshOptimizationHistory(true);
     }
 
     /**

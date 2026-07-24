@@ -148,6 +148,21 @@ export async function getJob(jobId: string): Promise<JobExecutionJob> {
  * is requested explicitly. The compute session is deleted after the job ends,
  * so the file is the fallback. Returns [] when neither log is readable.
  */
+let computeServicePrimed = false;
+
+/** Same first-contact SSO consideration as the Job Execution service: make
+ *  sure the browser session has met the compute service via a harmless GET
+ *  before the live-log polling relies on it. Best effort. */
+async function primeComputeService(): Promise<void> {
+  if (computeServicePrimed) return;
+  try {
+    await viyaFetch('/compute/contexts?limit=1');
+  } catch {
+    /* best effort */
+  }
+  computeServicePrimed = true;
+}
+
 export async function getJobProgressMessages(job: JobExecutionJob): Promise<string[]> {
   const results = (job.results ?? {}) as Record<string, unknown>;
   const computeJob = String(results['COMPUTE_JOB'] ?? '');
@@ -155,6 +170,7 @@ export async function getJobProgressMessages(job: JobExecutionJob): Promise<stri
   const computeSession = String(results['COMPUTE_SESSION'] ?? '').split(/\s/)[0];
   if (computeJob && computeSession) {
     try {
+      await primeComputeService();
       const response = await viyaFetch(
         `/compute/sessions/${computeSession}/jobs/${computeJob}/log/content?limit=100000`,
         { accept: 'text/plain' }
@@ -162,9 +178,13 @@ export async function getJobProgressMessages(job: JobExecutionJob): Promise<stri
       if (response.ok) {
         const messages = extractProgressMessages(await response.text());
         if (messages.length > 0) return messages;
+      } else {
+        // Diagnosis aid (no UI noise): why the live log yielded nothing.
+        console.debug(`Prompt Builder: live compute log returned HTTP ${response.status}`);
       }
-    } catch {
+    } catch (error) {
       /* session already gone — fall back to the log file */
+      console.debug('Prompt Builder: live compute log fetch failed', error);
     }
   }
   const logLocation = String(job.logLocation ?? '');

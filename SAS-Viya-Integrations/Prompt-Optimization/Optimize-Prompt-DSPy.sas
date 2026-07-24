@@ -402,7 +402,11 @@ def load_tracker_dataset(prompt_model_id):
 
 # ---- Metrics ---------------------------------------------------------------
 def normalise(text):
-    return re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+    """Whitespace-collapsed, casefolded, and stripped of surrounding
+    punctuation/markup - so a model answering "Cold." or "**cold**" still
+    exact-matches the reference "cold"."""
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+    return cleaned.strip(".!?,;:*\"'` ")
 
 
 def exact_metric(example, prediction, trace=None):

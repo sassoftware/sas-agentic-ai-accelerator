@@ -225,6 +225,9 @@
     "promptBuilderOptimizeHistoryBeforeHeader": "Before",
     "promptBuilderOptimizeHistoryAfterHeader": "After",
     "promptBuilderOptimizeLogHeading": "Run log",
-    "promptBuilderOptimizeRuntime": "Runtime:"
+    "promptBuilderOptimizeRuntime": "Runtime:",
+    "promptBuilderOptimizeHistoryDeleteButton": "Delete this optimization run",
+    "promptBuilderOptimizeHistoryDeleteConfirm": "The run's entry and its dataset snapshot are removed from the prompt (a model version preserves the audit trail). This cannot be undone from here.",
+    "promptBuilderOptimizeHistoryDeletedToast": "Optimization run deleted."
   }
 }

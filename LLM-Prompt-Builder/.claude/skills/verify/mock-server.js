@@ -84,6 +84,17 @@ let jobLaunched = false;
 // failed tracker entry — mirroring the shipped job's failure path.
 let failNextJob = false;
 let failJobPolls = 0;
+// The Builder can delete optimization runs: it removes the tracker content
+// and re-uploads the remaining entries, which the mock mirrors statefully.
+let optTrackerDeleted = false;
+function multipartJson(rawBody) {
+  const m = rawBody.match(/\r\n\r\n([\s\S]*?)\r\n--/);
+  try {
+    return m ? JSON.parse(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
 const DSPY_MISSING_ERROR =
   'The Python environment of this compute context lacks the dspy package - install the packages in Prompt-Optimization/requirements.txt into that Python environment, or point the computeContext Option at a prepared context.';
 const optimizedPrompt = {
@@ -227,8 +238,10 @@ http
         const items = [
           { id: 'c-trk', name: 'Prompt-Experiment-Tracker.json', fileUri: '/files/files/trk-1' },
           { id: 'c-req', name: 'requirements.json', fileUri: '/files/files/req-1' },
-          { id: 'c-opttrk', name: 'Prompt-Optimization-Tracker.json', fileUri: '/files/files/opttrk-1' },
         ];
+        if (!optTrackerDeleted) {
+          items.push({ id: 'c-opttrk', name: 'Prompt-Optimization-Tracker.json', fileUri: '/files/files/opttrk-1' });
+        }
         return json(res, 200, { items });
       }
       // @item resolves FOLDERS only — it 404s for jobDefinition members on a
@@ -269,7 +282,7 @@ http
         // session's log streams LIVE while running (the Files logLocation only
         // fills in at completion).
         const computeResults = { COMPUTE_SESSION: 'cs-1 (SAS Job Execution compute context)', COMPUTE_JOB: 'cj-1' };
-        if (jobPolls < 2) return json(res, 200, { id: 'job-1', state: 'running', results: computeResults });
+        if (jobPolls < 4) return json(res, 200, { id: 'job-1', state: 'running', results: computeResults });
         // The run's tracker entry appears exactly once, like the real job writes it.
         if (!optimizationTracker.some((entry) => entry.jobId === 'job-1')) {
           optimizationTracker.push(successEntry);
@@ -278,20 +291,20 @@ http
       }
       if (p === '/compute/sessions/cs-1/jobs/cj-1/log/content') {
         // Live only while the job runs; the session is deleted afterwards, so
-        // the app must fall back to the logLocation file. Plain-text shape as
-        // returned by a real compute server (source echo + NOTE per milestone).
-        if (jobPolls >= 2) return json(res, 404, { message: 'session not found' });
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        return res.end(
-          [
-            '663  %put NOTE: Python-Subprocess - Loading the experiment tracker dataset;',
-            'NOTE: Python-Subprocess - Loading the experiment tracker dataset',
-            '664  %put NOTE: Python-Subprocess - Dataset loaded (1 examples);',
-            'NOTE: Python-Subprocess - Dataset loaded (1 examples)',
-            '666  %put NOTE: Python-Subprocess - Scoring the baseline prompt;',
-            'NOTE: Python-Subprocess - Scoring the baseline prompt',
-          ].join('\n')
-        );
+        // the app must fall back to the logLocation file. Plain-text CRLF
+        // shape as returned by a real compute server (source echo + NOTE per
+        // milestone, growing as the job progresses).
+        if (jobPolls >= 4) return json(res, 404, { message: 'session not found' });
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        const liveLines = [
+          '663  %put NOTE: Python-Subprocess - Loading the experiment tracker dataset;',
+          'NOTE: Python-Subprocess - Loading the experiment tracker dataset',
+          '664  %put NOTE: Python-Subprocess - Dataset loaded (1 examples);',
+          'NOTE: Python-Subprocess - Dataset loaded (1 examples)',
+          '666  %put NOTE: Python-Subprocess - Scoring the baseline prompt;',
+          'NOTE: Python-Subprocess - Scoring the baseline prompt',
+        ];
+        return res.end(liveLines.slice(0, Math.min(liveLines.length, jobPolls * 2 + 2)).join('\r\n'));
       }
       if (p === '/jobExecution/jobs/job-fail' && req.method === 'GET') {
         failJobPolls += 1;
@@ -443,11 +456,25 @@ http
       if (/^\/modelRepository\/models\/[^/]+$/.test(p) && req.method === 'PUT') {
         return json(res, 200, {});
       }
+      if (p === '/modelRepository/models/model-used/contents/c-opttrk' && req.method === 'DELETE') {
+        optTrackerDeleted = true;
+        res.writeHead(204);
+        return res.end();
+      }
       if (req.method === 'DELETE') { res.writeHead(204); return res.end(); }
       if (/^\/modelRepository\/models\/[^/]+\/modelVersions$/.test(p) && req.method === 'POST') {
         return json(res, 200, { id: 'v2' });
       }
       if (/^\/modelRepository\/models\/[^/]+\/contents$/.test(p) && req.method === 'POST') {
+        // A re-uploaded optimization tracker (run deletion) replaces the state.
+        if (raw.includes('filename="Prompt-Optimization-Tracker.json"')) {
+          const replacement = multipartJson(raw);
+          if (Array.isArray(replacement)) {
+            optimizationTracker.length = 0;
+            optimizationTracker.push(...replacement);
+            optTrackerDeleted = false;
+          }
+        }
         return json(res, 201, { id: 'c-new' });
       }
       json(res, 404, { message: 'not mocked: ' + req.method + ' ' + p });
