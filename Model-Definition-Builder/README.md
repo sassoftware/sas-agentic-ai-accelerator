@@ -32,10 +32,10 @@ mdb add openrouter deepseek/deepseek-v3.1 --yes
 mdb add azure-foundry --resource myres --deployment my-gpt41 --id gpt_41_az --yes
 
 mdb validate <model_id> --live   # one real provider call before anything touches Viya
+mdb test <model_id>              # run the generated scoreModel() locally - what SCR will execute
 mdb generate --all --check       # CI drift gate: committed files match their manifests
 mdb sync --all                   # fact-sheet upsert (legacy rows preserved verbatim)
 mdb import <model_id>            # adopt an existing hand-written folder
-mdb test <model_id>              # invoke the generated scoreModel() locally
 ```
 
 Provider API keys are read from the environment or a `.env` at the repo root (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `AZURE_OPENAI_API_KEY`, `MISTRAL_API_KEY`, `GEMINI_API_KEY`, `VOYAGE_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`). Keys never enter manifests or generated files — `mdb validate` scans for secret-shaped strings. Environment-specific hosts stay out of definitions by default: Azure resources, Bedrock regions and self-hosted Ollama/vLLM base URLs resolve per call via options or the `AZURE_OPENAI_RESOURCE` / `AWS_BEDROCK_REGION` / `OLLAMA_BASE_URL` / `VLLM_BASE_URL` container environment variables.

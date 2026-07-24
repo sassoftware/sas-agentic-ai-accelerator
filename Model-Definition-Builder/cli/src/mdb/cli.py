@@ -490,7 +490,9 @@ def add(
     console.print(f"\n[green]Created {final_id} ({len(rendered)} files + fact-sheet row).[/green]")
     console.print("Next steps:")
     console.print(f"  1. mdb validate {final_id} --live     (smoke-test the provider before Viya)")
-    console.print(f"  2. mdb register {final_id}            (or mdb ship {final_id} to register + publish)")
+    console.print(f"  2. mdb test {final_id}                (run the generated scoreModel() locally - what SCR will execute)")
+    console.print(f"  3. mdb register {final_id}            (register in SAS Model Manager)")
+    console.print(f"  4. mdb publish {final_id}             (publish to SCR - or mdb ship {final_id} for register + publish)")
 
 
 # ---------------------------------------------------------------------------

@@ -85,12 +85,16 @@ MDB_DEFINITIONS=/path/to/your-repo             # mdb keeps its layout under this
 
 `mdb` loads the `.env` from your current working directory (and its parents), so running it from inside your repo picks these up automatically. Under that root, mdb creates the familiar layout **as needed** — `LLM-Definitions/`, `Embedding-Definitions/`, and the `mdb retire` archive `_archive/` (add that one to your `.gitignore`) — and every command (`add`, `apply`, `generate`, `validate`, `register`, `list`, `retire`, …) operates there, including the fact sheets (`llm_fact_sheet.csv` / `embedding_fact_sheet.csv`) inside the definition folders. The accelerator clone is still required for the templates, which is what `MDB_REPO` points at.
 
-After adding a model:
+After adding a model, work through the pipeline in order — each step catches a different class of problem before the next one can be blamed for it:
 
 ```bash
-mdb validate <model_id> --live     # smoke-test the provider directly
-mdb register <model_id>            # or mdb ship <model_id> to register + publish
+mdb validate <model_id> --live     # coherence rules + one real provider call through the adapter
+mdb test <model_id>                # run the GENERATED scoreModel() locally - exactly what SCR will execute
+mdb register <model_id>            # register in SAS Model Manager
+mdb publish <model_id>             # publish to the SCR destination (or mdb ship for register + publish)
 ```
+
+`mdb validate --live` proves the provider, endpoint and key work; `mdb test` additionally proves the *generated score code* works — options parsing, request body, response extraction — so a template or option problem surfaces on your machine, not in a published container.
 
 ## Register, update and publish from the CLI
 
