@@ -29,7 +29,7 @@ Install them into the Python environment your compute contexts use — the same 
 pip install "dspy>=3.2.1" "requests>=2.31" "optuna>=3.0"
 ```
 
-`optuna` is only needed for the **MIPROv2** optimizer (dspy treats it as an optional extra, so a plain dspy install does not pull it in — verified live). Without it, bootstrap few-shot still works and the job fails a MIPROv2 run fast with a clear message.
+`optuna` is only needed for the **MIPROv2** optimizer (dspy treats it as an optional extra, so a plain dspy install does not pull it in — verified live). Without it, bootstrap few-shot still works and the job fails a MIPROv2 run fast with a clear message. The **GEPA** optimizer needs no extra package: its engine (`gepa`) is a hard dependency of dspy ≥ 3.2.1 and installs with it.
 
 :::warning The most common failure
 A compute context whose Python lacks `dspy` — or carries one older than **3.2.1**, the version the job's DSPy adapter is validated against — is the most common reason an optimization fails. The job checks both at startup and fails fast; the message (*"…lacks the dspy package"* or *"dspy X is too old"*) appears directly in the Prompt Builder's Optimize panel and in the run's optimization-tracker entry. If you see it, install/upgrade the requirements in that context's Python or point the Prompt Builder at a context that has them.

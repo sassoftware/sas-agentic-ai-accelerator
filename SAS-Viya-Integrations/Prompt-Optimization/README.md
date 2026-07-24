@@ -21,11 +21,14 @@ Execution job that improves a Prompt Builder prompt with
    containers the Builder uses) via a small `SCRLM` DSPy adapter speaking the
    SAS 3-input contract. Provider API keys come from a governed SAS
    library.table — only its *name* travels in the job request.
-4. A DSPy optimizer (bootstrap few-shot) maximises the chosen metric (exact
-   match or an LLM judge), the result is baked back into a Prompt-Builder
-   prompt and written as a **new prompt-test** `<prompt> (optimised <date>)`,
-   and the run — including a dataset snapshot — is appended to the prompt's
-   `Prompt-Optimization-Tracker.json` (this job is that file's only writer).
+4. A DSPy optimizer (bootstrap few-shot, MIPROv2, or GEPA — which evolves the
+   instruction from natural-language feedback, the judge's own reasoning when
+   the metric is the judge) maximises the chosen metric (exact match, token
+   overlap, or an LLM judge). The result is baked back into a Prompt-Builder
+   prompt and recorded — with the per-example evaluations and a dataset
+   snapshot — as an entry of the prompt's own
+   `Prompt-Optimization-Tracker.json` (this job is that file's only writer;
+   no additional Model Manager models are created).
 5. The job reports milestones with `SAS.logMessage()`; the Builder polls the
    job and shows them live.
 

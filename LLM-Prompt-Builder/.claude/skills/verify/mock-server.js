@@ -317,6 +317,17 @@ http
         }
         jobLaunched = true;
         jobPolls = 0;
+        // Echo the launch configuration into the success entry, like the real
+        // job records exactly what it was launched with (lets a verify script
+        // assert e.g. a GEPA run's history row shows gepa + its judge model).
+        try {
+          const args = JSON.parse(raw).arguments || {};
+          if (args.optimizer) successEntry.optimizer = args.optimizer;
+          if (args.metric) successEntry.metric = args.metric;
+          successEntry.judgeModel = args.judgeModelName || null;
+        } catch {
+          /* keep the defaults */
+        }
         return json(res, 201, { id: 'job-1', state: 'pending' });
       }
       if (p === '/jobExecution/jobs/job-1' && req.method === 'GET') {

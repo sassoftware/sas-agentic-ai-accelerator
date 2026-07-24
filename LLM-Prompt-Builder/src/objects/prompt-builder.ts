@@ -4497,9 +4497,15 @@ ${scoreCodeReturn}`;
 
       // Rough call estimate: baseline + after evaluation over the dataset plus
       // the optimizer's own passes (MIPROv2 additionally proposes and trials
-      // candidate instructions) — kept deliberately coarse.
+      // candidate instructions; GEPA adds reflection rounds on top of its
+      // candidate evaluations) — kept deliberately coarse.
+      const selectedOptimizer = optimizeUI.optimizerSelect.value;
       const estimatedCalls =
-        optimizeUI.optimizerSelect.value === 'miprov2' ? samples * 8 + 30 : samples * 3 + 10;
+        selectedOptimizer === 'gepa'
+          ? samples * 12 + 40
+          : selectedOptimizer === 'miprov2'
+            ? samples * 8 + 30
+            : samples * 3 + 10;
       const estimateParts = [
         `${promptBuilderInterfaceText?.promptBuilderOptimizeEstimate}`.replace('{calls}', String(estimatedCalls)),
       ];
@@ -4511,7 +4517,14 @@ ${scoreCodeReturn}`;
         estimateParts.push(`${promptBuilderInterfaceText?.promptBuilderOptimizeJudgeSelfWarning}`);
       }
       optimizeUI.estimateLine.innerText = estimateParts.join(' ');
-      optimizeUI.judgeRow.classList.toggle('d-none', optimizeUI.metricSelect.value !== 'judge');
+      // The judge model picker also serves GEPA, whose reflection step runs on
+      // the judge model regardless of the chosen metric; GEPA selects no
+      // few-shot demos, so the max-demos input is moot for it.
+      optimizeUI.judgeRow.classList.toggle(
+        'd-none',
+        optimizeUI.metricSelect.value !== 'judge' && selectedOptimizer !== 'gepa'
+      );
+      optimizeUI.maxDemosInput.disabled = selectedOptimizer === 'gepa';
 
       const promptSelected =
         promptBuilderPromptSelectorDropdown.value !== '' &&
@@ -4526,6 +4539,8 @@ ${scoreCodeReturn}`;
           '{min}',
           String(minSamples)
         );
+      else if (selectedOptimizer === 'gepa' && optimizeUI.judgeSelect.value === '')
+        disabledHint = `${promptBuilderInterfaceText?.promptBuilderOptimizeGepaNeedsJudge}`;
       setDisabledHint(optimizeUI.runButton, optimizeUI.runWrapper, disabledHint !== '', disabledHint);
       // Follow the selection: render the selected prompt's optimization
       // history (no-op while the selection is unchanged).
@@ -5057,9 +5072,19 @@ ${scoreCodeReturn}`;
       const metric = ['judge', 'overlap'].includes(optimizeUI.metricSelect.value)
         ? optimizeUI.metricSelect.value
         : 'exact';
-      const judgeModelName = metric === 'judge' ? optimizeUI.judgeSelect.value : '';
+      // GEPA reflects with the judge model even when the metric is not the
+      // judge, so the name travels along in both cases.
+      const optimizer = ['miprov2', 'gepa'].includes(optimizeUI.optimizerSelect.value)
+        ? optimizeUI.optimizerSelect.value
+        : 'bootstrap';
+      const judgeModelName =
+        metric === 'judge' || optimizer === 'gepa' ? optimizeUI.judgeSelect.value : '';
       if (metric === 'judge' && judgeModelName === '') {
         showToast(`${promptBuilderInterfaceText?.promptBuilderJudgeSelectModelToast}`);
+        return;
+      }
+      if (optimizer === 'gepa' && judgeModelName === '') {
+        showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeGepaNeedsJudge}`);
         return;
       }
       // CAS dataset source: validate the table BEFORE launching — its columns
@@ -5142,7 +5167,7 @@ ${scoreCodeReturn}`;
           casTable,
           metric,
           judgeModelName,
-          optimizer: optimizeUI.optimizerSelect.value === 'miprov2' ? 'miprov2' : 'bootstrap',
+          optimizer,
           maxDemos: String(maxDemos),
           minSamples: String(optimizeMinSamples()),
           keyLibrary: String(promptBuilderObject?.optimizeKeyLibrary ?? ''),
@@ -5421,6 +5446,10 @@ ${scoreCodeReturn}`;
       miprov2Option.value = 'miprov2';
       miprov2Option.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeOptimizerMiprov2}`;
       optimizeOptimizerSelect.appendChild(miprov2Option);
+      const gepaOption = document.createElement('option');
+      gepaOption.value = 'gepa';
+      gepaOption.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeOptimizerGepa}`;
+      optimizeOptimizerSelect.appendChild(gepaOption);
       const maxDemosLabel = document.createElement('label');
       maxDemosLabel.classList.add('form-label', 'mb-0', 'ms-3');
       maxDemosLabel.htmlFor = `${paneID}-obj-${promptBuilderObject?.id}-optimize-max-demos`;

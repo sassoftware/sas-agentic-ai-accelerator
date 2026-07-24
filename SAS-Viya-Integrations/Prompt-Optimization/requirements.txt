@@ -10,4 +10,6 @@ dspy>=3.2.1
 requests>=2.31
 # Needed only for the MIPROv2 optimizer (its Bayesian trial search); the job
 # checks for it at startup when MIPROv2 is chosen and fails fast without it.
+# (The GEPA optimizer needs no entry here - the gepa engine is a hard
+# dependency of dspy >= 3.2.1 and installs with it.)
 optuna>=3.0

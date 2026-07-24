@@ -56,10 +56,15 @@
       casTable         - the CAS table: one column per prompt variable plus a
                          response column with the reference answer
       metric           - exact (default), overlap (token-level F1) or judge
-      judgeModelName   - the judge LLM name when metric=judge
-      optimizer        - bootstrap (default, selects few-shot demos) or
+      judgeModelName   - the judge LLM name when metric=judge; GEPA also uses
+                         this model for its reflection step, so it is required
+                         whenever optimizer=gepa (for any metric)
+      optimizer        - bootstrap (default, selects few-shot demos),
                          miprov2 (additionally rewrites the instruction text;
-                         needs more model calls)
+                         needs more model calls) or gepa (evolves the
+                         instruction from natural-language feedback - the
+                         judge's own reasoning when metric=judge; the most
+                         model calls)
       maxDemos         - max few-shot examples to select (default 4)
       minSamples       - minimum qualifying runs required (default 30)
       keyLibrary       - SAS library of the governed API-key table (optional)
@@ -272,6 +277,10 @@ def import_dependencies():
             import optuna  # noqa: F401
         except Exception:
             fail("The MIPROv2 optimizer needs the optuna package - install it into the compute context Python (see Prompt-Optimization/requirements.txt) or choose the bootstrap optimizer.")
+    if P["optimizer"] == "gepa" and not hasattr(dspy_module, "GEPA"):
+        # The gepa engine is a HARD dependency of dspy >= 3.2.1 (unlike
+        # optuna), so this only fires on a broken or hand-pruned install.
+        fail("This dspy installation lacks the GEPA optimizer - reinstall dspy (>= 3.2.1, see Prompt-Optimization/requirements.txt) or choose another optimizer.")
 
 
 # ---- SAS Viya REST helpers -------------------------------------------------
@@ -422,15 +431,18 @@ def build_scrlm_class():
         shape BaseLM expects. Same URL forms as the browser (k8s vs aca).
         """
 
-        def __init__(self, model_name, options):
+        def __init__(self, model_name, options, role="target"):
             super().__init__(model=model_name)
             self.scr_options = dict(options)
+            # Usage-accounting bucket: GEPA's reflection model is the judge
+            # model, so its calls are charged to the judge bucket.
+            self.scr_role = role
 
         def forward(self, prompt=None, messages=None, **kwargs):
             chat = messages or [{"role": "user", "content": prompt or ""}]
             system_prompt = "\n".join(str(m.get("content", "")) for m in chat if m.get("role") == "system")
             user_prompt = "\n\n".join(str(m.get("content", "")) for m in chat if m.get("role") != "system")
-            text = call_scr(self.model, self.scr_options, system_prompt, user_prompt)
+            text = call_scr(self.model, self.scr_options, system_prompt, user_prompt, role=self.scr_role)
             # usage must be a plain dict: dspy's BaseLM does dict(response.usage)
             # (verified against dspy 3.2.1 — a SimpleNamespace raises TypeError).
             return SimpleNamespace(
@@ -560,11 +572,13 @@ def overlap_metric(example, prediction, trace=None):
     return score
 
 
-def make_judge_metric(judge_lm_options, task_system_prompt=""):
+def make_judge(judge_lm_options, task_system_prompt=""):
     # The same rubric the Prompt Builder's Phase-1 judge uses (accuracy,
     # relevance to the task, completeness, clarity; ignore length/formatting)
     # - and like that judge, this one SEES THE TASK: equivalence judged blind
-    # to the question over-credits generic answers.
+    # to the question over-credits generic answers. Returns the full verdict
+    # (equivalent, reasoning) - the reasoning doubles as GEPA's reflection
+    # feedback, which is the whole point of Phase 3c.
     judge_system = (
         "You are an impartial evaluator. You will see the TASK an AI assistant "
         "was given, a REFERENCE answer a human vouched for, and a CANDIDATE "
@@ -575,7 +589,7 @@ def make_judge_metric(judge_lm_options, task_system_prompt=""):
         'then return ONLY a JSON object: {"reasoning": "...", "equivalent": true|false}'
     )
 
-    def judge_metric(example, prediction, trace=None):
+    def judge_verdict(example, prediction):
         task_lines = [f"{name}: {example[name]}" for name in example.inputs().keys()]
         user = (
             "== TASK ==\n" + (str(task_system_prompt) or "(none)") +
@@ -588,11 +602,69 @@ def make_judge_metric(judge_lm_options, task_system_prompt=""):
             raw = call_scr(P["judgeModelName"], judge_lm_options, judge_system, user, role="judge")
             match = re.search(r"\{.*\}", raw, re.DOTALL)
             verdict = json.loads(match.group(0)) if match else {}
-            return bool(verdict.get("equivalent"))
+            return bool(verdict.get("equivalent")), str(verdict.get("reasoning") or "").strip()
         except Exception:
-            return False
+            return False, ""
+
+    return judge_verdict
+
+
+def make_judge_metric(judge_verdict):
+    def judge_metric(example, prediction, trace=None):
+        return judge_verdict(example, prediction)[0]
 
     return judge_metric
+
+
+def make_gepa_metric(metric_name, judge_verdict=None):
+    """GEPA's reflection model needs to know WHY an answer scored the way it
+    did: this wrapper returns the score TOGETHER with a natural-language
+    explanation (dspy's GEPAFeedbackMetric protocol - a Prediction carrying
+    score + feedback). For the judge metric the explanation is the judge's own
+    reasoning; for exact/overlap it is a generated expected-vs-produced note.
+    The extra pred_name/pred_trace arguments come from GEPA's per-predictor
+    feedback requests - our program has a single predictor, so they are
+    accepted and ignored."""
+
+    def gepa_metric(gold, pred, trace=None, pred_name=None, pred_trace=None):
+        response = str(getattr(pred, "response", ""))
+        if metric_name == "judge":
+            equivalent, reasoning = judge_verdict(gold, pred)
+            score = 1.0 if equivalent else 0.0
+            feedback = reasoning or (
+                "The answer conveys the same meaning as the reference."
+                if equivalent
+                else f"The answer does not convey the reference answer: {gold.response}"
+            )
+        elif metric_name == "overlap":
+            score = float(overlap_metric(gold, pred))
+            pred_tokens = set(normalise(response).split())
+            ref_tokens = set(normalise(gold.response).split())
+            missing = sorted(ref_tokens - pred_tokens)
+            extra = sorted(pred_tokens - ref_tokens)
+            parts = [f"Token overlap with the reference is {score:.2f}."]
+            if score < OVERLAP_PASS:
+                parts.append(f"Reference answer: {gold.response}")
+                if missing:
+                    parts.append("Words missing from the answer: " + ", ".join(missing[:20]))
+                if extra:
+                    parts.append("Unexpected words in the answer: " + ", ".join(extra[:20]))
+            feedback = " ".join(parts)
+        else:
+            correct = bool(exact_metric(gold, pred))
+            score = 1.0 if correct else 0.0
+            feedback = (
+                "Correct - the answer matches the reference exactly."
+                if correct
+                else (
+                    "The answer must match the reference exactly (case and surrounding "
+                    f"punctuation are ignored). Expected: {gold.response} - the prompt "
+                    f"produced: {response}"
+                )
+            )
+        return dspy.Prediction(score=score, feedback=feedback)
+
+    return gepa_metric
 
 
 def evaluate(program, dataset, metric, pass_threshold=1.0):
@@ -750,15 +822,24 @@ def main():
         call_scr(P["targetModelName"], target_options, "You are a health check.", "Reply with OK.")
         dspy.configure(lm=target_lm)
 
-        if P["metric"] == "judge":
+        # The judge model serves two roles: the judge METRIC scores with it,
+        # and the GEPA optimizer additionally reflects with it (reads the
+        # per-example feedback and proposes improved instructions) - so it is
+        # resolved whenever either needs it.
+        judge_options = None
+        judge_verdict = None
+        if P["metric"] == "judge" or P["optimizer"] == "gepa":
             if not P["judgeModelName"]:
-                fail("metric=judge requires judgeModelName.")
+                fail("metric=judge requires judgeModelName." if P["metric"] == "judge"
+                     else "The GEPA optimizer needs a judge model for its reflection step - pick one in the Optimize panel.")
             judge_model = next(
                 (i for i in viya("GET", "/modelRepository/models?filter=eq(name,'" + P["judgeModelName"] + "')").get("items", [])), None)
             if judge_model is None:
                 fail(f"The judge model {P['judgeModelName']} was not found in Model Manager.")
             judge_options = build_model_options(judge_model["id"], P["judgeModelName"], key_map)
-            metric = make_judge_metric(judge_options, str(source_header.get("systemPrompt") or ""))
+        if P["metric"] == "judge":
+            judge_verdict = make_judge(judge_options, str(source_header.get("systemPrompt") or ""))
+            metric = make_judge_metric(judge_verdict)
             pass_threshold = 1.0
         elif P["metric"] == "overlap":
             metric = overlap_metric
@@ -835,6 +916,29 @@ def main():
                 "trainset": trainset, "valset": valset,
                 "minibatch": False, "requires_permission_to_run": False,
             }
+            compiled = optimizer.compile(
+                program, **{k: v for k, v in compile_kwargs.items() if k in compile_params})
+        elif P["optimizer"] == "gepa":
+            # GEPA evolves the INSTRUCTION reflectively: the metric returns a
+            # score plus a natural-language explanation (the judge's reasoning
+            # when metric=judge), and the reflection model - the configured
+            # judge model through the same SCR adapter - reads those
+            # explanations and proposes improved instructions. No demos are
+            # selected (maxDemos does not apply). auto=light bounds the
+            # metric-call budget; num_threads=1 keeps the SCR calls sequential
+            # inside proc python; keyword filtering tolerates signature drift
+            # across dspy releases (validated against 3.2.1, where the gepa
+            # engine is a hard dependency of dspy itself).
+            reflection_lm = SCRLM(P["judgeModelName"], judge_options, role="judge")
+            gepa_metric = make_gepa_metric(P["metric"], judge_verdict)
+            init_params = inspect.signature(dspy.GEPA.__init__).parameters
+            init_kwargs = {
+                "metric": gepa_metric, "auto": "light",
+                "reflection_lm": reflection_lm, "num_threads": 1,
+            }
+            optimizer = dspy.GEPA(**{k: v for k, v in init_kwargs.items() if k in init_params})
+            compile_params = inspect.signature(optimizer.compile).parameters
+            compile_kwargs = {"trainset": trainset, "valset": valset}
             compiled = optimizer.compile(
                 program, **{k: v for k, v in compile_kwargs.items() if k in compile_params})
         else:
