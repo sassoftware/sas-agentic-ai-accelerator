@@ -1202,7 +1202,7 @@ def retire(
     # always recoverable with 'mdb pull' or from git history.
     import shutil
     removed = facts.remove_row(ctx.fact_sheet(manifest.kind), model_id)
-    destination = archive_dir(ctx.repo) / manifest.kind / model_id
+    destination = archive_dir(ctx.repo, manifest.kind) / manifest.kind / model_id
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         shutil.rmtree(destination)

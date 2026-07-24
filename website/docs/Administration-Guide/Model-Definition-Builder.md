@@ -35,7 +35,7 @@ mdb add azure-foundry --resource myres --deployment my-gpt41 --id gpt_41_az --ye
 mdb add hf-selfhosted --repo Qwen/Qwen2.5-0.5B-Instruct --id qwen_25_05b --params-billions 0.5 --yes
 ```
 
-Supported providers: OpenRouter, OpenAI, Azure AI Foundry (v1 endpoint, key auth), Mistral, Anthropic, AWS Bedrock (Converse API - Bedrock API key by default, `--auth-variant sigv4` for boto3/IAM shops), Google Gemini, Voyage AI, self-hosted Hugging Face models (`transformers` for LLMs, `sentence-transformers` for embeddings) and self-hosted OpenAI-compatible servers (**Ollama**, **vLLM**).
+Supported providers: OpenRouter, OpenAI, Azure AI Foundry (any host flavor; GA v1 or legacy api-version endpoint, key auth), Mistral, Anthropic, AWS Bedrock (Converse API - Bedrock API key by default, `--auth-variant sigv4` for boto3/IAM shops), Google Gemini, Voyage AI, self-hosted Hugging Face models (`transformers` for LLMs, `sentence-transformers` for embeddings) and self-hosted OpenAI-compatible servers (**Ollama**, **vLLM**).
 
 **Embedding definitions** work exactly like LLM definitions: the wizard picks the kind from the model you select (or the runtime you choose for self-hosted models), the folder lands in `Embedding-Definitions/`, the row goes to `embedding_fact_sheet.csv`, and registration continues with `mdb register`, exactly like an LLM. The generated embedding scorers return all three declared outputs (embedding, run_time, tokens) and embed the full vector — two long-standing bugs in several hand-written definitions that the templates fix centrally. The bundled open-source embedding models run on CPU: `all_minilm_l6_v2`, the BGE family, `embedding_gemma_300m` and the RTEB-leaderboard IBM Granite models `granite_embedding_small_r2` (47M, 384-dim) and `granite_embedding_r2` (149M, 768-dim), all Apache-2.0/MIT ModernBERT or MiniLM bi-encoders.
 
@@ -57,7 +57,30 @@ AWS Bedrock regions work like Azure resources: the region resolves per call as o
 
 Azure definitions are environment-neutral by default: the resource host you enter during `mdb add` is used for smoke tests, but is **not** baked into the definition unless you confirm it (or pass `--commit-resource`). A deployed container resolves its target in this order: per-call `azure_openai_resource` option → `AZURE_OPENAI_RESOURCE` container environment variable → the baked default. Set `AZURE_OPENAI_RESOURCE` in each deployment's YAML to serve dev, test and production (or different customer subscriptions) from the same published image — and set it in your `.env` so the wizard and smoke tests use your environment automatically. `mdb validate` reminds you when a definition carries a baked resource.
 
+**Host flavors and API styles.** Azure hands out the same OpenAI-compatible data plane under three host suffixes, and mdb accepts any of them verbatim (a bare name still expands to the classic `*.openai.azure.com`):
+
+| Host | Resource type |
+| --- | --- |
+| `<res>.openai.azure.com` | classic Azure OpenAI resource |
+| `<res>.cognitiveservices.azure.com` | Azure AI Services / Foundry resource |
+| `<res>.services.ai.azure.com` | Azure AI Foundry endpoint (sometimes region-qualified) |
+
+By default mdb calls the **GA v1 endpoint** (`/openai/v1/chat/completions`, deployment name in the body — Microsoft's recommended surface). If your resource or org policy still requires the **legacy deployment-scoped route** — recognizable by URLs like `…/openai/deployments/<name>/chat/completions?api-version=2025-01-01-preview` — answer the wizard's *API version* question (or set the `azure_api_version` option / `AZURE_OPENAI_API_VERSION` container environment variable) and the calls switch to that route, same resolution order as the resource. One caveat: models that are only reachable through the newer **Responses API** (`/openai/v1/responses` — a different request/response shape, e.g. computer-use previews) are not supported by the chat-completions score contract.
+
 API keys are read from environment variables or the `.env` file at the repository root (for example `ANTHROPIC_API_KEY`, `AZURE_OPENAI_API_KEY`). The wizard tells you which variable it used; keys are never written into any generated file.
+
+### Keeping your definitions in your own repository
+
+By default `mdb` reads and writes definitions in the accelerator clone's `LLM-Definitions/` and `Embedding-Definitions/` folders. If you would rather **commit your definitions to your own git repository** (instead of carrying them in a fork of the accelerator), relocate the folders in the `.env` of your repo:
+
+```bash
+# .env in your own repository
+MDB_REPO=/path/to/sas-agentic-ai-accelerator      # supplies the definition-core templates
+MDB_LLM_DEFINITIONS=/path/to/your-repo/llm-definitions
+MDB_EMBEDDING_DEFINITIONS=/path/to/your-repo/embedding-definitions
+```
+
+`mdb` loads the `.env` from your current working directory (and its parents), so running it from inside your repo picks these up automatically. Every command — `add`, `apply`, `generate`, `validate`, `register`, `list`, `retire`, … — then operates on your folders: the fact sheets (`llm_fact_sheet.csv` / `embedding_fact_sheet.csv`) live inside them, `mdb retire` archives into an `_archive/` subfolder there (add it to your `.gitignore`), and the directories are created on first use. The two variables are independent — relocate only the kind you need. The accelerator clone is still required for the templates, which is what `MDB_REPO` points at.
 
 After adding a model:
 
