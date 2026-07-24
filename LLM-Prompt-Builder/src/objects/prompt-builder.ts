@@ -229,10 +229,20 @@ interface OptimizationTrackerEntry {
     /** The few-shot examples the optimizer selected (one object per demo). */
     demos?: Array<Record<string, string>>;
   } | null;
+  /** Per-role call accounting the job records from the SCR responses. */
+  usage?: { target?: OptimizationUsage; judge?: OptimizationUsage } | null;
   /** Legacy (pre-history releases): the separate prompt-test a run created. */
   producedPromptModelId?: string | null;
   datasetSnapshot?: string | null;
   error?: string | null;
+}
+
+/** What one role (target or judge LLM) spent during an optimization run. */
+interface OptimizationUsage {
+  calls?: number;
+  promptTokens?: number;
+  outputTokens?: number;
+  runTime?: number;
 }
 
 /** One validation example's before/after result inside a tracker entry. */
@@ -4415,7 +4425,7 @@ ${scoreCodeReturn}`;
      * — never the raw SAS log). `finished` paints the final runtime and
      * freezes it.
      */
-    function updateOptimizeRunLog(messages: string[], finished: boolean): void {
+    function updateOptimizeRunLog(messages: string[], finished: boolean, liveStatus?: string): void {
       if (!optimizeUI) return;
       updateOptimizeRuntimeDisplay();
       if (finished) {
@@ -4424,6 +4434,22 @@ ${scoreCodeReturn}`;
       }
       if (messages.length > 0) {
         optimizeUI.logList.innerText = messages.join('\n');
+        delete optimizeUI.logList.dataset.pending;
+      } else if (!finished && liveStatus && liveStatus !== 'ok') {
+        // No milestones yet: say WHY instead of showing an empty log —
+        // 'no-milestones' just means the job has not reported one yet, any
+        // other status pinpoints why live streaming is unavailable (the full
+        // log always appears when the run finishes). Never overwrite already
+        // painted milestones with this (a poll can fail transiently).
+        const pendingOrEmpty =
+          optimizeUI.logList.dataset.pending === '1' || optimizeUI.logList.innerText.trim() === '';
+        if (pendingOrEmpty) {
+          optimizeUI.logList.innerText =
+            liveStatus === 'no-milestones' || liveStatus === 'no-session-refs'
+              ? `${promptBuilderInterfaceText?.promptBuilderOptimizeLogWaiting}`
+              : `${promptBuilderInterfaceText?.promptBuilderOptimizeLogUnavailable}`.replace('{status}', liveStatus);
+          optimizeUI.logList.dataset.pending = '1';
+        }
       }
     }
 
@@ -4533,8 +4559,9 @@ ${scoreCodeReturn}`;
         // Transient poll failure — keep polling.
         return;
       }
-      const progressMessages = await getJobProgressMessages(job);
-      updateOptimizeRunLog(progressMessages, false);
+      const progress = await getJobProgressMessages(job);
+      const progressMessages = progress.messages;
+      updateOptimizeRunLog(progressMessages, false, progress.liveStatus);
       const latestMilestone = progressMessages.length > 0 ? ` — ${progressMessages[progressMessages.length - 1]}` : '';
       optimizeUI.statusLine.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobState} ${job.state}${latestMilestone}`;
       if (!isTerminalJobState(job.state)) {
@@ -4639,6 +4666,19 @@ ${scoreCodeReturn}`;
       optimizeHistoryModelId = modelId;
       const trackerEntries = await readOptimizationEntries(modelId);
       // The selection may have moved on while the tracker was being fetched.
+      if (promptBuilderPromptSelectorDropdown.value !== modelId) return;
+      // Cost estimates in the rows need the price attributes of the models
+      // the runs used (fetched lazily) — best effort before rendering.
+      const usedModels = new Set<string>();
+      (trackerEntries ?? []).forEach((entry) => {
+        if (entry.targetModel) usedModels.add(entry.targetModel);
+        if (entry.judgeModel) usedModels.add(entry.judgeModel);
+      });
+      try {
+        await Promise.all([...usedModels].map((name) => ensureLLMCostAttributes(name)));
+      } catch {
+        /* rows render without cost estimates */
+      }
       if (promptBuilderPromptSelectorDropdown.value !== modelId) return;
       renderOptimizationHistory(trackerEntries ?? []);
     }
@@ -4783,6 +4823,52 @@ ${scoreCodeReturn}`;
         promptBuilderInterfaceText?.promptBuilderOptimizeHistoryUserPromptLabel,
         entry.optimizedPrompt?.userPrompt
       );
+
+      // What the run actually spent: per-role calls + token totals from the
+      // tracker entry, priced with the same per-token/per-second attributes
+      // the run table uses (blank when a model carries no prices).
+      if (entry.usage) {
+        const roles: Array<[string | null | undefined, OptimizationUsage | null | undefined]> = [
+          [entry.targetModel, entry.usage.target],
+          [entry.judgeModel, entry.usage.judge],
+        ];
+        const callParts: string[] = [];
+        let promptTokens = 0;
+        let outputTokens = 0;
+        let totalCost = 0;
+        let anyCost = false;
+        roles.forEach(([modelName, roleUsage]) => {
+          if (!roleUsage?.calls) return;
+          callParts.push(`${roleUsage.calls} × ${modelName ?? '?'}`);
+          promptTokens += Number(roleUsage.promptTokens) || 0;
+          outputTokens += Number(roleUsage.outputTokens) || 0;
+          const roleCost = computeCallCost(
+            {
+              prompt_length: roleUsage.promptTokens,
+              output_length: roleUsage.outputTokens,
+              run_time: roleUsage.runTime,
+            },
+            modelName ? llmAttributesByName.get(modelName) : undefined
+          );
+          if (roleCost !== null) {
+            totalCost += roleCost;
+            anyCost = true;
+          }
+        });
+        if (callParts.length > 0) {
+          const usageLine = document.createElement('p');
+          usageLine.classList.add('text-muted', 'mb-1', 'mt-2', 'pb-optimize-usage');
+          let usageText = `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryUsage}`
+            .replace('{calls}', callParts.join(' + '))
+            .replace('{prompt}', String(Math.round(promptTokens)))
+            .replace('{output}', String(Math.round(outputTokens)));
+          if (anyCost) {
+            usageText += ` — ${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryCost} ${formatCost(totalCost)}`;
+          }
+          usageLine.innerText = usageText;
+          body.appendChild(usageLine);
+        }
+      }
 
       const evaluations = entry.evaluations ?? [];
       if (evaluations.length > 0) {
@@ -5061,6 +5147,7 @@ ${scoreCodeReturn}`;
         // ticks browser-side every second.
         optimizeJobStartedAt = Date.now();
         optimizeUI.logList.innerText = '';
+        delete optimizeUI.logList.dataset.pending;
         optimizeUI.logDetails.classList.remove('d-none');
         updateOptimizeRuntimeDisplay();
         startOptimizeRuntimeTicker();
@@ -5083,7 +5170,30 @@ ${scoreCodeReturn}`;
       const optimizeHeader = document.createElement('h2');
       optimizeHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeSectionHeading}`;
       const optimizeDescription = document.createElement('p');
-      optimizeDescription.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeSectionDescription}`;
+      optimizeDescription.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeSectionDescription} `;
+      // A deep link into the user guide: when optimization helps, which
+      // metric/optimizer to pick, and the CAS dataset schema.
+      const optimizeLearnMore = document.createElement('a');
+      optimizeLearnMore.href =
+        'https://sassoftware.github.io/sas-agentic-ai-accelerator/docs/User-Guide/Prompt-Builder#choosing-the-dataset-metric-and-optimizer';
+      optimizeLearnMore.target = '_blank';
+      optimizeLearnMore.rel = 'noopener';
+      optimizeLearnMore.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeLearnMore}`;
+      optimizeDescription.appendChild(optimizeLearnMore);
+
+      // ℹ️ tooltip helper for the optimize controls (the app's judge toggles
+      // use the same pattern: keyboard-focusable Bootstrap tooltip).
+      const makeOptimizeInfoIcon = (labelText: unknown, infoHtml: unknown): HTMLSpanElement => {
+        const icon = document.createElement('span');
+        icon.classList.add('info-icon', 'ms-1');
+        icon.innerHTML = '&#x2139;&#xFE0F;';
+        icon.setAttribute('tabindex', '0');
+        icon.setAttribute('role', 'button');
+        icon.setAttribute('aria-label', `${labelText}`);
+        icon.setAttribute('data-bs-toggle', 'tooltip');
+        new Tooltip(icon, { title: String(infoHtml), html: true, container: 'body' });
+        return icon;
+      };
 
       const optimizeControls = document.createElement('div');
       optimizeControls.classList.add('pb-optimize-controls', 'd-flex', 'flex-column', 'gap-2', 'mt-2');
@@ -5118,6 +5228,12 @@ ${scoreCodeReturn}`;
       const datasetLabel = document.createElement('p');
       datasetLabel.classList.add('fw-bold', 'mb-1');
       datasetLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeDatasetLabel}`;
+      datasetLabel.appendChild(
+        makeOptimizeInfoIcon(
+          promptBuilderInterfaceText?.promptBuilderOptimizeDatasetLabel,
+          promptBuilderInterfaceText?.promptBuilderOptimizeDatasetInfo
+        )
+      );
       datasetBlock.appendChild(datasetLabel);
       const datasetSourceName = `${paneID}-obj-${promptBuilderObject?.id}-optimize-dataset-source`;
       const makeDatasetRadio = (value: string, labelText: unknown, checked: boolean): HTMLInputElement => {
@@ -5213,6 +5329,12 @@ ${scoreCodeReturn}`;
       metricLabel.classList.add('form-label', 'mb-0');
       metricLabel.htmlFor = `${paneID}-obj-${promptBuilderObject?.id}-optimize-metric`;
       metricLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeMetricLabel}`;
+      metricLabel.appendChild(
+        makeOptimizeInfoIcon(
+          promptBuilderInterfaceText?.promptBuilderOptimizeMetricLabel,
+          promptBuilderInterfaceText?.promptBuilderOptimizeMetricInfo
+        )
+      );
       const optimizeMetricSelect = document.createElement('select');
       optimizeMetricSelect.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-metric`;
       optimizeMetricSelect.classList.add('form-select', 'form-select-sm');
@@ -5271,6 +5393,12 @@ ${scoreCodeReturn}`;
       optimizerLabel.classList.add('form-label', 'mb-0');
       optimizerLabel.htmlFor = `${paneID}-obj-${promptBuilderObject?.id}-optimize-optimizer`;
       optimizerLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeOptimizerLabel}`;
+      optimizerLabel.appendChild(
+        makeOptimizeInfoIcon(
+          promptBuilderInterfaceText?.promptBuilderOptimizeOptimizerLabel,
+          promptBuilderInterfaceText?.promptBuilderOptimizeOptimizerInfo
+        )
+      );
       const optimizeOptimizerSelect = document.createElement('select');
       optimizeOptimizerSelect.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-optimizer`;
       optimizeOptimizerSelect.classList.add('form-select', 'form-select-sm');

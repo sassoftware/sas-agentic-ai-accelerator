@@ -163,38 +163,66 @@ async function primeComputeService(): Promise<void> {
   computeServicePrimed = true;
 }
 
-export async function getJobProgressMessages(job: JobExecutionJob): Promise<string[]> {
+/** The outcome of one progress poll: the milestones plus WHY there are none
+ *  (`liveStatus`), so the panel can show a diagnostic instead of silence. */
+export interface JobProgress {
+  messages: string[];
+  liveStatus:
+    | 'ok'
+    | 'no-milestones'
+    | 'no-session-refs'
+    | 'html-response'
+    | 'fetch-failed'
+    | `http-${number}`;
+}
+
+export async function getJobProgressMessages(job: JobExecutionJob): Promise<JobProgress> {
   const results = (job.results ?? {}) as Record<string, unknown>;
   const computeJob = String(results['COMPUTE_JOB'] ?? '');
   // The COMPUTE_SESSION value can carry the context name after the id.
   const computeSession = String(results['COMPUTE_SESSION'] ?? '').split(/\s/)[0];
+  let liveStatus: JobProgress['liveStatus'] = 'no-session-refs';
   if (computeJob && computeSession) {
     try {
       await primeComputeService();
       const response = await viyaFetch(
         `/compute/sessions/${computeSession}/jobs/${computeJob}/log/content?limit=100000`,
-        { accept: 'text/plain' }
+        // Prefer the log-line collection; a live server may also answer with
+        // plain text — extractProgressMessages handles both shapes.
+        { accept: 'application/vnd.sas.compute.log.line.collection+json, application/json;q=0.9, text/plain;q=0.8' }
       );
       if (response.ok) {
-        const messages = extractProgressMessages(await response.text());
-        if (messages.length > 0) return messages;
+        const logText = await response.text();
+        if (logText.trimStart().startsWith('<')) {
+          // An HTML body on a 200 means the request was answered by an SSO
+          // redirect (SASLogon page), not the compute service — the service
+          // session is not established. Re-prime on the next poll.
+          computeServicePrimed = false;
+          liveStatus = 'html-response';
+          console.debug('Prompt Builder: live compute log answered with HTML (SSO redirect?) — re-priming');
+        } else {
+          const messages = extractProgressMessages(logText);
+          if (messages.length > 0) return { messages, liveStatus: 'ok' };
+          liveStatus = 'no-milestones';
+        }
       } else {
-        // Diagnosis aid (no UI noise): why the live log yielded nothing.
+        liveStatus = `http-${response.status}`;
         console.debug(`Prompt Builder: live compute log returned HTTP ${response.status}`);
       }
     } catch (error) {
       /* session already gone — fall back to the log file */
+      liveStatus = 'fetch-failed';
       console.debug('Prompt Builder: live compute log fetch failed', error);
     }
   }
   const logLocation = String(job.logLocation ?? '');
-  if (!logLocation) return [];
+  if (!logLocation) return { messages: [], liveStatus };
   try {
     const response = await viyaFetch(`${logLocation}/content?limit=100000`, { accept: 'text/plain' });
-    if (!response.ok) return [];
-    return extractProgressMessages(await response.text());
+    if (!response.ok) return { messages: [], liveStatus };
+    return { messages: extractProgressMessages(await response.text()), liveStatus };
   } catch {
-    return [];
+    return { messages: [], liveStatus };
   }
 }
 

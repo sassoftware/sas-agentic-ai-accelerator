@@ -341,7 +341,29 @@ def scr_url(model_name):
     return f"{P['scrEndpoint']}/{model_name}/{model_name}"
 
 
-def call_scr(model_name, options, system_prompt, user_prompt):
+# Per-role call accounting from the SCR responses (the SAS contract returns
+# prompt_length/output_length/run_time with every call): recorded in the
+# tracker entry so the Builder can show how many calls a run actually made
+# and estimate what it cost.
+USAGE = {
+    "target": {"calls": 0, "promptTokens": 0.0, "outputTokens": 0.0, "runTime": 0.0},
+    "judge": {"calls": 0, "promptTokens": 0.0, "outputTokens": 0.0, "runTime": 0.0},
+}
+
+
+def usage_snapshot():
+    return {
+        role: {
+            "calls": bucket["calls"],
+            "promptTokens": int(round(bucket["promptTokens"])),
+            "outputTokens": int(round(bucket["outputTokens"])),
+            "runTime": round(bucket["runTime"], 1),
+        }
+        for role, bucket in USAGE.items()
+    }
+
+
+def call_scr(model_name, options, system_prompt, user_prompt, role="target"):
     # The containers expect the options as a single unquoted {k:v,...} string -
     # the SAS 3-input contract, including API_KEY when the model needs one.
     options_string = "{" + ",".join(f"{k}:{v}" for k, v in options.items()) + "}"
@@ -355,6 +377,13 @@ def call_scr(model_name, options, system_prompt, user_prompt):
         raise RuntimeError(f"SCR call to {model_name} failed with HTTP {response.status_code}: {response.text[:300]}")
     payload = response.json()
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    bucket = USAGE["judge" if role == "judge" else "target"]
+    bucket["calls"] += 1
+    for field, target_key in (("prompt_length", "promptTokens"), ("output_length", "outputTokens"), ("run_time", "runTime")):
+        try:
+            bucket[target_key] += float(data.get(field) or 0)
+        except Exception:
+            pass
     if data.get("error"):
         raise RuntimeError(f"SCR call to {model_name} returned an error: {data['error']}")
     return str(data.get("response") or "")
@@ -556,7 +585,7 @@ def make_judge_metric(judge_lm_options, task_system_prompt=""):
             "\n\nReturn the JSON object now."
         )
         try:
-            raw = call_scr(P["judgeModelName"], judge_lm_options, judge_system, user)
+            raw = call_scr(P["judgeModelName"], judge_lm_options, judge_system, user, role="judge")
             match = re.search(r"\{.*\}", raw, re.DOTALL)
             verdict = json.loads(match.group(0)) if match else {}
             return bool(verdict.get("equivalent"))
@@ -806,10 +835,12 @@ def main():
         baked = bake_out(compiled, source_header, input_names)
         tracker_entry["optimizedPrompt"] = baked
 
+        progress(f"Model calls made: {USAGE['target']['calls']} target, {USAGE['judge']['calls']} judge")
         progress("Writing the results back to SAS Model Manager")
         # Snapshot the exact examples optimised on (provenance) and record the
         # whole run - optimised prompt, demos, per-example evaluations - as an
         # entry of the prompt's own optimization tracker. No new models.
+        tracker_entry["usage"] = usage_snapshot()
         tracker_entry["status"] = "succeeded"
         tracker_entry["finishedAt"] = datetime.now(timezone.utc).isoformat()
         append_optimization_tracker(tracker_entry, dataset_snapshot=examples_raw)
@@ -823,6 +854,8 @@ def main():
         tracker_entry["status"] = "failed"
         tracker_entry["finishedAt"] = datetime.now(timezone.utc).isoformat()
         tracker_entry["error"] = error_text[:500]
+        # Even a failed run spent calls - record them for the panel.
+        tracker_entry["usage"] = usage_snapshot()
         # Best effort: record the failure for the Builder's result panel. Skipped
         # only when even requests could not be imported (nothing can reach Viya).
         if requests is not None:

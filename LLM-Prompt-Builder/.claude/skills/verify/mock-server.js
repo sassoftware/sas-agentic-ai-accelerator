@@ -153,6 +153,12 @@ const successEntry = {
   ],
   optimizedPrompt,
   datasetSnapshot: 'Prompt-Optimization-Dataset-2.json',
+  // Per-role call accounting the job records (the Builder shows calls +
+  // token totals and prices them when the model carries cost attributes).
+  usage: {
+    target: { calls: 13, promptTokens: 5200, outputTokens: 640, runTime: 38.5 },
+    judge: { calls: 0, promptTokens: 0, outputTokens: 0, runTime: 0 },
+  },
   error: null,
 };
 
