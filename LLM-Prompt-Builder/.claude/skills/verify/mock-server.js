@@ -123,6 +123,9 @@ const optimizationTracker = [
     optimizedPrompt,
     producedPromptModelId: 'model-opt-legacy',
     datasetSnapshot: 'Prompt-Optimization-Dataset-1.json',
+    // Exercises the baseline-perfect info note the history renders when the
+    // job skipped the optimization phase.
+    skippedReason: 'baseline-perfect',
     error: null,
   },
 ];
