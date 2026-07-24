@@ -222,8 +222,13 @@ def add(
     yes: bool = typer.Option(False, "--yes", help="Non-interactive: accept all defaults"),
     offline: bool = typer.Option(False, "--offline", help="No network calls - use bundled catalogs / manual entry"),
     verify_ssl: bool = typer.Option(True, "--verify-ssl/--no-verify-ssl", help="TLS verification for provider calls"),
-    resource: Optional[str] = typer.Option(None, help="Azure resource host (azure-foundry)"),
+    resource: Optional[str] = typer.Option(None, help="Azure resource host, any flavor (azure-foundry)"),
     deployment: Optional[str] = typer.Option(None, help="Azure deployment name (azure-foundry)"),
+    api_version: Optional[str] = typer.Option(
+        None, "--api-version",
+        help="Azure API version (azure-foundry): omit for the GA v1 endpoint; set e.g. 2024-10-21 "
+             "or 2025-01-01-preview to use the legacy /openai/deployments route",
+    ),
     commit_resource: bool = typer.Option(
         False, "--commit-resource",
         help="Bake the Azure resource host into the definition as its default. Without this, the "
@@ -263,7 +268,7 @@ def add(
             )
 
     flag_answers = {
-        "resource": resource, "deployment": deployment, "repo": repo,
+        "resource": resource, "deployment": deployment, "api_version": api_version, "repo": repo,
         "gated": {True: "y", False: "n"}.get(gated), "runtime": runtime,
         "params_billions": str(params_billions) if params_billions is not None else None,
         "base_url": base_url, "kind": kind, "license": license_,
