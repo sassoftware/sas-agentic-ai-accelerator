@@ -82,6 +82,71 @@ def test_upsert_inserts_in_sorted_position(tmp_path, repo_root, fact_sheet):
     assert working.read_bytes() == before
 
 
+class _StubPrompt:
+    """Answers Prompt.ask by label; anything unlisted keeps its default."""
+
+    answers: dict = {}
+
+    @classmethod
+    def ask(cls, label, default=""):
+        return cls.answers.get(label, default)
+
+
+class _StubConfirm:
+    answer = True
+
+    @classmethod
+    def ask(cls, label, default=True):
+        return cls.answer
+
+
+def _patched_review(monkeypatch, manifest, confirm, answers, skip_review=False):
+    from mdb import cli as mdb_cli
+    _StubConfirm.answer = confirm
+    _StubPrompt.answers = answers
+    monkeypatch.setattr(mdb_cli, "Confirm", _StubConfirm)
+    monkeypatch.setattr(mdb_cli, "Prompt", _StubPrompt)
+    mdb_cli._review_catalog_values(manifest, skip_review=skip_review)
+
+
+def test_review_accept_keeps_everything(monkeypatch):
+    manifest = _openrouter_manifest(1e-07, 2e-07)
+    _patched_review(monkeypatch, manifest, confirm=True, answers={})
+    assert manifest.options["temperature"].default == 1
+    assert manifest.metadata.pricing.input_token_price == 1e-07
+
+
+def test_review_adjust_edits_options_metadata_and_pricing(monkeypatch):
+    manifest = _openrouter_manifest(1e-07, 2e-07)
+    _patched_review(monkeypatch, manifest, confirm=False, answers={
+        "options.temperature.default": "0.5",
+        "metadata.context_length": "32768",
+        "pricing.output_token_price": "6e-07",
+    })
+    assert manifest.options["temperature"].default == 0.5
+    assert manifest.metadata.context_length == 32768
+    # untouched prompts keep their defaults
+    assert manifest.options["top_p"].default == 1
+    assert manifest.metadata.pricing.input_token_price == 1e-07
+    assert manifest.metadata.pricing.output_token_price == 6e-07
+
+
+def test_review_accept_still_asks_when_pricing_unknown(monkeypatch):
+    manifest = _openrouter_manifest(None, None)
+    _patched_review(monkeypatch, manifest, confirm=True, answers={
+        "pricing.input_token_price": "0",
+        "pricing.output_token_price": "0",
+    })
+    assert manifest.metadata.pricing.input_token_price == 0.0
+    assert manifest.metadata.pricing.output_token_price == 0.0
+
+
+def test_review_skipped_leaves_unknown_pricing(monkeypatch):
+    manifest = _openrouter_manifest(None, None)
+    _patched_review(monkeypatch, manifest, confirm=True, answers={}, skip_review=True)
+    assert manifest.metadata.pricing.input_token_price is None
+
+
 def test_http_smoke_failure_classifies_rate_limits():
     limited = http_smoke_failure(SimpleNamespace(status_code=429), {"error": "slow down"})
     assert limited.ok is False and limited.inconclusive is True

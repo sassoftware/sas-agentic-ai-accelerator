@@ -214,12 +214,103 @@ def _select_model(adapter: ProviderAdapter, catalog: list[CatalogModel], ref: Op
     return filtered[_pick_from_list(f"Models available from {adapter.display_name}", labels)]
 
 
+def _cast_like(current, raw: str):
+    """Cast a prompt answer to the type of the value it replaces. Numeric
+    options stay int only for integral answers - a catalog default of 1 must
+    not truncate an entered 0.5."""
+    if isinstance(current, bool):
+        return raw.strip().lower() in ("1", "true", "y", "yes", "on")
+    if isinstance(current, (int, float)):
+        value = float(raw)
+        return int(value) if isinstance(current, int) and value.is_integer() else value
+    return raw
+
+
+def _review_catalog_values(manifest, skip_review: bool) -> None:
+    """Show the catalog-derived options, metadata and pricing and let the user
+    confirm or adjust them before anything is written - these values steer
+    scoring behavior and cost monitoring, so they should be accepted
+    consciously, not silently. Skipped with --accept-defaults / --yes; unknown
+    token pricing is still asked about (or, when skipped, warned about)."""
+    metadata = manifest.metadata
+    pricing = metadata.pricing
+    pricing_unknown = (manifest.kind == "llm" and pricing.cost_type == "Tokens"
+                       and pricing.input_token_price is None and pricing.output_token_price is None)
+    if skip_review:
+        if pricing_unknown:
+            console.print(
+                "[yellow]No token pricing available for this model - set metadata.pricing in "
+                "definition.yaml (0 for a free model); mdb validate reminds you (V008).[/yellow]"
+            )
+        return
+
+    unknown = "[dim]unknown[/dim]"
+    table = Table(title=f"Catalog-derived values for {manifest.model_id}")
+    table.add_column("Section")
+    table.add_column("Name")
+    table.add_column("Value")
+    for name, spec in manifest.options.items():
+        bounds = "" if spec.max is None else f"  (max {spec.max:g})"
+        table.add_row("options", name, f"{spec.default}{bounds}")
+    table.add_row("metadata", "description", metadata.description)
+    table.add_row("metadata", "context_length", str(metadata.context_length) if metadata.context_length else unknown)
+    table.add_row("metadata", "release_date", metadata.release_date or unknown)
+    table.add_row("metadata", "knowledge_cutoff", metadata.knowledge_cutoff or unknown)
+    if manifest.kind == "llm" and pricing.cost_type == "Tokens":
+        table.add_row("pricing", "input_token_price",
+                      unknown if pricing.input_token_price is None else f"{pricing.input_token_price:g}")
+        table.add_row("pricing", "output_token_price",
+                      unknown if pricing.output_token_price is None else f"{pricing.output_token_price:g}")
+    console.print(table)
+
+    adjust = not Confirm.ask("Accept these values?", default=True)
+    if adjust:
+        console.print("[dim]Press Enter to keep a value.[/dim]")
+        for name, spec in manifest.options.items():
+            raw = Prompt.ask(f"options.{name}.default", default=str(spec.default))
+            try:
+                spec.default = _cast_like(spec.default, raw)
+            except (TypeError, ValueError):
+                console.print(f"[yellow]'{raw}' does not fit {name} - keeping {spec.default}.[/yellow]")
+        metadata.description = Prompt.ask("metadata.description", default=metadata.description)
+        for attribute in ("release_date", "knowledge_cutoff"):
+            raw = Prompt.ask(f"metadata.{attribute}", default=getattr(metadata, attribute) or "").strip()
+            setattr(metadata, attribute, raw or None)
+        raw = Prompt.ask("metadata.context_length",
+                         default=str(metadata.context_length) if metadata.context_length else "").strip()
+        try:
+            metadata.context_length = int(float(raw)) if raw else None
+        except ValueError:
+            console.print(f"[yellow]'{raw}' is not a number - keeping {metadata.context_length}.[/yellow]")
+    if manifest.kind == "llm" and pricing.cost_type == "Tokens" and (adjust or pricing_unknown):
+        if pricing_unknown:
+            console.print(
+                "No token pricing is available for this model. Enter the per-token prices "
+                "(e.g. 2.5e-07; 0 for a free model; leave empty to decide later)."
+            )
+        for attribute, label in (("input_token_price", "pricing.input_token_price"),
+                                 ("output_token_price", "pricing.output_token_price")):
+            current = getattr(pricing, attribute)
+            raw = Prompt.ask(label, default="" if current is None else f"{current:g}").strip()
+            if raw == "":
+                continue
+            try:
+                setattr(pricing, attribute, float(raw))
+            except ValueError:
+                console.print(f"[yellow]'{raw}' is not a number - keeping {current}.[/yellow]")
+
+
 @app.command()
 def add(
     provider: Optional[str] = typer.Argument(None, help="Provider adapter id (see 'mdb providers')"),
     ref: Optional[str] = typer.Argument(None, help="Provider model reference / deployment name / HF repo"),
     model_id: Optional[str] = typer.Option(None, "--id", help="Definition folder name (snake_case)"),
     yes: bool = typer.Option(False, "--yes", help="Non-interactive: accept all defaults"),
+    accept_defaults: bool = typer.Option(
+        False, "--accept-defaults",
+        help="Skip the review of catalog-derived options, metadata and pricing "
+             "(the wizard confirms them by default; --yes implies this)",
+    ),
     offline: bool = typer.Option(False, "--offline", help="No network calls - use bundled catalogs / manual entry"),
     verify_ssl: bool = typer.Option(True, "--verify-ssl/--no-verify-ssl", help="TLS verification for provider calls"),
     resource: Optional[str] = typer.Option(None, help="Azure resource host, any flavor (azure-foundry)"),
@@ -326,31 +417,10 @@ def add(
     modeler = os.environ.get("SAS_RESPONSIBLE_PARTY", "") or os.environ.get("USERNAME", "") or os.environ.get("USER", "")
     try:
         manifest = adapter.build_manifest(cm, final_id, answers, modeler)
-        # When the catalog carried no token pricing (offline, manual entry, or a
-        # provider without price data), ask instead of writing an unknown that
-        # only surfaces later as a V008 warning. An explicit 0 marks a genuinely
-        # free model and is not asked about.
-        pricing = manifest.metadata.pricing
-        if (manifest.kind == "llm" and pricing.cost_type == "Tokens"
-                and pricing.input_token_price is None and pricing.output_token_price is None):
-            if yes:
-                console.print(
-                    "[yellow]No token pricing available for this model - set metadata.pricing in "
-                    "definition.yaml (0 for a free model); mdb validate reminds you (V008).[/yellow]"
-                )
-            else:
-                console.print(
-                    "No token pricing is available for this model. Enter the per-token prices "
-                    "(e.g. 2.5e-07; 0 for a free model; leave empty to decide later)."
-                )
-                for attribute, label in (("input_token_price", "Input token price"),
-                                         ("output_token_price", "Output token price")):
-                    raw_price = Prompt.ask(label, default="").strip()
-                    if raw_price != "":
-                        try:
-                            setattr(pricing, attribute, float(raw_price))
-                        except ValueError:
-                            console.print(f"[yellow]'{raw_price}' is not a number - leaving {label.lower()} empty.[/yellow]")
+        # The catalog-derived values steer scoring behavior and cost monitoring
+        # - confirm them consciously by default; --accept-defaults / --yes skip
+        # the review (unknown token pricing is still asked/warned about).
+        _review_catalog_values(manifest, skip_review=yes or accept_defaults)
         rendered = render_assets(manifest, ctx.core)
     except (GenerationError, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")
