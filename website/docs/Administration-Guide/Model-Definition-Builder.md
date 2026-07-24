@@ -73,16 +73,15 @@ API keys are read from environment variables or the `.env` file at the repositor
 
 ### Keeping your definitions in your own repository
 
-By default `mdb` reads and writes definitions in the accelerator clone's `LLM-Definitions/` and `Embedding-Definitions/` folders. If you would rather **commit your definitions to your own git repository** (instead of carrying them in a fork of the accelerator), relocate the folders in the `.env` of your repo:
+By default `mdb` reads and writes definitions in the accelerator clone's `LLM-Definitions/` and `Embedding-Definitions/` folders. If you would rather **commit your definitions to your own git repository** (instead of carrying them in a fork of the accelerator), point `MDB_DEFINITIONS` at your repo in its `.env`:
 
 ```bash
 # .env in your own repository
-MDB_REPO=/path/to/sas-agentic-ai-accelerator      # supplies the definition-core templates
-MDB_LLM_DEFINITIONS=/path/to/your-repo/llm-definitions
-MDB_EMBEDDING_DEFINITIONS=/path/to/your-repo/embedding-definitions
+MDB_REPO=/path/to/sas-agentic-ai-accelerator   # supplies the definition-core templates
+MDB_DEFINITIONS=/path/to/your-repo             # mdb keeps its layout under this root
 ```
 
-`mdb` loads the `.env` from your current working directory (and its parents), so running it from inside your repo picks these up automatically. Every command — `add`, `apply`, `generate`, `validate`, `register`, `list`, `retire`, … — then operates on your folders: the fact sheets (`llm_fact_sheet.csv` / `embedding_fact_sheet.csv`) live inside them, `mdb retire` archives into an `_archive/` subfolder there (add it to your `.gitignore`), and the directories are created on first use. The two variables are independent — relocate only the kind you need. The accelerator clone is still required for the templates, which is what `MDB_REPO` points at.
+`mdb` loads the `.env` from your current working directory (and its parents), so running it from inside your repo picks these up automatically. Under that root, mdb creates the familiar layout **as needed** — `LLM-Definitions/`, `Embedding-Definitions/`, and the `mdb retire` archive `_archive/` (add that one to your `.gitignore`) — and every command (`add`, `apply`, `generate`, `validate`, `register`, `list`, `retire`, …) operates there, including the fact sheets (`llm_fact_sheet.csv` / `embedding_fact_sheet.csv`) inside the definition folders. The accelerator clone is still required for the templates, which is what `MDB_REPO` points at.
 
 After adding a model:
 
