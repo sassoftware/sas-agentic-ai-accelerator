@@ -156,6 +156,12 @@ class ProviderAdapter(ABC):
             "top_p": OptionSpec(default=1),
             "max_tokens": OptionSpec(default=1000, max=float(cm.max_output_tokens) if cm.max_output_tokens else None),
         }
+        # Newer OpenAI-style models reject max_tokens in favor of
+        # max_completion_tokens - when the catalog says which one the model
+        # actually supports, follow it.
+        supported = cm.supported_parameters or []
+        if supported and "max_tokens" not in supported and "max_completion_tokens" in supported:
+            options["max_completion_tokens"] = options.pop("max_tokens")
         if cm.extended_thinking:
             options["thinking_budget"] = OptionSpec(default=0, max=float(cm.max_output_tokens or 64000))
         return options

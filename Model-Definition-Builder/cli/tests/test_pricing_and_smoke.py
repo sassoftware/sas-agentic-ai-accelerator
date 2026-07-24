@@ -83,13 +83,17 @@ def test_upsert_inserts_in_sorted_position(tmp_path, repo_root, fact_sheet):
 
 
 class _StubPrompt:
-    """Answers Prompt.ask by label; anything unlisted keeps its default."""
+    """Answers Prompt.ask by label; anything unlisted keeps its default. A
+    list value yields one element per call (for looping prompts)."""
 
     answers: dict = {}
 
     @classmethod
     def ask(cls, label, default=""):
-        return cls.answers.get(label, default)
+        value = cls.answers.get(label)
+        if isinstance(value, list):
+            return value.pop(0) if value else default
+        return value if value is not None else default
 
 
 class _StubConfirm:
@@ -129,6 +133,46 @@ def test_review_adjust_edits_options_metadata_and_pricing(monkeypatch):
     assert manifest.options["top_p"].default == 1
     assert manifest.metadata.pricing.input_token_price == 1e-07
     assert manifest.metadata.pricing.output_token_price == 6e-07
+
+
+def test_review_renames_and_drops_options(monkeypatch):
+    """The provider contract sometimes wants a different option NAME (newer
+    OpenAI-style models take max_completion_tokens, not max_tokens) - the
+    review can fix that without editing definition.yaml."""
+    manifest = _openrouter_manifest(1e-07, 2e-07)
+    _patched_review(monkeypatch, manifest, confirm=False, answers={
+        "Rename or drop an option (old=new renames, -name drops, Enter continues)":
+            ["max_tokens=max_completion_tokens", "-top_p", ""],
+    })
+    assert "max_completion_tokens" in manifest.options
+    assert "max_tokens" not in manifest.options
+    assert "top_p" not in manifest.options
+    # the renamed option keeps its spec
+    assert manifest.options["max_completion_tokens"].max == 16384
+
+
+def test_default_options_follow_supported_parameters():
+    from mdb.providers.base import CatalogModel
+    from mdb.providers.openai_compat import OpenAICompatAdapter
+    adapter = OpenAICompatAdapter(
+        id="openai", display_name="OpenAI", provider_tag="OpenAI", key_name="OpenAI",
+        env_key_var="OPENAI_API_KEY", base_url="https://api.openai.com/v1",
+    )
+    modern = CatalogModel(
+        ref="gpt-modern", display_name="GPT Modern", max_output_tokens=8192,
+        supported_parameters=["temperature", "top_p", "max_completion_tokens"],
+    )
+    options = adapter.default_options(modern)
+    assert "max_completion_tokens" in options and "max_tokens" not in options
+    assert options["max_completion_tokens"].max == 8192.0
+    classic = CatalogModel(
+        ref="gpt-classic", display_name="GPT Classic", max_output_tokens=4096,
+        supported_parameters=["temperature", "top_p", "max_tokens"],
+    )
+    assert "max_tokens" in adapter.default_options(classic)
+    # no catalog knowledge -> the traditional default stays
+    unknown = CatalogModel(ref="gpt-unknown", display_name="GPT Unknown")
+    assert "max_tokens" in adapter.default_options(unknown)
 
 
 def test_review_accept_still_asks_when_pricing_unknown(monkeypatch):

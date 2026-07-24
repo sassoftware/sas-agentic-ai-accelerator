@@ -226,7 +226,7 @@ def _cast_like(current, raw: str):
     return raw
 
 
-def _review_catalog_values(manifest, skip_review: bool) -> None:
+def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
     """Show the catalog-derived options, metadata and pricing and let the user
     confirm or adjust them before anything is written - these values steer
     scoring behavior and cost monitoring, so they should be accepted
@@ -272,6 +272,45 @@ def _review_catalog_values(manifest, skip_review: bool) -> None:
                 spec.default = _cast_like(spec.default, raw)
             except (TypeError, ValueError):
                 console.print(f"[yellow]'{raw}' does not fit {name} - keeping {spec.default}.[/yellow]")
+        # Option NAMES are part of the provider contract (e.g. newer OpenAI
+        # models take max_completion_tokens instead of max_tokens) - allow
+        # fixing them here instead of editing definition.yaml afterwards.
+        while True:
+            action = Prompt.ask(
+                "Rename or drop an option (old=new renames, -name drops, Enter continues)",
+                default="",
+            ).strip()
+            if not action:
+                break
+            if action.startswith("-"):
+                target = action[1:].strip()
+                if manifest.options.pop(target, None) is None:
+                    console.print(f"[yellow]No option named '{target}'.[/yellow]")
+                else:
+                    console.print(f"[dim]Dropped {target}.[/dim]")
+                continue
+            if "=" not in action:
+                console.print("[yellow]Use old=new to rename, -name to drop, or Enter to continue.[/yellow]")
+                continue
+            old_name, new_name = (part.strip() for part in action.split("=", 1))
+            if old_name not in manifest.options:
+                console.print(f"[yellow]No option named '{old_name}'.[/yellow]")
+                continue
+            if not new_name or new_name in manifest.options:
+                console.print(f"[yellow]'{new_name}' is empty or already exists.[/yellow]")
+                continue
+            manifest.options = {
+                (new_name if key == old_name else key): value
+                for key, value in manifest.options.items()
+            }
+            spec = manifest.options[new_name]
+            if core is not None and new_name not in core.vocabulary and spec.type is None:
+                console.print(
+                    f"[yellow]'{new_name}' is not in the option vocabulary - generation will fail "
+                    "unless you pick a vocabulary name or add an inline type in definition.yaml.[/yellow]"
+                )
+            else:
+                console.print(f"[dim]Renamed {old_name} -> {new_name}.[/dim]")
         metadata.description = Prompt.ask("metadata.description", default=metadata.description)
         for attribute in ("release_date", "knowledge_cutoff"):
             raw = Prompt.ask(f"metadata.{attribute}", default=getattr(metadata, attribute) or "").strip()
@@ -420,7 +459,7 @@ def add(
         # The catalog-derived values steer scoring behavior and cost monitoring
         # - confirm them consciously by default; --accept-defaults / --yes skip
         # the review (unknown token pricing is still asked/warned about).
-        _review_catalog_values(manifest, skip_review=yes or accept_defaults)
+        _review_catalog_values(manifest, skip_review=yes or accept_defaults, core=ctx.core)
         rendered = render_assets(manifest, ctx.core)
     except (GenerationError, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")
