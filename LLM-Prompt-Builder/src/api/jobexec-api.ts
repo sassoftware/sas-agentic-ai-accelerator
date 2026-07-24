@@ -140,17 +140,39 @@ export async function getJob(jobId: string): Promise<JobExecutionJob> {
 /**
  * Read the job's log and return the progress messages the job emitted with
  * SAS.logMessage() — they land in the log as `NOTE: Python-Subprocess - ...`.
- * Returns [] when the log is not (yet) readable; while the job is still
- * running the log resource may not exist.
+ *
+ * While the job RUNS its log streams live from the COMPUTE session (whose ids
+ * Job Execution exposes in the job's `results` as COMPUTE_SESSION and
+ * COMPUTE_JOB); the Files-service `logLocation` only fills in at completion —
+ * and both content endpoints paginate at 100 lines by default, so everything
+ * is requested explicitly. The compute session is deleted after the job ends,
+ * so the file is the fallback. Returns [] when neither log is readable.
  */
 export async function getJobProgressMessages(job: JobExecutionJob): Promise<string[]> {
+  const results = (job.results ?? {}) as Record<string, unknown>;
+  const computeJob = String(results['COMPUTE_JOB'] ?? '');
+  // The COMPUTE_SESSION value can carry the context name after the id.
+  const computeSession = String(results['COMPUTE_SESSION'] ?? '').split(/\s/)[0];
+  if (computeJob && computeSession) {
+    try {
+      const response = await viyaFetch(
+        `/compute/sessions/${computeSession}/jobs/${computeJob}/log/content?limit=100000`,
+        { accept: 'text/plain' }
+      );
+      if (response.ok) {
+        const messages = extractProgressMessages(await response.text());
+        if (messages.length > 0) return messages;
+      }
+    } catch {
+      /* session already gone — fall back to the log file */
+    }
+  }
   const logLocation = String(job.logLocation ?? '');
   if (!logLocation) return [];
   try {
-    const response = await viyaFetch(`${logLocation}/content`, { accept: 'text/plain' });
+    const response = await viyaFetch(`${logLocation}/content?limit=100000`, { accept: 'text/plain' });
     if (!response.ok) return [];
-    const text = await response.text();
-    return extractProgressMessages(text);
+    return extractProgressMessages(await response.text());
   } catch {
     return [];
   }

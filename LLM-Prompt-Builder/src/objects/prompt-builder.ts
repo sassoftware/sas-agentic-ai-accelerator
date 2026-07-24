@@ -4278,8 +4278,10 @@ ${scoreCodeReturn}`;
     // change while the job runs) and the launched job's id.
     let optimizeSourceModelId = '';
     let optimizeJobId = '';
-    // Launch timestamp for the run-log's runtime display (0 = frozen).
+    // Launch timestamp for the run-log's runtime display (0 = frozen) and the
+    // 1-second browser-side ticker that keeps it smooth between job polls.
     let optimizeJobStartedAt = 0;
+    let optimizeRuntimeHandle: number | null = null;
 
     /** mm:ss for the run-log runtime display. */
     function formatOptimizeRuntime(elapsedMs: number): string {
@@ -4287,17 +4289,37 @@ ${scoreCodeReturn}`;
       return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, '0')}`;
     }
 
+    /** Paint the current elapsed runtime (no-op once frozen). */
+    function updateOptimizeRuntimeDisplay(): void {
+      if (!optimizeUI || optimizeJobStartedAt === 0) return;
+      optimizeUI.logRuntime.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeRuntime} ${formatOptimizeRuntime(Date.now() - optimizeJobStartedAt)}`;
+    }
+
+    /** Tick the runtime every second in the browser (smoother than the 5s job polls). */
+    function startOptimizeRuntimeTicker(): void {
+      stopOptimizeRuntimeTicker();
+      optimizeRuntimeHandle = window.setInterval(updateOptimizeRuntimeDisplay, 1000);
+    }
+
+    function stopOptimizeRuntimeTicker(): void {
+      if (optimizeRuntimeHandle !== null) {
+        window.clearInterval(optimizeRuntimeHandle);
+        optimizeRuntimeHandle = null;
+      }
+    }
+
     /**
-     * Refresh the collapsible run log: elapsed runtime plus the job's own
-     * milestones (the SAS.logMessage notes, prefix already stripped by
-     * extractProgressMessages — never the raw SAS log). `finished` freezes
-     * the runtime at its final value.
+     * Refresh the collapsible run log with the job's own milestones (the
+     * SAS.logMessage notes, prefix already stripped by extractProgressMessages
+     * — never the raw SAS log). `finished` paints the final runtime and
+     * freezes it.
      */
     function updateOptimizeRunLog(messages: string[], finished: boolean): void {
       if (!optimizeUI) return;
-      if (optimizeJobStartedAt > 0) {
-        optimizeUI.logRuntime.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeRuntime} ${formatOptimizeRuntime(Date.now() - optimizeJobStartedAt)}`;
-        if (finished) optimizeJobStartedAt = 0;
+      updateOptimizeRuntimeDisplay();
+      if (finished) {
+        stopOptimizeRuntimeTicker();
+        optimizeJobStartedAt = 0;
       }
       if (messages.length > 0) {
         optimizeUI.logList.innerText = messages.join('\n');
@@ -4383,6 +4405,9 @@ ${scoreCodeReturn}`;
     function resetOptimizeRunButton(): void {
       if (!optimizeUI) return;
       optimizeJobActive = false;
+      // Safety net: never leave the runtime ticking (covers launch failures,
+      // where updateOptimizeRunLog(…, true) is not reached).
+      stopOptimizeRuntimeTicker();
       optimizeUI.runButton.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeRunButton}`;
       updateOptimizeState();
     }
@@ -4796,11 +4821,13 @@ ${scoreCodeReturn}`;
           throw new Error('Job Execution returned no job id.');
         }
         optimizeUI.statusLine.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobState} ${job.state ?? 'pending'}`;
-        // Reset + reveal the collapsed run log for this run.
+        // Reset + reveal the collapsed run log for this run; the runtime
+        // ticks browser-side every second.
         optimizeJobStartedAt = Date.now();
         optimizeUI.logList.innerText = '';
         optimizeUI.logDetails.classList.remove('d-none');
-        updateOptimizeRunLog([], false);
+        updateOptimizeRuntimeDisplay();
+        startOptimizeRuntimeTicker();
         optimizePollHandle = window.setInterval(() => {
           void pollOptimizeJob();
         }, 5000);

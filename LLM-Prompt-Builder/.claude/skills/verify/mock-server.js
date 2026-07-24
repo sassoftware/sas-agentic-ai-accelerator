@@ -265,12 +265,33 @@ http
       }
       if (p === '/jobExecution/jobs/job-1' && req.method === 'GET') {
         jobPolls += 1;
-        if (jobPolls < 2) return json(res, 200, { id: 'job-1', state: 'running' });
+        // Real JES jobs expose the compute session/job ids in `results`; the
+        // session's log streams LIVE while running (the Files logLocation only
+        // fills in at completion).
+        const computeResults = { COMPUTE_SESSION: 'cs-1 (SAS Job Execution compute context)', COMPUTE_JOB: 'cj-1' };
+        if (jobPolls < 2) return json(res, 200, { id: 'job-1', state: 'running', results: computeResults });
         // The run's tracker entry appears exactly once, like the real job writes it.
         if (!optimizationTracker.some((entry) => entry.jobId === 'job-1')) {
           optimizationTracker.push(successEntry);
         }
-        return json(res, 200, { id: 'job-1', state: 'completed', logLocation: '/files/files/joblog-1' });
+        return json(res, 200, { id: 'job-1', state: 'completed', logLocation: '/files/files/joblog-1', results: computeResults });
+      }
+      if (p === '/compute/sessions/cs-1/jobs/cj-1/log/content') {
+        // Live only while the job runs; the session is deleted afterwards, so
+        // the app must fall back to the logLocation file. Plain-text shape as
+        // returned by a real compute server (source echo + NOTE per milestone).
+        if (jobPolls >= 2) return json(res, 404, { message: 'session not found' });
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        return res.end(
+          [
+            '663  %put NOTE: Python-Subprocess - Loading the experiment tracker dataset;',
+            'NOTE: Python-Subprocess - Loading the experiment tracker dataset',
+            '664  %put NOTE: Python-Subprocess - Dataset loaded (1 examples);',
+            'NOTE: Python-Subprocess - Dataset loaded (1 examples)',
+            '666  %put NOTE: Python-Subprocess - Scoring the baseline prompt;',
+            'NOTE: Python-Subprocess - Scoring the baseline prompt',
+          ].join('\n')
+        );
       }
       if (p === '/jobExecution/jobs/job-fail' && req.method === 'GET') {
         failJobPolls += 1;
