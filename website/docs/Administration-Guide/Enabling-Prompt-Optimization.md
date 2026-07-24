@@ -70,9 +70,11 @@ The same values can be supplied as URL parameters (`enableOptimization=true&comp
 
 ## What a run produces
 
-- A **new prompt-test** named `<prompt> (optimised <date>)` in the same project, tagged `Optimized-Prompt`, whose experiment tracker opens in the Builder showing the optimised prompt.
-- An entry in the source prompt's **`Prompt-Optimization-Tracker.json`** (written only by the job): dataset, optimizer, metric before/after, the produced prompt and any error.
-- A **dataset snapshot** (`Prompt-Optimization-Dataset-<n>.json`) on the source prompt, so every optimised prompt stays traceable to the exact examples it was optimised on.
+Everything stays **on the prompt-test itself**, next to its `Prompt-Experiment-Tracker.json` — a run creates **no additional Model Manager models**:
+
+- An entry in the prompt's **`Prompt-Optimization-Tracker.json`** (written only by the job) holding the complete run: dataset/optimizer/metric configuration, metric before/after, the **baseline and the optimised prompt**, the selected few-shot demos, per-validation-example before/after evaluations, and — for failed runs — the error message the Builder displays.
+- A **dataset snapshot** (`Prompt-Optimization-Dataset-<n>.json`), so every optimised prompt stays traceable to the exact examples it was optimised on.
+- The Builder renders these entries as the **Optimization history** in the Optimize section, where a run can be inspected (evolution details) and loaded back into the workbench as an experiment.
 
 ## Troubleshooting
 

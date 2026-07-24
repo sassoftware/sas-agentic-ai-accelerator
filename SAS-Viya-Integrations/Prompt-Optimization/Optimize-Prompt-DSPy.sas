@@ -16,10 +16,13 @@
          a small DSPy adapter (the same 3-input contract the Builder uses),
       3. runs a DSPy optimizer (bootstrap few-shot) against the chosen metric
          (exact match or an LLM judge),
-      4. bakes the optimised program back into a Prompt-Builder-shaped prompt,
-         writes it as a NEW prompt-test next to the original, snapshots the
-         dataset it optimised on, and appends an entry to the source prompt's
-         Prompt-Optimization-Tracker.json (this job is that file's only writer).
+      4. bakes the optimised program back into a Prompt-Builder-shaped prompt
+         and records the WHOLE run - optimised prompt, few-shot demos and the
+         per-example before/after evaluations - as an entry of the prompt's
+         own Prompt-Optimization-Tracker.json (next to its experiment tracker;
+         this job is that file's only writer), plus a dataset snapshot file.
+         No additional Model Manager models are created; the Builder shows the
+         run history and loads a result back into the workbench on demand.
 
     Prerequisites (see the "Enabling Prompt Optimization" administration guide):
       - The compute context this job runs in must have a Python environment
@@ -432,26 +435,42 @@ def make_judge_metric(judge_lm_options):
 
 
 def evaluate(program, dataset, metric):
+    """Score a program on a dataset. Returns (score, per-example details) so
+    the tracker entry can show WHICH validation examples improved - the
+    per-example before/after view is the evolution display the Builder
+    renders (the same idea as MLflow's per-example DSPy evaluation traces)."""
     if not dataset:
-        return 0.0
+        return 0.0, []
     hits = 0
+    details = []
     for example in dataset:
+        prediction = None
         try:
             prediction = program(**example.inputs())
-        except Exception:
-            continue
-        if metric(example, prediction):
+            response_text = str(getattr(prediction, "response", ""))
+        except Exception as call_error:
+            response_text = f"(call failed: {call_error})"
+        correct = bool(prediction is not None and metric(example, prediction))
+        if correct:
             hits += 1
-    return hits / len(dataset)
+        details.append({
+            "inputs": {k: str(example[k]) for k in example.inputs().keys()},
+            "expected": str(example.response),
+            "response": response_text,
+            "correct": correct,
+        })
+    return hits / len(dataset), details
 
 
 # ---- Bake-out: DSPy program -> Prompt-Builder-shaped prompt ----------------
 def bake_out(compiled, source_header, input_names):
     predictor = compiled.predictors()[0]
     instructions = str(getattr(predictor.signature, "instructions", "") or "")
+    demo_rows = []
     demo_blocks = []
     for demo in getattr(predictor, "demos", []) or []:
         demo_dict = dict(demo) if not isinstance(demo, dict) else demo
+        demo_rows.append({name: str(demo_dict.get(name, "")) for name in input_names + ["response"]})
         lines = [f"{name}: {demo_dict.get(name, '')}" for name in input_names]
         lines.append(f"response: {demo_dict.get('response', '')}")
         demo_blocks.append("\n".join(lines))
@@ -464,79 +483,17 @@ def bake_out(compiled, source_header, input_names):
         "systemPrompt": system_prompt,
         "userPrompt": str(source_header.get("userPrompt") or ""),
         "variables": source_header.get("variables") or [],
+        "demos": demo_rows,
     }
 
 
 # ---- Write-back ------------------------------------------------------------
-def create_optimised_prompt_model(source_model, baked, attributes):
-    body = {
-        "name": f"{P['promptName']} (optimised {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')})",
-        "projectId": source_model.get("projectId"),
-        "function": "prompt template",
-        "tool": "Prompt-Builder",
-        "algorithm": "Prompt-Template",
-        "tags": ["LLM", "Prompt-Template", "Optimized-Prompt"],
-    }
-    response = requests.post(
-        BASE + "/modelRepository/models",
-        headers={
-            "Authorization": "Bearer " + TOKEN,
-            "Content-Type": "application/vnd.sas.models.model+json",
-            "Accept": "application/json",
-        },
-        data=json.dumps(body), verify=VERIFY, timeout=120,
-    )
-    if response.status_code >= 400:
-        fail(f"Creating the optimised prompt model failed with HTTP {response.status_code}: {response.text[:300]}")
-    created = response.json()
-    if isinstance(created, dict) and created.get("items"):
-        created = created["items"][0]
-    new_model_id = created.get("id")
-    # Model Manager DROPS tags and custom attributes on the create POST
-    # (verified live: the created model came back with tags=None), so stamp
-    # them with a follow-up ETag'd PUT - the same pattern the Builder and mdb
-    # use. Custom key-values must go into the model's `properties` array;
-    # arbitrary top-level fields are silently discarded (also verified live).
-    # Best effort: a failure here must not lose the optimisation result.
-    try:
-        detail_response = requests.get(
-            BASE + f"/modelRepository/models/{new_model_id}",
-            headers={"Authorization": "Bearer " + TOKEN, "Accept": "application/vnd.sas.models.model+json"},
-            verify=VERIFY, timeout=120,
-        )
-        if detail_response.status_code < 400:
-            detail = detail_response.json()
-            detail["tags"] = body["tags"]
-            model_properties = [p for p in (detail.get("properties") or [])
-                                if p.get("name") not in attributes]
-            for attr_name, attr_value in attributes.items():
-                model_properties.append({"name": attr_name, "value": str(attr_value), "type": "string"})
-            detail["properties"] = model_properties
-            etag = detail_response.headers.get("ETag")
-            put_headers = {"Authorization": "Bearer " + TOKEN,
-                           "Content-Type": "application/vnd.sas.models.model+json"}
-            if etag:
-                put_headers["If-Match"] = etag
-            requests.put(BASE + f"/modelRepository/models/{new_model_id}",
-                         headers=put_headers, data=json.dumps(detail), verify=VERIFY, timeout=120)
-    except Exception:
-        progress("Warning: could not stamp tags/provenance attributes on the optimised prompt")
-    # Seed the tracker with one header row so the Builder opens the new
-    # prompt-test showing the optimised prompt (no model results yet).
-    header_row = {
-        "runId": 1,
-        "systemPrompt": baked["systemPrompt"],
-        "userPrompt": baked["userPrompt"],
-        "variables": baked["variables"] or None,
-        "manifest": None, "model": "", "options": "", "response": "",
-        "run_time": None, "prompt_length": None, "output_length": None,
-        "best_prompt": None, "fastest_prompt": None, "fewest_tokens_prompt": None,
-        "judge_rank": None, "judge_best": None,
-    }
-    add_model_content(new_model_id, "Prompt-Experiment-Tracker.json", [header_row])
-    return new_model_id
-
-
+# Everything a run produces stays ON the source prompt-test, next to its
+# Prompt-Experiment-Tracker.json: the run entry (with the optimised prompt,
+# demos and per-example evaluations) goes into Prompt-Optimization-Tracker.json
+# and the exact dataset into a snapshot file. No extra Model Manager models are
+# created - the Builder renders the history and loads a result back into the
+# workbench as an experiment.
 def append_optimization_tracker(entry, dataset_snapshot=None):
     """Append one run entry (this job is the tracker's only writer). When a
     dataset snapshot is given it is uploaded first, named after the new
@@ -574,7 +531,8 @@ tracker_entry = {
     "sampleCount": 0, "optimizer": P["optimizer"], "metric": P["metric"],
     "judgeModel": P["judgeModelName"] or None,
     "metricBefore": None, "metricAfter": None,
-    "optimizedPrompt": None, "producedPromptModelId": None,
+    "baselinePrompt": None, "optimizedPrompt": None,
+    "trainSize": None, "validationSize": None, "evaluations": None,
     "datasetSnapshot": None, "error": None,
 }
 
@@ -635,8 +593,14 @@ def main():
         program = dspy.Predict(signature)
 
         progress("Scoring the baseline prompt")
-        metric_before = evaluate(program, valset, metric)
+        metric_before, eval_before = evaluate(program, valset, metric)
         tracker_entry["metricBefore"] = metric_before
+        tracker_entry["baselinePrompt"] = {
+            "systemPrompt": str(source_header.get("systemPrompt") or ""),
+            "userPrompt": str(source_header.get("userPrompt") or ""),
+        }
+        tracker_entry["trainSize"] = len(trainset)
+        tracker_entry["validationSize"] = len(valset)
         progress(f"Baseline metric: {metric_before:.3f}")
 
         progress(f"Optimising with {P['optimizer']} ({len(trainset)} training examples)")
@@ -645,8 +609,21 @@ def main():
         compiled = optimizer.compile(program, trainset=trainset)
 
         progress("Scoring the optimised prompt")
-        metric_after = evaluate(compiled, valset, metric)
+        metric_after, eval_after = evaluate(compiled, valset, metric)
         tracker_entry["metricAfter"] = metric_after
+        # Per-validation-example before/after - the evolution view the Builder
+        # renders (which examples the optimisation actually fixed or broke).
+        tracker_entry["evaluations"] = [
+            {
+                "inputs": before_detail["inputs"],
+                "expected": before_detail["expected"],
+                "baselineResponse": before_detail["response"],
+                "baselineCorrect": before_detail["correct"],
+                "optimizedResponse": after_detail["response"],
+                "optimizedCorrect": after_detail["correct"],
+            }
+            for before_detail, after_detail in zip(eval_before, eval_after)
+        ]
         progress(f"Optimised metric: {metric_after:.3f}")
 
         progress("Baking the optimised program into a prompt")
@@ -654,19 +631,14 @@ def main():
         tracker_entry["optimizedPrompt"] = baked
 
         progress("Writing the results back to SAS Model Manager")
-        source_model = viya("GET", f"/modelRepository/models/{P['promptModelId']}")
-        produced_id = create_optimised_prompt_model(source_model, baked, {
-            "sourcePromptId": P["promptModelId"],
-            "optimizedBy": f"dspy-{P['optimizer']}",
-        })
-        tracker_entry["producedPromptModelId"] = produced_id
-
-        # Snapshot the exact examples optimised on (provenance) and record the run.
+        # Snapshot the exact examples optimised on (provenance) and record the
+        # whole run - optimised prompt, demos, per-example evaluations - as an
+        # entry of the prompt's own optimization tracker. No new models.
         tracker_entry["status"] = "succeeded"
         tracker_entry["finishedAt"] = datetime.now(timezone.utc).isoformat()
         append_optimization_tracker(tracker_entry, dataset_snapshot=examples_raw)
 
-        progress(f"Done - optimised prompt model {produced_id}, metric {metric_before:.3f} -> {metric_after:.3f}")
+        progress(f"Done - metric {metric_before:.3f} -> {metric_after:.3f}, run recorded on the prompt")
         SAS.symput("_opt_rc", "0")
     except Exception as error:
         error_text = str(error) or error.__class__.__name__

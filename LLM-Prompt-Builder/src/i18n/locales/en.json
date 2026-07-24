@@ -209,6 +209,22 @@
     "promptBuilderOptimizeMetricAfter": "after:",
     "promptBuilderOptimizeOpenProduced": "Open the optimised prompt in SAS Model Manager",
     "promptBuilderOptimizeLoadButton": "Load the optimised prompt into the workbench",
-    "promptBuilderOptimizeLoadedToast": "Optimised prompt loaded into the workbench."
+    "promptBuilderOptimizeLoadedToast": "Optimised prompt loaded into the workbench.",
+    "promptBuilderOptimizeHistoryHeading": "Optimization history",
+    "promptBuilderOptimizeStatusSucceeded": "succeeded",
+    "promptBuilderOptimizeStatusFailed": "failed",
+    "promptBuilderOptimizeHistoryExamples": "examples",
+    "promptBuilderOptimizeHistoryLoadButton": "Load as experiment",
+    "promptBuilderOptimizeHistoryLoadedToast": "Optimised prompt loaded into the workbench — run the experiment to try it.",
+    "promptBuilderOptimizeHistoryBaselineLabel": "Baseline system prompt",
+    "promptBuilderOptimizeHistoryOptimizedLabel": "Optimised system prompt",
+    "promptBuilderOptimizeHistoryUserPromptLabel": "User prompt template",
+    "promptBuilderOptimizeHistoryEvalLabel": "Validation examples — before vs. after",
+    "promptBuilderOptimizeHistoryInputHeader": "Input",
+    "promptBuilderOptimizeHistoryExpectedHeader": "Expected",
+    "promptBuilderOptimizeHistoryBeforeHeader": "Before",
+    "promptBuilderOptimizeHistoryAfterHeader": "After",
+    "promptBuilderOptimizeLogHeading": "Run log",
+    "promptBuilderOptimizeRuntime": "Runtime:"
   }
 }

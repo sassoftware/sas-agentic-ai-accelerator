@@ -90,29 +90,58 @@ const optimizedPrompt = {
   systemPrompt: 'Optimised system prompt.\n\nFollow the pattern of these examples:\n\nuserPrompt: User 2\nresponse: Response two',
   userPrompt: 'User 2',
   variables: [],
+  demos: [{ userPrompt: 'User 2', response: 'Response two' }],
 };
+// Seeded with one LEGACY entry (earlier releases created a separate
+// prompt-test, recorded as producedPromptModelId) so the history view's
+// backward compatibility is exercised; runs append new-shape entries.
 const optimizationTracker = [
   {
     optimizationId: 1,
-    startedAt: '2026-07-23T09:00:00Z',
-    finishedAt: '2026-07-23T09:05:00Z',
+    startedAt: '2026-07-20T09:00:00Z',
+    finishedAt: '2026-07-20T09:05:00Z',
     status: 'succeeded',
-    jobId: 'job-1',
+    jobId: 'job-legacy',
     targetModel: 'demo_llm',
     datasetSource: 'tracker',
-    datasetRef: 'Prompt-Experiment-Tracker.json',
     sampleCount: 1,
     optimizer: 'bootstrap',
     metric: 'exact',
-    judgeModel: null,
-    metricBefore: 0.5,
-    metricAfter: 0.833,
+    metricBefore: 0.4,
+    metricAfter: 0.6,
     optimizedPrompt,
-    producedPromptModelId: 'model-opt-1',
+    producedPromptModelId: 'model-opt-legacy',
     datasetSnapshot: 'Prompt-Optimization-Dataset-1.json',
     error: null,
   },
 ];
+const successEntry = {
+  optimizationId: 2,
+  startedAt: '2026-07-23T09:00:00Z',
+  finishedAt: '2026-07-23T09:05:00Z',
+  status: 'succeeded',
+  jobId: 'job-1',
+  targetModel: 'demo_llm',
+  datasetSource: 'tracker',
+  datasetRef: 'Prompt-Experiment-Tracker.json',
+  sampleCount: 1,
+  optimizer: 'bootstrap',
+  metric: 'exact',
+  judgeModel: null,
+  metricBefore: 0.5,
+  metricAfter: 0.833,
+  baselinePrompt: { systemPrompt: 'Sys 2', userPrompt: 'User 2' },
+  trainSize: 7,
+  validationSize: 3,
+  evaluations: [
+    { inputs: { userPrompt: 'User 1' }, expected: 'Response one', baselineResponse: 'wrong', baselineCorrect: false, optimizedResponse: 'Response one', optimizedCorrect: true },
+    { inputs: { userPrompt: 'User 2' }, expected: 'Response two', baselineResponse: 'Response two', baselineCorrect: true, optimizedResponse: 'Response two', optimizedCorrect: true },
+    { inputs: { userPrompt: 'User 3' }, expected: 'Response three', baselineResponse: 'nope', baselineCorrect: false, optimizedResponse: 'still nope', optimizedCorrect: false },
+  ],
+  optimizedPrompt,
+  datasetSnapshot: 'Prompt-Optimization-Dataset-2.json',
+  error: null,
+};
 
 function json(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -193,15 +222,13 @@ http
       if (p === '/modelRepository/models/model-used/contents' && req.method === 'GET') {
         // The requirements.json entry simulates a leftover from an earlier
         // integrated-call manifest: a manifest without the LLM call must
-        // remove it. After the mock optimize job completed, the job-written
-        // optimization tracker appears alongside.
+        // remove it. The optimization tracker is present from the start (the
+        // prompt has a legacy run) and grows as mock jobs finish.
         const items = [
           { id: 'c-trk', name: 'Prompt-Experiment-Tracker.json', fileUri: '/files/files/trk-1' },
           { id: 'c-req', name: 'requirements.json', fileUri: '/files/files/req-1' },
+          { id: 'c-opttrk', name: 'Prompt-Optimization-Tracker.json', fileUri: '/files/files/opttrk-1' },
         ];
-        if (jobLaunched && jobPolls >= 2) {
-          items.push({ id: 'c-opttrk', name: 'Prompt-Optimization-Tracker.json', fileUri: '/files/files/opttrk-1' });
-        }
         return json(res, 200, { items });
       }
       // @item resolves FOLDERS only — it 404s for jobDefinition members on a
@@ -239,6 +266,10 @@ http
       if (p === '/jobExecution/jobs/job-1' && req.method === 'GET') {
         jobPolls += 1;
         if (jobPolls < 2) return json(res, 200, { id: 'job-1', state: 'running' });
+        // The run's tracker entry appears exactly once, like the real job writes it.
+        if (!optimizationTracker.some((entry) => entry.jobId === 'job-1')) {
+          optimizationTracker.push(successEntry);
+        }
         return json(res, 200, { id: 'job-1', state: 'completed', logLocation: '/files/files/joblog-1' });
       }
       if (p === '/jobExecution/jobs/job-fail' && req.method === 'GET') {
@@ -297,8 +328,8 @@ http
             { version: 1, type: 'note', line: 'NOTE: Python-Subprocess - Dataset loaded (1 examples)' },
             { version: 1, type: 'source', line: '601  %put NOTE: Python-Subprocess - Baseline metric: 0.500;' },
             { version: 1, type: 'note', line: 'NOTE: Python-Subprocess - Baseline metric: 0.500' },
-            { version: 1, type: 'source', line: '607  %put NOTE: Python-Subprocess - Done - optimised prompt model model-opt-1, metric 0.500 -> 0.833;' },
-            { version: 1, type: 'note', line: 'NOTE: Python-Subprocess - Done - optimised prompt model model-opt-1, metric 0.500 -> 0.833' },
+            { version: 1, type: 'source', line: '607  %put NOTE: Python-Subprocess - Done - metric 0.500 -> 0.833, run recorded on the prompt;' },
+            { version: 1, type: 'note', line: 'NOTE: Python-Subprocess - Done - metric 0.500 -> 0.833, run recorded on the prompt' },
             { version: 1, type: 'note', line: 'NOTE: PROC PYTHON ended.' },
           ],
         });

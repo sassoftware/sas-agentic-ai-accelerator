@@ -209,6 +209,22 @@
     "promptBuilderOptimizeMetricAfter": "nachher:",
     "promptBuilderOptimizeOpenProduced": "Optimierten Prompt in SAS Model Manager öffnen",
     "promptBuilderOptimizeLoadButton": "Optimierten Prompt in die Arbeitsfläche laden",
-    "promptBuilderOptimizeLoadedToast": "Optimierter Prompt in die Arbeitsfläche geladen."
+    "promptBuilderOptimizeLoadedToast": "Optimierter Prompt in die Arbeitsfläche geladen.",
+    "promptBuilderOptimizeHistoryHeading": "Optimierungsverlauf",
+    "promptBuilderOptimizeStatusSucceeded": "erfolgreich",
+    "promptBuilderOptimizeStatusFailed": "fehlgeschlagen",
+    "promptBuilderOptimizeHistoryExamples": "Beispiele",
+    "promptBuilderOptimizeHistoryLoadButton": "Als Experiment laden",
+    "promptBuilderOptimizeHistoryLoadedToast": "Optimierter Prompt in die Arbeitsfläche geladen — starte das Experiment, um ihn auszuprobieren.",
+    "promptBuilderOptimizeHistoryBaselineLabel": "System-Prompt (Ausgangsbasis)",
+    "promptBuilderOptimizeHistoryOptimizedLabel": "System-Prompt (optimiert)",
+    "promptBuilderOptimizeHistoryUserPromptLabel": "User-Prompt-Vorlage",
+    "promptBuilderOptimizeHistoryEvalLabel": "Validierungsbeispiele — vorher vs. nachher",
+    "promptBuilderOptimizeHistoryInputHeader": "Eingabe",
+    "promptBuilderOptimizeHistoryExpectedHeader": "Erwartet",
+    "promptBuilderOptimizeHistoryBeforeHeader": "Vorher",
+    "promptBuilderOptimizeHistoryAfterHeader": "Nachher",
+    "promptBuilderOptimizeLogHeading": "Protokoll des Laufs",
+    "promptBuilderOptimizeRuntime": "Laufzeit:"
   }
 }

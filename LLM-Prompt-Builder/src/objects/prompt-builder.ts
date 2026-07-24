@@ -197,7 +197,9 @@ interface ManifestConfig {
 /**
  * One entry of the job-owned `Prompt-Optimization-Tracker.json` on a
  * prompt-test model (see the Phase-3 design). The browser only reads it —
- * the optimization job is the sole writer.
+ * the optimization job is the sole writer. Every optimization run lives here,
+ * next to the prompt's experiment tracker; no extra Model Manager models are
+ * created for results.
  */
 interface OptimizationTrackerEntry {
   optimizationId?: number;
@@ -213,14 +215,33 @@ interface OptimizationTrackerEntry {
   judgeModel?: string | null;
   metricBefore?: number | null;
   metricAfter?: number | null;
+  /** The prompt the optimisation started from. */
+  baselinePrompt?: { systemPrompt?: string; userPrompt?: string } | null;
+  trainSize?: number | null;
+  validationSize?: number | null;
+  /** Per-validation-example before/after — the run's evolution detail. */
+  evaluations?: OptimizationEvaluation[] | null;
   optimizedPrompt?: {
     systemPrompt?: string;
     userPrompt?: string;
     variables?: PromptVariable[];
+    /** The few-shot examples the optimizer selected (one object per demo). */
+    demos?: Array<Record<string, string>>;
   } | null;
+  /** Legacy (pre-history releases): the separate prompt-test a run created. */
   producedPromptModelId?: string | null;
   datasetSnapshot?: string | null;
   error?: string | null;
+}
+
+/** One validation example's before/after result inside a tracker entry. */
+interface OptimizationEvaluation {
+  inputs?: Record<string, string>;
+  expected?: string;
+  baselineResponse?: string;
+  baselineCorrect?: boolean;
+  optimizedResponse?: string;
+  optimizedCorrect?: boolean;
 }
 
 /** The outputs an integrated LLM call can return (mirroring the SCR contract). */
@@ -4247,12 +4268,41 @@ ${scoreCodeReturn}`;
           runWrapper: HTMLSpanElement;
           statusLine: HTMLElement;
           resultBox: HTMLElement;
+          historyContainer: HTMLElement;
+          logDetails: HTMLElement;
+          logRuntime: HTMLElement;
+          logList: HTMLElement;
         }
       | undefined;
     // The prompt-test the running job was launched for (the dropdown may
     // change while the job runs) and the launched job's id.
     let optimizeSourceModelId = '';
     let optimizeJobId = '';
+    // Launch timestamp for the run-log's runtime display (0 = frozen).
+    let optimizeJobStartedAt = 0;
+
+    /** mm:ss for the run-log runtime display. */
+    function formatOptimizeRuntime(elapsedMs: number): string {
+      const totalSeconds = Math.max(0, Math.round(elapsedMs / 1000));
+      return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, '0')}`;
+    }
+
+    /**
+     * Refresh the collapsible run log: elapsed runtime plus the job's own
+     * milestones (the SAS.logMessage notes, prefix already stripped by
+     * extractProgressMessages — never the raw SAS log). `finished` freezes
+     * the runtime at its final value.
+     */
+    function updateOptimizeRunLog(messages: string[], finished: boolean): void {
+      if (!optimizeUI) return;
+      if (optimizeJobStartedAt > 0) {
+        optimizeUI.logRuntime.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeRuntime} ${formatOptimizeRuntime(Date.now() - optimizeJobStartedAt)}`;
+        if (finished) optimizeJobStartedAt = 0;
+      }
+      if (messages.length > 0) {
+        optimizeUI.logList.innerText = messages.join('\n');
+      }
+    }
 
     /** Runs that qualify as optimization examples: those with a Best Response. */
     function countOptimizeSamples(): number {
@@ -4316,6 +4366,9 @@ ${scoreCodeReturn}`;
           String(minSamples)
         );
       setDisabledHint(optimizeUI.runButton, optimizeUI.runWrapper, disabledHint !== '', disabledHint);
+      // Follow the selection: render the selected prompt's optimization
+      // history (no-op while the selection is unchanged).
+      void refreshOptimizationHistory();
     }
 
     /** Stop polling the optimization job (finished, failed, or abandoned). */
@@ -4345,6 +4398,7 @@ ${scoreCodeReturn}`;
         return;
       }
       const progressMessages = await getJobProgressMessages(job);
+      updateOptimizeRunLog(progressMessages, false);
       const latestMilestone = progressMessages.length > 0 ? ` — ${progressMessages[progressMessages.length - 1]}` : '';
       optimizeUI.statusLine.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobState} ${job.state}${latestMilestone}`;
       if (!isTerminalJobState(job.state)) {
@@ -4355,17 +4409,26 @@ ${scoreCodeReturn}`;
         const earlyEntry = await readOptimizationEntry(true);
         if (!earlyEntry) return;
         stopOptimizePolling();
+        // Clear the (possibly stale) state line — the run is over; the result
+        // box and the run log carry the outcome from here.
+        optimizeUI.statusLine.innerText = '';
+        updateOptimizeRunLog(progressMessages, true);
         if (earlyEntry.status === 'succeeded') {
           await showOptimizeResult();
         } else {
           const earlyError = earlyEntry.error ? ` ${earlyEntry.error}` : '';
           optimizeUI.resultBox.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}${earlyError}`;
           showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}`);
+          void refreshOptimizationHistory(true);
         }
         resetOptimizeRunButton();
         return;
       }
       stopOptimizePolling();
+      // The run is over: replace the transient state line with nothing — the
+      // outcome lives in the result box; runtime + milestones in the run log.
+      optimizeUI.statusLine.innerText = '';
+      updateOptimizeRunLog(progressMessages, true);
       if (job.state === 'completed' || job.state === 'completedWithWarnings') {
         await showOptimizeResult();
       } else {
@@ -4380,33 +4443,268 @@ ${scoreCodeReturn}`;
             : '';
         optimizeUI.resultBox.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}${failureDetail}`;
         showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}`);
+        void refreshOptimizationHistory(true);
       }
       resetOptimizeRunButton();
     }
 
     /**
-     * Read the launched job's entry from the job-written optimization tracker
-     * on the source prompt-test, matched by job id. With `requireJobIdMatch`
-     * only an exact match counts (used while the job still reports running);
-     * otherwise the newest entry is the fallback. Null when the tracker or
-     * entry is not (yet) readable.
+     * Read a model's job-written optimization tracker. Null when the tracker
+     * does not exist or is not (yet) readable.
      */
-    async function readOptimizationEntry(requireJobIdMatch = false): Promise<OptimizationTrackerEntry | null> {
+    async function readOptimizationEntries(modelId: string): Promise<OptimizationTrackerEntry[] | null> {
       try {
-        const sourceContents = await getModelContents(optimizeSourceModelId);
+        const sourceContents = await getModelContents(modelId);
         const trackerContent = sourceContents.find(
           (modelContent) => modelContent.name === 'Prompt-Optimization-Tracker.json'
         );
         if (!trackerContent?.fileUri) return null;
         const response = await getFileContent(String(trackerContent.fileUri));
         const trackerEntries = (await response.json()) as OptimizationTrackerEntry[];
-        if (!Array.isArray(trackerEntries)) return null;
-        const matched = trackerEntries.find((candidate) => candidate.jobId === optimizeJobId) ?? null;
-        if (requireJobIdMatch) return matched;
-        return matched ?? trackerEntries[trackerEntries.length - 1] ?? null;
+        return Array.isArray(trackerEntries) ? trackerEntries : null;
       } catch {
         return null;
       }
+    }
+
+    /**
+     * The launched job's entry from the source prompt's optimization tracker,
+     * matched by job id. With `requireJobIdMatch` only an exact match counts
+     * (used while the job still reports running); otherwise the newest entry
+     * is the fallback.
+     */
+    async function readOptimizationEntry(requireJobIdMatch = false): Promise<OptimizationTrackerEntry | null> {
+      const trackerEntries = await readOptimizationEntries(optimizeSourceModelId);
+      if (!trackerEntries) return null;
+      const matched = trackerEntries.find((candidate) => candidate.jobId === optimizeJobId) ?? null;
+      if (requireJobIdMatch) return matched;
+      return matched ?? trackerEntries[trackerEntries.length - 1] ?? null;
+    }
+
+    /** The model whose optimization history is currently rendered. */
+    let optimizeHistoryModelId = '';
+
+    /**
+     * (Re)load the optimization history for the currently selected prompt and
+     * render it under the Optimize section. Cheap no-op when the selection has
+     * not changed (unless `force`, used after a run finishes).
+     */
+    async function refreshOptimizationHistory(force = false): Promise<void> {
+      if (!optimizeUI) return;
+      const modelId = promptBuilderPromptSelectorDropdown.value;
+      const promptSelected =
+        modelId !== '' && modelId !== `${promptBuilderInterfaceText?.promptSelect}`;
+      if (!promptSelected) {
+        optimizeUI.historyContainer.innerHTML = '';
+        optimizeHistoryModelId = '';
+        return;
+      }
+      if (!force && modelId === optimizeHistoryModelId) return;
+      optimizeHistoryModelId = modelId;
+      const trackerEntries = await readOptimizationEntries(modelId);
+      // The selection may have moved on while the tracker was being fetched.
+      if (promptBuilderPromptSelectorDropdown.value !== modelId) return;
+      renderOptimizationHistory(trackerEntries ?? []);
+    }
+
+    /** Format a metric value for the history display. */
+    function formatOptimizeMetric(value: number | null | undefined): string {
+      return value === null || value === undefined || !Number.isFinite(Number(value))
+        ? '—'
+        : String(Math.round(Number(value) * 1000) / 1000);
+    }
+
+    /** Render the optimization runs (newest first) under the Optimize panel. */
+    function renderOptimizationHistory(trackerEntries: OptimizationTrackerEntry[]): void {
+      if (!optimizeUI) return;
+      const container = optimizeUI.historyContainer;
+      container.innerHTML = '';
+      if (trackerEntries.length === 0) return;
+      const heading = document.createElement('p');
+      heading.classList.add('fw-bold', 'mb-1', 'mt-3');
+      heading.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryHeading}`;
+      container.appendChild(heading);
+      trackerEntries
+        .slice()
+        .reverse()
+        .forEach((entry) => container.appendChild(buildOptimizationHistoryRow(entry)));
+    }
+
+    /** One collapsible history row: summary line + evolution details. */
+    function buildOptimizationHistoryRow(entry: OptimizationTrackerEntry): HTMLElement {
+      const row = document.createElement('details');
+      row.classList.add('pb-optimize-history-entry', 'border', 'rounded', 'p-2', 'mb-2');
+      const succeeded = entry.status === 'succeeded';
+
+      const summary = document.createElement('summary');
+      const statusBadge = document.createElement('span');
+      statusBadge.classList.add('badge', succeeded ? 'bg-success' : 'bg-danger', 'me-2');
+      statusBadge.innerText = succeeded
+        ? `${promptBuilderInterfaceText?.promptBuilderOptimizeStatusSucceeded}`
+        : `${promptBuilderInterfaceText?.promptBuilderOptimizeStatusFailed}`;
+      summary.appendChild(statusBadge);
+      const finished = entry.finishedAt ? new Date(entry.finishedAt) : null;
+      const summaryParts = [
+        `#${entry.optimizationId ?? '?'}`,
+        finished && !Number.isNaN(finished.getTime()) ? finished.toLocaleString() : '',
+        entry.targetModel ?? '',
+        [entry.optimizer, entry.metric].filter(Boolean).join(' · '),
+        entry.sampleCount != null
+          ? `${entry.sampleCount} ${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryExamples}`
+          : '',
+      ].filter((part) => part !== '');
+      summary.appendChild(document.createTextNode(summaryParts.join('  |  ') + '  '));
+      if (succeeded) {
+        const metricSpan = document.createElement('span');
+        metricSpan.classList.add('fw-bold');
+        metricSpan.innerText = `${formatOptimizeMetric(entry.metricBefore)} → ${formatOptimizeMetric(entry.metricAfter)}`;
+        summary.appendChild(metricSpan);
+        const before = Number(entry.metricBefore);
+        const after = Number(entry.metricAfter);
+        if (Number.isFinite(before) && Number.isFinite(after) && after !== before) {
+          const delta = document.createElement('span');
+          delta.classList.add('badge', after > before ? 'bg-success' : 'bg-danger', 'ms-2');
+          delta.innerText = `${after > before ? '+' : ''}${formatOptimizeMetric(after - before)}`;
+          summary.appendChild(delta);
+        }
+      }
+      row.appendChild(summary);
+
+      const body = document.createElement('div');
+      body.classList.add('mt-2');
+      if (!succeeded && entry.error) {
+        const errorLine = document.createElement('p');
+        errorLine.classList.add('text-danger');
+        errorLine.innerText = entry.error;
+        body.appendChild(errorLine);
+      }
+      if (succeeded && entry.optimizedPrompt) {
+        const loadButton = document.createElement('button');
+        loadButton.type = 'button';
+        loadButton.classList.add('btn', 'btn-primary', 'btn-sm', 'mb-2', 'pb-optimize-history-load');
+        loadButton.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryLoadButton}`;
+        loadButton.onclick = () => loadOptimizationAsExperiment(entry);
+        body.appendChild(loadButton);
+      }
+      // Legacy entries (earlier releases created a separate prompt-test).
+      if (entry.producedPromptModelId) {
+        const legacyLine = document.createElement('p');
+        legacyLine.classList.add('mb-1');
+        const legacyAnchor = document.createElement('a');
+        legacyAnchor.target = '_blank';
+        legacyAnchor.rel = 'noopener noreferrer';
+        legacyAnchor.href = `${VIYA}/SASModelManager/models/${entry.producedPromptModelId}`;
+        legacyAnchor.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeOpenProduced}`;
+        legacyLine.appendChild(legacyAnchor);
+        body.appendChild(legacyLine);
+      }
+
+      const addPromptBlock = (label: unknown, text: string | undefined | null): void => {
+        if (!text) return;
+        const blockLabel = document.createElement('p');
+        blockLabel.classList.add('fw-bold', 'mb-1', 'mt-2');
+        blockLabel.innerText = `${label}`;
+        const block = document.createElement('pre');
+        block.classList.add('pb-optimize-prompt-block', 'border', 'rounded', 'p-2', 'mb-1');
+        block.style.whiteSpace = 'pre-wrap';
+        block.innerText = text;
+        body.appendChild(blockLabel);
+        body.appendChild(block);
+      };
+      addPromptBlock(
+        promptBuilderInterfaceText?.promptBuilderOptimizeHistoryBaselineLabel,
+        entry.baselinePrompt?.systemPrompt
+      );
+      addPromptBlock(
+        promptBuilderInterfaceText?.promptBuilderOptimizeHistoryOptimizedLabel,
+        entry.optimizedPrompt?.systemPrompt
+      );
+      addPromptBlock(
+        promptBuilderInterfaceText?.promptBuilderOptimizeHistoryUserPromptLabel,
+        entry.optimizedPrompt?.userPrompt
+      );
+
+      const evaluations = entry.evaluations ?? [];
+      if (evaluations.length > 0) {
+        const evalLabel = document.createElement('p');
+        evalLabel.classList.add('fw-bold', 'mb-1', 'mt-2');
+        evalLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryEvalLabel}`;
+        body.appendChild(evalLabel);
+        const table = document.createElement('table');
+        table.classList.add('table', 'table-sm', 'pb-optimize-eval-table');
+        const thead = document.createElement('thead');
+        const headRow = document.createElement('tr');
+        [
+          promptBuilderInterfaceText?.promptBuilderOptimizeHistoryInputHeader,
+          promptBuilderInterfaceText?.promptBuilderOptimizeHistoryExpectedHeader,
+          promptBuilderInterfaceText?.promptBuilderOptimizeHistoryBeforeHeader,
+          promptBuilderInterfaceText?.promptBuilderOptimizeHistoryAfterHeader,
+        ].forEach((headerText) => {
+          const th = document.createElement('th');
+          th.innerText = `${headerText}`;
+          headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        evaluations.forEach((evaluation) => {
+          const tr = document.createElement('tr');
+          // Highlight the evolution: green where the optimisation fixed an
+          // example, red where it broke one.
+          if (!evaluation.baselineCorrect && evaluation.optimizedCorrect) tr.classList.add('table-success');
+          if (evaluation.baselineCorrect && !evaluation.optimizedCorrect) tr.classList.add('table-danger');
+          const inputsCell = document.createElement('td');
+          inputsCell.innerText = Object.entries(evaluation.inputs ?? {})
+            .map(([key, value]) => `${key}: ${value}`)
+            .join(', ');
+          const expectedCell = document.createElement('td');
+          expectedCell.innerText = String(evaluation.expected ?? '');
+          const beforeCell = document.createElement('td');
+          beforeCell.innerText = `${evaluation.baselineCorrect ? '✓' : '✗'} ${String(evaluation.baselineResponse ?? '')}`;
+          const afterCell = document.createElement('td');
+          afterCell.innerText = `${evaluation.optimizedCorrect ? '✓' : '✗'} ${String(evaluation.optimizedResponse ?? '')}`;
+          [inputsCell, expectedCell, beforeCell, afterCell].forEach((cell) => tr.appendChild(cell));
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        body.appendChild(table);
+      }
+      row.appendChild(body);
+      return row;
+    }
+
+    /**
+     * Load a run's optimised prompt into the workbench AS AN EXPERIMENT: the
+     * prompts and variables are restored and the run's target LLM selected, so
+     * "Run Experiments" is one click away — judge it against the original,
+     * pick a Best Response and save/manifest as usual.
+     */
+    function loadOptimizationAsExperiment(entry: OptimizationTrackerEntry): void {
+      const optimizedPrompt = entry.optimizedPrompt;
+      if (!optimizedPrompt) return;
+      const systemPromptArea = document.getElementById(
+        `${paneID}-obj-${promptBuilderObject?.id}-system-prompt`
+      ) as HTMLTextAreaElement | null;
+      const userPromptArea = document.getElementById(
+        `${paneID}-obj-${promptBuilderObject?.id}-user-prompt`
+      ) as HTMLTextAreaElement | null;
+      if (systemPromptArea) systemPromptArea.value = String(optimizedPrompt.systemPrompt ?? '');
+      if (userPromptArea) userPromptArea.value = String(optimizedPrompt.userPrompt ?? '');
+      setPromptVariables(Array.isArray(optimizedPrompt.variables) ? optimizedPrompt.variables : []);
+      // Pre-select the LLM the prompt was optimised for.
+      const targetIndex = promptBuilderAvailableLLMs.findIndex(
+        (availableLLM) => availableLLM.name === entry.targetModel
+      );
+      if (targetIndex >= 0) {
+        const targetCheckbox = document.getElementById(`model${targetIndex}`) as HTMLInputElement | null;
+        if (targetCheckbox && !targetCheckbox.checked) {
+          targetCheckbox.checked = true;
+          targetCheckbox.dispatchEvent(new Event('change'));
+        }
+      }
+      updateRunExperimentsButtonState();
+      systemPromptArea?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryLoadedToast}`);
     }
 
     /**
@@ -4426,52 +4724,16 @@ ${scoreCodeReturn}`;
         return;
       }
 
+      // Brief summary in the result box; the full outcome — evolution details
+      // and the load-as-experiment action — lives in the history below.
       const resultHeading = document.createElement('p');
       resultHeading.classList.add('fw-bold', 'mb-1');
-      resultHeading.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeDone}`;
+      resultHeading.innerText =
+        `${promptBuilderInterfaceText?.promptBuilderOptimizeDone} ` +
+        `${promptBuilderInterfaceText?.promptBuilderOptimizeMetricBefore} ${formatOptimizeMetric(entry.metricBefore)}` +
+        ` → ${promptBuilderInterfaceText?.promptBuilderOptimizeMetricAfter} ${formatOptimizeMetric(entry.metricAfter)}`;
       optimizeUI.resultBox.appendChild(resultHeading);
-      const metricLine = document.createElement('p');
-      metricLine.classList.add('mb-1');
-      const formatMetric = (value: number | null | undefined): string =>
-        value === null || value === undefined || !Number.isFinite(Number(value))
-          ? '—'
-          : String(Math.round(Number(value) * 1000) / 1000);
-      metricLine.innerText =
-        `${promptBuilderInterfaceText?.promptBuilderOptimizeMetricBefore} ${formatMetric(entry.metricBefore)}` +
-        ` → ${promptBuilderInterfaceText?.promptBuilderOptimizeMetricAfter} ${formatMetric(entry.metricAfter)}`;
-      optimizeUI.resultBox.appendChild(metricLine);
-      if (entry.producedPromptModelId) {
-        const producedLink = document.createElement('p');
-        producedLink.classList.add('mb-1');
-        const anchor = document.createElement('a');
-        anchor.target = '_blank';
-        anchor.rel = 'noopener noreferrer';
-        anchor.href = `${VIYA}/SASModelManager/models/${entry.producedPromptModelId}`;
-        anchor.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeOpenProduced}`;
-        producedLink.appendChild(anchor);
-        optimizeUI.resultBox.appendChild(producedLink);
-      }
-      const optimizedPrompt = entry.optimizedPrompt;
-      if (optimizedPrompt && (optimizedPrompt.systemPrompt || optimizedPrompt.userPrompt)) {
-        const loadButton = document.createElement('button');
-        loadButton.type = 'button';
-        loadButton.classList.add('btn', 'btn-secondary', 'btn-sm');
-        loadButton.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-load`;
-        loadButton.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeLoadButton}`;
-        loadButton.onclick = () => {
-          const systemPromptArea = document.getElementById(
-            `${paneID}-obj-${promptBuilderObject?.id}-system-prompt`
-          ) as HTMLTextAreaElement | null;
-          const userPromptArea = document.getElementById(
-            `${paneID}-obj-${promptBuilderObject?.id}-user-prompt`
-          ) as HTMLTextAreaElement | null;
-          if (systemPromptArea) systemPromptArea.value = String(optimizedPrompt.systemPrompt ?? '');
-          if (userPromptArea) userPromptArea.value = String(optimizedPrompt.userPrompt ?? '');
-          if (Array.isArray(optimizedPrompt.variables)) setPromptVariables(optimizedPrompt.variables);
-          showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeLoadedToast}`);
-        };
-        optimizeUI.resultBox.appendChild(loadButton);
-      }
+      void refreshOptimizationHistory(true);
       showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeDone}`);
     }
 
@@ -4534,6 +4796,11 @@ ${scoreCodeReturn}`;
           throw new Error('Job Execution returned no job id.');
         }
         optimizeUI.statusLine.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobState} ${job.state ?? 'pending'}`;
+        // Reset + reveal the collapsed run log for this run.
+        optimizeJobStartedAt = Date.now();
+        optimizeUI.logList.innerText = '';
+        optimizeUI.logDetails.classList.remove('d-none');
+        updateOptimizeRunLog([], false);
         optimizePollHandle = window.setInterval(() => {
           void pollOptimizeJob();
         }, 5000);
@@ -4704,8 +4971,26 @@ ${scoreCodeReturn}`;
       const optimizeStatusLine = document.createElement('p');
       optimizeStatusLine.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-status`;
       optimizeStatusLine.classList.add('mb-1');
+      // Collapsible run log (collapsed by default, hidden until a run starts):
+      // the job's runtime plus its OWN milestones — never the raw SAS log.
+      const optimizeLogDetails = document.createElement('details');
+      optimizeLogDetails.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-log`;
+      optimizeLogDetails.classList.add('d-none', 'mb-2');
+      const optimizeLogSummary = document.createElement('summary');
+      optimizeLogSummary.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeLogHeading}`;
+      const optimizeLogRuntime = document.createElement('p');
+      optimizeLogRuntime.classList.add('text-muted', 'mb-1', 'mt-1');
+      const optimizeLogList = document.createElement('pre');
+      optimizeLogList.classList.add('pb-optimize-log-list', 'mb-1');
+      optimizeLogList.style.whiteSpace = 'pre-wrap';
+      optimizeLogDetails.appendChild(optimizeLogSummary);
+      optimizeLogDetails.appendChild(optimizeLogRuntime);
+      optimizeLogDetails.appendChild(optimizeLogList);
       const optimizeResultBox = document.createElement('div');
       optimizeResultBox.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-result`;
+      // Past runs of the selected prompt, read from its optimization tracker.
+      const optimizeHistoryContainer = document.createElement('div');
+      optimizeHistoryContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-history`;
 
       optimizeControls.appendChild(targetRow);
       optimizeControls.appendChild(datasetBlock);
@@ -4715,7 +5000,9 @@ ${scoreCodeReturn}`;
       optimizeControls.appendChild(optimizeEstimateLine);
       optimizeControls.appendChild(optimizeRunWrapper);
       optimizeControls.appendChild(optimizeStatusLine);
+      optimizeControls.appendChild(optimizeLogDetails);
       optimizeControls.appendChild(optimizeResultBox);
+      optimizeControls.appendChild(optimizeHistoryContainer);
 
       optimizeUI = {
         targetSelect: optimizeTargetSelect,
@@ -4729,6 +5016,10 @@ ${scoreCodeReturn}`;
         runWrapper: optimizeRunWrapper,
         statusLine: optimizeStatusLine,
         resultBox: optimizeResultBox,
+        historyContainer: optimizeHistoryContainer,
+        logDetails: optimizeLogDetails,
+        logRuntime: optimizeLogRuntime,
+        logList: optimizeLogList,
       };
       optimizeTargetSelect.addEventListener('change', updateOptimizeState);
       optimizeMetricSelect.addEventListener('change', updateOptimizeState);
