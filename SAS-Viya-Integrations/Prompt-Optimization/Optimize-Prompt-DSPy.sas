@@ -782,6 +782,37 @@ def main():
         tracker_entry["validationSize"] = len(valset)
         progress(f"Baseline metric: {metric_before:.3f}")
 
+        if metric_before >= 1.0 - 1e-9:
+            # A perfect baseline leaves the optimizer no gradient: every
+            # candidate scores at most 1.0 on the validation split, so the
+            # search cannot distinguish better from worse and the calls are
+            # wasted. Record the run (baseline == optimised) and say what
+            # would give the optimizer room instead.
+            progress("Baseline already scores perfectly on the validation split - skipping optimization. Add harder examples or a stricter metric to give the optimizer room to improve.")
+            tracker_entry["metricAfter"] = metric_before
+            tracker_entry["evaluations"] = [
+                {
+                    "inputs": detail["inputs"],
+                    "expected": detail["expected"],
+                    "baselineResponse": detail["response"],
+                    "baselineCorrect": detail["correct"],
+                    "baselineScore": detail["score"],
+                    "optimizedResponse": detail["response"],
+                    "optimizedCorrect": detail["correct"],
+                    "optimizedScore": detail["score"],
+                }
+                for detail in eval_before
+            ]
+            tracker_entry["optimizedPrompt"] = bake_out(program, source_header, input_names)
+            tracker_entry["skippedReason"] = "baseline-perfect"
+            tracker_entry["usage"] = usage_snapshot()
+            tracker_entry["status"] = "succeeded"
+            tracker_entry["finishedAt"] = datetime.now(timezone.utc).isoformat()
+            append_optimization_tracker(tracker_entry, dataset_snapshot=examples_raw)
+            progress(f"Done - baseline metric {metric_before:.3f} needs no optimization, run recorded on the prompt")
+            SAS.symput("_opt_rc", "0")
+            return
+
         progress(f"Optimising with {P['optimizer']} ({len(trainset)} training examples)")
         if P["optimizer"] == "miprov2":
             # MIPROv2 proposes and trials candidate INSTRUCTIONS on top of

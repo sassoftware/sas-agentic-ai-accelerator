@@ -229,6 +229,8 @@ interface OptimizationTrackerEntry {
     /** The few-shot examples the optimizer selected (one object per demo). */
     demos?: Array<Record<string, string>>;
   } | null;
+  /** Set when the job skipped the optimization phase (e.g. baseline-perfect). */
+  skippedReason?: string | null;
   /** Per-role call accounting the job records from the SCR responses. */
   usage?: { target?: OptimizationUsage; judge?: OptimizationUsage } | null;
   /** Legacy (pre-history releases): the separate prompt-test a run created. */
@@ -4811,6 +4813,14 @@ ${scoreCodeReturn}`;
         body.appendChild(blockLabel);
         body.appendChild(block);
       };
+      // The job skips the search when the baseline already scores perfectly
+      // on the validation split (no gradient to climb) — explain that here.
+      if (entry.skippedReason === 'baseline-perfect') {
+        const skippedNote = document.createElement('p');
+        skippedNote.classList.add('alert', 'alert-info', 'py-1', 'px-2', 'mb-1', 'mt-2', 'pb-optimize-skipped');
+        skippedNote.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeHistorySkippedPerfect}`;
+        body.appendChild(skippedNote);
+      }
       addPromptBlock(
         promptBuilderInterfaceText?.promptBuilderOptimizeHistoryBaselineLabel,
         entry.baselinePrompt?.systemPrompt
