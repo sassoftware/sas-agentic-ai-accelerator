@@ -240,8 +240,10 @@ interface OptimizationEvaluation {
   expected?: string;
   baselineResponse?: string;
   baselineCorrect?: boolean;
+  baselineScore?: number;
   optimizedResponse?: string;
   optimizedCorrect?: boolean;
+  optimizedScore?: number;
 }
 
 /** The outputs an integrated LLM call can return (mirroring the SCR contract). */
@@ -4259,6 +4261,7 @@ ${scoreCodeReturn}`;
       | {
           targetSelect: HTMLSelectElement;
           metricSelect: HTMLSelectElement;
+          optimizerSelect: HTMLSelectElement;
           judgeRow: HTMLElement;
           judgeSelect: HTMLSelectElement;
           maxDemosInput: HTMLInputElement;
@@ -4359,8 +4362,10 @@ ${scoreCodeReturn}`;
       optimizeUI.samplesHint.innerText = sampleParts.join(' — ');
 
       // Rough call estimate: baseline + after evaluation over the dataset plus
-      // the bootstrap teacher pass — kept deliberately coarse.
-      const estimatedCalls = samples * 3 + 10;
+      // the optimizer's own passes (MIPROv2 additionally proposes and trials
+      // candidate instructions) — kept deliberately coarse.
+      const estimatedCalls =
+        optimizeUI.optimizerSelect.value === 'miprov2' ? samples * 8 + 30 : samples * 3 + 10;
       const estimateParts = [
         `${promptBuilderInterfaceText?.promptBuilderOptimizeEstimate}`.replace('{calls}', String(estimatedCalls)),
       ];
@@ -4708,10 +4713,16 @@ ${scoreCodeReturn}`;
             .join(', ');
           const expectedCell = document.createElement('td');
           expectedCell.innerText = String(evaluation.expected ?? '');
+          // Partial-credit metrics (token overlap) also carry a per-example
+          // score; show it next to the ✓/✗ when it is not simply 0 or 1.
+          const evalMark = (correct: boolean | undefined, score: number | undefined): string => {
+            const mark = correct ? '✓' : '✗';
+            return typeof score === 'number' && score > 0 && score < 1 ? `${mark} ${score.toFixed(2)}` : mark;
+          };
           const beforeCell = document.createElement('td');
-          beforeCell.innerText = `${evaluation.baselineCorrect ? '✓' : '✗'} ${String(evaluation.baselineResponse ?? '')}`;
+          beforeCell.innerText = `${evalMark(evaluation.baselineCorrect, evaluation.baselineScore)} ${String(evaluation.baselineResponse ?? '')}`;
           const afterCell = document.createElement('td');
-          afterCell.innerText = `${evaluation.optimizedCorrect ? '✓' : '✗'} ${String(evaluation.optimizedResponse ?? '')}`;
+          afterCell.innerText = `${evalMark(evaluation.optimizedCorrect, evaluation.optimizedScore)} ${String(evaluation.optimizedResponse ?? '')}`;
           [inputsCell, expectedCell, beforeCell, afterCell].forEach((cell) => tr.appendChild(cell));
           tbody.appendChild(tr);
         });
@@ -4841,7 +4852,9 @@ ${scoreCodeReturn}`;
         showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeNoTarget}`);
         return;
       }
-      const metric = optimizeUI.metricSelect.value === 'judge' ? 'judge' : 'exact';
+      const metric = ['judge', 'overlap'].includes(optimizeUI.metricSelect.value)
+        ? optimizeUI.metricSelect.value
+        : 'exact';
       const judgeModelName = metric === 'judge' ? optimizeUI.judgeSelect.value : '';
       if (metric === 'judge' && judgeModelName === '') {
         showToast(`${promptBuilderInterfaceText?.promptBuilderJudgeSelectModelToast}`);
@@ -4878,7 +4891,7 @@ ${scoreCodeReturn}`;
           datasetSource: 'tracker',
           metric,
           judgeModelName,
-          optimizer: 'bootstrap',
+          optimizer: optimizeUI.optimizerSelect.value === 'miprov2' ? 'miprov2' : 'bootstrap',
           maxDemos: String(maxDemos),
           minSamples: String(optimizeMinSamples()),
           keyLibrary: String(promptBuilderObject?.optimizeKeyLibrary ?? ''),
@@ -4978,10 +4991,14 @@ ${scoreCodeReturn}`;
       const exactOption = document.createElement('option');
       exactOption.value = 'exact';
       exactOption.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeMetricExact}`;
+      const overlapMetricOption = document.createElement('option');
+      overlapMetricOption.value = 'overlap';
+      overlapMetricOption.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeMetricOverlap}`;
       const judgeMetricOption = document.createElement('option');
       judgeMetricOption.value = 'judge';
       judgeMetricOption.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeMetricJudge}`;
       optimizeMetricSelect.appendChild(exactOption);
+      optimizeMetricSelect.appendChild(overlapMetricOption);
       optimizeMetricSelect.appendChild(judgeMetricOption);
       metricRow.appendChild(metricLabel);
       metricRow.appendChild(optimizeMetricSelect);
@@ -5017,7 +5034,8 @@ ${scoreCodeReturn}`;
       optimizeJudgeRow.appendChild(optimizeJudgeLabel);
       optimizeJudgeRow.appendChild(optimizeJudgeSelect);
 
-      // Optimizer (bootstrap only in 3a) + max few-shot demos.
+      // Optimizer (bootstrap selects demos; MIPROv2 also rewrites the
+      // instruction text at the cost of more model calls) + max few-shot demos.
       const optimizerRow = document.createElement('div');
       optimizerRow.classList.add('d-flex', 'align-items-center', 'gap-2', 'flex-wrap');
       const optimizerLabel = document.createElement('label');
@@ -5032,6 +5050,10 @@ ${scoreCodeReturn}`;
       bootstrapOption.value = 'bootstrap';
       bootstrapOption.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeOptimizerBootstrap}`;
       optimizeOptimizerSelect.appendChild(bootstrapOption);
+      const miprov2Option = document.createElement('option');
+      miprov2Option.value = 'miprov2';
+      miprov2Option.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeOptimizerMiprov2}`;
+      optimizeOptimizerSelect.appendChild(miprov2Option);
       const maxDemosLabel = document.createElement('label');
       maxDemosLabel.classList.add('form-label', 'mb-0', 'ms-3');
       maxDemosLabel.htmlFor = `${paneID}-obj-${promptBuilderObject?.id}-optimize-max-demos`;
@@ -5102,6 +5124,7 @@ ${scoreCodeReturn}`;
       optimizeUI = {
         targetSelect: optimizeTargetSelect,
         metricSelect: optimizeMetricSelect,
+        optimizerSelect: optimizeOptimizerSelect,
         judgeRow: optimizeJudgeRow,
         judgeSelect: optimizeJudgeSelect,
         maxDemosInput: optimizeMaxDemosInput,
@@ -5118,6 +5141,7 @@ ${scoreCodeReturn}`;
       };
       optimizeTargetSelect.addEventListener('change', updateOptimizeState);
       optimizeMetricSelect.addEventListener('change', updateOptimizeState);
+      optimizeOptimizerSelect.addEventListener('change', updateOptimizeState);
       optimizeJudgeSelect.addEventListener('change', updateOptimizeState);
 
       optimizeSection = document.createElement('div');

@@ -14,8 +14,9 @@
       2. reads the target LLM's options.json from its Model Manager model and
          calls the model through the SAS Container Runtime (SCR) endpoint with
          a small DSPy adapter (the same 3-input contract the Builder uses),
-      3. runs a DSPy optimizer (bootstrap few-shot) against the chosen metric
-         (exact match or an LLM judge),
+      3. runs a DSPy optimizer (bootstrap few-shot, or MIPROv2 which also
+         rewrites the instruction text) against the chosen metric
+         (exact match, token-overlap F1, or an LLM judge),
       4. bakes the optimised program back into a Prompt-Builder-shaped prompt
          and records the WHOLE run - optimised prompt, few-shot demos and the
          per-example before/after evaluations - as an entry of the prompt's
@@ -43,9 +44,11 @@
       scrEndpoint      - base URL of the SCR endpoint (required)
       deploymentType   - k8s (default) or aca
       datasetSource    - tracker (the only source in this release)
-      metric           - exact (default) or judge
+      metric           - exact (default), overlap (token-level F1) or judge
       judgeModelName   - the judge LLM name when metric=judge
-      optimizer        - bootstrap (the only optimizer in this release)
+      optimizer        - bootstrap (default, selects few-shot demos) or
+                         miprov2 (additionally rewrites the instruction text;
+                         needs more model calls)
       maxDemos         - max few-shot examples to select (default 4)
       minSamples       - minimum qualifying runs required (default 30)
       keyLibrary       - SAS library of the governed API-key table (optional)
@@ -137,11 +140,13 @@ proc python restart;
 # Python; SAS Viya REST calls authenticate with the session's service token
 # (the same pattern the accelerator's Track-Prompt-Experiments.sas uses).
 # ============================================================================
+import inspect
 import json
 import os
 import random
 import re
 import traceback
+from collections import Counter
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -413,6 +418,33 @@ def exact_metric(example, prediction, trace=None):
     return normalise(getattr(prediction, "response", "")) == normalise(example.response)
 
 
+OVERLAP_PASS = 0.75
+
+
+def overlap_metric(example, prediction, trace=None):
+    """Token-level F1 between the prediction and the reference (SQuAD style) -
+    partial credit for answers that are close but not verbatim, sitting between
+    exact-match (too strict for chatty models) and the judge (needs an extra
+    LLM). During optimisation (trace is not None) DSPy needs a pass/fail
+    decision for demo selection, so a high-overlap threshold applies."""
+    pred_tokens = normalise(getattr(prediction, "response", "")).split()
+    ref_tokens = normalise(example.response).split()
+    if not pred_tokens or not ref_tokens:
+        score = 1.0 if pred_tokens == ref_tokens else 0.0
+    else:
+        common = Counter(pred_tokens) & Counter(ref_tokens)
+        overlap = sum(common.values())
+        if overlap == 0:
+            score = 0.0
+        else:
+            precision = overlap / len(pred_tokens)
+            recall = overlap / len(ref_tokens)
+            score = 2 * precision * recall / (precision + recall)
+    if trace is not None:
+        return score >= OVERLAP_PASS
+    return score
+
+
 def make_judge_metric(judge_lm_options):
     judge_system = (
         "You are an impartial evaluator. You will see a reference answer and a "
@@ -438,14 +470,17 @@ def make_judge_metric(judge_lm_options):
     return judge_metric
 
 
-def evaluate(program, dataset, metric):
+def evaluate(program, dataset, metric, pass_threshold=1.0):
     """Score a program on a dataset. Returns (score, per-example details) so
     the tracker entry can show WHICH validation examples improved - the
     per-example before/after view is the evolution display the Builder
-    renders (the same idea as MLflow's per-example DSPy evaluation traces)."""
+    renders (the same idea as MLflow's per-example DSPy evaluation traces).
+    The aggregate is the mean per-example score; boolean metrics contribute
+    0/1 while the overlap metric contributes partial credit, with
+    pass_threshold deciding what counts as correct in the evolution view."""
     if not dataset:
         return 0.0, []
-    hits = 0
+    total = 0.0
     details = []
     for example in dataset:
         prediction = None
@@ -454,16 +489,21 @@ def evaluate(program, dataset, metric):
             response_text = str(getattr(prediction, "response", ""))
         except Exception as call_error:
             response_text = f"(call failed: {call_error})"
-        correct = bool(prediction is not None and metric(example, prediction))
-        if correct:
-            hits += 1
+        score = 0.0
+        if prediction is not None:
+            try:
+                score = float(metric(example, prediction))
+            except Exception:
+                score = 0.0
+        total += score
         details.append({
             "inputs": {k: str(example[k]) for k in example.inputs().keys()},
             "expected": str(example.response),
             "response": response_text,
-            "correct": correct,
+            "correct": score >= pass_threshold,
+            "score": round(score, 3),
         })
-    return hits / len(dataset), details
+    return total / len(dataset), details
 
 
 # ---- Bake-out: DSPy program -> Prompt-Builder-shaped prompt ----------------
@@ -589,15 +629,20 @@ def main():
                 fail(f"The judge model {P['judgeModelName']} was not found in Model Manager.")
             judge_options = build_model_options(judge_model["id"], P["judgeModelName"], key_map)
             metric = make_judge_metric(judge_options)
+            pass_threshold = 1.0
+        elif P["metric"] == "overlap":
+            metric = overlap_metric
+            pass_threshold = OVERLAP_PASS
         else:
             metric = exact_metric
+            pass_threshold = 1.0
 
         signature_str = ", ".join(input_names) + " -> response"
         signature = dspy.Signature(signature_str, str(source_header.get("systemPrompt") or ""))
         program = dspy.Predict(signature)
 
         progress("Scoring the baseline prompt")
-        metric_before, eval_before = evaluate(program, valset, metric)
+        metric_before, eval_before = evaluate(program, valset, metric, pass_threshold)
         tracker_entry["metricBefore"] = metric_before
         tracker_entry["baselinePrompt"] = {
             "systemPrompt": str(source_header.get("systemPrompt") or ""),
@@ -608,12 +653,36 @@ def main():
         progress(f"Baseline metric: {metric_before:.3f}")
 
         progress(f"Optimising with {P['optimizer']} ({len(trainset)} training examples)")
-        optimizer = dspy.BootstrapFewShot(
-            metric=metric, max_bootstrapped_demos=MAX_DEMOS, max_labeled_demos=MAX_DEMOS)
-        compiled = optimizer.compile(program, trainset=trainset)
+        if P["optimizer"] == "miprov2":
+            # MIPROv2 proposes and trials candidate INSTRUCTIONS on top of
+            # demo selection - the baked system prompt can differ from the
+            # baseline. auto=light keeps the trial count sane; num_threads=1
+            # keeps the SCR calls sequential inside proc python; minibatch
+            # evaluation is disabled because the validation split is smaller
+            # than MIPROv2's default minibatch size. The keyword filtering
+            # tolerates signature drift across dspy releases (validated
+            # against 3.2.1).
+            init_params = inspect.signature(dspy.MIPROv2.__init__).parameters
+            init_kwargs = {
+                "metric": metric, "auto": "light",
+                "max_bootstrapped_demos": MAX_DEMOS, "max_labeled_demos": MAX_DEMOS,
+                "num_threads": 1,
+            }
+            optimizer = dspy.MIPROv2(**{k: v for k, v in init_kwargs.items() if k in init_params})
+            compile_params = inspect.signature(optimizer.compile).parameters
+            compile_kwargs = {
+                "trainset": trainset, "valset": valset,
+                "minibatch": False, "requires_permission_to_run": False,
+            }
+            compiled = optimizer.compile(
+                program, **{k: v for k, v in compile_kwargs.items() if k in compile_params})
+        else:
+            optimizer = dspy.BootstrapFewShot(
+                metric=metric, max_bootstrapped_demos=MAX_DEMOS, max_labeled_demos=MAX_DEMOS)
+            compiled = optimizer.compile(program, trainset=trainset)
 
         progress("Scoring the optimised prompt")
-        metric_after, eval_after = evaluate(compiled, valset, metric)
+        metric_after, eval_after = evaluate(compiled, valset, metric, pass_threshold)
         tracker_entry["metricAfter"] = metric_after
         # Per-validation-example before/after - the evolution view the Builder
         # renders (which examples the optimisation actually fixed or broke).
@@ -623,8 +692,10 @@ def main():
                 "expected": before_detail["expected"],
                 "baselineResponse": before_detail["response"],
                 "baselineCorrect": before_detail["correct"],
+                "baselineScore": before_detail["score"],
                 "optimizedResponse": after_detail["response"],
                 "optimizedCorrect": after_detail["correct"],
+                "optimizedScore": after_detail["score"],
             }
             for before_detail, after_detail in zip(eval_before, eval_after)
         ]

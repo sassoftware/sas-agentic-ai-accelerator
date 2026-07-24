@@ -137,17 +137,19 @@ const successEntry = {
   datasetRef: 'Prompt-Experiment-Tracker.json',
   sampleCount: 1,
   optimizer: 'bootstrap',
-  metric: 'exact',
+  metric: 'overlap',
   judgeModel: null,
   metricBefore: 0.5,
   metricAfter: 0.833,
   baselinePrompt: { systemPrompt: 'Sys 2', userPrompt: 'User 2' },
   trainSize: 7,
   validationSize: 3,
+  // Overlap-metric entry: per-example partial-credit scores accompany the
+  // correctness flags (the UI shows the score next to ✓/✗ when it is not 0/1).
   evaluations: [
-    { inputs: { userPrompt: 'User 1' }, expected: 'Response one', baselineResponse: 'wrong', baselineCorrect: false, optimizedResponse: 'Response one', optimizedCorrect: true },
-    { inputs: { userPrompt: 'User 2' }, expected: 'Response two', baselineResponse: 'Response two', baselineCorrect: true, optimizedResponse: 'Response two', optimizedCorrect: true },
-    { inputs: { userPrompt: 'User 3' }, expected: 'Response three', baselineResponse: 'nope', baselineCorrect: false, optimizedResponse: 'still nope', optimizedCorrect: false },
+    { inputs: { userPrompt: 'User 1' }, expected: 'Response one', baselineResponse: 'wrong', baselineCorrect: false, baselineScore: 0, optimizedResponse: 'Response one', optimizedCorrect: true, optimizedScore: 1 },
+    { inputs: { userPrompt: 'User 2' }, expected: 'Response two', baselineResponse: 'Response two', baselineCorrect: true, baselineScore: 1, optimizedResponse: 'Response two', optimizedCorrect: true, optimizedScore: 1 },
+    { inputs: { userPrompt: 'User 3' }, expected: 'Response three', baselineResponse: 'nope', baselineCorrect: false, baselineScore: 0.25, optimizedResponse: 'still nope', optimizedCorrect: false, optimizedScore: 0.5 },
   ],
   optimizedPrompt,
   datasetSnapshot: 'Prompt-Optimization-Dataset-2.json',
