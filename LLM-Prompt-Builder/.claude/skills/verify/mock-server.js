@@ -263,6 +263,23 @@ http
           : [];
         return json(res, 200, { items });
       }
+      // CAS Management: the optimize panel probes a CAS dataset table (info +
+      // columns) before launching a run with the CAS dataset source.
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/OPT_DATA') {
+        return json(res, 200, { name: 'OPT_DATA', rowCount: 5 });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/OPT_DATA/columns') {
+        return json(res, 200, { items: [{ name: 'userPrompt' }, { name: 'response' }] });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/BAD_COLS') {
+        return json(res, 200, { name: 'BAD_COLS', rowCount: 5 });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/BAD_COLS/columns') {
+        return json(res, 200, { items: [{ name: 'question' }, { name: 'answer' }] });
+      }
+      if (p.startsWith('/casManagement/')) {
+        return json(res, 404, { message: 'table not found' });
+      }
       // The app primes the Job Execution service session with a GET before its
       // first POST (a first-contact POST 449s on a real Viya's SSO handshake).
       if (p === '/jobExecution/jobs' && req.method === 'GET') {

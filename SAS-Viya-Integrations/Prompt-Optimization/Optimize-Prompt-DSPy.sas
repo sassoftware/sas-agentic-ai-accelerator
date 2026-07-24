@@ -43,7 +43,12 @@
       targetModelName  - its SCR module/model name (required)
       scrEndpoint      - base URL of the SCR endpoint (required)
       deploymentType   - k8s (default) or aca
-      datasetSource    - tracker (the only source in this release)
+      datasetSource    - tracker (default, the prompt's experiment runs) or
+                         cas (a governed CAS table built from the shipped
+                         Create-Optimization-Dataset.sas template)
+      casLibrary       - the caslib holding the dataset when datasetSource=cas
+      casTable         - the CAS table: one column per prompt variable plus a
+                         response column with the reference answer
       metric           - exact (default), overlap (token-level F1) or judge
       judgeModelName   - the judge LLM name when metric=judge
       optimizer        - bootstrap (default, selects few-shot demos) or
@@ -78,6 +83,8 @@
 %_opt_default(minSamples, 30);
 %_opt_default(keyLibrary, );
 %_opt_default(keyTable, );
+%_opt_default(casLibrary, );
+%_opt_default(casTable, );
 /* Set by SAS Job Execution on every job run (/jobExecution/jobs/<id>) and by
    the Builder-launched request respectively; blank when run interactively */
 %_opt_default(SYS_JES_JOB_URI, );
@@ -133,6 +140,33 @@
 %mend _opt_export_keys;
 %_opt_export_keys;
 
+/* ---- CAS dataset source ----
+   When datasetSource=cas, export the governed dataset table to a JSON file in
+   WORK for the Python program (same pattern as the key export). The libname
+   with an explicit caslib= avoids the 8-character truncation a blanket
+   "caslib _all_ assign" would apply to longer caslib names. */
+%macro _opt_export_dataset;
+    %if %superq(datasetSource) = cas and %superq(casLibrary) ne and %superq(casTable) ne %then %do;
+        cas _optdata;
+        libname _optds cas caslib="&casLibrary." sessref=_optdata;
+        %if %sysfunc(exist(_optds.&casTable.)) %then %do;
+            filename _optdata "%sysfunc(pathname(work))/optimize_dataset.json";
+            proc json out=_optdata noSASTags;
+                export _optds.&casTable.;
+            run; quit;
+            filename _optdata clear;
+        %end;
+        %else %do;
+            data _null_;
+                putLog "WARNING: The CAS table &casLibrary..&casTable. is not available - the job will fail with a clear message.";
+            run;
+        %end;
+        libname _optds clear;
+        cas _optdata terminate;
+    %end;
+%mend _opt_export_dataset;
+%_opt_export_dataset;
+
 proc python restart;
     submit;
 # ============================================================================
@@ -178,6 +212,7 @@ P = {
         "promptModelId", "promptName", "targetModelId", "targetModelName",
         "scrEndpoint", "deploymentType", "datasetSource", "metric",
         "judgeModelName", "optimizer", "maxDemos", "minSamples",
+        "casLibrary", "casTable",
     ]
 }
 P = {k: str(v).strip() for k, v in P.items()}
@@ -223,6 +258,13 @@ def import_dependencies():
     if (version + (0, 0, 0))[:3] < MIN_DSPY_VERSION:
         minimum = ".".join(str(part) for part in MIN_DSPY_VERSION)
         fail(f"dspy {raw_version} is too old - the optimization job is validated against dspy >= {minimum}. Update the Python environment of the compute context (see Prompt-Optimization/requirements.txt).")
+    if P["optimizer"] == "miprov2":
+        # dspy treats optuna (MIPROv2's trial search) as an optional extra, so
+        # its absence only surfaces mid-run - verified live. Gate it up front.
+        try:
+            import optuna  # noqa: F401
+        except Exception:
+            fail("The MIPROv2 optimizer needs the optuna package - install it into the compute context Python (see Prompt-Optimization/requirements.txt) or choose the bootstrap optimizer.")
 
 
 # ---- SAS Viya REST helpers -------------------------------------------------
@@ -403,6 +445,43 @@ def load_tracker_dataset(prompt_model_id):
     if latest_header is None:
         fail("The experiment tracker holds no runs.")
     return examples, latest_header
+
+
+# ---- Dataset: a governed CAS table (exported to WORK by the SAS wrapper) ---
+def load_cas_dataset(source_header):
+    """Rows of the exported CAS table -> examples. The PROMPT itself (system/
+    user template + variables) still comes from the experiment tracker header -
+    the Builder saves the prompt right before launching, so at least one saved
+    run must exist. The table needs one column per prompt variable (or a
+    userPrompt column when the prompt has no variables) plus a response column
+    holding the reference answer - the shipped Create-Optimization-Dataset.sas
+    template builds exactly that schema."""
+    dataset_path = WORKPATH + "optimize_dataset.json"
+    if not os.path.exists(dataset_path):
+        fail(f"The CAS table {P['casLibrary']}.{P['casTable']} could not be read - make sure it exists and is loaded into memory (build it with the Create-Optimization-Dataset.sas template).")
+    with open(dataset_path, "r", encoding="utf-8") as dataset_file:
+        rows = json.load(dataset_file)
+    if not isinstance(rows, list) or not rows:
+        fail(f"The CAS table {P['casLibrary']}.{P['casTable']} is empty.")
+    variables = source_header.get("variables") or []
+    input_columns = [str(v.get("name")) for v in variables if v.get("name")] or ["userPrompt"]
+    first = {str(k).casefold() for k in rows[0]}
+    missing = [c for c in input_columns + ["response"] if c.casefold() not in first]
+    if missing:
+        fail("The CAS table lacks required columns: " + ", ".join(missing) + ". Expected one column per prompt variable plus response - see Create-Optimization-Dataset.sas.")
+    examples = []
+    for row in rows:
+        ci = {str(k).casefold(): ("" if v is None else str(v)) for k, v in row.items()}
+        response = ci.get("response", "").strip()
+        if not response:
+            continue
+        examples.append({
+            "inputs": {name: ci.get(name.casefold(), "") for name in input_columns},
+            "response": response,
+        })
+    if not examples:
+        fail(f"No row of {P['casLibrary']}.{P['casTable']} has a response value.")
+    return examples
 
 
 # ---- Metrics ---------------------------------------------------------------
@@ -598,6 +677,10 @@ def main():
         key_map = load_key_map()
         progress("Loading the experiment tracker dataset")
         examples_raw, source_header = load_tracker_dataset(P["promptModelId"])
+        if P["datasetSource"] == "cas":
+            progress(f"Loading the CAS dataset {P['casLibrary']}.{P['casTable']}")
+            examples_raw = load_cas_dataset(source_header)
+            tracker_entry["datasetRef"] = f"{P['casLibrary']}.{P['casTable']}"
         tracker_entry["sampleCount"] = len(examples_raw)
         if len(examples_raw) < MIN_SAMPLES:
             fail(f"Only {len(examples_raw)} runs have a Best Response - at least {MIN_SAMPLES} are required.")

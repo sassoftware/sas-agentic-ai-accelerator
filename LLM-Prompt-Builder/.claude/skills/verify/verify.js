@@ -433,12 +433,15 @@ function multipartJson(body) {
   await waitUntil(
     async () => {
       const l = await getLog();
+      // Wait for the tag PUT too — it lands AFTER the content uploads, and
+      // the assertions below read it from this same log snapshot.
       return (
         l.some((e) => e.method === 'POST' && e.body.includes('def scoreModel(')) &&
-        l.some((e) => e.method === 'POST' && e.body.includes('filename="outputVar.json"'))
+        l.some((e) => e.method === 'POST' && e.body.includes('filename="outputVar.json"')) &&
+        l.some((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-used')
       );
     },
-    'parsing score code + outputVar uploaded'
+    'parsing score code + outputVar + tag update uploaded'
   );
   aLog = await getLog();
   const findPart3 = (name) => aLog.find((e) => e.method === 'POST' && e.body.includes(`filename="${name}"`));

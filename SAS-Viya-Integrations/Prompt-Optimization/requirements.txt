@@ -8,3 +8,6 @@
 # checks it at startup and fails fast with a clear message when it is older.
 dspy>=3.2.1
 requests>=2.31
+# Needed only for the MIPROv2 optimizer (its Bayesian trial search); the job
+# checks for it at startup when MIPROv2 is chosen and fails fast without it.
+optuna>=3.0

@@ -36,6 +36,7 @@ import {
   launchJob,
   getJob,
   getJobProgressMessages,
+  getCasTableInfo,
   isTerminalJobState,
   type JobExecutionJob,
 } from '../api/jobexec-api';
@@ -4262,6 +4263,12 @@ ${scoreCodeReturn}`;
           targetSelect: HTMLSelectElement;
           metricSelect: HTMLSelectElement;
           optimizerSelect: HTMLSelectElement;
+          datasetTrackerRadio: HTMLInputElement;
+          datasetCasRadio: HTMLInputElement;
+          datasetTrackerInfo: HTMLElement;
+          casRow: HTMLElement;
+          casLibInput: HTMLInputElement;
+          casTableInput: HTMLInputElement;
           judgeRow: HTMLElement;
           judgeSelect: HTMLSelectElement;
           maxDemosInput: HTMLInputElement;
@@ -4347,6 +4354,13 @@ ${scoreCodeReturn}`;
     /** Refresh the optimize panel's gating, sample count and estimate. */
     function updateOptimizeState(): void {
       if (!optimizeUI) return;
+      const casSource = optimizeUI.datasetCasRadio.checked;
+      // The tracker-specific pieces (assumed-correct notice, sample count and
+      // the minimum-samples gate) only apply to the tracker source; a CAS
+      // table is validated against its real columns/rows at launch instead.
+      optimizeUI.casRow.classList.toggle('d-none', !casSource);
+      optimizeUI.datasetTrackerInfo.classList.toggle('d-none', casSource);
+      optimizeUI.samplesHint.classList.toggle('d-none', casSource);
       const samples = countOptimizeSamples();
       const minSamples = optimizeMinSamples();
       const sampleParts = [
@@ -4387,7 +4401,7 @@ ${scoreCodeReturn}`;
       if (optimizeJobActive) disabledHint = `${promptBuilderInterfaceText?.promptBuilderOptimizeAlreadyRunning}`;
       else if (!configReady) disabledHint = `${promptBuilderInterfaceText?.promptBuilderOptimizeNotConfigured}`;
       else if (!promptSelected) disabledHint = `${promptBuilderInterfaceText?.promptBuilderOptimizeNoPrompt}`;
-      else if (samples < minSamples)
+      else if (!casSource && samples < minSamples)
         disabledHint = `${promptBuilderInterfaceText?.promptBuilderOptimizeSamplesBelowMin}`.replace(
           '{min}',
           String(minSamples)
@@ -4860,6 +4874,51 @@ ${scoreCodeReturn}`;
         showToast(`${promptBuilderInterfaceText?.promptBuilderJudgeSelectModelToast}`);
         return;
       }
+      // CAS dataset source: validate the table BEFORE launching — its columns
+      // must cover the prompt's variables (or userPrompt) plus response, and
+      // its row count must clear the sample minimum (§6.3 of the design).
+      const casSource = optimizeUI.datasetCasRadio.checked;
+      const casLibrary = casSource ? optimizeUI.casLibInput.value.trim() : '';
+      const casTable = casSource ? optimizeUI.casTableInput.value.trim() : '';
+      if (casSource) {
+        if (casLibrary === '' || casTable === '') {
+          showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeCasMissingToast}`);
+          return;
+        }
+        let casInfo;
+        try {
+          casInfo = await getCasTableInfo(casLibrary, casTable);
+        } catch {
+          showToast(
+            `${promptBuilderInterfaceText?.promptBuilderOptimizeCasTableUnavailable}`.replace(
+              '{table}',
+              `${casLibrary}.${casTable}`
+            )
+          );
+          return;
+        }
+        const columnNames = casInfo.columns.map((column) => column.toLowerCase());
+        const variableNames = collectPromptVariables().map((variable) => variable.name);
+        const expectedColumns = (variableNames.length > 0 ? variableNames : ['userPrompt']).concat('response');
+        const missingColumns = expectedColumns.filter((name) => !columnNames.includes(name.toLowerCase()));
+        if (missingColumns.length > 0) {
+          showToast(
+            `${promptBuilderInterfaceText?.promptBuilderOptimizeCasColumnsMissing}`.replace(
+              '{columns}',
+              missingColumns.join(', ')
+            )
+          );
+          return;
+        }
+        if (casInfo.rowCount < optimizeMinSamples()) {
+          showToast(
+            `${promptBuilderInterfaceText?.promptBuilderOptimizeCasRowsBelowMin}`
+              .replace('{rows}', String(casInfo.rowCount))
+              .replace('{min}', String(optimizeMinSamples()))
+          );
+          return;
+        }
+      }
       const targetLLM = promptBuilderAvailableLLMs.find((availableLLM) => availableLLM.name === targetModelName);
 
       optimizeJobActive = true;
@@ -4888,7 +4947,9 @@ ${scoreCodeReturn}`;
           targetModelName,
           scrEndpoint: String(promptBuilderObject?.SCREndpoint ?? ''),
           deploymentType: String(promptBuilderObject?.deploymentType ?? 'k8s'),
-          datasetSource: 'tracker',
+          datasetSource: casSource ? 'cas' : 'tracker',
+          casLibrary,
+          casTable,
           metric,
           judgeModelName,
           optimizer: optimizeUI.optimizerSelect.value === 'miprov2' ? 'miprov2' : 'bootstrap',
@@ -4957,25 +5018,77 @@ ${scoreCodeReturn}`;
       targetRow.appendChild(targetLabel);
       targetRow.appendChild(optimizeTargetSelect);
 
-      // Dataset: this prompt's experiments (Phase 3a's only source), with the
-      // assumed-correct notice and the live sample count.
+      // Dataset source: the prompt's experiments (default), or a governed CAS
+      // table built from the shipped Create-Optimization-Dataset.sas template.
       const datasetBlock = document.createElement('div');
       const datasetLabel = document.createElement('p');
       datasetLabel.classList.add('fw-bold', 'mb-1');
       datasetLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeDatasetLabel}`;
-      const datasetText = document.createElement('p');
-      datasetText.classList.add('mb-1');
-      datasetText.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeDatasetTracker}`;
+      datasetBlock.appendChild(datasetLabel);
+      const datasetSourceName = `${paneID}-obj-${promptBuilderObject?.id}-optimize-dataset-source`;
+      const makeDatasetRadio = (value: string, labelText: unknown, checked: boolean): HTMLInputElement => {
+        const wrapper = document.createElement('div');
+        wrapper.classList.add('form-check');
+        const radio = document.createElement('input');
+        radio.classList.add('form-check-input');
+        radio.type = 'radio';
+        radio.name = datasetSourceName;
+        radio.id = `${datasetSourceName}-${value}`;
+        radio.value = value;
+        radio.checked = checked;
+        const radioLabel = document.createElement('label');
+        radioLabel.classList.add('form-check-label');
+        radioLabel.htmlFor = radio.id;
+        radioLabel.innerText = `${labelText}`;
+        wrapper.appendChild(radio);
+        wrapper.appendChild(radioLabel);
+        datasetBlock.appendChild(wrapper);
+        return radio;
+      };
+      const datasetTrackerRadio = makeDatasetRadio(
+        'tracker',
+        promptBuilderInterfaceText?.promptBuilderOptimizeDatasetTracker,
+        true
+      );
       const datasetNotice = document.createElement('small');
       datasetNotice.classList.add('text-muted', 'd-block');
       datasetNotice.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeDatasetTrackerInfo}`;
       const optimizeSamplesHint = document.createElement('small');
       optimizeSamplesHint.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-samples-hint`;
       optimizeSamplesHint.classList.add('text-muted', 'd-block');
-      datasetBlock.appendChild(datasetLabel);
-      datasetBlock.appendChild(datasetText);
       datasetBlock.appendChild(datasetNotice);
       datasetBlock.appendChild(optimizeSamplesHint);
+      const datasetCasRadio = makeDatasetRadio(
+        'cas',
+        promptBuilderInterfaceText?.promptBuilderOptimizeDatasetCas,
+        false
+      );
+      // caslib + table inputs (revealed for the CAS source) + template pointer.
+      const casRow = document.createElement('div');
+      casRow.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-cas-row`;
+      casRow.classList.add('d-none', 'ms-4', 'mb-1');
+      const casInputs = document.createElement('div');
+      casInputs.classList.add('d-flex', 'align-items-center', 'gap-2', 'flex-wrap');
+      const casLibInput = document.createElement('input');
+      casLibInput.type = 'text';
+      casLibInput.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-cas-lib`;
+      casLibInput.classList.add('form-control', 'form-control-sm');
+      casLibInput.style.width = '11rem';
+      casLibInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderOptimizeCasLibPlaceholder}`;
+      const casTableInput = document.createElement('input');
+      casTableInput.type = 'text';
+      casTableInput.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-cas-table`;
+      casTableInput.classList.add('form-control', 'form-control-sm');
+      casTableInput.style.width = '15rem';
+      casTableInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderOptimizeCasTablePlaceholder}`;
+      casInputs.appendChild(casLibInput);
+      casInputs.appendChild(casTableInput);
+      const casTemplateHint = document.createElement('small');
+      casTemplateHint.classList.add('text-muted', 'd-block');
+      casTemplateHint.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCasTemplateHint}`;
+      casRow.appendChild(casInputs);
+      casRow.appendChild(casTemplateHint);
+      datasetBlock.appendChild(casRow);
 
       // Metric (+ judge model when the metric is the judge).
       const metricRow = document.createElement('div');
@@ -5125,6 +5238,12 @@ ${scoreCodeReturn}`;
         targetSelect: optimizeTargetSelect,
         metricSelect: optimizeMetricSelect,
         optimizerSelect: optimizeOptimizerSelect,
+        datasetTrackerRadio,
+        datasetCasRadio,
+        datasetTrackerInfo: datasetNotice,
+        casRow,
+        casLibInput,
+        casTableInput,
         judgeRow: optimizeJudgeRow,
         judgeSelect: optimizeJudgeSelect,
         maxDemosInput: optimizeMaxDemosInput,
@@ -5143,6 +5262,8 @@ ${scoreCodeReturn}`;
       optimizeMetricSelect.addEventListener('change', updateOptimizeState);
       optimizeOptimizerSelect.addEventListener('change', updateOptimizeState);
       optimizeJudgeSelect.addEventListener('change', updateOptimizeState);
+      datasetTrackerRadio.addEventListener('change', updateOptimizeState);
+      datasetCasRadio.addEventListener('change', updateOptimizeState);
 
       optimizeSection = document.createElement('div');
       optimizeSection.classList.add('pb-section');
