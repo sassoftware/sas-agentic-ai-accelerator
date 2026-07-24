@@ -524,17 +524,27 @@ def overlap_metric(example, prediction, trace=None):
     return score
 
 
-def make_judge_metric(judge_lm_options):
+def make_judge_metric(judge_lm_options, task_system_prompt=""):
+    # The same rubric the Prompt Builder's Phase-1 judge uses (accuracy,
+    # relevance to the task, completeness, clarity; ignore length/formatting)
+    # - and like that judge, this one SEES THE TASK: equivalence judged blind
+    # to the question over-credits generic answers.
     judge_system = (
-        "You are an impartial evaluator. You will see a reference answer and a "
-        "candidate answer. Decide whether the candidate conveys the same answer "
-        "as the reference - the wording may differ. Think step by step, then "
-        'return ONLY a JSON object: {"reasoning": "...", "equivalent": true|false}'
+        "You are an impartial evaluator. You will see the TASK an AI assistant "
+        "was given, a REFERENCE answer a human vouched for, and a CANDIDATE "
+        "answer. Judge whether the candidate conveys the same answer as the "
+        "reference for this task, weighing accuracy, relevance to the task, "
+        "completeness, and clarity. Ignore differences in length, wording and "
+        "formatting except where they change the meaning. Think step by step, "
+        'then return ONLY a JSON object: {"reasoning": "...", "equivalent": true|false}'
     )
 
     def judge_metric(example, prediction, trace=None):
+        task_lines = [f"{name}: {example[name]}" for name in example.inputs().keys()]
         user = (
-            "== REFERENCE ==\n" + str(example.response) +
+            "== TASK ==\n" + (str(task_system_prompt) or "(none)") +
+            "\n\n== TASK INPUTS ==\n" + "\n".join(task_lines) +
+            "\n\n== REFERENCE ==\n" + str(example.response) +
             "\n\n== CANDIDATE ==\n" + str(getattr(prediction, "response", "")) +
             "\n\nReturn the JSON object now."
         )
@@ -711,7 +721,7 @@ def main():
             if judge_model is None:
                 fail(f"The judge model {P['judgeModelName']} was not found in Model Manager.")
             judge_options = build_model_options(judge_model["id"], P["judgeModelName"], key_map)
-            metric = make_judge_metric(judge_options)
+            metric = make_judge_metric(judge_options, str(source_header.get("systemPrompt") or ""))
             pass_threshold = 1.0
         elif P["metric"] == "overlap":
             metric = overlap_metric
