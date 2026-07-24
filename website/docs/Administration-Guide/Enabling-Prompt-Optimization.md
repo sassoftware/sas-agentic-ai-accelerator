@@ -23,7 +23,7 @@ requests>=2.31
 optuna>=3.0
 ```
 
-Install them into the Python environment your compute contexts use (the same one configured for `proc python` via `PROC_PYPATH`), for example:
+Install them into the Python environment your compute contexts use — the same one configured for `proc python` via `PROC_PYPATH`, see [Configuring SAS Viya for Python Integration](https://go.documentation.sas.com/doc/en/sasadmincdc/default/calsrvpgm/n1a7ados7ybdn1n15f0td8twwca9.htm) — for example:
 
 ```bash
 pip install "dspy>=3.2.1" "requests>=2.31" "optuna>=3.0"
@@ -38,7 +38,7 @@ A compute context whose Python lacks `dspy` — or carries one older than **3.2.
 Because not every deployment wants DSPy in its default environment, the context is **configurable**: you can prepare a dedicated context (for example `SAS Job Execution — DSPy`) with a Python environment that has the packages, and point the Prompt Builder at it. Size the context generously — an optimization run makes many model calls and runs for several minutes.
 
 :::note Install centrally — this is an administrator task
-`sas-pyconfig`-managed environments are mounted **read-only** in compute pods, so the packages cannot be (and should not be) installed from a compute session — a user-level `pip install` will fail by design. The packages belong in the **centrally managed Python configuration**: add the entries from `requirements.txt` to the `pip_installed_packages` option of the target environment (e.g. `default_py`) in the `sas-pyconfig` configuration and re-run the `sas-pyconfig` job, following the *SAS Viya Platform: Integration with External Languages* documentation for configuring Python. This keeps every compute pod consistent, survives updates and re-provisioning, and keeps package governance where it belongs. Avoid ad-hoc alternatives such as `PYTHONPATH` overlays on shared storage — they bypass the managed environment and are easy to leave behind unmaintained.
+`sas-pyconfig`-managed environments are mounted **read-only** in compute pods, so the packages cannot be (and should not be) installed from a compute session — a user-level `pip install` will fail by design. The packages belong in the **centrally managed Python configuration**: add the entries from `requirements.txt` to the `pip_installed_packages` option of the target environment (e.g. `default_py`) in the `sas-pyconfig` configuration and re-run the `sas-pyconfig` job — see [Managing Python Packages with sas-pyconfig](https://go.documentation.sas.com/doc/en/sasadmincdc/default/calsrvpgm/p1iu2rzpk1j1b4n1shfqxpqzyso4.htm) and, for the overall `proc python` setup, [Configuring SAS Viya for Python Integration](https://go.documentation.sas.com/doc/en/sasadmincdc/default/calsrvpgm/n1a7ados7ybdn1n15f0td8twwca9.htm). This keeps every compute pod consistent, survives updates and re-provisioning, and keeps package governance where it belongs. Avoid ad-hoc alternatives such as `PYTHONPATH` overlays on shared storage — they bypass the managed environment and are easy to leave behind unmaintained.
 :::
 
 ## 2. Import the optimize job
