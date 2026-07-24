@@ -21,8 +21,9 @@
       2. Pick the caslib. It must be accessible from the compute context that
          runs the optimize job; a shared caslib (like Public) lets a whole
          team maintain the dataset.
-      3. Run this program, then enter the caslib + table name in the Optimize
-         section's "Use a CAS table" fields.
+      3. Run this program, then pick the table from the Optimize section's
+         CAS server / caslib / table dropdowns (the lists show loaded tables,
+         which is why the load + promote below matters).
 
     The optimize job snapshots the exact rows it used into the prompt's model
     (Prompt-Optimization-Dataset-<n>.json), so later edits to this table never

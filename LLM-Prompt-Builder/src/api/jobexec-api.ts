@@ -137,35 +137,6 @@ export async function getJob(jobId: string): Promise<JobExecutionJob> {
   return viyaGet<JobExecutionJob>(`/jobExecution/jobs/${jobId}`);
 }
 
-/** What the optimize panel needs to validate a CAS dataset table up front. */
-export interface CasTableInfo {
-  columns: string[];
-  rowCount: number;
-}
-
-/**
- * Probe a CAS dataset table through the CAS Management REST API — the
- * Optimize panel validates the table's columns against the prompt's
- * variables (plus the response column) and its row count against the
- * sample minimum BEFORE launching the job. Throws on an unknown
- * caslib/table; the caller turns that into a toast.
- */
-export async function getCasTableInfo(
-  caslib: string,
-  table: string,
-  server = 'cas-shared-default'
-): Promise<CasTableInfo> {
-  const base =
-    `/casManagement/servers/${encodeURIComponent(server)}` +
-    `/caslibs/${encodeURIComponent(caslib)}/tables/${encodeURIComponent(table)}`;
-  const info = await viyaGet<{ rowCount?: number }>(base);
-  const columns = await viyaGet<{ items?: { name?: string }[] }>(`${base}/columns?limit=1000`);
-  return {
-    columns: (columns.items ?? []).map((column) => String(column.name ?? '')).filter(Boolean),
-    rowCount: Number(info.rowCount ?? 0),
-  };
-}
-
 /**
  * Read the job's log and return the progress messages the job emitted with
  * SAS.logMessage() — they land in the log as `NOTE: Python-Subprocess - ...`.

@@ -263,8 +263,23 @@ http
           : [];
         return json(res, 200, { items });
       }
-      // CAS Management: the optimize panel probes a CAS dataset table (info +
-      // columns) before launching a run with the CAS dataset source.
+      // CAS Management: the optimize panel builds its server → caslib → table
+      // dropdowns from these listings, then probes the chosen table (info +
+      // columns) before launching a run with the CAS dataset source. GHOST is
+      // listed but its probe 404s — a stale listing (table dropped between
+      // browse and launch).
+      if (p === '/casManagement/servers') {
+        return json(res, 200, { items: [{ name: 'cas-shared-default' }] });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs') {
+        return json(res, 200, { items: [{ name: 'Public' }, { name: 'casuser' }] });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables') {
+        return json(res, 200, { items: [{ name: 'OPT_DATA' }, { name: 'BAD_COLS' }, { name: 'GHOST' }] });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/casuser/tables') {
+        return json(res, 200, { items: [] });
+      }
       if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/OPT_DATA') {
         return json(res, 200, { name: 'OPT_DATA', rowCount: 5 });
       }

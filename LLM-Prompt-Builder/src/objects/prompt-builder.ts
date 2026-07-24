@@ -36,10 +36,10 @@ import {
   launchJob,
   getJob,
   getJobProgressMessages,
-  getCasTableInfo,
   isTerminalJobState,
   type JobExecutionJob,
 } from '../api/jobexec-api';
+import { getCasServers, getCaslibs, getCasTables, getCasTableInfo } from '../api/cas-api';
 import { createAccordionItem } from '../ui/accordion';
 import { showConfirmModal } from '../ui/confirm-modal';
 import { showToast } from '../ui/toast';
@@ -4267,8 +4267,9 @@ ${scoreCodeReturn}`;
           datasetCasRadio: HTMLInputElement;
           datasetTrackerInfo: HTMLElement;
           casRow: HTMLElement;
-          casLibInput: HTMLInputElement;
-          casTableInput: HTMLInputElement;
+          casServerSelect: HTMLSelectElement;
+          casLibSelect: HTMLSelectElement;
+          casTableSelect: HTMLSelectElement;
           judgeRow: HTMLElement;
           judgeSelect: HTMLSelectElement;
           maxDemosInput: HTMLInputElement;
@@ -4318,6 +4319,96 @@ ${scoreCodeReturn}`;
       }
     }
 
+    // CAS dataset picker: cascading server → caslib → table dropdowns over
+    // the CAS Management listings (the interactive-selection pattern of the
+    // portal framework's prompt controls). Listings are cached per
+    // server/caslib; the server list loads at most once, lazily, the first
+    // time the CAS source is revealed.
+    const casPickerCache = { caslibs: new Map<string, string[]>(), tables: new Map<string, string[]>() };
+    let casServersPromise: Promise<void> | null = null;
+
+    /** Rebuild a picker: placeholder + entries, keeping a still-valid selection. */
+    function fillCasSelect(select: HTMLSelectElement, placeholderText: unknown, names: string[]): void {
+      const previous = select.value;
+      select.innerHTML = '';
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.innerText = `${placeholderText}`;
+      placeholder.disabled = true;
+      placeholder.selected = true;
+      select.appendChild(placeholder);
+      names.forEach((name) => {
+        const option = document.createElement('option');
+        option.value = name;
+        option.innerText = name;
+        select.appendChild(option);
+      });
+      if (previous !== '' && names.includes(previous)) select.value = previous;
+    }
+
+    /** Load the server list once; preselect the usual single server and cascade. */
+    function loadCasServerOptions(): Promise<void> {
+      if (!casServersPromise) {
+        casServersPromise = (async () => {
+          if (!optimizeUI) return;
+          try {
+            const servers = await getCasServers();
+            fillCasSelect(
+              optimizeUI.casServerSelect,
+              promptBuilderInterfaceText?.promptBuilderOptimizeCasServerPlaceholder,
+              servers
+            );
+            const preferred = servers.includes('cas-shared-default') ? 'cas-shared-default' : servers[0];
+            if (preferred) {
+              optimizeUI.casServerSelect.value = preferred;
+              await loadCaslibOptions();
+            }
+          } catch (error) {
+            // Retry on the next reveal; the launch-time validation still guards.
+            casServersPromise = null;
+            console.debug('Prompt Builder: CAS server listing failed', error);
+          }
+        })();
+      }
+      return casServersPromise;
+    }
+
+    async function loadCaslibOptions(): Promise<void> {
+      if (!optimizeUI) return;
+      const server = optimizeUI.casServerSelect.value;
+      if (server === '') return;
+      try {
+        let caslibs = casPickerCache.caslibs.get(server);
+        if (!caslibs) {
+          caslibs = await getCaslibs(server);
+          casPickerCache.caslibs.set(server, caslibs);
+        }
+        fillCasSelect(optimizeUI.casLibSelect, promptBuilderInterfaceText?.promptBuilderOptimizeCasLibPlaceholder, caslibs);
+        fillCasSelect(optimizeUI.casTableSelect, promptBuilderInterfaceText?.promptBuilderOptimizeCasTablePlaceholder, []);
+        if (optimizeUI.casLibSelect.value !== '') await loadCasTableOptions();
+      } catch (error) {
+        console.debug('Prompt Builder: caslib listing failed', error);
+      }
+    }
+
+    async function loadCasTableOptions(): Promise<void> {
+      if (!optimizeUI) return;
+      const server = optimizeUI.casServerSelect.value;
+      const caslib = optimizeUI.casLibSelect.value;
+      if (server === '' || caslib === '') return;
+      const cacheKey = `${server}/${caslib}`;
+      try {
+        let tables = casPickerCache.tables.get(cacheKey);
+        if (!tables) {
+          tables = await getCasTables(server, caslib);
+          casPickerCache.tables.set(cacheKey, tables);
+        }
+        fillCasSelect(optimizeUI.casTableSelect, promptBuilderInterfaceText?.promptBuilderOptimizeCasTablePlaceholder, tables);
+      } catch (error) {
+        console.debug('Prompt Builder: CAS table listing failed', error);
+      }
+    }
+
     /**
      * Refresh the collapsible run log with the job's own milestones (the
      * SAS.logMessage notes, prefix already stripped by extractProgressMessages
@@ -4361,6 +4452,7 @@ ${scoreCodeReturn}`;
       optimizeUI.casRow.classList.toggle('d-none', !casSource);
       optimizeUI.datasetTrackerInfo.classList.toggle('d-none', casSource);
       optimizeUI.samplesHint.classList.toggle('d-none', casSource);
+      if (casSource) void loadCasServerOptions();
       const samples = countOptimizeSamples();
       const minSamples = optimizeMinSamples();
       const sampleParts = [
@@ -4878,16 +4970,17 @@ ${scoreCodeReturn}`;
       // must cover the prompt's variables (or userPrompt) plus response, and
       // its row count must clear the sample minimum (§6.3 of the design).
       const casSource = optimizeUI.datasetCasRadio.checked;
-      const casLibrary = casSource ? optimizeUI.casLibInput.value.trim() : '';
-      const casTable = casSource ? optimizeUI.casTableInput.value.trim() : '';
+      const casServer = casSource ? optimizeUI.casServerSelect.value : '';
+      const casLibrary = casSource ? optimizeUI.casLibSelect.value : '';
+      const casTable = casSource ? optimizeUI.casTableSelect.value : '';
       if (casSource) {
-        if (casLibrary === '' || casTable === '') {
+        if (casServer === '' || casLibrary === '' || casTable === '') {
           showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeCasMissingToast}`);
           return;
         }
         let casInfo;
         try {
-          casInfo = await getCasTableInfo(casLibrary, casTable);
+          casInfo = await getCasTableInfo(casLibrary, casTable, casServer);
         } catch {
           showToast(
             `${promptBuilderInterfaceText?.promptBuilderOptimizeCasTableUnavailable}`.replace(
@@ -4948,6 +5041,7 @@ ${scoreCodeReturn}`;
           scrEndpoint: String(promptBuilderObject?.SCREndpoint ?? ''),
           deploymentType: String(promptBuilderObject?.deploymentType ?? 'k8s'),
           datasetSource: casSource ? 'cas' : 'tracker',
+          casServer,
           casLibrary,
           casTable,
           metric,
@@ -5063,32 +5157,54 @@ ${scoreCodeReturn}`;
         promptBuilderInterfaceText?.promptBuilderOptimizeDatasetCas,
         false
       );
-      // caslib + table inputs (revealed for the CAS source) + template pointer.
+      // Server → caslib → table pickers (revealed for the CAS source) +
+      // template pointer. Populated lazily from the CAS Management listings.
       const casRow = document.createElement('div');
       casRow.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-cas-row`;
       casRow.classList.add('d-none', 'ms-4', 'mb-1');
       const casInputs = document.createElement('div');
       casInputs.classList.add('d-flex', 'align-items-center', 'gap-2', 'flex-wrap');
-      const casLibInput = document.createElement('input');
-      casLibInput.type = 'text';
-      casLibInput.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-cas-lib`;
-      casLibInput.classList.add('form-control', 'form-control-sm');
-      casLibInput.style.width = '11rem';
-      casLibInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderOptimizeCasLibPlaceholder}`;
-      const casTableInput = document.createElement('input');
-      casTableInput.type = 'text';
-      casTableInput.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-cas-table`;
-      casTableInput.classList.add('form-control', 'form-control-sm');
-      casTableInput.style.width = '15rem';
-      casTableInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderOptimizeCasTablePlaceholder}`;
-      casInputs.appendChild(casLibInput);
-      casInputs.appendChild(casTableInput);
+      const makeCasPicker = (kind: string, placeholderText: unknown, width: string): HTMLSelectElement => {
+        const select = document.createElement('select');
+        select.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-cas-${kind}`;
+        select.classList.add('form-select', 'form-select-sm');
+        select.style.width = width;
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.innerText = `${placeholderText}`;
+        placeholder.disabled = true;
+        placeholder.selected = true;
+        select.appendChild(placeholder);
+        casInputs.appendChild(select);
+        return select;
+      };
+      const optimizeCasServerSelect = makeCasPicker(
+        'server',
+        promptBuilderInterfaceText?.promptBuilderOptimizeCasServerPlaceholder,
+        '12rem'
+      );
+      const optimizeCasLibSelect = makeCasPicker(
+        'lib',
+        promptBuilderInterfaceText?.promptBuilderOptimizeCasLibPlaceholder,
+        '12rem'
+      );
+      const optimizeCasTableSelect = makeCasPicker(
+        'table',
+        promptBuilderInterfaceText?.promptBuilderOptimizeCasTablePlaceholder,
+        '15rem'
+      );
       const casTemplateHint = document.createElement('small');
       casTemplateHint.classList.add('text-muted', 'd-block');
       casTemplateHint.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCasTemplateHint}`;
       casRow.appendChild(casInputs);
       casRow.appendChild(casTemplateHint);
       datasetBlock.appendChild(casRow);
+      optimizeCasServerSelect.addEventListener('change', () => {
+        void loadCaslibOptions();
+      });
+      optimizeCasLibSelect.addEventListener('change', () => {
+        void loadCasTableOptions();
+      });
 
       // Metric (+ judge model when the metric is the judge).
       const metricRow = document.createElement('div');
@@ -5242,8 +5358,9 @@ ${scoreCodeReturn}`;
         datasetCasRadio,
         datasetTrackerInfo: datasetNotice,
         casRow,
-        casLibInput,
-        casTableInput,
+        casServerSelect: optimizeCasServerSelect,
+        casLibSelect: optimizeCasLibSelect,
+        casTableSelect: optimizeCasTableSelect,
         judgeRow: optimizeJudgeRow,
         judgeSelect: optimizeJudgeSelect,
         maxDemosInput: optimizeMaxDemosInput,

@@ -46,6 +46,12 @@
       datasetSource    - tracker (default, the prompt's experiment runs) or
                          cas (a governed CAS table built from the shipped
                          Create-Optimization-Dataset.sas template)
+      casServer        - the CAS server the Builder browsed/validated the
+                         dataset on (default cas-shared-default; recorded for
+                         provenance - the compute session reads through its
+                         own default CAS server, so in a multi-server
+                         deployment the optimization context must connect to
+                         the server that hosts the caslib)
       casLibrary       - the caslib holding the dataset when datasetSource=cas
       casTable         - the CAS table: one column per prompt variable plus a
                          response column with the reference answer
@@ -83,6 +89,7 @@
 %_opt_default(minSamples, 30);
 %_opt_default(keyLibrary, );
 %_opt_default(keyTable, );
+%_opt_default(casServer, cas-shared-default);
 %_opt_default(casLibrary, );
 %_opt_default(casTable, );
 /* Set by SAS Job Execution on every job run (/jobExecution/jobs/<id>) and by
@@ -212,7 +219,7 @@ P = {
         "promptModelId", "promptName", "targetModelId", "targetModelName",
         "scrEndpoint", "deploymentType", "datasetSource", "metric",
         "judgeModelName", "optimizer", "maxDemos", "minSamples",
-        "casLibrary", "casTable",
+        "casServer", "casLibrary", "casTable",
     ]
 }
 P = {k: str(v).strip() for k, v in P.items()}
@@ -691,6 +698,7 @@ def main():
             progress(f"Loading the CAS dataset {P['casLibrary']}.{P['casTable']}")
             examples_raw = load_cas_dataset(source_header)
             tracker_entry["datasetRef"] = f"{P['casLibrary']}.{P['casTable']}"
+            tracker_entry["casServer"] = P["casServer"]
         tracker_entry["sampleCount"] = len(examples_raw)
         if len(examples_raw) < MIN_SAMPLES:
             fail(f"Only {len(examples_raw)} runs have a Best Response - at least {MIN_SAMPLES} are required.")
