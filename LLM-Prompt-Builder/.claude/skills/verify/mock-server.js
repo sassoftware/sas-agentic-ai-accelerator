@@ -221,6 +221,11 @@ http
           : [];
         return json(res, 200, { items });
       }
+      // The app primes the Job Execution service session with a GET before its
+      // first POST (a first-contact POST 449s on a real Viya's SSO handshake).
+      if (p === '/jobExecution/jobs' && req.method === 'GET') {
+        return json(res, 200, { items: [] });
+      }
       if (p === '/jobExecution/jobs' && req.method === 'POST') {
         if (failNextJob) {
           failNextJob = false;

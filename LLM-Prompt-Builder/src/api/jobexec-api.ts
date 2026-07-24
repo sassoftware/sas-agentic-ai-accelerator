@@ -98,6 +98,22 @@ export async function resolveJobDefinitionUri(programPath: string): Promise<stri
   return String(member.uri);
 }
 
+let jobExecutionSessionPrimed = false;
+
+/**
+ * The FIRST browser request to the Job Execution service must be a GET: with
+ * cookie auth, a first-contact POST triggers the SSO handshake (303 to
+ * SASLogon, then a retry at `?sso_retry=POST` that answers HTTP 449) because
+ * the redirect cannot replay the POST body — seen live. A cheap GET completes
+ * the handshake and establishes the service session, after which POSTs work
+ * (a CSRF 403 on the first POST is already handled by viyaFetch's retry).
+ */
+async function primeJobExecutionSession(): Promise<void> {
+  if (jobExecutionSessionPrimed) return;
+  await viyaFetch('/jobExecution/jobs?limit=1');
+  jobExecutionSessionPrimed = true;
+}
+
 /**
  * Launch a job definition asynchronously with the given arguments (all values
  * are sent as strings, mirroring how Job Execution passes request parameters
@@ -108,6 +124,7 @@ export async function launchJob(
   jobName: string,
   args: Record<string, string>
 ): Promise<JobExecutionJob> {
+  await primeJobExecutionSession();
   return viyaPost<JobExecutionJob>(
     '/jobExecution/jobs',
     { name: jobName, jobDefinitionUri, arguments: args },

@@ -98,6 +98,16 @@
    which is destroyed with the session. */
 %macro _opt_export_keys;
     %if %superq(keyLibrary) ne and %superq(keyTable) ne %then %do;
+        %let _opt_cas_started = 0;
+        %if %sysfunc(exist(&keyLibrary..&keyTable.)) = 0 %then %do;
+            /* The accelerator's key table normally lives in CAS (see
+               create-api-key-table.sas, caslib CASUSER): a fresh compute
+               session has no CAS libraries assigned, so connect and assign
+               them to make the table visible. Best effort. */
+            cas _optcas;
+            caslib _all_ assign sessref=_optcas;
+            %let _opt_cas_started = 1;
+        %end;
         %if %sysfunc(exist(&keyLibrary..&keyTable.)) %then %do;
             filename _optkeys "%sysfunc(pathname(work))/optimize_keys.json";
             proc json out=_optkeys noSASTags;
@@ -109,6 +119,9 @@
             data _null_;
                 putLog "WARNING: The API-key table &keyLibrary..&keyTable. does not exist - hosted models that need a key will fail.";
             run;
+        %end;
+        %if &_opt_cas_started. = 1 %then %do;
+            cas _optcas terminate;
         %end;
     %end;
 %mend _opt_export_keys;
@@ -247,6 +260,8 @@ def replace_model_content(model_id, name, payload):
 
 # ---- Provider keys (exported by the SAS wrapper, never logged) -------------
 def load_key_map():
+    """Provider name -> key. Accepts both column conventions: KeyName/KeyValue
+    (the accelerator's create-api-key-table.sas) and name/value."""
     key_path = WORKPATH + "optimize_keys.json"
     if not os.path.exists(key_path):
         return {}
@@ -255,7 +270,8 @@ def load_key_map():
     key_map = {}
     for row in rows if isinstance(rows, list) else []:
         lowered = {str(k).lower(): v for k, v in row.items()}
-        name, value = lowered.get("name"), lowered.get("value")
+        name = lowered.get("keyname") or lowered.get("name")
+        value = lowered.get("keyvalue") or lowered.get("value")
         if name and value:
             key_map[str(name).strip()] = str(value).strip()
     return key_map
