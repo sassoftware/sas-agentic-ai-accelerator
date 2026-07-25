@@ -4498,11 +4498,13 @@ ${scoreCodeReturn}`;
       // Rough call estimate: baseline + after evaluation over the dataset plus
       // the optimizer's own passes (MIPROv2 additionally proposes and trials
       // candidate instructions; GEPA adds reflection rounds on top of its
-      // candidate evaluations) — kept deliberately coarse.
+      // candidate evaluations) — kept deliberately coarse. The GEPA factor is
+      // calibrated against a live light-budget run: 10 examples cost ~810
+      // calls (751 target + 59 reflection) over ~30 minutes.
       const selectedOptimizer = optimizeUI.optimizerSelect.value;
       const estimatedCalls =
         selectedOptimizer === 'gepa'
-          ? samples * 12 + 40
+          ? samples * 75 + 60
           : selectedOptimizer === 'miprov2'
             ? samples * 8 + 30
             : samples * 3 + 10;
