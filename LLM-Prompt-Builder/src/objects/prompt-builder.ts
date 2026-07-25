@@ -264,12 +264,20 @@ interface ComparisonTargetRow {
   metricAfter?: number | null;
   skippedReason?: string | null;
   optimizedPrompt?: OptimizationTrackerEntry['optimizedPrompt'];
+  /** Screening rows use the flat shape (response/correct/score); sweep rows
+   *  use the before/after shape the single-run evaluations use. */
   evaluations?: Array<{
     inputs?: Record<string, string>;
     expected?: string;
     response?: string;
     correct?: boolean;
     score?: number;
+    baselineResponse?: string;
+    baselineCorrect?: boolean;
+    baselineScore?: number;
+    optimizedResponse?: string;
+    optimizedCorrect?: boolean;
+    optimizedScore?: number;
   }> | null;
   error?: string | null;
 }
@@ -4329,6 +4337,10 @@ ${scoreCodeReturn}`;
     // change while the job runs) and the launched job's id.
     let optimizeSourceModelId = '';
     let optimizeJobId = '';
+    // Row count of the currently selected CAS dataset table (fetched lazily
+    // when the table is picked) so the panel's call estimate reflects the
+    // CAS source instead of the tracker count; null = not (yet) known.
+    let optimizeCasRowCount: number | null = null;
     // Launch timestamp for the run-log's runtime display (0 = frozen) and the
     // 1-second browser-side ticker that keeps it smooth between job polls.
     let optimizeJobStartedAt = 0;
@@ -4509,7 +4521,10 @@ ${scoreCodeReturn}`;
       optimizeUI.datasetTrackerInfo.classList.toggle('d-none', casSource);
       optimizeUI.samplesHint.classList.toggle('d-none', casSource);
       if (casSource) void loadCasServerOptions();
-      const samples = countOptimizeSamples();
+      // The estimate must reflect the SELECTED dataset source: the CAS row
+      // count (fetched when the table is picked; null while unknown) rather
+      // than the tracker count when the CAS source is active.
+      const samples = casSource ? (optimizeCasRowCount ?? 0) : countOptimizeSamples();
       const minSamples = optimizeMinSamples();
       const sampleParts = [
         `${samples} ${promptBuilderInterfaceText?.promptBuilderOptimizeSamplesLabel}`,
@@ -4537,7 +4552,10 @@ ${scoreCodeReturn}`;
             ? samples * 8 + 30
             : samples * 3 + 10;
       const estimateParts = [
-        `${promptBuilderInterfaceText?.promptBuilderOptimizeEstimate}`.replace('{calls}', String(estimatedCalls)),
+        `${promptBuilderInterfaceText?.promptBuilderOptimizeEstimate}`.replace(
+          '{calls}',
+          casSource && optimizeCasRowCount === null ? '?' : String(estimatedCalls)
+        ),
       ];
       if (
         optimizeUI.metricSelect.value === 'judge' &&
@@ -5435,9 +5453,13 @@ ${scoreCodeReturn}`;
         showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeNoPrompt}`);
         return;
       }
-      const metric = ['judge', 'overlap'].includes(optimizeUI.metricSelect.value)
-        ? optimizeUI.metricSelect.value
-        : 'exact';
+      // Read the metric FRESH wherever it is used: the CAS row-count fetch
+      // below awaits before the modal blocks the panel, so a value captured
+      // here could go stale if the user changes the select in that window.
+      const currentMetric = (): string =>
+        ['judge', 'overlap'].includes(optimizeUI?.metricSelect.value ?? '')
+          ? String(optimizeUI?.metricSelect.value)
+          : 'exact';
       // Sample count for the estimate: the tracker count is known; a CAS
       // table's row count is fetched best-effort when one is fully selected.
       let samples = optimizeUI.datasetCasRadio.checked ? NaN : countOptimizeSamples();
@@ -5529,7 +5551,7 @@ ${scoreCodeReturn}`;
         // (doubled by the judge metric's extra scoring call per example).
         // Sweep: per target a FULL optimization run — the same per-optimizer
         // factors the panel's estimate uses.
-        let perTargetCalls = 1 + perTarget * (metric === 'judge' ? 2 : 1);
+        let perTargetCalls = 1 + perTarget * (currentMetric() === 'judge' ? 2 : 1);
         if (sweepRadio.checked) {
           const sweepOptimizer = optimizeUI?.optimizerSelect.value ?? 'bootstrap';
           perTargetCalls =
@@ -5583,7 +5605,7 @@ ${scoreCodeReturn}`;
         );
         return;
       }
-      await promptBuilderRunComparison(selectedNames, metric, sweepMode);
+      await promptBuilderRunComparison(selectedNames, currentMetric(), sweepMode);
     }
 
     /** Save the prompt, launch the job in compare/sweep mode and start polling. */
@@ -5829,10 +5851,32 @@ ${scoreCodeReturn}`;
       casRow.appendChild(casTemplateHint);
       datasetBlock.appendChild(casRow);
       optimizeCasServerSelect.addEventListener('change', () => {
+        optimizeCasRowCount = null;
         void loadCaslibOptions();
       });
       optimizeCasLibSelect.addEventListener('change', () => {
+        optimizeCasRowCount = null;
         void loadCasTableOptions();
+      });
+      // Fetch the picked table's row count (best effort) so the panel's call
+      // estimate reflects the CAS dataset; '?' is shown while unknown.
+      optimizeCasTableSelect.addEventListener('change', () => {
+        optimizeCasRowCount = null;
+        updateOptimizeState();
+        const pickedServer = optimizeCasServerSelect.value;
+        const pickedLib = optimizeCasLibSelect.value;
+        const pickedTable = optimizeCasTableSelect.value;
+        if (pickedServer === '' || pickedLib === '' || pickedTable === '') return;
+        getCasTableInfo(pickedLib, pickedTable, pickedServer)
+          .then((casInfo) => {
+            if (optimizeUI && optimizeUI.casTableSelect.value === pickedTable) {
+              optimizeCasRowCount = casInfo.rowCount;
+              updateOptimizeState();
+            }
+          })
+          .catch(() => {
+            /* the estimate keeps showing '?' */
+          });
       });
 
       // Metric (+ judge model when the metric is the judge).

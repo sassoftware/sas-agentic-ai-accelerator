@@ -4,7 +4,7 @@ sidebar_position: 11.5
 
 # Enabling Prompt Optimization
 
-This step is optional. With it, the LLM Prompt Builder gains an **Optimize** section that improves a prompt automatically with [DSPy](https://dspy.ai): a SAS Job Execution job rewrites nothing by hand — it uses the experiment runs the prompt engineer marked as **Best Response** (or a governed CAS table) as training data, runs an optimizer (bootstrap few-shot, or MIPROv2 which also rewrites the instruction) against a metric (exact match, token-overlap F1 or an LLM judge), and records the result **on the prompt itself** for the user to review, judge and accept. Nothing is ever applied automatically.
+This step is optional. With it, the LLM Prompt Builder gains an **Optimize** section that improves a prompt automatically with [DSPy](https://dspy.ai): a SAS Job Execution job rewrites nothing by hand — it uses the experiment runs the prompt engineer marked as **Best Response** (or a governed CAS table) as training data, runs an optimizer (bootstrap few-shot; MIPROv2, which also rewrites the instruction; or GEPA, which evolves it from natural-language feedback) against a metric (exact match, token-overlap F1 or an LLM judge), and records the result **on the prompt itself** for the user to review, judge and accept. Nothing is ever applied automatically.
 
 The feature is off by default and gated behind the `enableOptimization` Option of the Prompt Builder object. Enabling it takes four steps:
 

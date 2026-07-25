@@ -14,9 +14,10 @@
       2. reads the target LLM's options.json from its Model Manager model and
          calls the model through the SAS Container Runtime (SCR) endpoint with
          a small DSPy adapter (the same 3-input contract the Builder uses),
-      3. runs a DSPy optimizer (bootstrap few-shot, or MIPROv2 which also
-         rewrites the instruction text) against the chosen metric
-         (exact match, token-overlap F1, or an LLM judge),
+      3. runs a DSPy optimizer (bootstrap few-shot; MIPROv2, which also
+         rewrites the instruction text; or GEPA, which evolves the
+         instruction from natural-language feedback) against the chosen
+         metric (exact match, token-overlap F1, or an LLM judge),
       4. bakes the optimised program back into a Prompt-Builder-shaped prompt
          and records the WHOLE run - optimised prompt, few-shot demos and the
          per-example before/after evaluations - as an entry of the prompt's
@@ -247,8 +248,19 @@ P = {k: str(v).strip() for k, v in P.items()}
 BASE = str(SAS.symget("_opt_viyaHost") or "").rstrip("/")
 TOKEN = os.environ.get("SAS_SERVICES_TOKEN", "")
 VERIFY = os.environ.get("SSLCALISTLOC") or os.environ.get("CAS_CLIENT_SSL_CA_LIST") or True
-MAX_DEMOS = max(0, min(16, int(P["maxDemos"] or "4")))
-MIN_SAMPLES = max(1, int(P["minSamples"] or "30"))
+def _int_param(raw_value, fallback):
+    """Lenient numeric-parameter parse: this runs at module level, OUTSIDE
+    main()'s try/except, where an unhandled exception would bypass the
+    always-complete failure contract (and, verified live, can wedge the
+    compute session) - so a malformed value falls back instead of raising."""
+    try:
+        return int(float(raw_value))
+    except Exception:
+        return fallback
+
+
+MAX_DEMOS = max(0, min(16, _int_param(P["maxDemos"] or "4", 4)))
+MIN_SAMPLES = max(1, _int_param(P["minSamples"] or "30", 30))
 WORKPATH = SAS.workpath if SAS.workpath.endswith(os.sep) else SAS.workpath + os.sep
 
 
@@ -286,14 +298,17 @@ def import_dependencies():
     if (version + (0, 0, 0))[:3] < MIN_DSPY_VERSION:
         minimum = ".".join(str(part) for part in MIN_DSPY_VERSION)
         fail(f"dspy {raw_version} is too old - the optimization job is validated against dspy >= {minimum}. Update the Python environment of the compute context (see Prompt-Optimization/requirements.txt).")
-    if P["optimizer"] == "miprov2":
+    # mode=compare never runs an optimizer, so the optimizer gates must not
+    # fail a comparison over a dependency the run will not use.
+    optimizer_will_run = P["mode"] != "compare"
+    if optimizer_will_run and P["optimizer"] == "miprov2":
         # dspy treats optuna (MIPROv2's trial search) as an optional extra, so
         # its absence only surfaces mid-run - verified live. Gate it up front.
         try:
             import optuna  # noqa: F401
         except Exception:
             fail("The MIPROv2 optimizer needs the optuna package - install it into the compute context Python (see Prompt-Optimization/requirements.txt) or choose the bootstrap optimizer.")
-    if P["optimizer"] == "gepa" and not hasattr(dspy_module, "GEPA"):
+    if optimizer_will_run and P["optimizer"] == "gepa" and not hasattr(dspy_module, "GEPA"):
         # The gepa engine is a HARD dependency of dspy >= 3.2.1 (unlike
         # optuna), so this only fires on a broken or hand-pruned install.
         fail("This dspy installation lacks the GEPA optimizer - reinstall dspy (>= 3.2.1, see Prompt-Optimization/requirements.txt) or choose another optimizer.")
@@ -618,7 +633,12 @@ def make_judge(judge_lm_options, task_system_prompt=""):
             raw = call_scr(P["judgeModelName"], judge_lm_options, judge_system, user, role="judge")
             match = re.search(r"\{.*\}", raw, re.DOTALL)
             verdict = json.loads(match.group(0)) if match else {}
-            return bool(verdict.get("equivalent")), str(verdict.get("reasoning") or "").strip()
+            equivalent = verdict.get("equivalent")
+            if isinstance(equivalent, str):
+                # LLMs routinely quote booleans; bool("false") is True, which
+                # would silently invert a fail into a pass.
+                equivalent = equivalent.strip().casefold() in ("true", "yes", "1")
+            return bool(equivalent), str(verdict.get("reasoning") or "").strip()
         except Exception:
             return False, ""
 

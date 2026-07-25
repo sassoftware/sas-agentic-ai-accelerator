@@ -384,7 +384,9 @@ http
                 quality: index === 1 ? 0.9 : 0.4,
                 avgLatency: index === 1 ? 1.8 : 0.7,
                 usage: { calls: 2, promptTokens: 220, outputTokens: 30, runTime: index === 1 ? 3.6 : 1.4 },
-                // Sweep rows additionally carry the per-candidate run.
+                // Sweep rows additionally carry the per-candidate run — and
+                // their evaluations use the before/after shape the real job
+                // writes for sweeps (screening rows use the flat shape).
                 ...(compareArgs.mode === 'sweep'
                   ? {
                       metricBefore: 0.3,
@@ -395,11 +397,24 @@ http
                         variables: [],
                         demos: [],
                       },
+                      evaluations: [
+                        {
+                          inputs: { userPrompt: 'User 2' },
+                          expected: 'Response two',
+                          baselineResponse: 'wrong',
+                          baselineCorrect: false,
+                          baselineScore: 0.3,
+                          optimizedResponse: 'Response two',
+                          optimizedCorrect: true,
+                          optimizedScore: 1,
+                        },
+                      ],
                     }
-                  : {}),
-                evaluations: [
-                  { inputs: { userPrompt: 'User 2' }, expected: 'Response two', response: 'Response two', correct: true, score: 1 },
-                ],
+                  : {
+                      evaluations: [
+                        { inputs: { userPrompt: 'User 2' }, expected: 'Response two', response: 'Response two', correct: true, score: 1 },
+                      ],
+                    }),
                 error: null,
               })),
               usage: {
