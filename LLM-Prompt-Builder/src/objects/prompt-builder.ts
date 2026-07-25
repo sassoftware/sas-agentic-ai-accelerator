@@ -231,6 +231,10 @@ interface OptimizationTrackerEntry {
   } | null;
   /** Set when the job skipped the optimization phase (e.g. baseline-perfect). */
   skippedReason?: string | null;
+  /** 'comparison' for a compare-targets run (Phase 4a); absent for optimize runs. */
+  type?: string;
+  /** Per-candidate results of a compare-targets run. */
+  targets?: ComparisonTargetRow[] | null;
   /** Per-role call accounting the job records from the SCR responses. */
   usage?: { target?: OptimizationUsage; judge?: OptimizationUsage } | null;
   /** Legacy (pre-history releases): the separate prompt-test a run created. */
@@ -245,6 +249,29 @@ interface OptimizationUsage {
   promptTokens?: number;
   outputTokens?: number;
   runTime?: number;
+}
+
+/** One candidate target's result inside a compare-targets tracker entry. */
+interface ComparisonTargetRow {
+  model?: string;
+  status?: 'scored' | 'unreachable' | string;
+  quality?: number | null;
+  /** Mean model run time per call in seconds (from the SCR contract). */
+  avgLatency?: number | null;
+  usage?: OptimizationUsage | null;
+  /** Sweep rows (mode=sweep) additionally carry the per-candidate run. */
+  metricBefore?: number | null;
+  metricAfter?: number | null;
+  skippedReason?: string | null;
+  optimizedPrompt?: OptimizationTrackerEntry['optimizedPrompt'];
+  evaluations?: Array<{
+    inputs?: Record<string, string>;
+    expected?: string;
+    response?: string;
+    correct?: boolean;
+    score?: number;
+  }> | null;
+  error?: string | null;
 }
 
 /** One validation example's before/after result inside a tracker entry. */
@@ -4287,6 +4314,7 @@ ${scoreCodeReturn}`;
           maxDemosInput: HTMLInputElement;
           samplesHint: HTMLElement;
           estimateLine: HTMLElement;
+          compareButton: HTMLButtonElement;
           runButton: HTMLButtonElement;
           runWrapper: HTMLSpanElement;
           statusLine: HTMLElement;
@@ -4544,6 +4572,9 @@ ${scoreCodeReturn}`;
       else if (selectedOptimizer === 'gepa' && optimizeUI.judgeSelect.value === '')
         disabledHint = `${promptBuilderInterfaceText?.promptBuilderOptimizeGepaNeedsJudge}`;
       setDisabledHint(optimizeUI.runButton, optimizeUI.runWrapper, disabledHint !== '', disabledHint);
+      // The compare entry point only needs a prompt and a quiet job slot —
+      // its own modal handles candidate/sample validation.
+      optimizeUI.compareButton.disabled = optimizeJobActive || !configReady || !promptSelected;
       // Follow the selection: render the selected prompt's optimization
       // history (no-op while the selection is unchanged).
       void refreshOptimizationHistory();
@@ -4690,8 +4721,11 @@ ${scoreCodeReturn}`;
       // the runs used (fetched lazily) — best effort before rendering.
       const usedModels = new Set<string>();
       (trackerEntries ?? []).forEach((entry) => {
-        if (entry.targetModel) usedModels.add(entry.targetModel);
+        if (entry.targetModel && entry.type !== 'comparison') usedModels.add(entry.targetModel);
         if (entry.judgeModel) usedModels.add(entry.judgeModel);
+        (entry.targets ?? []).forEach((targetRow) => {
+          if (targetRow.model) usedModels.add(targetRow.model);
+        });
       });
       try {
         await Promise.all([...usedModels].map((name) => ensureLLMCostAttributes(name)));
@@ -4707,6 +4741,22 @@ ${scoreCodeReturn}`;
       return value === null || value === undefined || !Number.isFinite(Number(value))
         ? '—'
         : String(Math.round(Number(value) * 1000) / 1000);
+    }
+
+    /**
+     * Rank a comparison's candidate rows the way MMDSPy ranks endpoints:
+     * best quality first, lower latency breaking ties — with unreachable
+     * candidates sorted to the bottom.
+     */
+    function rankComparisonTargets(targetRows: ComparisonTargetRow[]): ComparisonTargetRow[] {
+      return targetRows.slice().sort((a, b) => {
+        const aScored = a.status === 'scored' ? 0 : 1;
+        const bScored = b.status === 'scored' ? 0 : 1;
+        if (aScored !== bScored) return aScored - bScored;
+        const qualityDelta = (Number(b.quality) || 0) - (Number(a.quality) || 0);
+        if (qualityDelta !== 0) return qualityDelta;
+        return (Number(a.avgLatency) || 0) - (Number(b.avgLatency) || 0);
+      });
     }
 
     /** Render the optimization runs (newest first) under the Optimize panel. */
@@ -4739,17 +4789,33 @@ ${scoreCodeReturn}`;
         : `${promptBuilderInterfaceText?.promptBuilderOptimizeStatusFailed}`;
       summary.appendChild(statusBadge);
       const finished = entry.finishedAt ? new Date(entry.finishedAt) : null;
+      const isComparison = entry.type === 'comparison';
       const summaryParts = [
         `#${entry.optimizationId ?? '?'}`,
         finished && !Number.isNaN(finished.getTime()) ? finished.toLocaleString() : '',
         entry.targetModel ?? '',
-        [entry.optimizer, entry.metric].filter(Boolean).join(' · '),
+        (isComparison
+          ? // A screening has no optimizer; a sweep names the one it ran.
+            [`${promptBuilderInterfaceText?.promptBuilderOptimizeCompareLabel}`, entry.optimizer, entry.metric]
+          : [entry.optimizer, entry.metric]
+        )
+          .filter(Boolean)
+          .join(' · '),
         entry.sampleCount != null
           ? `${entry.sampleCount} ${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryExamples}`
           : '',
       ].filter((part) => part !== '');
       summary.appendChild(document.createTextNode(summaryParts.join('  |  ') + '  '));
-      if (succeeded) {
+      if (succeeded && isComparison) {
+        // A comparison has no before/after — its headline is the winner.
+        const winner = rankComparisonTargets(entry.targets ?? [])[0];
+        if (winner?.model && winner.status === 'scored') {
+          const winnerSpan = document.createElement('span');
+          winnerSpan.classList.add('fw-bold');
+          winnerSpan.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareBest} ${winner.model} ${formatOptimizeMetric(winner.quality)}`;
+          summary.appendChild(winnerSpan);
+        }
+      } else if (succeeded) {
         const metricSpan = document.createElement('span');
         metricSpan.classList.add('fw-bold');
         metricSpan.innerText = `${formatOptimizeMetric(entry.metricBefore)} → ${formatOptimizeMetric(entry.metricAfter)}`;
@@ -4855,10 +4921,14 @@ ${scoreCodeReturn}`;
       // tracker entry, priced with the same per-token/per-second attributes
       // the run table uses (blank when a model carries no prices).
       if (entry.usage) {
-        const roles: Array<[string | null | undefined, OptimizationUsage | null | undefined]> = [
-          [entry.targetModel, entry.usage.target],
-          [entry.judgeModel, entry.usage.judge],
-        ];
+        // For a comparison the per-target spend lives in the ranked table
+        // rows; only the judge's extra calls are worth a summary line.
+        const roles: Array<[string | null | undefined, OptimizationUsage | null | undefined]> = isComparison
+          ? [[entry.judgeModel, entry.usage.judge]]
+          : [
+              [entry.targetModel, entry.usage.target],
+              [entry.judgeModel, entry.usage.judge],
+            ];
         const callParts: string[] = [];
         let promptTokens = 0;
         let outputTokens = 0;
@@ -4895,6 +4965,111 @@ ${scoreCodeReturn}`;
           usageLine.innerText = usageText;
           body.appendChild(usageLine);
         }
+      }
+
+      // Ranked candidate table of a compare-targets run: quality first,
+      // latency as the tiebreak (MMDSPy's ordering) plus the cost dimension,
+      // with an "optimize this target" handoff into the single-target flow.
+      const rankedTargets = isComparison ? rankComparisonTargets(entry.targets ?? []) : [];
+      if (rankedTargets.length > 0) {
+        const compareTable = document.createElement('table');
+        compareTable.classList.add('table', 'table-sm', 'pb-optimize-compare-table', 'mt-2');
+        const compareHead = document.createElement('thead');
+        const compareHeadRow = document.createElement('tr');
+        [
+          promptBuilderInterfaceText?.promptBuilderOptimizeCompareModelHeader,
+          promptBuilderInterfaceText?.promptBuilderOptimizeCompareQualityHeader,
+          promptBuilderInterfaceText?.promptBuilderOptimizeCompareLatencyHeader,
+          promptBuilderInterfaceText?.promptBuilderOptimizeCompareCallsHeader,
+          promptBuilderInterfaceText?.promptBuilderOptimizeCompareCostHeader,
+          '',
+        ].forEach((headerText) => {
+          const th = document.createElement('th');
+          th.innerText = `${headerText}`;
+          compareHeadRow.appendChild(th);
+        });
+        compareHead.appendChild(compareHeadRow);
+        compareTable.appendChild(compareHead);
+        const compareBody = document.createElement('tbody');
+        let winnerMarked = false;
+        rankedTargets.forEach((targetRow) => {
+          const tr = document.createElement('tr');
+          const scored = targetRow.status === 'scored';
+          if (scored && !winnerMarked) {
+            tr.classList.add('table-success');
+            winnerMarked = true;
+          }
+          if (!scored) tr.classList.add('table-warning');
+          const modelCell = document.createElement('td');
+          modelCell.innerText = String(targetRow.model ?? '');
+          const qualityCell = document.createElement('td');
+          if (scored && targetRow.metricBefore != null) {
+            // A sweep row shows its own before → after evolution.
+            qualityCell.innerText = `${formatOptimizeMetric(targetRow.metricBefore)} → ${formatOptimizeMetric(targetRow.metricAfter)}`;
+          } else if (scored) {
+            qualityCell.innerText = formatOptimizeMetric(targetRow.quality);
+          } else {
+            const unreachableBadge = document.createElement('span');
+            unreachableBadge.classList.add('badge', 'bg-warning', 'text-dark');
+            unreachableBadge.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareUnreachable}`;
+            if (targetRow.error) unreachableBadge.title = targetRow.error;
+            qualityCell.appendChild(unreachableBadge);
+          }
+          const latencyCell = document.createElement('td');
+          latencyCell.innerText =
+            scored && typeof targetRow.avgLatency === 'number' ? `${targetRow.avgLatency.toFixed(2)}s` : '—';
+          const callsCell = document.createElement('td');
+          callsCell.innerText = String(targetRow.usage?.calls ?? 0);
+          const costCell = document.createElement('td');
+          const rowCost = computeCallCost(
+            {
+              prompt_length: targetRow.usage?.promptTokens,
+              output_length: targetRow.usage?.outputTokens,
+              run_time: targetRow.usage?.runTime,
+            },
+            targetRow.model ? llmAttributesByName.get(targetRow.model) : undefined
+          );
+          costCell.innerText = rowCost !== null ? formatCost(rowCost) : '—';
+          const actionCell = document.createElement('td');
+          if (scored && targetRow.model && targetRow.optimizedPrompt) {
+            // Sweep rows carry the candidate's optimised prompt — load it
+            // into the workbench like a single-run result.
+            const loadRowButton = document.createElement('button');
+            loadRowButton.type = 'button';
+            loadRowButton.classList.add('btn', 'btn-outline-primary', 'btn-sm', 'pb-optimize-compare-load');
+            loadRowButton.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryLoadButton}`;
+            loadRowButton.onclick = (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              loadOptimizationAsExperiment({
+                optimizedPrompt: targetRow.optimizedPrompt,
+                targetModel: targetRow.model,
+              });
+            };
+            actionCell.appendChild(loadRowButton);
+          } else if (scored && targetRow.model) {
+            const pickButton = document.createElement('button');
+            pickButton.type = 'button';
+            pickButton.classList.add('btn', 'btn-outline-primary', 'btn-sm', 'pb-optimize-compare-pick');
+            pickButton.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareOptimizeThis}`;
+            pickButton.onclick = (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (!optimizeUI) return;
+              optimizeUI.targetSelect.value = String(targetRow.model);
+              optimizeUI.targetSelect.dispatchEvent(new Event('change'));
+              optimizeUI.targetSelect.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeCompareTargetSetToast}`);
+            };
+            actionCell.appendChild(pickButton);
+          }
+          [modelCell, qualityCell, latencyCell, callsCell, costCell, actionCell].forEach((cell) =>
+            tr.appendChild(cell)
+          );
+          compareBody.appendChild(tr);
+        });
+        compareTable.appendChild(compareBody);
+        body.appendChild(compareTable);
       }
 
       const evaluations = entry.evaluations ?? [];
@@ -5047,6 +5222,18 @@ ${scoreCodeReturn}`;
         return;
       }
 
+      if (entry.type === 'comparison') {
+        // A comparison has no before/after — point at the ranked table in
+        // the history, which refreshOptimizationHistory renders below.
+        const compareHeading = document.createElement('p');
+        compareHeading.classList.add('fw-bold', 'mb-1');
+        compareHeading.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareDone}`;
+        optimizeUI.resultBox.appendChild(compareHeading);
+        void refreshOptimizationHistory(true);
+        showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeCompareDone}`);
+        return;
+      }
+
       // Brief summary in the result box; the full outcome — evolution details
       // and the load-as-experiment action — lives in the history below.
       const resultHeading = document.createElement('p');
@@ -5058,6 +5245,87 @@ ${scoreCodeReturn}`;
       optimizeUI.resultBox.appendChild(resultHeading);
       void refreshOptimizationHistory(true);
       showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeDone}`);
+    }
+
+    /**
+     * Validate the panel's dataset selection for a launch. For the CAS source
+     * the table's columns must cover the prompt's variables (or userPrompt)
+     * plus response, and its row count must clear `minRows` (§6.3 of the
+     * design). Returns the selection to send with the job, or null when
+     * validation failed (a toast has been shown).
+     */
+    async function validateOptimizeDatasetSelection(
+      minRows: number
+    ): Promise<{ casSource: boolean; casServer: string; casLibrary: string; casTable: string } | null> {
+      if (!optimizeUI) return null;
+      const casSource = optimizeUI.datasetCasRadio.checked;
+      const casServer = casSource ? optimizeUI.casServerSelect.value : '';
+      const casLibrary = casSource ? optimizeUI.casLibSelect.value : '';
+      const casTable = casSource ? optimizeUI.casTableSelect.value : '';
+      if (!casSource) return { casSource, casServer, casLibrary, casTable };
+      if (casServer === '' || casLibrary === '' || casTable === '') {
+        showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeCasMissingToast}`);
+        return null;
+      }
+      let casInfo;
+      try {
+        casInfo = await getCasTableInfo(casLibrary, casTable, casServer);
+      } catch {
+        showToast(
+          `${promptBuilderInterfaceText?.promptBuilderOptimizeCasTableUnavailable}`.replace(
+            '{table}',
+            `${casLibrary}.${casTable}`
+          )
+        );
+        return null;
+      }
+      const columnNames = casInfo.columns.map((column) => column.toLowerCase());
+      const variableNames = collectPromptVariables().map((variable) => variable.name);
+      const expectedColumns = (variableNames.length > 0 ? variableNames : ['userPrompt']).concat('response');
+      const missingColumns = expectedColumns.filter((name) => !columnNames.includes(name.toLowerCase()));
+      if (missingColumns.length > 0) {
+        showToast(
+          `${promptBuilderInterfaceText?.promptBuilderOptimizeCasColumnsMissing}`.replace(
+            '{columns}',
+            missingColumns.join(', ')
+          )
+        );
+        return null;
+      }
+      if (casInfo.rowCount < minRows) {
+        showToast(
+          `${promptBuilderInterfaceText?.promptBuilderOptimizeCasRowsBelowMin}`
+            .replace('{rows}', String(casInfo.rowCount))
+            .replace('{min}', String(minRows))
+        );
+        return null;
+      }
+      return { casSource, casServer, casLibrary, casTable };
+    }
+
+    /**
+     * Shared post-launch wiring for optimize and compare runs: record the job
+     * id, reveal + reset the run log, and start the runtime ticker and the
+     * poll loop. Throws when Job Execution returned no id.
+     */
+    function startOptimizeJobMonitor(job: JobExecutionJob): void {
+      if (!optimizeUI) return;
+      optimizeJobId = String(job.id ?? '');
+      if (optimizeJobId === '') {
+        throw new Error('Job Execution returned no job id.');
+      }
+      optimizeUI.statusLine.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobState} ${job.state ?? 'pending'}`;
+      // Reset + reveal the collapsed run log for this run; the runtime
+      // ticks browser-side every second.
+      optimizeJobStartedAt = Date.now();
+      optimizeUI.logList.innerText = '';
+      delete optimizeUI.logList.dataset.pending;
+      optimizeUI.logDetails.classList.remove('d-none');
+      updateOptimizeRuntimeDisplay();
+      startOptimizeRuntimeTicker();
+      optimizePollHandle = window.setInterval(() => {
+        void pollOptimizeJob();
+      }, 5000);
     }
 
     /** Save the prompt, launch the optimize job and start polling it. */
@@ -5089,52 +5357,9 @@ ${scoreCodeReturn}`;
         showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeGepaNeedsJudge}`);
         return;
       }
-      // CAS dataset source: validate the table BEFORE launching — its columns
-      // must cover the prompt's variables (or userPrompt) plus response, and
-      // its row count must clear the sample minimum (§6.3 of the design).
-      const casSource = optimizeUI.datasetCasRadio.checked;
-      const casServer = casSource ? optimizeUI.casServerSelect.value : '';
-      const casLibrary = casSource ? optimizeUI.casLibSelect.value : '';
-      const casTable = casSource ? optimizeUI.casTableSelect.value : '';
-      if (casSource) {
-        if (casServer === '' || casLibrary === '' || casTable === '') {
-          showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeCasMissingToast}`);
-          return;
-        }
-        let casInfo;
-        try {
-          casInfo = await getCasTableInfo(casLibrary, casTable, casServer);
-        } catch {
-          showToast(
-            `${promptBuilderInterfaceText?.promptBuilderOptimizeCasTableUnavailable}`.replace(
-              '{table}',
-              `${casLibrary}.${casTable}`
-            )
-          );
-          return;
-        }
-        const columnNames = casInfo.columns.map((column) => column.toLowerCase());
-        const variableNames = collectPromptVariables().map((variable) => variable.name);
-        const expectedColumns = (variableNames.length > 0 ? variableNames : ['userPrompt']).concat('response');
-        const missingColumns = expectedColumns.filter((name) => !columnNames.includes(name.toLowerCase()));
-        if (missingColumns.length > 0) {
-          showToast(
-            `${promptBuilderInterfaceText?.promptBuilderOptimizeCasColumnsMissing}`.replace(
-              '{columns}',
-              missingColumns.join(', ')
-            )
-          );
-          return;
-        }
-        if (casInfo.rowCount < optimizeMinSamples()) {
-          showToast(
-            `${promptBuilderInterfaceText?.promptBuilderOptimizeCasRowsBelowMin}`
-              .replace('{rows}', String(casInfo.rowCount))
-              .replace('{min}', String(optimizeMinSamples()))
-          );
-          return;
-        }
-      }
+      const datasetSelection = await validateOptimizeDatasetSelection(optimizeMinSamples());
+      if (datasetSelection === null) return;
+      const { casSource, casServer, casLibrary, casTable } = datasetSelection;
       const targetLLM = promptBuilderAvailableLLMs.find((availableLLM) => availableLLM.name === targetModelName);
 
       optimizeJobActive = true;
@@ -5175,22 +5400,262 @@ ${scoreCodeReturn}`;
           keyLibrary: String(promptBuilderObject?.optimizeKeyLibrary ?? ''),
           keyTable: String(promptBuilderObject?.optimizeKeyTable ?? ''),
         });
-        optimizeJobId = String(job.id ?? '');
-        if (optimizeJobId === '') {
-          throw new Error('Job Execution returned no job id.');
+        startOptimizeJobMonitor(job);
+      } catch (error) {
+        stopOptimizePolling();
+        optimizeUI.resultBox.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed} ${String(
+          (error as Error)?.message ?? error
+        )}`;
+        showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed}`);
+        resetOptimizeRunButton();
+      }
+    }
+
+    /** The compare-mode sample floor: nothing is trained, so a comparison may
+     *  run on smaller sets than an optimization — with a noise warning. */
+    const COMPARE_MIN_SAMPLES = 10;
+
+    /**
+     * "Compare targets…" (Phase 4a): pick 2+ candidate LLMs in a modal, then
+     * launch the SAME job in compare mode — the baseline prompt is scored on
+     * every candidate (no optimizer runs) and the ranked comparison lands in
+     * the optimization history, where each row offers the handoff into the
+     * normal single-target optimization.
+     */
+    async function openCompareTargetsModal(): Promise<void> {
+      if (!optimizeUI) return;
+      if (optimizeJobActive) {
+        showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeAlreadyRunning}`);
+        return;
+      }
+      const promptSelected =
+        promptBuilderPromptSelectorDropdown.value !== '' &&
+        promptBuilderPromptSelectorDropdown.value !== `${promptBuilderInterfaceText?.promptSelect}`;
+      if (!promptSelected) {
+        showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeNoPrompt}`);
+        return;
+      }
+      const metric = ['judge', 'overlap'].includes(optimizeUI.metricSelect.value)
+        ? optimizeUI.metricSelect.value
+        : 'exact';
+      // Sample count for the estimate: the tracker count is known; a CAS
+      // table's row count is fetched best-effort when one is fully selected.
+      let samples = optimizeUI.datasetCasRadio.checked ? NaN : countOptimizeSamples();
+      if (
+        optimizeUI.datasetCasRadio.checked &&
+        optimizeUI.casServerSelect.value !== '' &&
+        optimizeUI.casLibSelect.value !== '' &&
+        optimizeUI.casTableSelect.value !== ''
+      ) {
+        try {
+          const casInfo = await getCasTableInfo(
+            optimizeUI.casLibSelect.value,
+            optimizeUI.casTableSelect.value,
+            optimizeUI.casServerSelect.value
+          );
+          samples = casInfo.rowCount;
+        } catch {
+          /* estimate renders without a sample count */
         }
-        optimizeUI.statusLine.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobState} ${job.state ?? 'pending'}`;
-        // Reset + reveal the collapsed run log for this run; the runtime
-        // ticks browser-side every second.
-        optimizeJobStartedAt = Date.now();
-        optimizeUI.logList.innerText = '';
-        delete optimizeUI.logList.dataset.pending;
-        optimizeUI.logDetails.classList.remove('d-none');
-        updateOptimizeRuntimeDisplay();
-        startOptimizeRuntimeTicker();
-        optimizePollHandle = window.setInterval(() => {
-          void pollOptimizeJob();
-        }, 5000);
+      }
+
+      const intro = document.createElement('p');
+      intro.classList.add('mb-2');
+      intro.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareIntro}`;
+      // Screen-only (4a) vs optimize-each (4b): pre-screen cheaply, then
+      // sweep only the promising candidates — or sweep directly.
+      const modeBlock = document.createElement('div');
+      modeBlock.classList.add('mb-2');
+      const modeName = `${paneID}-obj-${promptBuilderObject?.id}-optimize-compare-mode`;
+      const makeModeRadio = (value: string, labelText: unknown, checked: boolean): HTMLInputElement => {
+        const wrapper = document.createElement('div');
+        wrapper.classList.add('form-check');
+        const radio = document.createElement('input');
+        radio.classList.add('form-check-input');
+        radio.type = 'radio';
+        radio.name = modeName;
+        radio.id = `${modeName}-${value}`;
+        radio.value = value;
+        radio.checked = checked;
+        const radioLabel = document.createElement('label');
+        radioLabel.classList.add('form-check-label');
+        radioLabel.htmlFor = radio.id;
+        radioLabel.innerText = `${labelText}`;
+        wrapper.appendChild(radio);
+        wrapper.appendChild(radioLabel);
+        modeBlock.appendChild(wrapper);
+        return radio;
+      };
+      const screenRadio = makeModeRadio(
+        'compare',
+        promptBuilderInterfaceText?.promptBuilderOptimizeCompareModeScreen,
+        true
+      );
+      const sweepRadio = makeModeRadio(
+        'sweep',
+        `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareModeSweep}`.replace(
+          '{optimizer}',
+          optimizeUI.optimizerSelect.value
+        ),
+        false
+      );
+      const candidateList = document.createElement('div');
+      candidateList.classList.add('mb-2');
+      const candidateBoxes: HTMLInputElement[] = [];
+      promptBuilderAvailableLLMs.forEach((availableLLM, index) => {
+        const wrapper = document.createElement('div');
+        wrapper.classList.add('form-check');
+        const checkbox = document.createElement('input');
+        checkbox.classList.add('form-check-input');
+        checkbox.type = 'checkbox';
+        checkbox.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-compare-model-${index}`;
+        checkbox.value = availableLLM.name;
+        checkbox.checked = availableLLM.name === optimizeUI?.targetSelect.value;
+        const checkboxLabel = document.createElement('label');
+        checkboxLabel.classList.add('form-check-label');
+        checkboxLabel.htmlFor = checkbox.id;
+        checkboxLabel.innerText = availableLLM.name;
+        wrapper.appendChild(checkbox);
+        wrapper.appendChild(checkboxLabel);
+        candidateList.appendChild(wrapper);
+        candidateBoxes.push(checkbox);
+      });
+      const estimateLine = document.createElement('small');
+      estimateLine.classList.add('text-muted', 'd-block');
+      const updateCompareEstimate = (): void => {
+        const selectedCount = candidateBoxes.filter((box) => box.checked).length;
+        const perTarget = Number.isFinite(samples) ? Number(samples) : 0;
+        // Screening: per target one smoke call + one call per example
+        // (doubled by the judge metric's extra scoring call per example).
+        // Sweep: per target a FULL optimization run — the same per-optimizer
+        // factors the panel's estimate uses.
+        let perTargetCalls = 1 + perTarget * (metric === 'judge' ? 2 : 1);
+        if (sweepRadio.checked) {
+          const sweepOptimizer = optimizeUI?.optimizerSelect.value ?? 'bootstrap';
+          perTargetCalls =
+            sweepOptimizer === 'gepa'
+              ? perTarget * 75 + 60
+              : sweepOptimizer === 'miprov2'
+                ? perTarget * 8 + 30
+                : perTarget * 3 + 10;
+        }
+        estimateLine.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareEstimate}`
+          .replace('{calls}', Number.isFinite(samples) ? String(selectedCount * perTargetCalls) : '?')
+          .replace('{targets}', String(selectedCount));
+      };
+      candidateBoxes.forEach((box) => box.addEventListener('change', updateCompareEstimate));
+      screenRadio.addEventListener('change', updateCompareEstimate);
+      sweepRadio.addEventListener('change', updateCompareEstimate);
+      updateCompareEstimate();
+      const modalBody: (HTMLElement | string)[] = [intro, modeBlock, candidateList, estimateLine];
+      if (Number.isFinite(samples) && Number(samples) < 30) {
+        const noiseWarning = document.createElement('small');
+        noiseWarning.classList.add('text-warning', 'd-block');
+        noiseWarning.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareNoiseWarning}`;
+        modalBody.push(noiseWarning);
+      }
+
+      const confirmed = await showConfirmModal({
+        title: `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareTitle}`,
+        body: modalBody,
+        confirmText: `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareConfirm}`,
+        cancelText: `${promptBuilderInterfaceText?.promptBuilderDeleteCancelButton}`,
+        confirmClass: 'btn-primary',
+      });
+      if (!confirmed) return;
+      const sweepMode = sweepRadio.checked;
+      const selectedNames = candidateBoxes.filter((box) => box.checked).map((box) => box.value);
+      if (selectedNames.length < 2) {
+        showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeCompareMinTargets}`);
+        return;
+      }
+      // Screening only evaluates (fixed floor of 10); a sweep TRAINS per
+      // candidate, so the full configured minimum applies.
+      const requiredSamples = sweepMode ? optimizeMinSamples() : COMPARE_MIN_SAMPLES;
+      if (Number.isFinite(samples) && Number(samples) < requiredSamples) {
+        showToast(
+          sweepMode
+            ? `${promptBuilderInterfaceText?.promptBuilderOptimizeSamplesBelowMin}`.replace(
+                '{min}',
+                String(requiredSamples)
+              )
+            : `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareMinSamples}`
+        );
+        return;
+      }
+      await promptBuilderRunComparison(selectedNames, metric, sweepMode);
+    }
+
+    /** Save the prompt, launch the job in compare/sweep mode and start polling. */
+    async function promptBuilderRunComparison(
+      targetNames: string[],
+      metric: string,
+      sweepMode: boolean
+    ): Promise<void> {
+      if (!optimizeUI || optimizeJobActive) return;
+      const promptModelId = promptBuilderPromptSelectorDropdown.value;
+      const promptName =
+        promptBuilderPromptSelectorDropdown.options[promptBuilderPromptSelectorDropdown.selectedIndex]?.text ?? '';
+      const optimizer = ['miprov2', 'gepa'].includes(optimizeUI.optimizerSelect.value)
+        ? optimizeUI.optimizerSelect.value
+        : 'bootstrap';
+      // A sweep runs the panel's optimizer per candidate, so it inherits the
+      // optimizer's judge requirement (GEPA reflection) too.
+      const judgeModelName =
+        metric === 'judge' || (sweepMode && optimizer === 'gepa') ? optimizeUI.judgeSelect.value : '';
+      if (metric === 'judge' && judgeModelName === '') {
+        showToast(`${promptBuilderInterfaceText?.promptBuilderJudgeSelectModelToast}`);
+        return;
+      }
+      if (sweepMode && optimizer === 'gepa' && judgeModelName === '') {
+        showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeGepaNeedsJudge}`);
+        return;
+      }
+      const datasetSelection = await validateOptimizeDatasetSelection(
+        sweepMode ? optimizeMinSamples() : COMPARE_MIN_SAMPLES
+      );
+      if (datasetSelection === null) return;
+      const { casSource, casServer, casLibrary, casTable } = datasetSelection;
+
+      optimizeJobActive = true;
+      optimizeSourceModelId = promptModelId;
+      optimizeJobId = '';
+      updateOptimizeState();
+      optimizeUI.resultBox.innerHTML = '';
+      optimizeUI.statusLine.innerText = '';
+      optimizeUI.runButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText?.promptBuilderOptimizeRunButtonStatus}`;
+
+      try {
+        // Save first so the job reads the exact prompt (and tracker) the user
+        // sees — same contract as an optimization launch.
+        if (petRows.length > 0 || experimentsModified) {
+          await promptBuilderSaveExperiments();
+        }
+        const jobDefinitionUri = await resolveJobDefinitionUri(String(promptBuilderObject?.optimizeJobProgram ?? ''));
+        const maxDemos = Math.max(0, Math.min(16, Number(optimizeUI.maxDemosInput.value) || 4));
+        const job = await launchJob(jobDefinitionUri, `Compare targets for ${promptName}`, {
+          _contextName: String(promptBuilderObject?.computeContext ?? ''),
+          promptModelId,
+          promptName,
+          mode: sweepMode ? 'sweep' : 'compare',
+          targetModelNames: targetNames.join(','),
+          targetModelId: '',
+          targetModelName: '',
+          scrEndpoint: String(promptBuilderObject?.SCREndpoint ?? ''),
+          deploymentType: String(promptBuilderObject?.deploymentType ?? 'k8s'),
+          datasetSource: casSource ? 'cas' : 'tracker',
+          casServer,
+          casLibrary,
+          casTable,
+          metric,
+          judgeModelName,
+          optimizer: sweepMode ? optimizer : 'bootstrap',
+          maxDemos: sweepMode ? String(maxDemos) : '0',
+          minSamples: String(sweepMode ? optimizeMinSamples() : COMPARE_MIN_SAMPLES),
+          keyLibrary: String(promptBuilderObject?.optimizeKeyLibrary ?? ''),
+          keyTable: String(promptBuilderObject?.optimizeKeyTable ?? ''),
+        });
+        startOptimizeJobMonitor(job);
       } catch (error) {
         stopOptimizePolling();
         optimizeUI.resultBox.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed} ${String(
@@ -5258,6 +5723,17 @@ ${scoreCodeReturn}`;
       });
       targetRow.appendChild(targetLabel);
       targetRow.appendChild(optimizeTargetSelect);
+      // Phase 4a: baseline screening across several candidate targets — an
+      // explicit modal entry point so the single-target flow stays untouched.
+      const optimizeCompareButton = document.createElement('button');
+      optimizeCompareButton.type = 'button';
+      optimizeCompareButton.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-compare`;
+      optimizeCompareButton.classList.add('btn', 'btn-outline-secondary', 'btn-sm');
+      optimizeCompareButton.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareButton}`;
+      optimizeCompareButton.onclick = () => {
+        void openCompareTargetsModal();
+      };
+      targetRow.appendChild(optimizeCompareButton);
 
       // Dataset source: the prompt's experiments (default), or a governed CAS
       // table built from the shipped Create-Optimization-Dataset.sas template.
@@ -5521,6 +5997,7 @@ ${scoreCodeReturn}`;
 
       optimizeUI = {
         targetSelect: optimizeTargetSelect,
+        compareButton: optimizeCompareButton,
         metricSelect: optimizeMetricSelect,
         optimizerSelect: optimizeOptimizerSelect,
         datasetTrackerRadio,

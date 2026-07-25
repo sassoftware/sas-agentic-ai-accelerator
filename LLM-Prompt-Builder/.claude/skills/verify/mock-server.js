@@ -84,6 +84,9 @@ let jobLaunched = false;
 // failed tracker entry — mirroring the shipped job's failure path.
 let failNextJob = false;
 let failJobPolls = 0;
+// Set when the most recent launch was a compare-mode run (Phase 4a): job-1
+// then completes into a comparison entry echoing the requested candidates.
+let compareArgs = null;
 // The Builder can delete optimization runs: it removes the tracker content
 // and re-uploads the remaining entries, which the mock mirrors statefully.
 let optTrackerDeleted = false;
@@ -284,7 +287,15 @@ http
         return json(res, 200, { items: [{ name: 'Public' }, { name: 'casuser' }] });
       }
       if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables') {
-        return json(res, 200, { items: [{ name: 'OPT_DATA' }, { name: 'BAD_COLS' }, { name: 'GHOST' }] });
+        return json(res, 200, { items: [{ name: 'OPT_DATA' }, { name: 'BIG_DATA' }, { name: 'BAD_COLS' }, { name: 'GHOST' }] });
+      }
+      // BIG_DATA clears the compare-mode floor of 10 rows (OPT_DATA's 5 rows
+      // exercise the too-small path).
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/BIG_DATA') {
+        return json(res, 200, { name: 'BIG_DATA', rowCount: 12 });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/BIG_DATA/columns') {
+        return json(res, 200, { items: [{ name: 'userPrompt' }, { name: 'response' }] });
       }
       if (p === '/casManagement/servers/cas-shared-default/caslibs/casuser/tables') {
         return json(res, 200, { items: [] });
@@ -320,8 +331,10 @@ http
         // Echo the launch configuration into the success entry, like the real
         // job records exactly what it was launched with (lets a verify script
         // assert e.g. a GEPA run's history row shows gepa + its judge model).
+        compareArgs = null;
         try {
           const args = JSON.parse(raw).arguments || {};
+          if (args.mode === 'compare' || args.mode === 'sweep') compareArgs = args;
           if (args.optimizer) successEntry.optimizer = args.optimizer;
           if (args.metric) successEntry.metric = args.metric;
           successEntry.judgeModel = args.judgeModelName || null;
@@ -339,7 +352,65 @@ http
         if (jobPolls < 4) return json(res, 200, { id: 'job-1', state: 'running', results: computeResults });
         // The run's tracker entry appears exactly once, like the real job writes it.
         if (!optimizationTracker.some((entry) => entry.jobId === 'job-1')) {
-          optimizationTracker.push(successEntry);
+          if (compareArgs) {
+            // A compare-mode launch completes into a comparison entry whose
+            // candidates echo the request. Qualities are assigned so the
+            // SECOND selected name wins - a verify script can assert the
+            // ranked table reorders rows instead of keeping request order.
+            const names = String(compareArgs.targetModelNames || '')
+              .split(',')
+              .map((n) => n.trim())
+              .filter(Boolean);
+            optimizationTracker.push({
+              optimizationId: optimizationTracker.length + 1,
+              startedAt: '2026-07-25T09:00:00Z',
+              finishedAt: '2026-07-25T09:03:00Z',
+              status: 'succeeded',
+              jobId: 'job-1',
+              type: 'comparison',
+              targetModel: names.join(', '),
+              datasetSource: compareArgs.datasetSource || 'tracker',
+              sampleCount: 1,
+              // A screening carries no optimizer; a sweep names the one it ran.
+              optimizer: compareArgs.mode === 'sweep' ? compareArgs.optimizer || 'bootstrap' : null,
+              metric: compareArgs.metric || 'exact',
+              judgeModel: compareArgs.judgeModelName || null,
+              metricBefore: null,
+              metricAfter: null,
+              baselinePrompt: { systemPrompt: 'Sys 2', userPrompt: 'User 2' },
+              targets: names.map((name, index) => ({
+                model: name,
+                status: 'scored',
+                quality: index === 1 ? 0.9 : 0.4,
+                avgLatency: index === 1 ? 1.8 : 0.7,
+                usage: { calls: 2, promptTokens: 220, outputTokens: 30, runTime: index === 1 ? 3.6 : 1.4 },
+                // Sweep rows additionally carry the per-candidate run.
+                ...(compareArgs.mode === 'sweep'
+                  ? {
+                      metricBefore: 0.3,
+                      metricAfter: index === 1 ? 0.9 : 0.4,
+                      optimizedPrompt: {
+                        systemPrompt: `Optimised for ${name}.`,
+                        userPrompt: 'User 2',
+                        variables: [],
+                        demos: [],
+                      },
+                    }
+                  : {}),
+                evaluations: [
+                  { inputs: { userPrompt: 'User 2' }, expected: 'Response two', response: 'Response two', correct: true, score: 1 },
+                ],
+                error: null,
+              })),
+              usage: {
+                target: { calls: 2 * names.length, promptTokens: 440, outputTokens: 60, runTime: 5.0 },
+                judge: { calls: 0, promptTokens: 0, outputTokens: 0, runTime: 0 },
+              },
+              error: null,
+            });
+          } else {
+            optimizationTracker.push(successEntry);
+          }
         }
         return json(res, 200, { id: 'job-1', state: 'completed', logLocation: '/files/files/joblog-1', results: computeResults });
       }

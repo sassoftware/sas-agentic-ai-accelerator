@@ -39,8 +39,21 @@
     arrives as a macro variable of the same name):
       promptModelId    - the prompt-test model being optimised (required)
       promptName       - its display name (required)
-      targetModelId    - the LLM model in Model Manager to optimise for (required)
-      targetModelName  - its SCR module/model name (required)
+      mode             - optimize (default) runs an optimizer on one target;
+                         compare scores the CURRENT prompt on several
+                         candidate targets instead (baseline screening - no
+                         optimizer runs); sweep additionally runs the chosen
+                         optimizer on EVERY candidate and ranks them by the
+                         optimised metric (many times the calls of a
+                         compare). Both record one ranked comparison entry
+                         with per-target quality, latency and usage
+      targetModelId    - the LLM model in Model Manager to optimise for
+                         (required when mode=optimize)
+      targetModelName  - its SCR module/model name (required when
+                         mode=optimize)
+      targetModelNames - comma-separated LLM model names to score against
+                         each other (required when mode=compare or sweep;
+                         the models are resolved by name in Model Manager)
       scrEndpoint      - base URL of the SCR endpoint (required)
       deploymentType   - k8s (default) or aca
       datasetSource    - tracker (default, the prompt's experiment runs) or
@@ -85,6 +98,8 @@
     %else %if %superq(&name.) = %then %let &name. = &value.;
 %mend _opt_default;
 
+%_opt_default(mode, optimize);
+%_opt_default(targetModelNames, );
 %_opt_default(deploymentType, k8s);
 %_opt_default(datasetSource, tracker);
 %_opt_default(metric, exact);
@@ -221,7 +236,8 @@ def progress(message):
 P = {
     name: (SAS.symget(name) if SAS.symget(name) is not None else "")
     for name in [
-        "promptModelId", "promptName", "targetModelId", "targetModelName",
+        "promptModelId", "promptName", "mode", "targetModelId",
+        "targetModelName", "targetModelNames",
         "scrEndpoint", "deploymentType", "datasetSource", "metric",
         "judgeModelName", "optimizer", "maxDemos", "minSamples",
         "casServer", "casLibrary", "casTable",
@@ -703,6 +719,59 @@ def evaluate(program, dataset, metric, pass_threshold=1.0):
     return total / len(dataset), details
 
 
+# ---- Optimizer compile (shared by the single-target flow and the sweep) ----
+def compile_optimized(SCRLM, program, trainset, valset, metric, judge_verdict, judge_options):
+    """Run the configured optimizer over the program and return the compiled
+    result. Shared between the single-target optimization and the
+    optimize-per-target sweep (mode=sweep), which calls it once per
+    candidate. Keyword filtering against the live signatures tolerates drift
+    across dspy releases (validated against 3.2.1)."""
+    if P["optimizer"] == "miprov2":
+        # MIPROv2 proposes and trials candidate INSTRUCTIONS on top of
+        # demo selection - the baked system prompt can differ from the
+        # baseline. auto=light keeps the trial count sane; num_threads=1
+        # keeps the SCR calls sequential inside proc python; minibatch
+        # evaluation is disabled because the validation split is smaller
+        # than MIPROv2's default minibatch size.
+        init_params = inspect.signature(dspy.MIPROv2.__init__).parameters
+        init_kwargs = {
+            "metric": metric, "auto": "light",
+            "max_bootstrapped_demos": MAX_DEMOS, "max_labeled_demos": MAX_DEMOS,
+            "num_threads": 1,
+        }
+        optimizer = dspy.MIPROv2(**{k: v for k, v in init_kwargs.items() if k in init_params})
+        compile_params = inspect.signature(optimizer.compile).parameters
+        compile_kwargs = {
+            "trainset": trainset, "valset": valset,
+            "minibatch": False, "requires_permission_to_run": False,
+        }
+        return optimizer.compile(
+            program, **{k: v for k, v in compile_kwargs.items() if k in compile_params})
+    if P["optimizer"] == "gepa":
+        # GEPA evolves the INSTRUCTION reflectively: the metric returns a
+        # score plus a natural-language explanation (the judge's reasoning
+        # when metric=judge), and the reflection model - the configured
+        # judge model through the same SCR adapter - reads those
+        # explanations and proposes improved instructions. No demos are
+        # selected (maxDemos does not apply). The gepa engine is a hard
+        # dependency of dspy >= 3.2.1.
+        reflection_lm = SCRLM(P["judgeModelName"], judge_options, role="judge")
+        gepa_metric = make_gepa_metric(P["metric"], judge_verdict)
+        init_params = inspect.signature(dspy.GEPA.__init__).parameters
+        init_kwargs = {
+            "metric": gepa_metric, "auto": "light",
+            "reflection_lm": reflection_lm, "num_threads": 1,
+        }
+        optimizer = dspy.GEPA(**{k: v for k, v in init_kwargs.items() if k in init_params})
+        compile_params = inspect.signature(optimizer.compile).parameters
+        compile_kwargs = {"trainset": trainset, "valset": valset}
+        return optimizer.compile(
+            program, **{k: v for k, v in compile_kwargs.items() if k in compile_params})
+    optimizer = dspy.BootstrapFewShot(
+        metric=metric, max_bootstrapped_demos=MAX_DEMOS, max_labeled_demos=MAX_DEMOS)
+    return optimizer.compile(program, trainset=trainset)
+
+
 # ---- Bake-out: DSPy program -> Prompt-Builder-shaped prompt ----------------
 def bake_out(compiled, source_header, input_names):
     predictor = compiled.predictors()[0]
@@ -785,9 +854,9 @@ def main():
     # then crashed the compute session (verified live: Segmentation
     # Violation in the log, job stuck in running).
     try:
-        missing_params = [name for name in
-                          ("promptModelId", "promptName", "targetModelId", "targetModelName", "scrEndpoint")
-                          if not P[name]]
+        required = ["promptModelId", "promptName", "scrEndpoint"]
+        required += ["targetModelNames"] if P["mode"] in ("compare", "sweep") else ["targetModelId", "targetModelName"]
+        missing_params = [name for name in required if not P[name]]
         if missing_params:
             fail("Required job parameters missing: " + ", ".join(missing_params))
         import_dependencies()
@@ -815,20 +884,14 @@ def main():
         validation_size = max(1, len(examples) // 5)
         valset, trainset = examples[:validation_size], examples[validation_size:]
 
-        progress("Preparing the target model")
-        target_options = build_model_options(P["targetModelId"], P["targetModelName"], key_map)
-        target_lm = SCRLM(P["targetModelName"], target_options)
-        # Smoke test - fail fast on a bad endpoint or key before spending calls.
-        call_scr(P["targetModelName"], target_options, "You are a health check.", "Reply with OK.")
-        dspy.configure(lm=target_lm)
-
         # The judge model serves two roles: the judge METRIC scores with it,
         # and the GEPA optimizer additionally reflects with it (reads the
         # per-example feedback and proposes improved instructions) - so it is
-        # resolved whenever either needs it.
+        # resolved whenever either needs it. Resolved before the target so a
+        # comparison run (which has no single target) can use it too.
         judge_options = None
         judge_verdict = None
-        if P["metric"] == "judge" or P["optimizer"] == "gepa":
+        if P["metric"] == "judge" or (P["mode"] != "compare" and P["optimizer"] == "gepa"):
             if not P["judgeModelName"]:
                 fail("metric=judge requires judgeModelName." if P["metric"] == "judge"
                      else "The GEPA optimizer needs a judge model for its reflection step - pick one in the Optimize panel.")
@@ -851,6 +914,117 @@ def main():
         signature_str = ", ".join(input_names) + " -> response"
         signature = dspy.Signature(signature_str, str(source_header.get("systemPrompt") or ""))
         program = dspy.Predict(signature)
+
+        if P["mode"] in ("compare", "sweep"):
+            # Phase 4a/4b - candidate comparison. compare (4a) is baseline
+            # screening: score the CURRENT prompt on each candidate; nothing
+            # is trained, so ALL examples feed the ranking. sweep (4b)
+            # additionally runs the configured optimizer per candidate on the
+            # SHARED train/validation split and ranks by the optimised
+            # metric - the truthful (and far more expensive) ranking. Either
+            # way one target failing its smoke test must not kill the run:
+            # its row is recorded as unreachable and the rest still score.
+            sweep = P["mode"] == "sweep"
+            names = [n.strip() for n in P["targetModelNames"].split(",") if n.strip()]
+            if len(names) < 2:
+                fail("A candidate comparison needs at least two comma-separated targetModelNames.")
+            tracker_entry["type"] = "comparison"
+            tracker_entry["optimizer"] = P["optimizer"] if sweep else None
+            tracker_entry["targetModel"] = ", ".join(names)
+            tracker_entry["baselinePrompt"] = {
+                "systemPrompt": str(source_header.get("systemPrompt") or ""),
+                "userPrompt": str(source_header.get("userPrompt") or ""),
+            }
+            if sweep:
+                tracker_entry["trainSize"] = len(trainset)
+                tracker_entry["validationSize"] = len(valset)
+            target_rows = []
+            for position, name in enumerate(names, 1):
+                progress(("Optimising " if sweep else "Scoring the baseline on ") + f"{name} ({position}/{len(names)})")
+                row = {"model": name, "status": "scored", "quality": None,
+                       "avgLatency": None, "usage": None, "evaluations": None, "error": None}
+                before = dict(USAGE["target"])
+                try:
+                    model_item = next(
+                        (i for i in viya("GET", "/modelRepository/models?filter=eq(name,'" + name + "')").get("items", [])), None)
+                    if model_item is None:
+                        raise RuntimeError(f"The model {name} was not found in Model Manager.")
+                    options = build_model_options(model_item["id"], name, key_map)
+                    call_scr(name, options, "You are a health check.", "Reply with OK.")
+                    dspy.configure(lm=SCRLM(name, options))
+                    if sweep:
+                        metric_before, eval_before = evaluate(program, valset, metric, pass_threshold)
+                        row["metricBefore"] = round(metric_before, 3)
+                        if metric_before >= 1.0 - 1e-9:
+                            # Same guard as the single-target flow: a perfect
+                            # baseline leaves this candidate's optimizer no
+                            # gradient - record it without spending the calls.
+                            row["skippedReason"] = "baseline-perfect"
+                            compiled_candidate = program
+                            metric_after, eval_after = metric_before, eval_before
+                        else:
+                            compiled_candidate = compile_optimized(
+                                SCRLM, program, trainset, valset, metric, judge_verdict, judge_options)
+                            dspy.configure(lm=SCRLM(name, options))
+                            metric_after, eval_after = evaluate(compiled_candidate, valset, metric, pass_threshold)
+                        row["metricAfter"] = round(metric_after, 3)
+                        row["quality"] = row["metricAfter"]
+                        row["optimizedPrompt"] = bake_out(compiled_candidate, source_header, input_names)
+                        row["evaluations"] = [
+                            {
+                                "inputs": before_detail["inputs"],
+                                "expected": before_detail["expected"],
+                                "baselineResponse": before_detail["response"],
+                                "baselineCorrect": before_detail["correct"],
+                                "baselineScore": before_detail["score"],
+                                "optimizedResponse": after_detail["response"],
+                                "optimizedCorrect": after_detail["correct"],
+                                "optimizedScore": after_detail["score"],
+                            }
+                            for before_detail, after_detail in zip(eval_before, eval_after)
+                        ]
+                    else:
+                        quality, details = evaluate(program, examples, metric, pass_threshold)
+                        row["quality"] = round(quality, 3)
+                        row["evaluations"] = details
+                except Exception as target_error:
+                    row["status"] = "unreachable"
+                    row["error"] = str(target_error)[:300]
+                calls_made = USAGE["target"]["calls"] - before["calls"]
+                run_time = USAGE["target"]["runTime"] - before["runTime"]
+                row["usage"] = {
+                    "calls": calls_made,
+                    "promptTokens": int(round(USAGE["target"]["promptTokens"] - before["promptTokens"])),
+                    "outputTokens": int(round(USAGE["target"]["outputTokens"] - before["outputTokens"])),
+                    "runTime": round(run_time, 1),
+                }
+                if calls_made > 0:
+                    # The SCR contract reports the model run time per call -
+                    # the per-target latency the ranking surfaces.
+                    row["avgLatency"] = round(run_time / calls_made, 2)
+                target_rows.append(row)
+            scored_rows = [r for r in target_rows if r["status"] == "scored"]
+            tracker_entry["targets"] = target_rows
+            tracker_entry["usage"] = usage_snapshot()
+            tracker_entry["status"] = "succeeded" if scored_rows else "failed"
+            if not scored_rows:
+                tracker_entry["error"] = "No target could be scored - every candidate was unreachable."
+            tracker_entry["finishedAt"] = datetime.now(timezone.utc).isoformat()
+            append_optimization_tracker(tracker_entry, dataset_snapshot=examples_raw)
+            summary = ", ".join(f"{r['model']} {r['quality']}" for r in scored_rows) or "no targets scored"
+            progress(f"Done - comparison recorded ({summary})")
+            if scored_rows:
+                SAS.symput("_opt_rc", "0")
+            else:
+                SAS.symput("_opt_error", sas_safe(tracker_entry["error"]))
+            return
+
+        progress("Preparing the target model")
+        target_options = build_model_options(P["targetModelId"], P["targetModelName"], key_map)
+        target_lm = SCRLM(P["targetModelName"], target_options)
+        # Smoke test - fail fast on a bad endpoint or key before spending calls.
+        call_scr(P["targetModelName"], target_options, "You are a health check.", "Reply with OK.")
+        dspy.configure(lm=target_lm)
 
         progress("Scoring the baseline prompt")
         metric_before, eval_before = evaluate(program, valset, metric, pass_threshold)
@@ -895,56 +1069,7 @@ def main():
             return
 
         progress(f"Optimising with {P['optimizer']} ({len(trainset)} training examples)")
-        if P["optimizer"] == "miprov2":
-            # MIPROv2 proposes and trials candidate INSTRUCTIONS on top of
-            # demo selection - the baked system prompt can differ from the
-            # baseline. auto=light keeps the trial count sane; num_threads=1
-            # keeps the SCR calls sequential inside proc python; minibatch
-            # evaluation is disabled because the validation split is smaller
-            # than MIPROv2's default minibatch size. The keyword filtering
-            # tolerates signature drift across dspy releases (validated
-            # against 3.2.1).
-            init_params = inspect.signature(dspy.MIPROv2.__init__).parameters
-            init_kwargs = {
-                "metric": metric, "auto": "light",
-                "max_bootstrapped_demos": MAX_DEMOS, "max_labeled_demos": MAX_DEMOS,
-                "num_threads": 1,
-            }
-            optimizer = dspy.MIPROv2(**{k: v for k, v in init_kwargs.items() if k in init_params})
-            compile_params = inspect.signature(optimizer.compile).parameters
-            compile_kwargs = {
-                "trainset": trainset, "valset": valset,
-                "minibatch": False, "requires_permission_to_run": False,
-            }
-            compiled = optimizer.compile(
-                program, **{k: v for k, v in compile_kwargs.items() if k in compile_params})
-        elif P["optimizer"] == "gepa":
-            # GEPA evolves the INSTRUCTION reflectively: the metric returns a
-            # score plus a natural-language explanation (the judge's reasoning
-            # when metric=judge), and the reflection model - the configured
-            # judge model through the same SCR adapter - reads those
-            # explanations and proposes improved instructions. No demos are
-            # selected (maxDemos does not apply). auto=light bounds the
-            # metric-call budget; num_threads=1 keeps the SCR calls sequential
-            # inside proc python; keyword filtering tolerates signature drift
-            # across dspy releases (validated against 3.2.1, where the gepa
-            # engine is a hard dependency of dspy itself).
-            reflection_lm = SCRLM(P["judgeModelName"], judge_options, role="judge")
-            gepa_metric = make_gepa_metric(P["metric"], judge_verdict)
-            init_params = inspect.signature(dspy.GEPA.__init__).parameters
-            init_kwargs = {
-                "metric": gepa_metric, "auto": "light",
-                "reflection_lm": reflection_lm, "num_threads": 1,
-            }
-            optimizer = dspy.GEPA(**{k: v for k, v in init_kwargs.items() if k in init_params})
-            compile_params = inspect.signature(optimizer.compile).parameters
-            compile_kwargs = {"trainset": trainset, "valset": valset}
-            compiled = optimizer.compile(
-                program, **{k: v for k, v in compile_kwargs.items() if k in compile_params})
-        else:
-            optimizer = dspy.BootstrapFewShot(
-                metric=metric, max_bootstrapped_demos=MAX_DEMOS, max_labeled_demos=MAX_DEMOS)
-            compiled = optimizer.compile(program, trainset=trainset)
+        compiled = compile_optimized(SCRLM, program, trainset, valset, metric, judge_verdict, judge_options)
 
         progress("Scoring the optimised prompt")
         metric_after, eval_after = evaluate(compiled, valset, metric, pass_threshold)
