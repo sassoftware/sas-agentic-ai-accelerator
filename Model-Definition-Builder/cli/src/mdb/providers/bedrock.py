@@ -18,7 +18,7 @@ from typing import Optional
 import requests
 
 from ..core.manifest import AuthBlock, ModelManifest
-from .base import CatalogModel, ProviderAdapter, Question, SmokeResult
+from .base import CatalogModel, ProviderAdapter, Question, SmokeResult, http_smoke_failure
 
 
 class BedrockAdapter(ProviderAdapter):
@@ -82,7 +82,7 @@ class BedrockAdapter(ProviderAdapter):
                 )
                 body = response.json()
                 if response.status_code >= 300:
-                    return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+                    return http_smoke_failure(response, body)
                 return SmokeResult(ok=True, detail=f"Provider responded with a "
                                                    f"{len(body['embedding'])}-dimension embedding.")
             response = session.post(
@@ -94,7 +94,7 @@ class BedrockAdapter(ProviderAdapter):
             )
             body = response.json()
             if response.status_code >= 300:
-                return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+                return http_smoke_failure(response, body)
             text = "".join(b.get("text", "") for b in body["output"]["message"]["content"])
             usage = body.get("usage", {})
             return SmokeResult(ok=True, detail=(

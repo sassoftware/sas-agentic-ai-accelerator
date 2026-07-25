@@ -8,7 +8,7 @@ from typing import Optional
 import requests
 
 from ..core.manifest import ModelManifest, OptionSpec
-from .base import CatalogModel, ProviderAdapter, SmokeResult
+from .base import CatalogModel, ProviderAdapter, SmokeResult, http_smoke_failure
 
 
 class VoyageAdapter(ProviderAdapter):
@@ -47,7 +47,7 @@ class VoyageAdapter(ProviderAdapter):
             )
             body = response.json()
             if response.status_code >= 300:
-                return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+                return http_smoke_failure(response, body)
             vector = body["data"][0]["embedding"]
             return SmokeResult(ok=True, detail=f"Provider responded with a {len(vector)}-dimension embedding.")
         except Exception as exc:

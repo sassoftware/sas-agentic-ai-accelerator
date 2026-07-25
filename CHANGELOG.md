@@ -2,6 +2,24 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [1.8.2] - 2026-07-24
+
+mdb works with every Azure endpoint flavor and can keep your definitions in your own repository.
+
+### Added
+
+- **All Azure host flavors and both API styles for `azure-foundry` models.** Azure serves the same OpenAI-compatible data plane under three host suffixes — `*.openai.azure.com` (classic Azure OpenAI resource), `*.cognitiveservices.azure.com` (AI Services / Foundry resource) and `*.services.ai.azure.com` (Foundry endpoint, sometimes region-qualified) — and mdb now accepts any of them verbatim (a bare resource name still expands to the classic host). By default calls use Microsoft's recommended **GA v1 endpoint** (`/openai/v1/chat/completions`, deployment in the body); the new **`api_version`** wizard answer / `azure_api_version` option / `AZURE_OPENAI_API_VERSION` container environment variable switches to the **legacy deployment-scoped route** (`/openai/deployments/<name>/chat/completions?api-version=…`) that some resources and org policies still require — with the same option → environment variable → baked-default resolution as the resource host. The smoke test honors the chosen style; the admin guide documents the flavors, including the caveat that Responses-API-only models (`/openai/v1/responses`, a different request shape) are outside the chat-completions score contract. The shipped Azure definition is regenerated with the new `azure_api_version` option (default empty = v1, byte-identical behavior)
+- **The wizard confirms catalog-derived values instead of accepting them silently.** `mdb add` now shows the option defaults, metadata (description, context length, dates) and token pricing it derived from the catalog and asks you to confirm — or walk through and adjust — them before anything is written: these values steer scoring behavior and cost monitoring, so they should be accepted consciously. The review can also **rename or drop options** (`max_tokens=max_completion_tokens` renames, `-top_p` drops) — option names are part of the provider contract, and newer OpenAI-style models reject `max_tokens` in favor of `max_completion_tokens`; when the catalog's `supported_parameters` say which one a model takes, the wizard now picks the right one automatically in the first place. The new **`--accept-defaults`** flag skips the review for scripted-but-interactive use (`--yes` implies it), and unknown token pricing is always asked about (or, non-interactively, warned about)
+- **Definitions in your own repository.** `MDB_DEFINITIONS` (an absolute path, typically set in the `.env` of your own repo — mdb loads the `.env` of the directory you run it from) names a single root under which mdb keeps its familiar layout, creating the folders as needed: `LLM-Definitions/`, `Embedding-Definitions/`, the fact sheets inside them, and the `mdb retire` archive `_archive/`. Definitions can then be committed to your own git repository while the accelerator clone only supplies the definition-core templates (`MDB_REPO`); every command follows the relocation
+
+- **The endorsed pipeline is now `validate → test → register → publish`.** `mdb add`'s next-steps output and the guides include `mdb test` between validation and registration: `mdb validate --live` proves the provider/endpoint/key through the adapter, while `mdb test` runs the *generated* `scoreModel()` locally — options parsing, request body, response extraction — so a template or option problem surfaces on your machine instead of in a published container
+
+### Fixed
+
+- **Free models are not "missing pricing".** V008 now distinguishes *unknown* token prices (both absent — still warned about) from an **explicit 0** — the correct answer for a `:free` catalog model, which previously produced a contradictory *"fill the pricing"* warning right after the wizard had (correctly) prefilled zeros. And when the catalog genuinely carries no prices, the wizard now **asks** for them during `mdb add` (skippable; `--yes` prints a reminder instead) rather than silently writing an unknown that only surfaces later as V008
+- **A rate-limited smoke test is not a failed validation.** `mdb validate --live` reports an upstream **HTTP 429** as *inconclusive* (yellow, exit code unaffected) with a message that says what it proves — the endpoint answered and the key was accepted; the model is temporarily rate-limited upstream — instead of a red failure with a raw provider error. Uniform across all provider adapters
+- **`mdb add` keeps the fact sheet in rebuild order.** New rows are inserted in `model_id` order (where `rebuild_sheet` would put them) instead of appended, so an add no longer desyncs the committed sheet from a fresh rebuild
+
 ## [1.8.1] - 2026-07-23
 
 Robustness follow-ups to the 1.8.0 code review — no functional changes to what the commands do on the happy path.

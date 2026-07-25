@@ -13,7 +13,7 @@ import requests
 
 from ..core.manifest import ModelManifest
 from ..core.netutil import get_json
-from .base import CatalogModel, ProviderAdapter, SmokeResult
+from .base import CatalogModel, ProviderAdapter, SmokeResult, http_smoke_failure
 
 BASE = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -73,7 +73,7 @@ class GoogleAdapter(ProviderAdapter):
                 )
                 body = response.json()
                 if response.status_code >= 300:
-                    return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+                    return http_smoke_failure(response, body)
                 return SmokeResult(ok=True, detail=f"Provider responded with a "
                                                    f"{len(body['embedding']['values'])}-dimension embedding.")
             response = session.post(
@@ -84,7 +84,7 @@ class GoogleAdapter(ProviderAdapter):
             )
             body = response.json()
             if response.status_code >= 300:
-                return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+                return http_smoke_failure(response, body)
             text = "".join(p.get("text", "") for p in body["candidates"][0]["content"]["parts"])
             usage = body.get("usageMetadata", {})
             return SmokeResult(ok=True, detail=(

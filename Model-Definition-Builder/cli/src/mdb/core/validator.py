@@ -167,13 +167,16 @@ def validate_folder(folder: Path, core: CoreAssets, fact_sheet: Path) -> list[Is
             "otherwise scoring fails with a missing-URL error.",
         ))
 
-    # V008 - pricing placeholders that would silently corrupt cost monitoring
+    # V008 - pricing placeholders that would silently corrupt cost monitoring.
+    # Only when the prices are UNKNOWN (absent): an explicit 0 is the correct
+    # answer for a genuinely free model and produces a correct costPerCall.
     pricing = manifest.metadata.pricing
-    if pricing.cost_type == "Tokens" and not (pricing.input_token_price or pricing.output_token_price):
+    if pricing.cost_type == "Tokens" and pricing.input_token_price is None and pricing.output_token_price is None:
         issues.append(Issue(
             "V008", "warning", model_id,
-            "Token pricing is empty - costPerCall in SAS Model Manager will be 0.",
-            "Fill metadata.pricing from the provider's price list (the wizard prefills this when online).",
+            "Token pricing is unknown - costPerCall in SAS Model Manager will be 0.",
+            "Fill metadata.pricing from the provider's price list (the wizard prefills it when online "
+            "and asks otherwise), or set both prices to 0 explicitly if the model is genuinely free.",
         ))
 
     return issues
