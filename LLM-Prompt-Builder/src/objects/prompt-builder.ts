@@ -41,6 +41,7 @@ import {
 } from '../api/jobexec-api';
 import { getCasServers, getCaslibs, getCasTables, getCasTableInfo } from '../api/cas-api';
 import { createAccordionItem } from '../ui/accordion';
+import { attachCombobox } from '../ui/combobox';
 import { showConfirmModal } from '../ui/confirm-modal';
 import { showToast } from '../ui/toast';
 import { escapeHtml } from '../ui/dom-helpers';
@@ -4316,9 +4317,7 @@ ${scoreCodeReturn}`;
           casRow: HTMLElement;
           casServerSelect: HTMLSelectElement;
           casLibSelect: HTMLSelectElement;
-          casLibFilter: HTMLInputElement;
           casTableSelect: HTMLSelectElement;
-          casTableFilter: HTMLInputElement;
           judgeRow: HTMLElement;
           judgeSelect: HTMLSelectElement;
           maxDemosInput: HTMLInputElement;
@@ -4381,29 +4380,6 @@ ${scoreCodeReturn}`;
     const casPickerCache = { caslibs: new Map<string, string[]>(), tables: new Map<string, string[]>() };
     let casServersPromise: Promise<void> | null = null;
 
-    // Full (unfiltered) listings behind the caslib/table pickers, so their
-    // filter boxes can narrow the visible options without refetching.
-    let optimizeCasLibNames: string[] = [];
-    let optimizeCasTableNames: string[] = [];
-
-    /**
-     * Re-render a CAS picker from its cached names applying the filter text.
-     * The current selection stays listed even when it no longer matches, so
-     * typing a filter can never silently clear a made choice.
-     */
-    function applyCasPickerFilter(
-      select: HTMLSelectElement,
-      placeholderText: unknown,
-      names: string[],
-      filterText: string
-    ): void {
-      const needle = filterText.trim().toLowerCase();
-      const visible = names.filter(
-        (name) => needle === '' || name.toLowerCase().includes(needle) || name === select.value
-      );
-      fillCasSelect(select, placeholderText, visible);
-    }
-
     /** Rebuild a picker: placeholder + entries, keeping a still-valid selection. */
     function fillCasSelect(select: HTMLSelectElement, placeholderText: unknown, names: string[]): void {
       const previous = select.value;
@@ -4460,14 +4436,7 @@ ${scoreCodeReturn}`;
           caslibs = await getCaslibs(server);
           casPickerCache.caslibs.set(server, caslibs);
         }
-        optimizeCasLibNames = caslibs;
-        applyCasPickerFilter(
-          optimizeUI.casLibSelect,
-          promptBuilderInterfaceText?.promptBuilderOptimizeCasLibPlaceholder,
-          optimizeCasLibNames,
-          optimizeUI.casLibFilter.value
-        );
-        optimizeCasTableNames = [];
+        fillCasSelect(optimizeUI.casLibSelect, promptBuilderInterfaceText?.promptBuilderOptimizeCasLibPlaceholder, caslibs);
         fillCasSelect(optimizeUI.casTableSelect, promptBuilderInterfaceText?.promptBuilderOptimizeCasTablePlaceholder, []);
         if (optimizeUI.casLibSelect.value !== '') await loadCasTableOptions();
       } catch (error) {
@@ -4487,13 +4456,7 @@ ${scoreCodeReturn}`;
           tables = await getCasTables(server, caslib);
           casPickerCache.tables.set(cacheKey, tables);
         }
-        optimizeCasTableNames = tables;
-        applyCasPickerFilter(
-          optimizeUI.casTableSelect,
-          promptBuilderInterfaceText?.promptBuilderOptimizeCasTablePlaceholder,
-          optimizeCasTableNames,
-          optimizeUI.casTableFilter.value
-        );
+        fillCasSelect(optimizeUI.casTableSelect, promptBuilderInterfaceText?.promptBuilderOptimizeCasTablePlaceholder, tables);
       } catch (error) {
         console.debug('Prompt Builder: CAS table listing failed', error);
       }
@@ -5867,52 +5830,25 @@ ${scoreCodeReturn}`;
         casInputs.appendChild(select);
         return select;
       };
-      // Long deployments have MANY caslibs/tables — each of those two pickers
-      // gets a filter box (same pattern as the project/prompt name filters)
-      // that narrows the dropdown as you type.
-      const makeCasFilter = (kind: string, width: string): HTMLInputElement => {
-        const filterInput = document.createElement('input');
-        filterInput.type = 'text';
-        filterInput.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-cas-${kind}-filter`;
-        filterInput.classList.add('form-control', 'form-control-sm');
-        filterInput.style.width = width;
-        filterInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderFilterNamePlaceholder}`;
-        casInputs.appendChild(filterInput);
-        return filterInput;
-      };
       const optimizeCasServerSelect = makeCasPicker(
         'server',
         promptBuilderInterfaceText?.promptBuilderOptimizeCasServerPlaceholder,
         '12rem'
       );
-      const optimizeCasLibFilter = makeCasFilter('lib', '9rem');
       const optimizeCasLibSelect = makeCasPicker(
         'lib',
         promptBuilderInterfaceText?.promptBuilderOptimizeCasLibPlaceholder,
         '12rem'
       );
-      const optimizeCasTableFilter = makeCasFilter('table', '9rem');
       const optimizeCasTableSelect = makeCasPicker(
         'table',
         promptBuilderInterfaceText?.promptBuilderOptimizeCasTablePlaceholder,
         '15rem'
       );
-      optimizeCasLibFilter.addEventListener('input', () => {
-        applyCasPickerFilter(
-          optimizeCasLibSelect,
-          promptBuilderInterfaceText?.promptBuilderOptimizeCasLibPlaceholder,
-          optimizeCasLibNames,
-          optimizeCasLibFilter.value
-        );
-      });
-      optimizeCasTableFilter.addEventListener('input', () => {
-        applyCasPickerFilter(
-          optimizeCasTableSelect,
-          promptBuilderInterfaceText?.promptBuilderOptimizeCasTablePlaceholder,
-          optimizeCasTableNames,
-          optimizeCasTableFilter.value
-        );
-      });
+      // Deployments have MANY caslibs/tables: both pickers become comboboxes,
+      // so typing filters the open dropdown itself.
+      attachCombobox(optimizeCasLibSelect);
+      attachCombobox(optimizeCasTableSelect);
       const casTemplateHint = document.createElement('small');
       casTemplateHint.classList.add('text-muted', 'd-block');
       casTemplateHint.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCasTemplateHint}`;
@@ -5921,14 +5857,10 @@ ${scoreCodeReturn}`;
       datasetBlock.appendChild(casRow);
       optimizeCasServerSelect.addEventListener('change', () => {
         optimizeCasRowCount = null;
-        // A new server means new listings — stale filters would just hide them.
-        optimizeCasLibFilter.value = '';
-        optimizeCasTableFilter.value = '';
         void loadCaslibOptions();
       });
       optimizeCasLibSelect.addEventListener('change', () => {
         optimizeCasRowCount = null;
-        optimizeCasTableFilter.value = '';
         void loadCasTableOptions();
       });
       // Fetch the picked table's row count (best effort) so the panel's call
@@ -6123,9 +6055,7 @@ ${scoreCodeReturn}`;
         casRow,
         casServerSelect: optimizeCasServerSelect,
         casLibSelect: optimizeCasLibSelect,
-        casLibFilter: optimizeCasLibFilter,
         casTableSelect: optimizeCasTableSelect,
-        casTableFilter: optimizeCasTableFilter,
         judgeRow: optimizeJudgeRow,
         judgeSelect: optimizeJudgeSelect,
         maxDemosInput: optimizeMaxDemosInput,
@@ -6179,6 +6109,11 @@ ${scoreCodeReturn}`;
     projectSection.appendChild(document.createElement('br'));
     projectSection.appendChild(promptBuilderModalButtonContainer);
     promptBuilderContainer.appendChild(projectSection);
+    // Merge searching into the dropdowns themselves: typing in the picker
+    // filters the open list live (the separate name/user filter row above
+    // still narrows by creator). The underlying selects stay scriptable.
+    attachCombobox(promptBuilderProjectSelectorDropdown);
+    attachCombobox(promptBuilderPromptSelectorDropdown);
 
     const llmSection = createPageSection();
     llmSection.appendChild(promptBuilderModelSelectorHeader);
