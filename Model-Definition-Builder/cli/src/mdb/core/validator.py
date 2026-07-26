@@ -167,6 +167,20 @@ def validate_folder(folder: Path, core: CoreAssets, fact_sheet: Path) -> list[Is
             "otherwise scoring fails with a missing-URL error.",
         ))
 
+    # V012 - kind/template mismatch: embedding score templates are named
+    # emb_*; a chat template on kind=embedding (or vice versa) means the
+    # definition was misclassified at add time - it would score through the
+    # wrong contract and sit in the wrong folder and Model Manager project.
+    template_is_embedding = manifest.runtime.template.startswith("emb_")
+    if template_is_embedding != (manifest.kind == "embedding"):
+        issues.append(Issue(
+            "V012", "error", model_id,
+            f"kind '{manifest.kind}' does not match score template '{manifest.runtime.template}' "
+            f"({'an embedding' if template_is_embedding else 'a chat'} template).",
+            "Re-add the model with the correct kind (mdb add ... --kind llm|embedding), or fix "
+            "kind/runtime.template together in definition.yaml and regenerate.",
+        ))
+
     # V008 - pricing placeholders that would silently corrupt cost monitoring.
     # Only when the prices are UNKNOWN (absent): an explicit 0 is the correct
     # answer for a genuinely free model and produces a correct costPerCall.

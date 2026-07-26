@@ -156,9 +156,15 @@ def _enrich_from_static(live: list[CatalogModel], static: list[CatalogModel]) ->
         if model.display_name == model.ref:
             model.display_name = known.display_name
         for attr in ("context_length", "max_output_tokens", "input_price_per_m",
-                     "output_price_per_m", "knowledge_cutoff", "release_date"):
+                     "output_price_per_m", "knowledge_cutoff", "release_date",
+                     "embedding_length"):
             if getattr(model, attr) is None:
                 setattr(model, attr, getattr(known, attr))
+        # kind never comes from live listings (e.g. OpenAI's /v1/models returns
+        # ids only) - without this, a live add of a known embedding model
+        # silently built an LLM definition while the offline add got it right.
+        if model.kind == "llm" and known.kind == "embedding":
+            model.kind = known.kind
         model.reasoning = model.reasoning or known.reasoning
         model.extended_thinking = model.extended_thinking or known.extended_thinking
         if known.source != "static":
@@ -249,6 +255,7 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
     table.add_column("Section")
     table.add_column("Name")
     table.add_column("Value")
+    table.add_row("definition", "kind", manifest.kind.upper())
     for name, spec in manifest.options.items():
         bounds = "" if spec.max is None else f"  (max {spec.max:g})"
         table.add_row("options", name, f"{spec.default}{bounds}")
@@ -370,7 +377,7 @@ def add(
     runtime: Optional[str] = typer.Option(None, help="Runtime family: transformers | onnx | sentence-transformers (hf-selfhosted)"),
     params_billions: Optional[float] = typer.Option(None, help="Parameter count in billions (hf-selfhosted)"),
     base_url: Optional[str] = typer.Option(None, help="Server base URL (ollama/vllm self-hosted)"),
-    kind: Optional[str] = typer.Option(None, help="Model kind: llm or embedding (ollama/vllm self-hosted)"),
+    kind: Optional[str] = typer.Option(None, help="Model kind: llm or embedding (any provider whose adapter supports embedding definitions)"),
     license_: Optional[str] = typer.Option(None, "--license", help="License class for self-hosted models (Open-Source/Proprietary)"),
     description: Optional[str] = typer.Option(None, help="Model description for Model Manager and the fact sheet"),
 ):
@@ -417,9 +424,20 @@ def add(
             answers[question.param] = question.default
         else:
             answers[question.param] = Prompt.ask(question.prompt, default=question.default or None)
+    # The definition KIND (llm vs embedding) decides the score template, the
+    # destination folder (LLM-Definitions vs Embedding-Definitions) and the
+    # Model Manager project - so --kind is honored for EVERY adapter that can
+    # build embedding definitions, not only the ones that ask a kind question.
+    supports_embedding = getattr(adapter, "embedding_template", None) is not None
+    kind_is_flaggable = supports_embedding and "kind" not in question_params
+    if kind is not None and kind not in ("llm", "embedding"):
+        console.print("[red]--kind must be 'llm' or 'embedding'.[/red]")
+        raise typer.Exit(2)
     # Surface flags that this provider does not consume, so a misdirected flag
-    # (e.g. --kind on a hosted provider) is not silently ignored.
+    # (e.g. --kind on an LLM-only provider) is not silently ignored.
     for flag_name, flag_value in flag_answers.items():
+        if flag_name == "kind" and kind_is_flaggable:
+            continue
         if flag_value is not None and flag_name != "description" and flag_name not in question_params:
             console.print(f"[yellow]--{flag_name.replace('_', '-')} is not used by provider "
                           f"'{provider}' - ignored.[/yellow]")
@@ -442,6 +460,7 @@ def add(
     if manual_ref and not ref:
         ref = manual_ref
     cm = _select_model(adapter, catalog, ref, yes)
+    manual_entry = cm is None
     if cm is None:
         if not ref and yes:
             console.print("[red]No model reference given.[/red]")
@@ -450,12 +469,31 @@ def add(
         display = the_ref if yes else Prompt.ask("Display name", default=the_ref)
         cm = CatalogModel(ref=the_ref, display_name=display, source="manual entry")
 
+    # Resolve the kind explicitly instead of silently defaulting to llm:
+    # embedding-only adapters (voyage) force it, --kind overrides it, and a
+    # manual entry on a both-kinds adapter is asked interactively - the paths
+    # that used to misfile embedding models into LLM-Definitions.
+    embedding_only = supports_embedding and adapter.template == adapter.embedding_template
+    if embedding_only:
+        cm.kind = "embedding"
+    elif kind_is_flaggable:
+        if kind is not None:
+            cm.kind = kind
+        elif manual_entry and not yes:
+            cm.kind = Prompt.ask("Model kind", choices=["llm", "embedding"], default=cm.kind)
+
     proposed = model_id or slugify(cm.display_name)
     final_id = proposed if yes else Prompt.ask("Definition folder / model_id", default=proposed)
 
     modeler = os.environ.get("SAS_RESPONSIBLE_PARTY", "") or os.environ.get("USERNAME", "") or os.environ.get("USER", "")
     try:
         manifest = adapter.build_manifest(cm, final_id, answers, modeler)
+        # State the kind up front - it decides the score template, the folder
+        # and the Model Manager project, and used to be visible only as an
+        # easily-missed folder name near the end.
+        kind_folder = "LLM-Definitions" if manifest.kind == "llm" else "Embedding-Definitions"
+        console.print(f"\n[bold cyan]Adding an {manifest.kind.upper()} model definition -> "
+                      f"{kind_folder}/{final_id}/[/bold cyan]")
         # The catalog-derived values steer scoring behavior and cost monitoring
         # - confirm them consciously by default; --accept-defaults / --yes skip
         # the review (unknown token pricing is still asked/warned about).
@@ -487,7 +525,7 @@ def add(
     drift.write_lock(folder, manifest_path.read_bytes(), rendered)
     facts.upsert_row(fact_sheet, manifest)
 
-    console.print(f"\n[green]Created {final_id} ({len(rendered)} files + fact-sheet row).[/green]")
+    console.print(f"\n[green]Created {final_id} ({manifest.kind} definition, {len(rendered)} files + fact-sheet row).[/green]")
     console.print("Next steps:")
     console.print(f"  1. mdb validate {final_id} --live     (smoke-test the provider before Viya)")
     console.print(f"  2. mdb test {final_id}                (run the generated scoreModel() locally - what SCR will execute)")
@@ -1363,10 +1401,18 @@ def providers():
     table = Table()
     table.add_column("id")
     table.add_column("name")
+    table.add_column("kinds")
     table.add_column("API key env var")
     table.add_column("score template")
     for adapter in load_adapters().values():
-        table.add_row(adapter.id, adapter.display_name, adapter.env_key_var or "-", adapter.template)
+        embedding_template = getattr(adapter, "embedding_template", None)
+        if embedding_template is None:
+            kinds = "llm"
+        elif adapter.template == embedding_template:
+            kinds = "embedding"
+        else:
+            kinds = "llm + embedding"
+        table.add_row(adapter.id, adapter.display_name, kinds, adapter.env_key_var or "-", adapter.template)
     console.print(table)
     console.print("Third-party adapters: pip packages exposing the 'mdb.providers' entry-point group.")
 
