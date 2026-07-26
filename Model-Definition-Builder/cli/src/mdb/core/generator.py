@@ -279,6 +279,11 @@ def _render_score(manifest: ModelManifest, core: CoreAssets) -> str:
         # per-call option decide at runtime).
         params = manifest.provider.params
         context["azure_resource"] = params.get("resource", "") if params.get("commit_resource") else ""
+        # Empty = the GA v1 endpoint; a version pins the legacy deployment-
+        # scoped route some resources/policies still require. Not gated on
+        # commit_resource - the API style belongs to the definition, while the
+        # AZURE_OPENAI_API_VERSION container env var can still override it.
+        context["azure_api_version"] = params.get("api_version", "") or ""
     if manifest.runtime.template in ("openai_compat_selfhosted", "emb_openai_compat_selfhosted"):
         # Self-hosted OpenAI-compatible servers (Ollama, vLLM). The base URL
         # resolves at runtime from an env var so one image serves any server;
@@ -344,6 +349,18 @@ def _render_options_json(manifest: ModelManifest, core: CoreAssets) -> str:
                 "this option > the AZURE_OPENAI_RESOURCE environment variable of the container > "
                 "this default - set the environment variable per deployment to serve different "
                 "subscriptions/projects from the same image."
+            ),
+            "type": "string",
+        }
+        entries["azure_api_version"] = {
+            "default": params.get("api_version", "") or "",
+            "range": "2024-10-21 (empty = GA v1 endpoint)",
+            "description": (
+                "Empty uses the GA v1 endpoint (/openai/v1/chat/completions). Set an API version "
+                "(e.g. 2024-10-21 or 2025-01-01-preview) to call the legacy deployment-scoped route "
+                "(/openai/deployments/<name>/chat/completions?api-version=...) that some resources "
+                "or policies still require. Resolution order: this option > the "
+                "AZURE_OPENAI_API_VERSION environment variable of the container > this default."
             ),
             "type": "string",
         }

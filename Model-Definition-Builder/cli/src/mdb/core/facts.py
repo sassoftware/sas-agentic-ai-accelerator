@@ -163,7 +163,20 @@ def upsert_row(fact_sheet: Path, manifest: ModelManifest) -> str:
         else:
             out.append(line)
     if not replaced:
-        out.append(new_line)
+        # Insert in model_id order (the same order rebuild_sheet produces), so
+        # an add never desyncs the committed sheet from a fresh rebuild.
+        insert_at = len(out)
+        for index, line in enumerate(out):
+            if index == 0 or not line.strip():
+                continue
+            try:
+                first_field = next(csv.reader(io.StringIO(line)))[0]
+            except (StopIteration, IndexError):
+                continue
+            if first_field > manifest.model_id:
+                insert_at = index
+                break
+        out.insert(insert_at, new_line)
 
     content = newline.join(out)
     if trailing_empty or not replaced:

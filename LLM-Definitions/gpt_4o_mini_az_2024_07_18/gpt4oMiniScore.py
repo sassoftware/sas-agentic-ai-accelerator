@@ -11,6 +11,11 @@ import requests
 # The target resource resolves per call: options override > AZURE_OPENAI_RESOURCE
 # container environment variable > the default baked into this file - so one
 # published image can serve different subscriptions/projects without a rebuild.
+# All Azure host flavors are accepted (<res>.openai.azure.com,
+# <res>.cognitiveservices.azure.com, <res>.services.ai.azure.com); when
+# azure_api_version is set the call uses the legacy deployment-scoped route
+# (/openai/deployments/<name>/chat/completions?api-version=...) instead of the
+# GA v1 endpoint - some resources/policies still require it.
 deploymentName = 'gpt-4o-mini'
 
 # Initiate the logger to write output information to the log
@@ -70,6 +75,7 @@ def scoreModel(userPrompt, systemPrompt, options):
         "temperature": 1,
         "top_p": 1,
         "azure_openai_resource": os.environ.get("AZURE_OPENAI_RESOURCE", ""),
+        "azure_api_version": os.environ.get("AZURE_OPENAI_API_VERSION", ""),
         "endpoint_url": "",
     }
     options = {**optionsDefaults, **_parse_options(options)}
@@ -79,9 +85,17 @@ def scoreModel(userPrompt, systemPrompt, options):
     else:
         host = (options.get('azure_openai_resource') or '').strip()
         # Accept either a short resource name (my-openai-resource) or a full host
+        # of any Azure flavor (openai / cognitiveservices / services.ai)
         if host and '.' not in host:
             host = f"{host}.openai.azure.com"
-        modelEndpoint = f"https://{host}/openai/v1/chat/completions"
+        apiVersion = (options.get('azure_api_version') or '').strip()
+        if apiVersion:
+            # Legacy deployment-scoped route (deployment in the path, api-version required)
+            modelEndpoint = (f"https://{host}/openai/deployments/{deploymentName}"
+                             f"/chat/completions?api-version={apiVersion}")
+        else:
+            # GA v1 endpoint (deployment addressed via the model field in the body)
+            modelEndpoint = f"https://{host}/openai/v1/chat/completions"
     payload = {
         "model": deploymentName,
         "messages": [{"role": "system", "content": systemPrompt[0]},

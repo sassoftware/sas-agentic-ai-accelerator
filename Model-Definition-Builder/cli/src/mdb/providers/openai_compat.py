@@ -19,7 +19,7 @@ from ..core.manifest import (
     PricingBlock, ProviderBlock, RuntimeBlock, TagsBlock,
 )
 from ..core.netutil import get_json
-from .base import CatalogModel, ProviderAdapter, Question, SmokeResult
+from .base import CatalogModel, ProviderAdapter, Question, SmokeResult, http_smoke_failure
 
 
 class OpenAICompatAdapter(ProviderAdapter):
@@ -98,7 +98,7 @@ class OpenAICompatAdapter(ProviderAdapter):
             )
             body = response.json()
             if response.status_code >= 300:
-                return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+                return http_smoke_failure(response, body)
             text = body["choices"][0]["message"]["content"]
             usage = body.get("usage", {})
             return SmokeResult(ok=True, detail=(
@@ -261,7 +261,7 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
                 )
                 body = response.json()
                 if response.status_code >= 300:
-                    return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+                    return http_smoke_failure(response, body)
                 dims = len(body["data"][0]["embedding"])
                 return SmokeResult(ok=True, detail=f"Server returned a {dims}-dim embedding from {base}.")
             response = session.post(
@@ -272,7 +272,7 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
             )
             body = response.json()
             if response.status_code >= 300:
-                return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+                return http_smoke_failure(response, body)
             text = body["choices"][0]["message"]["content"]
             return SmokeResult(ok=True, detail=f"Server responded from {base}: {text[:60]!r}")
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
@@ -283,11 +283,20 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
 
 
 class AzureFoundryAdapter(OpenAICompatAdapter):
-    """Azure AI Foundry / Azure OpenAI via the GA v1 endpoint (key-only mode).
+    """Azure AI Foundry / Azure OpenAI (key-only mode).
 
     Models are addressed by DEPLOYMENT NAME (chosen by the user in Azure),
     and the endpoint is built at runtime from the azure_openai_resource
     option so one registered model works across environments.
+
+    Every Azure host flavor is accepted — <res>.openai.azure.com (Azure
+    OpenAI resource), <res>.cognitiveservices.azure.com (AI Services /
+    Foundry resource) and <res>.services.ai.azure.com (Foundry endpoint) all
+    serve the same OpenAI-compatible data plane. By default the GA v1
+    endpoint (/openai/v1/chat/completions, deployment in the body) is used;
+    setting api_version switches to the legacy deployment-scoped route
+    (/openai/deployments/<name>/chat/completions?api-version=...) that some
+    resources or org policies still require.
     """
 
     template = "azure_openai_v1"
@@ -308,9 +317,15 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
 
     def questions(self) -> list[Question]:
         return [
-            Question("resource", "Azure resource host (e.g. myres.openai.azure.com or just 'myres')",
+            Question("resource",
+                     "Azure resource host (full host of any flavor - myres.openai.azure.com, "
+                     "myres.cognitiveservices.azure.com, myres.services.ai.azure.com - or just 'myres')",
                      default=os.environ.get("AZURE_OPENAI_RESOURCE", "")),
             Question("deployment", "Deployment name (as chosen in Azure AI Foundry)"),
+            Question("api_version",
+                     "API version - leave blank for the GA v1 endpoint; set e.g. 2024-10-21 or "
+                     "2025-01-01-preview if your resource requires the legacy /openai/deployments route",
+                     default=os.environ.get("AZURE_OPENAI_API_VERSION", "")),
         ]
 
     def provider_params(self, cm: CatalogModel, answers: dict) -> dict:
@@ -320,14 +335,23 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
             # used CLI-side (smoke tests), while deployed containers resolve it via
             # the AZURE_OPENAI_RESOURCE environment variable or a per-call option.
             "commit_resource": bool(answers.get("commit_resource")),
+            # Empty = GA v1 endpoint; a version pins the legacy deployment-scoped
+            # route. Part of the definition (the style belongs to the resource's
+            # API surface), overridable at runtime via AZURE_OPENAI_API_VERSION.
+            "api_version": (answers.get("api_version") or "").strip(),
         }
 
-    def _resource_base(self, manifest: ModelManifest) -> str:
+    def _chat_url(self, manifest: ModelManifest) -> str:
         host = (manifest.provider.params.get("resource")
                 or os.environ.get("AZURE_OPENAI_RESOURCE") or "").strip()
         if host and "." not in host:
             host = f"{host}.openai.azure.com"
-        return f"https://{host}/openai/v1"
+        api_version = (manifest.provider.params.get("api_version")
+                       or os.environ.get("AZURE_OPENAI_API_VERSION") or "").strip()
+        if api_version:
+            return (f"https://{host}/openai/deployments/{manifest.provider.model_version}"
+                    f"/chat/completions?api-version={api_version}")
+        return f"https://{host}/openai/v1/chat/completions"
 
     def live_catalog(self, session: requests.Session, api_key: Optional[str]) -> list[CatalogModel]:
         raise NotImplementedError(
@@ -341,8 +365,10 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
             return SmokeResult(ok=False, detail=f"No API key - set {self.env_key_var} in the environment or .env.")
         try:
             response = session.post(
-                f"{self._resource_base(manifest)}/chat/completions",
+                self._chat_url(manifest),
                 headers={"Content-Type": "application/json", "api-key": api_key},
+                # The model field is the deployment name on the v1 endpoint and
+                # ignored (harmlessly, SDK-consistent) on the legacy route.
                 json={
                     "model": manifest.provider.model_version,
                     "messages": [{"role": "user", "content": "Reply with the single word OK."}],
@@ -351,7 +377,7 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
             )
             body = response.json()
             if response.status_code >= 300:
-                return SmokeResult(ok=False, detail=f"HTTP {response.status_code}: {body}")
+                return http_smoke_failure(response, body)
             return SmokeResult(ok=True, detail=f"Deployment responded: {body['choices'][0]['message']['content'][:60]!r}")
         except Exception as exc:
             return SmokeResult(ok=False, detail=str(exc))
