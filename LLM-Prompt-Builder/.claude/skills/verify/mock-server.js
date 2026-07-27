@@ -247,13 +247,17 @@ http
         // with a credentialDomainPrefix configured it must render disabled.
         return json(res, 200, { temperature: { default: 0.3 }, API_KEY: { default: 'Anthropic' } });
       }
-      // Credential domains (password type): the key is the password secret,
-      // Base64-encoded. agentic-ai-OpenAI resolves; agentic-ai-Anthropic 404s.
-      if (p === '/credentials/domains/agentic-ai-OpenAI/secrets') {
+      // The single credential domain: one secrets map, entries named per
+      // provider. OpenAI has a key; Anthropic deliberately has none, so with
+      // credentialDomain configured the model needing it renders disabled.
+      if (p === '/credentials/domains/agentic-ai-keys/secrets') {
         return json(res, 200, {
-          domainId: 'agentic-ai-OpenAI',
-          properties: { userId: 'apikey' },
-          secrets: { password: Buffer.from('sk-mock-openai-key').toString('base64') },
+          domainId: 'agentic-ai-keys',
+          secrets: {
+            OpenAI: Buffer.from('sk-mock-openai-key').toString('base64'),
+            pgvector_user: Buffer.from('rag_ingest').toString('base64'),
+            pgvector_password: Buffer.from('mock-db-pw').toString('base64'),
+          },
         });
       }
       if (p.startsWith('/credentials/domains/') && p.endsWith('/secrets')) {

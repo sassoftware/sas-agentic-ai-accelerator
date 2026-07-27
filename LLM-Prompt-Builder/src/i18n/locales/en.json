@@ -130,7 +130,7 @@
     "promptBuilderJudgeSectionDescription": "Use another LLM as a judge to rank each run's responses and highlight the strongest one. Pick a judge model and, optionally, judge automatically after every run. The verdict appears on each run in the tracker below; you still choose the Best Response yourself.",
     "promptBuilderJudgeModelLabel": "Judge model",
     "promptBuilderJudgeSelectPlaceholder": "Select a judge model",
-    "promptBuilderCredentialMissing": "No credential available - request access to the {domain} credential domain.",
+    "promptBuilderCredentialMissing": "No {provider} key available in the {domain} credential domain - ask your administrator for access.",
     "promptBuilderJudgeIncludeSelfLabel": "Include the judge's own response",
     "promptBuilderJudgeIncludeSelfInfo": "By default the judge does not rank its own response, because language models tend to prefer their own output (self-preference bias). Tick this only if you want the judge model's own response included in the ranking anyway — its rank may then be inflated in its own favour.",
     "promptBuilderJudgeAutoLabel": "Auto-judge when the experiment finishes",

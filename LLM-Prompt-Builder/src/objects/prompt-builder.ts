@@ -1,5 +1,5 @@
-/**
- * Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
+﻿/**
+ * Copyright Â© 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Create a Prompt Builder Object
@@ -40,7 +40,7 @@ import {
   type JobExecutionJob,
 } from '../api/jobexec-api';
 import { getCasServers, getCaslibs, getCasTables, getCasTableInfo } from '../api/cas-api';
-import { resolveProviderKeys } from '../api/credentials-api';
+import { resolveDomainSecrets } from '../api/credentials-api';
 import { createAccordionItem } from '../ui/accordion';
 import { attachCombobox } from '../ui/combobox';
 import { showConfirmModal } from '../ui/confirm-modal';
@@ -158,7 +158,7 @@ interface JudgeSummary {
   tie?: boolean;
   /** Council: the models that tied at the top (kept even after a chairman resolves it). */
   tiedBest?: string[] | null;
-  /** Council: set when a chairman broke a tie — the chairman model + its reasoning. */
+  /** Council: set when a chairman broke a tie â€” the chairman model + its reasoning. */
   chairman?: { model: string; reasoning?: string | null } | null;
   /** Reason text for a non-'ok' status. */
   error?: string | null;
@@ -199,7 +199,7 @@ interface ManifestConfig {
 
 /**
  * One entry of the job-owned `Prompt-Optimization-Tracker.json` on a
- * prompt-test model (see the Phase-3 design). The browser only reads it —
+ * prompt-test model (see the Phase-3 design). The browser only reads it â€”
  * the optimization job is the sole writer. Every optimization run lives here,
  * next to the prompt's experiment tracker; no extra Model Manager models are
  * created for results.
@@ -222,7 +222,7 @@ interface OptimizationTrackerEntry {
   baselinePrompt?: { systemPrompt?: string; userPrompt?: string } | null;
   trainSize?: number | null;
   validationSize?: number | null;
-  /** Per-validation-example before/after — the run's evolution detail. */
+  /** Per-validation-example before/after â€” the run's evolution detail. */
   evaluations?: OptimizationEvaluation[] | null;
   optimizedPrompt?: {
     systemPrompt?: string;
@@ -337,8 +337,8 @@ function extractCostAttributes(body: Record<string, unknown> | null): LLMCostAtt
 
 /**
  * Estimate the cost of one SCR call. Prefers per-token pricing
- * (inputTokenCount/outputTokenCount × token counts); falls back to per-second
- * hosting cost (hostingCosts × run_time), mirroring mdb's costPerCall
+ * (inputTokenCount/outputTokenCount Ã— token counts); falls back to per-second
+ * hosting cost (hostingCosts Ã— run_time), mirroring mdb's costPerCall
  * convention. Returns null when the model carries no usable prices.
  */
 function computeCallCost(
@@ -387,7 +387,7 @@ interface ModelExperimentData {
   fewest_tokens_prompt: boolean | null;
   /** Cheapest response in the run (lowest estimated cost); null when unknown. */
   cheapest_prompt: boolean | null;
-  /** 1 = judge's best, 2, 3, … ; null = not judged. */
+  /** 1 = judge's best, 2, 3, â€¦ ; null = not judged. */
   judge_rank: number | null;
   /** Convenience flag for the judge's winner (judge_rank === 1). */
   judge_best: boolean | null;
@@ -474,12 +474,12 @@ function openModelManagerLink(
   const opened = window.open(url, '_blank', 'noopener,noreferrer');
   if (opened) return;
 
-  // Popup blocked by the sandbox — copy the link and let the user open it.
+  // Popup blocked by the sandbox â€” copy the link and let the user open it.
   copyToClipboard(url);
   const original = anchor.innerHTML;
   anchor.textContent =
     (interfaceText?.promptBuilderOpenInMMCopied as string) ??
-    'Link copied — open it in a new tab';
+    'Link copied â€” open it in a new tab';
   window.setTimeout(() => {
     anchor.innerHTML = original;
   }, 2500);
@@ -509,7 +509,7 @@ function legacyCopyToClipboard(text: string): void {
   try {
     document.execCommand('copy');
   } catch {
-    /* clipboard unavailable — nothing more we can do */
+    /* clipboard unavailable â€” nothing more we can do */
   }
   document.body.removeChild(textarea);
 }
@@ -517,7 +517,7 @@ function legacyCopyToClipboard(text: string): void {
 /**
  * Parse an SCR options string (`{key:value,key:value}`, unquoted) back into an
  * object. Values are coerced to number/boolean when they look like one, else
- * kept as strings — so non-numeric options (`reasoning_effort:medium`,
+ * kept as strings â€” so non-numeric options (`reasoning_effort:medium`,
  * `API_KEY:OpenAI`, `normalize:true`) round-trip without breaking parsing.
  */
 function parseScrOptionsString(optionsStr: string | null | undefined): Record<string, unknown> {
@@ -732,7 +732,7 @@ export async function buildPromptBuilder(
       }
       for (const promptBuilderAvailablepte in promptBuilderAvailablePTE) {
         if (promptBuilderAvailablePTE[promptBuilderAvailablepte]?.name === 'Prompt-Experiment-Tracker.json') {
-          // A tracker that cannot be parsed must not abort the handler — the
+          // A tracker that cannot be parsed must not abort the handler â€” the
           // Model Manager link and delete buttons below still have to work.
           try {
             // Reset the prompt tracker to nothing
@@ -805,7 +805,7 @@ export async function buildPromptBuilder(
             });
             // Reconstruct each judged run's aggregate. A council re-runs the
             // (pure, deterministic) Borda aggregation over its persisted ballots
-            // — restoring winner/ranking/tie/agreement/confidence exactly. A
+            // â€” restoring winner/ranking/tie/agreement/confidence exactly. A
             // single judge rebuilds its ranking from the per-model ranks.
             promptBuilderPreviousExperiment.forEach((loadedRun) => {
               if (!loadedRun.judge) return;
@@ -873,7 +873,7 @@ export async function buildPromptBuilder(
     };
 
     // Name + user filters for the two selection lists. The lists can get very
-    // long, so each dropdown only renders the matching entries — filtering by
+    // long, so each dropdown only renders the matching entries â€” filtering by
     // name and by who created or last modified an entry. The current selection
     // always stays in the list.
     function createListFilter(
@@ -1218,7 +1218,7 @@ export async function buildPromptBuilder(
           });
           if (!confirmed) return;
         }
-        // Delete the confirmed prompts explicitly before the project itself —
+        // Delete the confirmed prompts explicitly before the project itself â€”
         // whether a project DELETE cascades to its models varies by SAS Viya
         // release, deleting them one by one is deterministic.
         for (const projectPrompt of projectPrompts) {
@@ -1561,18 +1561,20 @@ export async function buildPromptBuilder(
 
         modelDiv.appendChild(checkbox);
         modelDiv.appendChild(label);
-        // A model whose provider has no resolvable credential for this user is
-        // visible but not selectable — the note names the domain to request.
-        const missingDomain = llmMissingCredentialDomain(model);
-        if (missingDomain) {
+        // A model whose provider has no key for this user is visible but not
+        // selectable â€” the note names the missing entry and the domain.
+        const missingProvider = llmMissingCredentialDomain(model);
+        if (missingProvider) {
           checkbox.disabled = true;
           label.classList.add('text-muted');
           const note = document.createElement('small');
           note.classList.add('text-muted', 'd-block', 'pb-credential-note');
           note.innerText = String(
             promptBuilderInterfaceText?.promptBuilderCredentialMissing ??
-              'No credential available - request access to the {domain} credential domain.'
-          ).replace('{domain}', missingDomain);
+              'No {provider} key available in the {domain} credential domain - ask your administrator for access.'
+          )
+            .replace('{provider}', missingProvider)
+            .replace('{domain}', credentialDomain);
           modelDiv.title = note.innerText;
           modelDiv.appendChild(note);
         }
@@ -1587,7 +1589,7 @@ export async function buildPromptBuilder(
     const promptBuilderModelSelectorContainer = document.createElement('div');
     promptBuilderModelSelectorContainer.setAttribute('id', `${promptBuilderObject?.id}-model-selector-container`);
     // Load the available and deprecated LLM lists, then each LLM's options.json,
-    // all in parallel — done serially this delays the first paint noticeably.
+    // all in parallel â€” done serially this delays the first paint noticeably.
     const [promptBuilderAllLLMOptions, promptBuilderDeprecatedLLMOptions] = await Promise.all([
       getModelProjectModels(promptBuilderObject?.llmProjectID as string),
       getModelProjectModels(promptBuilderObject?.llmProjectID as string, "eq(tags,'deprecated')"),
@@ -1598,7 +1600,7 @@ export async function buildPromptBuilder(
       .filter((obj1) => !promptBuilderDeprecatedLLMs.some((obj2) => obj1.id === obj2.id));
     await Promise.all(
       promptBuilderAvailableLLMs.map(async (availableLLM) => {
-        // A single unreachable/slow LLM must not break the whole builder — it
+        // A single unreachable/slow LLM must not break the whole builder â€” it
         // just loads without its options (and, later, without a cost estimate).
         try {
           const availableLLMContents = await getModelContents(availableLLM.id);
@@ -1614,40 +1616,35 @@ export async function buildPromptBuilder(
         }
       })
     );
-    // Resolve provider keys from credential domains when a prefix is
-    // configured: `${prefix}${provider}` per provider under the signed-in
-    // user's identity (user credential overrides group credential). Providers
-    // that resolve neither a domain credential nor an assigned-data key are
-    // disabled in every model selector with a note naming the domain — access
-    // to a provider becomes an identity decision, not an app setting.
-    const credentialPrefix = String(promptBuilderObject?.credentialDomainPrefix ?? '').trim();
+    // Resolve provider keys from the credential domain when one is
+    // configured: a single secrets-map lookup under the signed-in user's
+    // identity (user credential overrides group credential). Providers with
+    // neither a domain entry nor an assigned-data key are disabled in every
+    // model selector with a note naming the domain â€” access to a provider
+    // becomes an identity decision, not an app setting.
+    const credentialDomain = String(promptBuilderObject?.credentialDomain ?? '').trim();
     const providersWithoutCredential = new Set<string>();
-    if (credentialPrefix) {
-      const requiredProviders = [
-        ...new Set(
-          promptBuilderAvailableLLMs
-            .map((llm) => llm.options?.API_KEY?.default as string | undefined)
-            .filter((name): name is string => Boolean(name))
-        ),
-      ];
-      const { keys, unavailable } = await resolveProviderKeys(credentialPrefix, requiredProviders);
+    if (credentialDomain) {
+      const domainSecrets = await resolveDomainSecrets(credentialDomain);
       const assignedKeys = (promptBuilderObject?.API_KEYS ?? {}) as Record<string, string>;
       // Domain-resolved keys win; assigned-data keys back-fill providers the
-      // domains do not cover (the migration path for existing reports).
-      promptBuilderObject.API_KEYS = { ...assignedKeys, ...keys };
-      unavailable
-        .filter((name) => !assignedKeys[name])
-        .forEach((name) => providersWithoutCredential.add(name));
+      // domain does not cover (the migration path for existing reports).
+      promptBuilderObject.API_KEYS = { ...assignedKeys, ...domainSecrets };
+      const mergedKeys = promptBuilderObject.API_KEYS as Record<string, string>;
+      promptBuilderAvailableLLMs
+        .map((llm) => llm.options?.API_KEY?.default as string | undefined)
+        .filter((name): name is string => Boolean(name))
+        .forEach((name) => {
+          if (!mergedKeys[name]) providersWithoutCredential.add(name);
+        });
     }
     function llmMissingCredentialDomain(llm: AvailableLLM): string | null {
       const provider = llm.options?.API_KEY?.default as string | undefined;
-      return provider && providersWithoutCredential.has(provider)
-        ? `${credentialPrefix}${provider}`
-        : null;
+      return provider && providersWithoutCredential.has(provider) ? provider : null;
     }
     // Cost/governance attributes of a run's LLM (per-token / per-second prices,
-    // provider, family, endpoint), resolved by model name. Fetched LAZILY — only
-    // for the models actually used (run / judge / manifest) — so the initial load
+    // provider, family, endpoint), resolved by model name. Fetched LAZILY â€” only
+    // for the models actually used (run / judge / manifest) â€” so the initial load
     // is a fixed number of requests regardless of how many LLMs are registered.
     const llmAttributesByName = new Map<string, AvailableLLM>();
     for (const llm of [...promptBuilderAvailableLLMs, ...promptBuilderDeprecatedLLMs]) {
@@ -1926,7 +1923,7 @@ export async function buildPromptBuilder(
     const promptBuilderJudgeControls = document.createElement('div');
     promptBuilderJudgeControls.classList.add('pb-judge-controls', 'd-flex', 'flex-column', 'gap-2', 'mt-2');
 
-    // Row 1 — the single judge model.
+    // Row 1 â€” the single judge model.
     const judgeModelRow = document.createElement('div');
     judgeModelRow.classList.add('d-flex', 'align-items-center', 'gap-2', 'flex-wrap');
     const judgeModelLabel = document.createElement('label');
@@ -1957,7 +1954,7 @@ export async function buildPromptBuilder(
     judgeModelRow.appendChild(judgeModelLabel);
     judgeModelRow.appendChild(promptBuilderJudgeModelSelect);
 
-    // Row 2 — the council question (hidden until a judge is chosen).
+    // Row 2 â€” the council question (hidden until a judge is chosen).
     const judgeCouncilToggleDiv = document.createElement('div');
     judgeCouncilToggleDiv.classList.add('form-check', 'mb-0', 'd-none');
     const promptBuilderJudgeCouncilToggle = document.createElement('input');
@@ -1969,7 +1966,7 @@ export async function buildPromptBuilder(
     judgeCouncilToggleLabel.htmlFor = promptBuilderJudgeCouncilToggle.id;
     judgeCouncilToggleLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeCouncilToggleLabel}`;
     // Info icon explaining what a council is, its cost, when to use it, and why
-    // an odd number helps — matching the option/include-self tooltips.
+    // an odd number helps â€” matching the option/include-self tooltips.
     const judgeCouncilInfo = document.createElement('span');
     judgeCouncilInfo.classList.add('info-icon');
     judgeCouncilInfo.style.marginLeft = '4px';
@@ -1987,7 +1984,7 @@ export async function buildPromptBuilder(
     judgeCouncilToggleDiv.appendChild(judgeCouncilToggleLabel);
     judgeCouncilToggleDiv.appendChild(judgeCouncilInfo);
 
-    // Row 3 — the council members (hidden unless the council question is on),
+    // Row 3 â€” the council members (hidden unless the council question is on),
     // stacked vertically like the model selector above.
     const judgeCouncilSection = document.createElement('div');
     judgeCouncilSection.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-council-section`;
@@ -2235,7 +2232,7 @@ export async function buildPromptBuilder(
       }
 
       // Estimated per-response cost (when the model carries prices) and the
-      // cheapest response — considered only among priced responses.
+      // cheapest response â€” considered only among priced responses.
       let cheapestIndex = -1;
       let minCost = Infinity;
       for (let i = 0; i < arr.length; i++) {
@@ -2352,7 +2349,7 @@ export async function buildPromptBuilder(
 
       const results = await Promise.all(allPromises);
       // Load the (cached) cost attributes of just the models that ran, so cost +
-      // cheapest can be computed. Guarded internally — never blocks a run.
+      // cheapest can be computed. Guarded internally â€” never blocks a run.
       await Promise.all(results.map((result) => ensureLLMCostAttributes(result.modelName)));
       // Identify fastest prompt and fewest tokens used prompt
       annotatePrompts(results);
@@ -2707,7 +2704,7 @@ export async function buildPromptBuilder(
             deleteRunButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText.promptExperimentDeleteRunButton}</title><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>`;
             deleteRunButton.onclick = () => deleteExperimentRun(index);
             promptExperimentRunHeader.appendChild(deleteRunButton);
-            // Judge this run — LLM-as-a-Judge ranks the run's responses
+            // Judge this run â€” LLM-as-a-Judge ranks the run's responses
             const judgeRunButton = document.createElement('button');
             judgeRunButton.type = 'button';
             judgeRunButton.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-${index}-judge`;
@@ -2819,11 +2816,11 @@ export async function buildPromptBuilder(
               if (modelData?.fewest_tokens_prompt) {
                 promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderFewestTokensPrompt}</title><path d="M480-83 240-323l56-56 184 183 184-183 56 56L480-83Zm0-238L240-561l56-56 184 183 184-183 56 56-240 240Zm0-238L240-799l56-56 184 183 184-183 56 56-240 240Z"/></svg> `;
               }
-              // Cheapest response — a coin icon, peer to fastest/fewest-tokens
+              // Cheapest response â€” a coin icon, peer to fastest/fewest-tokens
               if (modelData?.cheapest_prompt) {
                 promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg class="cheapestPrompt" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderCheapestPrompt}</title><path d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm-38-152h68v-42q42-7 72-30t30-66q0-42-24-66t-84-45q-51-18-70.5-32T404-506q0-20 17-33t45-13q26 0 42 12.5t22 32.5l62-25q-9-28-32.5-49T508-611v-41h-68v41q-40 8-63.5 33T353-518q0 39 22.5 61.5T450-416q49 18 68.5 33.5T538-343q0 26-21 40t-49 14q-32 0-56-17.5T379-354l-64 26q13 44 40 69.5t87 33.5v41Z"/></svg> `;
               }
-              // Judge's best response — a fifth icon, peer to the four above
+              // Judge's best response â€” a fifth icon, peer to the four above
               if (modelData?.judge_best) {
                 promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg class="judgeBest" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderJudgeBestPrompt}</title><path d="M280-120v-80h160v-124q-49-11-87.5-41.5T296-442q-75-9-125.5-65.5T120-640v-40q0-33 23.5-56.5T200-760h80v-80h400v80h80q33 0 56.5 23.5T840-680v40q0 76-50.5 132.5T664-442q-18 56-56.5 86.5T520-324v124h160v80H280Zm0-408v-152h-80v40q0 38 22 68.5t58 43.5Zm200 128q50 0 85-35t35-85v-240H360v240q0 50 35 85t85 35Zm200-128q36-13 58-43.5t22-68.5v-40h-80v152Zm-200-52Z"/></svg> `;
               }
@@ -2902,7 +2899,7 @@ export async function buildPromptBuilder(
                 } else if (promptExperimentRunModelKeyAttribute === 'judge_rank') {
                   // Skip when this run was never judged; the winner also gets a header icon.
                   if (promptExperimentRunModelKeyValue == null) continue;
-                  // On a council tie, the tied-top models share the rank — flag
+                  // On a council tie, the tied-top models share the rank â€” flag
                   // them so the shared number reads as a tie, not an ordering.
                   const runJudge = promptExperimentTrackerRunResult.judge as JudgeSummary | null | undefined;
                   const tiedNote =
@@ -3000,7 +2997,7 @@ export async function buildPromptBuilder(
     function renderAllExperimentRuns(preserveOpen = false): void {
       const prommpExperimentTargetContainer = document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-pet`);
       // Snapshot which accordions (run-level and nested model bodies) are open
-      // so a re-render can restore them — Bootstrap collapse state lives in the
+      // so a re-render can restore them â€” Bootstrap collapse state lives in the
       // DOM classes, which innerHTML='' would otherwise wipe.
       const openBodyIds =
         preserveOpen && prommpExperimentTargetContainer
@@ -3061,7 +3058,7 @@ export async function buildPromptBuilder(
     }
 
     // Council ranks come from the Borda scores (competition ranking): equal
-    // scores share a rank, so a top tie shows as 1, 1, 3, … The winner icon is
+    // scores share a rank, so a top tie shows as 1, 1, 3, â€¦ The winner icon is
     // set only when there is a single winner (no tie).
     function applyCouncilRanks(
       trackerEntry: ExperimentTrackerEntry,
@@ -3142,7 +3139,7 @@ export async function buildPromptBuilder(
         });
       const now = new Date().toISOString();
       // Load the (cached) cost attributes of the judge models so judging cost can
-      // be estimated. Guarded internally — never blocks judging.
+      // be estimated. Guarded internally â€” never blocks judging.
       await Promise.all(panel.map(ensureLLMCostAttributes));
       // Estimated cost of one judge/chairman call from its SCR usage + the
       // judge model's prices. null when the model carries no prices.
@@ -3231,7 +3228,7 @@ export async function buildPromptBuilder(
           let councilTie = result.tie;
           let chairman: { model: string; reasoning?: string | null } | null = null;
           let chairmanCost: number | null = null;
-          // Chairman tiebreaker — only when the panel tied and the user opted in.
+          // Chairman tiebreaker â€” only when the panel tied and the user opted in.
           if (
             result.tie &&
             promptBuilderJudgeChairmanToggle.checked &&
@@ -3321,7 +3318,7 @@ export async function buildPromptBuilder(
           promptBuilderAvailableLLMs.some((llm) => llm.name === name)
         );
         if (availableRunPanel.length > 0) {
-          // Single judge → the dropdown; a panel → the council toggle + list.
+          // Single judge â†’ the dropdown; a panel â†’ the council toggle + list.
           promptBuilderJudgeModelSelect.value = availableRunPanel[0];
           const isCouncil = availableRunPanel.length >= 2;
           promptBuilderJudgeCouncilToggle.checked = isCouncil;
@@ -3801,7 +3798,7 @@ export async function buildPromptBuilder(
     promptExperimentSaveResultContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-save-only-result`;
 
     // Save the experiments to the SAS Model Manager. The success/failure
-    // message goes to `resultContainer` — next to Save for a plain save, or the
+    // message goes to `resultContainer` â€” next to Save for a plain save, or the
     // manifest box when called as the first step of manifesting.
     async function promptBuilderSaveExperiments(
       resultContainer: HTMLElement = promptExperimentSaveResultContainer
@@ -4318,7 +4315,7 @@ ${scoreCodeReturn}`;
           }
         }
         // When a model-card report URI is configured (Options pane), embed it as
-        // the model card's custom chart — same attributes/shape mdb writes.
+        // the model card's custom chart â€” same attributes/shape mdb writes.
         const modelCardChart = buildModelCardChart(
           getAppState().config.viyaHost,
           promptBuilderObject?.modelCardReportURI as string | undefined
@@ -4349,7 +4346,7 @@ ${scoreCodeReturn}`;
     // Execution job (proc python + DSPy, see SAS-Viya-Integrations/
     // Prompt-Optimization/), polls it with live log milestones, and offers the
     // optimised prompt back. Gated by the enableOptimization Option; the job
-    // is the sole writer of Prompt-Optimization-Tracker.json — the browser
+    // is the sole writer of Prompt-Optimization-Tracker.json â€” the browser
     // only launches, polls and reads.
     const optimizationEnabled = String(promptBuilderObject?.enableOptimization ?? '') === 'true';
     // Hoisting-safe handle for updateOptimizeState(), which manifest/tracker
@@ -4422,7 +4419,7 @@ ${scoreCodeReturn}`;
       }
     }
 
-    // CAS dataset picker: cascading server → caslib → table dropdowns over
+    // CAS dataset picker: cascading server â†’ caslib â†’ table dropdowns over
     // the CAS Management listings (the interactive-selection pattern of the
     // portal framework's prompt controls). Listings are cached per
     // server/caslib; the server list loads at most once, lazily, the first
@@ -4515,7 +4512,7 @@ ${scoreCodeReturn}`;
     /**
      * Refresh the collapsible run log with the job's own milestones (the
      * SAS.logMessage notes, prefix already stripped by extractProgressMessages
-     * — never the raw SAS log). `finished` paints the final runtime and
+     * â€” never the raw SAS log). `finished` paints the final runtime and
      * freezes it.
      */
     function updateOptimizeRunLog(messages: string[], finished: boolean, liveStatus?: string): void {
@@ -4529,7 +4526,7 @@ ${scoreCodeReturn}`;
         optimizeUI.logList.innerText = messages.join('\n');
         delete optimizeUI.logList.dataset.pending;
       } else if (!finished && liveStatus && liveStatus !== 'ok') {
-        // No milestones yet: say WHY instead of showing an empty log —
+        // No milestones yet: say WHY instead of showing an empty log â€”
         // 'no-milestones' just means the job has not reported one yet, any
         // other status pinpoints why live streaming is unavailable (the full
         // log always appears when the run finishes). Never overwrite already
@@ -4587,12 +4584,12 @@ ${scoreCodeReturn}`;
       } else if (samples < 50) {
         sampleParts.push(`${promptBuilderInterfaceText?.promptBuilderOptimizeSamplesLowWarning}`);
       }
-      optimizeUI.samplesHint.innerText = sampleParts.join(' — ');
+      optimizeUI.samplesHint.innerText = sampleParts.join(' â€” ');
 
       // Rough call estimate: baseline + after evaluation over the dataset plus
       // the optimizer's own passes (MIPROv2 additionally proposes and trials
       // candidate instructions; GEPA adds reflection rounds on top of its
-      // candidate evaluations) — kept deliberately coarse. The GEPA factor is
+      // candidate evaluations) â€” kept deliberately coarse. The GEPA factor is
       // calibrated against a live light-budget run: 10 examples cost ~810
       // calls (751 target + 59 reflection) over ~30 minutes.
       const selectedOptimizer = optimizeUI.optimizerSelect.value;
@@ -4641,7 +4638,7 @@ ${scoreCodeReturn}`;
       else if (selectedOptimizer === 'gepa' && optimizeUI.judgeSelect.value === '')
         disabledHint = `${promptBuilderInterfaceText?.promptBuilderOptimizeGepaNeedsJudge}`;
       setDisabledHint(optimizeUI.runButton, optimizeUI.runWrapper, disabledHint !== '', disabledHint);
-      // The compare entry point only needs a prompt and a quiet job slot —
+      // The compare entry point only needs a prompt and a quiet job slot â€”
       // its own modal handles candidate/sample validation.
       optimizeUI.compareButton.disabled = optimizeJobActive || !configReady || !promptSelected;
       // Follow the selection: render the selected prompt's optimization
@@ -4662,7 +4659,7 @@ ${scoreCodeReturn}`;
       if (!optimizeUI) return;
       optimizeJobActive = false;
       // Safety net: never leave the runtime ticking (covers launch failures,
-      // where updateOptimizeRunLog(…, true) is not reached).
+      // where updateOptimizeRunLog(â€¦, true) is not reached).
       stopOptimizeRuntimeTicker();
       optimizeUI.runButton.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeRunButton}`;
       updateOptimizeState();
@@ -4675,23 +4672,23 @@ ${scoreCodeReturn}`;
       try {
         job = await getJob(optimizeJobId);
       } catch {
-        // Transient poll failure — keep polling.
+        // Transient poll failure â€” keep polling.
         return;
       }
       const progress = await getJobProgressMessages(job);
       const progressMessages = progress.messages;
       updateOptimizeRunLog(progressMessages, false, progress.liveStatus);
-      const latestMilestone = progressMessages.length > 0 ? ` — ${progressMessages[progressMessages.length - 1]}` : '';
+      const latestMilestone = progressMessages.length > 0 ? ` â€” ${progressMessages[progressMessages.length - 1]}` : '';
       optimizeUI.statusLine.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobState} ${job.state}${latestMilestone}`;
       if (!isTerminalJobState(job.state)) {
         // The job records its outcome in the optimization tracker BEFORE Job
-        // Execution's state turns terminal — and a hard-killed compute session
+        // Execution's state turns terminal â€” and a hard-killed compute session
         // can leave the state 'running' indefinitely (seen live). When this
         // job's entry exists, finish from it instead of polling forever.
         const earlyEntry = await readOptimizationEntry(true);
         if (!earlyEntry) return;
         stopOptimizePolling();
-        // Clear the (possibly stale) state line — the run is over; the result
+        // Clear the (possibly stale) state line â€” the run is over; the result
         // box and the run log carry the outcome from here.
         optimizeUI.statusLine.innerText = '';
         updateOptimizeRunLog(progressMessages, true);
@@ -4707,7 +4704,7 @@ ${scoreCodeReturn}`;
         return;
       }
       stopOptimizePolling();
-      // The run is over: replace the transient state line with nothing — the
+      // The run is over: replace the transient state line with nothing â€” the
       // outcome lives in the result box; runtime + milestones in the run log.
       optimizeUI.statusLine.innerText = '';
       updateOptimizeRunLog(progressMessages, true);
@@ -4715,7 +4712,7 @@ ${scoreCodeReturn}`;
         await showOptimizeResult();
       } else {
         // The job records its failure reason in the optimization tracker
-        // (e.g. "the compute context lacks the dspy package") — prefer that
+        // (e.g. "the compute context lacks the dspy package") â€” prefer that
         // over Job Execution's generic error message.
         const failedEntry = await readOptimizationEntry();
         const failureDetail = failedEntry?.error
@@ -4787,7 +4784,7 @@ ${scoreCodeReturn}`;
       // The selection may have moved on while the tracker was being fetched.
       if (promptBuilderPromptSelectorDropdown.value !== modelId) return;
       // Cost estimates in the rows need the price attributes of the models
-      // the runs used (fetched lazily) — best effort before rendering.
+      // the runs used (fetched lazily) â€” best effort before rendering.
       const usedModels = new Set<string>();
       (trackerEntries ?? []).forEach((entry) => {
         if (entry.targetModel && entry.type !== 'comparison') usedModels.add(entry.targetModel);
@@ -4808,13 +4805,13 @@ ${scoreCodeReturn}`;
     /** Format a metric value for the history display. */
     function formatOptimizeMetric(value: number | null | undefined): string {
       return value === null || value === undefined || !Number.isFinite(Number(value))
-        ? '—'
+        ? 'â€”'
         : String(Math.round(Number(value) * 1000) / 1000);
     }
 
     /**
      * Rank a comparison's candidate rows the way MMDSPy ranks endpoints:
-     * best quality first, lower latency breaking ties — with unreachable
+     * best quality first, lower latency breaking ties â€” with unreachable
      * candidates sorted to the bottom.
      */
     function rankComparisonTargets(targetRows: ComparisonTargetRow[]): ComparisonTargetRow[] {
@@ -4869,14 +4866,14 @@ ${scoreCodeReturn}`;
           : [entry.optimizer, entry.metric]
         )
           .filter(Boolean)
-          .join(' · '),
+          .join(' Â· '),
         entry.sampleCount != null
           ? `${entry.sampleCount} ${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryExamples}`
           : '',
       ].filter((part) => part !== '');
       summary.appendChild(document.createTextNode(summaryParts.join('  |  ') + '  '));
       if (succeeded && isComparison) {
-        // A comparison has no before/after — its headline is the winner.
+        // A comparison has no before/after â€” its headline is the winner.
         const winner = rankComparisonTargets(entry.targets ?? [])[0];
         if (winner?.model && winner.status === 'scored') {
           const winnerSpan = document.createElement('span');
@@ -4887,7 +4884,7 @@ ${scoreCodeReturn}`;
       } else if (succeeded) {
         const metricSpan = document.createElement('span');
         metricSpan.classList.add('fw-bold');
-        metricSpan.innerText = `${formatOptimizeMetric(entry.metricBefore)} → ${formatOptimizeMetric(entry.metricAfter)}`;
+        metricSpan.innerText = `${formatOptimizeMetric(entry.metricBefore)} â†’ ${formatOptimizeMetric(entry.metricAfter)}`;
         summary.appendChild(metricSpan);
         const before = Number(entry.metricBefore);
         const after = Number(entry.metricAfter);
@@ -4898,7 +4895,7 @@ ${scoreCodeReturn}`;
           summary.appendChild(delta);
         }
       }
-      // Load/delete as icon buttons in the summary line — the same icons the
+      // Load/delete as icon buttons in the summary line â€” the same icons the
       // experiment-run headers use. Clicks inside <summary> toggle the
       // details, so both stop the event.
       const summaryActions = document.createElement('span');
@@ -4966,7 +4963,7 @@ ${scoreCodeReturn}`;
         body.appendChild(block);
       };
       // The job skips the search when the baseline already scores perfectly
-      // on the validation split (no gradient to climb) — explain that here.
+      // on the validation split (no gradient to climb) â€” explain that here.
       if (entry.skippedReason === 'baseline-perfect') {
         const skippedNote = document.createElement('p');
         skippedNote.classList.add('alert', 'alert-info', 'py-1', 'px-2', 'mb-1', 'mt-2', 'pb-optimize-skipped');
@@ -5005,7 +5002,7 @@ ${scoreCodeReturn}`;
         let anyCost = false;
         roles.forEach(([modelName, roleUsage]) => {
           if (!roleUsage?.calls) return;
-          callParts.push(`${roleUsage.calls} × ${modelName ?? '?'}`);
+          callParts.push(`${roleUsage.calls} Ã— ${modelName ?? '?'}`);
           promptTokens += Number(roleUsage.promptTokens) || 0;
           outputTokens += Number(roleUsage.outputTokens) || 0;
           const roleCost = computeCallCost(
@@ -5029,7 +5026,7 @@ ${scoreCodeReturn}`;
             .replace('{prompt}', String(Math.round(promptTokens)))
             .replace('{output}', String(Math.round(outputTokens)));
           if (anyCost) {
-            usageText += ` — ${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryCost} ${formatCost(totalCost)}`;
+            usageText += ` â€” ${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryCost} ${formatCost(totalCost)}`;
           }
           usageLine.innerText = usageText;
           body.appendChild(usageLine);
@@ -5073,8 +5070,8 @@ ${scoreCodeReturn}`;
           modelCell.innerText = String(targetRow.model ?? '');
           const qualityCell = document.createElement('td');
           if (scored && targetRow.metricBefore != null) {
-            // A sweep row shows its own before → after evolution.
-            qualityCell.innerText = `${formatOptimizeMetric(targetRow.metricBefore)} → ${formatOptimizeMetric(targetRow.metricAfter)}`;
+            // A sweep row shows its own before â†’ after evolution.
+            qualityCell.innerText = `${formatOptimizeMetric(targetRow.metricBefore)} â†’ ${formatOptimizeMetric(targetRow.metricAfter)}`;
           } else if (scored) {
             qualityCell.innerText = formatOptimizeMetric(targetRow.quality);
           } else {
@@ -5086,7 +5083,7 @@ ${scoreCodeReturn}`;
           }
           const latencyCell = document.createElement('td');
           latencyCell.innerText =
-            scored && typeof targetRow.avgLatency === 'number' ? `${targetRow.avgLatency.toFixed(2)}s` : '—';
+            scored && typeof targetRow.avgLatency === 'number' ? `${targetRow.avgLatency.toFixed(2)}s` : 'â€”';
           const callsCell = document.createElement('td');
           callsCell.innerText = String(targetRow.usage?.calls ?? 0);
           const costCell = document.createElement('td');
@@ -5098,10 +5095,10 @@ ${scoreCodeReturn}`;
             },
             targetRow.model ? llmAttributesByName.get(targetRow.model) : undefined
           );
-          costCell.innerText = rowCost !== null ? formatCost(rowCost) : '—';
+          costCell.innerText = rowCost !== null ? formatCost(rowCost) : 'â€”';
           const actionCell = document.createElement('td');
           if (scored && targetRow.model && targetRow.optimizedPrompt) {
-            // Sweep rows carry the candidate's optimised prompt — load it
+            // Sweep rows carry the candidate's optimised prompt â€” load it
             // into the workbench like a single-run result.
             const loadRowButton = document.createElement('button');
             loadRowButton.type = 'button';
@@ -5177,9 +5174,9 @@ ${scoreCodeReturn}`;
           const expectedCell = document.createElement('td');
           expectedCell.innerText = String(evaluation.expected ?? '');
           // Partial-credit metrics (token overlap) also carry a per-example
-          // score; show it next to the ✓/✗ when it is not simply 0 or 1.
+          // score; show it next to the âœ“/âœ— when it is not simply 0 or 1.
           const evalMark = (correct: boolean | undefined, score: number | undefined): string => {
-            const mark = correct ? '✓' : '✗';
+            const mark = correct ? 'âœ“' : 'âœ—';
             return typeof score === 'number' && score > 0 && score < 1 ? `${mark} ${score.toFixed(2)}` : mark;
           };
           const beforeCell = document.createElement('td');
@@ -5243,7 +5240,7 @@ ${scoreCodeReturn}`;
     /**
      * Load a run's optimised prompt into the workbench AS AN EXPERIMENT: the
      * prompts and variables are restored and the run's target LLM selected, so
-     * "Run Experiments" is one click away — judge it against the original,
+     * "Run Experiments" is one click away â€” judge it against the original,
      * pick a Best Response and save/manifest as usual.
      */
     function loadOptimizationAsExperiment(entry: OptimizationTrackerEntry): void {
@@ -5284,7 +5281,7 @@ ${scoreCodeReturn}`;
       optimizeUI.resultBox.innerHTML = '';
       const entry = await readOptimizationEntry();
       if (!entry || entry.status !== 'succeeded') {
-        // The job completed but its tracker entry is missing/failed — surface
+        // The job completed but its tracker entry is missing/failed â€” surface
         // whatever error the entry carries.
         const entryError = entry?.error ? ` ${entry.error}` : '';
         optimizeUI.resultBox.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}${entryError}`;
@@ -5292,7 +5289,7 @@ ${scoreCodeReturn}`;
       }
 
       if (entry.type === 'comparison') {
-        // A comparison has no before/after — point at the ranked table in
+        // A comparison has no before/after â€” point at the ranked table in
         // the history, which refreshOptimizationHistory renders below.
         const compareHeading = document.createElement('p');
         compareHeading.classList.add('fw-bold', 'mb-1');
@@ -5303,14 +5300,14 @@ ${scoreCodeReturn}`;
         return;
       }
 
-      // Brief summary in the result box; the full outcome — evolution details
-      // and the load-as-experiment action — lives in the history below.
+      // Brief summary in the result box; the full outcome â€” evolution details
+      // and the load-as-experiment action â€” lives in the history below.
       const resultHeading = document.createElement('p');
       resultHeading.classList.add('fw-bold', 'mb-1');
       resultHeading.innerText =
         `${promptBuilderInterfaceText?.promptBuilderOptimizeDone} ` +
         `${promptBuilderInterfaceText?.promptBuilderOptimizeMetricBefore} ${formatOptimizeMetric(entry.metricBefore)}` +
-        ` → ${promptBuilderInterfaceText?.promptBuilderOptimizeMetricAfter} ${formatOptimizeMetric(entry.metricAfter)}`;
+        ` â†’ ${promptBuilderInterfaceText?.promptBuilderOptimizeMetricAfter} ${formatOptimizeMetric(entry.metricAfter)}`;
       optimizeUI.resultBox.appendChild(resultHeading);
       void refreshOptimizationHistory(true);
       showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeDone}`);
@@ -5319,7 +5316,7 @@ ${scoreCodeReturn}`;
     /**
      * Validate the panel's dataset selection for a launch. For the CAS source
      * the table's columns must cover the prompt's variables (or userPrompt)
-     * plus response, and its row count must clear `minRows` (§6.3 of the
+     * plus response, and its row count must clear `minRows` (Â§6.3 of the
      * design). Returns the selection to send with the job, or null when
      * validation failed (a toast has been shown).
      */
@@ -5441,13 +5438,13 @@ ${scoreCodeReturn}`;
 
       try {
         // Save first so the job reads the exact prompt (and tracker) the user
-        // sees — the dataset gate guarantees there is something to save.
+        // sees â€” the dataset gate guarantees there is something to save.
         if (petRows.length > 0 || experimentsModified) {
           await promptBuilderSaveExperiments();
         }
         const jobDefinitionUri = await resolveJobDefinitionUri(String(promptBuilderObject?.optimizeJobProgram ?? ''));
         const maxDemos = Math.max(0, Math.min(16, Number(optimizeUI.maxDemosInput.value) || 4));
-        // Only names and ids travel in the request — provider keys stay in the
+        // Only names and ids travel in the request â€” provider keys stay in the
         // governed library/table the job reads server-side.
         const job = await launchJob(jobDefinitionUri, `Optimize ${promptName}`, {
           _contextName: String(promptBuilderObject?.computeContext ?? ''),
@@ -5468,7 +5465,7 @@ ${scoreCodeReturn}`;
           minSamples: String(optimizeMinSamples()),
           keyLibrary: String(promptBuilderObject?.optimizeKeyLibrary ?? ''),
           keyTable: String(promptBuilderObject?.optimizeKeyTable ?? ''),
-          keyDomainPrefix: credentialPrefix,
+          keyDomain: credentialDomain,
         });
         startOptimizeJobMonitor(job);
       } catch (error) {
@@ -5482,12 +5479,12 @@ ${scoreCodeReturn}`;
     }
 
     /** The compare-mode sample floor: nothing is trained, so a comparison may
-     *  run on smaller sets than an optimization — with a noise warning. */
+     *  run on smaller sets than an optimization â€” with a noise warning. */
     const COMPARE_MIN_SAMPLES = 10;
 
     /**
-     * "Compare targets…" (Phase 4a): pick 2+ candidate LLMs in a modal, then
-     * launch the SAME job in compare mode — the baseline prompt is scored on
+     * "Compare targetsâ€¦" (Phase 4a): pick 2+ candidate LLMs in a modal, then
+     * launch the SAME job in compare mode â€” the baseline prompt is scored on
      * every candidate (no optimizer runs) and the ranked comparison lands in
      * the optimization history, where each row offers the handoff into the
      * normal single-target optimization.
@@ -5537,7 +5534,7 @@ ${scoreCodeReturn}`;
       intro.classList.add('mb-2');
       intro.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareIntro}`;
       // Screen-only (4a) vs optimize-each (4b): pre-screen cheaply, then
-      // sweep only the promising candidates — or sweep directly.
+      // sweep only the promising candidates â€” or sweep directly.
       const modeBlock = document.createElement('div');
       modeBlock.classList.add('mb-2');
       const modeName = `${paneID}-obj-${promptBuilderObject?.id}-optimize-compare-mode`;
@@ -5604,7 +5601,7 @@ ${scoreCodeReturn}`;
         const perTarget = Number.isFinite(samples) ? Number(samples) : 0;
         // Screening: per target one smoke call + one call per example
         // (doubled by the judge metric's extra scoring call per example).
-        // Sweep: per target a FULL optimization run — the same per-optimizer
+        // Sweep: per target a FULL optimization run â€” the same per-optimizer
         // factors the panel's estimate uses.
         let perTargetCalls = 1 + perTarget * (currentMetric() === 'judge' ? 2 : 1);
         if (sweepRadio.checked) {
@@ -5704,7 +5701,7 @@ ${scoreCodeReturn}`;
 
       try {
         // Save first so the job reads the exact prompt (and tracker) the user
-        // sees — same contract as an optimization launch.
+        // sees â€” same contract as an optimization launch.
         if (petRows.length > 0 || experimentsModified) {
           await promptBuilderSaveExperiments();
         }
@@ -5731,7 +5728,7 @@ ${scoreCodeReturn}`;
           minSamples: String(sweepMode ? optimizeMinSamples() : COMPARE_MIN_SAMPLES),
           keyLibrary: String(promptBuilderObject?.optimizeKeyLibrary ?? ''),
           keyTable: String(promptBuilderObject?.optimizeKeyTable ?? ''),
-          keyDomainPrefix: credentialPrefix,
+          keyDomain: credentialDomain,
         });
         startOptimizeJobMonitor(job);
       } catch (error) {
@@ -5761,7 +5758,7 @@ ${scoreCodeReturn}`;
       optimizeLearnMore.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeLearnMore}`;
       optimizeDescription.appendChild(optimizeLearnMore);
 
-      // ℹ️ tooltip helper for the optimize controls (the app's judge toggles
+      // â„¹ï¸ tooltip helper for the optimize controls (the app's judge toggles
       // use the same pattern: keyboard-focusable Bootstrap tooltip).
       const makeOptimizeInfoIcon = (labelText: unknown, infoHtml: unknown): HTMLSpanElement => {
         const icon = document.createElement('span');
@@ -5803,7 +5800,7 @@ ${scoreCodeReturn}`;
       });
       targetRow.appendChild(targetLabel);
       targetRow.appendChild(optimizeTargetSelect);
-      // Phase 4a: baseline screening across several candidate targets — an
+      // Phase 4a: baseline screening across several candidate targets â€” an
       // explicit modal entry point so the single-target flow stays untouched.
       const optimizeCompareButton = document.createElement('button');
       optimizeCompareButton.type = 'button';
@@ -5866,7 +5863,7 @@ ${scoreCodeReturn}`;
         promptBuilderInterfaceText?.promptBuilderOptimizeDatasetCas,
         false
       );
-      // Server → caslib → table pickers (revealed for the CAS source) +
+      // Server â†’ caslib â†’ table pickers (revealed for the CAS source) +
       // template pointer. Populated lazily from the CAS Management listings.
       const casRow = document.createElement('div');
       casRow.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-cas-row`;
@@ -6070,7 +6067,7 @@ ${scoreCodeReturn}`;
       optimizeStatusLine.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-status`;
       optimizeStatusLine.classList.add('mb-1');
       // Collapsible run log (collapsed by default, hidden until a run starts):
-      // the job's runtime plus its OWN milestones — never the raw SAS log.
+      // the job's runtime plus its OWN milestones â€” never the raw SAS log.
       const optimizeLogDetails = document.createElement('details');
       optimizeLogDetails.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-log`;
       optimizeLogDetails.classList.add('d-none', 'mb-2');
@@ -6229,7 +6226,7 @@ ${scoreCodeReturn}`;
     promptBuilderContainer.appendChild(manifestSection);
 
     // Optimize (only when the deployment enables it): after the manifest, as
-    // the closing step of the judge → optimise → judge-again loop.
+    // the closing step of the judge â†’ optimise â†’ judge-again loop.
     if (optimizeSection) {
       promptBuilderContainer.appendChild(optimizeSection);
     }

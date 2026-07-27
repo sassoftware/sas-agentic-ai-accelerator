@@ -2,20 +2,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """Credential resolution through the SAS Viya Credentials service.
 
-Convention (design §4a): every external secret lives in its own credential
-domain named ``{prefix}{name}`` — the prefix is configured once (Options pane
-/ step parameter), the name is the provider key name the accelerator already
-uses (``OpenAI``, ``Anthropic``, ...) or the vector-store backend name
-(``pgvector``, ``singlestore``, ...). Domains are of the standard password
-type, so admins manage them with SAS Environment Manager (Security > Domains)
-or the sas-viya CLI credentials plugin; a user credential overrides a group
-credential (``lookupInGroup=true`` searches groups only when the caller has
-no credential of their own).
+Convention (design §4a, owner decision 2026-07-27): ONE credential domain —
+its name configured once per deployment (Options pane / job parameter) —
+holds per-identity credentials whose ``secrets`` map carries every key the
+accelerator needs, under the names it already uses:
 
-The secret part is the ``password`` entry; the non-secret ``userId`` property
-carries the companion user name where one exists (for a vector store: the
-database user; for an API key: unused). Secrets stay in process memory —
-they never touch WORK files or logs.
+    OpenAI, Anthropic, Google, ...        LLM provider API keys
+    pgvector_user, pgvector_password      vector-store credentials, prefixed
+    singlestore_user, ...                 with the backend name
+
+A user credential overrides a group credential (``lookupInGroup=true``
+searches groups only when the caller has none). The multi-key secrets map is
+authored with the shipped ``create-credential-domain.sas`` admin script
+(standard admin UIs only author single user/password pairs); domains and
+credentials can be listed and deleted with the sas-viya credentials CLI.
+Secrets stay in process memory — never in WORK files or logs.
 """
 from __future__ import annotations
 
@@ -29,12 +30,13 @@ def _headers(token: str) -> dict:
     return {"Authorization": "Bearer " + token, "Accept": "application/json"}
 
 
-def fetch_credential(base: str, token: str, domain_id: str,
-                     verify=True, timeout: float = 60.0,
-                     session=None) -> Optional[dict]:
-    """The caller's credential in a domain, secrets decoded — None if absent.
+def fetch_secrets(base: str, token: str, domain_id: str,
+                  verify=True, timeout: float = 60.0,
+                  session=None) -> Optional[dict]:
+    """The caller's decoded secrets map in a domain — None when absent.
 
-    Returns {"properties": {...}, "secrets": {name: decoded str}}.
+    Returns {name: decoded str} for every entry of the credential's secrets
+    map (an undecodable entry decodes to "" rather than raising).
     """
     http = session or requests
     response = http.get(
@@ -44,19 +46,18 @@ def fetch_credential(base: str, token: str, domain_id: str,
     if response.status_code == 404:
         return None
     response.raise_for_status()
-    payload = response.json()
     secrets = {}
-    for name, value in (payload.get("secrets") or {}).items():
+    for name, value in (response.json().get("secrets") or {}).items():
         try:
             secrets[name] = base64.b64decode(value).decode("utf-8")
         except Exception:
             secrets[name] = ""
-    return {"properties": payload.get("properties") or {}, "secrets": secrets}
+    return secrets
 
 
-def credential_available(base: str, token: str, domain_id: str,
-                         verify=True, timeout: float = 30.0,
-                         session=None) -> bool:
+def secrets_available(base: str, token: str, domain_id: str,
+                      verify=True, timeout: float = 30.0,
+                      session=None) -> bool:
     """Cheap existence check (HEAD) — no secret material transferred."""
     http = session or requests
     response = http.head(
@@ -66,25 +67,19 @@ def credential_available(base: str, token: str, domain_id: str,
     return response.status_code == 200
 
 
-def resolve_secret(base: str, token: str, prefix: str, name: str,
-                   verify=True, session=None) -> Optional[dict]:
-    """Convenience: fetch the ``{prefix}{name}`` domain credential."""
-    return fetch_credential(base, token, f"{prefix}{name}",
-                            verify=verify, session=session)
-
-
-def store_config_from_credential(credential: dict, host: str, port,
-                                 dbname: str, sslmode: str = "prefer") -> dict:
-    """Adapter connection config from a vector-store credential + setup config.
+def store_config_from_secrets(secrets: dict, backend: str, host: str, port,
+                              dbname: str, sslmode: str = "prefer") -> dict:
+    """Adapter connection config from the shared secrets map + setup config.
 
     Host/port/database/sslmode are configuration, not secrets — they come
-    from the RAG setup (pipeline.yaml / step parameters). The credential
-    contributes the user (``userId`` property) and password (secret).
+    from the RAG setup (pipeline.yaml / step parameters). The secrets map
+    contributes ``{backend}_user`` and ``{backend}_password``.
     """
-    user = (credential.get("properties") or {}).get("userId", "")
-    password = (credential.get("secrets") or {}).get("password", "")
+    user = (secrets or {}).get(f"{backend}_user", "")
+    password = (secrets or {}).get(f"{backend}_password", "")
     if not user or not password:
-        raise KeyError("vector-store credential is incomplete: it needs the "
-                       "userId property and the password secret")
+        raise KeyError(f"the credential domain has no {backend}_user / "
+                       f"{backend}_password entries - add them with the "
+                       "create-credential-domain.sas admin script")
     return {"host": host, "port": int(port or 5432), "dbname": dbname,
             "user": user, "password": password, "sslmode": sslmode or "prefer"}

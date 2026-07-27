@@ -130,7 +130,7 @@
     "promptBuilderJudgeSectionDescription": "Nutze ein weiteres LLM als Bewertungsmodell, um die Antworten jedes Laufs zu ranken und die stärkste hervorzuheben. Wähle ein Bewertungsmodell und bewerte optional automatisch nach jedem Lauf. Das Urteil erscheint unten im Tracker bei jedem Lauf; die beste Antwort wählst weiterhin du selbst aus.",
     "promptBuilderJudgeModelLabel": "Bewertungsmodell",
     "promptBuilderJudgeSelectPlaceholder": "Wähle ein Bewertungsmodell",
-    "promptBuilderCredentialMissing": "Kein Zugriffsschlüssel verfügbar - beantrage Zugriff auf die Anmeldedomäne {domain}.",
+    "promptBuilderCredentialMissing": "Kein {provider}-Schlüssel in der Anmeldedomäne {domain} verfügbar - bitte den Administrator um Zugriff.",
     "promptBuilderJudgeIncludeSelfLabel": "Eigene Antwort des Bewertungsmodells einbeziehen",
     "promptBuilderJudgeIncludeSelfInfo": "Standardmäßig bewertet das Modell seine eigene Antwort nicht mit, da Sprachmodelle dazu neigen, ihre eigene Ausgabe zu bevorzugen (Self-Preference-Bias). Aktiviere dies nur, wenn die eigene Antwort des Bewertungsmodells trotzdem in die Rangfolge aufgenommen werden soll — ihr Rang kann dann zu ihren Gunsten verzerrt sein.",
     "promptBuilderJudgeAutoLabel": "Automatisch bewerten, sobald das Experiment fertig ist",

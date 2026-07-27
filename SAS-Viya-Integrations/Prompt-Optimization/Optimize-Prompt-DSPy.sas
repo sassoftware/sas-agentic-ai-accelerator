@@ -110,7 +110,7 @@
 %_opt_default(minSamples, 30);
 %_opt_default(keyLibrary, );
 %_opt_default(keyTable, );
-%_opt_default(keyDomainPrefix, );
+%_opt_default(keyDomain, );
 %_opt_default(casServer, cas-shared-default);
 %_opt_default(casLibrary, );
 %_opt_default(casTable, );
@@ -243,7 +243,7 @@ P = {
         "targetModelName", "targetModelNames",
         "scrEndpoint", "deploymentType", "datasetSource", "metric",
         "judgeModelName", "optimizer", "maxDemos", "minSamples",
-        "casServer", "casLibrary", "casTable", "keyDomainPrefix",
+        "casServer", "casLibrary", "casTable", "keyDomain",
     ]
 }
 P = {k: str(v).strip() for k, v in P.items()}
@@ -379,40 +379,43 @@ def load_key_map():
 class KeyResolver:
     """Provider keys from the governed table, with credential-domain fallback.
 
-    When keyDomainPrefix is set, a provider missing from the table resolves
-    from the credential domain {prefix}{provider} under the identity of the
-    user who launched the job (a user credential overrides a group
-    credential). The key is the credential's password secret; it stays in
+    When keyDomain is set, the domain's secrets map is fetched ONCE under
+    the identity of the user who launched the job (a user credential
+    overrides a group credential; entries are named per provider, e.g.
+    OpenAI). Table entries win for backward compatibility. Keys stay in
     process memory - never in WORK files or the log."""
 
     def __init__(self):
         self.table = load_key_map()
-        self.cache = {}
+        self.domain_map = None
+
+    def _domain_secrets(self):
+        if self.domain_map is not None:
+            return self.domain_map
+        self.domain_map = {}
+        domain = P.get("keyDomain", "")
+        if domain:
+            try:
+                response = requests.get(
+                    BASE + f"/credentials/domains/{domain}/secrets",
+                    params={"lookupInGroup": "true"},
+                    headers={"Authorization": "Bearer " + TOKEN},
+                    verify=VERIFY, timeout=60,
+                )
+                if response.status_code == 200:
+                    for name, value in (response.json().get("secrets") or {}).items():
+                        try:
+                            self.domain_map[name] = base64.b64decode(value).decode("utf-8")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        return self.domain_map
 
     def get(self, name):
         if name in self.table:
             return self.table[name]
-        prefix = P.get("keyDomainPrefix", "")
-        if not prefix:
-            return None
-        if name in self.cache:
-            return self.cache[name]
-        key = None
-        try:
-            response = requests.get(
-                BASE + f"/credentials/domains/{prefix}{name}/secrets",
-                params={"lookupInGroup": "true"},
-                headers={"Authorization": "Bearer " + TOKEN},
-                verify=VERIFY, timeout=60,
-            )
-            if response.status_code == 200:
-                encoded = (response.json().get("secrets") or {}).get("password")
-                if encoded:
-                    key = base64.b64decode(encoded).decode("utf-8")
-        except Exception:
-            key = None
-        self.cache[name] = key
-        return key
+        return self._domain_secrets().get(name)
 
 
 # ---- SCR access (mirrors the browser's callSCRLLM) -------------------------
