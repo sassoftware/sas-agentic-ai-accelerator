@@ -36,6 +36,21 @@ An in-Builder click-through against a live environment added three more fixes: t
 
 - The **project, prompt-test, caslib and table pickers are type-to-filter comboboxes**: typing in the picker narrows the OPEN dropdown live (case-insensitive substring), Enter picks the highlighted or only remaining match, and leaving the field without picking keeps the previous selection - so filtering and choosing are one visible control instead of a separate filter box beside a closed dropdown. The underlying selects stay in the DOM as the source of truth (programmatic value changes and repopulation sync back into the combobox), and the project/prompt "created/modified by" filters are unchanged
 - The Prompt Builder launches and monitors the job through the **Job Execution REST API** (`/jobExecution/jobs` with the definition resolved from its Content path) rather than the JES web-app form endpoint, reusing the app's CSRF-aware HTTP client; state is polled and the `NOTE: Python-Subprocess - …` log lines are surfaced as the live status
+## [1.8.3] - 2026-07-26
+
+The llm-vs-embedding **kind** of a definition is now unmistakable in `mdb add` - and wrong classifications fail validation instead of surfacing at smoke-test time.
+
+### Fixed
+
+- **Live catalogs no longer lose the kind.** OpenAI's live `/v1/models` returns ids only; the static-snapshot enrichment now carries over `kind` and `embedding_length`, so `mdb add openai text-embedding-3-small` builds an embedding definition online exactly as it does offline (it used to silently build an LLM definition end to end - chat template, LLM-Definitions folder, LLM project)
+- **Embedding-only providers force their kind.** A manual model reference on `voyage` produced an inconsistent hybrid (embedding score script filed as an LLM definition); adapters whose only template is an embedding template now always set `kind: embedding`
+
+### Added
+
+- **The kind is stated everywhere it matters:** a banner right after the wizard resolves the model ("Adding an EMBEDDING model definition -> Embedding-Definitions/<id>/"), a `definition / kind` row first in the review table, and the kind in the success line
+- **`--kind llm|embedding` works for every adapter that supports embeddings** (previously only ollama/vllm; it was warn-ignored elsewhere), and a manual model reference on a both-kinds provider asks for the kind interactively (`--yes` keeps the previous default)
+- **V012 (error): kind/template mismatch.** Embedding templates are named `emb_*`; a chat template on `kind: embedding` (or vice versa) now fails `mdb validate` with a pointer to `--kind`
+- **`mdb providers` gains a kinds column** (llm / embedding / llm + embedding), and the README documents how the kind is decided and overridden
 
 ## [1.8.2] - 2026-07-24
 
