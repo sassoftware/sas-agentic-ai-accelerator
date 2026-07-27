@@ -2,6 +2,22 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [1.8.3] - 2026-07-26
+
+The llm-vs-embedding **kind** of a definition is now unmistakable in `mdb add` - and wrong classifications fail validation instead of surfacing at smoke-test time.
+
+### Fixed
+
+- **Live catalogs no longer lose the kind.** OpenAI's live `/v1/models` returns ids only; the static-snapshot enrichment now carries over `kind` and `embedding_length`, so `mdb add openai text-embedding-3-small` builds an embedding definition online exactly as it does offline (it used to silently build an LLM definition end to end - chat template, LLM-Definitions folder, LLM project)
+- **Embedding-only providers force their kind.** A manual model reference on `voyage` produced an inconsistent hybrid (embedding score script filed as an LLM definition); adapters whose only template is an embedding template now always set `kind: embedding`
+
+### Added
+
+- **The kind is stated everywhere it matters:** a banner right after the wizard resolves the model ("Adding an EMBEDDING model definition -> Embedding-Definitions/<id>/"), a `definition / kind` row first in the review table, and the kind in the success line
+- **`--kind llm|embedding` works for every adapter that supports embeddings** (previously only ollama/vllm; it was warn-ignored elsewhere), and a manual model reference on a both-kinds provider asks for the kind interactively (`--yes` keeps the previous default)
+- **V012 (error): kind/template mismatch.** Embedding templates are named `emb_*`; a chat template on `kind: embedding` (or vice versa) now fails `mdb validate` with a pointer to `--kind`
+- **`mdb providers` gains a kinds column** (llm / embedding / llm + embedding), and the README documents how the kind is decided and overridden
+
 ## [1.8.2] - 2026-07-24
 
 mdb works with every Azure endpoint flavor and can keep your definitions in your own repository.
