@@ -110,6 +110,7 @@
 %_opt_default(minSamples, 30);
 %_opt_default(keyLibrary, );
 %_opt_default(keyTable, );
+%_opt_default(keyDomainPrefix, );
 %_opt_default(casServer, cas-shared-default);
 %_opt_default(casLibrary, );
 %_opt_default(casTable, );
@@ -202,6 +203,7 @@ proc python restart;
 # Python; SAS Viya REST calls authenticate with the session's service token
 # (the same pattern the accelerator's Track-Prompt-Experiments.sas uses).
 # ============================================================================
+import base64
 import inspect
 import json
 import os
@@ -241,7 +243,7 @@ P = {
         "targetModelName", "targetModelNames",
         "scrEndpoint", "deploymentType", "datasetSource", "metric",
         "judgeModelName", "optimizer", "maxDemos", "minSamples",
-        "casServer", "casLibrary", "casTable",
+        "casServer", "casLibrary", "casTable", "keyDomainPrefix",
     ]
 }
 P = {k: str(v).strip() for k, v in P.items()}
@@ -374,6 +376,45 @@ def load_key_map():
     return key_map
 
 
+class KeyResolver:
+    """Provider keys from the governed table, with credential-domain fallback.
+
+    When keyDomainPrefix is set, a provider missing from the table resolves
+    from the credential domain {prefix}{provider} under the identity of the
+    user who launched the job (a user credential overrides a group
+    credential). The key is the credential's password secret; it stays in
+    process memory - never in WORK files or the log."""
+
+    def __init__(self):
+        self.table = load_key_map()
+        self.cache = {}
+
+    def get(self, name):
+        if name in self.table:
+            return self.table[name]
+        prefix = P.get("keyDomainPrefix", "")
+        if not prefix:
+            return None
+        if name in self.cache:
+            return self.cache[name]
+        key = None
+        try:
+            response = requests.get(
+                BASE + f"/credentials/domains/{prefix}{name}/secrets",
+                params={"lookupInGroup": "true"},
+                headers={"Authorization": "Bearer " + TOKEN},
+                verify=VERIFY, timeout=60,
+            )
+            if response.status_code == 200:
+                encoded = (response.json().get("secrets") or {}).get("password")
+                if encoded:
+                    key = base64.b64decode(encoded).decode("utf-8")
+        except Exception:
+            key = None
+        self.cache[name] = key
+        return key
+
+
 # ---- SCR access (mirrors the browser's callSCRLLM) -------------------------
 def scr_url(model_name):
     if P["deploymentType"] == "aca":
@@ -442,7 +483,7 @@ def build_model_options(model_id, model_name, key_map):
         provider = str(options["API_KEY"])
         key = key_map.get(provider)
         if not key:
-            fail(f"The model {model_name} needs an API key for provider {provider} but the governed key table has none - add it or configure optimizeKeyLibrary/optimizeKeyTable.")
+            fail(f"The model {model_name} needs an API key for provider {provider} but neither the governed key table nor a credential domain provided one - add the key (see the Managing Credentials administration guide) or configure optimizeKeyLibrary/optimizeKeyTable.")
         options["API_KEY"] = key
     return options
 
@@ -881,7 +922,7 @@ def main():
             fail("Required job parameters missing: " + ", ".join(missing_params))
         import_dependencies()
         SCRLM = build_scrlm_class()
-        key_map = load_key_map()
+        key_map = KeyResolver()
         progress("Loading the experiment tracker dataset")
         examples_raw, source_header = load_tracker_dataset(P["promptModelId"])
         if P["datasetSource"] == "cas":

@@ -79,3 +79,44 @@ class EmbeddingClient:
     def smoke(self) -> int:
         """One tiny call; returns the embedding dimension (fails fast on misconfig)."""
         return len(self.embed("smoke test", mode="query"))
+
+    @classmethod
+    def from_env(cls, **overrides) -> "EmbeddingClient":
+        """Build the client from RAGEMBED_* environment variables.
+
+        The SCR/MAS destination path (design §4a): a published retrieval
+        container has no Viya session, so its embedding call is configured at
+        deployment time — the same env-var pattern the LLM containers use.
+
+          RAGEMBED_ENDPOINT         required  SCR base URL (e.g. https://host/llm)
+          RAGEMBED_MODEL            required  embedding model name
+          RAGEMBED_DEPLOYMENT_TYPE  optional  k8s (default) | aca
+          RAGEMBED_PROJECT          optional  project tag sent with each call
+          RAGEMBED_SSLVERIFY        optional  false disables TLS verification;
+                                    a path is used as the CA bundle
+
+        Keyword overrides win over the environment (the manifested
+        retrieve_context.py passes its baked-in setup values as overrides, so
+        env vars only need to cover what the manifest cannot know).
+        """
+        import os
+
+        endpoint = overrides.pop("scr_endpoint", None) or os.environ.get("RAGEMBED_ENDPOINT", "")
+        model = overrides.pop("model_name", None) or os.environ.get("RAGEMBED_MODEL", "")
+        if not endpoint or not model:
+            raise KeyError("embedding configuration incomplete: set RAGEMBED_ENDPOINT "
+                           "and RAGEMBED_MODEL (or pass scr_endpoint/model_name)")
+        deployment = overrides.pop("deployment_type", None) \
+            or os.environ.get("RAGEMBED_DEPLOYMENT_TYPE", "k8s")
+        project = overrides.pop("project", None) or os.environ.get("RAGEMBED_PROJECT", "rag")
+        raw_verify = os.environ.get("RAGEMBED_SSLVERIFY", "")
+        verify = overrides.pop("verify_ssl", None)
+        if verify is None:
+            if raw_verify.lower() in ("false", "no", "off", "0"):
+                verify = False
+            elif raw_verify:
+                verify = raw_verify        # path to a CA bundle
+            else:
+                verify = True
+        return cls(endpoint, model, deployment_type=deployment, project=project,
+                   verify_ssl=verify, **overrides)

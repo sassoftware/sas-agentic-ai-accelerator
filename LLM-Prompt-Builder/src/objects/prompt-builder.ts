@@ -40,6 +40,7 @@ import {
   type JobExecutionJob,
 } from '../api/jobexec-api';
 import { getCasServers, getCaslibs, getCasTables, getCasTableInfo } from '../api/cas-api';
+import { resolveProviderKeys } from '../api/credentials-api';
 import { createAccordionItem } from '../ui/accordion';
 import { attachCombobox } from '../ui/combobox';
 import { showConfirmModal } from '../ui/confirm-modal';
@@ -1560,6 +1561,21 @@ export async function buildPromptBuilder(
 
         modelDiv.appendChild(checkbox);
         modelDiv.appendChild(label);
+        // A model whose provider has no resolvable credential for this user is
+        // visible but not selectable — the note names the domain to request.
+        const missingDomain = llmMissingCredentialDomain(model);
+        if (missingDomain) {
+          checkbox.disabled = true;
+          label.classList.add('text-muted');
+          const note = document.createElement('small');
+          note.classList.add('text-muted', 'd-block', 'pb-credential-note');
+          note.innerText = String(
+            promptBuilderInterfaceText?.promptBuilderCredentialMissing ??
+              'No credential available - request access to the {domain} credential domain.'
+          ).replace('{domain}', missingDomain);
+          modelDiv.title = note.innerText;
+          modelDiv.appendChild(note);
+        }
         modelDiv.appendChild(optionsDiv);
         promptBuilderModelSelectorContainer.appendChild(modelDiv);
       });
@@ -1598,6 +1614,37 @@ export async function buildPromptBuilder(
         }
       })
     );
+    // Resolve provider keys from credential domains when a prefix is
+    // configured: `${prefix}${provider}` per provider under the signed-in
+    // user's identity (user credential overrides group credential). Providers
+    // that resolve neither a domain credential nor an assigned-data key are
+    // disabled in every model selector with a note naming the domain — access
+    // to a provider becomes an identity decision, not an app setting.
+    const credentialPrefix = String(promptBuilderObject?.credentialDomainPrefix ?? '').trim();
+    const providersWithoutCredential = new Set<string>();
+    if (credentialPrefix) {
+      const requiredProviders = [
+        ...new Set(
+          promptBuilderAvailableLLMs
+            .map((llm) => llm.options?.API_KEY?.default as string | undefined)
+            .filter((name): name is string => Boolean(name))
+        ),
+      ];
+      const { keys, unavailable } = await resolveProviderKeys(credentialPrefix, requiredProviders);
+      const assignedKeys = (promptBuilderObject?.API_KEYS ?? {}) as Record<string, string>;
+      // Domain-resolved keys win; assigned-data keys back-fill providers the
+      // domains do not cover (the migration path for existing reports).
+      promptBuilderObject.API_KEYS = { ...assignedKeys, ...keys };
+      unavailable
+        .filter((name) => !assignedKeys[name])
+        .forEach((name) => providersWithoutCredential.add(name));
+    }
+    function llmMissingCredentialDomain(llm: AvailableLLM): string | null {
+      const provider = llm.options?.API_KEY?.default as string | undefined;
+      return provider && providersWithoutCredential.has(provider)
+        ? `${credentialPrefix}${provider}`
+        : null;
+    }
     // Cost/governance attributes of a run's LLM (per-token / per-second prices,
     // provider, family, endpoint), resolved by model name. Fetched LAZILY — only
     // for the models actually used (run / judge / manifest) — so the initial load
@@ -1895,6 +1942,8 @@ export async function buildPromptBuilder(
     judgePlaceholderOption.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSelectPlaceholder}`;
     promptBuilderJudgeModelSelect.appendChild(judgePlaceholderOption);
     promptBuilderAvailableLLMs.forEach((availableLLM) => {
+      // Models without a resolvable credential cannot judge either.
+      if (llmMissingCredentialDomain(availableLLM)) return;
       const judgeOption = document.createElement('option');
       judgeOption.value = availableLLM.name;
       judgeOption.innerText = availableLLM.name;
@@ -1950,6 +1999,7 @@ export async function buildPromptBuilder(
     promptBuilderJudgePanel.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-panel`;
     promptBuilderJudgePanel.classList.add('pb-judge-panel', 'd-flex', 'flex-column', 'gap-1');
     promptBuilderAvailableLLMs.forEach((availableLLM, index) => {
+      if (llmMissingCredentialDomain(availableLLM)) return;
       const judgeItem = document.createElement('div');
       judgeItem.classList.add('form-check', 'mb-0');
       const judgeCheckbox = document.createElement('input');
@@ -5418,6 +5468,7 @@ ${scoreCodeReturn}`;
           minSamples: String(optimizeMinSamples()),
           keyLibrary: String(promptBuilderObject?.optimizeKeyLibrary ?? ''),
           keyTable: String(promptBuilderObject?.optimizeKeyTable ?? ''),
+          keyDomainPrefix: credentialPrefix,
         });
         startOptimizeJobMonitor(job);
       } catch (error) {
@@ -5526,6 +5577,9 @@ ${scoreCodeReturn}`;
       candidateList.classList.add('mb-2');
       const candidateBoxes: HTMLInputElement[] = [];
       promptBuilderAvailableLLMs.forEach((availableLLM, index) => {
+        // The job resolves the same credential domains server-side, so a
+        // model this user has no credential for cannot be a compare target.
+        if (llmMissingCredentialDomain(availableLLM)) return;
         const wrapper = document.createElement('div');
         wrapper.classList.add('form-check');
         const checkbox = document.createElement('input');
@@ -5677,6 +5731,7 @@ ${scoreCodeReturn}`;
           minSamples: String(sweepMode ? optimizeMinSamples() : COMPARE_MIN_SAMPLES),
           keyLibrary: String(promptBuilderObject?.optimizeKeyLibrary ?? ''),
           keyTable: String(promptBuilderObject?.optimizeKeyTable ?? ''),
+          keyDomainPrefix: credentialPrefix,
         });
         startOptimizeJobMonitor(job);
       } catch (error) {
@@ -5739,6 +5794,8 @@ ${scoreCodeReturn}`;
       targetPlaceholder.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeTargetPlaceholder}`;
       optimizeTargetSelect.appendChild(targetPlaceholder);
       promptBuilderAvailableLLMs.forEach((availableLLM) => {
+        // The optimize job resolves the same credential domains server-side.
+        if (llmMissingCredentialDomain(availableLLM)) return;
         const targetOption = document.createElement('option');
         targetOption.value = availableLLM.name;
         targetOption.innerText = availableLLM.name;
@@ -5932,6 +5989,7 @@ ${scoreCodeReturn}`;
       optimizeJudgePlaceholder.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSelectPlaceholder}`;
       optimizeJudgeSelect.appendChild(optimizeJudgePlaceholder);
       promptBuilderAvailableLLMs.forEach((availableLLM) => {
+        if (llmMissingCredentialDomain(availableLLM)) return;
         const judgeOption = document.createElement('option');
         judgeOption.value = availableLLM.name;
         judgeOption.innerText = availableLLM.name;

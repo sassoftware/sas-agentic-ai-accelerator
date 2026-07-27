@@ -75,6 +75,12 @@ const DEFAULTS: RuntimeConfig = {
     // Governed SAS library.table the job reads provider API keys from.
     optimizeKeyLibrary: '',
     optimizeKeyTable: '',
+    // Credential-domain prefix. When set, provider API keys are resolved from
+    // the SAS Viya credential domains named `${prefix}${provider}` (e.g.
+    // "agentic-ai-OpenAI") under the identity of the signed-in user, and
+    // models whose domain yields no credential are disabled with a note.
+    // Blank = keys come exclusively from the assigned DDC data table.
+    credentialDomainPrefix: '',
   },
 };
 
@@ -92,6 +98,7 @@ const URL_OVERRIDABLE = [
   'minOptimizeSamples',
   'optimizeKeyLibrary',
   'optimizeKeyTable',
+  'credentialDomainPrefix',
   'id',
 ] as const;
 

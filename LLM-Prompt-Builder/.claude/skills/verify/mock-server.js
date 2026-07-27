@@ -239,10 +239,25 @@ http
         return json(res, 200, { temperature: { default: 0.7 } });
       }
       if (p === '/files/files/opt-2/content') {
-        return json(res, 200, { temperature: { default: 0.5 } });
+        // second_llm needs an OpenAI key — its credential domain EXISTS below.
+        return json(res, 200, { temperature: { default: 0.5 }, API_KEY: { default: 'OpenAI' } });
       }
       if (p === '/files/files/opt-3/content') {
-        return json(res, 200, { temperature: { default: 0.3 } });
+        // contrarian_judge needs an Anthropic key — its domain 404s below, so
+        // with a credentialDomainPrefix configured it must render disabled.
+        return json(res, 200, { temperature: { default: 0.3 }, API_KEY: { default: 'Anthropic' } });
+      }
+      // Credential domains (password type): the key is the password secret,
+      // Base64-encoded. agentic-ai-OpenAI resolves; agentic-ai-Anthropic 404s.
+      if (p === '/credentials/domains/agentic-ai-OpenAI/secrets') {
+        return json(res, 200, {
+          domainId: 'agentic-ai-OpenAI',
+          properties: { userId: 'apikey' },
+          secrets: { password: Buffer.from('sk-mock-openai-key').toString('base64') },
+        });
+      }
+      if (p.startsWith('/credentials/domains/') && p.endsWith('/secrets')) {
+        return json(res, 404, { message: 'The requested credential does not exist.' });
       }
       if (p === '/modelRepository/models/model-used/contents' && req.method === 'GET') {
         // The requirements.json entry simulates a leftover from an earlier

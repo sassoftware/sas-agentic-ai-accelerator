@@ -177,6 +177,12 @@ function buildOptionsConfig(config: RuntimeConfig): Record<string, unknown> {
         pb.modelCardReportURI,
         'Optional SAS Visual Analytics report URI (the /reports/reports/<uuid> path). When set, manifesting the best prompt embeds that report on the model card as its custom chart, using the SAS Viya host above.'
       ),
+      textField(
+        'credentialDomainPrefix',
+        'Credential domain prefix',
+        pb.credentialDomainPrefix,
+        'When set (e.g. "agentic-ai-"), provider API keys are resolved from the SAS Viya credential domains named <prefix><provider> under the signed-in user, and models without a credential are disabled with a note. Leave blank to keep supplying keys via the assigned data table. See the "Managing Credentials" administration guide.'
+      ),
       // Progressive disclosure: the optimization master toggle is always shown;
       // its settings only join the panel once it is on (VA mirrors the changed
       // value into the URL and reloads the iframe, which rebuilds this group).

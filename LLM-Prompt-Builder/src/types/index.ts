@@ -67,6 +67,14 @@ export interface PromptBuilderConfig {
    */
   optimizeKeyLibrary?: string;
   optimizeKeyTable?: string;
+  /**
+   * Credential-domain prefix. When set, provider API keys resolve from the
+   * SAS Viya credential domains `${prefix}${provider}` under the signed-in
+   * user's identity (user credential overrides group credential), and models
+   * without a resolvable credential are disabled with a note. Blank = keys
+   * come exclusively from the assigned DDC data table.
+   */
+  credentialDomainPrefix?: string;
   [key: string]: unknown;
 }
 
