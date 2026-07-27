@@ -68,12 +68,13 @@ export interface PromptBuilderConfig {
   optimizeKeyLibrary?: string;
   optimizeKeyTable?: string;
   /**
-   * Credential domain. When set, provider API keys resolve from this single
-   * SAS Viya credential domain under the signed-in user's identity (user
-   * credential overrides group credential; the credential's secrets map
-   * holds one entry per provider name), and models without an entry are
-   * disabled with a note. Blank = keys come exclusively from the assigned
-   * DDC data table.
+   * Credential domain provider API keys resolve from under the signed-in
+   * user's identity (user credential overrides group credential; the
+   * credential's secrets map holds one entry per provider name); models
+   * without an entry are disabled with a note. Defaults to the
+   * create-credential-domain.sas default (agentic-ai-keys) — a missing
+   * domain 404s harmlessly and assigned-data keys still apply. 'none'
+   * disables credential lookups entirely.
    */
   credentialDomain?: string;
   [key: string]: unknown;

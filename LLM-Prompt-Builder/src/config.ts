@@ -75,12 +75,14 @@ const DEFAULTS: RuntimeConfig = {
     // Governed SAS library.table the job reads provider API keys from.
     optimizeKeyLibrary: '',
     optimizeKeyTable: '',
-    // Credential domain. When set, provider API keys are resolved from this
-    // single SAS Viya credential domain under the identity of the signed-in
-    // user (the credential's secrets map holds one entry per provider name),
-    // and models without an entry are disabled with a note. Blank = keys
-    // come exclusively from the assigned DDC data table.
-    credentialDomain: '',
+    // Credential domain: provider API keys are resolved from this single SAS
+    // Viya credential domain under the identity of the signed-in user (the
+    // credential's secrets map holds one entry per provider name), and models
+    // without an entry are disabled with a note. The default matches the
+    // create-credential-domain.sas admin script; if the domain does not
+    // exist the lookup 404s harmlessly and assigned-data keys work as
+    // before. Set to 'none' to disable credential lookups entirely.
+    credentialDomain: 'agentic-ai-keys',
   },
 };
 

@@ -78,12 +78,15 @@ them.
 
 ## How the applications use the domain
 
-- The **Prompt Builder** Options pane gets a *Credential domain* setting.
-  When set, the Builder fetches the signed-in user's secrets map once at load
-  time and disables models whose provider entry is missing (a note names the
-  entry and domain). When blank, the existing report-assigned-data key table
-  keeps working unchanged; when both exist, domain entries win and assigned
-  keys back-fill.
+- The **Prompt Builder** Options pane gets a *Credential domain* setting,
+  **defaulting to `agentic-ai-keys`** — the same default the admin script
+  uses, so a deployment that runs the script needs no configuration at all.
+  The Builder fetches the signed-in user's secrets map once at load time and
+  disables models whose provider entry is missing (a note names the entry
+  and domain). If the domain does not exist, the lookup fails harmlessly and
+  the existing report-assigned-data key table keeps working unchanged; when
+  both exist, domain entries win and assigned keys back-fill. Enter `none`
+  to disable credential lookups entirely.
 - The **prompt-optimization job** accepts the same domain name (`keyDomain`)
   and resolves keys server-side under the identity of the user who launched
   the run — the governed key-table parameters remain supported and win for

@@ -1622,7 +1622,10 @@ export async function buildPromptBuilder(
     // neither a domain entry nor an assigned-data key are disabled in every
     // model selector with a note naming the domain â€” access to a provider
     // becomes an identity decision, not an app setting.
-    const credentialDomain = String(promptBuilderObject?.credentialDomain ?? '').trim();
+    // 'none' is the explicit off-switch: with a non-blank default, an empty
+    // URL parameter cannot disable the lookup (empty params are ignored).
+    const credentialDomainRaw = String(promptBuilderObject?.credentialDomain ?? '').trim();
+    const credentialDomain = credentialDomainRaw.toLowerCase() === 'none' ? '' : credentialDomainRaw;
     const providersWithoutCredential = new Set<string>();
     if (credentialDomain) {
       const domainSecrets = await resolveDomainSecrets(credentialDomain);

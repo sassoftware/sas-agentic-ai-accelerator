@@ -181,7 +181,7 @@ function buildOptionsConfig(config: RuntimeConfig): Record<string, unknown> {
         'credentialDomain',
         'Credential domain',
         pb.credentialDomain,
-        'When set (e.g. "agentic-ai-keys"), provider API keys are resolved from this SAS Viya credential domain under the signed-in user, and models without a key entry are disabled with a note. Leave blank to keep supplying keys via the assigned data table. See the "Managing Credentials" administration guide.'
+        'SAS Viya credential domain provider API keys are resolved from under the signed-in user; models without a key entry are disabled with a note. Defaults to agentic-ai-keys (the create-credential-domain.sas default); if the domain does not exist, keys from the assigned data table work as before. Enter none to disable credential lookups. See the Managing Credentials administration guide.'
       ),
       // Progressive disclosure: the optimization master toggle is always shown;
       // its settings only join the panel once it is on (VA mirrors the changed
