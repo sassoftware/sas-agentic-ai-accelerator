@@ -82,4 +82,9 @@ export interface RagSetup {
   };
   pipelineVersion: string;
   credentialDomain: string;
+  /** Set once the ingestion job has been generated for this setup. */
+  job?: {
+    /** URI of the generated Job Execution definition. */
+    definitionUri: string;
+  };
 }

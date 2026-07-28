@@ -38,6 +38,21 @@ import {
   updateModelTags,
 } from '../api/models-api';
 import { getFileContent } from '../api/files-api';
+import { ensureChildFolder, getFolderByPath, getFolderMembers } from '../api/folders-api';
+import {
+  createJobDefinition,
+  getJobDefinition,
+  jobParameter,
+  updateJobDefinition,
+  type JobDefinition,
+} from '../api/jobdef-api';
+import {
+  getJob,
+  getJobProgressMessages,
+  isTerminalJobState,
+  launchJob,
+} from '../api/jobexec-api';
+import { getCasTableRows } from '../api/cas-api';
 import { getAppState } from '../state/app-state';
 import type { InterfaceText } from '../types';
 import type { DropdownOption } from '../types/models';
@@ -174,6 +189,10 @@ export async function buildRagBuilder(
   let selectedSetupName = '';
   /** Tags of the loaded setup that this builder manages (removed on re-save). */
   let managedTags: string[] = [];
+  /** URI of the setup's generated ingestion job definition ('' = none yet). */
+  let currentJobUri = '';
+  /** Poll timer of a running ingestion launch. */
+  let pollTimer: number | null = null;
 
   const container = document.createElement('div');
   container.className = 'container-fluid py-3';
@@ -419,26 +438,46 @@ export async function buildRagBuilder(
   // ---- actions --------------------------------------------------------------
   const actions = document.createElement('div');
   actions.className = 'd-flex gap-2 flex-wrap mb-3';
-  const saveButton = document.createElement('button');
-  saveButton.type = 'button';
-  saveButton.className = 'btn btn-primary';
-  saveButton.textContent = str('ragBuilderSaveButton', 'Save setup');
-  actions.appendChild(saveButton);
-  for (const [key, fallback] of [
-    ['ragBuilderGenerateButton', 'Generate flow and job'],
-    ['ragBuilderLaunchButton', 'Launch ingestion'],
-    ['ragBuilderLedgerButton', 'Browse ledger'],
-    ['ragBuilderTestButton', 'Test retrieval'],
-  ] as const) {
+  const actionButton = (label: string, style = 'btn-outline-secondary'): HTMLButtonElement => {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'btn btn-outline-secondary';
-    button.disabled = true;
-    button.title = str('ragBuilderComingSoon', 'Arrives with Register Setup (P2)');
-    button.textContent = str(key, fallback);
+    button.className = `btn ${style}`;
+    button.textContent = label;
     actions.appendChild(button);
-  }
+    return button;
+  };
+  const saveButton = actionButton(str('ragBuilderSaveButton', 'Save setup'), 'btn-primary');
+  const generateJobButton = actionButton(str('ragBuilderGenerateJobButton', 'Generate ingestion job'));
+  const launchButton = actionButton(str('ragBuilderLaunchButton', 'Launch ingestion'));
+  launchButton.disabled = true;
+  launchButton.title = str('ragBuilderLaunchNeedsJob', 'Generate the ingestion job first.');
+  const ledgerButton = actionButton(str('ragBuilderLedgerButton', 'Browse ledger'));
+  const generateFlowButton = actionButton(str('ragBuilderGenerateFlowButton', 'Generate Studio Flow'));
+  generateFlowButton.disabled = true;
+  generateFlowButton.title = str('ragBuilderComingSoon', 'Arrives with Register Setup (P2)');
+  const testButton = actionButton(str('ragBuilderTestButton', 'Test retrieval'));
+  testButton.disabled = true;
+  testButton.title = str('ragBuilderComingSoon', 'Arrives with Register Setup (P2)');
   editor.appendChild(actions);
+
+  // ---- ingestion run panel --------------------------------------------------
+  const [runCard, runBody] = card(str('ragBuilderRunHeading', 'Ingestion run'));
+  runCard.style.display = 'none';
+  const runState = document.createElement('p');
+  runState.className = 'fw-bold mb-2';
+  const runMilestones = document.createElement('ul');
+  runMilestones.className = 'small mb-0';
+  runBody.appendChild(runState);
+  runBody.appendChild(runMilestones);
+  editor.appendChild(runCard);
+
+  // ---- ledger panel ---------------------------------------------------------
+  const [ledgerCard, ledgerBody] = card(str('ragBuilderLedgerHeading', 'Ingestion ledger'));
+  ledgerCard.style.display = 'none';
+  const ledgerContent = document.createElement('div');
+  ledgerContent.className = 'table-responsive';
+  ledgerBody.appendChild(ledgerContent);
+  editor.appendChild(ledgerCard);
 
   // ---- data plumbing --------------------------------------------------------
   const fillSelect = (select: HTMLSelectElement, options: DropdownOption[], placeholder: string): void => {
@@ -475,6 +514,22 @@ export async function buildRagBuilder(
     prefixField.value = setup.tables.prefix;
     caslibField.value = setup.tables.caslib;
     managedTags = [setup.embedding.model, setup.store.backend].filter(Boolean);
+    currentJobUri = setup.job?.definitionUri ?? '';
+    updateLaunchState();
+  };
+
+  const updateLaunchState = (): void => {
+    launchButton.disabled = !currentJobUri;
+    launchButton.title = currentJobUri
+      ? ''
+      : str('ragBuilderLaunchNeedsJob', 'Generate the ingestion job first.');
+  };
+
+  const stopPolling = (): void => {
+    if (pollTimer !== null) {
+      window.clearInterval(pollTimer);
+      pollTimer = null;
+    }
   };
 
   const collectSetup = (): RagSetup => ({
@@ -511,6 +566,7 @@ export async function buildRagBuilder(
     },
     pipelineVersion: 'v1',
     credentialDomain: config.credentialDomain || 'agentic-ai-keys',
+    ...(currentJobUri ? { job: { definitionUri: currentJobUri } } : {}),
   });
 
   const validateSetup = (setup: RagSetup): string | null => {
@@ -541,6 +597,9 @@ export async function buildRagBuilder(
   }
 
   async function loadSetup(): Promise<void> {
+    stopPolling();
+    runCard.style.display = 'none';
+    ledgerCard.style.display = 'none';
     editor.style.display = selectedSetupID ? '' : 'none';
     if (!selectedSetupID) return;
     applySetup(defaultSetup(config));
@@ -558,13 +617,13 @@ export async function buildRagBuilder(
     }
   }
 
-  async function saveSetup(): Promise<void> {
+  async function saveSetup(): Promise<boolean> {
     clearStatus();
     const setup = collectSetup();
     const problem = validateSetup(setup);
     if (problem) {
       showStatus('danger', problem);
-      return;
+      return false;
     }
     saveButton.disabled = true;
     try {
@@ -598,11 +657,207 @@ export async function buildRagBuilder(
       ]);
       managedTags = [setup.embedding.model, setup.store.backend];
       showStatus('success', str('ragBuilderSaveSuccess', 'RAG setup saved to Model Manager (rag-setup.json, pipeline.yaml, documentation.md, tags, ledger reference and variable definitions).'));
+      return true;
     } catch (error) {
       console.error('Saving the RAG setup failed.', error);
       showStatus('danger', str('ragBuilderSaveError', 'Saving the RAG setup failed - check the browser console and your Model Manager permissions.'));
+      return false;
     } finally {
       saveButton.disabled = false;
+    }
+  }
+
+  /** The launch/parameter values of a setup, shared by the generated job
+   *  definition's parameter defaults and the launch-time arguments. */
+  const jobArguments = (setup: RagSetup): Record<string, string> => ({
+    sourcePath: setup.source.path,
+    collection: setup.store.collection,
+    backend: setup.store.backend,
+    storeHost: setup.store.host,
+    storePort: String(setup.store.port),
+    storeDb: setup.store.database,
+    storeSslmode: setup.store.sslmode,
+    credentialDomain: setup.credentialDomain,
+    scrEndpoint: config.SCREndpoint || '',
+    embedModel: setup.embedding.model,
+    deploymentType: setup.embedding.deploymentType,
+    inputTokenLimit: String(setup.chunking.inputTokenLimit),
+    chunker: setup.chunking.chunker,
+    overlapTokens: String(setup.chunking.overlapTokens),
+    pipelineVersion: setup.pipelineVersion,
+    ledgerCaslib: setup.tables.caslib,
+    ledgerTable: `${setup.tables.prefix}_LEDGER`,
+    ragCorePath: `${config.contentRoot}/rag_core`,
+  });
+
+  /**
+   * Generate (or refresh) the Job Execution definition for this setup: the
+   * deployed Ingest-Documents.sas from the content root becomes the code, the
+   * setup's values become the parameter defaults, and the definition lands in
+   * the content root's `generated` subfolder. The definition URI is stored in
+   * rag-setup.json so a later save/generate updates in place.
+   */
+  async function generateIngestionJob(): Promise<void> {
+    if (!(await saveSetup())) return;
+    const setup = collectSetup();
+    generateJobButton.disabled = true;
+    try {
+      // the golden-path job source, exactly as deployed
+      const jobsFolder = await getFolderByPath(`${config.contentRoot}/jobs`);
+      const jobFile = jobsFolder
+        ? (await getFolderMembers(jobsFolder.id)).find(
+            (member) => member.name === 'Ingest-Documents.sas'
+          )
+        : undefined;
+      if (!jobFile?.uri) {
+        showStatus('danger', str('ragBuilderJobSourceMissing', 'Ingest-Documents.sas was not found under the content root - run the deploy-rag-content script first.'));
+        return;
+      }
+      const source = await (await getFileContent(String(jobFile.uri), 'text/plain')).text();
+
+      const parameters = [
+        ...Object.entries(jobArguments(setup)).map(([name, value]) => jobParameter(name, value)),
+        jobParameter('_contextName', config.computeContext || '', 'Compute context'),
+      ];
+      const definition: JobDefinition = {
+        name: `RAG Ingest - ${selectedSetupName}`,
+        type: 'Compute',
+        code: source,
+        parameters,
+        description: `Generated by the RAG Builder from the RAG setup ${selectedSetupName}. Regenerate through the RAG Builder instead of editing.`,
+      };
+
+      let definitionUri = '';
+      if (currentJobUri) {
+        const existing = await getJobDefinition(currentJobUri);
+        if (existing) {
+          const body = { ...existing.body, ...definition, id: existing.body.id };
+          await updateJobDefinition(currentJobUri, body, existing.etag);
+          definitionUri = currentJobUri;
+        }
+      }
+      if (!definitionUri) {
+        const generatedFolder = await ensureChildFolder(config.contentRoot, 'generated');
+        if (!generatedFolder) {
+          showStatus('danger', str('ragBuilderJobFolderError', 'The generated-artifacts folder under the content root could not be created - check your permissions on it.'));
+          return;
+        }
+        const created = await createJobDefinition(definition, generatedFolder.id);
+        definitionUri = `/jobDefinitions/definitions/${created.id}`;
+      }
+
+      currentJobUri = definitionUri;
+      updateLaunchState();
+      // persist the job reference with the setup
+      await createModelContent(selectedSetupID, collectSetup(), SETUP_FILE, 'documentation');
+      showStatus('success', str('ragBuilderJobGenerated', 'Ingestion job generated in the content root (generated folder) and linked to this setup.'));
+    } catch (error) {
+      console.error('Generating the ingestion job failed.', error);
+      showStatus('danger', str('ragBuilderJobGenerateError', 'Generating the ingestion job failed - check the browser console and your permissions on the content root.'));
+    } finally {
+      generateJobButton.disabled = false;
+    }
+  }
+
+  /** Launch the generated job and poll its state + milestones until done. */
+  async function launchIngestion(): Promise<void> {
+    if (!currentJobUri) return;
+    clearStatus();
+    stopPolling();
+    const setup = collectSetup();
+    const args: Record<string, string> = { ...jobArguments(setup) };
+    if (config.computeContext) args._contextName = config.computeContext;
+    launchButton.disabled = true;
+    runCard.style.display = '';
+    runState.textContent = str('ragBuilderRunLaunching', 'Launching…');
+    runMilestones.replaceChildren();
+    try {
+      const job = await launchJob(currentJobUri, `RAG Ingest - ${selectedSetupName}`, args);
+      const jobId = String(job.id ?? '');
+      const renderMilestones = (messages: string[]): void => {
+        runMilestones.replaceChildren();
+        for (const message of messages) {
+          const item = document.createElement('li');
+          item.textContent = message.replace(/^RAGINGEST\s+/, '');
+          runMilestones.appendChild(item);
+        }
+      };
+      const poll = async (): Promise<void> => {
+        try {
+          const current = await getJob(jobId);
+          const state = String(current.state ?? 'running');
+          runState.textContent = `${str('ragBuilderRunStateLabel', 'State:')} ${state}`;
+          const progress = await getJobProgressMessages(current);
+          if (progress.messages.length > 0) renderMilestones(progress.messages);
+          else if (progress.liveStatus !== 'ok') {
+            runState.textContent += ` (${str('ragBuilderRunLogPending', 'full log at completion')})`;
+          }
+          if (isTerminalJobState(state as never)) {
+            stopPolling();
+            launchButton.disabled = false;
+            const failed = progress.messages.some((message) => message.toLowerCase().includes('failed'));
+            showStatus(
+              state === 'completed' && !failed ? 'success' : 'danger',
+              state === 'completed' && !failed
+                ? str('ragBuilderRunDone', 'Ingestion run completed - see the milestones and browse the ledger.')
+                : str('ragBuilderRunFailed', 'The ingestion run did not succeed - see the milestones/log for the reason.')
+            );
+          }
+        } catch (error) {
+          console.debug('RAG Builder: ingestion poll failed', error);
+        }
+      };
+      pollTimer = window.setInterval(() => void poll(), 5000);
+      void poll();
+    } catch (error) {
+      console.error('Launching the ingestion job failed.', error);
+      launchButton.disabled = false;
+      showStatus('danger', str('ragBuilderRunLaunchError', 'Launching the ingestion job failed - check the browser console.'));
+    }
+  }
+
+  /** Show the promoted ledger table of this setup (page of rows). */
+  async function browseLedger(): Promise<void> {
+    clearStatus();
+    const setup = collectSetup();
+    ledgerCard.style.display = '';
+    ledgerContent.textContent = '…';
+    try {
+      const table = `${setup.tables.prefix}_LEDGER`;
+      const data = await getCasTableRows(setup.tables.caslib, table, config.casServer);
+      const preferred = ['doc_id', 'status', 'chunk_count', 'error_text', 'run_id', 'updated_at', 'source_uri'];
+      const order = preferred
+        .map((name) => data.columns.findIndex((column) => column.toLowerCase() === name))
+        .filter((index) => index >= 0);
+      const tableEl = document.createElement('table');
+      tableEl.className = 'table table-sm table-striped align-middle';
+      const head = document.createElement('thead');
+      const headRow = document.createElement('tr');
+      for (const index of order) {
+        const cell = document.createElement('th');
+        cell.textContent = data.columns[index];
+        headRow.appendChild(cell);
+      }
+      head.appendChild(headRow);
+      const body = document.createElement('tbody');
+      for (const row of data.rows) {
+        const rowEl = document.createElement('tr');
+        for (const index of order) {
+          const cell = document.createElement('td');
+          cell.textContent = String(row[index] ?? '');
+          rowEl.appendChild(cell);
+        }
+        body.appendChild(rowEl);
+      }
+      tableEl.appendChild(head);
+      tableEl.appendChild(body);
+      ledgerContent.replaceChildren(tableEl);
+      if (data.rows.length === 0) {
+        ledgerContent.textContent = str('ragBuilderLedgerEmpty', 'The ledger has no rows yet - run an ingestion first.');
+      }
+    } catch (error) {
+      console.debug('RAG Builder: ledger read failed', error);
+      ledgerContent.textContent = str('ragBuilderLedgerMissing', 'No loaded ledger table was found for this setup - it appears after the first ingestion run (a saved ledger is loaded by the run itself).');
     }
   }
 
@@ -686,6 +941,9 @@ export async function buildRagBuilder(
   });
 
   saveButton.addEventListener('click', () => void saveSetup());
+  generateJobButton.addEventListener('click', () => void generateIngestionJob());
+  launchButton.addEventListener('click', () => void launchIngestion());
+  ledgerButton.addEventListener('click', () => void browseLedger());
 
   // ---- initial load ---------------------------------------------------------
   await refreshProjects();

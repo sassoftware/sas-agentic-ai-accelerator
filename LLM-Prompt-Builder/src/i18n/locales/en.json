@@ -324,7 +324,6 @@
     "ragBuilderTablesCaslibLabel": "Tables caslib:",
     "ragBuilderDomainNote": "Credential domain:",
     "ragBuilderSaveButton": "Save setup",
-    "ragBuilderGenerateButton": "Generate flow and job",
     "ragBuilderLaunchButton": "Launch ingestion",
     "ragBuilderLedgerButton": "Browse ledger",
     "ragBuilderTestButton": "Test retrieval",
@@ -335,6 +334,23 @@
     "ragBuilderValidateCollection": "The collection must be a lowercase identifier (letters, digits, underscores; starts with a letter).",
     "ragBuilderValidatePrefix": "The table prefix must be 1-20 characters (letters, digits, underscores; starts with a letter) so every table name stays within 32 characters.",
     "ragBuilderSaveSuccess": "RAG setup saved to Model Manager (rag-setup.json, pipeline.yaml, documentation.md, tags, ledger reference and variable definitions).",
-    "ragBuilderSaveError": "Saving the RAG setup failed - check the browser console and your Model Manager permissions."
+    "ragBuilderSaveError": "Saving the RAG setup failed - check the browser console and your Model Manager permissions.",
+    "ragBuilderGenerateJobButton": "Generate ingestion job",
+    "ragBuilderGenerateFlowButton": "Generate Studio Flow",
+    "ragBuilderLaunchNeedsJob": "Generate the ingestion job first.",
+    "ragBuilderRunHeading": "Ingestion run",
+    "ragBuilderRunLaunching": "Launching…",
+    "ragBuilderRunStateLabel": "State:",
+    "ragBuilderRunLogPending": "full log at completion",
+    "ragBuilderRunDone": "Ingestion run completed - see the milestones and browse the ledger.",
+    "ragBuilderRunFailed": "The ingestion run did not succeed - see the milestones/log for the reason.",
+    "ragBuilderRunLaunchError": "Launching the ingestion job failed - check the browser console.",
+    "ragBuilderJobSourceMissing": "Ingest-Documents.sas was not found under the content root - run the deploy-rag-content script first.",
+    "ragBuilderJobFolderError": "The generated-artifacts folder under the content root could not be created - check your permissions on it.",
+    "ragBuilderJobGenerated": "Ingestion job generated in the content root (generated folder) and linked to this setup.",
+    "ragBuilderJobGenerateError": "Generating the ingestion job failed - check the browser console and your permissions on the content root.",
+    "ragBuilderLedgerHeading": "Ingestion ledger",
+    "ragBuilderLedgerEmpty": "The ledger has no rows yet - run an ingestion first.",
+    "ragBuilderLedgerMissing": "No loaded ledger table was found for this setup - it appears after the first ingestion run (a saved ledger is loaded by the run itself)."
   }
 }

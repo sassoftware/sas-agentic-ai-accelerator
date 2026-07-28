@@ -44,6 +44,11 @@ const DEFAULTS: RagRuntimeConfig = {
     // Where deploy-rag-content.ps1/.sh put the runtime.
     contentRoot: '/SAS Agentic AI Accelerator/RAG',
     casServer: 'cas-shared-default',
+    // Compute context the ingestion job runs in (Job Execution _contextName);
+    // blank = the Job Execution default context. If the context runs its
+    // servers under a service account, THAT identity needs the credential —
+    // see the Managing Credentials guide's service-account caveat.
+    computeContext: '',
   },
 };
 
@@ -55,6 +60,7 @@ const URL_OVERRIDABLE = [
   'credentialDomain',
   'contentRoot',
   'casServer',
+  'computeContext',
   'id',
 ] as const;
 

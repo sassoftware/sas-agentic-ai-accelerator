@@ -19,6 +19,7 @@ import { initAppState, getAppState } from './state/app-state';
 import { getUserInfo } from './api/identity-api';
 import { getInterfaceLanguage } from './i18n/i18n';
 import { buildRagBuilder } from './objects/rag-builder';
+import { initRagVaIntegration } from './va/ddc-rag';
 import type { RagBuilderText } from './types/rag';
 
 function showAlert(
@@ -50,6 +51,9 @@ async function main(): Promise<void> {
 
   const { viyaHost, ragBuilder } = getRagConfig();
   initAppState({ viyaHost });
+
+  // Drive the VA Properties panel; a no-op outside a VA embed.
+  initRagVaIntegration({ viyaHost, ragBuilder });
 
   const interfaceText = getInterfaceLanguage();
   const text = (interfaceText.ragBuilder ?? {}) as RagBuilderText;
