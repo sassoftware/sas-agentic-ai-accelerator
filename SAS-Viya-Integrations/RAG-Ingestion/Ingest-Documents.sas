@@ -75,7 +75,7 @@
 %_rag_default(configHash, );
 %_rag_default(ledgerCaslib, casuser);
 %_rag_default(ledgerTable, RAG_INGESTION_LEDGER);
-%_rag_default(ragCorePath, /Public/SAS-Agentic-AI/RAG/rag_core);
+%_rag_default(ragCorePath, /SAS Agentic AI Accelerator/RAG/rag_core);
 
 %let _rag_viyaHost = %sysfunc(getoption(SERVICESBASEURL));
 %let _rag_rc = 1;
