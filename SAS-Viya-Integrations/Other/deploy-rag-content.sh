@@ -55,6 +55,19 @@ folder_id() {  # folder_id <content-path> -> id (creates the chain as needed)
 
 publish_file() {  # publish_file <folder-id> <local-file> <name>
   local fid="$1" file="$2" name="$3"
+  # Custom steps are dataFlows SERVICE resources, not plain Content files -
+  # a raw-uploaded .step renders as an empty step editor (verified live).
+  # Register through the service; overwrite=true replaces on redeploy.
+  case "$name" in
+    *.step)
+      curl -fsS "${CURL_OPTS[@]}" -X POST -H "Authorization: Bearer $TOKEN" \
+        -H 'Content-Type: application/json' \
+        -H 'Accept: application/vnd.sas.data.flow.step+json' \
+        --data-binary "@$file" \
+        "$ENDPOINT/dataFlows/steps?parentFolderUri=/folders/folders/$fid&overwrite=true" > /dev/null
+      return
+      ;;
+  esac
   curl -fsS "${CURL_OPTS[@]}" -H "Authorization: Bearer $TOKEN" \
     "$ENDPOINT/folders/folders/$fid/members?limit=200" \
     | python3 -c "
@@ -67,12 +80,8 @@ for m in json.load(sys.stdin).get('items', []):
       done
   # Raw uploads are named by the Content-Disposition header; without it the
   # files service mints a FileResource<timestamp> name (verified live).
-  # SAS Studio only opens .step files whose content type is the data-flow
-  # step media type (an octet-stream .step renders as an empty editor).
-  local content_type='application/octet-stream'
-  case "$name" in *.step) content_type='application/vnd.sas.data.flow.step; charset=utf-8' ;; esac
   curl -fsS "${CURL_OPTS[@]}" -X POST -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: $content_type" \
+    -H 'Content-Type: application/octet-stream' \
     -H "Content-Disposition: attachment; filename=\"$name\"" \
     --data-binary "@$file" \
     "$ENDPOINT/files/files?parentFolderUri=/folders/folders/$fid&filename=$name" > /dev/null
