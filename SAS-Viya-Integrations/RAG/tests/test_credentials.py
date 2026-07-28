@@ -46,12 +46,12 @@ URL = BASE + "/credentials/domains/agentic-ai-keys/secrets"
 def test_fetch_decodes_whole_map():
     session = FakeSession({URL: FakeResponse(200, {
         "secrets": {"OpenAI": _b64("sk-test"),
-                    "pgvector_user": _b64("rag_ingest"),
-                    "pgvector_password": _b64("s3cret")},
+                    "PGVECTOR_RAG_USER": _b64("rag_ingest"),
+                    "PGVECTOR_RAG_PW": _b64("s3cret")},
     })})
     secrets = fetch_secrets(BASE, "tok", "agentic-ai-keys", session=session)
-    assert secrets == {"OpenAI": "sk-test", "pgvector_user": "rag_ingest",
-                       "pgvector_password": "s3cret"}
+    assert secrets == {"OpenAI": "sk-test", "PGVECTOR_RAG_USER": "rag_ingest",
+                       "PGVECTOR_RAG_PW": "s3cret"}
     method, url, kwargs = session.calls[0]
     assert kwargs["params"] == {"lookupInGroup": "true"}
     assert kwargs["headers"]["Authorization"] == "Bearer tok"
@@ -69,7 +69,7 @@ def test_available_uses_head():
 
 
 def test_store_config_uses_backend_prefixed_entries():
-    secrets = {"pgvector_user": "rag_ingest", "pgvector_password": "s3cret",
+    secrets = {"PGVECTOR_RAG_USER": "rag_ingest", "PGVECTOR_RAG_PW": "s3cret",
                "OpenAI": "sk-x"}
     config = store_config_from_secrets(secrets, "pgvector", "dbhost", 5432,
                                        "vectors", sslmode="false")
@@ -79,7 +79,7 @@ def test_store_config_uses_backend_prefixed_entries():
 
 
 def test_store_config_rejects_missing_backend_entries():
-    with pytest.raises(KeyError, match="pgvector_user"):
+    with pytest.raises(KeyError, match="PGVECTOR_RAG_USER"):
         store_config_from_secrets({"OpenAI": "sk-x"}, "pgvector", "h", 5432, "db")
 
 

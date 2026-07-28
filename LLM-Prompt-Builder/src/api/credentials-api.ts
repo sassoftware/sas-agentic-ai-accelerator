@@ -7,7 +7,7 @@
  * Convention: ONE domain (its name configured in the Options pane) holds
  * per-identity credentials whose `secrets` map carries every key under the
  * names the accelerator already uses (`OpenAI`, `Anthropic`, …; vector-store
- * entries are prefixed with the backend name, e.g. `pgvector_password`). A
+ * entries are prefixed with the backend name, e.g. `PGVECTOR_RAG_PW`). A
  * user credential overrides a group credential (`lookupInGroup=true`
  * searches groups only when the signed-in user has none). The multi-key map
  * is authored with the create-credential-domain.sas admin script — see the

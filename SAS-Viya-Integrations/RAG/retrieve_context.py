@@ -39,10 +39,12 @@ Signature (a decision maps these to terms):
 Connection resolution (design §4 destination boundary), per value:
   1. the per-call options input (external callers with their own secrets)
   2. secrets from the SAS Viya credentials service when a session token is
-     present (compute sessions, ID test scoring): entries
-     {backend}_user/{backend}_password in the credential domain
-  3. RAGSTORE_*/RAGEMBED_* environment variables (SCR/MAS deploy-time
-     injection; local development .env)
+     present (compute sessions): entries {BACKEND}_RAG_USER and
+     {BACKEND}_RAG_PW in the credential domain (the backend prefix lets one
+     domain serve several vector stores)
+  3. environment variables (SCR/MAS deploy-time injection; local .env):
+     {BACKEND}_RAG_USER/{BACKEND}_RAG_PW for the secrets, RAGSTORE_HOST/
+     PORT/DB/SSLMODE for connection config, RAGEMBED_* for the embedder
   4. the manifested constants below
 A decision definition never stores a secret.
 """
@@ -111,19 +113,19 @@ def _domain_secrets():
 
 
 def _store_config(options):
-    secrets = {}
-    user = options.get("user") or os.getenv("RAGSTORE_USER", "")
-    password = options.get("password") or os.getenv("RAGSTORE_PW", "")
+    prefix = BACKEND.upper()
+    user = options.get("user") or os.getenv(prefix + "_RAG_USER", "")
+    password = options.get("password") or os.getenv(prefix + "_RAG_PW", "")
     if not (user and password):
         secrets = _domain_secrets()
-        user = user or secrets.get(BACKEND + "_user", "")
-        password = password or secrets.get(BACKEND + "_password", "")
+        user = user or secrets.get(prefix + "_RAG_USER", "")
+        password = password or secrets.get(prefix + "_RAG_PW", "")
     if not (user and password):
         raise RuntimeError(
             "no vector-store credentials resolved: pass user/password in "
             "options, grant a " + CREDENTIAL_DOMAIN + " credential holding "
-            + BACKEND + "_user/" + BACKEND + "_password, or set "
-            "RAGSTORE_USER/RAGSTORE_PW on the destination")
+            + prefix + "_RAG_USER/" + prefix + "_RAG_PW, or set those "
+            "environment variables on the destination")
     sslmode = str(options.get("sslmode") or os.getenv("RAGSTORE_SSLMODE")
                   or STORE_SSLMODE).lower()
     return {

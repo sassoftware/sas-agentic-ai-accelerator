@@ -27,7 +27,7 @@
  *   storeHost/storePort/storeDb/storeSslmode - vector store connection
  *                      CONFIGURATION (not secrets; secrets come from the
  *                      credential domain)
- *   credentialDomain - credential domain holding {backend}_user/_password
+ *   credentialDomain - credential domain holding <BACKEND>_RAG_USER/_RAG_PW
  *                      (default agentic-ai-keys, the accelerator standard)
  *   scrEndpoint      - SCR base URL hosting the embedding container
  *                      (default: <viya-host>/llm)

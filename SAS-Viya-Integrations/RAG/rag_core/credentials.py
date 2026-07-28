@@ -7,16 +7,19 @@ its name configured once per deployment (Options pane / job parameter) —
 holds per-identity credentials whose ``secrets`` map carries every key the
 accelerator needs, under the names it already uses:
 
-    OpenAI, Anthropic, Google, ...        LLM provider API keys
-    pgvector_user, pgvector_password      vector-store credentials, prefixed
-    singlestore_user, ...                 with the backend name
+    OpenAI, Anthropic, Google, ...        LLM provider API keys (the provider
+                                          names of the model fact sheets)
+    PGVECTOR_RAG_USER, PGVECTOR_RAG_PW    vector-store credentials — the
+    SINGLESTORE_RAG_USER, ...             prefix names the vector DB backend,
+                                          so one domain serves several stores
 
 A user credential overrides a group credential (``lookupInGroup=true``
 searches groups only when the caller has none). The multi-key secrets map is
-authored with the shipped ``create-credential-domain.sas`` admin script
-(standard admin UIs only author single user/password pairs); domains and
-credentials can be listed and deleted with the sas-viya credentials CLI.
-Secrets stay in process memory — never in WORK files or logs.
+authored with the shipped ``create-credential-domain.ps1``/``.sh`` admin
+scripts, which read the entries straight from the accelerator's git-ignored
+.env file (the same variable names); domains and credentials can be listed
+and deleted with the sas-viya credentials CLI. Secrets stay in process
+memory — never in WORK files or logs.
 """
 from __future__ import annotations
 
@@ -73,13 +76,15 @@ def store_config_from_secrets(secrets: dict, backend: str, host: str, port,
 
     Host/port/database/sslmode are configuration, not secrets — they come
     from the RAG setup (pipeline.yaml / step parameters). The secrets map
-    contributes ``{backend}_user`` and ``{backend}_password``.
+    contributes ``{BACKEND}_RAG_USER`` and ``{BACKEND}_RAG_PW`` — the
+    backend-name prefix lets one domain serve several vector stores.
     """
-    user = (secrets or {}).get(f"{backend}_user", "")
-    password = (secrets or {}).get(f"{backend}_password", "")
+    prefix = str(backend or "").upper()
+    user = (secrets or {}).get(f"{prefix}_RAG_USER", "")
+    password = (secrets or {}).get(f"{prefix}_RAG_PW", "")
     if not user or not password:
-        raise KeyError(f"the credential domain has no {backend}_user / "
-                       f"{backend}_password entries - add them with the "
-                       "create-credential-domain.sas admin script")
+        raise KeyError(f"the credential domain has no {prefix}_RAG_USER / "
+                       f"{prefix}_RAG_PW entries - add them to your .env and "
+                       "rerun the create-credential-domain script")
     return {"host": host, "port": int(port or 5432), "dbname": dbname,
             "user": user, "password": password, "sslmode": sslmode or "prefer"}

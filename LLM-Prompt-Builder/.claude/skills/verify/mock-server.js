@@ -255,8 +255,8 @@ http
           domainId: 'agentic-ai-keys',
           secrets: {
             OpenAI: Buffer.from('sk-mock-openai-key').toString('base64'),
-            pgvector_user: Buffer.from('rag_ingest').toString('base64'),
-            pgvector_password: Buffer.from('mock-db-pw').toString('base64'),
+            PGVECTOR_RAG_USER: Buffer.from('rag_ingest').toString('base64'),
+            PGVECTOR_RAG_PW: Buffer.from('mock-db-pw').toString('base64'),
           },
         });
       }

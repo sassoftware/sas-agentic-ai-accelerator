@@ -20,9 +20,9 @@ of named secrets:
 
 | Entry name | Holds |
 | --- | --- |
-| `OpenAI`, `Anthropic`, `Google`, … | LLM provider API keys — the `API_KEY.default` names the LLM `options.json` files already reference |
-| `pgvector_user`, `pgvector_password` | RAG vector-store credentials, prefixed with the backend name |
-| `singlestore_user`, `singlestore_password`, … | further vector-store backends |
+| `OpenAI`, `Anthropic`, `Google`, … | LLM provider API keys — the provider names the model fact sheets already use |
+| `PGVECTOR_RAG_USER`, `PGVECTOR_RAG_PW` | RAG vector-store credentials — the prefix names the vector DB backend |
+| `SINGLESTORE_RAG_USER`, `SINGLESTORE_RAG_PW`, … | further vector-store backends; one domain serves several stores side by side |
 
 Who resolves what:
 
@@ -47,26 +47,48 @@ Multi-entry credentials are authored with the shipped scripts
 (Linux/macOS), which authenticate through your **sas-viya CLI session**:
 
 1. Sign in once: `./sas-viya auth login`.
-2. Put the entries in a plain `NAME=VALUE` file (one per line, `#` comments):
+2. Keep your secrets where they already live: the accelerator's git-ignored
+   **`.env` file**. The script reads it directly — no second secrets file to
+   author or clean up. Provider key variables map onto their provider entry
+   names, and every `<BACKEND>_RAG_USER` / `<BACKEND>_RAG_PW` pair is carried
+   over verbatim (uppercased); everything else in the `.env` is ignored:
 
-   ```text
-   OpenAI=sk-...
-   Anthropic=sk-ant-...
-   pgvector_user=rag_ingest
-   pgvector_password=...
-   ```
+   | `.env` variable | Domain entry |
+   | --- | --- |
+   | `OPENAI_API_KEY` | `OpenAI` |
+   | `ANTHROPIC_API_KEY` | `Anthropic` |
+   | `GEMINI_API_KEY` | `Google` |
+   | `OPENROUTER_API_KEY` | `OpenRouter` |
+   | `AZURE_OPENAI_API_KEY` | `Azure OpenAI` |
+   | `MISTRAL_API_KEY` | `Mistral` |
+   | `VOYAGE_API_KEY` | `Voyage.ai` |
+   | `HUGGINGFACE_API_KEY` | `HuggingFace` |
+   | `AWS_BEDROCK_API_KEY` | `AWS Bedrock` |
+   | `PGVECTOR_RAG_USER`, `PGVECTOR_RAG_PW`, `SINGLESTORE_RAG_USER`, … | same names |
 
 3. Run the script per identity you want to equip:
 
    ```bash
-   ./create-credential-domain.ps1 -IdentityType group -IdentityId LLMConsumers -KeysFile keys.env
-   ./create-credential-domain.sh -t user -i myuser -k my-keys.env
+   ./create-credential-domain.ps1 -IdentityType group -IdentityId LLMConsumers
+   ./create-credential-domain.sh -t user -i myuser
    ```
 
+   By default the repository's own `.env` is used. Point at a different file
+   to manage **multiple environments** from separate `.env` files:
+
+   ```bash
+   ./create-credential-domain.ps1 -IdentityType user -IdentityId myuser -EnvFile C:\envs\prod.env
+   ./create-credential-domain.sh -t user -i myuser -e /envs/prod.env
+   ```
+
+   For full control (custom entry names, no mapping), pass a raw `NAME=VALUE`
+   file instead with `-KeysFile my-keys.env` / `-k my-keys.env` — its entries
+   are stored verbatim.
+
 The domain is created if needed and the identity's credential is **fully
-replaced** with the file's entries (list every entry the identity should keep,
-not only new ones). Delete the keys file afterwards. Creating the domain and
-any **group** credential requires SAS administrator rights; a user can (re)run
+replaced** with the recognized entries (the source file must list every entry
+the identity should keep, not only new ones). Creating the domain and any
+**group** credential requires SAS administrator rights; a user can (re)run
 the script for their **own** user credential in an existing domain. Secret
 values are never printed.
 
@@ -100,21 +122,24 @@ them.
 - The **prompt-optimization job** accepts the same domain name (`keyDomain`,
   same default) and resolves keys server-side under the identity of the user
   who launched the run.
-- **RAG ingestion and retrieval** read the `{backend}_user` /
-  `{backend}_password` entries the same way; ingestion (SAS Studio / Job
-  Execution) and retrieval (Intelligent Decisioning) both run under the
+- **RAG ingestion and retrieval** read the `<BACKEND>_RAG_USER` /
+  `<BACKEND>_RAG_PW` entries the same way — the backend prefix (`PGVECTOR_`,
+  `SINGLESTORE_`, …) lets one domain hold credentials for several vector
+  stores at once. Ingestion (SAS Studio / Job Execution) runs under the
   calling user, so access to the vector store follows the same identity
   rules end to end.
 
 ## Where the domain applies — and where it cannot
 
 Resolving a credential requires a SAS Viya session: the browser (the
-signed-in user) and every compute-session runtime (SAS Studio steps, Job
-Execution jobs, Intelligent Decisioning test scoring) have one. A **SAS
-Container Runtime (SCR) container does not** — a decision published to SCR
-(or MAS) runs outside the Viya session context. For those destinations the
-secrets are supplied as **container environment variables at deployment
-time** (for a vector store: `RAGSTORE_USER` / `RAGSTORE_PW`; for the
+signed-in user) and compute-session runtimes (SAS Studio steps, Job
+Execution jobs) have one. A **SAS Container Runtime (SCR) container does
+not**, and neither do the **MAS and CAS scoring runtimes** that published
+decisions and Intelligent Decisioning tests execute in. For those
+destinations the secrets are supplied as **environment variables at
+deployment time**, using the same names as the `.env` and the domain (for a
+vector store: `<BACKEND>_RAG_USER` / `<BACKEND>_RAG_PW`, e.g.
+`PGVECTOR_RAG_USER`; connection config: the `RAGSTORE_*` variables; the
 embedding call: the `RAGEMBED_*` variables), exactly like the LLM containers
 receive their configuration today. The manifested retrieval code tries the
 credential domain first and falls back to the environment variables, so the
