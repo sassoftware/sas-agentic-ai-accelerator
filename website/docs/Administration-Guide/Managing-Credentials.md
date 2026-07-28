@@ -120,8 +120,10 @@ them.
   and domain). The domain is the only key source; enter `none` to skip the
   lookup in deployments that use exclusively key-less self-hosted models.
 - The **prompt-optimization job** accepts the same domain name (`keyDomain`,
-  same default) and resolves keys server-side under the identity of the user
-  who launched the run.
+  same default) and resolves keys server-side under the identity its compute
+  session runs as. **That is only the launching user when the compute context
+  runs its servers as the requesting user** — see the service-account caveat
+  below.
 - **RAG ingestion and retrieval** read the `<BACKEND>_RAG_USER` /
   `<BACKEND>_RAG_PW` entries the same way — the backend prefix (`PGVECTOR_`,
   `SINGLESTORE_`, …) lets one domain hold credentials for several vector
@@ -146,3 +148,17 @@ credential domain first and falls back to the environment variables, so the
 same artifact runs on every destination. The LLM containers themselves are
 unaffected either way: they receive the API key per call via the options
 payload, resolved by the caller.
+
+**Service-account compute contexts.** A compute context can be configured to
+run its servers under a **shared service account** instead of the requesting
+user (the stock *SAS Job Execution compute context* often is). A job running
+there resolves the domain as **that service account** — not as the person who
+clicked *Optimize* — so a personal credential is never found, and the job's
+error names the identity it actually resolved as. Two remedies:
+
+- Grant the credential to the **service account's identity or one of its
+  groups** with the admin script. Be deliberate: every job that runs under
+  that account can then use those keys.
+- Or prepare a **dedicated compute context that runs as the requesting
+  user** and point the app's compute-context Option at it — keys then follow
+  the per-user/group rules above.

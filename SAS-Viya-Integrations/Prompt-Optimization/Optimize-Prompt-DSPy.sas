@@ -334,6 +334,7 @@ class KeyResolver:
 
     def __init__(self):
         self.domain_map = None
+        self.identity = ""
 
     def _domain_secrets(self):
         if self.domain_map is not None:
@@ -356,12 +357,35 @@ class KeyResolver:
                             self.domain_map[name] = base64.b64decode(value).decode("utf-8")
                         except Exception:
                             pass
+                else:
+                    # Name WHO the credentials service saw: compute contexts
+                    # that run their servers under a service account resolve
+                    # the domain as that account, not as the launching user
+                    # (verified live) - the error must say so or the failure
+                    # is undebuggable from the outside.
+                    try:
+                        who = requests.get(
+                            BASE + "/identities/users/@currentUser",
+                            headers={"Authorization": "Bearer " + TOKEN},
+                            verify=VERIFY, timeout=30,
+                        )
+                        if who.status_code == 200:
+                            self.identity = str(who.json().get("id") or "")
+                    except Exception:
+                        pass
             except Exception:
                 pass
         return self.domain_map
 
     def get(self, name):
         return self._domain_secrets().get(name)
+
+    def identity_note(self):
+        if not self.identity:
+            return ""
+        return (f" The job resolved the domain as identity {self.identity} - "
+                "if that is a service account of the compute context, grant "
+                "the credential to that identity or one of its groups.")
 
 
 # ---- SCR access (mirrors the browser's callSCRLLM) -------------------------
@@ -432,7 +456,8 @@ def build_model_options(model_id, model_name, key_map):
         provider = str(options["API_KEY"])
         key = key_map.get(provider)
         if not key:
-            fail(f"The model {model_name} needs an API key for provider {provider} but the credential domain provided none - add a {provider} entry for this user or their group (see the Managing Credentials administration guide).")
+            note = key_map.identity_note() if hasattr(key_map, "identity_note") else ""
+            fail(f"The model {model_name} needs an API key for provider {provider} but the credential domain provided none - add a {provider} entry for this user or their group (see the Managing Credentials administration guide).{note}")
         options["API_KEY"] = key
     return options
 
