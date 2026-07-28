@@ -14,6 +14,9 @@
  * or run in SAS Studio. The compute context's Python needs the packages from
  * the Administration Guide (requests, pandas, psycopg2-binary, pypdfium2,
  * markitdown); rag_core itself is downloaded from SAS Content at run time.
+ * If you %include this program, do it at TOP LEVEL - a %include nested
+ * inside a macro prevents the proc python submit block from executing
+ * (verified live).
  *
  * Parameters (all optional unless noted; defaults below):
  *   sourcePath       - REQUIRED. Filesystem path (visible from this compute
