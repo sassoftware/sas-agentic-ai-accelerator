@@ -1,7 +1,7 @@
 {
   "name": "llm-prompt-builder",
   "version": "1.0.0",
-  "description": "Standalone LLM Prompt Builder — a no-code prompt engineering UI for SAS Viya, deployable as a single-file embed in SAS Visual Analytics.",
+  "description": "Standalone LLM Prompt Builder \u2014 a no-code prompt engineering UI for SAS Viya, deployable as a single-file embed in SAS Visual Analytics.",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -12,7 +12,9 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dev:rag": "vite --config vite.rag.config.ts",
+    "build:rag": "tsc --noEmit && vite build --config vite.rag.config.ts"
   },
   "dependencies": {
     "bootstrap": "^5.3.3",

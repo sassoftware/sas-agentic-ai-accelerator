@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<!--
+Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0
+
+Entry document of the RAG Builder. Everything (CSS, JS, locales) is bundled and
+inlined into one self-contained HTML file at build time — there are no external
+CDN scripts, fonts, or a runtime config.js, so the built file works inside a
+locked-down SAS Visual Analytics / SAS Job Execution embed.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RAG Builder</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main-rag.ts"></script>
+  </body>
+</html>

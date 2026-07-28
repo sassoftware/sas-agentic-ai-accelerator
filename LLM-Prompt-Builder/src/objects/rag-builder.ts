@@ -1,0 +1,695 @@
+/**
+ * Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * RAG Builder (design §14) — first slice: author a RAG Setup as a governed
+ * Model Manager artifact.
+ *
+ * What this slice does:
+ *   - pick or create the RAG project (tags LLM/RAG-Engineering, function RAG —
+ *     read-compatible with the portal RAG builder's conventions);
+ *   - pick or create a RAG Setup model inside it;
+ *   - author the setup: documentation (description, intended use,
+ *     LIMITATIONS — owner requirement 2026-07-28), source, extraction,
+ *     chunking, embedding, vector store and pipeline-table settings;
+ *   - save: writes rag-setup.json (round-trip state), pipeline.yaml
+ *     (generated governance artifact) and documentation.md onto the model,
+ *     and sets the model's registration metadata — description, tags
+ *     (LLM/RAG + embedding model + vector database), trainTable (the
+ *     ingestion ledger reference) and the retrieval variable definitions.
+ *
+ * Later phases (buttons visible but disabled, so the roadmap is honest):
+ * generate the Studio Flow + Job Execution job from the yaml, launch and
+ * monitor ingestion, browse the ledger, cut over collection versions, and
+ * test retrieval through the manifested model. The browser NEVER sees
+ * vector-store credentials and never runs ingestion itself.
+ */
+
+import {
+  createModel,
+  createModelContent,
+  createModelProject,
+  getModelContents,
+  getModelDetails,
+  getModelProjectModels,
+  getModelProjects,
+  getModelRepositoryInformation,
+  updateModelAttributes,
+  updateModelTags,
+} from '../api/models-api';
+import { getFileContent } from '../api/files-api';
+import { getAppState } from '../state/app-state';
+import type { InterfaceText } from '../types';
+import type { DropdownOption } from '../types/models';
+import type { RagBuilderConfig, RagBuilderText, RagSetup } from '../types/rag';
+
+const SETUP_FILE = 'rag-setup.json';
+const PIPELINE_FILE = 'pipeline.yaml';
+const DOCUMENTATION_FILE = 'documentation.md';
+
+const PREFIX_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,19}$/;
+const COLLECTION_PATTERN = /^[a-z][a-z0-9_]{0,62}$/;
+
+const EXTRACTORS = ['', 'plaintext', 'markdown', 'csv_json', 'html', 'pdf-text'];
+const CHUNKERS = ['recursive', 'paragraph'];
+const BACKENDS = ['pgvector'];
+const SSLMODES = ['prefer', 'require', 'disable'];
+
+/** The retrieval model's fixed in/out contract (owner requirement: the model
+ * page must show clear variable definitions like manifested prompts do). */
+const INPUT_VARIABLES = [
+  { name: 'question', role: 'input', type: 'string', length: 32000, description: 'The user question to retrieve context for' },
+  { name: 'k', role: 'input', type: 'decimal', description: 'Number of chunks to return (0 = manifested default)' },
+  { name: 'filter_json', role: 'input', type: 'string', length: 4000, description: 'Optional JSON object of allow-listed column equality filters' },
+  { name: 'retrieval_mode', role: 'input', type: 'string', length: 32, description: 'vector (hybrid arrives with a later release)' },
+  { name: 'options', role: 'input', type: 'string', length: 4000, description: 'Optional JSON connection overrides for callers managing their own secrets' },
+];
+const OUTPUT_VARIABLES = [
+  { name: 'context_dg', role: 'output', type: 'string', description: 'Context datagrid as JSON: document_id, chunk_id, filename, ingestion_timestamp, distance, document' },
+  { name: 'context_envelope', role: 'output', type: 'string', description: 'JSON envelope: query, hits[], graph_context, retrieval_mode, collection, ingestion_run_id' },
+  { name: 'retrieval_status', role: 'output', type: 'string', length: 512, description: 'ok or the failure message - retrieval never raises' },
+  { name: 'run_time', role: 'output', type: 'decimal', description: 'Total seconds spent' },
+];
+
+function defaultSetup(config: RagBuilderConfig): RagSetup {
+  return {
+    version: 1,
+    documentation: { description: '', intendedUse: '', limitations: '' },
+    source: { path: '' },
+    extraction: { extractor: '' },
+    chunking: { chunker: 'recursive', inputTokenLimit: 256, overlapTokens: 30 },
+    embedding: {
+      model: 'all_minilm_l6_v2',
+      dims: 384,
+      deploymentType: config.deploymentType || 'k8s',
+      scrEndpoint: '',
+    },
+    store: {
+      backend: 'pgvector',
+      host: '',
+      port: 5432,
+      database: '',
+      sslmode: 'prefer',
+      collection: '',
+    },
+    tables: { prefix: '', caslib: 'casuser' },
+    pipelineVersion: 'v1',
+    credentialDomain: config.credentialDomain || 'agentic-ai-keys',
+  };
+}
+
+/** Flat, ordered YAML rendering of the setup — the governance artifact the
+ * executables are generated from in P2 (values are JSON-encoded, which is
+ * valid YAML for scalars and keeps quoting/escaping exact). */
+function renderPipelineYaml(setup: RagSetup): string {
+  const scalar = (value: string | number): string => JSON.stringify(value);
+  const lines = [
+    '# pipeline.yaml - generated by the RAG Builder; the RAG Setup source of',
+    '# truth. The Studio Flow and the Ingest-Documents job are generated FROM',
+    '# this file (design section 2 source-of-truth rule). Regenerate through',
+    '# the RAG Builder instead of editing by hand.',
+    'version: 1',
+    'source:',
+    `  path: ${scalar(setup.source.path)}`,
+    'extraction:',
+    `  extractor: ${scalar(setup.extraction.extractor || 'auto')}`,
+    'chunking:',
+    `  chunker: ${scalar(setup.chunking.chunker)}`,
+    `  inputTokenLimit: ${setup.chunking.inputTokenLimit}`,
+    `  overlapTokens: ${setup.chunking.overlapTokens}`,
+    'embedding:',
+    `  model: ${scalar(setup.embedding.model)}`,
+    `  dims: ${setup.embedding.dims}`,
+    `  deploymentType: ${scalar(setup.embedding.deploymentType)}`,
+    `  scrEndpoint: ${scalar(setup.embedding.scrEndpoint || '')}`,
+    'store:',
+    `  backend: ${scalar(setup.store.backend)}`,
+    `  host: ${scalar(setup.store.host)}`,
+    `  port: ${setup.store.port}`,
+    `  database: ${scalar(setup.store.database)}`,
+    `  sslmode: ${scalar(setup.store.sslmode)}`,
+    `  collection: ${scalar(setup.store.collection)}`,
+    'tables:',
+    `  prefix: ${scalar(setup.tables.prefix)}`,
+    `  caslib: ${scalar(setup.tables.caslib)}`,
+    `pipelineVersion: ${scalar(setup.pipelineVersion)}`,
+    `credentialDomain: ${scalar(setup.credentialDomain)}`,
+  ];
+  return lines.join('\n') + '\n';
+}
+
+function renderDocumentationMarkdown(setup: RagSetup, setupName: string): string {
+  return [
+    `# ${setupName}`,
+    '',
+    '## Description',
+    '',
+    setup.documentation.description || '_Not documented yet._',
+    '',
+    '## Intended use',
+    '',
+    setup.documentation.intendedUse || '_Not documented yet._',
+    '',
+    '## Limitations',
+    '',
+    setup.documentation.limitations || '_Not documented yet._',
+    '',
+  ].join('\n');
+}
+
+export async function buildRagBuilder(
+  config: RagBuilderConfig,
+  paneID: string,
+  interfaceText: InterfaceText
+): Promise<HTMLElement> {
+  const text = (interfaceText.ragBuilder ?? {}) as RagBuilderText;
+  const str = (key: string, fallback: string): string => {
+    const value = text[key];
+    return typeof value === 'string' ? value : fallback;
+  };
+  const idOf = (suffix: string): string => `${paneID}-obj-${config.id}-${suffix}`;
+
+  let selectedProjectID = '';
+  let selectedSetupID = '';
+  let selectedSetupName = '';
+  /** Tags of the loaded setup that this builder manages (removed on re-save). */
+  let managedTags: string[] = [];
+
+  const container = document.createElement('div');
+  container.className = 'container-fluid py-3';
+
+  // ---- header ---------------------------------------------------------------
+  const heading = document.createElement('h2');
+  heading.textContent = str('ragBuilderHeading', 'RAG Builder');
+  const subtitle = document.createElement('p');
+  subtitle.className = 'text-muted';
+  subtitle.textContent = str(
+    'ragBuilderDescription',
+    'Author a governed RAG setup: documents in, an incremental ingestion pipeline, and a retrieval model out. Everything is saved to SAS Model Manager; vector-store credentials stay in the SAS Viya credential domain and never enter this browser.'
+  );
+  container.appendChild(heading);
+  container.appendChild(subtitle);
+
+  // ---- status area ----------------------------------------------------------
+  const status = document.createElement('div');
+  status.id = idOf('status');
+  container.appendChild(status);
+  const showStatus = (variant: 'success' | 'danger' | 'info', message: string): void => {
+    const alert = document.createElement('div');
+    alert.className = `alert alert-${variant} py-2`;
+    alert.setAttribute('role', 'alert');
+    alert.textContent = message;
+    status.replaceChildren(alert);
+  };
+  const clearStatus = (): void => status.replaceChildren();
+
+  // ---- small form helpers ---------------------------------------------------
+  const card = (titleText: string, hint?: string): [HTMLElement, HTMLElement] => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'card mb-3';
+    const body = document.createElement('div');
+    body.className = 'card-body';
+    const title = document.createElement('h5');
+    title.className = 'card-title';
+    title.textContent = titleText;
+    body.appendChild(title);
+    if (hint) {
+      const hintEl = document.createElement('p');
+      hintEl.className = 'text-muted small';
+      hintEl.textContent = hint;
+      body.appendChild(hintEl);
+    }
+    wrapper.appendChild(body);
+    return [wrapper, body];
+  };
+
+  const labeled = (
+    parent: HTMLElement,
+    id: string,
+    labelText: string,
+    element: HTMLElement,
+    columns = 'col-md-4'
+  ): void => {
+    const column = document.createElement('div');
+    column.className = columns;
+    const label = document.createElement('label');
+    label.className = 'form-label fw-bold mb-1';
+    label.htmlFor = id;
+    label.textContent = labelText;
+    element.id = id;
+    column.appendChild(label);
+    column.appendChild(element);
+    parent.appendChild(column);
+  };
+
+  const textInput = (value = '', placeholder = ''): HTMLInputElement => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'form-control';
+    input.value = value;
+    input.placeholder = placeholder;
+    return input;
+  };
+
+  const numberInput = (value: number, min: number): HTMLInputElement => {
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'form-control';
+    input.value = String(value);
+    input.min = String(min);
+    return input;
+  };
+
+  const selectInput = (options: string[], value: string, labels?: Record<string, string>): HTMLSelectElement => {
+    const select = document.createElement('select');
+    select.className = 'form-select';
+    for (const option of options) {
+      const entry = document.createElement('option');
+      entry.value = option;
+      entry.textContent = labels?.[option] ?? (option !== '' ? option : (labels?.[''] ?? option));
+      select.appendChild(entry);
+    }
+    select.value = value;
+    return select;
+  };
+
+  const textArea = (rows: number, placeholder: string): HTMLTextAreaElement => {
+    const area = document.createElement('textarea');
+    area.className = 'form-control';
+    area.rows = rows;
+    area.placeholder = placeholder;
+    return area;
+  };
+
+  // ---- project + setup selection -------------------------------------------
+  const [selectionCard, selectionBody] = card(
+    str('ragBuilderSelectionHeading', 'Project and setup'),
+    str(
+      'ragBuilderSelectionHint',
+      'A RAG project groups related setups in SAS Model Manager; a setup is one document corpus wired to one vector-store collection.'
+    )
+  );
+  const selectionRow = document.createElement('div');
+  selectionRow.className = 'row g-3 align-items-end';
+
+  const projectSelect = selectInput([], '');
+  labeled(selectionRow, idOf('project'), str('ragBuilderProjectLabel', 'RAG project:'), projectSelect);
+  const newProjectName = textInput('', str('ragBuilderNewProjectPlaceholder', 'New project name'));
+  const newProjectButton = document.createElement('button');
+  newProjectButton.type = 'button';
+  newProjectButton.className = 'btn btn-secondary';
+  newProjectButton.textContent = str('ragBuilderNewProjectButton', 'Create project');
+  {
+    const column = document.createElement('div');
+    column.className = 'col-md-4';
+    const group = document.createElement('div');
+    group.className = 'input-group';
+    group.appendChild(newProjectName);
+    group.appendChild(newProjectButton);
+    column.appendChild(group);
+    selectionRow.appendChild(column);
+  }
+
+  const setupSelect = selectInput([], '');
+  labeled(selectionRow, idOf('setup'), str('ragBuilderSetupLabel', 'RAG setup:'), setupSelect);
+  const newSetupName = textInput('', str('ragBuilderNewSetupPlaceholder', 'New setup name'));
+  const newSetupButton = document.createElement('button');
+  newSetupButton.type = 'button';
+  newSetupButton.className = 'btn btn-secondary';
+  newSetupButton.textContent = str('ragBuilderNewSetupButton', 'Create setup');
+  {
+    const column = document.createElement('div');
+    column.className = 'col-md-4';
+    const group = document.createElement('div');
+    group.className = 'input-group';
+    group.appendChild(newSetupName);
+    group.appendChild(newSetupButton);
+    column.appendChild(group);
+    selectionRow.appendChild(column);
+  }
+  selectionBody.appendChild(selectionRow);
+  container.appendChild(selectionCard);
+
+  // ---- the setup editor (hidden until a setup is selected) ------------------
+  const editor = document.createElement('div');
+  editor.style.display = 'none';
+  container.appendChild(editor);
+
+  // Documentation — owner requirement: the author documents description,
+  // intended use and LIMITATIONS up front, like the Prompt Builder's top
+  // section; saved as the model description + documentation.md.
+  const [documentationCard, documentationBody] = card(
+    str('ragBuilderDocumentationHeading', 'Documentation'),
+    str(
+      'ragBuilderDocumentationHint',
+      'Written by the setup author, shown to every consumer: what this corpus is, what it should be used for, and where its limits are. Saved onto the Model Manager model so governance reviews read your own caveats.'
+    )
+  );
+  const documentationRow = document.createElement('div');
+  documentationRow.className = 'row g-3';
+  const descriptionField = textArea(2, str('ragBuilderDocDescriptionPlaceholder', 'What does this RAG setup contain?'));
+  labeled(documentationRow, idOf('doc-description'), str('ragBuilderDocDescriptionLabel', 'Description:'), descriptionField, 'col-12');
+  const intendedUseField = textArea(2, str('ragBuilderDocIntendedUsePlaceholder', 'Which questions/decisions should it serve?'));
+  labeled(documentationRow, idOf('doc-intended'), str('ragBuilderDocIntendedUseLabel', 'Intended use:'), intendedUseField, 'col-md-6');
+  const limitationsField = textArea(2, str('ragBuilderDocLimitationsPlaceholder', 'Known gaps: coverage, freshness, languages, document quality…'));
+  labeled(documentationRow, idOf('doc-limitations'), str('ragBuilderDocLimitationsLabel', 'Limitations:'), limitationsField, 'col-md-6');
+  documentationBody.appendChild(documentationRow);
+  editor.appendChild(documentationCard);
+
+  // Pipeline
+  const [pipelineCard, pipelineBody] = card(
+    str('ragBuilderPipelineHeading', 'Ingestion pipeline'),
+    str(
+      'ragBuilderPipelineHint',
+      'What the generated Studio Flow / Job Execution job will run: crawl, extract, chunk and embed through the governed SCR embedding container.'
+    )
+  );
+  const pipelineRow = document.createElement('div');
+  pipelineRow.className = 'row g-3';
+  const sourcePathField = textInput('', '/data/documents');
+  labeled(pipelineRow, idOf('source-path'), str('ragBuilderSourcePathLabel', 'Document folder (compute-context path):'), sourcePathField, 'col-md-6');
+  const extractorField = selectInput(EXTRACTORS, '', { '': str('ragBuilderExtractorAuto', 'Automatic (by file format)') });
+  labeled(pipelineRow, idOf('extractor'), str('ragBuilderExtractorLabel', 'Extractor:'), extractorField, 'col-md-3');
+  const chunkerField = selectInput(CHUNKERS, 'recursive');
+  labeled(pipelineRow, idOf('chunker'), str('ragBuilderChunkerLabel', 'Chunker:'), chunkerField, 'col-md-3');
+  const tokenLimitField = numberInput(256, 16);
+  labeled(pipelineRow, idOf('token-limit'), str('ragBuilderTokenLimitLabel', 'Embedding token window:'), tokenLimitField, 'col-md-3');
+  const overlapField = numberInput(30, 0);
+  labeled(pipelineRow, idOf('overlap'), str('ragBuilderOverlapLabel', 'Chunk overlap (tokens):'), overlapField, 'col-md-3');
+  const embedModelField = textInput('all_minilm_l6_v2');
+  labeled(pipelineRow, idOf('embed-model'), str('ragBuilderEmbedModelLabel', 'Embedding model:'), embedModelField, 'col-md-3');
+  const embedDimsField = numberInput(384, 1);
+  labeled(pipelineRow, idOf('embed-dims'), str('ragBuilderEmbedDimsLabel', 'Embedding dimensions:'), embedDimsField, 'col-md-3');
+  pipelineBody.appendChild(pipelineRow);
+  editor.appendChild(pipelineCard);
+
+  // Vector store + pipeline tables
+  const [storeCard, storeBody] = card(
+    str('ragBuilderStoreHeading', 'Vector store and pipeline tables'),
+    str(
+      'ragBuilderStoreHint',
+      'Connection settings only — the store user and password are resolved server-side from the credential domain (<BACKEND>_RAG_USER / <BACKEND>_RAG_PW) and never enter this browser.'
+    )
+  );
+  const storeRow = document.createElement('div');
+  storeRow.className = 'row g-3';
+  const backendField = selectInput(BACKENDS, 'pgvector');
+  labeled(storeRow, idOf('backend'), str('ragBuilderBackendLabel', 'Vector database:'), backendField, 'col-md-3');
+  const hostField = textInput('', 'db.example.com');
+  labeled(storeRow, idOf('store-host'), str('ragBuilderStoreHostLabel', 'Host:'), hostField, 'col-md-4');
+  const portField = numberInput(5432, 1);
+  labeled(storeRow, idOf('store-port'), str('ragBuilderStorePortLabel', 'Port:'), portField, 'col-md-2');
+  const databaseField = textInput('');
+  labeled(storeRow, idOf('store-db'), str('ragBuilderStoreDbLabel', 'Database:'), databaseField, 'col-md-3');
+  const sslmodeField = selectInput(SSLMODES, 'prefer');
+  labeled(storeRow, idOf('store-sslmode'), str('ragBuilderStoreSslmodeLabel', 'SSL mode:'), sslmodeField, 'col-md-3');
+  const collectionField = textInput('', 'rag_hr_policies_v1');
+  labeled(storeRow, idOf('collection'), str('ragBuilderCollectionLabel', 'Collection (lowercase identifier):'), collectionField, 'col-md-4');
+  const prefixField = textInput('', 'RAG_HR');
+  labeled(storeRow, idOf('tables-prefix'), str('ragBuilderTablesPrefixLabel', 'Pipeline table prefix (max 20 chars):'), prefixField, 'col-md-3');
+  const caslibField = textInput('casuser');
+  labeled(storeRow, idOf('tables-caslib'), str('ragBuilderTablesCaslibLabel', 'Tables caslib:'), caslibField, 'col-md-2');
+  const domainNote = document.createElement('p');
+  domainNote.className = 'text-muted small mb-0 mt-2';
+  domainNote.textContent = `${str('ragBuilderDomainNote', 'Credential domain:')} ${config.credentialDomain}`;
+  storeBody.appendChild(storeRow);
+  storeBody.appendChild(domainNote);
+  editor.appendChild(storeCard);
+
+  // ---- actions --------------------------------------------------------------
+  const actions = document.createElement('div');
+  actions.className = 'd-flex gap-2 flex-wrap mb-3';
+  const saveButton = document.createElement('button');
+  saveButton.type = 'button';
+  saveButton.className = 'btn btn-primary';
+  saveButton.textContent = str('ragBuilderSaveButton', 'Save setup');
+  actions.appendChild(saveButton);
+  for (const [key, fallback] of [
+    ['ragBuilderGenerateButton', 'Generate flow and job'],
+    ['ragBuilderLaunchButton', 'Launch ingestion'],
+    ['ragBuilderLedgerButton', 'Browse ledger'],
+    ['ragBuilderTestButton', 'Test retrieval'],
+  ] as const) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn btn-outline-secondary';
+    button.disabled = true;
+    button.title = str('ragBuilderComingSoon', 'Arrives with Register Setup (P2)');
+    button.textContent = str(key, fallback);
+    actions.appendChild(button);
+  }
+  editor.appendChild(actions);
+
+  // ---- data plumbing --------------------------------------------------------
+  const fillSelect = (select: HTMLSelectElement, options: DropdownOption[], placeholder: string): void => {
+    select.replaceChildren();
+    const empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = placeholder;
+    select.appendChild(empty);
+    for (const option of options) {
+      const entry = document.createElement('option');
+      entry.value = option.value;
+      entry.textContent = option.innerHTML;
+      select.appendChild(entry);
+    }
+  };
+
+  const applySetup = (setup: RagSetup): void => {
+    descriptionField.value = setup.documentation.description;
+    intendedUseField.value = setup.documentation.intendedUse;
+    limitationsField.value = setup.documentation.limitations;
+    sourcePathField.value = setup.source.path;
+    extractorField.value = setup.extraction.extractor;
+    chunkerField.value = setup.chunking.chunker;
+    tokenLimitField.value = String(setup.chunking.inputTokenLimit);
+    overlapField.value = String(setup.chunking.overlapTokens);
+    embedModelField.value = setup.embedding.model;
+    embedDimsField.value = String(setup.embedding.dims);
+    backendField.value = setup.store.backend;
+    hostField.value = setup.store.host;
+    portField.value = String(setup.store.port);
+    databaseField.value = setup.store.database;
+    sslmodeField.value = setup.store.sslmode;
+    collectionField.value = setup.store.collection;
+    prefixField.value = setup.tables.prefix;
+    caslibField.value = setup.tables.caslib;
+    managedTags = [setup.embedding.model, setup.store.backend].filter(Boolean);
+  };
+
+  const collectSetup = (): RagSetup => ({
+    version: 1,
+    documentation: {
+      description: descriptionField.value.trim(),
+      intendedUse: intendedUseField.value.trim(),
+      limitations: limitationsField.value.trim(),
+    },
+    source: { path: sourcePathField.value.trim() },
+    extraction: { extractor: extractorField.value },
+    chunking: {
+      chunker: chunkerField.value,
+      inputTokenLimit: Math.max(16, Number(tokenLimitField.value) || 256),
+      overlapTokens: Math.max(0, Number(overlapField.value) || 0),
+    },
+    embedding: {
+      model: embedModelField.value.trim() || 'all_minilm_l6_v2',
+      dims: Math.max(1, Number(embedDimsField.value) || 384),
+      deploymentType: config.deploymentType || 'k8s',
+      scrEndpoint: '',
+    },
+    store: {
+      backend: backendField.value,
+      host: hostField.value.trim(),
+      port: Math.max(1, Number(portField.value) || 5432),
+      database: databaseField.value.trim(),
+      sslmode: sslmodeField.value,
+      collection: collectionField.value.trim(),
+    },
+    tables: {
+      prefix: prefixField.value.trim(),
+      caslib: caslibField.value.trim() || 'casuser',
+    },
+    pipelineVersion: 'v1',
+    credentialDomain: config.credentialDomain || 'agentic-ai-keys',
+  });
+
+  const validateSetup = (setup: RagSetup): string | null => {
+    if (!setup.source.path) return str('ragBuilderValidateSource', 'The document folder path is required.');
+    if (!setup.store.host || !setup.store.database)
+      return str('ragBuilderValidateStore', 'Vector store host and database are required.');
+    if (!COLLECTION_PATTERN.test(setup.store.collection))
+      return str('ragBuilderValidateCollection', 'The collection must be a lowercase identifier (letters, digits, underscores; starts with a letter).');
+    if (!PREFIX_PATTERN.test(setup.tables.prefix))
+      return str('ragBuilderValidatePrefix', 'The table prefix must be 1-20 characters (letters, digits, underscores; starts with a letter) so every table name stays within 32 characters.');
+    return null;
+  };
+
+  async function refreshProjects(): Promise<void> {
+    const projects = await getModelProjects("contains(tags,'RAG-Engineering')");
+    fillSelect(projectSelect, projects, str('ragBuilderProjectPlaceholder', 'Select a RAG project…'));
+    projectSelect.value = selectedProjectID;
+  }
+
+  async function refreshSetups(): Promise<void> {
+    if (!selectedProjectID) {
+      fillSelect(setupSelect, [], str('ragBuilderSetupPlaceholder', 'Select a RAG setup…'));
+      return;
+    }
+    const setups = await getModelProjectModels(selectedProjectID);
+    fillSelect(setupSelect, setups, str('ragBuilderSetupPlaceholder', 'Select a RAG setup…'));
+    setupSelect.value = selectedSetupID;
+  }
+
+  async function loadSetup(): Promise<void> {
+    editor.style.display = selectedSetupID ? '' : 'none';
+    if (!selectedSetupID) return;
+    applySetup(defaultSetup(config));
+    const contents = await getModelContents(selectedSetupID);
+    const setupItem = contents.find((item) => item.name === SETUP_FILE);
+    if (setupItem?.fileUri) {
+      try {
+        const response = await getFileContent(setupItem.fileUri);
+        if (response.ok) {
+          applySetup({ ...defaultSetup(config), ...(await response.json()) } as RagSetup);
+        }
+      } catch {
+        showStatus('danger', str('ragBuilderLoadSetupError', 'The stored rag-setup.json could not be read - starting from defaults.'));
+      }
+    }
+  }
+
+  async function saveSetup(): Promise<void> {
+    clearStatus();
+    const setup = collectSetup();
+    const problem = validateSetup(setup);
+    if (problem) {
+      showStatus('danger', problem);
+      return;
+    }
+    saveButton.disabled = true;
+    try {
+      // 1. the three artifacts (onConflict=update keeps one copy each)
+      await createModelContent(selectedSetupID, setup, SETUP_FILE, 'documentation');
+      await createModelContent(selectedSetupID, renderPipelineYaml(setup), PIPELINE_FILE, 'documentation', 'text/plain');
+      await createModelContent(
+        selectedSetupID,
+        renderDocumentationMarkdown(setup, selectedSetupName),
+        DOCUMENTATION_FILE,
+        'documentation',
+        'text/markdown'
+      );
+      // 2. registration metadata (owner requirements 2026-07-28): description,
+      //    trainTable = the ingestion ledger, and the retrieval in/out contract
+      await updateModelAttributes(selectedSetupID, {
+        description: setup.documentation.description.slice(0, 1000),
+        trainTable: `${config.casServer}/${setup.tables.caslib.toUpperCase() === 'CASUSER' ? `CASUSER(${getAppState().userName ?? 'casuser'})` : setup.tables.caslib}/${setup.tables.prefix}_LEDGER`,
+        inputVariables: INPUT_VARIABLES,
+        outputVariables: OUTPUT_VARIABLES,
+        scoreCodeType: 'python',
+        trainCodeType: 'python',
+      });
+      // 3. tags: LLM/RAG plus one for the embedding model and one for the
+      //    vector database (previously managed stack tags are replaced)
+      await updateModelTags(selectedSetupID, managedTags, [
+        'LLM',
+        'RAG',
+        setup.embedding.model,
+        setup.store.backend,
+      ]);
+      managedTags = [setup.embedding.model, setup.store.backend];
+      showStatus('success', str('ragBuilderSaveSuccess', 'RAG setup saved to Model Manager (rag-setup.json, pipeline.yaml, documentation.md, tags, ledger reference and variable definitions).'));
+    } catch (error) {
+      console.error('Saving the RAG setup failed.', error);
+      showStatus('danger', str('ragBuilderSaveError', 'Saving the RAG setup failed - check the browser console and your Model Manager permissions.'));
+    } finally {
+      saveButton.disabled = false;
+    }
+  }
+
+  // ---- events ---------------------------------------------------------------
+  projectSelect.addEventListener('change', () => {
+    selectedProjectID = projectSelect.value;
+    selectedSetupID = '';
+    selectedSetupName = '';
+    void refreshSetups();
+    void loadSetup();
+  });
+
+  setupSelect.addEventListener('change', () => {
+    selectedSetupID = setupSelect.value;
+    selectedSetupName = setupSelect.selectedOptions[0]?.textContent ?? '';
+    void loadSetup();
+  });
+
+  newProjectButton.addEventListener('click', () => {
+    void (async () => {
+      const name = newProjectName.value.trim();
+      if (!name) return;
+      clearStatus();
+      newProjectButton.disabled = true;
+      try {
+        const repository = await getModelRepositoryInformation(config.modelRepositoryID);
+        const project = await createModelProject({
+          name,
+          description: str('ragBuilderProjectDescription', 'RAG setups of the SAS Agentic AI Accelerator'),
+          function: 'RAG',
+          repositoryId: config.modelRepositoryID,
+          folderId: (repository as { folderId?: string })?.folderId,
+          properties: [{ name: 'Origin', value: 'SAS Agentic AI Accelerator', type: 'string' }],
+          tags: ['LLM', 'RAG-Engineering'],
+        });
+        selectedProjectID = project?.id ?? '';
+        newProjectName.value = '';
+        await refreshProjects();
+        await refreshSetups();
+        await loadSetup();
+      } catch (error) {
+        console.error('Creating the RAG project failed.', error);
+        showStatus('danger', str('ragBuilderProjectCreateError', 'Creating the RAG project failed - check your Model Manager permissions.'));
+      } finally {
+        newProjectButton.disabled = false;
+      }
+    })();
+  });
+
+  newSetupButton.addEventListener('click', () => {
+    void (async () => {
+      const name = newSetupName.value.trim();
+      if (!name || !selectedProjectID) return;
+      clearStatus();
+      newSetupButton.disabled = true;
+      try {
+        const created = (await createModel({
+          name,
+          description: '',
+          function: 'RAG',
+          algorithm: 'RAG',
+          tool: 'SAS Agentic AI Accelerator RAG Builder',
+          modeler: getAppState().userName ?? '',
+          projectId: selectedProjectID,
+          scoreCodeType: 'python',
+          trainCodeType: 'python',
+          tags: ['LLM', 'RAG'],
+        })) as unknown as { id?: string; items?: Array<{ id?: string; name?: string }> };
+        selectedSetupID = created?.items?.[0]?.id ?? created?.id ?? '';
+        selectedSetupName = name;
+        newSetupName.value = '';
+        await refreshSetups();
+        await loadSetup();
+      } catch (error) {
+        console.error('Creating the RAG setup failed.', error);
+        showStatus('danger', str('ragBuilderSetupCreateError', 'Creating the RAG setup failed - check your Model Manager permissions.'));
+      } finally {
+        newSetupButton.disabled = false;
+      }
+    })();
+  });
+
+  saveButton.addEventListener('click', () => void saveSetup());
+
+  // ---- initial load ---------------------------------------------------------
+  await refreshProjects();
+  await refreshSetups();
+
+  return container;
+}
