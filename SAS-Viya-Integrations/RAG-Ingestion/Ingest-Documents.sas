@@ -87,15 +87,15 @@
    rewrites the table without a lock row, which releases it. */
 %macro _rag_export_ledger;
     cas _ragcas;
-    caslib _all_ assign sessref=_ragcas;
-    %if %sysfunc(exist(&ledgerCaslib..&ledgerTable.)) %then %do;
+    libname _ragcl cas caslib="&ledgerCaslib." sessref=_ragcas;
+    %if %sysfunc(exist(_ragcl.&ledgerTable.)) %then %do;
         filename _ragled "%sysfunc(pathname(work))/rag_ledger_in.json";
         proc json out=_ragled noSASTags;
-            export &ledgerCaslib..&ledgerTable.;
+            export _ragcl.&ledgerTable.;
         run; quit;
         filename _ragled clear;
 
-        data &ledgerCaslib..&ledgerTable.(append=yes);
+        data _ragcl.&ledgerTable.(append=yes);
             length doc_id $ 40 source_uri $ 1024 source_kind $ 16
                    content_hash $ 64 mtime $ 32 status $ 12 error_text $ 512
                    pipeline_version $ 32 config_hash $ 32 chunk_count 8
@@ -115,6 +115,7 @@
             updated_at = '';
         run;
     %end;
+    libname _ragcl clear;
     cas _ragcas terminate;
 %mend _rag_export_ledger;
 %_rag_export_ledger;
@@ -130,17 +131,18 @@ def main():
     import time
     import traceback
 
-    milestones = []
-
-    def M(msg):
-        milestones.append(str(msg))
-        SAS.logMessage("RAGINGEST " + str(msg))
-
     def sas_safe(text):
+        """Text passed to SAS.logMessage/SAS.symput is embedded into generated
+        SAS statements - quotes and macro characters corrupt the code stream
+        (verified live by the optimize job). EVERY string crossing that
+        boundary goes through here."""
         cleaned = str(text)
         for ch in ("'", '"', "%", "&", ";"):
             cleaned = cleaned.replace(ch, " ")
         return cleaned
+
+    def M(msg):
+        SAS.logMessage("RAGINGEST " + sas_safe(msg))
 
     try:
         import requests
@@ -332,7 +334,6 @@ run; quit;
         filename _ragout clear;
 
         cas _ragcas2;
-        caslib _all_ assign sessref=_ragcas2;
         proc casutil sessref=_ragcas2 incaslib="&ledgerCaslib." outcaslib="&ledgerCaslib.";
             droptable casdata="&ledgerTable." quiet;
             load data=work._rag_ledger_new casout="&ledgerTable.";
