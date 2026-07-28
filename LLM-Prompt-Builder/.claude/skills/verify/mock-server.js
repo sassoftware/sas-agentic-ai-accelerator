@@ -72,6 +72,102 @@ const relationshipsFor = {
   },
 };
 
+// --- Prompt optimization (Phase 3) -----------------------------------------
+// The Optimize flow resolves the job definition path, launches a Job Execution
+// job and polls it. The mock job runs for one poll cycle, then completes; on
+// completion the source model gains a Prompt-Optimization-Tracker.json whose
+// entry the app renders (metrics, produced model link, load button).
+let jobPolls = 0;
+let jobLaunched = false;
+// POST /__failjob arms a failure: the NEXT launched job fails after one poll,
+// logging the job's dependency-preflight error (missing dspy) and appending a
+// failed tracker entry — mirroring the shipped job's failure path.
+let failNextJob = false;
+let failJobPolls = 0;
+// Set when the most recent launch was a compare-mode run (Phase 4a): job-1
+// then completes into a comparison entry echoing the requested candidates.
+let compareArgs = null;
+// The Builder can delete optimization runs: it removes the tracker content
+// and re-uploads the remaining entries, which the mock mirrors statefully.
+let optTrackerDeleted = false;
+function multipartJson(rawBody) {
+  const m = rawBody.match(/\r\n\r\n([\s\S]*?)\r\n--/);
+  try {
+    return m ? JSON.parse(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
+const DSPY_MISSING_ERROR =
+  'The Python environment of this compute context lacks the dspy package - install the packages in Prompt-Optimization/requirements.txt into that Python environment, or point the computeContext Option at a prepared context.';
+const optimizedPrompt = {
+  systemPrompt: 'Optimised system prompt.\n\nFollow the pattern of these examples:\n\nuserPrompt: User 2\nresponse: Response two',
+  userPrompt: 'User 2',
+  variables: [],
+  demos: [{ userPrompt: 'User 2', response: 'Response two' }],
+};
+// Seeded with one LEGACY entry (earlier releases created a separate
+// prompt-test, recorded as producedPromptModelId) so the history view's
+// backward compatibility is exercised; runs append new-shape entries.
+const optimizationTracker = [
+  {
+    optimizationId: 1,
+    startedAt: '2026-07-20T09:00:00Z',
+    finishedAt: '2026-07-20T09:05:00Z',
+    status: 'succeeded',
+    jobId: 'job-legacy',
+    targetModel: 'demo_llm',
+    datasetSource: 'tracker',
+    sampleCount: 1,
+    optimizer: 'bootstrap',
+    metric: 'exact',
+    metricBefore: 0.4,
+    metricAfter: 0.6,
+    optimizedPrompt,
+    producedPromptModelId: 'model-opt-legacy',
+    datasetSnapshot: 'Prompt-Optimization-Dataset-1.json',
+    // Exercises the baseline-perfect info note the history renders when the
+    // job skipped the optimization phase.
+    skippedReason: 'baseline-perfect',
+    error: null,
+  },
+];
+const successEntry = {
+  optimizationId: 2,
+  startedAt: '2026-07-23T09:00:00Z',
+  finishedAt: '2026-07-23T09:05:00Z',
+  status: 'succeeded',
+  jobId: 'job-1',
+  targetModel: 'demo_llm',
+  datasetSource: 'tracker',
+  datasetRef: 'Prompt-Experiment-Tracker.json',
+  sampleCount: 1,
+  optimizer: 'bootstrap',
+  metric: 'overlap',
+  judgeModel: null,
+  metricBefore: 0.5,
+  metricAfter: 0.833,
+  baselinePrompt: { systemPrompt: 'Sys 2', userPrompt: 'User 2' },
+  trainSize: 7,
+  validationSize: 3,
+  // Overlap-metric entry: per-example partial-credit scores accompany the
+  // correctness flags (the UI shows the score next to ✓/✗ when it is not 0/1).
+  evaluations: [
+    { inputs: { userPrompt: 'User 1' }, expected: 'Response one', baselineResponse: 'wrong', baselineCorrect: false, baselineScore: 0, optimizedResponse: 'Response one', optimizedCorrect: true, optimizedScore: 1 },
+    { inputs: { userPrompt: 'User 2' }, expected: 'Response two', baselineResponse: 'Response two', baselineCorrect: true, baselineScore: 1, optimizedResponse: 'Response two', optimizedCorrect: true, optimizedScore: 1 },
+    { inputs: { userPrompt: 'User 3' }, expected: 'Response three', baselineResponse: 'nope', baselineCorrect: false, baselineScore: 0.25, optimizedResponse: 'still nope', optimizedCorrect: false, optimizedScore: 0.5 },
+  ],
+  optimizedPrompt,
+  datasetSnapshot: 'Prompt-Optimization-Dataset-2.json',
+  // Per-role call accounting the job records (the Builder shows calls +
+  // token totals and prices them when the model carries cost attributes).
+  usage: {
+    target: { calls: 13, promptTokens: 5200, outputTokens: 640, runTime: 38.5 },
+    judge: { calls: 0, promptTokens: 0, outputTokens: 0, runTime: 0 },
+  },
+  error: null,
+};
+
 function json(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
@@ -90,6 +186,7 @@ http
 
       if (p === '/__log') return json(res, 200, log);
       if (p === '/__reset') { log.length = 0; return json(res, 200, {}); }
+      if (p === '/__failjob') { failNextJob = true; return json(res, 200, {}); }
 
       if (p === '/' || p === '/index.html') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -150,14 +247,268 @@ http
       if (p === '/modelRepository/models/model-used/contents' && req.method === 'GET') {
         // The requirements.json entry simulates a leftover from an earlier
         // integrated-call manifest: a manifest without the LLM call must
-        // remove it.
+        // remove it. The optimization tracker is present from the start (the
+        // prompt has a legacy run) and grows as mock jobs finish.
+        const items = [
+          { id: 'c-trk', name: 'Prompt-Experiment-Tracker.json', fileUri: '/files/files/trk-1' },
+          { id: 'c-req', name: 'requirements.json', fileUri: '/files/files/req-1' },
+        ];
+        if (!optTrackerDeleted) {
+          items.push({ id: 'c-opttrk', name: 'Prompt-Optimization-Tracker.json', fileUri: '/files/files/opttrk-1' });
+        }
+        return json(res, 200, { items });
+      }
+      // @item resolves FOLDERS only — it 404s for jobDefinition members on a
+      // real SAS Viya, so the app resolves the parent folder, then finds the
+      // definition among the folder's members by name.
+      if (p === '/folders/folders/@item') {
+        const path = u.searchParams.get('path') || '';
+        if (path === '/Public/Jobs') {
+          return json(res, 200, { id: 'folder-jobs', uri: '/folders/folders/folder-jobs' });
+        }
+        return json(res, 404, { message: 'no such content item: ' + path });
+      }
+      if (p === '/folders/folders/folder-jobs/members') {
+        const filter = u.searchParams.get('filter') || '';
+        const items = filter.includes("'Optimize-Prompt-DSPy'")
+          ? [{ name: 'Optimize-Prompt-DSPy', uri: '/jobDefinitions/definitions/jobdef-1', contentType: 'jobDefinition' }]
+          : [];
+        return json(res, 200, { items });
+      }
+      // CAS Management: the optimize panel builds its server → caslib → table
+      // dropdowns from these listings, then probes the chosen table (info +
+      // columns) before launching a run with the CAS dataset source. GHOST is
+      // listed but its probe 404s — a stale listing (table dropped between
+      // browse and launch).
+      if (p === '/casManagement/servers') {
+        return json(res, 200, { items: [{ name: 'cas-shared-default' }] });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs') {
+        return json(res, 200, { items: [{ name: 'Public' }, { name: 'casuser' }] });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables') {
+        return json(res, 200, { items: [{ name: 'OPT_DATA' }, { name: 'BIG_DATA' }, { name: 'BAD_COLS' }, { name: 'GHOST' }] });
+      }
+      // BIG_DATA clears the compare-mode floor of 10 rows (OPT_DATA's 5 rows
+      // exercise the too-small path).
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/BIG_DATA') {
+        return json(res, 200, { name: 'BIG_DATA', rowCount: 12 });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/BIG_DATA/columns') {
+        return json(res, 200, { items: [{ name: 'userPrompt' }, { name: 'response' }] });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/casuser/tables') {
+        return json(res, 200, { items: [] });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/OPT_DATA') {
+        return json(res, 200, { name: 'OPT_DATA', rowCount: 5 });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/OPT_DATA/columns') {
+        return json(res, 200, { items: [{ name: 'userPrompt' }, { name: 'response' }] });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/BAD_COLS') {
+        return json(res, 200, { name: 'BAD_COLS', rowCount: 5 });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/BAD_COLS/columns') {
+        return json(res, 200, { items: [{ name: 'question' }, { name: 'answer' }] });
+      }
+      if (p.startsWith('/casManagement/')) {
+        return json(res, 404, { message: 'table not found' });
+      }
+      // The app primes the Job Execution service session with a GET before its
+      // first POST (a first-contact POST 449s on a real Viya's SSO handshake).
+      if (p === '/jobExecution/jobs' && req.method === 'GET') {
+        return json(res, 200, { items: [] });
+      }
+      if (p === '/jobExecution/jobs' && req.method === 'POST') {
+        if (failNextJob) {
+          failNextJob = false;
+          failJobPolls = 0;
+          return json(res, 201, { id: 'job-fail', state: 'pending' });
+        }
+        jobLaunched = true;
+        jobPolls = 0;
+        // Echo the launch configuration into the success entry, like the real
+        // job records exactly what it was launched with (lets a verify script
+        // assert e.g. a GEPA run's history row shows gepa + its judge model).
+        compareArgs = null;
+        try {
+          const args = JSON.parse(raw).arguments || {};
+          if (args.mode === 'compare' || args.mode === 'sweep') compareArgs = args;
+          if (args.optimizer) successEntry.optimizer = args.optimizer;
+          if (args.metric) successEntry.metric = args.metric;
+          successEntry.judgeModel = args.judgeModelName || null;
+        } catch {
+          /* keep the defaults */
+        }
+        return json(res, 201, { id: 'job-1', state: 'pending' });
+      }
+      if (p === '/jobExecution/jobs/job-1' && req.method === 'GET') {
+        jobPolls += 1;
+        // Real JES jobs expose the compute session/job ids in `results`; the
+        // session's log streams LIVE while running (the Files logLocation only
+        // fills in at completion).
+        const computeResults = { COMPUTE_SESSION: 'cs-1 (SAS Job Execution compute context)', COMPUTE_JOB: 'cj-1' };
+        if (jobPolls < 4) return json(res, 200, { id: 'job-1', state: 'running', results: computeResults });
+        // The run's tracker entry appears exactly once, like the real job writes it.
+        if (!optimizationTracker.some((entry) => entry.jobId === 'job-1')) {
+          if (compareArgs) {
+            // A compare-mode launch completes into a comparison entry whose
+            // candidates echo the request. Qualities are assigned so the
+            // SECOND selected name wins - a verify script can assert the
+            // ranked table reorders rows instead of keeping request order.
+            const names = String(compareArgs.targetModelNames || '')
+              .split(',')
+              .map((n) => n.trim())
+              .filter(Boolean);
+            optimizationTracker.push({
+              optimizationId: optimizationTracker.length + 1,
+              startedAt: '2026-07-25T09:00:00Z',
+              finishedAt: '2026-07-25T09:03:00Z',
+              status: 'succeeded',
+              jobId: 'job-1',
+              type: 'comparison',
+              targetModel: names.join(', '),
+              datasetSource: compareArgs.datasetSource || 'tracker',
+              sampleCount: 1,
+              // A screening carries no optimizer; a sweep names the one it ran.
+              optimizer: compareArgs.mode === 'sweep' ? compareArgs.optimizer || 'bootstrap' : null,
+              metric: compareArgs.metric || 'exact',
+              judgeModel: compareArgs.judgeModelName || null,
+              metricBefore: null,
+              metricAfter: null,
+              baselinePrompt: { systemPrompt: 'Sys 2', userPrompt: 'User 2' },
+              targets: names.map((name, index) => ({
+                model: name,
+                status: 'scored',
+                quality: index === 1 ? 0.9 : 0.4,
+                avgLatency: index === 1 ? 1.8 : 0.7,
+                usage: { calls: 2, promptTokens: 220, outputTokens: 30, runTime: index === 1 ? 3.6 : 1.4 },
+                // Sweep rows additionally carry the per-candidate run — and
+                // their evaluations use the before/after shape the real job
+                // writes for sweeps (screening rows use the flat shape).
+                ...(compareArgs.mode === 'sweep'
+                  ? {
+                      metricBefore: 0.3,
+                      metricAfter: index === 1 ? 0.9 : 0.4,
+                      optimizedPrompt: {
+                        systemPrompt: `Optimised for ${name}.`,
+                        userPrompt: 'User 2',
+                        variables: [],
+                        demos: [],
+                      },
+                      evaluations: [
+                        {
+                          inputs: { userPrompt: 'User 2' },
+                          expected: 'Response two',
+                          baselineResponse: 'wrong',
+                          baselineCorrect: false,
+                          baselineScore: 0.3,
+                          optimizedResponse: 'Response two',
+                          optimizedCorrect: true,
+                          optimizedScore: 1,
+                        },
+                      ],
+                    }
+                  : {
+                      evaluations: [
+                        { inputs: { userPrompt: 'User 2' }, expected: 'Response two', response: 'Response two', correct: true, score: 1 },
+                      ],
+                    }),
+                error: null,
+              })),
+              usage: {
+                target: { calls: 2 * names.length, promptTokens: 440, outputTokens: 60, runTime: 5.0 },
+                judge: { calls: 0, promptTokens: 0, outputTokens: 0, runTime: 0 },
+              },
+              error: null,
+            });
+          } else {
+            optimizationTracker.push(successEntry);
+          }
+        }
+        return json(res, 200, { id: 'job-1', state: 'completed', logLocation: '/files/files/joblog-1', results: computeResults });
+      }
+      if (p === '/compute/sessions/cs-1/jobs/cj-1/log/content') {
+        // Live only while the job runs; the session is deleted afterwards, so
+        // the app must fall back to the logLocation file. Plain-text CRLF
+        // shape as returned by a real compute server (source echo + NOTE per
+        // milestone, growing as the job progresses).
+        if (jobPolls >= 4) return json(res, 404, { message: 'session not found' });
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        const liveLines = [
+          '663  %put NOTE: Python-Subprocess - Loading the experiment tracker dataset;',
+          'NOTE: Python-Subprocess - Loading the experiment tracker dataset',
+          '664  %put NOTE: Python-Subprocess - Dataset loaded (1 examples);',
+          'NOTE: Python-Subprocess - Dataset loaded (1 examples)',
+          '666  %put NOTE: Python-Subprocess - Scoring the baseline prompt;',
+          'NOTE: Python-Subprocess - Scoring the baseline prompt',
+        ];
+        return res.end(liveLines.slice(0, Math.min(liveLines.length, jobPolls * 2 + 2)).join('\r\n'));
+      }
+      if (p === '/jobExecution/jobs/job-fail' && req.method === 'GET') {
+        failJobPolls += 1;
+        if (failJobPolls < 2) return json(res, 200, { id: 'job-fail', state: 'running' });
+        // The failed run's tracker entry appears exactly once, like the real job writes it.
+        if (!optimizationTracker.some((entry) => entry.jobId === 'job-fail')) {
+          optimizationTracker.push({
+            optimizationId: optimizationTracker.length + 1,
+            startedAt: '2026-07-23T10:00:00Z',
+            finishedAt: '2026-07-23T10:00:30Z',
+            status: 'failed',
+            jobId: 'job-fail',
+            targetModel: 'demo_llm',
+            datasetSource: 'tracker',
+            sampleCount: 0,
+            optimizer: 'bootstrap',
+            metric: 'exact',
+            metricBefore: null,
+            metricAfter: null,
+            optimizedPrompt: null,
+            producedPromptModelId: null,
+            error: DSPY_MISSING_ERROR,
+          });
+        }
         return json(res, 200, {
+          id: 'job-fail',
+          state: 'failed',
+          logLocation: '/files/files/joblog-fail',
+          error: { message: 'The job request failed.' },
+        });
+      }
+      if (p === '/files/files/joblog-fail/content') {
+        return json(res, 200, {
+          version: 2,
+          name: 'items',
+          accept: 'application/vnd.sas.compute.log.line',
           items: [
-            { id: 'c-trk', name: 'Prompt-Experiment-Tracker.json', fileUri: '/files/files/trk-1' },
-            { id: 'c-req', name: 'requirements.json', fileUri: '/files/files/req-1' },
+            { version: 1, type: 'source', line: '597  %put NOTE: Python-Subprocess - Optimization failed: ' + DSPY_MISSING_ERROR + ';' },
+            { version: 1, type: 'note', line: 'NOTE: Python-Subprocess - Optimization failed: ' + DSPY_MISSING_ERROR },
+            { version: 1, type: 'error', line: 'ERROR: Prompt optimization failed: ' + DSPY_MISSING_ERROR },
           ],
         });
       }
+      if (p === '/files/files/joblog-1/content') {
+        // Real shape (verified live): a vnd.sas.compute.log.line collection —
+        // one JSON document with items[].line, each milestone preceded by its
+        // `%put` source-echo line, which the app must NOT show twice.
+        return json(res, 200, {
+          version: 2,
+          name: 'items',
+          accept: 'application/vnd.sas.compute.log.line',
+          items: [
+            { version: 1, type: 'note', line: 'NOTE: PROC PYTHON started.' },
+            { version: 1, type: 'source', line: '597  %put NOTE: Python-Subprocess - Dataset loaded (1 examples);' },
+            { version: 1, type: 'note', line: 'NOTE: Python-Subprocess - Dataset loaded (1 examples)' },
+            { version: 1, type: 'source', line: '601  %put NOTE: Python-Subprocess - Baseline metric: 0.500;' },
+            { version: 1, type: 'note', line: 'NOTE: Python-Subprocess - Baseline metric: 0.500' },
+            { version: 1, type: 'source', line: '607  %put NOTE: Python-Subprocess - Done - metric 0.500 -> 0.833, run recorded on the prompt;' },
+            { version: 1, type: 'note', line: 'NOTE: Python-Subprocess - Done - metric 0.500 -> 0.833, run recorded on the prompt' },
+            { version: 1, type: 'note', line: 'NOTE: PROC PYTHON ended.' },
+          ],
+        });
+      }
+      if (p === '/files/files/opttrk-1/content') return json(res, 200, optimizationTracker);
       if (/^\/modelRepository\/models\/(model-free|model-err)\/contents$/.test(p) && req.method === 'GET') {
         return json(res, 200, { items: [] });
       }
@@ -245,11 +596,25 @@ http
       if (/^\/modelRepository\/models\/[^/]+$/.test(p) && req.method === 'PUT') {
         return json(res, 200, {});
       }
+      if (p === '/modelRepository/models/model-used/contents/c-opttrk' && req.method === 'DELETE') {
+        optTrackerDeleted = true;
+        res.writeHead(204);
+        return res.end();
+      }
       if (req.method === 'DELETE') { res.writeHead(204); return res.end(); }
       if (/^\/modelRepository\/models\/[^/]+\/modelVersions$/.test(p) && req.method === 'POST') {
         return json(res, 200, { id: 'v2' });
       }
       if (/^\/modelRepository\/models\/[^/]+\/contents$/.test(p) && req.method === 'POST') {
+        // A re-uploaded optimization tracker (run deletion) replaces the state.
+        if (raw.includes('filename="Prompt-Optimization-Tracker.json"')) {
+          const replacement = multipartJson(raw);
+          if (Array.isArray(replacement)) {
+            optimizationTracker.length = 0;
+            optimizationTracker.push(...replacement);
+            optTrackerDeleted = false;
+          }
+        }
         return json(res, 201, { id: 'c-new' });
       }
       json(res, 404, { message: 'not mocked: ' + req.method + ' ' + p });

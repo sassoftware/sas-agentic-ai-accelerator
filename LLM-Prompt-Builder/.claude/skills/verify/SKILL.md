@@ -19,6 +19,9 @@ server that also implements the handful of Viya endpoints the app calls.
    `POST /__reset` clears):
    `node mock-server.js <abs-path-to>/LLM-Prompt-Builder/dist/index.html`
    (serves on http://localhost:4173 — see `mock-server.js` next to this file).
+   The mock is CommonJS but `LLM-Prompt-Builder/package.json` declares
+   `"type": "module"`, so running it in place fails — copy it to a scratch
+   directory as `mock-server.cjs` first.
 3. Drive with Playwright using the system Edge (no browser download needed):
    `npm i playwright` in a scratch dir, then
    `chromium.launch({ channel: 'msedge', headless: true })`.
@@ -42,6 +45,13 @@ server that also implements the handful of Viya endpoints the app calls.
 - `POST /relationships/relationships`, `GET /decisions/flows/{id}`
 - Save flow: `POST .../modelVersions` (200 JSON), `DELETE .../contents/{id}`
   (204), `POST .../contents?...` (201 JSON, multipart body)
+- Optimize flow (enable with URL params `enableOptimization=true&computeContext=...`
+  `&optimizeJobProgram=/Public/Jobs/Optimize-Prompt-DSPy&minOptimizeSamples=1`):
+  `GET /folders/folders/@item?path=...` → job-definition URI,
+  `POST /jobExecution/jobs` + `GET /jobExecution/jobs/{id}` (the mock job
+  completes on the second poll), the job log at `/files/files/joblog-1/content`
+  with `NOTE: Python-Subprocess - ...` milestone lines, and — after completion —
+  a `Prompt-Optimization-Tracker.json` entry on the source model
 
 ## Gotchas
 
@@ -56,3 +66,7 @@ server that also implements the handful of Viya endpoints the app calls.
   `document.activeElement` to be the modal before pressing it.
 - The run-header system prompt element id contains a pre-existing typo:
   `...-run-systenPrompt`.
+- Run each verify script against a FRESHLY started mock instance: the optimize
+  flow mutates mock state (job polls, the optimization tracker appearing in
+  the model contents) that can break other suites run against the same
+  instance.

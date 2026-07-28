@@ -41,6 +41,32 @@ export interface PromptBuilderConfig {
   modelCardReportURI?: string;
   /** Map of API-key name (as referenced by an LLM's options.json) to key value. */
   API_KEYS?: Record<string, string>;
+  /**
+   * Master toggle for DSPy prompt optimization ('true' enables it). When off
+   * (the default) the Optimize section is hidden and none of the optimize
+   * settings below are used.
+   */
+  enableOptimization?: string;
+  /**
+   * SAS Compute context the optimization job runs in, passed to Job Execution
+   * as `_contextName`. Its Python environment must have `dspy` installed (see
+   * the "Enabling Prompt Optimization" administration guide).
+   */
+  computeContext?: string;
+  /**
+   * SAS Content path of the deployed optimize Job Definition (the `_program`
+   * the Builder launches), e.g. `/Public/Jobs/Optimize-Prompt-DSPy`.
+   */
+  optimizeJobProgram?: string;
+  /** Minimum dataset rows before an optimization run is allowed (default 30). */
+  minOptimizeSamples?: string;
+  /**
+   * Governed SAS library + table holding provider API keys (name → value) that
+   * the optimization job reads. Only the names travel in the job request —
+   * never the keys themselves.
+   */
+  optimizeKeyLibrary?: string;
+  optimizeKeyTable?: string;
   [key: string]: unknown;
 }
 
