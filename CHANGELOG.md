@@ -27,11 +27,11 @@ The `create-api-key-table.sas` helper and the VA data-role assignment are gone; 
 
 - The Prompt Builder's assigned-data API-key table (DDC data role), the `optimizeKeyLibrary`/`optimizeKeyTable` Options, the job's governed key-table parameters and WORK-file key export, and the `create-api-key-table.sas` helper
 
-## [1.9.0] - 2026-07-23
+## [1.9.0] - 2026-07-27
 
 The Prompt Builder learns to **optimize prompts with DSPy** (Phase 3a of the judging roadmap — the thin end-to-end slice). An opt-in **Optimize** section saves the prompt and launches a SAS Job Execution job that runs DSPy inside `proc python` in a configurable compute context: the runs marked as Best Response become the training examples, models are called through the governed SCR endpoints, the chosen optimizer — bootstrap few-shot, MIPROv2 which also rewrites the instruction text, or GEPA which evolves the instruction from natural-language feedback — maximises the chosen metric (exact match, token-overlap F1 or an LLM judge), and the result comes back **on the prompt itself** for the user to review, judge and accept — completing the loop *judge → optimise → judge again*. Nothing is ever applied automatically.
 
-To pick up the change, re-upload the prebuilt `LLM-Prompt-Builder/dist/index.html` to your SAS Job Execution definition. The feature itself is **off by default** — enabling it additionally requires importing the new optimize job and preparing a compute context, per the new Administration Guide page.
+To pick up the change, re-upload the prebuilt `LLM-Prompt-Builder/dist/index.html` to your SAS Job Execution definition — or import the re-exported **transfer package** (`SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json`), which now bundles the rebuilt UI, the **Optimize-Prompt-DSPy job definition**, the VA report and the API-key table script (`SAS-Viya-Integrations/Other/create-api-key-table.sas`), with the environment host replaced by the `https://your-sas-viya-host` placeholder for the documented import-mapping substitution. The feature itself is **off by default** — enabling it additionally requires preparing a compute context and setting the Options, per the new Administration Guide page.
 
 The whole path was **validated end-to-end against a live SAS Viya environment** (dspy 3.2.1): the deployed job definition was launched through the Job Execution REST API with the Builder's exact arguments, optimised a 10-example prompt through the SCR `qwen_25_05b` container with `BootstrapFewShot`, and wrote back the optimised prompt-test (tags + provenance), the optimization-tracker entry (jobId matching the launched job) and the dataset snapshot. Corrections from that live run are included: the `SCRLM` adapter returns its `usage` as a plain dict (dspy calls `dict(response.usage)`); the Builder resolves the optimize job by **folder membership** because a live `/folders/folders/@item` returns 404 for jobDefinition members; and the Builder parses the job log's real shape — a `vnd.sas.compute.log.line` JSON collection — and filters the `%put` source-echo lines so each milestone shows once. (Also fixed: multi-line `*` comments in the job program containing semicolons, which put the SAS session into syntax-check mode.)
 
@@ -61,6 +61,21 @@ An in-Builder click-through against a live environment added three more fixes: t
 
 - The **project, prompt-test, caslib and table pickers are type-to-filter comboboxes**: typing in the picker narrows the OPEN dropdown live (case-insensitive substring), Enter picks the highlighted or only remaining match, and leaving the field without picking keeps the previous selection - so filtering and choosing are one visible control instead of a separate filter box beside a closed dropdown. The underlying selects stay in the DOM as the source of truth (programmatic value changes and repopulation sync back into the combobox), and the project/prompt "created/modified by" filters are unchanged
 - The Prompt Builder launches and monitors the job through the **Job Execution REST API** (`/jobExecution/jobs` with the definition resolved from its Content path) rather than the JES web-app form endpoint, reusing the app's CSRF-aware HTTP client; state is polled and the `NOTE: Python-Subprocess - …` log lines are surfaced as the live status
+## [1.8.3] - 2026-07-26
+
+The llm-vs-embedding **kind** of a definition is now unmistakable in `mdb add` - and wrong classifications fail validation instead of surfacing at smoke-test time.
+
+### Fixed
+
+- **Live catalogs no longer lose the kind.** OpenAI's live `/v1/models` returns ids only; the static-snapshot enrichment now carries over `kind` and `embedding_length`, so `mdb add openai text-embedding-3-small` builds an embedding definition online exactly as it does offline (it used to silently build an LLM definition end to end - chat template, LLM-Definitions folder, LLM project)
+- **Embedding-only providers force their kind.** A manual model reference on `voyage` produced an inconsistent hybrid (embedding score script filed as an LLM definition); adapters whose only template is an embedding template now always set `kind: embedding`
+
+### Added
+
+- **The kind is stated everywhere it matters:** a banner right after the wizard resolves the model ("Adding an EMBEDDING model definition -> Embedding-Definitions/<id>/"), a `definition / kind` row first in the review table, and the kind in the success line
+- **`--kind llm|embedding` works for every adapter that supports embeddings** (previously only ollama/vllm; it was warn-ignored elsewhere), and a manual model reference on a both-kinds provider asks for the kind interactively (`--yes` keeps the previous default)
+- **V012 (error): kind/template mismatch.** Embedding templates are named `emb_*`; a chat template on `kind: embedding` (or vice versa) now fails `mdb validate` with a pointer to `--kind`
+- **`mdb providers` gains a kinds column** (llm / embedding / llm + embedding), and the README documents how the kind is decided and overridden
 
 ## [1.8.2] - 2026-07-24
 
