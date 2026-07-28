@@ -67,8 +67,12 @@ for m in json.load(sys.stdin).get('items', []):
       done
   # Raw uploads are named by the Content-Disposition header; without it the
   # files service mints a FileResource<timestamp> name (verified live).
+  # SAS Studio only opens .step files whose content type is the data-flow
+  # step media type (an octet-stream .step renders as an empty editor).
+  local content_type='application/octet-stream'
+  case "$name" in *.step) content_type='application/vnd.sas.data.flow.step; charset=utf-8' ;; esac
   curl -fsS "${CURL_OPTS[@]}" -X POST -H "Authorization: Bearer $TOKEN" \
-    -H 'Content-Type: application/octet-stream' \
+    -H "Content-Type: $content_type" \
     -H "Content-Disposition: attachment; filename=\"$name\"" \
     --data-binary "@$file" \
     "$ENDPOINT/files/files?parentFolderUri=/folders/folders/$fid&filename=$name" > /dev/null

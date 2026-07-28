@@ -96,8 +96,15 @@ function Publish-File([string]$folderId, [System.IO.FileInfo]$file) {
     $uploadHeaders = $headers + @{
         'Content-Disposition' = "attachment; filename=""$($file.Name)"""
     }
+    # SAS Studio only opens .step files whose content type is the data-flow
+    # step media type (an octet-stream .step renders as an empty editor).
+    $contentType = if ($file.Extension -eq '.step') {
+        'application/vnd.sas.data.flow.step; charset=utf-8'
+    } else {
+        'application/octet-stream'
+    }
     Invoke-RestMethod -Method Post -Headers $uploadHeaders -Uri $uri `
-        -ContentType 'application/octet-stream' -InFile $file.FullName | Out-Null
+        -ContentType $contentType -InFile $file.FullName | Out-Null
 }
 
 # ---- deploy ----------------------------------------------------------------
