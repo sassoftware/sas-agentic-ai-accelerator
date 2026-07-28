@@ -83,6 +83,9 @@
       minSamples       - minimum qualifying runs required (default 30)
       keyLibrary       - SAS library of the governed API-key table (optional)
       keyTable         - table in that library: columns name, value (optional)
+      keyDomain        - SAS Viya credential domain to resolve provider keys
+                         from, under the launching user's identity (default
+                         agentic-ai-keys; 'none' disables; table entries win)
 
     Progress is emitted with SAS.logMessage() and lands in the job log as
     "NOTE: Python-Subprocess - ..." lines; the Prompt Builder polls the log and
@@ -110,7 +113,9 @@
 %_opt_default(minSamples, 30);
 %_opt_default(keyLibrary, );
 %_opt_default(keyTable, );
-%_opt_default(keyDomain, );
+/* Matches the create-credential-domain.sas / Prompt Builder default; a
+   missing domain resolves nothing, harmlessly. 'none' disables the lookup. */
+%_opt_default(keyDomain, agentic-ai-keys);
 %_opt_default(casServer, cas-shared-default);
 %_opt_default(casLibrary, );
 %_opt_default(casTable, );
@@ -394,6 +399,8 @@ class KeyResolver:
             return self.domain_map
         self.domain_map = {}
         domain = P.get("keyDomain", "")
+        if domain.lower() == "none":
+            domain = ""
         if domain:
             try:
                 response = requests.get(
