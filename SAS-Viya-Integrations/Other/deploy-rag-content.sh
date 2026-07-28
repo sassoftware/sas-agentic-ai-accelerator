@@ -75,8 +75,10 @@ for m in json.load(sys.stdin).get('items', []):
 }
 
 uploaded=0
-deploy_tree() {  # deploy_tree <local-dir> <remote-subdir> <extension>
-  local local_dir="$1" remote_subdir="$2" ext="$3"
+deploy_tree() {  # deploy_tree <local-dir> <remote-subdir> <extension> [maxdepth]
+  local local_dir="$1" remote_subdir="$2" ext="$3" depth="${4:-}"
+  local depth_args=()
+  [ -n "$depth" ] && depth_args=(-maxdepth "$depth")
   [ -d "$local_dir" ] || { echo "missing: $local_dir" >&2; return; }
   while IFS= read -r -d '' file; do
     local rel="${file#"$local_dir"/}"
@@ -86,9 +88,11 @@ deploy_tree() {  # deploy_tree <local-dir> <remote-subdir> <extension>
     publish_file "$(folder_id "$remote_path")" "$file" "${file##*/}"
     uploaded=$((uploaded + 1))
     echo "  $remote_path/${file##*/}"
-  done < <(find "$local_dir" -type f -name "$ext" -not -path '*__pycache__*' -print0)
+  done < <(find "$local_dir" "${depth_args[@]}" -type f -name "$ext" -not -path '*__pycache__*' -print0)
 }
 
 deploy_tree "$SOURCE_ROOT/SAS-Viya-Integrations/RAG/rag_core" rag_core '*.py'
 deploy_tree "$SOURCE_ROOT/SAS-Viya-Integrations/RAG-Ingestion" jobs '*.sas'
+# retrieval model template (manifested per RAG Setup) - top level only
+deploy_tree "$SOURCE_ROOT/SAS-Viya-Integrations/RAG" models '*.py' 1
 echo "Deployed $uploaded files to $CONTENT_ROOT on $ENDPOINT."

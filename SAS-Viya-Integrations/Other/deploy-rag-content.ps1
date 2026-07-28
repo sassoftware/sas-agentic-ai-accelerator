@@ -49,7 +49,10 @@ $headers = @{ Authorization = "Bearer $token" }
 $sourceRoot = (Resolve-Path $SourceRoot).Path
 $bundle = @(
     @{ Local = Join-Path $sourceRoot 'SAS-Viya-Integrations\RAG\rag_core'; Remote = 'rag_core'; Filter = '*.py' },
-    @{ Local = Join-Path $sourceRoot 'SAS-Viya-Integrations\RAG-Ingestion'; Remote = 'jobs'; Filter = '*.sas' }
+    @{ Local = Join-Path $sourceRoot 'SAS-Viya-Integrations\RAG-Ingestion'; Remote = 'jobs'; Filter = '*.sas' },
+    # retrieval model template (manifested per RAG Setup) - top level only,
+    # rag_core/ and tests/ must not be re-included here
+    @{ Local = Join-Path $sourceRoot 'SAS-Viya-Integrations\RAG'; Remote = 'models'; Filter = '*.py'; NoRecurse = $true }
 )
 
 # ---- folder + file helpers -------------------------------------------------
@@ -98,7 +101,7 @@ function Publish-File([string]$folderId, [System.IO.FileInfo]$file) {
 $uploaded = 0
 foreach ($part in $bundle) {
     if (-not (Test-Path $part.Local)) { Write-Warning "missing: $($part.Local)"; continue }
-    $files = Get-ChildItem $part.Local -Recurse -File -Filter $part.Filter |
+    $files = Get-ChildItem $part.Local -Recurse:(-not $part.NoRecurse) -File -Filter $part.Filter |
         Where-Object { $_.FullName -notmatch '__pycache__' }
     foreach ($file in $files) {
         $relativeDir = [System.IO.Path]::GetDirectoryName(
