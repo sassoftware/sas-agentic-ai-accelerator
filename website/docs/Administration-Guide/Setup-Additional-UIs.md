@@ -12,7 +12,7 @@ The Prompt Builder is shipped as a **standalone application** in the [`LLM-Promp
 
 ## Shortcut: import the transfer package (optional)
 
-Rather than building the app and wiring it up by hand (steps 1–2), you can import the [`SAS-Agentic-AI-Accelerator-Prompt-Builder.json`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json) transfer package. It bundles the whole UI ready to run — the **Prompt Builder** folder, the **SAS Job Execution** definition that serves the single-file app, the `create-api-key-table.sas` helper, and the **Visual Analytics report** that hosts the object. Import it and you can skip straight to [step 3](#3-create-the-api-key-data-source).
+Rather than building the app and wiring it up by hand (steps 1–2), you can import the [`SAS-Agentic-AI-Accelerator-Prompt-Builder.json`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json) transfer package. It bundles the whole UI ready to run — the **Prompt Builder** folder, the **SAS Job Execution** definition that serves the single-file app, and the **Visual Analytics report** that hosts the object. Import it and you can skip straight to [step 3](#3-provide-the-api-keys-via-the-credential-domain).
 
 The package ships the report's Prompt Builder object pointing at a **placeholder host, `https://your-sas-viya-host`** — point it at your own environment before or after import.
 
@@ -73,7 +73,7 @@ sas-viya transfer packages import --id <package-id> --mapping mapping.json
 (`sas-viya transfer get-mapping --id <package-id>` regenerates the file for an already-uploaded package.) If you do neither, the report still imports; you then correct the object's base URL in [step 5](#5-add-the-object-to-a-visual-analytics-report).
 :::
 
-After import, continue at [step 3](#3-create-the-api-key-data-source) — the Job Execution definition and report already exist under **SAS Content > SAS Agentic AI Accelerator > Prompt Builder**.
+After import, continue at [step 3](#3-provide-the-api-keys-via-the-credential-domain) — the Job Execution definition and report already exist under **SAS Content > SAS Agentic AI Accelerator > Prompt Builder**.
 
 ## 1. Get the single-file app
 

@@ -2,6 +2,31 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [2.0.0] - Unreleased
+
+Provider secrets move to **SAS Viya credential domains** — centrally administered, per-user or per-group, encrypted at rest, and audited. One domain (default `agentic-ai-keys`) holds every key the accelerator needs in a named secrets map: `OpenAI`, `Anthropic`, … for the LLM providers, and `{backend}_user`/`{backend}_password` for RAG vector stores. A **user credential overrides a group credential**, so who can call which provider becomes an identity decision instead of an application setting — the Prompt Builder shows each user exactly the models they hold a key for and disables the rest with a note naming the missing entry.
+
+### ⚠️ Breaking change — migrate before upgrading
+
+**The key-table pattern is removed.** The Prompt Builder no longer reads API keys from the report's assigned data table, and the optimize job no longer accepts `keyLibrary`/`keyTable` — deployments upgrading to this release must create the credential domain first (one script run) or every keyed model will show as unavailable:
+
+1. Sign in with the SAS Viya CLI (`sas-viya auth login`).
+2. Put your existing keys in a `NAME=VALUE` file (the same names your `LLM_API_KEYS` table used).
+3. Run `SAS-Viya-Integrations/Other/create-credential-domain.ps1` (or `.sh`) once per group/user to equip — see the new **Managing Credentials** administration guide.
+
+The `create-api-key-table.sas` helper and the VA data-role assignment are gone; the report needs no assigned data at all.
+
+### Added
+
+- **Credential-domain key resolution** across the Prompt Builder (one secrets-map lookup per session under the signed-in user; a *Credential domain* Option defaulting to `agentic-ai-keys`, `none` for key-less-model deployments) and the optimize job (`keyDomain` parameter, same default — keys resolve server-side under the identity of the user who launched the run and never touch WORK files or logs)
+- **Per-user model availability**: models whose provider entry is missing for the signed-in user are visibly disabled in the model selector — with a note naming the entry and domain — and excluded from the judge, council, optimize-target and compare-targets selectors
+- **`create-credential-domain.ps1`/`.sh` admin scripts**: author the domain and an identity's full secrets map through the sas-viya CLI session (the CLI's own `credentials` plugin remains the list/inspect/delete tool); the credential is fully replaced on each run
+- **A new Administration Guide page, "Managing Credentials"**: the naming convention, the CLI workflow, group-vs-user precedence, and where domains apply (browser + compute sessions) versus where deploy-time environment variables take over (SCR/MAS containers, which have no SAS Viya session)
+
+### Removed
+
+- The Prompt Builder's assigned-data API-key table (DDC data role), the `optimizeKeyLibrary`/`optimizeKeyTable` Options, the job's governed key-table parameters and WORK-file key export, and the `create-api-key-table.sas` helper
+
 ## [1.9.0] - 2026-07-23
 
 The Prompt Builder learns to **optimize prompts with DSPy** (Phase 3a of the judging roadmap — the thin end-to-end slice). An opt-in **Optimize** section saves the prompt and launches a SAS Job Execution job that runs DSPy inside `proc python` in a configurable compute context: the runs marked as Best Response become the training examples, models are called through the governed SCR endpoints, the chosen optimizer — bootstrap few-shot, MIPROv2 which also rewrites the instruction text, or GEPA which evolves the instruction from natural-language feedback — maximises the chosen metric (exact match, token-overlap F1 or an LLM judge), and the result comes back **on the prompt itself** for the user to review, judge and accept — completing the loop *judge → optimise → judge again*. Nothing is ever applied automatically.
