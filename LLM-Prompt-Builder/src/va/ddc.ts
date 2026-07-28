@@ -8,19 +8,17 @@
  * (github.com/sassoftware/sas-visualanalytics-geowebmap): a single `message`
  * listener handles the whole DDC lifecycle.
  *
- * VA posts a message to the iframe that carries a `resultName` (and, once data
- * is assigned, `columns` + `data`). We use that message to do two things:
+ * VA posts a message to the iframe that carries a `resultName`. We use that
+ * message to render the Properties panel: post the options group back to VA
+ * wrapped in the envelope `{ resultName, optionsConfig }`. `resultName` is
+ * ONLY available from an inbound VA message, so the options MUST be posted in
+ * response to one — not on load. With `urlOption: true`, VA mirrors the
+ * author's values into the iframe URL (keyed by each field's `name`), which
+ * `config.ts` reads back as query parameters on the next (re)load.
  *
- *  1. Properties panel — post the options group back to VA wrapped in the
- *     envelope `{ resultName, optionsConfig }`. VA renders it as the object's
- *     Properties panel. `resultName` is ONLY available from an inbound VA
- *     message, so the options MUST be posted in response to one — not on load.
- *     With `urlOption: true`, VA mirrors the author's values into the iframe URL
- *     (keyed by each field's `name`), which `config.ts` reads back as query
- *     parameters on the next (re)load.
- *
- *  2. API key(s) — parse them from the assigned data table (>= 2 columns:
- *     column 0 = key name, column 1 = key value), keeping secrets out of the URL.
+ * Provider API keys are NOT part of this contract: they resolve from the
+ * configured SAS Viya credential domain under the signed-in user (see
+ * src/api/credentials-api.ts and the Managing Credentials guide).
  *
  * See also the "Data-Driven Content (DDC) - Option Groups" reference and
  * https://davidweik.substack.com/p/creating-data-driven-content-in-sas-visual-analytics
@@ -46,13 +44,10 @@ interface RuntimeConfig {
 
 /**
  * Wire up the VA DDC integration: one `message` listener that renders the
- * Properties panel and extracts the API key(s). No-op when the page is not
- * embedded in a parent frame (e.g. standalone dev / preview).
+ * Properties panel. No-op when the page is not embedded in a parent frame
+ * (e.g. standalone dev / preview).
  */
-export function initVaIntegration(
-  config: RuntimeConfig,
-  onKeys: (keys: Record<string, string>) => void
-): void {
+export function initVaIntegration(config: RuntimeConfig): void {
   const targets = getPostTargets();
   if (targets.length === 0) return;
 
@@ -84,21 +79,11 @@ export function initVaIntegration(
       return;
     }
 
-    // (1) Render/refresh the Properties panel once VA gives us a resultName.
+    // Render/refresh the Properties panel once VA gives us a resultName.
     const resultName = typeof msg.resultName === 'string' ? msg.resultName : '';
     if (resultName && !postedFor.has(resultName)) {
       postedFor.add(resultName);
       postOptions(resultName);
-    }
-
-    // (2) Extract API key(s) from an assigned data table.
-    if (
-      Array.isArray(msg.columns) &&
-      Array.isArray(msg.data) &&
-      msg.columns.length >= 2
-    ) {
-      const keys = parseKeyTable(msg.data as unknown[][]);
-      if (Object.keys(keys).length > 0) onKeys(keys);
     }
   }
 
@@ -218,18 +203,6 @@ function buildOptionsConfig(config: RuntimeConfig): Record<string, unknown> {
               pb.minOptimizeSamples ?? '30',
               'Minimum dataset rows before an optimization run is allowed. Default 30; the Optimize panel warns below 50.'
             ),
-            textField(
-              'optimizeKeyLibrary',
-              'API-key library',
-              pb.optimizeKeyLibrary,
-              'SAS library holding the governed provider API-key table the job reads. Only the library and table names are sent to the job — never the keys.'
-            ),
-            textField(
-              'optimizeKeyTable',
-              'API-key table',
-              pb.optimizeKeyTable,
-              'Table in the API-key library mapping provider name to key value (same names the LLM options.json files reference).'
-            ),
           ]
         : []),
     ],
@@ -244,21 +217,4 @@ function textField(
   tooltip: string
 ): OptionField {
   return { name, label, type: 'String', value: value ?? '', tooltip };
-}
-
-/**
- * Parse an API-key table: column 0 is the key NAME (matching the `API_KEY.default`
- * value referenced by an LLM's `options.json`, e.g. "Anthropic"); column 1 is the
- * key VALUE. One provider per row.
- */
-function parseKeyTable(rows: unknown[][]): Record<string, string> {
-  const keys: Record<string, string> = {};
-  for (const row of rows) {
-    if (!Array.isArray(row) || row.length < 2) continue;
-    const name = row[0];
-    const value = row[1];
-    if (name == null || value == null || String(name).trim() === '') continue;
-    keys[String(name)] = String(value);
-  }
-  return keys;
 }

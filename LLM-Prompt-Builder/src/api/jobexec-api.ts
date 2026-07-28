@@ -14,8 +14,8 @@
  *   4. read the job log and surface the `NOTE: Python-Subprocess - ...` lines
  *      the job emits via SAS.logMessage() as live progress.
  *
- * Secrets never travel in the request: the job receives only the names of the
- * governed library/table it reads provider API keys from.
+ * Secrets never travel in the request: the job resolves provider keys
+ * server-side from the credential domain under the launching user's identity.
  */
 
 import { viyaGet, viyaFetch, viyaPost } from './http-client';

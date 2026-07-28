@@ -53,15 +53,11 @@ The Prompt Builder launches the job through the Job Execution REST API with `_co
 
 Next to the job program ships [`Create-Optimization-Dataset.sas`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/Prompt-Optimization/Create-Optimization-Dataset.sas) — a **template, not a job**: prompt engineers run it (e.g. in SAS Studio) to build a governed **CAS dataset table** (one column per prompt variable plus a `response` column) they can pick as the dataset source in the Optimize panel instead of the prompt's own experiments. The panel validates the table's columns and row count before launching; the compute context from step 1 must be able to reach the caslib.
 
-## 3. Create the governed API-key table
+## 3. Provide the provider keys via the credential domain
 
-Hosted models (OpenAI, Anthropic, Gemini, …) need their provider API key at call time. The browser gets its keys from the report's assigned data; the **job** reads them from a governed SAS table instead:
+Hosted models (OpenAI, Anthropic, Gemini, …) need their provider API key at call time. Both the browser and the **job** resolve them from the **credential domain** (default `agentic-ai-keys`) under the identity of the user who launched the run — set it up once as described in [Managing Credentials](./Managing-Credentials.md). Who holds a credential in the domain is the access control for who can spend on optimization; the keys stay out of every request, log, tracker and produced prompt.
 
-- Create a table with two character columns, `name` and `value` — one row per provider. The `name` must match what the LLM's `options.json` references via `API_KEY.default` (for example `OpenAI`, `Anthropic`), exactly like the [API-key table of the Prompt Builder itself](./Setup-Additional-UIs.md).
-- Put it in a **SAS library that is pre-assigned in the compute context** from step 1 (for example via the context's autoexec), and restrict read access to the users who may run optimizations — access to this table is the access control for who can spend on optimization.
-- The Prompt Builder passes only the **library and table names** to the job; the job reads the keys server-side and keeps them out of every log, tracker and produced prompt.
-
-Self-hosted models without an `API_KEY` option need no key table.
+Self-hosted models without an `API_KEY` option need no credential.
 
 ## 4. Configure the Prompt Builder
 
@@ -73,7 +69,7 @@ In the Visual Analytics report, select the Prompt Builder object and open its **
 | **Optimization compute context** | The compute context from step 1 |
 | **Optimize job path** | The job's Content path from step 2, e.g. `/Public/Jobs/Optimize-Prompt-DSPy` |
 | **Minimum optimization samples** | Minimum Best-Response runs required before a run is allowed. Default `30`; the panel warns below 50 |
-| **API-key library** / **API-key table** | The governed library and table from step 3 (leave blank when only key-less models are used) |
+| **Credential domain** | The domain from step 3. Defaults to `agentic-ai-keys`; enter `none` when only key-less models are used |
 
 The same values can be supplied as URL parameters (`enableOptimization=true&computeContext=...&optimizeJobProgram=...`) when the Builder is used outside Visual Analytics.
 
@@ -92,7 +88,7 @@ Everything stays **on the prompt-test itself**, next to its `Prompt-Experiment-T
 | Job fails immediately: *"lacks the dspy package"* | The compute context's Python is missing the requirements — see step 1. |
 | Job fails immediately: *"dspy X is too old"* | The context's dspy predates 3.2.1, which the job's adapter is validated against — upgrade it (`pip install -U "dspy>=3.2.1"`). |
 | Job fails: *"MIPROv2 … needs the optuna package"* | dspy's MIPROv2 requires the optional `optuna` package — install it in the context's Python (see step 1) or use the bootstrap optimizer. |
-| Job fails: *"needs an API key for provider …"* | The governed key table has no row for that provider (or the Options don't name the table) — see step 3. |
+| Job fails: *"needs an API key for provider …"* | The credential domain has no entry for that provider for the launching user or their groups — see step 3 and [Managing Credentials](./Managing-Credentials.md). |
 | Launch blocked: *"The CAS table … was not found"* / *"lacks required columns"* | The dataset table isn't loaded/promoted in that caslib, or its columns don't match the prompt's variables + `response` — rebuild it with `Create-Optimization-Dataset.sas`. |
 | Optimize button disabled: *"not fully configured"* | `computeContext` or `optimizeJobProgram` is blank in the Options pane. |
 | Optimize button disabled: *"At least N runs …"* | The prompt has fewer Best-Response runs than the minimum — run and mark more experiments. |

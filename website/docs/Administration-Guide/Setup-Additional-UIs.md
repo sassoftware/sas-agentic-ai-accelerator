@@ -70,7 +70,7 @@ sas-viya transfer packages upload --file SAS-Agentic-AI-Accelerator-Prompt-Build
 sas-viya transfer packages import --id <package-id> --mapping mapping.json
 ```
 
-(The mapping file also lists the package's data-table connector, so the API-key CAS table can be remapped the same way. `sas-viya transfer get-mapping --id <package-id>` regenerates the file for an already-uploaded package.) If you do neither, the report still imports; you then correct the object's base URL in [step 5](#5-add-the-object-to-a-visual-analytics-report).
+(`sas-viya transfer get-mapping --id <package-id>` regenerates the file for an already-uploaded package.) If you do neither, the report still imports; you then correct the object's base URL in [step 5](#5-add-the-object-to-a-visual-analytics-report).
 :::
 
 After import, continue at [step 3](#3-create-the-api-key-data-source) — the Job Execution definition and report already exist under **SAS Content > SAS Agentic AI Accelerator > Prompt Builder**.
@@ -106,47 +106,12 @@ The single-file app is served to Visual Analytics through **SAS Job Execution**:
 SAS Job Execution serves HTML through a Go template engine that treats `{{ … }}` as directives. The build base64-encodes every inline `<script>` and decodes it at runtime so the minified bundle — which inevitably contains `{{`/`}}` — is not corrupted. This is automatic and requires no action.
 :::
 
-## 3. Create the API Key data source
+## 3. Provide the API keys via the credential domain
 
-The API keys used for the Prompt Builder are stored in a CAS table, this enables you to create one report with applied row-level-security (please add your own columns, the script below only provides the bare bones) and also enables easy key rotation by updating the table. Replace the key values with your API keys and also if you do not want store it in your CASUSER change the CAS Library.
+The Prompt Builder resolves provider API keys from a **SAS Viya credential domain** (default `agentic-ai-keys`) under the identity of the signed-in user — a user credential overrides a group credential, and models the user holds no key entry for are shown disabled with a note. Set the domain up once with the CLI-based scripts as described in [Managing Credentials](./Managing-Credentials.md); no data source, table, or report assignment is involved.
 
-```sas
-cas mySess;
-
-data work.LLM_API_KEYS;
-    length KeyName $ 64 KeyValue $ 512;
-    label KeyName  = "Key Name"
-          KeyValue = "API Key";
-    infile datalines dlm='|' truncover;
-    input KeyName $ KeyValue $;
-    datalines;
-Anthropic|REPLACE_WITH_YOUR_ANTHROPIC_API_KEY
-OpenAI|REPLACE_WITH_YOUR_OPENAI_API_KEY
-Google|REPLACE_WITH_YOUR_GOOGLE_API_KEY
-;
-run;
-
-proc casUtil inCASLib='casuser' outCASLib='casuser';
-    dropTable casData='LLM_API_KEYS' quiet;
-    load data=work.LLM_API_KEYS casOut='LLM_API_KEYS';
-    promote casData='LLM_API_KEYS' casOut='LLM_API_KEYS';
-    save casData='LLM_API_KEYS' casOut='LLM_API_KEYS' replace;
-quit;
-
-cas mySess terminate;
-```
-
-### API keys (assigned data)
-
-The API keys are the entries under `API_KEYS` in that same `llm-prompt-builder.json`. They are supplied through the object's **assigned data** — never the URL or Properties panel — so they never appear in the report definition or a shareable link. Assign a data source with **two columns**, one provider per row:
-
-| Column | Meaning |
-|---|---|
-| 1st | Key **name** — the `API_KEYS` entry name, which must match the `API_KEY.default` value referenced by an LLM's `options.json` (e.g. `Anthropic`, `OpenAI`, `Google`). |
-| 2nd | Key **value** — the actual API key. |
-
-:::warning Keep keys governed
-Keeping API keys in a governed CAS/data source (rather than the URL) means they are never persisted in the report definition or a shareable link. Restricting read access to that data source restricts who can run paid model calls.
+:::warning Keys stay governed
+Keys live encrypted in the Credentials service — never in the report definition, the URL, or a data table. Who holds a credential in the domain (directly or via group membership) is who can run paid model calls.
 :::
 
 ## 4. SAS Environment Manager configuration
@@ -188,8 +153,7 @@ kubectl get pods -n <your-namespace> -o name | grep -E 'pod/sas-job-execution|po
 If you imported the SAS-Agentic-AI-Accelerator-Prompt-Builder.json package then open up the SAS Visual Analytics report under SAS Content > SAS Agentic AI Accelerator > Prompt Builder > Prompt Builder and then continue.
 
 1. In a Visual Analytics report, add a **Data-Driven Content** object and in the **Options** pane under Web Content enter the URL from the previous step or if you imported it update the base URL to your SAS Viya server.
-2. **Assign the API-key data source** (see below) to the object's data role. If you moved the CAS table from CASUSER to another place you will have to replace the data source.
-3. Open the object's **Properties** panel and set the configuration values (see below).
+2. Open the object's **Properties** panel and set the configuration values (see below). No data assignment is needed — provider keys come from the credential domain (step 3).
 
 ### Configuration (Properties panel)
 
@@ -204,6 +168,7 @@ The core environment-specific values below are exactly those captured in your `l
 | Deployment type | `deploymentType` | `deploymentType` | `k8s` (default) or `aca` (Azure Container Apps / Instances). See [Container Deployment](./Container-Deployment.md). |
 | Default judge model | *(optional — not in the file)* | `judgeModel` | Optional. Name of an LLM in the LLM project used by default for the [LLM-as-a-Judge](../User-Guide/Prompt-Builder.md) comparison; prompt engineers can still override it in the app. Leave blank for no default. |
 | Model card report URI | *(optional — not in the file)* | `modelCardReportURI` | Optional. A SAS Visual Analytics report path (`/reports/reports/<uuid>`). When set, manifesting the best prompt embeds that report on its model card as the custom chart, hosted from the *SAS Viya host* above. Leave blank to omit. |
+| Credential domain | *(optional — not in the file)* | `credentialDomain` | Credential domain provider API keys resolve from (see step 3). Defaults to `agentic-ai-keys`; enter `none` when only key-less self-hosted models are used. |
 
 :::info
 Until the three required values (repository ID, LLM project ID, SCR endpoint) are supplied the object shows a **"Configuration required"** message and does not call SAS Viya, so it never fails against placeholder IDs. Every field can also be appended to the object's URL by hand using its **URL parameter** name above (for example `&judgeModel=...&modelCardReportURI=/reports/reports/<uuid>`), which is a reliable fallback if your Visual Analytics version does not render the options panel.

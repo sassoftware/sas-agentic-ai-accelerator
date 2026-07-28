@@ -38,25 +38,37 @@ Who resolves what:
 Connection *configuration* — vector-store host, port, database name — is not
 a secret and stays in the RAG setup, never in the credential.
 
-## Creating and updating: the admin script
+## Creating and updating: the CLI workflow
 
-Multi-entry credentials are authored with the shipped script
-[`SAS-Viya-Integrations/Other/create-credential-domain.sas`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/Other/create-credential-domain.sas):
+Multi-entry credentials are authored with the shipped scripts
+[`create-credential-domain.ps1`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/Other/create-credential-domain.ps1)
+(Windows) /
+[`create-credential-domain.sh`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/Other/create-credential-domain.sh)
+(Linux/macOS), which authenticate through your **sas-viya CLI session**:
 
-1. Open it in SAS Studio.
-2. Set the domain name, the identity (`user` or `group` + id), and fill the
-   `SECRETS` map. Remove entries you don't need; add any you do.
-3. Optionally set `migrateFromKeyTable = 1` to merge the rows of an existing
-   `LLM_API_KEYS` table (from `create-api-key-table.sas`) into the map —
-   moving off the table pattern is one run.
-4. Run it. The domain is created if needed and the identity's credential is
-   **fully replaced** with the map (list every entry the identity should
-   keep, not only new ones).
+1. Sign in once: `./sas-viya auth login`.
+2. Put the entries in a plain `NAME=VALUE` file (one per line, `#` comments):
 
-Creating the domain and any **group** credential requires SAS administrator
-rights; a user can (re)run the script for their **own** user credential in an
-existing domain. The secret values appear only inside the program you edit in
-Studio — never in the SAS log.
+   ```text
+   OpenAI=sk-...
+   Anthropic=sk-ant-...
+   pgvector_user=rag_ingest
+   pgvector_password=...
+   ```
+
+3. Run the script per identity you want to equip:
+
+   ```bash
+   ./create-credential-domain.ps1 -IdentityType group -IdentityId LLMConsumers -KeysFile keys.env
+   ./create-credential-domain.sh -t user -i myuser -k my-keys.env
+   ```
+
+The domain is created if needed and the identity's credential is **fully
+replaced** with the file's entries (list every entry the identity should keep,
+not only new ones). Delete the keys file afterwards. Creating the domain and
+any **group** credential requires SAS administrator rights; a user can (re)run
+the script for their **own** user credential in an existing domain. Secret
+values are never printed.
 
 ## Inspecting and deleting: CLI and Environment Manager
 
@@ -79,18 +91,15 @@ them.
 ## How the applications use the domain
 
 - The **Prompt Builder** Options pane gets a *Credential domain* setting,
-  **defaulting to `agentic-ai-keys`** — the same default the admin script
-  uses, so a deployment that runs the script needs no configuration at all.
-  The Builder fetches the signed-in user's secrets map once at load time and
+  **defaulting to `agentic-ai-keys`** — the same default the admin scripts
+  use, so a deployment that runs a script needs no configuration at all. The
+  Builder fetches the signed-in user's secrets map once at load time and
   disables models whose provider entry is missing (a note names the entry
-  and domain). If the domain does not exist, the lookup fails harmlessly and
-  the existing report-assigned-data key table keeps working unchanged; when
-  both exist, domain entries win and assigned keys back-fill. Enter `none`
-  to disable credential lookups entirely.
-- The **prompt-optimization job** accepts the same domain name (`keyDomain`)
-  and resolves keys server-side under the identity of the user who launched
-  the run — the governed key-table parameters remain supported and win for
-  backward compatibility.
+  and domain). The domain is the only key source; enter `none` to skip the
+  lookup in deployments that use exclusively key-less self-hosted models.
+- The **prompt-optimization job** accepts the same domain name (`keyDomain`,
+  same default) and resolves keys server-side under the identity of the user
+  who launched the run.
 - **RAG ingestion and retrieval** read the `{backend}_user` /
   `{backend}_password` entries the same way; ingestion (SAS Studio / Job
   Execution) and retrieval (Intelligent Decisioning) both run under the

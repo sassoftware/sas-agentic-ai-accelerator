@@ -81,11 +81,9 @@
                          model calls)
       maxDemos         - max few-shot examples to select (default 4)
       minSamples       - minimum qualifying runs required (default 30)
-      keyLibrary       - SAS library of the governed API-key table (optional)
-      keyTable         - table in that library: columns name, value (optional)
       keyDomain        - SAS Viya credential domain to resolve provider keys
                          from, under the launching user's identity (default
-                         agentic-ai-keys; 'none' disables; table entries win)
+                         agentic-ai-keys; 'none' disables the lookup)
 
     Progress is emitted with SAS.logMessage() and lands in the job log as
     "NOTE: Python-Subprocess - ..." lines; the Prompt Builder polls the log and
@@ -111,9 +109,7 @@
 %_opt_default(optimizer, bootstrap);
 %_opt_default(maxDemos, 4);
 %_opt_default(minSamples, 30);
-%_opt_default(keyLibrary, );
-%_opt_default(keyTable, );
-/* Matches the create-credential-domain.sas / Prompt Builder default; a
+/* Matches the create-credential-domain script / Prompt Builder default; a
    missing domain resolves nothing, harmlessly. 'none' disables the lookup. */
 %_opt_default(keyDomain, agentic-ai-keys);
 %_opt_default(casServer, cas-shared-default);
@@ -137,42 +133,6 @@
    entry the Prompt Builder reads (see the note at the end of this program) */
 %let _opt_rc = 1;
 %let _opt_error = The Python program did not run.;
-
-/* ---- Provider API keys ----
-   When a governed library.table was configured, export it to a JSON file in the
-   job's work directory for the Python program to read. The values never appear
-   in the log (proc json writes to the file only) and the file lives in WORK,
-   which is destroyed with the session. */
-%macro _opt_export_keys;
-    %if %superq(keyLibrary) ne and %superq(keyTable) ne %then %do;
-        %let _opt_cas_started = 0;
-        %if %sysfunc(exist(&keyLibrary..&keyTable.)) = 0 %then %do;
-            /* The accelerator's key table normally lives in CAS (see
-               create-api-key-table.sas, caslib CASUSER): a fresh compute
-               session has no CAS libraries assigned, so connect and assign
-               them to make the table visible. Best effort. */
-            cas _optcas;
-            caslib _all_ assign sessref=_optcas;
-            %let _opt_cas_started = 1;
-        %end;
-        %if %sysfunc(exist(&keyLibrary..&keyTable.)) %then %do;
-            filename _optkeys "%sysfunc(pathname(work))/optimize_keys.json";
-            proc json out=_optkeys noSASTags;
-                export &keyLibrary..&keyTable.;
-            run; quit;
-            filename _optkeys clear;
-        %end;
-        %else %do;
-            data _null_;
-                putLog "WARNING: The API-key table &keyLibrary..&keyTable. does not exist - hosted models that need a key will fail.";
-            run;
-        %end;
-        %if &_opt_cas_started. = 1 %then %do;
-            cas _optcas terminate;
-        %end;
-    %end;
-%mend _opt_export_keys;
-%_opt_export_keys;
 
 /* ---- CAS dataset source ----
    When datasetSource=cas, export the governed dataset table to a JSON file in
@@ -362,36 +322,17 @@ def replace_model_content(model_id, name, payload):
     add_model_content(model_id, name, payload)
 
 
-# ---- Provider keys (exported by the SAS wrapper, never logged) -------------
-def load_key_map():
-    """Provider name -> key. Accepts both column conventions: KeyName/KeyValue
-    (the accelerator's create-api-key-table.sas) and name/value."""
-    key_path = WORKPATH + "optimize_keys.json"
-    if not os.path.exists(key_path):
-        return {}
-    with open(key_path, "r", encoding="utf-8") as key_file:
-        rows = json.load(key_file)
-    key_map = {}
-    for row in rows if isinstance(rows, list) else []:
-        lowered = {str(k).lower(): v for k, v in row.items()}
-        name = lowered.get("keyname") or lowered.get("name")
-        value = lowered.get("keyvalue") or lowered.get("value")
-        if name and value:
-            key_map[str(name).strip()] = str(value).strip()
-    return key_map
-
-
+# ---- Provider keys (resolved from the credential domain, never logged) -----
 class KeyResolver:
-    """Provider keys from the governed table, with credential-domain fallback.
+    """Provider keys from the credential domain's secrets map.
 
-    When keyDomain is set, the domain's secrets map is fetched ONCE under
-    the identity of the user who launched the job (a user credential
-    overrides a group credential; entries are named per provider, e.g.
-    OpenAI). Table entries win for backward compatibility. Keys stay in
-    process memory - never in WORK files or the log."""
+    Fetched ONCE under the identity of the user who launched the job (a user
+    credential overrides a group credential; entries are named per provider,
+    e.g. OpenAI - see the Managing Credentials administration guide). 'none'
+    disables the lookup. Keys stay in process memory - never in WORK files
+    or the log."""
 
     def __init__(self):
-        self.table = load_key_map()
         self.domain_map = None
 
     def _domain_secrets(self):
@@ -420,8 +361,6 @@ class KeyResolver:
         return self.domain_map
 
     def get(self, name):
-        if name in self.table:
-            return self.table[name]
         return self._domain_secrets().get(name)
 
 
@@ -493,7 +432,7 @@ def build_model_options(model_id, model_name, key_map):
         provider = str(options["API_KEY"])
         key = key_map.get(provider)
         if not key:
-            fail(f"The model {model_name} needs an API key for provider {provider} but neither the governed key table nor a credential domain provided one - add the key (see the Managing Credentials administration guide) or configure optimizeKeyLibrary/optimizeKeyTable.")
+            fail(f"The model {model_name} needs an API key for provider {provider} but the credential domain provided none - add a {provider} entry for this user or their group (see the Managing Credentials administration guide).")
         options["API_KEY"] = key
     return options
 
