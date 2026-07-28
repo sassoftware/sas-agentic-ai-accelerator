@@ -52,7 +52,10 @@ $bundle = @(
     @{ Local = Join-Path $sourceRoot 'SAS-Viya-Integrations\RAG-Ingestion'; Remote = 'jobs'; Filter = '*.sas' },
     # retrieval model template (manifested per RAG Setup) - top level only,
     # rag_core/ and tests/ must not be re-included here
-    @{ Local = Join-Path $sourceRoot 'SAS-Viya-Integrations\RAG'; Remote = 'models'; Filter = '*.py'; NoRecurse = $true }
+    @{ Local = Join-Path $sourceRoot 'SAS-Viya-Integrations\RAG'; Remote = 'models'; Filter = '*.py'; NoRecurse = $true },
+    # the five RAG custom steps - SAS Studio picks .step files up from SAS
+    # Content, so deploying them here makes them usable in flows
+    @{ Local = Join-Path $sourceRoot 'SAS-Viya-Integrations\Custom-Steps'; Remote = 'steps'; Filter = 'RAG - *.step'; NoRecurse = $true }
 )
 
 # ---- folder + file helpers -------------------------------------------------
