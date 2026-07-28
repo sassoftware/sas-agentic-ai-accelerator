@@ -125,6 +125,36 @@ def run_list(source_path: str, ledger_rows: list, run_id: str,
     return inventory
 
 
+def split_oversized_elements(elements: list, max_bytes: int = 24000) -> list:
+    """Split element texts that would not fit a table column (design §2a).
+
+    Compute-session character columns cap at 32767 bytes; elements travel
+    between steps as table rows, so an oversized text (e.g. a 1 MB plaintext
+    file extracting to ONE element) is split at paragraph/line boundaries
+    into multiple elements. The chunker rejoins texts anyway, so the split
+    only inserts an extra join boundary.
+    """
+    result: list = []
+    for element in elements:
+        text = element.get("text") or ""
+        if len(text.encode("utf-8")) <= max_bytes:
+            result.append(element)
+            continue
+        remaining = text
+        while remaining:
+            piece = remaining
+            while len(piece.encode("utf-8")) > max_bytes:
+                cut = max(piece.rfind("\n\n", 0, max_bytes // 2),
+                          piece.rfind("\n", 0, max_bytes // 2),
+                          piece.rfind(" ", 0, max_bytes // 2))
+                piece = piece[:cut] if cut > 0 else piece[: max_bytes // 4]
+            part = dict(element)
+            part["text"] = piece
+            result.append(part)
+            remaining = remaining[len(piece):].lstrip("\n")
+    return result
+
+
 # ---------------------------------------------------------------------------
 # RAG - Extract Text
 # ---------------------------------------------------------------------------
@@ -146,7 +176,7 @@ def run_extract(inventory: list, registry, extractor_name=None, log=print) -> tu
                                  "(content-uri fetch lands with the SAS Content source)")
             doc_elements, used = registry.extract(data, row["source_uri"],
                                                   extractor_name=extractor_name)
-            for el in doc_elements:
+            for el in split_oversized_elements(doc_elements):
                 el = dict(el)
                 el["doc_id"] = row["doc_id"]
                 elements.append(el)

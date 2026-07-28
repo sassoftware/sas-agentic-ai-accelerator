@@ -133,6 +133,23 @@ def test_full_pipeline_incremental(adapter, corpus):
     assert adapter.count(COLLECTION, filter={"doc_id": gone["doc_id"]}) == 0
 
 
+def test_split_oversized_elements_preserves_text_and_metadata():
+    from rag_core.steps import split_oversized_elements
+
+    big = ("paragraph one line. " * 200 + "\n\n") * 40   # ~170 KB
+    elements = [{"type": "text", "text": big, "page": 3, "heading_path": "A"},
+                {"type": "text", "text": "small", "page": 4, "heading_path": None}]
+    result = split_oversized_elements(elements, max_bytes=24000)
+    assert len(result) > 2
+    assert all(len(e["text"].encode("utf-8")) <= 24000 for e in result)
+    # metadata survives on every part; small elements pass through untouched
+    assert all(e["page"] == 3 for e in result[:-1])
+    assert result[-1]["text"] == "small"
+    # no content lost beyond the stripped join newlines
+    rejoined = "".join(e["text"] for e in result[:-1])
+    assert rejoined.replace("\n", "") == big.replace("\n", "")
+
+
 def test_config_hash_is_order_insensitive():
     a = config_hash({"chunker": "recursive", "k": 5})
     b = config_hash({"k": 5, "chunker": "recursive"})
