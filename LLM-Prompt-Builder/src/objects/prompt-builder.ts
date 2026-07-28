@@ -5748,7 +5748,7 @@ ${scoreCodeReturn}`;
       // metric/optimizer to pick, and the CAS dataset schema.
       const optimizeLearnMore = document.createElement('a');
       optimizeLearnMore.href =
-        'https://sassoftware.github.io/sas-agentic-ai-accelerator/docs/User-Guide/Prompt-Builder#choosing-the-dataset-metric-and-optimizer';
+        'https://sassoftware.github.io/sas-agentic-ai-accelerator/User-Guide/Prompt-Builder#choosing-the-dataset-metric-and-optimizer';
       optimizeLearnMore.target = '_blank';
       optimizeLearnMore.rel = 'noopener';
       optimizeLearnMore.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeLearnMore}`;
