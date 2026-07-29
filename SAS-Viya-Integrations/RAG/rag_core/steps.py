@@ -31,6 +31,12 @@ LEDGER_COLUMNS = ["doc_id", "source_uri", "source_kind", "content_hash", "mtime"
                   "status", "error_text", "pipeline_version", "config_hash",
                   "chunk_count", "run_id", "updated_at"]
 
+# What travels between the steps. The ledger persists LEDGER_COLUMNS only;
+# the extra three ride along the flow so every step after List Documents
+# knows which extractor ran and WHERE the pipeline tables live - nobody
+# should have to retype the project name into five steps.
+INVENTORY_COLUMNS = LEDGER_COLUMNS + ["extractor", "rag_project", "tables_caslib"]
+
 ELEMENT_COLUMNS = ["doc_id", "type", "text", "level", "page", "heading_path"]
 
 CHUNK_COLUMNS = ["chunk_id", "doc_id", "source_uri", "chunk_index", "content",
@@ -56,6 +62,8 @@ COLUMN_LABELS = {
     "run_id": "Ingestion run ID",
     "updated_at": "Row updated (UTC)",
     "extractor": "Text extractor used",
+    "rag_project": "RAG project",
+    "tables_caslib": "Pipeline tables caslib",
     # elements
     "type": "Element type",
     "text": "Element text",
