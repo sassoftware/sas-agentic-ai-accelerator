@@ -84,10 +84,28 @@ function Get-FolderId([string]$path) {
 function Publish-File([string]$folderId, [System.IO.FileInfo]$file) {
     # Custom steps are dataFlows SERVICE resources, not plain Content files -
     # a raw-uploaded .step renders as an empty step editor (verified live).
-    # Register through the service; overwrite=true replaces on redeploy.
     if ($file.Extension -eq '.step') {
-        $stepHeaders = $headers + @{ Accept = 'application/vnd.sas.data.flow.step+json' }
-        $uri = "$endpoint/dataFlows/steps?parentFolderUri=/folders/folders/$folderId&overwrite=true"
+        $stepType = 'application/vnd.sas.data.flow.step+json'
+        $stepHeaders = $headers + @{ Accept = $stepType }
+        $members = Invoke-RestMethod -Method Get -Headers $headers `
+            -Uri "$endpoint/folders/folders/$folderId/members?limit=200"
+        $existing = @($members.items) | Where-Object {
+            $_.name -eq $file.Name -and $_.uri -like '*/dataFlows/steps/*' }
+        if ($existing) {
+            # A redeploy MUST keep the step id: saved flows reference
+            # /dataFlows/steps/<id>, and POST with overwrite=true mints a new
+            # id, which 404s every flow already using the step (verified
+            # live). PUT updates in place and leaves those flows working.
+            $stepId = ($existing[0].uri -split '/')[-1]
+            $definition = Get-Content $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            $definition | Add-Member -NotePropertyName id -NotePropertyValue $stepId -Force
+            $putHeaders = $stepHeaders + @{ 'If-Match' = '*' }
+            Invoke-RestMethod -Method Put -Headers $putHeaders `
+                -Uri "$endpoint/dataFlows/steps/$stepId" -ContentType $stepType `
+                -Body ($definition | ConvertTo-Json -Depth 30 -Compress) | Out-Null
+            return
+        }
+        $uri = "$endpoint/dataFlows/steps?parentFolderUri=/folders/folders/$folderId"
         Invoke-RestMethod -Method Post -Headers $stepHeaders -Uri $uri `
             -ContentType 'application/json' -InFile $file.FullName | Out-Null
         return

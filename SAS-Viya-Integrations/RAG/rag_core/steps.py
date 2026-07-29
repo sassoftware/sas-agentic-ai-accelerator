@@ -20,11 +20,11 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
-import os
 from concurrent.futures import ThreadPoolExecutor
 
 from .chunkers import CHUNKERS
 from .schema import Chunk, link_neighbors
+from .sources import FileSystemSource
 from .tokens import token_budget
 
 LEDGER_COLUMNS = ["doc_id", "source_uri", "source_kind", "content_hash", "mtime",
@@ -38,19 +38,62 @@ CHUNK_COLUMNS = ["chunk_id", "doc_id", "source_uri", "chunk_index", "content",
                  "span", "heading_path", "tags", "prev_id", "next_id",
                  "context_header", "entities", "relations", "embedding"]
 
+# Every column the accelerator ships carries a label: the steps put them on
+# the SAS output tables and on the promoted CAS tables, so a table opened in
+# SAS Studio or Visual Analytics reads without the schema at hand.
+COLUMN_LABELS = {
+    # ledger / inventory
+    "doc_id": "Document ID",
+    "source_uri": "Source location",
+    "source_kind": "Source type",
+    "content_hash": "Content fingerprint",
+    "mtime": "Source last modified",
+    "status": "Ingestion status",
+    "error_text": "Failure reason",
+    "pipeline_version": "Pipeline version",
+    "config_hash": "Configuration fingerprint",
+    "chunk_count": "Chunks produced",
+    "run_id": "Ingestion run ID",
+    "updated_at": "Row updated (UTC)",
+    "extractor": "Text extractor used",
+    # elements
+    "type": "Element type",
+    "text": "Element text",
+    "level": "Heading level",
+    "page": "Page number",
+    "heading_path": "Heading path",
+    # chunks
+    "chunk_id": "Chunk ID",
+    "chunk_index": "Chunk number in document",
+    "content": "Chunk text",
+    "ingested_at": "Ingested (UTC)",
+    "span": "Source span (JSON)",
+    "tags": "Tags (JSON)",
+    "prev_id": "Previous chunk ID",
+    "next_id": "Next chunk ID",
+    "context_header": "Context header",
+    "entities": "Entities (JSON)",
+    "relations": "Relations (JSON)",
+    "embedding": "Embedding vector (JSON)",
+    # load report
+    "chunks_loaded": "Chunks written to the vector store",
+    "chunks_deleted": "Stale chunks removed",
+    "collection": "Vector store collection",
+    "load_status": "Load status",
+}
+
+
+def column_labels(columns) -> dict:
+    """Labels for the given columns, skipping any that have none."""
+    return {column: COLUMN_LABELS[column] for column in columns
+            if column in COLUMN_LABELS}
+
+
 _TEXT_SUFFIXES = None  # populated lazily from the registry
 
 
 def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _stream_sha256(path: str, chunk_bytes: int = 1 << 20) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for block in iter(lambda: fh.read(chunk_bytes), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _doc_id(source_uri: str) -> str:
@@ -60,56 +103,53 @@ def _doc_id(source_uri: str) -> str:
 # ---------------------------------------------------------------------------
 # RAG - List Documents
 # ---------------------------------------------------------------------------
-def run_list(source_path: str, ledger_rows: list, run_id: str,
+def run_list(source, ledger_rows: list, run_id: str,
              pipeline_version: str, config_hash: str,
              include_suffixes=None, log=print) -> list:
-    """Crawl a filesystem path, hash streaming, diff against the ledger.
+    """Crawl a document source, fingerprint it, diff against the ledger.
 
-    ledger_rows: list of dicts (previous ledger state). Returns the NEW
-    inventory rows (one per discovered or disappeared document).
+    `source` is a source object from rag_core.sources (filesystem or SAS
+    Content); a plain string is taken as a filesystem path. ledger_rows is
+    the previous ledger state. Returns the NEW inventory rows (one per
+    discovered or disappeared document).
     """
+    if isinstance(source, str):
+        source = FileSystemSource(source)
     previous = {row["doc_id"]: row for row in ledger_rows}
     seen: set = set()
     inventory: list = []
     now = _now()
 
-    if not os.path.isdir(source_path):
-        raise ValueError(f"source path is not a directory visible from this "
-                         f"compute context: {source_path!r}")
-
-    for root, _dirs, files in os.walk(source_path):
-        for filename in sorted(files):
-            full = os.path.join(root, filename)
-            suffix = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
-            if include_suffixes and suffix not in include_suffixes:
-                continue
-            doc_id = _doc_id(full)
-            seen.add(doc_id)
-            row = {"doc_id": doc_id, "source_uri": full, "source_kind": "path",
-                   "mtime": str(os.path.getmtime(full)), "error_text": "",
-                   "pipeline_version": pipeline_version, "config_hash": config_hash,
-                   "chunk_count": 0, "run_id": run_id, "updated_at": now}
-            try:
-                row["content_hash"] = _stream_sha256(full)
-            except OSError as exc:
-                row.update(status="failed", content_hash="",
-                           error_text=f"unreadable: {exc}")
-                inventory.append(row)
-                continue
-            old = previous.get(doc_id)
-            if old is None:
-                row["status"] = "new"
-            elif old.get("status") == "failed":
-                # failed docs re-enter the pipeline every run until they
-                # succeed or disappear — "unchanged" would hide them forever
-                row["status"] = "changed"
-            elif old.get("content_hash") != row["content_hash"] \
-                    or old.get("pipeline_version") != pipeline_version:
-                row["status"] = "changed"
-            else:
-                row["status"] = "unchanged"
-                row["chunk_count"] = old.get("chunk_count", 0)
+    for entry in source.entries(include_suffixes):
+        full = entry["source_uri"]
+        doc_id = _doc_id(full)
+        seen.add(doc_id)
+        row = {"doc_id": doc_id, "source_uri": full,
+               "source_kind": entry.get("source_kind", source.kind),
+               "mtime": entry.get("mtime", ""), "error_text": "",
+               "pipeline_version": pipeline_version, "config_hash": config_hash,
+               "chunk_count": 0, "run_id": run_id, "updated_at": now}
+        try:
+            row["content_hash"] = source.fingerprint(entry)
+        except Exception as exc:  # unreadable file, files-service error, ...
+            row.update(status="failed", content_hash="",
+                       error_text=f"unreadable: {exc}"[:500])
             inventory.append(row)
+            continue
+        old = previous.get(doc_id)
+        if old is None:
+            row["status"] = "new"
+        elif old.get("status") == "failed":
+            # failed docs re-enter the pipeline every run until they
+            # succeed or disappear — "unchanged" would hide them forever
+            row["status"] = "changed"
+        elif old.get("content_hash") != row["content_hash"] \
+                or old.get("pipeline_version") != pipeline_version:
+            row["status"] = "changed"
+        else:
+            row["status"] = "unchanged"
+            row["chunk_count"] = old.get("chunk_count", 0)
+        inventory.append(row)
 
     for doc_id, old in previous.items():
         if doc_id not in seen and old.get("status") != "deleted":
@@ -158,8 +198,14 @@ def split_oversized_elements(elements: list, max_bytes: int = 24000) -> list:
 # ---------------------------------------------------------------------------
 # RAG - Extract Text
 # ---------------------------------------------------------------------------
-def run_extract(inventory: list, registry, extractor_name=None, log=print) -> tuple:
-    """Extract elements for every new/changed doc. Returns (elements, updated_inventory)."""
+def run_extract(inventory: list, registry, extractor_name=None, source=None,
+                log=print) -> tuple:
+    """Extract elements for every new/changed doc. Returns (elements, updated_inventory).
+
+    `source` is the same source object the List step crawled; it reads the
+    bytes for its own `source_kind`. Filesystem rows are readable without
+    one, so the ingestion job can stay as it is.
+    """
     elements: list = []
     updated: list = []
     for row in inventory:
@@ -168,12 +214,16 @@ def run_extract(inventory: list, registry, extractor_name=None, log=print) -> tu
             updated.append(row)
             continue
         try:
-            if row.get("source_kind") == "path":
+            if source is not None and row.get("source_kind") == getattr(source, "kind", None):
+                data = source.read(row["source_uri"])
+            elif row.get("source_kind") == "path":
                 with open(row["source_uri"], "rb") as fh:
                     data = fh.read()
             else:
-                raise ValueError(f"unsupported source_kind {row.get('source_kind')!r} "
-                                 "(content-uri fetch lands with the SAS Content source)")
+                raise ValueError(
+                    f"the {row.get('source_kind')!r} source is not available in "
+                    "this step - point its document source at the same location "
+                    "the List Documents step used")
             doc_elements, used = registry.extract(data, row["source_uri"],
                                                   extractor_name=extractor_name)
             for el in split_oversized_elements(doc_elements):

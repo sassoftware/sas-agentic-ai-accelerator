@@ -57,14 +57,38 @@ publish_file() {  # publish_file <folder-id> <local-file> <name>
   local fid="$1" file="$2" name="$3"
   # Custom steps are dataFlows SERVICE resources, not plain Content files -
   # a raw-uploaded .step renders as an empty step editor (verified live).
-  # Register through the service; overwrite=true replaces on redeploy.
   case "$name" in
     *.step)
+      local step_type='application/vnd.sas.data.flow.step+json'
+      local step_id
+      step_id=$(curl -fsS "${CURL_OPTS[@]}" -H "Authorization: Bearer $TOKEN" \
+        "$ENDPOINT/folders/folders/$fid/members?limit=200" \
+        | python3 -c "
+import json, sys
+for m in json.load(sys.stdin).get('items', []):
+    if m.get('name') == '$name' and '/dataFlows/steps/' in m.get('uri', ''):
+        print(m['uri'].rsplit('/', 1)[-1])
+        break")
+      if [ -n "$step_id" ]; then
+        # A redeploy MUST keep the step id: saved flows reference
+        # /dataFlows/steps/<id>, and POST with overwrite=true mints a new id,
+        # which 404s every flow already using the step (verified live).
+        python3 -c "
+import json, sys
+d = json.load(open('$file', encoding='utf-8'))
+d['id'] = '$step_id'
+sys.stdout.write(json.dumps(d))" > "$file.put"
+        curl -fsS "${CURL_OPTS[@]}" -X PUT -H "Authorization: Bearer $TOKEN" \
+          -H "Content-Type: $step_type" -H "Accept: $step_type" -H 'If-Match: *' \
+          --data-binary "@$file.put" \
+          "$ENDPOINT/dataFlows/steps/$step_id" > /dev/null
+        rm -f "$file.put"
+        return
+      fi
       curl -fsS "${CURL_OPTS[@]}" -X POST -H "Authorization: Bearer $TOKEN" \
-        -H 'Content-Type: application/json' \
-        -H 'Accept: application/vnd.sas.data.flow.step+json' \
+        -H 'Content-Type: application/json' -H "Accept: $step_type" \
         --data-binary "@$file" \
-        "$ENDPOINT/dataFlows/steps?parentFolderUri=/folders/folders/$fid&overwrite=true" > /dev/null
+        "$ENDPOINT/dataFlows/steps?parentFolderUri=/folders/folders/$fid" > /dev/null
       return
       ;;
   esac
