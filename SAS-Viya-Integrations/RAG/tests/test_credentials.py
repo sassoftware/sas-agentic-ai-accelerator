@@ -83,6 +83,19 @@ def test_store_config_rejects_missing_backend_entries():
         store_config_from_secrets({"OpenAI": "sk-x"}, "pgvector", "h", 5432, "db")
 
 
+def test_a_blank_port_follows_the_backend():
+    """The step's port field may be left empty; a SingleStore setup must then
+    reach 3306, not Postgres's 5432."""
+    secrets = {"SINGLESTORE_RAG_USER": "u", "SINGLESTORE_RAG_PW": "p",
+               "PGVECTOR_RAG_USER": "u", "PGVECTOR_RAG_PW": "p"}
+    assert store_config_from_secrets(
+        secrets, "singlestore", "h", "", "db")["port"] == 3306
+    assert store_config_from_secrets(
+        secrets, "pgvector", "h", "", "db")["port"] == 5432
+    assert store_config_from_secrets(
+        secrets, "singlestore", "h", 3307, "db")["port"] == 3307
+
+
 def test_undecodable_secret_becomes_empty_not_crash():
     session = FakeSession({URL: FakeResponse(200, {
         "secrets": {"OpenAI": "%%%not-base64%%%"}})})

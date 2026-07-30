@@ -50,12 +50,19 @@ Connection resolution (design §4 destination boundary), per value:
      {BACKEND}_RAG_PW in the credential domain (the backend prefix lets one
      domain serve several vector stores)
   3. environment variables (SCR/MAS deploy-time injection; local .env):
-     {BACKEND}_RAG_USER/{BACKEND}_RAG_PW for the secrets, RAGSTORE_HOST/
-     PORT/DB/SSLMODE for connection config, RAGEMBED_* for the embedder
+     {BACKEND}_RAG_USER/{BACKEND}_RAG_PW for the secrets,
+     {BACKEND}_HOST/PORT/DB/SSLMODE — or the shared RAGSTORE_* fallback — for
+     connection config, RAGEMBED_* for the embedder
   4. the manifested constants below
 A decision definition never stores a secret.
+
+Two backends are supported, and BACKEND above decides which SQL dialect and
+driver this copy uses. SingleStore has no cosine metric, so vectors are stored
+and queried L2-normalized and ranked by dot product; `distance` therefore
+means the same number on both backends.
 """
 import json
+import math
 import os
 import time
 
@@ -78,6 +85,10 @@ _FILTER_COLUMNS = {"doc_id", "source_uri", "content_hash", "extractor",
 
 _SSLMODE_BOOLEANS = {"false": "disable", "off": "disable", "no": "disable",
                      "true": "require", "yes": "require", "on": "require"}
+
+# SingleStore has no NULL tombstone: a live row carries this valid_to instead
+_SENTINEL = "9999-12-31 00:00:00"
+_DEFAULT_PORTS = {"pgvector": 5432, "singlestore": 3306}
 
 # Datagrid v2: a cited chunk must be openable at the right place and
 # attributable to the corpus state that produced it, so the grid carries the
@@ -126,6 +137,12 @@ def _domain_secrets():
         return {}
 
 
+def _setting(name):
+    """A connection setting: this backend's own variable, then the shared one."""
+    return (os.getenv(BACKEND.upper() + "_" + name)
+            or os.getenv("RAGSTORE_" + name) or "")
+
+
 def _store_config(options):
     prefix = BACKEND.upper()
     user = options.get("user") or os.getenv(prefix + "_RAG_USER", "")
@@ -140,16 +157,33 @@ def _store_config(options):
             "options, grant a " + CREDENTIAL_DOMAIN + " credential holding "
             + prefix + "_RAG_USER/" + prefix + "_RAG_PW, or set those "
             "environment variables on the destination")
-    sslmode = str(options.get("sslmode") or os.getenv("RAGSTORE_SSLMODE")
+    sslmode = str(options.get("sslmode") or _setting("SSLMODE")
                   or STORE_SSLMODE).lower()
     return {
-        "host": options.get("host") or os.getenv("RAGSTORE_HOST") or STORE_HOST,
-        "port": int(options.get("port") or os.getenv("RAGSTORE_PORT")
-                    or STORE_PORT or 5432),
-        "dbname": options.get("dbname") or os.getenv("RAGSTORE_DB") or STORE_DB,
+        "host": options.get("host") or _setting("HOST") or STORE_HOST,
+        "port": int(options.get("port") or _setting("PORT") or STORE_PORT
+                    or _DEFAULT_PORTS.get(BACKEND, 5432)),
+        "dbname": options.get("dbname") or _setting("DB") or STORE_DB,
         "user": user, "password": password,
         "sslmode": _SSLMODE_BOOLEANS.get(sslmode, sslmode),
     }
+
+
+def _connect(store):
+    """The driver this backend needs — imported here so a destination only
+    installs the one it uses."""
+    if BACKEND == "singlestore":
+        import singlestoredb
+
+        return singlestoredb.connect(
+            host=store["host"], port=store["port"], database=store["dbname"],
+            user=store["user"], password=store["password"],
+            ssl_disabled=str(store["sslmode"]).lower()
+            in ("disable", "false", "off", "no", "0"),
+            connect_timeout=10)
+    import psycopg2
+
+    return psycopg2.connect(connect_timeout=10, **store)
 
 
 def _embed_query(question, options):
@@ -182,6 +216,12 @@ def _embed_query(question, options):
     return json.loads(data["embedding"])
 
 
+def _quote(identifier):
+    if BACKEND == "singlestore":
+        return "`" + identifier + "`"
+    return '"' + identifier + '"'
+
+
 def _compile_filter(filter_json):
     """Equality-only allow-listed filter -> (condition, params); always bound."""
     condition, params = "TRUE", []
@@ -194,7 +234,7 @@ def _compile_filter(filter_json):
         if column not in _FILTER_COLUMNS:
             raise ValueError("unsupported filter column " + str(column)
                              + " (allowed: " + ", ".join(sorted(_FILTER_COLUMNS)) + ")")
-        condition += ' AND "' + column + '" = %s'
+        condition += " AND " + _quote(column) + " = %s"
         params.append(value)
     return condition, params
 
@@ -205,39 +245,69 @@ def _live_clause(connection):
     The collection keeps previous generations so it can be read as of an
     earlier date and rolled back (design §2b); a collection created before
     lineage existed has no valid_to column, hence the probe rather than an
-    assumption.
+    assumption. pgvector marks a live row with NULL; SingleStore cannot (no
+    UNIQUE NULLS NOT DISTINCT) and uses the sentinel instead.
     """
+    schema = "DATABASE()" if BACKEND == "singlestore" else "current_schema()"
     with connection.cursor() as cursor:
         cursor.execute(
             "SELECT count(*) FROM information_schema.columns "
-            "WHERE table_schema = current_schema() AND table_name = %s "
+            "WHERE table_schema = " + schema + " AND table_name = %s "
             "AND column_name = 'valid_to'", [COLLECTION])
-        return " AND valid_to IS NULL" if int(cursor.fetchone()[0]) else ""
+        if not int(cursor.fetchone()[0]):
+            return ""
+    if BACKEND == "singlestore":
+        return " AND valid_to = '" + _SENTINEL + "'"
+    return " AND valid_to IS NULL"
+
+
+def _rank(vector):
+    """(select expression, ordering, query-vector literal, distance conversion).
+
+    SingleStore offers no cosine metric and its vector index rejects
+    metric_type COSINE, so the collection stores unit vectors and cosine
+    similarity is their dot product — which makes 1 - similarity the same
+    number pgvector's `<=>` returns.
+    """
+    values = [float(v) for v in vector]
+    if BACKEND == "singlestore":
+        norm = math.sqrt(sum(v * v for v in values))
+        if norm:
+            values = [v / norm for v in values]
+        literal = "[" + ",".join(repr(v) for v in values) + "]"
+        return ("DOT_PRODUCT(embedding, %s :> VECTOR(" + str(len(values)) + "))",
+                "DESC", literal, lambda score: 1.0 - score)
+    literal = "[" + ",".join(repr(v) for v in values) + "]"
+    return "(embedding <=> %s::vector)", "ASC", literal, lambda distance: distance
 
 
 def _search(vector, k, filter_json, store):
     """KNN against the live slice of the collection; higher score = better."""
-    import psycopg2
-
     condition, params = _compile_filter(filter_json)
-    connection = psycopg2.connect(connect_timeout=10, **store)
+    expression, ordering, literal, to_distance = _rank(vector)
+    connection = _connect(store)
     try:
         condition += _live_clause(connection)
         with connection.cursor() as cursor:
             cursor.execute(
-                'SELECT doc_id, chunk_id, source_uri, ingested_at, content, '
-                'heading_path, span, run_id, (embedding <=> %s::vector) AS distance '
-                'FROM "' + COLLECTION + '" WHERE ' + condition
-                + ' ORDER BY distance ASC LIMIT %s',
-                ["[" + ",".join(repr(float(v)) for v in vector) + "]",
-                 *params, int(k)])
+                "SELECT doc_id, chunk_id, source_uri, ingested_at, content, "
+                "heading_path, span, run_id, " + expression + " AS ranked "
+                "FROM " + _quote(COLLECTION) + " WHERE " + condition
+                + " ORDER BY ranked " + ordering + " LIMIT %s",
+                [literal, *params, int(k)])
             rows = cursor.fetchall()
         connection.commit()
     finally:
         connection.close()
     hits = []
     for (doc_id, chunk_id, source_uri, ingested_at, content, heading_path,
-         span, run_id, distance) in rows:
+         span, run_id, ranked) in rows:
+        distance = to_distance(float(ranked))
+        if isinstance(span, (str, bytes)):
+            try:
+                span = json.loads(span)
+            except (ValueError, TypeError):
+                span = None
         location = span if isinstance(span, dict) else {}
         hits.append({
             "chunk_id": chunk_id, "doc_id": doc_id, "source_uri": source_uri,

@@ -12,8 +12,9 @@
  *
  * Import as a SAS Job Execution job definition (like Optimize-Prompt-DSPy)
  * or run in SAS Studio. The compute context's Python needs the packages from
- * the Administration Guide (requests, pandas, psycopg2-binary, pypdfium2,
- * markitdown); rag_core itself is downloaded from SAS Content at run time.
+ * the Administration Guide (requests, pandas, pypdfium2, markitdown, plus the
+ * driver of the backend in use: psycopg2-binary for pgvector, singlestoredb
+ * for SingleStore); rag_core itself is downloaded from SAS Content at run time.
  * If you %include this program, do it at TOP LEVEL - a %include nested
  * inside a macro prevents the proc python submit block from executing
  * (verified live).
@@ -23,7 +24,7 @@
  *                      context) whose documents are ingested
  *   collection       - REQUIRED. Vector-store collection (lowercase
  *                      identifier, e.g. rag_hr_policies_v1)
- *   backend          - vector store backend (P1: pgvector)
+ *   backend          - vector store backend: pgvector or singlestore
  *   storeHost/storePort/storeDb/storeSslmode - vector store connection
  *                      CONFIGURATION (not secrets; secrets come from the
  *                      credential domain)
@@ -61,7 +62,7 @@
 %_rag_default(collection, );
 %_rag_default(backend, pgvector);
 %_rag_default(storeHost, );
-%_rag_default(storePort, 5432);
+%_rag_default(storePort, );          /* blank = the backend's default port */
 %_rag_default(storeDb, );
 %_rag_default(storeSslmode, prefer);
 %_rag_default(credentialDomain, agentic-ai-keys);
@@ -268,7 +269,7 @@ def main():
                                f"{P['credentialDomain']} for this user - see "
                                "the Managing Credentials administration guide")
         store_config = store_config_from_secrets(
-            secrets, P["backend"], P["storeHost"], P["storePort"] or 5432,
+            secrets, P["backend"], P["storeHost"], P["storePort"],
             P["storeDb"], P["storeSslmode"])
         adapter = get_adapter(P["backend"])
         adapter.connect(store_config)

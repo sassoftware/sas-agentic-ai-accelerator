@@ -29,6 +29,16 @@ def _prefix(backend: str) -> str:
     return str(backend or "").upper()
 
 
+def default_port(backend: str) -> int:
+    """The port a backend listens on when nobody configured one.
+
+    One home for it: the steps, the credential path and the manifested
+    retrieval model all default the same way, so a SingleStore setup does not
+    quietly try Postgres's 5432.
+    """
+    return _DEFAULT_PORTS.get(_prefix(backend), 5432)
+
+
 def _secret_keys(backend: str) -> tuple:
     prefix = _prefix(backend)
     return (f"{prefix}_RAG_USER", f"{prefix}_RAG_PW")
@@ -67,7 +77,7 @@ def _to_adapter_config(values: dict, backend: str) -> dict:
     sslmode = _setting(values, backend, "SSLMODE")
     return {
         "host": host,
-        "port": int(port or _DEFAULT_PORTS.get(_prefix(backend), 5432)),
+        "port": int(port or default_port(backend)),
         "dbname": database,
         "user": values[user_key],
         "password": values[pw_key],

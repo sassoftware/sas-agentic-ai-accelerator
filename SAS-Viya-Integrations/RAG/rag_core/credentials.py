@@ -78,7 +78,12 @@ def store_config_from_secrets(secrets: dict, backend: str, host: str, port,
     from the RAG setup (pipeline.yaml / step parameters). The secrets map
     contributes ``{BACKEND}_RAG_USER`` and ``{BACKEND}_RAG_PW`` — the
     backend-name prefix lets one domain serve several vector stores.
+
+    An unset port follows the backend rather than Postgres: a SingleStore
+    setup that left the field blank must reach 3306.
     """
+    from .env import default_port
+
     prefix = str(backend or "").upper()
     user = (secrets or {}).get(f"{prefix}_RAG_USER", "")
     password = (secrets or {}).get(f"{prefix}_RAG_PW", "")
@@ -86,5 +91,6 @@ def store_config_from_secrets(secrets: dict, backend: str, host: str, port,
         raise KeyError(f"the credential domain has no {prefix}_RAG_USER / "
                        f"{prefix}_RAG_PW entries - add them to your .env and "
                        "rerun the create-credential-domain script")
-    return {"host": host, "port": int(port or 5432), "dbname": dbname,
-            "user": user, "password": password, "sslmode": sslmode or "prefer"}
+    return {"host": host, "port": int(port or default_port(backend)),
+            "dbname": dbname, "user": user, "password": password,
+            "sslmode": sslmode or "prefer"}
