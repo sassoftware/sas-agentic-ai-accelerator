@@ -97,6 +97,11 @@ else:
     if not os.path.exists(env_file):
         sys.exit(".env file not found at '" + env_file + "' - pass -e (or -k for a raw file)")
     for name, value in read_pairs(env_file).items():
+        # a key that is present but EMPTY is a placeholder waiting to be filled
+        # in, not a credential: storing it would put blank entries in the domain
+        # and mask the real "no credential" case
+        if not value.strip():
+            continue
         if name in PROVIDER_MAP:
             secrets[PROVIDER_MAP[name]] = base64.b64encode(value.encode()).decode()
         elif RAG_ENTRY.match(name):

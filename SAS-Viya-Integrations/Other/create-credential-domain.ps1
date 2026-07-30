@@ -128,6 +128,10 @@ else {
     }
     foreach ($entry in (Read-NameValueFile $EnvFile).GetEnumerator()) {
         $name = $entry.Key
+        # a key that is present but EMPTY is a placeholder waiting to be filled
+        # in, not a credential: storing it would put blank entries in the domain
+        # and mask the real "no credential" case
+        if ([string]::IsNullOrWhiteSpace($entry.Value)) { continue }
         if ($providerMap.Contains($name)) {
             $secrets[$providerMap[$name]] = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($entry.Value))
         }
