@@ -121,6 +121,30 @@ def test_live_roundtrip(live_adapter):
     assert "CREATE TABLE IF NOT EXISTS" in ddl_artifact
 
 
+def test_live_retrieval_returns_everything_when_k_exceeds_the_collection(
+        live_adapter):
+    """The invariant SingleStore's ANN index broke, checked here too.
+
+    Verified against the live cluster on 2026-07-30 across four collections
+    (2, 2, 3 and 1578 live rows, with and without the partial live-row
+    index): every k from 1 to 50 returned min(k, live), and the indexed
+    top-5 was identical to the exact top-5. pgvector keeps its HNSW index
+    by default because of this result - the partial index over live rows is
+    what avoids the post-filter loss that costs recall elsewhere.
+    """
+    a = live_adapter
+    a.drop_collection("rag_pytest_scratch")
+    a.ensure_collection("rag_pytest_scratch", dims=8)
+    chunks = _make_chunks("docK", "hash1",
+                          ["one", "two", "three", "four", "five"])
+    a.upsert("rag_pytest_scratch", [c.__dict__ for c in chunks])
+    query = [0.0] * 8
+    query[0] = 1.0
+    for k in (1, 2, 3, 4, 5, 6, 9, 20):
+        found = len(a.search("rag_pytest_scratch", query, k=k))
+        assert found == min(k, 5), f"k={k} returned {found} of 5 live chunks"
+
+
 def test_live_cutover_rename(live_adapter):
     a = live_adapter
     a.drop_collection("rag_pytest_scratch_v2")
