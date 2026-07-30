@@ -95,6 +95,16 @@ COLUMN_LABELS = {
     "chunks_deleted": "Stale chunks removed",
     "collection": "Vector store collection",
     "load_status": "Load status",
+    # retrieval results
+    "question": "Question",
+    "rank": "Rank (1 = closest)",
+    "filename": "Source file",
+    "span_start": "Start offset in document",
+    "span_end": "End offset in document",
+    "ingestion_timestamp": "Chunk ingested (UTC)",
+    "corpus_run_id": "Corpus version (ingestion run)",
+    "distance": "Distance (lower = closer)",
+    "score": "Score (higher = better)",
     # purge report
     "chunks_removed": "Chunk rows removed (live and retired)",
     "ledger_removed": "Ledger entry removed",
@@ -518,6 +528,75 @@ def _cutoff(days: int) -> str:
     moment = (datetime.datetime.now(datetime.timezone.utc)
               - datetime.timedelta(days=int(days)))
     return moment.strftime("%Y-%m-%d %H:%M:%S")
+
+
+RETRIEVE_COLUMNS = ["question", "rank", "doc_id", "chunk_id", "filename",
+                    "source_uri", "heading_path", "page", "span_start",
+                    "span_end", "ingestion_timestamp", "corpus_run_id",
+                    "distance", "score", "content", "error_text"]
+
+
+def run_retrieve(questions: list, embedder, adapter, collection: str,
+                 k: int = 4, filter=None, log=print) -> list:
+    """Ask the collection a list of questions; one row per hit.
+
+    The same retrieval the manifested model performs, but landing in a table
+    instead of a decision - so a corpus can be examined, compared across
+    configurations, or turned into an evaluation set, without deploying
+    anything.
+
+    A question is isolated like a document is in ingestion: one that fails to
+    embed or search produces a row carrying its error and the rest still run.
+    A question that simply matches nothing produces a rank-0 row rather than
+    vanishing, because "no answer" is a result worth seeing in the output.
+    """
+    rows: list = []
+    asked = matched = failed = 0
+    for raw in questions:
+        question = str(raw or "").strip()
+        if not question:
+            continue
+        asked += 1
+        try:
+            vector = embedder.embed(question, mode="query")
+            hits = adapter.search(collection, vector, k=int(k), filter=filter)
+        except Exception as exc:
+            failed += 1
+            rows.append({"question": question, "rank": 0, "distance": 0.0,
+                         "score": 0.0, "error_text": str(exc)[:500]})
+            log(f"rag retrieve: FAILED {question[:60]!r}: {exc}")
+            continue
+        if not hits:
+            rows.append({"question": question, "rank": 0, "distance": 0.0,
+                         "score": 0.0,
+                         "error_text": "no chunks matched this question"})
+            continue
+        matched += 1
+        for position, hit in enumerate(hits, start=1):
+            record = hit.record
+            span = record.get("span") if isinstance(record.get("span"), dict) else {}
+            uri = str(record.get("source_uri") or "")
+            rows.append({
+                "question": question,
+                "rank": position,
+                "doc_id": record.get("doc_id", ""),
+                "chunk_id": record.get("chunk_id", ""),
+                "filename": uri.replace("\\", "/").rsplit("/", 1)[-1],
+                "source_uri": uri,
+                "heading_path": record.get("heading_path") or "",
+                "page": span.get("page") or 0,
+                "span_start": span.get("start") or 0,
+                "span_end": span.get("end") or 0,
+                "ingestion_timestamp": str(record.get("ingested_at") or ""),
+                "corpus_run_id": record.get("run_id") or "",
+                "distance": float(record.get("distance", 1.0 - hit.score)),
+                "score": float(hit.score),
+                "content": record.get("content", ""),
+                "error_text": "",
+            })
+    log(f"rag retrieve: {asked} questions, {matched} with matches, "
+        f"{failed} failed -> {len(rows)} rows from '{collection}'")
+    return rows
 
 
 def resolve_doc_ids(selectors, ledger: list) -> tuple:
