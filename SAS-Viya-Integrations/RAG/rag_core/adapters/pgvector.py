@@ -64,8 +64,8 @@ class PgVectorAdapter(VectorStoreAdapter):
         return self._conn.cursor()
 
     # -- schema -------------------------------------------------------------
-    def ddl(self, name: str, dims: int, metric: str = "cosine",
-            schema: Optional[dict] = None) -> str:
+    def _statements(self, name: str, dims: int, metric: str = "cosine",
+                    schema: Optional[dict] = None) -> list:
         """The collection schema, including chunk lineage (design §2b).
 
         A chunk row is valid for a period rather than forever: `valid_from`
@@ -124,7 +124,15 @@ class PgVectorAdapter(VectorStoreAdapter):
         if sparse:
             statements.append(
                 f"CREATE INDEX IF NOT EXISTS {name}_tsv_idx ON {table} USING gin (tsv);")
-        return "\n".join(statements)
+        return statements
+
+    def ddl(self, name: str, dims: int, metric: str = "cosine",
+            schema: Optional[dict] = None) -> str:
+        """The collection schema as one script (the governance artifact)."""
+        return "\n".join(self._statements(name, dims, metric, schema))
+
+    def _live_constraint(self, name: str) -> str:
+        return f"{name}_live_uk"
 
     # columns a collection created before lineage existed will not have
     _LINEAGE_COLUMNS = (("run_id", "text"), ("config_id", "text"),
@@ -134,15 +142,47 @@ class PgVectorAdapter(VectorStoreAdapter):
 
     def ensure_collection(self, name: str, dims: int, metric: str = "cosine",
                           schema: Optional[dict] = None) -> None:
+        """Create the collection, or bring an older one up to the schema.
+
+        Order matters and used to be wrong: the indexes are PARTIAL on
+        `valid_to IS NULL`, so running the whole DDL first made upgrading a
+        pre-lineage collection fail on a column that the very next statement
+        would have added. Columns first, then the live-row constraint, then
+        the indexes that depend on both.
+        """
+        statements = self._statements(name, dims, metric, schema)
+        table = _ident(name)
         with self._cursor() as cur:
-            cur.execute(self.ddl(name, dims, metric, schema))
+            for statement in statements[:2]:      # extension, then the table
+                cur.execute(statement)
             # an EXISTING collection keeps its rows and gains the lineage
             # columns, so history starts from the upgrade rather than
             # forcing a re-embed of everything already loaded
-            table = _ident(name)
             for column, coltype in self._LINEAGE_COLUMNS:
                 cur.execute(f"ALTER TABLE {table} "
                             f"ADD COLUMN IF NOT EXISTS {column} {coltype}")
+            # the live-row uniqueness lives in CREATE TABLE, so a collection
+            # that predates lineage never gains it - and upsert names it as
+            # its ON CONFLICT target, which would then fail at load time
+            constraint = self._live_constraint(name)
+            cur.execute("SELECT 1 FROM pg_constraint WHERE conname = %s",
+                        [constraint])
+            if not cur.fetchone():
+                cur.execute(f"ALTER TABLE {table} ADD CONSTRAINT {constraint} "
+                            f"UNIQUE NULLS NOT DISTINCT (chunk_id, valid_to)")
+            for statement in statements[2:]:
+                # IF NOT EXISTS keeps whatever index already carries the name,
+                # so an upgraded collection would hold on to its FULL index
+                # while retrieval filters on valid_to - and an unfiltered ANN
+                # index behind a filtered query is what loses rows. Replace it.
+                named = re.search(r"CREATE INDEX IF NOT EXISTS (\w+)", statement)
+                if named and "WHERE valid_to IS NULL" in statement:
+                    cur.execute("SELECT indexdef FROM pg_indexes "
+                                "WHERE indexname = %s", [named.group(1)])
+                    existing = cur.fetchone()
+                    if existing and "valid_to IS NULL" not in str(existing[0]):
+                        cur.execute(f"DROP INDEX IF EXISTS {named.group(1)}")
+                cur.execute(statement)
         self._conn.commit()
 
     # -- data ---------------------------------------------------------------

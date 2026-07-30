@@ -44,6 +44,100 @@ def test_ddl_sparse_optin_adds_tsvector():
     assert "USING gin (tsv)" in ddl
 
 
+class RecordingCursor:
+    """Captures the statements ensure_collection issues, in order."""
+
+    def __init__(self, log, constraint_exists, existing_indexdef):
+        self._log = log
+        self._constraint_exists = constraint_exists
+        self._existing_indexdef = existing_indexdef
+        self._last = ""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self._last = " ".join(str(sql).split())
+        self._log.append(self._last)
+
+    def fetchone(self):
+        if "pg_constraint" in self._last:
+            return (1,) if self._constraint_exists else None
+        if "pg_indexes" in self._last:
+            return (self._existing_indexdef,) if self._existing_indexdef else None
+        return None
+
+
+class RecordingConnection:
+    def __init__(self, constraint_exists=False, existing_indexdef=None):
+        self.statements = []
+        self._constraint_exists = constraint_exists
+        self._existing_indexdef = existing_indexdef
+
+    def cursor(self):
+        return RecordingCursor(self.statements, self._constraint_exists,
+                               self._existing_indexdef)
+
+    def commit(self):
+        pass
+
+
+def _ensure_log(constraint_exists=False, existing_indexdef=None):
+    adapter = PgVectorAdapter()
+    adapter._conn = RecordingConnection(constraint_exists, existing_indexdef)
+    adapter.ensure_collection("rag_demo_v1", 8)
+    return adapter._conn.statements
+
+
+def test_a_full_index_is_replaced_by_the_partial_one_on_upgrade():
+    """CREATE INDEX IF NOT EXISTS keeps whatever carries the name. Leaving a
+    FULL index while retrieval filters on valid_to is the post-filter loss
+    that cost SingleStore its rows - the reason pgvector uses a partial one."""
+    full = "CREATE INDEX rag_demo_v1_hnsw_idx ON rag_demo_v1 USING hnsw (embedding)"
+    log = _ensure_log(existing_indexdef=full)
+    assert any(s.startswith("DROP INDEX IF EXISTS rag_demo_v1_hnsw_idx") for s in log)
+    drop = next(i for i, s in enumerate(log) if s.startswith("DROP INDEX"))
+    create = next(i for i, s in enumerate(log)
+                  if "rag_demo_v1_hnsw_idx ON" in s and s.startswith("CREATE INDEX"))
+    assert drop < create
+
+
+def test_an_already_partial_index_is_left_alone():
+    partial = ("CREATE INDEX rag_demo_v1_hnsw_idx ON rag_demo_v1 USING hnsw "
+               "(embedding vector_cosine_ops) WHERE (valid_to IS NULL)")
+    assert not [s for s in _ensure_log(existing_indexdef=partial)
+                if s.startswith("DROP INDEX")]
+
+
+def test_lineage_columns_are_added_before_the_partial_indexes():
+    """The indexes are PARTIAL on `valid_to IS NULL`. Creating them before the
+    ALTER that adds valid_to fails on a pre-lineage collection - which made
+    the documented upgrade path impossible (found upgrading a live one)."""
+    log = _ensure_log()
+    first_index = next(i for i, s in enumerate(log) if s.startswith("CREATE INDEX"))
+    last_column = max(i for i, s in enumerate(log) if "ADD COLUMN IF NOT EXISTS" in s)
+    assert last_column < first_index
+    assert any("valid_to IS NULL" in s for s in log[first_index:])
+
+
+def test_an_older_collection_gains_the_live_row_constraint():
+    """upsert names {collection}_live_uk as its ON CONFLICT target, so a
+    collection that predates it would fail at load time, not at upgrade."""
+    log = _ensure_log(constraint_exists=False)
+    added = [s for s in log if "ADD CONSTRAINT rag_demo_v1_live_uk" in s]
+    assert added and "UNIQUE NULLS NOT DISTINCT (chunk_id, valid_to)" in added[0]
+    first_index = next(i for i, s in enumerate(log) if s.startswith("CREATE INDEX"))
+    assert log.index(added[0]) < first_index
+
+
+def test_an_existing_constraint_is_not_added_twice():
+    assert not [s for s in _ensure_log(constraint_exists=True)
+                if "ADD CONSTRAINT" in s]
+
+
 def _make_chunks(doc_id: str, content_hash: str, texts: list) -> list:
     chunks = [
         Chunk.build(doc_id, f"/docs/{doc_id}.txt", i, text, content_hash,
