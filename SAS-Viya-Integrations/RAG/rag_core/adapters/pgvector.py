@@ -66,6 +66,19 @@ class PgVectorAdapter(VectorStoreAdapter):
     # -- schema -------------------------------------------------------------
     def ddl(self, name: str, dims: int, metric: str = "cosine",
             schema: Optional[dict] = None) -> str:
+        """The collection schema, including chunk lineage (design §2b).
+
+        A chunk row is valid for a period rather than forever: `valid_from`
+        / `valid_to` plus `retired_in_run` make it possible to ask what the
+        collection contained on a past date, and to roll back a bad
+        ingestion. That means several generations of one `chunk_id` coexist,
+        so the key is a surrogate and uniqueness applies to the LIVE row -
+        `UNIQUE NULLS NOT DISTINCT (chunk_id, valid_to)`, which needs
+        Postgres 15 or newer (15.8 probed).
+
+        Both the vector index and the doc index are PARTIAL, over live rows
+        only, so retained history never slows retrieval down.
+        """
         table = _ident(name)
         opclass, _ = _METRIC_OPS[metric]
         sparse = bool((schema or {}).get("sparse"))
@@ -73,7 +86,8 @@ class PgVectorAdapter(VectorStoreAdapter):
         statements = [
             "CREATE EXTENSION IF NOT EXISTS vector;",
             f"""CREATE TABLE IF NOT EXISTS {table} (
-    chunk_id         text PRIMARY KEY,
+    id               bigserial PRIMARY KEY,
+    chunk_id         text NOT NULL,
     doc_id           text NOT NULL,
     source_uri       text NOT NULL,
     chunk_index      integer NOT NULL,
@@ -90,29 +104,55 @@ class PgVectorAdapter(VectorStoreAdapter):
     context_header   text,
     entities         jsonb,
     relations        jsonb,
-    embedding        vector({int(dims)}) NOT NULL{tsv_line}
+    run_id           text,
+    config_id        text,
+    embed_model      text,
+    embed_dims       integer,
+    valid_from       timestamptz NOT NULL DEFAULT now(),
+    valid_to         timestamptz,
+    retired_in_run   text,
+    embedding        vector({int(dims)}) NOT NULL{tsv_line},
+    CONSTRAINT {name}_live_uk UNIQUE NULLS NOT DISTINCT (chunk_id, valid_to)
 );""",
-            f"CREATE INDEX IF NOT EXISTS {name}_doc_idx ON {table} (doc_id);",
+            f"CREATE INDEX IF NOT EXISTS {name}_doc_idx ON {table} (doc_id) "
+            f"WHERE valid_to IS NULL;",
             f"CREATE INDEX IF NOT EXISTS {name}_hnsw_idx ON {table} "
-            f"USING hnsw (embedding {opclass});",
+            f"USING hnsw (embedding {opclass}) WHERE valid_to IS NULL;",
+            f"CREATE INDEX IF NOT EXISTS {name}_hist_idx ON {table} "
+            f"(doc_id, valid_from, valid_to);",
         ]
         if sparse:
             statements.append(
                 f"CREATE INDEX IF NOT EXISTS {name}_tsv_idx ON {table} USING gin (tsv);")
         return "\n".join(statements)
 
+    # columns a collection created before lineage existed will not have
+    _LINEAGE_COLUMNS = (("run_id", "text"), ("config_id", "text"),
+                        ("embed_model", "text"), ("embed_dims", "integer"),
+                        ("valid_from", "timestamptz NOT NULL DEFAULT now()"),
+                        ("valid_to", "timestamptz"), ("retired_in_run", "text"))
+
     def ensure_collection(self, name: str, dims: int, metric: str = "cosine",
                           schema: Optional[dict] = None) -> None:
         with self._cursor() as cur:
             cur.execute(self.ddl(name, dims, metric, schema))
+            # an EXISTING collection keeps its rows and gains the lineage
+            # columns, so history starts from the upgrade rather than
+            # forcing a re-embed of everything already loaded
+            table = _ident(name)
+            for column, coltype in self._LINEAGE_COLUMNS:
+                cur.execute(f"ALTER TABLE {table} "
+                            f"ADD COLUMN IF NOT EXISTS {column} {coltype}")
         self._conn.commit()
 
     # -- data ---------------------------------------------------------------
     _COLUMNS = ["chunk_id", "doc_id", "source_uri", "chunk_index", "content",
                 "content_hash", "extractor", "pipeline_version", "ingested_at",
                 "span", "heading_path", "tags", "prev_id", "next_id",
-                "context_header", "entities", "relations", "embedding"]
+                "context_header", "entities", "relations",
+                "run_id", "config_id", "embed_model", "embed_dims", "embedding"]
     _JSON_COLUMNS = {"span", "tags", "entities", "relations"}
+    _LIVE = "valid_to IS NULL"
 
     def _row(self, record: dict) -> tuple:
         values = []
@@ -138,11 +178,52 @@ class PgVectorAdapter(VectorStoreAdapter):
         template = "(" + ", ".join(
             "%s::vector" if c == "embedding" else "%s" for c in self._COLUMNS) + ")"
         with self._cursor() as cur:
+            # the conflict target is the LIVE-row constraint, named explicitly
+            # rather than inferred: with NULLS NOT DISTINCT the inference rules
+            # are easy to get subtly wrong, and re-loading identical content
+            # must refresh the live row rather than add a second one
             execute_values(
                 cur,
                 f"INSERT INTO {table} ({columns}) VALUES %s "
-                f"ON CONFLICT (chunk_id) DO UPDATE SET {updates}",
+                f"ON CONFLICT ON CONSTRAINT {collection}_live_uk "
+                f"DO UPDATE SET {updates}",
                 [self._row(r) for r in records], template=template, page_size=200,
+            )
+            affected = cur.rowcount
+        self._conn.commit()
+        return affected
+
+    def retire(self, collection: str, ids: Optional[list] = None,
+               filter: Optional[dict] = None, run_id: Optional[str] = None,
+               keep_ids: Optional[list] = None) -> int:
+        """Tombstone live rows instead of deleting them.
+
+        This is what the Load step calls. Physical deletion would make
+        point-in-time reconstruction impossible and leave nothing to roll
+        back to after a bad ingestion; `delete()` stays available for the
+        erasure path, where removing the bytes is the point.
+        """
+        table = _ident(collection)
+        clauses = [self._LIVE]
+        params: list = []
+        if ids:
+            clauses.append("chunk_id = ANY(%s)")
+            params.append(list(ids))
+        if keep_ids is not None:
+            clauses.append("NOT (chunk_id = ANY(%s))")
+            params.append(list(keep_ids))
+        if filter:
+            condition, filter_params = compile_sql(filter)
+            clauses.append(f"({condition})")
+            params.extend(filter_params)
+        if not ids and keep_ids is None and not filter:
+            raise ValueError("retire() needs ids, keep_ids or a filter - refusing "
+                             "to tombstone a whole collection implicitly")
+        with self._cursor() as cur:
+            cur.execute(
+                f"UPDATE {table} SET valid_to = now(), retired_in_run = %s "
+                f"WHERE {' AND '.join(clauses)}",
+                [run_id, *params],
             )
             affected = cur.rowcount
         self._conn.commit()
@@ -151,11 +232,24 @@ class PgVectorAdapter(VectorStoreAdapter):
     def search(self, collection: str, vector: list, k: int = 5,
                filter: Optional[dict] = None, mode: str = "vector",
                query_text: Optional[str] = None,
-               raw_filter: Optional[str] = None) -> list:
+               raw_filter: Optional[str] = None,
+               as_of: Optional[str] = None) -> list:
+        """Search the LIVE slice, or the slice as it stood at `as_of`.
+
+        Retrieval must never see retired chunks - that is the whole point of
+        tombstoning rather than deleting. `as_of` (an ISO timestamp) answers
+        "what would this query have returned last month".
+        """
         if mode != "vector":
             raise NotImplementedError("hybrid search is opt-in and lands in P2 (OQ15)")
         table = _ident(collection)
         condition, params = compile_sql(filter or {})
+        if as_of:
+            condition = (f"({condition}) AND valid_from <= %s::timestamptz "
+                         f"AND (valid_to IS NULL OR valid_to > %s::timestamptz)")
+            params = [*params, as_of, as_of]
+        else:
+            condition = f"({condition}) AND {self._LIVE}"
         if raw_filter:
             condition = f"({condition}) AND ({raw_filter})"   # documented escape hatch
         vec_literal = "[" + ",".join(repr(float(v)) for v in vector) + "]"
@@ -204,12 +298,36 @@ class PgVectorAdapter(VectorStoreAdapter):
                 "WHERE table_schema = current_schema() ORDER BY table_name")
             return [r[0] for r in cur.fetchall()]
 
-    def count(self, collection: str, filter: Optional[dict] = None) -> int:
+    def count(self, collection: str, filter: Optional[dict] = None,
+              include_retired: bool = False, as_of: Optional[str] = None) -> int:
         condition, params = compile_sql(filter or {})
+        if as_of:
+            condition = (f"({condition}) AND valid_from <= %s::timestamptz "
+                         f"AND (valid_to IS NULL OR valid_to > %s::timestamptz)")
+            params = [*params, as_of, as_of]
+        elif not include_retired:
+            condition = f"({condition}) AND {self._LIVE}"
         with self._cursor() as cur:
             cur.execute(f"SELECT count(*) FROM {_ident(collection)} WHERE {condition}",
                         params)
             return int(cur.fetchone()[0])
+
+    def restore(self, collection: str, run_id: str) -> int:
+        """Undo one run's retirements - the rollback the report asked for.
+
+        Rows this run tombstoned come back live; rows this run INSERTED are
+        tombstoned in turn, so the collection returns to its prior state.
+        """
+        table = _ident(collection)
+        with self._cursor() as cur:
+            cur.execute(f"UPDATE {table} SET valid_to = NULL, retired_in_run = NULL "
+                        f"WHERE retired_in_run = %s", [run_id])
+            restored = cur.rowcount
+            cur.execute(f"UPDATE {table} SET valid_to = now(), "
+                        f"retired_in_run = %s WHERE run_id = %s AND {self._LIVE}",
+                        [f"rollback-of-{run_id}", run_id])
+        self._conn.commit()
+        return restored
 
     def cutover(self, alias: str, new_collection: str) -> None:
         """Transactional rename: alias table (if any) steps aside, new one takes the name."""
@@ -226,5 +344,10 @@ class PgVectorAdapter(VectorStoreAdapter):
         self._conn.commit()
 
     def capabilities(self) -> dict:
-        return {"alias": False, "sparse": True, "hybrid": False,
-                "namespace": False, "cutover": "rename"}
+        # sparse is FALSE deliberately: the tsv column and its index exist in
+        # the DDL but nothing populates them, and advertising a capability
+        # that silently returns nothing is worse than not having it (the
+        # hybrid path lands with OQ15)
+        return {"alias": False, "sparse": False, "hybrid": False,
+                "namespace": False, "cutover": "rename",
+                "history": True, "as_of": True, "rollback": True}

@@ -27,9 +27,16 @@ Signature (a decision maps these to terms):
 
   context_dg       - the portal-compatible datagrid as a JSON string:
                      [{"metadata": [...]}, {"data": [...]}] with columns
-                     document_id, chunk_id, filename, ingestion_timestamp,
-                     distance, document (chunk_id is a string here — ids
-                     are deterministic hashes, not indexes)
+                     document_id, chunk_id, filename, source_uri,
+                     heading_path, page, span_start, span_end,
+                     ingestion_timestamp, corpus_run_id, distance, document
+                     (chunk_id is a string here — ids are deterministic
+                     hashes, not indexes). source_uri plus page/span make a
+                     citation openable at the right place; corpus_run_id
+                     attributes the answer to the ingestion state that
+                     produced it. Only LIVE chunks are retrieved: retired
+                     generations stay in the collection for point-in-time
+                     reads but never reach a caller.
   context_envelope - JSON string {query, hits[], graph_context: null,
                      retrieval_mode} — the KG-forward-compatible contract
   retrieval_status - "ok" / "ok (...note...)" or the failure message;
@@ -72,9 +79,16 @@ _FILTER_COLUMNS = {"doc_id", "source_uri", "content_hash", "extractor",
 _SSLMODE_BOOLEANS = {"false": "disable", "off": "disable", "no": "disable",
                      "true": "require", "yes": "require", "on": "require"}
 
+# Datagrid v2: a cited chunk must be openable at the right place and
+# attributable to the corpus state that produced it, so the grid carries the
+# source location, the position inside the document, and the corpus version.
 _DATAGRID_METADATA = [{"document_id": "string"}, {"chunk_id": "string"},
-                      {"filename": "string"}, {"ingestion_timestamp": "string"},
-                      {"distance": "decimal"}, {"document": "string"}]
+                      {"filename": "string"}, {"source_uri": "string"},
+                      {"heading_path": "string"}, {"page": "decimal"},
+                      {"span_start": "decimal"}, {"span_end": "decimal"},
+                      {"ingestion_timestamp": "string"},
+                      {"corpus_run_id": "string"}, {"distance": "decimal"},
+                      {"document": "string"}]
 
 
 def _ssl_verify(prefix):
@@ -185,17 +199,34 @@ def _compile_filter(filter_json):
     return condition, params
 
 
+def _live_clause(connection):
+    """Retired chunk generations must never be retrieved.
+
+    The collection keeps previous generations so it can be read as of an
+    earlier date and rolled back (design §2b); a collection created before
+    lineage existed has no valid_to column, hence the probe rather than an
+    assumption.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = %s "
+            "AND column_name = 'valid_to'", [COLLECTION])
+        return " AND valid_to IS NULL" if int(cursor.fetchone()[0]) else ""
+
+
 def _search(vector, k, filter_json, store):
-    """KNN against the collection; higher score = better (cosine)."""
+    """KNN against the live slice of the collection; higher score = better."""
     import psycopg2
 
     condition, params = _compile_filter(filter_json)
     connection = psycopg2.connect(connect_timeout=10, **store)
     try:
+        condition += _live_clause(connection)
         with connection.cursor() as cursor:
             cursor.execute(
                 'SELECT doc_id, chunk_id, source_uri, ingested_at, content, '
-                'heading_path, (embedding <=> %s::vector) AS distance '
+                'heading_path, span, run_id, (embedding <=> %s::vector) AS distance '
                 'FROM "' + COLLECTION + '" WHERE ' + condition
                 + ' ORDER BY distance ASC LIMIT %s',
                 ["[" + ",".join(repr(float(v)) for v in vector) + "]",
@@ -205,13 +236,20 @@ def _search(vector, k, filter_json, store):
     finally:
         connection.close()
     hits = []
-    for doc_id, chunk_id, source_uri, ingested_at, content, heading_path, distance in rows:
+    for (doc_id, chunk_id, source_uri, ingested_at, content, heading_path,
+         span, run_id, distance) in rows:
+        location = span if isinstance(span, dict) else {}
         hits.append({
             "chunk_id": chunk_id, "doc_id": doc_id, "source_uri": source_uri,
             "filename": str(source_uri or "").replace("\\", "/").rsplit("/", 1)[-1],
             "ingestion_timestamp": str(ingested_at or ""),
             "distance": float(distance), "score": 1.0 - float(distance),
             "content": content, "heading_path": heading_path,
+            "page": location.get("page"), "span_start": location.get("start"),
+            "span_end": location.get("end"),
+            # the corpus state this answer came from: the run that wrote the
+            # chunk, falling back to the version stamped at registration
+            "corpus_run_id": run_id or INGESTION_RUN_ID,
         })
     return hits
 
@@ -241,10 +279,16 @@ def execute(question, k, filter_json, retrieval_mode, options):
         # the manifested-model degradation contract: report, never raise
         status = "retrieval failed: " + type(error).__name__ + ": " + str(error)[:400]
         hits = []
+    def cell(value):
+        return "" if value is None else value
+
     context_dg = json.dumps([
         {"metadata": _DATAGRID_METADATA},
         {"data": [[h["doc_id"], h["chunk_id"], h["filename"],
-                   h["ingestion_timestamp"], h["distance"], h["content"]]
+                   cell(h["source_uri"]), cell(h["heading_path"]),
+                   cell(h["page"]) or 0, cell(h["span_start"]) or 0,
+                   cell(h["span_end"]) or 0, h["ingestion_timestamp"],
+                   cell(h["corpus_run_id"]), h["distance"], h["content"]]
                   for h in hits]},
     ])
     context_envelope = json.dumps({

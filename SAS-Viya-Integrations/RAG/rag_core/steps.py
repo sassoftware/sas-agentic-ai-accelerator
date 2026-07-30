@@ -35,7 +35,8 @@ LEDGER_COLUMNS = ["doc_id", "source_uri", "source_kind", "content_hash", "mtime"
 # the extra three ride along the flow so every step after List Documents
 # knows which extractor ran and WHERE the pipeline tables live - nobody
 # should have to retype the project name into five steps.
-INVENTORY_COLUMNS = LEDGER_COLUMNS + ["extractor", "rag_project", "tables_caslib"]
+INVENTORY_COLUMNS = LEDGER_COLUMNS + ["extractor", "rag_project",
+                                      "tables_caslib", "config_json"]
 
 ELEMENT_COLUMNS = ["doc_id", "type", "text", "level", "page", "heading_path"]
 
@@ -64,6 +65,7 @@ COLUMN_LABELS = {
     "extractor": "Text extractor used",
     "rag_project": "RAG project",
     "tables_caslib": "Pipeline tables caslib",
+    "config_json": "Pipeline configuration (JSON)",
     # elements
     "type": "Element type",
     "text": "Element text",
@@ -95,6 +97,65 @@ def column_labels(columns) -> dict:
     """Labels for the given columns, skipping any that have none."""
     return {column: COLUMN_LABELS[column] for column in columns
             if column in COLUMN_LABELS}
+
+
+# ---------------------------------------------------------------------------
+# Pipeline configuration: accumulated along the flow, hashed at the end
+# ---------------------------------------------------------------------------
+def merge_config(existing, additions: dict) -> str:
+    """Add this step's settings to the configuration travelling in the inventory.
+
+    No single step knows the whole pipeline configuration - the chunker lives
+    in one step, the embedding model in another - so each contributes its own
+    part and the Load step hashes the total. That accumulated value is what
+    makes both the drift guard and per-chunk `config_id` possible.
+    """
+    config = {}
+    if existing:
+        try:
+            parsed = json.loads(existing) if isinstance(existing, str) else dict(existing)
+            if isinstance(parsed, dict):
+                config.update(parsed)
+        except Exception:
+            pass                      # unreadable history never fails a run
+    for key, value in additions.items():
+        if value not in (None, ""):
+            config[str(key)] = value
+    return json.dumps(config, sort_keys=True, separators=(",", ":"))
+
+
+def stamp_config(rows: list, additions: dict) -> list:
+    """merge_config over every inventory row, in place."""
+    for row in rows:
+        row["config_json"] = merge_config(row.get("config_json"), additions)
+    return rows
+
+
+def check_config_drift(ledger_rows: list, config_id: str,
+                       pipeline_version: str) -> str:
+    """Refuse to mix two pipeline configurations into one collection.
+
+    Changing the chunker or the embedding model changes what a chunk IS, so a
+    corpus half-processed each way retrieves unpredictably. Bumping the
+    pipeline version is the sanctioned way to make that change: it re-ingests
+    everything, so the collection ends up consistent. Returns an empty string
+    when the run may proceed, otherwise the reason it may not.
+    """
+    previous = {(row.get("config_hash"), row.get("pipeline_version"))
+                for row in ledger_rows
+                if row.get("config_hash") and row.get("doc_id") != "__run_lock__"}
+    if not previous:
+        return ""
+    if any(existing == config_id for existing, _ in previous):
+        return ""
+    if all(str(version) != str(pipeline_version) for _, version in previous):
+        return ""                     # the version was bumped: re-ingest is intended
+    was = sorted({version for _, version in previous})
+    return ("the pipeline configuration changed since the last ingestion of "
+            "this ledger, but the pipeline version is still "
+            + str(pipeline_version) + " (previously " + ", ".join(map(str, was))
+            + "). Bump the pipeline version to re-ingest the corpus with the "
+              "new configuration, or restore the previous settings")
 
 
 _TEXT_SUFFIXES = None  # populated lazily from the registry
@@ -355,14 +416,25 @@ def run_embed(chunks: list, client, already_embedded: set = frozenset(),
 # ---------------------------------------------------------------------------
 def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
              dims: int, pipeline_version: str, sparse: bool = False,
-             log=print) -> list:
-    """Upsert-first-then-delete-stale per document; tombstone deleted docs.
+             run_id: str = "", config_id: str = "", embed_model: str = "",
+             embed_dims: int = 0, log=print) -> list:
+    """Upsert-first-then-RETIRE-stale per document; tombstone deleted docs.
+
+    Retiring rather than deleting is what makes the collection answerable
+    about the past and rollback-able after a bad run (§2b). Every chunk row
+    is stamped with the run and configuration that produced it, and with the
+    embedding model, so a later re-embed is visible rather than silent.
 
     Returns the updated inventory (per-doc statuses -> ingested/failed).
     """
     adapter.ensure_collection(collection, dims, schema={"sparse": sparse})
     by_doc: dict = {}
     for chunk in embedded_chunks:
+        chunk = dict(chunk)
+        chunk.setdefault("run_id", run_id)
+        chunk.setdefault("config_id", config_id)
+        chunk.setdefault("embed_model", embed_model)
+        chunk.setdefault("embed_dims", embed_dims or dims)
         by_doc.setdefault(chunk["doc_id"], []).append(chunk)
 
     updated: list = []
@@ -372,7 +444,8 @@ def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
         status = row.get("status")
         try:
             if status == "deleted":
-                adapter.delete(collection, filter={"doc_id": row["doc_id"]})
+                adapter.retire(collection, filter={"doc_id": row["doc_id"]},
+                               run_id=run_id)
                 removed += 1
             elif status in ("new", "changed"):
                 chunks = by_doc.get(row["doc_id"], [])
@@ -383,12 +456,13 @@ def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
                     failed += 1
                 else:
                     adapter.upsert(collection, chunks)          # new first (§2)
-                    adapter.delete(collection, filter={          # stale after
-                        "doc_id": row["doc_id"],
-                        "pipeline_version": {"$ne": pipeline_version}})
-                    stale_hash = {"doc_id": row["doc_id"],
-                                  "content_hash": {"$ne": row["content_hash"]}}
-                    adapter.delete(collection, filter=stale_hash)
+                    # retire what this document's previous generation left
+                    # behind: anything live for the doc that is not one of
+                    # the chunk ids we just wrote
+                    adapter.retire(collection,
+                                   filter={"doc_id": row["doc_id"]},
+                                   keep_ids=[c["chunk_id"] for c in chunks],
+                                   run_id=run_id)
                     row["status"] = "ingested"
                     loaded += 1
         except Exception as exc:
