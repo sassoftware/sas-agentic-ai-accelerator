@@ -2,10 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """The canonical chunk schema every adapter round-trips (design §2).
 
-`chunk_id` is deterministic — sha1(doc_id + chunk_index + content_hash) — so
-re-upserting the same document version is idempotent. Removing the chunks of a
-*previous* version is the Load step's stale-delete, not the ids (a changed
-content_hash changes every id).
+`chunk_id` is deterministic — sha1(doc_id + chunk_index + content_hash +
+pipeline_version) — so re-ingesting an unchanged document is idempotent and
+the Embed step can reuse its vectors.
+
+The pipeline version is part of it, and that matters: without it, re-chunking
+the same documents with a different chunker produced the SAME ids, the upsert
+updated the live rows in place, and the previous generation was silently
+overwritten instead of retired — verified live, which is how the omission was
+found. Since the drift guard requires a version bump for any configuration
+change, including the version is enough to make each configuration its own
+generation. It also invalidates the embedding cache on a bump, which is
+correct: new chunk boundaries need new vectors.
 """
 from __future__ import annotations
 
@@ -14,8 +22,9 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 
-def make_chunk_id(doc_id: str, chunk_index: int, content_hash: str) -> str:
-    raw = f"{doc_id}\x1f{chunk_index}\x1f{content_hash}"
+def make_chunk_id(doc_id: str, chunk_index: int, content_hash: str,
+                  pipeline_version: str = "") -> str:
+    raw = f"{doc_id}\x1f{chunk_index}\x1f{content_hash}\x1f{pipeline_version}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
@@ -45,7 +54,8 @@ class Chunk:
               content_hash: str, extractor: str, pipeline_version: str,
               ingested_at: str, **optional: Any) -> "Chunk":
         return cls(
-            chunk_id=make_chunk_id(doc_id, chunk_index, content_hash),
+            chunk_id=make_chunk_id(doc_id, chunk_index, content_hash,
+                                   pipeline_version),
             doc_id=doc_id, source_uri=source_uri, chunk_index=chunk_index,
             content=content, content_hash=content_hash, extractor=extractor,
             pipeline_version=pipeline_version, ingested_at=ingested_at, **optional,

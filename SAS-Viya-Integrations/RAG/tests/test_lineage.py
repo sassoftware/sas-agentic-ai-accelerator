@@ -195,3 +195,29 @@ def test_a_no_op_run_fingerprints_the_same_as_a_full_run():
     assert config_hash(json.loads(full)) == config_hash(json.loads(noop))
     for key in ("embed_dims", "deployment_type"):
         assert key not in json.loads(full)
+
+
+# ---------------------------------------------------------------------------
+# a new configuration must be a new GENERATION, not an overwrite
+# ---------------------------------------------------------------------------
+def test_chunk_ids_differ_between_pipeline_versions():
+    """Without this, re-chunking overwrites the previous generation in place:
+    the upsert matches the live row, nothing is retired, and the history the
+    tombstoning exists for is silently lost (found live)."""
+    from rag_core.schema import make_chunk_id
+    first = make_chunk_id("doc-1", 0, "hash-1", "v1")
+    second = make_chunk_id("doc-1", 0, "hash-1", "v2")
+    assert first != second
+
+
+def test_chunk_ids_are_stable_within_a_version():
+    from rag_core.schema import make_chunk_id
+    assert (make_chunk_id("doc-1", 0, "hash-1", "v1")
+            == make_chunk_id("doc-1", 0, "hash-1", "v1"))
+
+
+def test_chunk_build_puts_the_version_into_the_id():
+    from rag_core.schema import Chunk, make_chunk_id
+    built = Chunk.build("doc-1", "/a.md", 0, "text", "hash-1", "markdown", "v3",
+                        "2026-07-30T00:00:00Z")
+    assert built.chunk_id == make_chunk_id("doc-1", 0, "hash-1", "v3")
