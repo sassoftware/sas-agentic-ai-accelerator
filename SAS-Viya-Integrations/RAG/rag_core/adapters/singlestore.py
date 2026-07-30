@@ -19,10 +19,11 @@ Three things SingleStore does differently, each probed rather than assumed:
   and queries on the way out, which keeps the ANN index usable and makes the
   returned `distance` numerically the same as pgvector's `<=>`.
 
-* **No partial indexes.** The vector index covers retired rows too, so
-  retrieval slows as history accumulates where pgvector's live-only partial
-  index stays flat. Reported as `live_only_index: False` in capabilities()
-  rather than hidden.
+* **No partial indexes, and no ANN index by default.** A vector index here
+  cannot be limited to live rows, and — measured live — it also LOSES rows:
+  see `_statements`. Retrieval therefore uses exact KNN unless a deployment
+  opts in with schema={"ann": True}. Reported as `ann_index: False` and
+  `live_only_index: False` in capabilities() rather than hidden.
 
 Also: `ADD COLUMN IF NOT EXISTS` is a syntax error here, and DATE/TIME
 conversion rejects ISO-8601 `T`/`Z` — both handled below.
@@ -148,13 +149,29 @@ class SingleStoreAdapter(VectorStoreAdapter):
     # -- schema -------------------------------------------------------------
     def _statements(self, name: str, dims: int, metric: str,
                     schema: Optional[dict]) -> list:
+        """CREATE TABLE, plus the ANN index only when it was asked for.
+
+        The index is OPT-IN, against the obvious instinct, because measured
+        live it loses rows: on a collection of 6 rows the identical query
+        returned 1, 2, 1, 0, 1 and 1 rows for LIMIT 1 to 9, and dropping the
+        index returned the correct 4 every time. Neither SEARCH_OPTIONS
+        ("ef", "k") nor OPTIMIZE TABLE FULL changed it.
+
+        Approximate search is allowed to return an imperfect ORDER. It is not
+        allowed to return three fewer chunks than exist, and for retrieval
+        that feeds an answer, silently returning nothing is the worst failure
+        available - the decision flows on with empty context and no error.
+        So exact KNN is the default, and a deployment that needs the index
+        for a large collection turns it on deliberately with
+        schema={"ann": True} and validates recall on its own data.
+        """
         table = _ident(name)
         _, _, _, index_metric = _metric(metric)
         if (schema or {}).get("sparse"):
             raise NotImplementedError(
                 "sparse/hybrid retrieval is not implemented for SingleStore "
                 "(capabilities() reports sparse: False)")
-        return [
+        statements = [
             f"""CREATE TABLE IF NOT EXISTS {table} (
     chunk_id         VARCHAR(64)  NOT NULL,
     doc_id           VARCHAR(64)  NOT NULL,
@@ -186,11 +203,13 @@ class SingleStoreAdapter(VectorStoreAdapter):
     KEY {name}_doc_idx (doc_id),
     KEY {name}_hist_idx (doc_id, valid_from, valid_to),
     SORT KEY (doc_id)
-)""",
-            f"ALTER TABLE {table} ADD VECTOR INDEX {name}_ann_idx (embedding) "
-            f'INDEX_OPTIONS \'{{"index_type":"HNSW_FLAT",'
-            f'"metric_type":"{index_metric}"}}\'',
-        ]
+)"""]
+        if (schema or {}).get("ann"):
+            statements.append(
+                f"ALTER TABLE {table} ADD VECTOR INDEX {name}_ann_idx "
+                f"(embedding) INDEX_OPTIONS "
+                f'\'{{"index_type":"HNSW_FLAT","metric_type":"{index_metric}"}}\'')
+        return statements
 
     def ddl(self, name: str, dims: int, metric: str = "cosine",
             schema: Optional[dict] = None) -> str:
@@ -220,14 +239,15 @@ class SingleStoreAdapter(VectorStoreAdapter):
 
     def ensure_collection(self, name: str, dims: int, metric: str = "cosine",
                           schema: Optional[dict] = None) -> None:
-        create, vector_index = self._statements(name, dims, metric, schema)
+        statements = self._statements(name, dims, metric, schema)
         self._metric = metric
         existed = bool(self._columns_present(name))
-        self._execute(create)
+        self._execute(statements[0])
         if not existed:
-            # the ANN index is added once, at creation: re-adding it raises
+            # any ANN index is added once, at creation: re-adding it raises
             # "index already exists" rather than being a no-op
-            self._execute(vector_index)
+            for statement in statements[1:]:
+                self._execute(statement)
         # an EXISTING collection keeps its rows and gains the lineage columns.
         # ADD COLUMN IF NOT EXISTS is a syntax error here, so what is missing
         # is read from the catalog first.
@@ -506,5 +526,5 @@ class SingleStoreAdapter(VectorStoreAdapter):
         return {"alias": False, "sparse": False, "hybrid": False,
                 "namespace": False, "cutover": "rename",
                 "history": True, "as_of": True, "rollback": True,
-                "live_only_index": False, "normalized_vectors": True,
-                "transactional_ddl": False}
+                "ann_index": False, "live_only_index": False,
+                "normalized_vectors": True, "transactional_ddl": False}

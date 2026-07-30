@@ -62,13 +62,25 @@ def test_ddl_carries_the_history_model():
     assert "retired_in_run" in ddl
 
 
-def test_ddl_index_metric_is_dot_product_for_cosine():
+def test_no_ann_index_unless_it_is_asked_for():
+    """Measured live, the HNSW index LOSES rows: 6-row collection, identical
+    query, LIMIT 1..9 returned 1, 2, 1, 0, 1, 1 rows; without the index it
+    returned the correct 4 every time. An approximate ORDER is acceptable,
+    silently returning nothing is not."""
+    ddl = SingleStoreAdapter().ddl("rag_demo_v1", 384)
+    assert "VECTOR INDEX" not in ddl
+    assert SingleStoreAdapter().capabilities()["ann_index"] is False
+
+
+def test_the_ann_index_is_available_to_opt_into():
     """SingleStore rejects metric_type COSINE (probed), so cosine is served by
     normalized vectors ranked with a dot product."""
-    ddl = SingleStoreAdapter().ddl("rag_demo_v1", 384, metric="cosine")
+    ddl = SingleStoreAdapter().ddl("rag_demo_v1", 384, metric="cosine",
+                                   schema={"ann": True})
     assert '"metric_type":"DOT_PRODUCT"' in ddl
     assert '"index_type":"HNSW_FLAT"' in ddl
-    l2 = SingleStoreAdapter().ddl("rag_demo_v1", 8, metric="l2")
+    l2 = SingleStoreAdapter().ddl("rag_demo_v1", 8, metric="l2",
+                                  schema={"ann": True})
     assert '"metric_type":"EUCLIDEAN_DISTANCE"' in l2
 
 
@@ -192,6 +204,24 @@ def test_live_roundtrip(live_adapter):
 
     filtered = a.search(SCRATCH, query, k=5, filter={"department": "hr"})
     assert filtered and all(h.record["tags"]["department"] == "hr" for h in filtered)
+
+
+def test_live_retrieval_returns_everything_when_k_exceeds_the_collection(
+        live_adapter):
+    """The invariant an ANN index broke: asking for more than exists must
+    return everything that exists, at every k. A retrieval that silently
+    drops chunks feeds an answer built on less than the corpus."""
+    a = live_adapter
+    a.drop_collection(SCRATCH)
+    a.ensure_collection(SCRATCH, dims=8)
+    chunks = _make_chunks("docK", "hash1",
+                          ["one", "two", "three", "four", "five"])
+    a.upsert(SCRATCH, [c.__dict__ for c in chunks])
+    query = [0.0] * 8
+    query[0] = 1.0
+    for k in (1, 2, 3, 4, 5, 6, 9, 20):
+        found = len(a.search(SCRATCH, query, k=k))
+        assert found == min(k, 5), f"k={k} returned {found} of 5 live chunks"
 
 
 def test_live_retire_keeps_the_history(live_adapter):
