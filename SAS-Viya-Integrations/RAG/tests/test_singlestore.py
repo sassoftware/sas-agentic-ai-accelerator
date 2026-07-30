@@ -265,6 +265,51 @@ def test_live_retrieval_model_reads_the_singlestore_collection(live_adapter):
     assert hits[0]["filename"] == "docC.txt"
 
 
+def test_live_erasure_takes_the_retired_generations_too(live_adapter):
+    """Erasure that leaves the previous generation behind has erased nothing."""
+    a = live_adapter
+    a.drop_collection(SCRATCH)
+    a.ensure_collection(SCRATCH, dims=8)
+    first = _make_chunks("docD", "hash1", ["one", "two"], "v1")
+    a.upsert(SCRATCH, [c.__dict__ for c in first])
+    second = _make_chunks("docD", "hash2", ["one changed"], "v2")
+    a.upsert(SCRATCH, [c.__dict__ for c in second])
+    a.retire(SCRATCH, keep_ids=[c.chunk_id for c in second],
+             filter={"doc_id": "docD"}, run_id="run-2")
+    keep = _make_chunks("docE", "hash1", ["untouched"], "v1")
+    a.upsert(SCRATCH, [c.__dict__ for c in keep])
+    assert a.count(SCRATCH, include_retired=True) == 4
+
+    a.delete(SCRATCH, filter={"doc_id": "docD"})
+    assert a.count(SCRATCH, filter={"doc_id": "docD"},
+                   include_retired=True) == 0     # history gone as well
+    assert a.count(SCRATCH, include_retired=True) == 1   # the other doc stands
+
+
+def test_live_pruning_keeps_the_live_slice_intact(live_adapter):
+    a = live_adapter
+    a.drop_collection(SCRATCH)
+    a.ensure_collection(SCRATCH, dims=8)
+    first = _make_chunks("docF", "hash1", ["one", "two"], "v1")
+    a.upsert(SCRATCH, [c.__dict__ for c in first])
+    second = _make_chunks("docF", "hash2", ["one changed"], "v2")
+    a.upsert(SCRATCH, [c.__dict__ for c in second])
+    a.retire(SCRATCH, keep_ids=[c.chunk_id for c in second],
+             filter={"doc_id": "docF"}, run_id="run-3")
+    assert a.count(SCRATCH, include_retired=True) == 3
+
+    # nothing is old enough to prune yet
+    assert a.prune_history(SCRATCH, "2020-01-01 00:00:00") == 0
+    # a cutoff in the future catches every retired row - and only those
+    assert a.prune_history(SCRATCH, "2999-01-01 00:00:00", dry_run=True) == 2
+    assert a.count(SCRATCH, include_retired=True) == 3      # dry run changed nothing
+    assert a.prune_history(SCRATCH, "2999-01-01 00:00:00") == 2
+    assert a.count(SCRATCH, include_retired=True) == 1
+    assert a.count(SCRATCH) == 1                            # live slice untouched
+    with pytest.raises(ValueError):
+        a.prune_history(SCRATCH, "")
+
+
 def test_live_cutover_rename(live_adapter):
     a = live_adapter
     a.drop_collection(SCRATCH + "_v2")

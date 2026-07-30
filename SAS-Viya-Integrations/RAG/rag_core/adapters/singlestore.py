@@ -381,6 +381,11 @@ class SingleStoreAdapter(VectorStoreAdapter):
 
     def delete(self, collection: str, ids: Optional[list] = None,
                filter: Optional[dict] = None) -> int:
+        """Physically remove rows — the erasure path (see PgVectorAdapter).
+
+        A filter on doc_id takes the live row and every retired generation
+        with it. Irreversible; retire() is the routine path.
+        """
         table = _ident(collection)
         if ids:
             clause, values = self._in_clause("chunk_id", ids)
@@ -390,6 +395,28 @@ class SingleStoreAdapter(VectorStoreAdapter):
             return self._execute(f"DELETE FROM {table} WHERE {condition}", params)
         raise ValueError("delete() needs ids or a filter — refusing to empty "
                          "a collection implicitly (use drop_collection)")
+
+    def prune_history(self, collection: str, before: str,
+                      dry_run: bool = False) -> int:
+        """Drop retired generations tombstoned before `before` (retention).
+
+        This matters more here than on pgvector: the ANN index cannot be
+        limited to live rows, so retained history is index the search has to
+        walk. Pruning is how a SingleStore collection keeps its retrieval
+        cost flat.
+        """
+        if not str(before or "").strip():
+            raise ValueError("prune_history() needs a cutoff timestamp — "
+                             "refusing to drop all history implicitly")
+        table = _ident(collection)
+        cutoff = _timestamp(before)
+        condition = f"valid_to <> '{SENTINEL}' AND valid_to < %s"
+        if dry_run:
+            with self._cursor() as cursor:
+                cursor.execute(
+                    f"SELECT count(*) FROM {table} WHERE {condition}", [cutoff])
+                return int(cursor.fetchone()[0])
+        return self._execute(f"DELETE FROM {table} WHERE {condition}", [cutoff])
 
     def drop_collection(self, name: str) -> None:
         self._execute(f"DROP TABLE IF EXISTS {_ident(name)}")

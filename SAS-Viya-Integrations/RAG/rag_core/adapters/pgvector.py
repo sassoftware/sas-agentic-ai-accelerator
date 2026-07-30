@@ -271,6 +271,13 @@ class PgVectorAdapter(VectorStoreAdapter):
 
     def delete(self, collection: str, ids: Optional[list] = None,
                filter: Optional[dict] = None) -> int:
+        """Physically remove rows — the erasure path.
+
+        Unlike retire() this ignores lineage entirely: a filter on doc_id
+        takes the live row AND every retired generation with it, which is
+        what erasure has to mean. It is irreversible; the routine path for a
+        changed or vanished document is retire().
+        """
         table = _ident(collection)
         with self._cursor() as cur:
             if ids:
@@ -283,6 +290,31 @@ class PgVectorAdapter(VectorStoreAdapter):
                 raise ValueError("delete() needs ids or a filter — refusing to empty "
                                  "a collection implicitly (use drop_collection)")
             affected = cur.rowcount
+        self._conn.commit()
+        return affected
+
+    def prune_history(self, collection: str, before: str,
+                      dry_run: bool = False) -> int:
+        """Drop retired generations that were tombstoned before `before`.
+
+        Retention, not erasure: live rows are never touched, so retrieval
+        cannot change — only how far back the collection can be read. This is
+        what stops a frequently re-ingested corpus from growing without
+        bound.
+        """
+        if not str(before or "").strip():
+            raise ValueError("prune_history() needs a cutoff timestamp — "
+                             "refusing to drop all history implicitly")
+        table = _ident(collection)
+        condition = "valid_to IS NOT NULL AND valid_to < %s::timestamptz"
+        with self._cursor() as cur:
+            if dry_run:
+                cur.execute(f"SELECT count(*) FROM {table} WHERE {condition}",
+                            [before])
+                affected = int(cur.fetchone()[0])
+            else:
+                cur.execute(f"DELETE FROM {table} WHERE {condition}", [before])
+                affected = cur.rowcount
         self._conn.commit()
         return affected
 

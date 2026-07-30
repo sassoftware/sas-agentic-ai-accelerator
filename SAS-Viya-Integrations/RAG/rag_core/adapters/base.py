@@ -50,7 +50,24 @@ class VectorStoreAdapter(ABC):
 
     @abstractmethod
     def delete(self, collection: str, ids: Optional[list] = None,
-               filter: Optional[dict] = None) -> int: ...
+               filter: Optional[dict] = None) -> int:
+        """Physically remove rows, live and retired alike — the erasure path.
+
+        Backends that keep lineage must NOT restrict this to live rows:
+        erasing a document has to take its history with it, or the bytes are
+        still there. The reversible everyday operation is retire().
+        """
+
+    def prune_history(self, collection: str, before: str,
+                      dry_run: bool = False) -> int:
+        """Drop retired generations tombstoned before `before` (retention).
+
+        Live rows are never touched, so retrieval is unaffected — only how
+        far back an as-of read can reach. Backends without lineage have no
+        history to prune.
+        """
+        raise NotImplementedError(
+            f"{self.name} does not keep chunk history, so there is none to prune")
 
     @abstractmethod
     def drop_collection(self, name: str) -> None: ...

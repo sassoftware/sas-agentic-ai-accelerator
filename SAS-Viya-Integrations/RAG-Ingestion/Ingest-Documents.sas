@@ -28,6 +28,11 @@
  *   storeHost/storePort/storeDb/storeSslmode - vector store connection
  *                      CONFIGURATION (not secrets; secrets come from the
  *                      credential domain)
+ *   deletedPolicy    - a document that vanished from the source: retire
+ *                      (default - its chunks stay as unretrievable history)
+ *                      or purge (its chunks are removed for good)
+ *   retainDays       - drop retired chunk generations older than this many
+ *                      days after loading; 0 (default) keeps them forever
  *   credentialDomain - credential domain holding <BACKEND>_RAG_USER/_RAG_PW
  *                      (default agentic-ai-keys, the accelerator standard)
  *   scrEndpoint      - SCR base URL hosting the embedding container
@@ -72,6 +77,8 @@
 %_rag_default(inputTokenLimit, 256);
 %_rag_default(chunker, recursive);
 %_rag_default(overlapTokens, 30);
+%_rag_default(deletedPolicy, retire);   /* retire (keep history) | purge */
+%_rag_default(retainDays, 0);           /* 0 = keep retired chunks forever */
 %_rag_default(pipelineVersion, v1);
 %_rag_default(configHash, );
 %_rag_default(ledgerCaslib, casuser);
@@ -167,6 +174,7 @@ def main():
         "storeDb", "storeSslmode", "credentialDomain", "scrEndpoint",
         "embedModel", "deploymentType", "inputTokenLimit", "chunker",
         "overlapTokens", "pipelineVersion", "configHash", "ragCorePath",
+        "deletedPolicy", "retainDays",
     ]}
 
     try:
@@ -289,7 +297,10 @@ def main():
                            overlap_tokens=int(float(P["overlapTokens"] or 30)), log=M)
         embedded, embed_failures = run_embed(chunks, client, max_workers=8, log=M)
         inventory = run_load(embedded, inventory, adapter, P["collection"], dims,
-                             P["pipelineVersion"], log=M)
+                             P["pipelineVersion"],
+                             deleted_policy=P["deletedPolicy"] or "retire",
+                             retain_days=int(float(P["retainDays"] or 0)),
+                             log=M)
         new_ledger = merge_ledger(real_rows, inventory)
         for row in new_ledger:
             row["config_hash"] = cfg_hash

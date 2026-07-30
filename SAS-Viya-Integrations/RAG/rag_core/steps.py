@@ -95,6 +95,10 @@ COLUMN_LABELS = {
     "chunks_deleted": "Stale chunks removed",
     "collection": "Vector store collection",
     "load_status": "Load status",
+    # purge report
+    "chunks_removed": "Chunk rows removed (live and retired)",
+    "ledger_removed": "Ledger entry removed",
+    "outcome": "Outcome",
 }
 
 
@@ -422,7 +426,8 @@ def run_embed(chunks: list, client, already_embedded: set = frozenset(),
 def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
              dims: int, pipeline_version: str, sparse: bool = False,
              run_id: str = "", config_id: str = "", embed_model: str = "",
-             embed_dims: int = 0, log=print) -> list:
+             embed_dims: int = 0, deleted_policy: str = "retire",
+             retain_days: int = 0, log=print) -> list:
     """Upsert-first-then-RETIRE-stale per document; tombstone deleted docs.
 
     Retiring rather than deleting is what makes the collection answerable
@@ -430,8 +435,21 @@ def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
     is stamped with the run and configuration that produced it, and with the
     embedding model, so a later re-embed is visible rather than silent.
 
+    Two policies let a deployment choose otherwise:
+
+    * ``deleted_policy="purge"`` — a document that disappeared from the
+      source has its chunks REMOVED rather than tombstoned, history and all.
+      For a corpus where "gone from the source" must mean "gone", at the
+      price of not being able to read the collection as it stood before.
+    * ``retain_days`` — after loading, retired generations older than this
+      are dropped. 0 keeps history forever. This is retention housekeeping,
+      not erasure: live rows are never touched.
+
     Returns the updated inventory (per-doc statuses -> ingested/failed).
     """
+    if deleted_policy not in ("retire", "purge"):
+        raise ValueError(f"unknown deleted_policy {deleted_policy!r} "
+                         "(expected 'retire' or 'purge')")
     adapter.ensure_collection(collection, dims, schema={"sparse": sparse})
     by_doc: dict = {}
     for chunk in embedded_chunks:
@@ -449,8 +467,11 @@ def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
         status = row.get("status")
         try:
             if status == "deleted":
-                adapter.retire(collection, filter={"doc_id": row["doc_id"]},
-                               run_id=run_id)
+                if deleted_policy == "purge":
+                    adapter.delete(collection, filter={"doc_id": row["doc_id"]})
+                else:
+                    adapter.retire(collection, filter={"doc_id": row["doc_id"]},
+                                   run_id=run_id)
                 removed += 1
             elif status in ("new", "changed"):
                 chunks = by_doc.get(row["doc_id"], [])
@@ -478,9 +499,123 @@ def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
         updated.append(row)
     if adapter.needs_flush:
         adapter.flush(collection)
-    log(f"rag load: {loaded} docs loaded, {removed} removed, {failed} failed "
+    if retain_days:
+        # housekeeping, and never allowed to fail a run that loaded fine
+        try:
+            pruned = adapter.prune_history(collection, _cutoff(retain_days))
+            log(f"rag load: pruned {pruned} retired chunk rows older than "
+                f"{retain_days} days")
+        except Exception as exc:
+            log(f"rag load: history pruning skipped: {exc}")
+    log(f"rag load: {loaded} docs loaded, {removed} removed "
+        f"({deleted_policy}), {failed} failed "
         f"-> collection '{collection}' now {adapter.count(collection)} chunks")
     return updated
+
+
+def _cutoff(days: int) -> str:
+    """An ISO timestamp `days` in the past — the retention boundary."""
+    moment = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(days=int(days)))
+    return moment.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def resolve_doc_ids(selectors, ledger: list) -> tuple:
+    """Turn what a person would type into doc ids. Returns (ids, unmatched).
+
+    Nobody knows a doc_id — it is a hash. The ledger is what maps the things
+    people do know onto it: the full source URI, or just the file name. An
+    exact doc_id is accepted too, for the report-driven path.
+
+    A selector matching several documents (the same file name in two folders)
+    resolves to ALL of them, which is why the step previews before it acts.
+    """
+    ids: list = []
+    unmatched: list = []
+    for raw in selectors:
+        wanted = str(raw or "").strip()
+        if not wanted:
+            continue
+        found = []
+        for row in ledger:
+            uri = str(row.get("source_uri") or "")
+            name = uri.replace("\\", "/").rsplit("/", 1)[-1]
+            if wanted in (row.get("doc_id"), uri, name):
+                found.append(row["doc_id"])
+        if found:
+            ids.extend(found)
+        else:
+            unmatched.append(wanted)
+    seen: set = set()
+    unique = [i for i in ids if not (i in seen or seen.add(i))]
+    return unique, unmatched
+
+
+def run_purge(doc_ids: list, ledger: list, adapter, collection: str,
+              dry_run: bool = True, log=print) -> tuple:
+    """Erase named documents from the collection and forget them.
+
+    This is the deliberate, irreversible operation - not what an ingestion
+    run does. Two things have to happen together, or the state is worse than
+    before:
+
+    * every chunk row for the document goes, LIVE AND RETIRED, because
+      erasure that leaves the previous generation behind has erased nothing;
+    * the document's LEDGER row goes too. Leaving it would mean the
+      incremental diff still considers the document ingested and unchanged,
+      so a document that is still present at the source would never come
+      back - an invisible hole rather than a deletion.
+
+    Which also means: purging a document that still exists at the source
+    removes it until the next run, and then it returns. Erasure has to happen
+    at the source as well; the step says so.
+
+    Returns (report rows, remaining ledger).
+    """
+    wanted = {str(doc_id).strip() for doc_id in doc_ids if str(doc_id).strip()}
+    if not wanted:
+        raise ValueError("no documents selected - refusing to purge a whole "
+                         "collection implicitly")
+    by_doc = {row["doc_id"]: row for row in ledger}
+    report: list = []
+    purged: set = set()
+    for doc_id in sorted(wanted):
+        known = by_doc.get(doc_id)
+        try:
+            chunks = adapter.count(collection, filter={"doc_id": doc_id},
+                                   include_retired=True)
+            if not dry_run:
+                adapter.delete(collection, filter={"doc_id": doc_id})
+                purged.add(doc_id)
+            report.append({
+                "doc_id": doc_id,
+                "source_uri": (known or {}).get("source_uri", ""),
+                "chunks_removed": chunks,
+                "ledger_removed": "yes" if known and not dry_run else
+                                  ("would" if known else "no"),
+                "outcome": "would purge" if dry_run else "purged",
+                "error_text": "" if known else
+                              "not in the ledger - chunks removed by doc_id only",
+            })
+        except Exception as exc:
+            report.append({"doc_id": doc_id,
+                           "source_uri": (known or {}).get("source_uri", ""),
+                           "chunks_removed": 0, "ledger_removed": "no",
+                           "outcome": "failed", "error_text": str(exc)[:500]})
+            log(f"rag purge: FAILED doc {doc_id}: {exc}")
+    # only a document whose chunks actually went loses its ledger row: a
+    # failed erasure that was forgotten anyway would leave the chunks
+    # retrievable with nothing left to say the document is there
+    remaining = [row for row in ledger if row["doc_id"] not in purged]
+    total = sum(row["chunks_removed"] for row in report)
+    log(f"rag purge: {'would remove' if dry_run else 'removed'} {total} chunk "
+        f"rows for {len(report)} documents from '{collection}'"
+        + (" (DRY RUN - nothing was changed)" if dry_run else ""))
+    return report, remaining
+
+
+PURGE_COLUMNS = ["doc_id", "source_uri", "chunks_removed", "ledger_removed",
+                 "outcome", "error_text"]
 
 
 def merge_ledger(previous_rows: list, updated_inventory: list) -> list:
