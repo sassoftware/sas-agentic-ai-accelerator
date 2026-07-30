@@ -64,6 +64,10 @@ class VectorStoreAdapter(ABC):
     @abstractmethod
     def cutover(self, alias: str, new_collection: str) -> None: ...
 
+    def dimensions(self, collection: str) -> int:
+        """The collection's vector width; 0 when the store cannot report it."""
+        return 0
+
     def flush(self, collection: str) -> None:
         """Eventually-consistent stores refresh here; default no-op."""
 

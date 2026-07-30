@@ -16,9 +16,12 @@ duplicates:
 
 Contracts learned live and encoded here rather than rediscovered:
 `reference.path` for code generation is the flow's SAS CONTENT path, not its
-`/dataFlows/dataFlows/<uuid>` service URI; and an existing resource is
-UPDATED in place, because re-creating one mints a new id and orphans
-everything that referenced the old one.
+`/dataFlows/dataFlows/<uuid>` service URI; an existing resource is UPDATED in
+place, because re-creating one mints a new id and orphans everything that
+referenced the old one; every PUT carries the resource id in the BODY as well
+as the URL, or the service reports the resource as missing or mismatched; and
+Model Manager drops `tags` on create, keeping them only on a later update, so
+registration always finishes with one.
 """
 from __future__ import annotations
 
@@ -65,6 +68,23 @@ class ViyaClient:
         response = self.request(method, endpoint, expect=expect, **kwargs)
         return response.json() if response.content else {}
 
+    @staticmethod
+    def created_id(payload: dict) -> str:
+        """The id of a just-created resource.
+
+        Model Manager answers a model POST with a COLLECTION wrapper -
+        {count: 1, items: [{id: ...}]} - rather than the model itself
+        (verified live), while the folders and job-definition services return
+        the resource. Accept both instead of guessing per service.
+        """
+        if payload.get("id"):
+            return str(payload["id"])
+        items = payload.get("items") or []
+        if items and items[0].get("id"):
+            return str(items[0]["id"])
+        raise RuntimeError("the service did not return the id of the resource "
+                           "it created: " + json.dumps(payload)[:300])
+
     # -- SAS Content --------------------------------------------------------
     def folder_id(self, path: str, create: bool = False) -> str:
         response = self.request("GET", "/folders/folders/@item",
@@ -76,16 +96,28 @@ class ViyaClient:
         parent, _, name = path.rstrip("/").rpartition("/")
         parent_id = self.folder_id(parent or "/", create=True) if parent else ""
         params = {"parentFolderUri": "/folders/folders/" + parent_id} if parent_id else {}
-        return self.json("POST", "/folders/folders", params=params,
-                         json={"name": name})["id"]
+        return self.created_id(self.json("POST", "/folders/folders",
+                                         params=params, json={"name": name}))
 
     def put_file(self, folder_id: str, name: str, content: str) -> str:
-        """Write a text file, replacing any file of that name in the folder."""
+        """Write a text file, REPLACING the content of one already there.
+
+        The files service enforces one name per folder and answers 409 on a
+        second POST, so an existing artifact has its content replaced rather
+        than being deleted and re-created - which also keeps the file's id, so
+        anything referencing it still resolves.
+        """
         members = self.json("GET", f"/folders/folders/{folder_id}/members",
-                            params={"limit": 200}).get("items", [])
+                            params={"limit": 500}).get("items", [])
         for member in members:
             if member.get("name") == name and "/files/files/" in str(member.get("uri")):
-                self.request("DELETE", str(member["uri"]), expect=(200, 204, 404))
+                file_id = str(member["uri"]).rsplit("/", 1)[-1]
+                self.request("PUT", f"/files/files/{file_id}/content",
+                             expect=(200, 201, 204),
+                             data=content.encode("utf-8"),
+                             headers={"Content-Type": "application/octet-stream",
+                                      "If-Match": "*"})
+                return file_id
         created = self.json(
             "POST", "/files/files",
             params={"parentFolderUri": "/folders/folders/" + folder_id,
@@ -115,7 +147,28 @@ class ViyaClient:
                   "description": "RAG setups registered by the SAS Agentic AI "
                                  "Accelerator",
                   "tags": ["LLM", "RAG-Engineering"]})
-        return project["id"]
+        return self.created_id(project)
+
+    def project_version_id(self, project_id: str) -> str:
+        """The project version a model belongs to.
+
+        A model without one cannot be updated: the service answers 500 with
+        "the model has to belong to either a project version or folder"
+        (verified live). The project resource names its latest version but
+        does not give its id, so the versions collection is the source.
+        """
+        project = self.json("GET", f"/modelRepository/projects/{project_id}")
+        versions = self.json("GET",
+                             f"/modelRepository/projects/{project_id}/projectVersions",
+                             params={"limit": 20}).get("items") or []
+        if not versions:
+            raise RuntimeError(f"project {project_id} has no version to "
+                               "register a model into")
+        latest = str(project.get("latestVersion") or "")
+        for version in versions:
+            if str(version.get("name")) == latest:
+                return str(version["id"])
+        return str(versions[-1]["id"])
 
     def register_model(self, project_id: str, name: str, settings: dict,
                        description: str, train_table: str) -> str:
@@ -124,9 +177,11 @@ class ViyaClient:
                           params={"filter": f"eq(name,'{name}')", "limit": 5})
         existing = [m for m in (found.get("items") or [])
                     if m.get("projectId") == project_id]
+        version_id = self.project_version_id(project_id)
         body = {
             "name": name,
             "projectId": project_id,
+            "projectVersionId": version_id,
             "description": description[:1024],
             "function": "RAG",
             "algorithm": "RAG",
@@ -149,14 +204,35 @@ class ViyaClient:
                 {"name": n, "role": "output", "type": t, "length": length,
                  "description": d} for n, t, length, d in RETRIEVAL_OUTPUTS],
         }
-        headers = {"Content-Type": "application/vnd.sas.models.model+json"}
+        media = "application/vnd.sas.models.model+json"
+        headers = {"Content-Type": media, "Accept": media}
         if existing:
             model_id = existing[0]["id"]
-            self.json("PUT", f"/modelRepository/models/{model_id}",
-                      headers=dict(headers, **{"If-Match": "*"}), json=body)
-            return model_id
-        return self.json("POST", "/modelRepository/models", headers=headers,
-                         json=body)["id"]
+        else:
+            model_id = self.created_id(self.json("POST", "/modelRepository/models",
+                                                 headers=headers, json=body))
+        # ALWAYS finish with an update, even on a fresh model: Model Manager
+        # silently drops `tags` on create and only keeps them on a subsequent
+        # update (properties do persist on create) - verified live. GET, merge,
+        # PUT: the id must be in the BODY as well as the URL, or the service
+        # answers 404 "A model with the ID '' could not be found", and whatever
+        # the service set on the model has to survive the update.
+        merged = dict(body)
+        etag = "*"
+        try:
+            current = self.request("GET", f"/modelRepository/models/{model_id}",
+                                   headers={"Accept": media})
+            merged = dict(current.json())
+            merged.update(body)
+            etag = current.headers.get("ETag") or "*"
+        except Exception:
+            # a model an interrupted registration left in a bad state cannot
+            # even be READ; the complete definition still updates it
+            pass
+        merged["id"] = model_id
+        self.json("PUT", f"/modelRepository/models/{model_id}",
+                  headers=dict(headers, **{"If-Match": etag}), json=merged)
+        return model_id
 
     def put_model_content(self, model_id: str, name: str, content: str,
                           role: str = "") -> None:
@@ -233,15 +309,18 @@ class ViyaClient:
             if (member.get("name") == name
                     and "/jobDefinitions/definitions/" in str(member.get("uri"))):
                 job_id = str(member["uri"]).rsplit("/", 1)[-1]
+                # the id belongs in the BODY as well as the URL, exactly as for
+                # a model - here the service says "Job definition IDs do not
+                # match on update: <id> and ." (verified live)
                 self.json("PUT", f"/jobDefinitions/definitions/{job_id}",
                           headers={"Content-Type": media, "Accept": media,
-                                   "If-Match": "*"}, json=body)
+                                   "If-Match": "*"}, json=dict(body, id=job_id))
                 return job_id
         created = self.json(
             "POST", "/jobDefinitions/definitions",
             params={"parentFolderUri": "/folders/folders/" + folder_id},
             headers={"Content-Type": media, "Accept": media}, json=body)
-        return created["id"]
+        return self.created_id(created)
 
 
 def register_setup(client: ViyaClient, settings: dict, template: str,

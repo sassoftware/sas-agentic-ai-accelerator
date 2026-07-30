@@ -312,6 +312,24 @@ class PgVectorAdapter(VectorStoreAdapter):
                         params)
             return int(cur.fetchone()[0])
 
+    def dimensions(self, collection: str) -> int:
+        """The collection's vector width, read from the column itself.
+
+        Register Setup needs it to emit the DDL artifact, and nothing else in
+        the pipeline carries it: dimensions follow from the embedding model,
+        so they are deliberately not part of the configuration fingerprint.
+        For pgvector the width lives in the column's type modifier.
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT a.atttypmod FROM pg_attribute a "
+                "JOIN pg_class c ON c.oid = a.attrelid "
+                "WHERE c.relname = %s AND a.attname = 'embedding' "
+                "AND a.attnum > 0", [collection])
+            row = cur.fetchone()
+        self._conn.commit()
+        return int(row[0]) if row and row[0] and int(row[0]) > 0 else 0
+
     def restore(self, collection: str, run_id: str) -> int:
         """Undo one run's retirements - the rollback the report asked for.
 

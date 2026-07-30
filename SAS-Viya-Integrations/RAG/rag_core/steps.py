@@ -85,6 +85,11 @@ COLUMN_LABELS = {
     "entities": "Entities (JSON)",
     "relations": "Relations (JSON)",
     "embedding": "Embedding vector (JSON)",
+    # registration report
+    "registered": "Registered item",
+    "name": "Name",
+    "location": "Location",
+    "detail": "Detail",
     # load report
     "chunks_loaded": "Chunks written to the vector store",
     "chunks_deleted": "Stale chunks removed",

@@ -176,6 +176,7 @@ class _Reply:
         self._payload = payload if payload is not None else {}
         self.content = content
         self.text = ""
+        self.headers = {"ETag": 'W/"stub"'}
 
     def json(self):
         return self._payload
@@ -206,18 +207,31 @@ class _StubViya:
             items.append({"name": "RAG-Example.flw",
                           "uri": "/dataFlows/dataFlows/flow-9"})
             return _Reply(200, {"items": items})
+        if url.endswith("/content") and "/files/files/" in url:
+            return _Reply(204, {})
         if url.endswith("/files/files"):
             return _Reply(201, {"id": "file-1"})
+        if "/projectVersions" in url:
+            return _Reply(200, {"items": [{"id": "ver-1", "name": "Version 1"}]})
+        if url.endswith("/modelRepository/projects/proj-1"):
+            return _Reply(200, {"id": "proj-1", "latestVersion": "Version 1"})
         if "/modelRepository/projects" in url:
             return _Reply(200, {"items": [{"id": "proj-1"}]})
         if "/modelRepository/models/" in url and url.endswith("/contents"):
             return _Reply(201, {})
+        if url.endswith("/modelRepository/models/model-new") and method == "GET":
+            return _Reply(200, {"id": "model-new", "projectId": "proj-1",
+                                "projectVersionId": "ver-1"})
+        if url.endswith("/modelRepository/models/model-old") and method == "GET":
+            return _Reply(200, {"id": "model-old", "projectId": "proj-1",
+                                "projectVersionId": "ver-1",
+                                "somethingTheServiceSet": "keep me"})
         if "/modelRepository/models" in url:
             if method == "GET":
                 items = ([{"id": "model-old", "projectId": "proj-1"}]
                          if self.existing_model else [])
                 return _Reply(200, {"items": items})
-            return _Reply(201, {"id": "model-new"})
+            return _Reply(201, {"count": 1, "items": [{"id": "model-new"}]})
         if "/studioDevelopment/code" in url:
             return _Reply(200, {"code": "data _null_; run;"})
         if "/jobDefinitions/definitions" in url:
@@ -287,3 +301,70 @@ def test_no_flow_means_no_job():
     result = _register(stub)
     assert result["job_id"] == ""
     assert not any("/jobDefinitions/" in url for _m, url, _p, _b in stub.calls)
+
+
+def test_a_created_id_is_read_from_either_response_shape():
+    """Model Manager answers a model POST with a collection wrapper, the other
+    services with the resource itself (both verified live)."""
+    from rag_core.registration import ViyaClient
+    assert ViyaClient.created_id({"id": "direct"}) == "direct"
+    assert ViyaClient.created_id({"count": 1, "items": [{"id": "wrapped"}]}) == "wrapped"
+    with pytest.raises(RuntimeError, match="did not return the id"):
+        ViyaClient.created_id({"count": 0, "items": []})
+
+
+def test_updating_a_model_sends_the_id_in_the_body_too():
+    """Without it the service answers 404 as though the model did not exist."""
+    stub = _StubViya(existing_model=True)
+    _register(stub)
+    body = next(body for method, url, _p, body in stub.calls
+                if method == "PUT" and "/modelRepository/models/" in url)
+    assert body["id"] == "model-old"
+
+
+def test_a_created_model_belongs_to_the_project_version():
+    """Without projectVersionId the model cannot be updated later: the service
+    answers 500 "the model has to belong to either a project version or
+    folder" (verified live)."""
+    stub = _StubViya()
+    _register(stub)
+    body = next(body for method, url, _p, body in stub.calls
+                if method == "POST" and url.endswith("/modelRepository/models"))
+    assert body["projectVersionId"] == "ver-1"
+
+
+def test_updating_a_model_keeps_what_the_service_set():
+    stub = _StubViya(existing_model=True)
+    _register(stub)
+    body = next(body for method, url, _p, body in stub.calls
+                if method == "PUT" and "/modelRepository/models/" in url)
+    assert body["somethingTheServiceSet"] == "keep me"
+    assert body["projectVersionId"] == "ver-1"
+
+
+def test_an_existing_artifact_has_its_content_replaced():
+    """A second POST would 409: the files service allows one name per folder."""
+    stub = _StubViya(existing_model=True)     # the stub lists retrieve_context.py
+    _register(stub)
+    assert any(method == "PUT" and url.endswith("/files/files/old/content")
+               for method, url, _p, _b in stub.calls)
+    assert not any(method == "DELETE" for method, _u, _p, _b in stub.calls)
+
+
+def test_tags_are_applied_by_the_update_that_follows_a_create():
+    """Model Manager drops tags on create and keeps them only on a subsequent
+    update (verified live), so registration always ends with one."""
+    stub = _StubViya()
+    _register(stub)
+    put = next(body for method, url, _p, body in stub.calls
+               if method == "PUT" and "/modelRepository/models/model-new" in url)
+    assert "pgvector" in put["tags"] and "all_minilm_l6_v2" in put["tags"]
+
+
+def test_regenerating_a_job_sends_its_id_in_the_body():
+    """The service otherwise reports "Job definition IDs do not match"."""
+    stub = _StubViya(existing_job=True)
+    _register(stub, flow_path="/Users/x/My Folder/RAG-Example.flw")
+    body = next(body for method, url, _p, body in stub.calls
+                if method == "PUT" and "/jobDefinitions/definitions/" in url)
+    assert body["id"] == "job-old"
