@@ -176,3 +176,22 @@ def test_a_document_without_chunks_still_fails_only_itself():
     by_doc = {row["doc_id"]: row for row in updated}
     assert by_doc["d1"]["status"] == "failed"
     assert by_doc["d2"]["status"] == "ingested"
+
+
+# ---------------------------------------------------------------------------
+# the fingerprint must not depend on which PATH a run took
+# ---------------------------------------------------------------------------
+def test_a_no_op_run_fingerprints_the_same_as_a_full_run():
+    """A scheduled run with nothing new must not read as configuration drift.
+
+    A full run knows the embedding dimensions (it called the endpoint); a
+    no-op run does not. If dimensions entered the fingerprint, the two would
+    differ and the guard would refuse a run where nothing had changed.
+    """
+    full = merge_config(merge_config(None, {"chunker": "recursive"}),
+                        {"embed_model": "all_minilm_l6_v2"})
+    noop = merge_config(merge_config(None, {"chunker": "recursive"}),
+                        {"embed_model": "all_minilm_l6_v2"})
+    assert config_hash(json.loads(full)) == config_hash(json.loads(noop))
+    for key in ("embed_dims", "deployment_type"):
+        assert key not in json.loads(full)
