@@ -790,11 +790,15 @@ export async function buildRagBuilder(
   // is why the embedding card sits above this one: choosing the model first
   // means the ceiling is known before anyone picks a number under it. An
   // unknown model publishes no ceiling, and then nothing is imposed.
-  const capTokenWindow = (): void => {
+  const capTokenWindow = (clamp = true): void => {
     const ceiling = embeddingTokenLimit(embedModelField.value);
     if (ceiling > 0) {
       tokenLimitField.max = String(ceiling);
-      if (Number(tokenLimitField.value) > ceiling) tokenLimitField.value = String(ceiling);
+      // Clamp only when someone picked a different model. On LOAD the saved
+      // number is what the collection was actually built with: quietly
+      // lowering it here would hide a setup that is already broken, where
+      // validateSetup names it instead.
+      if (clamp && Number(tokenLimitField.value) > ceiling) tokenLimitField.value = String(ceiling);
       tokenWindowNote.textContent = str(
         'ragBuilderTokenLimitCeiling',
         'This model accepts at most {max} tokens per chunk.'
@@ -815,16 +819,16 @@ export async function buildRagBuilder(
   // overlap_tokens only to that one, and paragraph_chunks does not even
   // accept it. Leaving the field visible for a chunker that ignores it
   // invites tuning a number that does nothing.
-  const followChunker = (): void => {
+  const followChunker = (reset = true): void => {
     const uses = CHUNKERS_WITH_OVERLAP.has(chunkerField.value);
     overlapColumn.style.display = uses ? '' : 'none';
-    if (!uses) overlapField.value = '0';
+    if (!uses && reset) overlapField.value = '0';
   };
-  chunkerField.addEventListener('change', followChunker);
+  chunkerField.addEventListener('change', () => followChunker(true));
   followChunker();
   // The embedding card is built first, so the model's ceiling is wired here,
   // where the window field it caps exists. Changing the model re-applies it.
-  embedModelField.addEventListener('change', capTokenWindow);
+  embedModelField.addEventListener('change', () => capTokenWindow(true));
   capTokenWindow();
 
   chunkingBody.appendChild(chunkingRow);
@@ -1062,6 +1066,15 @@ export async function buildRagBuilder(
     // to show first is how a setup starts writing somewhere else.
     keepUnlisted(embedModelField, setup.embedding.model, str('ragBuilderUnlistedModel', 'not registered'));
     embedDimsField.value = String(setup.embedding.dims);
+    // Setting a field's value in script fires no change event, so everything
+    // derived from the model and the chunker has to be re-run by hand here -
+    // otherwise a loaded setup inherits the PREVIOUS setup's token ceiling,
+    // overlap bound and overlap visibility. Nothing is rewritten: the saved
+    // numbers stand, and validateSetup reports them if they no longer fit.
+    embedDimsField.readOnly = embeddingDimensions(setup.embedding.model) > 0;
+    capTokenWindow(false);
+    followChunker(false);
+    boundOverlap();
     backendField.value = setup.store.backend;
     // a setup saved before policies existed carries none
     currentPolicies = setup.policies ?? policiesFrom(config);
