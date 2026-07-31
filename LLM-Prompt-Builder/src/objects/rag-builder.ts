@@ -74,11 +74,28 @@ const SETUP_FILE = 'rag-setup.json';
 const PIPELINE_FILE = 'pipeline.yaml';
 const DOCUMENTATION_FILE = 'documentation.md';
 
-const PREFIX_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,19}$/;
+/**
+ * A pipeline table prefix: a SAS name, capped at 20 characters.
+ *
+ * The generated names are <prefix>_DOC_EVENTS and friends, and CAS stops at
+ * 32 characters — 20 is what leaves room for the longest suffix. Leading
+ * underscore is allowed because SAS names allow it; a leading digit is not,
+ * for the same reason.
+ */
+const PREFIX_MAX = 20;
+const PREFIX_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,19}$/;
 const COLLECTION_PATTERN = /^[a-z][a-z0-9_]{0,62}$/;
 
 const EXTRACTORS = ['', 'plaintext', 'markdown', 'csv_json', 'html', 'pdf-text'];
 const CHUNKERS = ['recursive', 'paragraph'];
+/**
+ * Chunkers that take an overlap.
+ *
+ * Mirrors run_chunk, which passes overlap_tokens to the recursive chunker
+ * only — paragraph_chunks has no such parameter, so a value set for it is
+ * silently discarded. Adding a chunker means deciding which list it joins.
+ */
+const CHUNKERS_WITH_OVERLAP = new Set(['recursive']);
 /**
  * A caslib nobody but its owner can read.
  *
@@ -372,7 +389,7 @@ export async function buildRagBuilder(
     columns = 'col-md-4',
     info = '',
     required = false
-  ): void => {
+  ): HTMLDivElement => {
     const column = document.createElement('div');
     column.className = columns;
     const label = document.createElement('label');
@@ -400,6 +417,7 @@ export async function buildRagBuilder(
     }
     column.appendChild(element);
     parent.appendChild(column);
+    return column;
   };
 
   const textInput = (value = '', placeholder = ''): HTMLInputElement => {
@@ -633,30 +651,61 @@ export async function buildRagBuilder(
   editor.appendChild(documentationCard);
 
   // Pipeline
-  const [pipelineCard, pipelineBody] = card(
-    str('ragBuilderPipelineHeading', 'Ingestion pipeline'),
+  // The ingestion is four stages, and they are grouped as four, in the order
+  // the data moves: documents are found, cut into chunks, turned into vectors,
+  // and landed in a store. One long row of unrelated controls hid which
+  // setting affected which stage — and the settings interact within a stage
+  // (overlap with the token window, dimensions with the model) far more than
+  // across them.
+  const [documentsCard, documentsBody] = card(
+    str('ragBuilderDocumentsHeading', '1. Documents'),
     str(
-      'ragBuilderPipelineHint',
-      'What the generated Studio Flow / Job Execution job will run: crawl, extract, chunk and embed through the governed SCR embedding container.'
+      'ragBuilderDocumentsHint',
+      'Where the corpus comes from and how text is read out of it. The ingestion walks this folder on every run and compares what it finds against the ledger, so adding or removing files there is how a corpus changes.'
     )
   );
-  const pipelineRow = document.createElement('div');
-  pipelineRow.className = 'row g-3';
+  const documentsRow = document.createElement('div');
+  documentsRow.className = 'row g-3';
   const sourcePathField = textInput('', '/data/documents');
-  labeled(pipelineRow, idOf('source-path'), str('ragBuilderSourcePathLabel', 'Document folder (compute-context path):'), sourcePathField, 'col-md-6',
+  labeled(documentsRow, idOf('source-path'), str('ragBuilderSourcePathLabel', 'Document folder (compute-context path):'), sourcePathField, 'col-md-8',
     str('ragBuilderSourcePathInfo', 'A path on the SAS Compute server, not on your workstation. The ingestion walks it recursively and treats every readable file as a candidate document. If the compute context cannot see this path, the run finds nothing rather than failing loudly.'), true);
   const extractorField = selectInput(EXTRACTORS, '', { '': str('ragBuilderExtractorAuto', 'Automatic (by file format)') });
-  labeled(pipelineRow, idOf('extractor'), str('ragBuilderExtractorLabel', 'Extractor:'), extractorField, 'col-md-3',
+  labeled(documentsRow, idOf('extractor'), str('ragBuilderExtractorLabel', 'Extractor:'), extractorField, 'col-md-4',
     str('ragBuilderExtractorInfo', 'How text is pulled out of each file. Automatic picks per file format and is almost always right; forcing one applies it to EVERY file, so a PDF read as plain text yields nonsense rather than an error. Some formats need optional Python packages — see the administration guide.'));
+  documentsBody.appendChild(documentsRow);
+  editor.appendChild(documentsCard);
+
+  const [chunkingCard, chunkingBody] = card(
+    str('ragBuilderChunkingHeading', '2. Chunking'),
+    str(
+      'ragBuilderChunkingHint',
+      'How each document is cut into the pieces that get embedded and retrieved. A chunk is the unit an answer is built from, so these settings decide how much context a single hit carries.'
+    )
+  );
+  const chunkingRow = document.createElement('div');
+  chunkingRow.className = 'row g-3';
   const chunkerField = selectInput(CHUNKERS, 'recursive');
-  labeled(pipelineRow, idOf('chunker'), str('ragBuilderChunkerLabel', 'Chunker:'), chunkerField, 'col-md-3',
+  labeled(chunkingRow, idOf('chunker'), str('ragBuilderChunkerLabel', 'Chunker:'), chunkerField, 'col-md-4',
     str('ragBuilderChunkerInfo', 'How a document is cut into retrievable pieces. Recursive splits on the largest natural boundary that fits the window (sections, then paragraphs, then sentences); paragraph keeps paragraphs whole and is better for short, well-structured documents.'));
   const tokenLimitField = numberInput(256, 16);
-  labeled(pipelineRow, idOf('token-limit'), str('ragBuilderTokenLimitLabel', 'Embedding token window:'), tokenLimitField, 'col-md-3',
+  labeled(chunkingRow, idOf('token-limit'), str('ragBuilderTokenLimitLabel', 'Embedding token window:'), tokenLimitField, 'col-md-4',
     str('ragBuilderTokenLimitInfo', 'The largest chunk, in tokens. This should match what the embedding model actually accepts: text beyond the model window is silently dropped, so an oversized chunk is embedded from its opening only, and retrieval then matches on text the answer never sees.'), true);
   const overlapField = numberInput(30, 0);
-  labeled(pipelineRow, idOf('overlap'), str('ragBuilderOverlapLabel', 'Chunk overlap (tokens):'), overlapField, 'col-md-3',
+  const overlapColumn = labeled(chunkingRow, idOf('overlap'), str('ragBuilderOverlapLabel', 'Chunk overlap (tokens):'), overlapField, 'col-md-4',
     str('ragBuilderOverlapInfo', 'How much text each chunk repeats from the previous one, so a sentence split across a boundary is still retrievable whole. Must be smaller than the token window — an overlap at or above it would never advance through the document. Larger overlap means more chunks, more embedding cost and more near-duplicate hits.'), true);
+  chunkingBody.appendChild(chunkingRow);
+  editor.appendChild(chunkingCard);
+
+  const [embeddingCard, embeddingBody] = card(
+    str('ragBuilderEmbeddingHeading', '3. Embedding'),
+    str(
+      'ragBuilderEmbeddingHint',
+      'The model that turns each chunk into a vector, run as a governed SCR container inside your deployment. Both settings here are fixed for the life of the collection: changing either means rebuilding it.'
+    )
+  );
+  const embeddingRow = document.createElement('div');
+  embeddingRow.className = 'row g-3';
+
   // The embedding model is LISTED, and never defaulted. Only a model
   // registered in the embedding project has a container behind it, and a name
   // with nothing behind it does not fail until the first embed call — after
@@ -679,10 +728,10 @@ export async function buildRagBuilder(
   const embedModelField = selectInput(['', ...registeredEmbeddings], '', {
     '': str('ragBuilderEmbedModelPlaceholder', 'Select an embedding model…'),
   });
-  labeled(pipelineRow, idOf('embed-model'), str('ragBuilderEmbedModelLabel', 'Embedding model:'), embedModelField, 'col-md-3',
+  labeled(embeddingRow, idOf('embed-model'), str('ragBuilderEmbedModelLabel', 'Embedding model:'), embedModelField, 'col-md-6',
     str('ragBuilderEmbedModelInfo', 'The model that turns each chunk into a vector, listed from the deployment\'s embedding model project. It cannot be changed later without re-embedding the whole corpus: a collection can only be searched with the model that built it, because vectors from two models are not comparable.'), true);
   const embedDimsField = numberInput(384, 1);
-  labeled(pipelineRow, idOf('embed-dims'), str('ragBuilderEmbedDimsLabel', 'Embedding dimensions:'), embedDimsField, 'col-md-3',
+  labeled(embeddingRow, idOf('embed-dims'), str('ragBuilderEmbedDimsLabel', 'Embedding dimensions:'), embedDimsField, 'col-md-3',
     str('ragBuilderEmbedDimsInfo', 'The width of the vector column, taken from the chosen model — it is a property of the model, not a setting, so it is read-only whenever the model publishes one. It stays editable only for a model registered outside the shipped set, where no width is published. Getting it wrong makes the collection unusable and it cannot be widened afterwards.'), true);
   // The vector column is created at this width and cannot be widened
   // afterwards, so the dimension follows the model wherever the model's fact
@@ -709,6 +758,18 @@ export async function buildRagBuilder(
   tokenLimitField.addEventListener('change', boundOverlap);
   tokenLimitField.addEventListener('input', boundOverlap);
   boundOverlap();
+
+  // Overlap is a property of the recursive chunker alone — run_chunk passes
+  // overlap_tokens only to that one, and paragraph_chunks does not even
+  // accept it. Leaving the field visible for a chunker that ignores it
+  // invites tuning a number that does nothing.
+  const followChunker = (): void => {
+    const uses = CHUNKERS_WITH_OVERLAP.has(chunkerField.value);
+    overlapColumn.style.display = uses ? '' : 'none';
+    if (!uses) overlapField.value = '0';
+  };
+  chunkerField.addEventListener('change', followChunker);
+  followChunker();
   if (!registeredEmbeddings.length) {
     const note = document.createElement('div');
     note.className = 'alert alert-danger py-2 px-3 mt-2 mb-0';
@@ -721,14 +782,14 @@ export async function buildRagBuilder(
           'ragBuilderNoEmbeddingProject',
           'No embedding model project is configured, so no embedding model can be chosen and no setup can be saved. Ask your administrator to set the "Embedding model project ID" option.'
         );
-    pipelineRow.appendChild(note);
+    embeddingRow.appendChild(note);
   }
-  pipelineBody.appendChild(pipelineRow);
-  editor.appendChild(pipelineCard);
+  embeddingBody.appendChild(embeddingRow);
+  editor.appendChild(embeddingCard);
 
   // Vector store + pipeline tables
   const [storeCard, storeBody] = card(
-    str('ragBuilderStoreHeading', 'Vector store and pipeline tables'),
+    str('ragBuilderStoreHeading', '4. Vector store'),
     str(
       'ragBuilderStoreHint',
       'Where the store lives and who may reach it both come from the credential domain — the connection is resolved server-side and never enters this browser as a secret.'
@@ -736,6 +797,20 @@ export async function buildRagBuilder(
   );
   const storeRow = document.createElement('div');
   storeRow.className = 'row g-3';
+  // The CAS working tables are a separate concern from the vector store: they
+  // are this pipeline's scratch space and audit trail, they live in CAS
+  // rather than in the database, and they are named independently of the
+  // collection. Grouping them with the store made two unrelated naming
+  // decisions look like one.
+  const [tablesCard, tablesBody] = card(
+    str('ragBuilderTablesHeading', '5. Pipeline tables'),
+    str(
+      'ragBuilderTablesHint',
+      'The CAS tables this pipeline writes as it runs — the ingestion ledger, the element and chunk tables and the run history. They are rebuilt by each run and are what you read to see what a run did.'
+    )
+  );
+  const tablesRow = document.createElement('div');
+  tablesRow.className = 'row g-3';
   // Which stores this deployment offers, and which of those THIS user holds
   // credentials for. Two separate questions: the admin decides what the site
   // runs, the credential domain decides who may use it. A backend the user
@@ -845,10 +920,14 @@ export async function buildRagBuilder(
   showStoreLocation();
   // TLS is deliberately NOT offered here - see RagBuilderConfig.storeSslmode
   const collectionField = textInput('', 'rag_hr_policies_v1');
-  labeled(storeRow, idOf('collection'), str('ragBuilderCollectionLabel', 'Collection (lowercase identifier):'), collectionField, 'col-md-4',
+  labeled(storeRow, idOf('collection'), str('ragBuilderCollectionLabel', 'Collection (lowercase identifier):'), collectionField, 'col-md-5',
     str('ragBuilderCollectionInfo', 'The table this corpus lives in inside the vector database. Two setups pointing at the same collection write into each other, so give each corpus its own — and a version suffix (…_v1) makes it possible to rebuild alongside the live one and cut over. Lowercase letters, digits and underscores, starting with a letter.'), true);
   const prefixField = textInput('', 'RAG_HR');
-  labeled(storeRow, idOf('tables-prefix'), str('ragBuilderTablesPrefixLabel', 'Pipeline table prefix (max 20 chars):'), prefixField, 'col-md-3',
+  // Bounded in the field itself: discovering a 20-character limit only when
+  // the save is rejected wastes the whole form-filling effort.
+  prefixField.maxLength = PREFIX_MAX;
+  prefixField.pattern = '[A-Za-z_][A-Za-z0-9_]*';
+  labeled(tablesRow, idOf('tables-prefix'), str('ragBuilderTablesPrefixLabel', 'Pipeline table prefix (max 20 chars):'), prefixField, 'col-md-4',
     str('ragBuilderTablesPrefixInfo', 'Prefix for the CAS working tables this pipeline creates — the ledger, the element and chunk tables, the run history. Kept to 20 characters so every generated name stays inside the 32-character CAS limit. Two setups sharing a prefix overwrite each other\'s ledger.'), true);
   // Caslib picker over the CAS Management listing, the same interactive
   // selection the Prompt Builder's dataset picker uses. Only the caslib is
@@ -867,7 +946,7 @@ export async function buildRagBuilder(
   const caslibField = selectInput(['', ...caslibs], '', {
     '': str('ragBuilderCaslibPlaceholder', 'Select a caslib…'),
   });
-  labeled(storeRow, idOf('tables-caslib'), str('ragBuilderTablesCaslibLabel', 'Tables caslib:'), caslibField, 'col-md-3',
+  labeled(tablesRow, idOf('tables-caslib'), str('ragBuilderTablesCaslibLabel', 'Tables caslib:'), caslibField, 'col-md-4',
     str('ragBuilderTablesCaslibInfo', 'The caslib holding this pipeline\'s working tables. It has to be one other people and scheduled jobs can reach: a personal caslib is not offered, because a corpus whose ledger only its author can see cannot be rerun by anyone else or by a schedule.'), true);
   const domainNote = document.createElement('p');
   domainNote.className = 'text-muted small mb-0 mt-2';
@@ -875,6 +954,9 @@ export async function buildRagBuilder(
   storeBody.appendChild(storeRow);
   storeBody.appendChild(domainNote);
   editor.appendChild(storeCard);
+
+  tablesBody.appendChild(tablesRow);
+  editor.appendChild(tablesCard);
 
   // ---- actions --------------------------------------------------------------
   const actions = document.createElement('div');
@@ -1024,9 +1106,12 @@ export async function buildRagBuilder(
     // through a document - the chunker would emit the same opening forever.
     if (!(setup.chunking.inputTokenLimit >= 16))
       return str('ragBuilderValidateTokenLimit', 'The embedding token window must be at least 16 tokens.');
-    if (setup.chunking.overlapTokens < 0)
+    if (CHUNKERS_WITH_OVERLAP.has(setup.chunking.chunker) && setup.chunking.overlapTokens < 0)
       return str('ragBuilderValidateOverlapNegative', 'The chunk overlap cannot be negative.');
-    if (setup.chunking.overlapTokens >= setup.chunking.inputTokenLimit)
+    if (
+      CHUNKERS_WITH_OVERLAP.has(setup.chunking.chunker) &&
+      setup.chunking.overlapTokens >= setup.chunking.inputTokenLimit
+    )
       return str(
         'ragBuilderValidateOverlap',
         'The chunk overlap must be smaller than the embedding token window - at or above it, chunking would never move forward through a document.'
@@ -1039,7 +1124,10 @@ export async function buildRagBuilder(
     if (!COLLECTION_PATTERN.test(setup.store.collection))
       return str('ragBuilderValidateCollection', 'The collection must be a lowercase identifier (letters, digits, underscores; starts with a letter).');
     if (!PREFIX_PATTERN.test(setup.tables.prefix))
-      return str('ragBuilderValidatePrefix', 'The table prefix must be 1-20 characters (letters, digits, underscores; starts with a letter) so every table name stays within 32 characters.');
+      return str(
+        'ragBuilderValidatePrefix',
+        'The table prefix must be 1-20 characters — letters, digits and underscores only, starting with a letter or an underscore — so every generated table name stays within the 32-character CAS limit.'
+      );
     return null;
   };
 

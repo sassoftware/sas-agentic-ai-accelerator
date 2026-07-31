@@ -298,8 +298,6 @@
     "ragBuilderDocumentationHint": "Written by the setup author, shown to every consumer: what this corpus is, what it should be used for, and where its limits are. Saved onto the Model Manager model so governance reviews read your own caveats.",
     "ragBuilderDocDescriptionLabel": "Description:",
     "ragBuilderDocDescriptionPlaceholder": "What does this RAG setup contain?",
-    "ragBuilderPipelineHeading": "Ingestion pipeline",
-    "ragBuilderPipelineHint": "What the generated Studio Flow / Job Execution job will run: crawl, extract, chunk and embed through the governed SCR embedding container.",
     "ragBuilderSourcePathLabel": "Document folder (compute-context path):",
     "ragBuilderExtractorLabel": "Extractor:",
     "ragBuilderExtractorAuto": "Automatic (by file format)",
@@ -308,7 +306,7 @@
     "ragBuilderOverlapLabel": "Chunk overlap (tokens):",
     "ragBuilderEmbedModelLabel": "Embedding model:",
     "ragBuilderEmbedDimsLabel": "Embedding dimensions:",
-    "ragBuilderStoreHeading": "Vector store and pipeline tables",
+    "ragBuilderStoreHeading": "4. Vector store",
     "ragBuilderStoreHint": "Where the store lives and who may reach it both come from the credential domain - the connection is resolved server-side and never enters this browser as a secret.",
     "ragBuilderBackendLabel": "Vector database:",
     "ragBuilderStoreSslmodeLabel": "SSL mode:",
@@ -325,7 +323,7 @@
     "ragBuilderValidateSource": "The document folder path is required.",
     "ragBuilderValidateStore": "This store has no host or database in the credential domain, so a setup saved here cannot ingest.",
     "ragBuilderValidateCollection": "The collection must be a lowercase identifier (letters, digits, underscores; starts with a letter).",
-    "ragBuilderValidatePrefix": "The table prefix must be 1-20 characters (letters, digits, underscores; starts with a letter) so every table name stays within 32 characters.",
+    "ragBuilderValidatePrefix": "The table prefix must be 1-20 characters — letters, digits and underscores only, starting with a letter or an underscore — so every generated table name stays within the 32-character CAS limit.",
     "ragBuilderSaveSuccess": "RAG setup saved to Model Manager (rag-setup.json, pipeline.yaml, documentation.md, tags, ledger reference and variable definitions).",
     "ragBuilderSaveError": "Saving the RAG setup failed - check the browser console and your Model Manager permissions.",
     "ragBuilderGenerateJobButton": "Generate ingestion job",
@@ -416,6 +414,14 @@
     "ragBuilderValidateEmbedModel": "Choose an embedding model. It decides the vector width and cannot be changed later without re-embedding the whole corpus.",
     "ragBuilderValidateOverlap": "The chunk overlap must be smaller than the embedding token window - at or above it, chunking would never move forward through a document.",
     "ragBuilderValidateOverlapNegative": "The chunk overlap cannot be negative.",
-    "ragBuilderValidateTokenLimit": "The embedding token window must be at least 16 tokens."
+    "ragBuilderValidateTokenLimit": "The embedding token window must be at least 16 tokens.",
+    "ragBuilderDocumentsHeading": "1. Documents",
+    "ragBuilderDocumentsHint": "Where the corpus comes from and how text is read out of it. The ingestion walks this folder on every run and compares what it finds against the ledger, so adding or removing files there is how a corpus changes.",
+    "ragBuilderChunkingHeading": "2. Chunking",
+    "ragBuilderChunkingHint": "How each document is cut into the pieces that get embedded and retrieved. A chunk is the unit an answer is built from, so these settings decide how much context a single hit carries.",
+    "ragBuilderEmbeddingHeading": "3. Embedding",
+    "ragBuilderEmbeddingHint": "The model that turns each chunk into a vector, run as a governed SCR container inside your deployment. Both settings here are fixed for the life of the collection: changing either means rebuilding it.",
+    "ragBuilderTablesHeading": "5. Pipeline tables",
+    "ragBuilderTablesHint": "The CAS tables this pipeline writes as it runs — the ingestion ledger, the element and chunk tables and the run history. They are rebuilt by each run and are what you read to see what a run did."
   }
 }

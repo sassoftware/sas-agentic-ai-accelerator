@@ -298,8 +298,6 @@
     "ragBuilderDocumentationHint": "Vom Setup-Autor geschrieben, für alle Konsumenten sichtbar: Was dieser Korpus ist, wofür er gedacht ist und wo seine Grenzen liegen. Wird am Model-Manager-Modell gespeichert, damit Governance-Reviews Ihre eigenen Einschränkungen lesen.",
     "ragBuilderDocDescriptionLabel": "Beschreibung:",
     "ragBuilderDocDescriptionPlaceholder": "Was enthält dieses RAG-Setup?",
-    "ragBuilderPipelineHeading": "Ingestion-Pipeline",
-    "ragBuilderPipelineHint": "Das führt der generierte Studio Flow / Job-Execution-Job aus: crawlen, extrahieren, chunken und über den governten SCR-Embedding-Container einbetten.",
     "ragBuilderSourcePathLabel": "Dokumentordner (Pfad im Compute-Kontext):",
     "ragBuilderExtractorLabel": "Extraktor:",
     "ragBuilderExtractorAuto": "Automatisch (nach Dateiformat)",
@@ -308,7 +306,7 @@
     "ragBuilderOverlapLabel": "Chunk-Überlappung (Tokens):",
     "ragBuilderEmbedModelLabel": "Embedding-Modell:",
     "ragBuilderEmbedDimsLabel": "Embedding-Dimensionen:",
-    "ragBuilderStoreHeading": "Vektordatenbank und Pipeline-Tabellen",
+    "ragBuilderStoreHeading": "4. Vektordatenbank",
     "ragBuilderStoreHint": "Sowohl der Ort der Datenbank als auch die Zugriffsberechtigung stammen aus der Credential-Domain - die Verbindung wird serverseitig aufgelöst und gelangt nie als Geheimnis in diesen Browser.",
     "ragBuilderBackendLabel": "Vektordatenbank:",
     "ragBuilderStoreSslmodeLabel": "SSL-Modus:",
@@ -325,7 +323,7 @@
     "ragBuilderValidateSource": "Der Pfad zum Dokumentordner ist erforderlich.",
     "ragBuilderValidateStore": "Für diese Datenbank sind in der Credential-Domain kein Host und keine Datenbank hinterlegt; eine hier gespeicherte Konfiguration kann nicht laden.",
     "ragBuilderValidateCollection": "Die Collection muss ein Kleinbuchstaben-Bezeichner sein (Buchstaben, Ziffern, Unterstriche; beginnt mit einem Buchstaben).",
-    "ragBuilderValidatePrefix": "Das Tabellen-Präfix muss 1-20 Zeichen lang sein (Buchstaben, Ziffern, Unterstriche; beginnt mit einem Buchstaben), damit jeder Tabellenname innerhalb von 32 Zeichen bleibt.",
+    "ragBuilderValidatePrefix": "Das Tabellenpräfix muss 1–20 Zeichen lang sein — nur Buchstaben, Ziffern und Unterstriche, beginnend mit einem Buchstaben oder Unterstrich —, damit jeder erzeugte Tabellenname innerhalb des CAS-Limits von 32 Zeichen bleibt.",
     "ragBuilderSaveSuccess": "RAG-Setup in Model Manager gespeichert (rag-setup.json, pipeline.yaml, documentation.md, Tags, Ledger-Referenz und Variablendefinitionen).",
     "ragBuilderSaveError": "Das Speichern des RAG-Setups ist fehlgeschlagen - prüfen Sie die Browser-Konsole und Ihre Model-Manager-Berechtigungen.",
     "ragBuilderGenerateJobButton": "Ingestion-Job generieren",
@@ -416,6 +414,14 @@
     "ragBuilderValidateTokenLimit": "Das Token-Fenster für das Embedding muss mindestens 16 Token betragen.",
     "ragBuilderBackendNoCredential": "keine Zugangsdaten",
     "ragBuilderBackendNoCredentialNote": "Kein Eintrag {entries} in der Credential-Domain {domain} — bitten Sie Ihre Administration um Zugriff.",
-    "ragBuilderNoBackendCredential": "Sie besitzen in der Credential-Domain {domain} keine Zugangsdaten für eine Vektordatenbank. Eine hier gespeicherte Konfiguration kann daher nicht laden. Bitten Sie Ihre Administration, die Einträge für die benötigte Datenbank zu ergänzen."
+    "ragBuilderNoBackendCredential": "Sie besitzen in der Credential-Domain {domain} keine Zugangsdaten für eine Vektordatenbank. Eine hier gespeicherte Konfiguration kann daher nicht laden. Bitten Sie Ihre Administration, die Einträge für die benötigte Datenbank zu ergänzen.",
+    "ragBuilderDocumentsHeading": "1. Dokumente",
+    "ragBuilderDocumentsHint": "Woher der Korpus stammt und wie Text daraus gelesen wird. Die Ingestion durchläuft diesen Ordner bei jedem Lauf und vergleicht den Fund mit dem Ledger — Dateien dort hinzuzufügen oder zu entfernen ist also der Weg, einen Korpus zu verändern.",
+    "ragBuilderChunkingHeading": "2. Chunking",
+    "ragBuilderChunkingHint": "Wie jedes Dokument in die Teile zerlegt wird, die eingebettet und abgerufen werden. Ein Chunk ist die Einheit, aus der eine Antwort entsteht; diese Einstellungen bestimmen also, wie viel Kontext ein einzelner Treffer trägt.",
+    "ragBuilderEmbeddingHeading": "3. Embedding",
+    "ragBuilderEmbeddingHint": "Das Modell, das jeden Chunk in einen Vektor überführt, ausgeführt als governter SCR-Container innerhalb Ihrer Installation. Beide Einstellungen sind für die Lebensdauer der Collection fest: Eine Änderung bedeutet Neuaufbau.",
+    "ragBuilderTablesHeading": "5. Pipeline-Tabellen",
+    "ragBuilderTablesHint": "Die CAS-Tabellen, die diese Pipeline im Lauf schreibt — das Ingestion-Ledger, die Element- und Chunk-Tabellen sowie die Laufhistorie. Sie werden bei jedem Lauf neu aufgebaut und sind das, was Sie lesen, um zu sehen, was ein Lauf getan hat."
   }
 }
