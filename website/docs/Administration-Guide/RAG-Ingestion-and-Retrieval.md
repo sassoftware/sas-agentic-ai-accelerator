@@ -55,13 +55,23 @@ prebuilt file) and create a job definition whose **form** is that HTML:
 | --- | --- |
 | Job definition | `<content root>/RAG-Builder-UI` |
 | `code` | empty — this job never runs SAS |
-| `form` property | the contents of `dist-rag/rag.html` |
+| `properties` entry named `form` | the contents of `dist-rag/rag.html` |
 | URL | `https://<host>/SASJobExecution/?_program=<path>&_action=form` |
 
-:::note The HTML is the FORM, not the code
-`&_action=form` serves the job's **form**. Putting the HTML in `code`
-produces *"Parameter Error — HTML form file was not found"*, which reads like
-a missing file rather than the wrong field.
+:::note The HTML is the FORM, not the code — and the form is a *property*
+`&_action=form` serves the job's **form**. Two ways to get this wrong, both
+of which look like something else:
+
+- HTML in `code` produces *"Parameter Error — HTML form file was not found"*,
+  which reads like a missing file rather than the wrong field.
+- The form is an entry **inside the definition's `properties` list**, named
+  `form` — not a top-level `form` key. A PUT carrying a top-level key returns
+  **200 and silently drops it**, so the deploy looks successful while the old
+  app keeps serving. Verify by reading the property back, not by trusting the
+  status code.
+
+The Prompt Builder is served the same way, from
+`/SAS Agentic AI Accelerator/Prompt Builder/SAS-LLM-Prompt-Builder-UI`.
 :::
 
 The Content Security Policy directives in
