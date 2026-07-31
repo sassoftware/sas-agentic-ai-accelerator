@@ -41,6 +41,8 @@ The `create-api-key-table.sas` helper and the VA data-role assignment are gone; 
 
   Neither policy enters the configuration fingerprint: they change nothing about how chunks are produced, so they must not demand a pipeline-version bump — and the drift guard must not refuse a run over a housekeeping setting.
 
+- **Email as a document format, and control over what the pipeline persists.** `.eml` is extracted with the standard library alone — no package for an admin to install — and the headers (from, to, date, subject) become a retrievable heading rather than being discarded, because with mail the metadata is usually *why* someone is searching; every body chunk inherits the subject as its heading path. Multipart mail prefers the plain-text part, falls back to stripped HTML, and never treats an attachment as document text. Outlook `.msg` routes to markitdown, which already carries the reader for that format. Separately, `RAG - Extract Text` and `RAG - Chunk Documents` can now keep their tables **in memory only** instead of saving them to disk: the ledger and the embedded chunks must survive a restart (the incremental diff and the embedding checkpoint depend on it), but elements and chunks are rebuilt from the documents on the next run and are the largest thing the pipeline writes on a big corpus
+
 ### Removed
 
 - The Prompt Builder's assigned-data API-key table (DDC data role), the `optimizeKeyLibrary`/`optimizeKeyTable` Options, the job's governed key-table parameters and WORK-file key export, and the `create-api-key-table.sas` helper

@@ -196,10 +196,86 @@ class PdfTextExtractor:
         return elements
 
 
+class EmailExtractor:
+    """RFC 822 mail (.eml) — headers as context, then the body.
+
+    Email is the one corpus format where the METADATA is usually the reason
+    someone is searching: who wrote it, to whom, when, about what. Those go
+    in as a heading element so they are retrievable and so every body chunk
+    inherits them through heading_path, rather than being discarded in
+    favour of the body text alone.
+
+    Stdlib only: the email package parses this, and multipart mail is walked
+    for the first text/plain part, falling back to text/html stripped by the
+    HTML extractor.
+    """
+    name = "email"
+    formats = {".eml", ".mht", ".mhtml"}
+    requires: list = []
+
+    _HEADERS = ("From", "To", "Cc", "Date", "Subject")
+
+    def extract(self, data: bytes, source_uri: str, **params) -> list:
+        import email
+        from email import policy
+
+        message = email.message_from_bytes(data, policy=policy.default)
+        summary = []
+        for name in self._HEADERS:
+            value = message.get(name)
+            if value:
+                summary.append(f"{name}: {' '.join(str(value).split())}")
+        subject = str(message.get("Subject") or "").strip()
+        heading = " ".join(subject.split()) or "(no subject)"
+
+        body, html_body = "", ""
+        if message.is_multipart():
+            for part in message.walk():
+                if part.get_content_maintype() == "multipart":
+                    continue
+                if part.get_filename():          # attachments are not text
+                    continue
+                kind = part.get_content_type()
+                try:
+                    text = part.get_content()
+                except Exception:
+                    continue
+                if kind == "text/plain" and not body:
+                    body = str(text)
+                elif kind == "text/html" and not html_body:
+                    html_body = str(text)
+        else:
+            try:
+                content = str(message.get_content())
+            except Exception:
+                content = data.decode("utf-8", errors="replace")
+            if message.get_content_type() == "text/html":
+                html_body = content
+            else:
+                body = content
+        if not body.strip() and html_body.strip():
+            parts = HtmlExtractor().extract(html_body.encode("utf-8"),
+                                            source_uri, **params)
+            body = "\n\n".join(p["text"] for p in parts)
+
+        elements = []
+        if summary:
+            elements.append(element("\n".join(summary), "heading", level=1,
+                                    heading_path=heading))
+        if body.strip():
+            elements.append(element(body.strip(), "text", heading_path=heading))
+        return elements
+
+
 class MarkitdownExtractor:
-    """Office-family formats via markitdown (owner-accepted default, OQ7)."""
+    """Office-family formats via markitdown (owner-accepted default, OQ7).
+
+    .msg (Outlook) rides along here rather than in the email extractor: it is
+    a compound OLE file, not RFC 822, and markitdown already carries the
+    reader for it.
+    """
     name = "markitdown"
-    formats = {".docx", ".xlsx", ".pptx", ".epub", ".rtf"}
+    formats = {".docx", ".xlsx", ".pptx", ".epub", ".rtf", ".msg"}
     requires = ["markitdown"]
 
     def extract(self, data: bytes, source_uri: str, **params) -> list:
@@ -219,5 +295,6 @@ BUILTINS = [
     CsvJsonExtractor(),
     HtmlExtractor(),
     PdfTextExtractor(),
+    EmailExtractor(),
     MarkitdownExtractor(),
 ]
