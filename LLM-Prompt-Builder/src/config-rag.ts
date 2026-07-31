@@ -19,6 +19,7 @@
  * connection CONFIG (host/port/database).
  */
 
+import { RAG_BACKENDS, backendOptionKey } from './objects/rag-backends';
 import type { RagBuilderConfig } from './types/rag';
 
 export interface RagRuntimeConfig {
@@ -51,7 +52,6 @@ const DEFAULTS: RagRuntimeConfig = {
     computeContext: '',
     // Blank = every backend the runtime supports. Set to e.g. 'pgvector' on a
     // site that operates only one store, so the others never appear.
-    enabledBackends: '',
     // Admin-set operational policy. Users do not see these per setup; a setup
     // records the values it was created with.
     storeSslmode: 'prefer',
@@ -61,6 +61,11 @@ const DEFAULTS: RagRuntimeConfig = {
     embedReplicas: '1',
     persistElements: '1',
     persistChunks: '1',
+    // one enable flag per backend, generated from the single list so adding a
+    // backend does not mean remembering to add a default here
+    ...Object.fromEntries(
+      RAG_BACKENDS.map((backend) => [backendOptionKey(backend), '1'])
+    ),
   },
 };
 
@@ -73,7 +78,6 @@ const URL_OVERRIDABLE = [
   'contentRoot',
   'casServer',
   'computeContext',
-  'enabledBackends',
   'storeSslmode',
   'deletedPolicy',
   'retainDays',
@@ -82,6 +86,7 @@ const URL_OVERRIDABLE = [
   'persistElements',
   'persistChunks',
   'id',
+  ...RAG_BACKENDS.map((backend) => backendOptionKey(backend)),
 ] as const;
 
 export function getRagConfig(): RagRuntimeConfig {

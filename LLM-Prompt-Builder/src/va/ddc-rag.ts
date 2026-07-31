@@ -11,6 +11,7 @@
  */
 
 import type { RagRuntimeConfig } from '../config-rag';
+import { RAG_BACKENDS, backendOptionKey } from '../objects/rag-backends';
 
 interface OptionField {
   name: string;
@@ -210,11 +211,22 @@ function buildOptionsConfig(config: RagRuntimeConfig): Record<string, unknown> {
           { key: '0', text: 'Keep in memory only' },
         ],
       } as OptionField,
-      textField(
-        'enabledBackends',
-        'Vector databases offered',
-        rb.enabledBackends,
-        'Comma-separated list of vector-store backends end users may choose from (e.g. "pgvector, singlestore"). Blank offers every backend the runtime supports. This is what the DEPLOYMENT offers; whether a given user can actually use one is decided separately by the credential domain, and a backend they hold no credential for is shown disabled with the missing entry named.'
+      // one enable/disable field per backend, generated from RAG_BACKENDS -
+      // a comma-separated list meant typing store names by hand, and a typo
+      // silently offered nothing
+      ...RAG_BACKENDS.map(
+        (backend) =>
+          ({
+            name: backendOptionKey(backend),
+            label: `Offer ${backend.label}`,
+            type: 'String',
+            value: rb[backendOptionKey(backend)] ?? '1',
+            tooltip: `Whether end users may choose ${backend.label} for a RAG setup. Independent of credentials: this is what the deployment offers, and a user who holds no ${backend.entries[0]} / ${backend.entries[1]} entry sees it disabled with the missing entry named.`,
+            dataProvider: [
+              { key: '1', text: 'Yes' },
+              { key: '0', text: 'No' },
+            ],
+          }) as OptionField
       ),
     ],
     groups: [],

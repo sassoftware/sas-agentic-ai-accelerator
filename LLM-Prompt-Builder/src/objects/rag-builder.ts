@@ -39,6 +39,7 @@ import {
 } from '../api/models-api';
 import { getFileContent } from '../api/files-api';
 import { resolveDomainSecrets } from '../api/credentials-api';
+import { RAG_BACKENDS, backendOptionKey, type RagBackend } from './rag-backends';
 import { ensureChildFolder, getFolderByPath, getFolderMembers } from '../api/folders-api';
 import {
   createJobDefinition,
@@ -69,33 +70,16 @@ const COLLECTION_PATTERN = /^[a-z][a-z0-9_]{0,62}$/;
 const EXTRACTORS = ['', 'plaintext', 'markdown', 'csv_json', 'html', 'pdf-text'];
 const CHUNKERS = ['recursive', 'paragraph'];
 /**
- * Vector-store backends the runtime supports, with the credential-domain
- * entries each one needs. Mirrors rag_core.adapters.REGISTRY — a backend the
- * runtime cannot load must never be offered here.
+ * The backends this deployment offers, in list order. Each has its own
+ * Options flag; '0' withholds it. If an administrator turns every one off we
+ * fall back to offering all of them, because an empty dropdown leaves the
+ * user unable to proceed with no explanation of why.
  */
-const BACKENDS: ReadonlyArray<{ key: string; label: string; entries: string[] }> = [
-  { key: 'pgvector', label: 'pgvector (PostgreSQL)',
-    entries: ['PGVECTOR_RAG_USER', 'PGVECTOR_RAG_PW'] },
-  { key: 'singlestore', label: 'SingleStore',
-    entries: ['SINGLESTORE_RAG_USER', 'SINGLESTORE_RAG_PW'] },
-];
-
-/**
- * The backends this deployment offers, in the order they were configured.
- * Blank (the default) offers all of them. An unknown name is ignored rather
- * than shown, so a typo cannot conjure a backend the runtime has no adapter
- * for. If the setting names nothing recognisable we fall back to everything,
- * because presenting an empty list would leave the user unable to proceed
- * with no explanation.
- */
-function offeredBackends(enabled: string): typeof BACKENDS {
-  const wanted = String(enabled ?? '')
-    .split(',')
-    .map((name) => name.trim().toLowerCase())
-    .filter(Boolean);
-  if (!wanted.length) return BACKENDS;
-  const offered = BACKENDS.filter((backend) => wanted.includes(backend.key));
-  return offered.length ? offered : BACKENDS;
+function offeredBackends(config: RagBuilderConfig): ReadonlyArray<RagBackend> {
+  const offered = RAG_BACKENDS.filter(
+    (backend) => String(config[backendOptionKey(backend)] ?? '1') !== '0'
+  );
+  return offered.length ? offered : RAG_BACKENDS;
 }
 
 /** The retrieval model's fixed in/out contract (owner requirement: the model
@@ -478,12 +462,12 @@ export async function buildRagBuilder(
   // runs, the credential domain decides who may use it. A backend the user
   // cannot reach stays visible but disabled, naming the missing entry — a
   // hidden option looks like the feature does not exist.
-  const offered = offeredBackends(config.enabledBackends);
+  const offered = offeredBackends(config);
   const credentialDomain = String(config.credentialDomain || 'agentic-ai-keys').trim();
   const heldEntries = credentialDomain
     ? await resolveDomainSecrets(credentialDomain)
     : {};
-  const backendReachable = (backend: (typeof BACKENDS)[number]): boolean =>
+  const backendReachable = (backend: RagBackend): boolean =>
     !credentialDomain || backend.entries.every((entry) => Boolean(heldEntries[entry]));
   const usable = offered.filter(backendReachable);
 

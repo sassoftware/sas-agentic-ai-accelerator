@@ -32,13 +32,12 @@ export interface RagBuilderConfig {
   /** CAS server name used when building table references. */
   casServer: string;
   /**
-   * Vector-store backends this deployment offers, comma-separated. A site
-   * running only one store should not present the others at all. Blank =
-   * every backend the runtime supports. Independent of credentials: this is
-   * what the DEPLOYMENT offers, the credential domain decides what a given
-   * USER can reach.
+   * Whether the deployment offers a given backend is carried as one
+   * `enable_<key>` entry per backend (see rag-backends.ts), reached through
+   * the index signature below. Independent of credentials: this is what the
+   * DEPLOYMENT offers, the credential domain decides what a given USER can
+   * reach.
    */
-  enabledBackends: string;
   /**
    * TLS to the vector store. Admin-set, not offered per setup: the six
    * PostgreSQL sslmode values are a Postgres concept, and offering them for a

@@ -71,8 +71,7 @@ corrupt them, and the CSP has to allow the decoded bundle to run.
 
 Configure the Builder from its **Options** pane in Visual Analytics: the
 Model Manager repository, SCR endpoint, credential domain, content root, CAS
-server, the ingestion compute context, which vector databases the deployment
-offers, and the operational policy (TLS, deleted-document handling, history
+server, the ingestion compute context, a Yes/No per vector database the deployment offers, and the operational policy (TLS, deleted-document handling, history
 retention, run-history recording, embedding replicas, table persistence).
 Those policy values are recorded onto each setup as it is created, so a
 setup keeps what it was built with.
