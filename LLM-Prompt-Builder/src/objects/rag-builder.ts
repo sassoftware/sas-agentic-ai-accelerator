@@ -58,6 +58,8 @@ import {
 import { getCasTableRows, getCaslibs } from '../api/cas-api';
 import { getAppState } from '../state/app-state';
 import { showToast } from '../ui/toast';
+import { attachCombobox } from '../ui/combobox';
+import { createListFilter, renderFilteredOptions } from '../ui/list-filter';
 import type { InterfaceText } from '../types';
 import type { DropdownOption } from '../types/models';
 import type { RagBuilderConfig, RagBuilderText, RagSetup } from '../types/rag';
@@ -385,53 +387,85 @@ export async function buildRagBuilder(
   };
 
   // ---- project + setup selection -------------------------------------------
-  const [selectionCard, selectionBody] = card(
-    str('ragBuilderSelectionHeading', 'Project and setup'),
-    str(
-      'ragBuilderSelectionHint',
-      'A RAG project groups related setups in SAS Model Manager; a setup is one document corpus wired to one vector-store collection.'
-    )
+  // Laid out as the Prompt Builder's project section: a `pb-section` block
+  // with h2/h3 headings and full-width pickers stacked in the order the work
+  // happens, each preceded by its name/creator filter and searchable by
+  // typing. Model Manager projects accumulate — a deployment with two hundred
+  // of them turns a bare dropdown into a scroll hunt, and it is the same list
+  // in both builders, so it should not be two different controls.
+  const selectionSection = document.createElement('div');
+  selectionSection.className = 'pb-section';
+  const selectionHeading = document.createElement('h2');
+  selectionHeading.textContent = str('ragBuilderSelectionHeading', 'Project and setup');
+  const selectionHint = document.createElement('p');
+  selectionHint.textContent = str(
+    'ragBuilderSelectionHint',
+    'A RAG project groups related setups in SAS Model Manager; a setup is one document corpus wired to one vector-store collection.'
   );
-  const selectionRow = document.createElement('div');
-  selectionRow.className = 'row g-3 align-items-end';
+  selectionSection.appendChild(selectionHeading);
+  selectionSection.appendChild(selectionHint);
 
+  const filterLabels = {
+    namePlaceholder: str('ragBuilderFilterNamePlaceholder', 'Filter by name…'),
+    userLabel: str('ragBuilderFilterUserLabel', 'Filter by user'),
+    userAll: str('ragBuilderFilterUserAll', 'All users'),
+  };
+
+  const projectHeading = document.createElement('h3');
+  projectHeading.textContent = str('ragBuilderProjectLabel', 'RAG project:');
   const projectSelect = selectInput([], '');
-  labeled(selectionRow, idOf('project'), str('ragBuilderProjectLabel', 'RAG project:'), projectSelect);
+  projectSelect.id = idOf('project');
+  const projectFilter = createListFilter(idOf('project-filter'), filterLabels, () =>
+    renderProjectOptions()
+  );
+  selectionSection.appendChild(projectHeading);
+  selectionSection.appendChild(projectFilter.filterRow);
+  selectionSection.appendChild(projectSelect);
+  selectionSection.appendChild(document.createElement('br'));
+
+  const setupHeading = document.createElement('h3');
+  setupHeading.textContent = str('ragBuilderSetupLabel', 'RAG setup:');
+  const setupSelect = selectInput([], '');
+  setupSelect.id = idOf('setup');
+  const setupFilter = createListFilter(idOf('setup-filter'), filterLabels, () =>
+    renderSetupOptions()
+  );
+  selectionSection.appendChild(setupHeading);
+  selectionSection.appendChild(setupFilter.filterRow);
+  selectionSection.appendChild(setupSelect);
+  selectionSection.appendChild(document.createElement('br'));
+
+  // Creating sits below the pickers in one button row, as it does in the
+  // Prompt Builder — an input box wedged beside a dropdown reads as part of
+  // the selection rather than as a separate act.
+  const selectionButtons = document.createElement('div');
+  selectionButtons.className = 'd-flex flex-wrap align-items-center gap-2';
   const newProjectName = textInput('', str('ragBuilderNewProjectPlaceholder', 'New project name'));
   const newProjectButton = document.createElement('button');
   newProjectButton.type = 'button';
   newProjectButton.className = 'btn btn-secondary';
   newProjectButton.textContent = str('ragBuilderNewProjectButton', 'Create project');
-  {
-    const column = document.createElement('div');
-    column.className = 'col-md-4';
-    const group = document.createElement('div');
-    group.className = 'input-group';
-    group.appendChild(newProjectName);
-    group.appendChild(newProjectButton);
-    column.appendChild(group);
-    selectionRow.appendChild(column);
-  }
-
-  const setupSelect = selectInput([], '');
-  labeled(selectionRow, idOf('setup'), str('ragBuilderSetupLabel', 'RAG setup:'), setupSelect);
   const newSetupName = textInput('', str('ragBuilderNewSetupPlaceholder', 'New setup name'));
   const newSetupButton = document.createElement('button');
   newSetupButton.type = 'button';
   newSetupButton.className = 'btn btn-secondary';
   newSetupButton.textContent = str('ragBuilderNewSetupButton', 'Create setup');
-  {
-    const column = document.createElement('div');
-    column.className = 'col-md-4';
+  for (const [field, button] of [
+    [newProjectName, newProjectButton],
+    [newSetupName, newSetupButton],
+  ] as const) {
     const group = document.createElement('div');
-    group.className = 'input-group';
-    group.appendChild(newSetupName);
-    group.appendChild(newSetupButton);
-    column.appendChild(group);
-    selectionRow.appendChild(column);
+    group.className = 'input-group w-auto';
+    group.appendChild(field);
+    group.appendChild(button);
+    selectionButtons.appendChild(group);
   }
-  selectionBody.appendChild(selectionRow);
-  container.appendChild(selectionCard);
+  selectionSection.appendChild(selectionButtons);
+  container.appendChild(selectionSection);
+  // Typing in either picker narrows the open list live; the underlying
+  // selects stay scriptable, so the load/refresh paths are unchanged.
+  attachCombobox(projectSelect);
+  attachCombobox(setupSelect);
 
   // ---- the setup editor (hidden until a setup is selected) ------------------
   const editor = document.createElement('div');
@@ -704,19 +738,6 @@ export async function buildRagBuilder(
   editor.appendChild(ledgerCard);
 
   // ---- data plumbing --------------------------------------------------------
-  const fillSelect = (select: HTMLSelectElement, options: DropdownOption[], placeholder: string): void => {
-    select.replaceChildren();
-    const empty = document.createElement('option');
-    empty.value = '';
-    empty.textContent = placeholder;
-    select.appendChild(empty);
-    for (const option of options) {
-      const entry = document.createElement('option');
-      entry.value = option.value;
-      entry.textContent = option.innerHTML;
-      select.appendChild(entry);
-    }
-  };
 
   const applySetup = (setup: RagSetup): void => {
     descriptionField.value = setup.documentation.description;
@@ -817,20 +838,43 @@ export async function buildRagBuilder(
     return null;
   };
 
+  // The full lists; the pickers render a filtered view of these, so narrowing
+  // never costs a round trip and never loses an entry the server already sent.
+  let allProjects: DropdownOption[] = [];
+  let allSetups: DropdownOption[] = [];
+
+  function renderProjectOptions(): void {
+    renderFilteredOptions(
+      projectSelect,
+      allProjects,
+      projectFilter.nameInput,
+      projectFilter.userSelect,
+      str('ragBuilderProjectPlaceholder', 'Select a RAG project…')
+    );
+  }
+
+  function renderSetupOptions(): void {
+    renderFilteredOptions(
+      setupSelect,
+      allSetups,
+      setupFilter.nameInput,
+      setupFilter.userSelect,
+      str('ragBuilderSetupPlaceholder', 'Select a RAG setup…')
+    );
+  }
+
   async function refreshProjects(): Promise<void> {
-    const projects = await getModelProjects("contains(tags,'RAG-Engineering')");
-    fillSelect(projectSelect, projects, str('ragBuilderProjectPlaceholder', 'Select a RAG project…'));
-    projectSelect.value = selectedProjectID;
+    allProjects = await getModelProjects("contains(tags,'RAG-Engineering')");
+    projectFilter.setUsers(allProjects);
+    renderProjectOptions();
+    if (selectedProjectID) projectSelect.value = selectedProjectID;
   }
 
   async function refreshSetups(): Promise<void> {
-    if (!selectedProjectID) {
-      fillSelect(setupSelect, [], str('ragBuilderSetupPlaceholder', 'Select a RAG setup…'));
-      return;
-    }
-    const setups = await getModelProjectModels(selectedProjectID);
-    fillSelect(setupSelect, setups, str('ragBuilderSetupPlaceholder', 'Select a RAG setup…'));
-    setupSelect.value = selectedSetupID;
+    allSetups = selectedProjectID ? await getModelProjectModels(selectedProjectID) : [];
+    setupFilter.setUsers(allSetups);
+    renderSetupOptions();
+    if (selectedSetupID) setupSelect.value = selectedSetupID;
   }
 
   async function loadSetup(): Promise<void> {

@@ -353,6 +353,9 @@
     "ragBuilderStoreUnresolved": "Für diese Datenbank sind in der Credential-Domain {domain} kein Host und keine Datenbank hinterlegt. Bitten Sie Ihre Administration, {prefix}_HOST und {prefix}_DB zu ergänzen.",
     "ragBuilderNoEmbeddingModels": "Aus dem konfigurierten Projekt konnten keine Embedding-Modelle geladen werden; der Modellname muss daher eingegeben werden. Prüfen Sie die Option \"Embedding model project ID\" und Ihre Leseberechtigung für das Projekt.",
     "ragBuilderUnlistedModel": "nicht registriert",
-    "ragBuilderUnlistedCaslib": "nicht gefunden"
+    "ragBuilderUnlistedCaslib": "nicht gefunden",
+    "ragBuilderFilterNamePlaceholder": "Nach Name filtern…",
+    "ragBuilderFilterUserLabel": "Nach Benutzer filtern",
+    "ragBuilderFilterUserAll": "Alle Benutzer"
   }
 }

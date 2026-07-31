@@ -356,6 +356,9 @@
     "ragBuilderStoreUnresolved": "No host or database for this store in the {domain} credential domain. Ask your administrator to add {prefix}_HOST and {prefix}_DB.",
     "ragBuilderNoEmbeddingModels": "No embedding models could be listed from the configured project, so the model name has to be typed. Check the \"Embedding model project ID\" option and that you can read that project.",
     "ragBuilderUnlistedModel": "not registered",
-    "ragBuilderUnlistedCaslib": "not found"
+    "ragBuilderUnlistedCaslib": "not found",
+    "ragBuilderFilterNamePlaceholder": "Filter by name…",
+    "ragBuilderFilterUserLabel": "Filter by user",
+    "ragBuilderFilterUserAll": "All users"
   }
 }
