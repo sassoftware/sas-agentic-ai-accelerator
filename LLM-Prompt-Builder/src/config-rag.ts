@@ -49,6 +49,9 @@ const DEFAULTS: RagRuntimeConfig = {
     // servers under a service account, THAT identity needs the credential —
     // see the Managing Credentials guide's service-account caveat.
     computeContext: '',
+    // Blank = every backend the runtime supports. Set to e.g. 'pgvector' on a
+    // site that operates only one store, so the others never appear.
+    enabledBackends: '',
   },
 };
 
@@ -61,6 +64,7 @@ const URL_OVERRIDABLE = [
   'contentRoot',
   'casServer',
   'computeContext',
+  'enabledBackends',
   'id',
 ] as const;
 

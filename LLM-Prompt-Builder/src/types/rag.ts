@@ -31,6 +31,14 @@ export interface RagBuilderConfig {
   contentRoot: string;
   /** CAS server name used when building table references. */
   casServer: string;
+  /**
+   * Vector-store backends this deployment offers, comma-separated. A site
+   * running only one store should not present the others at all. Blank =
+   * every backend the runtime supports. Independent of credentials: this is
+   * what the DEPLOYMENT offers, the credential domain decides what a given
+   * USER can reach.
+   */
+  enabledBackends: string;
   [key: string]: string;
 }
 

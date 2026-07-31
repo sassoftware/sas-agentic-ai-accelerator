@@ -38,6 +38,7 @@ import {
   updateModelTags,
 } from '../api/models-api';
 import { getFileContent } from '../api/files-api';
+import { resolveDomainSecrets } from '../api/credentials-api';
 import { ensureChildFolder, getFolderByPath, getFolderMembers } from '../api/folders-api';
 import {
   createJobDefinition,
@@ -67,7 +68,35 @@ const COLLECTION_PATTERN = /^[a-z][a-z0-9_]{0,62}$/;
 
 const EXTRACTORS = ['', 'plaintext', 'markdown', 'csv_json', 'html', 'pdf-text'];
 const CHUNKERS = ['recursive', 'paragraph'];
-const BACKENDS = ['pgvector'];
+/**
+ * Vector-store backends the runtime supports, with the credential-domain
+ * entries each one needs. Mirrors rag_core.adapters.REGISTRY — a backend the
+ * runtime cannot load must never be offered here.
+ */
+const BACKENDS: ReadonlyArray<{ key: string; label: string; entries: string[] }> = [
+  { key: 'pgvector', label: 'pgvector (PostgreSQL)',
+    entries: ['PGVECTOR_RAG_USER', 'PGVECTOR_RAG_PW'] },
+  { key: 'singlestore', label: 'SingleStore',
+    entries: ['SINGLESTORE_RAG_USER', 'SINGLESTORE_RAG_PW'] },
+];
+
+/**
+ * The backends this deployment offers, in the order they were configured.
+ * Blank (the default) offers all of them. An unknown name is ignored rather
+ * than shown, so a typo cannot conjure a backend the runtime has no adapter
+ * for. If the setting names nothing recognisable we fall back to everything,
+ * because presenting an empty list would leave the user unable to proceed
+ * with no explanation.
+ */
+function offeredBackends(enabled: string): typeof BACKENDS {
+  const wanted = String(enabled ?? '')
+    .split(',')
+    .map((name) => name.trim().toLowerCase())
+    .filter(Boolean);
+  if (!wanted.length) return BACKENDS;
+  const offered = BACKENDS.filter((backend) => wanted.includes(backend.key));
+  return offered.length ? offered : BACKENDS;
+}
 const SSLMODES = ['prefer', 'require', 'disable'];
 
 /** The retrieval model's fixed in/out contract (owner requirement: the model
@@ -412,14 +441,67 @@ export async function buildRagBuilder(
   );
   const storeRow = document.createElement('div');
   storeRow.className = 'row g-3';
-  const backendField = selectInput(BACKENDS, 'pgvector');
+  // Which stores this deployment offers, and which of those THIS user holds
+  // credentials for. Two separate questions: the admin decides what the site
+  // runs, the credential domain decides who may use it. A backend the user
+  // cannot reach stays visible but disabled, naming the missing entry — a
+  // hidden option looks like the feature does not exist.
+  const offered = offeredBackends(config.enabledBackends);
+  const credentialDomain = String(config.credentialDomain || 'agentic-ai-keys').trim();
+  const heldEntries = credentialDomain
+    ? await resolveDomainSecrets(credentialDomain)
+    : {};
+  const backendReachable = (backend: (typeof BACKENDS)[number]): boolean =>
+    !credentialDomain || backend.entries.every((entry) => Boolean(heldEntries[entry]));
+  const usable = offered.filter(backendReachable);
+
+  const backendField = selectInput(
+    offered.map((backend) => backend.key),
+    (usable[0] ?? offered[0]).key,
+    Object.fromEntries(offered.map((backend) => [backend.key, backend.label]))
+  );
+  for (const backend of offered) {
+    if (backendReachable(backend)) continue;
+    const option = Array.from(backendField.options).find((o) => o.value === backend.key);
+    if (!option) continue;
+    option.disabled = true;
+    const missing = backend.entries.filter((entry) => !heldEntries[entry]);
+    option.textContent = `${backend.label} — ${str(
+      'ragBuilderBackendNoCredential',
+      'no credential'
+    )}`;
+    option.title = str(
+      'ragBuilderBackendNoCredentialNote',
+      'No {entries} in the {domain} credential domain - ask your administrator for access.'
+    )
+      .replace('{entries}', missing.join(' / '))
+      .replace('{domain}', credentialDomain);
+  }
   labeled(storeRow, idOf('backend'), str('ragBuilderBackendLabel', 'Vector database:'), backendField, 'col-md-3');
+  if (!usable.length) {
+    const warning = document.createElement('div');
+    warning.className = 'alert alert-warning py-2 px-3 mt-2 mb-0';
+    warning.textContent = str(
+      'ragBuilderNoBackendCredential',
+      'You hold no vector-store credentials in the {domain} credential domain, so a setup saved here cannot ingest. Ask your administrator to add the entries for the database you need.'
+    ).replace('{domain}', credentialDomain);
+    storeRow.appendChild(warning);
+  }
   const hostField = textInput('', 'db.example.com');
   labeled(storeRow, idOf('store-host'), str('ragBuilderStoreHostLabel', 'Host:'), hostField, 'col-md-4');
   const portField = numberInput(5432, 1);
   labeled(storeRow, idOf('store-port'), str('ragBuilderStorePortLabel', 'Port:'), portField, 'col-md-2');
   const databaseField = textInput('');
   labeled(storeRow, idOf('store-db'), str('ragBuilderStoreDbLabel', 'Database:'), databaseField, 'col-md-3');
+  // the port follows the backend unless the user typed one, matching the
+  // Load step's blank-port behaviour (5432 pgvector, 3306 SingleStore)
+  const DEFAULT_PORTS: Record<string, number> = { pgvector: 5432, singlestore: 3306 };
+  backendField.addEventListener('change', () => {
+    const previous = Object.values(DEFAULT_PORTS).map(String);
+    if (!portField.value || previous.includes(portField.value)) {
+      portField.value = String(DEFAULT_PORTS[backendField.value] ?? 5432);
+    }
+  });
   const sslmodeField = selectInput(SSLMODES, 'prefer');
   labeled(storeRow, idOf('store-sslmode'), str('ragBuilderStoreSslmodeLabel', 'SSL mode:'), sslmodeField, 'col-md-3');
   const collectionField = textInput('', 'rag_hr_policies_v1');

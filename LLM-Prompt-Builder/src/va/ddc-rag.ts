@@ -132,7 +132,13 @@ function buildOptionsConfig(config: RagRuntimeConfig): Record<string, unknown> {
         'computeContext',
         'Ingestion compute context',
         rb.computeContext,
-        'SAS Compute context the ingestion job runs in (passed to Job Execution as _contextName; blank = the Job Execution default). Its Python needs the packages from the RAG administration guide. If the context runs its servers as a service account, that account needs the credential — see Managing Credentials.'
+        'SAS Compute context the ingestion job runs in (passed to Job Execution as _contextName). It MUST run as the requesting user: the stock "SAS Job Execution compute context" runs its servers as a service account, and the ingestion steps cannot reuse the CAS session they need there. "SAS Studio compute context" works. Its Python also needs the packages from the RAG administration guide.'
+      ),
+      textField(
+        'enabledBackends',
+        'Vector databases offered',
+        rb.enabledBackends,
+        'Comma-separated list of vector-store backends end users may choose from (e.g. "pgvector, singlestore"). Blank offers every backend the runtime supports. This is what the DEPLOYMENT offers; whether a given user can actually use one is decided separately by the credential domain, and a backend they hold no credential for is shown disabled with the missing entry named.'
       ),
     ],
     groups: [],

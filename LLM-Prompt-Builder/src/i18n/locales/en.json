@@ -351,6 +351,9 @@
     "ragBuilderJobGenerateError": "Generating the ingestion job failed - check the browser console and your permissions on the content root.",
     "ragBuilderLedgerHeading": "Ingestion ledger",
     "ragBuilderLedgerEmpty": "The ledger has no rows yet - run an ingestion first.",
-    "ragBuilderLedgerMissing": "No loaded ledger table was found for this setup - it appears after the first ingestion run (a saved ledger is loaded by the run itself)."
+    "ragBuilderLedgerMissing": "No loaded ledger table was found for this setup - it appears after the first ingestion run (a saved ledger is loaded by the run itself).",
+    "ragBuilderBackendNoCredential": "no credential",
+    "ragBuilderBackendNoCredentialNote": "No {entries} in the {domain} credential domain - ask your administrator for access.",
+    "ragBuilderNoBackendCredential": "You hold no vector-store credentials in the {domain} credential domain, so a setup saved here cannot ingest. Ask your administrator to add the entries for the database you need."
   }
 }
