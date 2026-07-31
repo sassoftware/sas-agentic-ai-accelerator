@@ -121,3 +121,70 @@ CHUNKERS = {
     "recursive": recursive_chunks,
     "paragraph": paragraph_chunks,
 }
+
+JOIN = "\n\n"      # how run_chunk joins element texts into one document text
+
+
+def locate(joined: str, contents: list) -> list:
+    """Where each chunk sits in the document text: [(start, end) or None].
+
+    The chunkers return strings, not positions — they split, re-merge and (for
+    the recursive chunker) prepend the previous chunk's tail, so an offset
+    threaded through all of that would be wrong in a way nobody would notice.
+    Finding each chunk afterwards is boring and checkable instead.
+
+    A cursor moves forward so repeated text matches the occurrence in reading
+    order. An overlapped chunk does not appear verbatim — it starts with the
+    tail of its predecessor — so the first line is dropped and the remainder
+    located, which is the part of the chunk that is genuinely new. Anything
+    still not found returns None rather than a guess: a wrong citation is
+    worse than an absent one.
+    """
+    spans: list = []
+    cursor = 0
+    for content in contents:
+        found = joined.find(content, cursor) if content else -1
+        text = content
+        if found < 0 and content and "\n" in content:
+            # recursive overlap: the leading tail came from the chunk before
+            text = content.split("\n", 1)[1]
+            found = joined.find(text, cursor) if text else -1
+        if found < 0:
+            spans.append(None)
+            continue
+        spans.append((found, found + len(text)))
+        cursor = found + len(text)
+    return spans
+
+
+def _page_number(value):
+    """A real 1-based page, or None.
+
+    Elements cross a CAS table between the steps, and a numeric column with
+    no value arrives as 0.0 rather than None - so an extractor that knew no
+    page produced `page: 0` in the citation, which reads like a fact and is
+    not one. Pages are 1-based; anything below that is 'unknown'.
+    """
+    try:
+        page = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return page if page >= 1 else None
+
+
+def element_pages(texts: list, pages: list) -> list:
+    """[(start, end, page)] for each element inside the joined document text."""
+    offsets: list = []
+    cursor = 0
+    for text, page in zip(texts, pages):
+        offsets.append((cursor, cursor + len(text), _page_number(page)))
+        cursor += len(text) + len(JOIN)
+    return offsets
+
+
+def page_at(offsets: list, position: int):
+    """The page of the element covering `position`, if one is known."""
+    for start, end, page in offsets:
+        if start <= position < end:
+            return page
+    return None

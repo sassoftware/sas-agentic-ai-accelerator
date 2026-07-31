@@ -22,7 +22,7 @@ import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 
-from .chunkers import CHUNKERS
+from .chunkers import CHUNKERS, JOIN, element_pages, locate, page_at
 from .schema import Chunk, link_neighbors
 from .sources import FileSystemSource
 from .tokens import token_budget
@@ -357,15 +357,21 @@ def run_chunk(elements: list, inventory: list, chunker: str, input_token_limit: 
             continue
         heading = None
         texts: list = []
+        pages: list = []
         for el in doc_elements:
             if el.get("heading_path"):
                 heading = el["heading_path"]
             if el.get("type") != "heading" and el.get("text"):
                 texts.append(el["text"])
+                pages.append(el.get("page"))
         kwargs = {"max_tokens": budget, "max_bytes": max_bytes}
         if chunk_fn is CHUNKERS["recursive"]:
             kwargs["overlap_tokens"] = overlap_tokens
         contents = chunk_fn(texts, **kwargs)
+        # where each chunk came from, so a citation can be opened there
+        joined = JOIN.join(texts)
+        spans = locate(joined, contents)
+        offsets = element_pages(texts, pages)
         chunks = [
             Chunk.build(doc_id, row.get("source_uri", ""), i, content,
                         row.get("content_hash", ""), row.get("extractor", ""),
@@ -373,6 +379,15 @@ def run_chunk(elements: list, inventory: list, chunker: str, input_token_limit: 
                         heading_path=heading if len(by_doc) else None)
             for i, content in enumerate(contents)
         ]
+        for chunk, span in zip(chunks, spans):
+            if span is None:
+                continue
+            start, end = span
+            located = {"start": start, "end": end}
+            page = page_at(offsets, start)
+            if page is not None:
+                located["page"] = page
+            chunk.span = located
         link_neighbors(chunks)
         row["chunk_count"] = len(chunks)
         all_chunks.extend(c.__dict__ for c in chunks)
