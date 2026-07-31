@@ -45,6 +45,38 @@ an already-registered step in place rather than replacing it. Re-registering a
 step mints a new id, and every saved flow referencing the old id breaks.
 :::
 
+## Serving the RAG Builder
+
+The Builder is a single-file app served through SAS Job Execution, the same
+way as the Prompt Builder. Build it with `npm run build:rag` (or take the
+prebuilt file) and create a job definition whose **form** is that HTML:
+
+| | |
+| --- | --- |
+| Job definition | `<content root>/RAG-Builder-UI` |
+| `code` | empty — this job never runs SAS |
+| `form` property | the contents of `dist-rag/rag.html` |
+| URL | `https://<host>/SASJobExecution/?_program=<path>&_action=form` |
+
+:::note The HTML is the FORM, not the code
+`&_action=form` serves the job's **form**. Putting the HTML in `code`
+produces *"Parameter Error — HTML form file was not found"*, which reads like
+a missing file rather than the wrong field.
+:::
+
+The Content Security Policy directives in
+[Setup Additional UIs](./Setup-Additional-UIs.md) apply here too — the
+build base64-encodes its inline scripts so the Go template engine cannot
+corrupt them, and the CSP has to allow the decoded bundle to run.
+
+Configure the Builder from its **Options** pane in Visual Analytics: the
+Model Manager repository, SCR endpoint, credential domain, content root, CAS
+server, the ingestion compute context, which vector databases the deployment
+offers, and the operational policy (TLS, deleted-document handling, history
+retention, run-history recording, embedding replicas, table persistence).
+Those policy values are recorded onto each setup as it is created, so a
+setup keeps what it was built with.
+
 ## Two prerequisites that are not optional
 
 Both of these produce confusing failures if missed, so check them first.
