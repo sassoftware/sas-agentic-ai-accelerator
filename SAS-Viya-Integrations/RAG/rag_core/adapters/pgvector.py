@@ -53,6 +53,18 @@ class PgVectorAdapter(VectorStoreAdapter):
         )
         self._conn.autocommit = False
 
+    #: the SQL dialect the history tables use on this backend
+    HISTORY_DIALECT = "postgres"
+
+    def raw_connection(self):
+        """The open connection, for the run-history tables.
+
+        History lives beside the chunks it describes and shares their
+        transaction scope, so it reuses this connection rather than opening a
+        second one.
+        """
+        return self._conn
+
     def close(self) -> None:
         if self._conn is not None:
             self._conn.close()

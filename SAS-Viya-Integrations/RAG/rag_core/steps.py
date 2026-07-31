@@ -614,6 +614,61 @@ def run_retrieve(questions: list, embedder, adapter, collection: str,
     return rows
 
 
+def record_history(adapter, inventory: list, previous_ledger: list,
+                   run_id: str, collection: str, config_id: str = "",
+                   settings=None, metrics=None, status: str = "completed",
+                   discovery: list = None, log=print) -> dict:
+    """Write this run into the history tables beside the chunks (design §6).
+
+    `inventory` is the post-load state, `discovery` the same documents as
+    List Documents classified them. Both are needed: run_load overwrites
+    every successful row's status with "ingested", so counting the post-load
+    inventory alone reports 0 new, 0 changed and 0 unchanged for a run that
+    plainly did work. A run describes what it FOUND (new/changed/unchanged/
+    deleted) and what it ACHIEVED (ingested/failed); those are different
+    questions and the ledger can only answer them together.
+
+    Never fails the run. History is a record of what happened, and losing the
+    record is not a reason to lose the ingestion that already succeeded - so
+    a store that refuses the write is reported and the load still stands.
+
+    Returns {"runs": n, "events": n} for the caller to publish to CAS.
+    """
+    from .history import History, events_from_inventory, status_counts
+
+    written = {"runs": 0, "events": 0}
+    try:
+        history = History(adapter.raw_connection(),
+                          getattr(adapter, "HISTORY_DIALECT", "postgres"))
+        history.ensure_tables()
+        previous = {row["doc_id"]: row for row in (previous_ledger or [])
+                    if row.get("doc_id")}
+        found = {row["doc_id"]: row.get("status", "")
+                 for row in (discovery or []) if row.get("doc_id")}
+        events = events_from_inventory(inventory, previous)
+        for event in events:
+            # what the document DID, unless the run failed on it - that
+            # outcome is the more important fact
+            if event["status"] != "failed" and found.get(event["doc_id"]):
+                event["status"] = found[event["doc_id"]]
+        written["events"] = history.record_events(run_id, events)
+        if config_id and settings:
+            history.record_config(config_id, settings)
+        counts = status_counts(discovery or inventory)     # what it found
+        for name in ("ingested", "failed"):                # what it achieved
+            counts[name] = status_counts(inventory)[name]
+        history.close_run(run_id, status=status, counts=counts,
+                          collection=collection, config_id=config_id,
+                          **{k: v for k, v in (metrics or {}).items()})
+        written["runs"] = 1
+        log(f"rag history: run {run_id} recorded, {written['events']} document "
+            f"events")
+    except Exception as exc:
+        log(f"rag history: not recorded ({type(exc).__name__}: "
+            f"{str(exc)[:160]}) - the load itself is unaffected")
+    return written
+
+
 def resolve_doc_ids(selectors, ledger: list) -> tuple:
     """Turn what a person would type into doc ids. Returns (ids, unmatched).
 
