@@ -69,6 +69,17 @@ export function createInfoLabel(labelText: string, infoHtml: string): HTMLDivEle
   const labelContainer = document.createElement('div');
   labelContainer.classList.add('info-container');
   labelContainer.append(`${labelText}: `);
+  labelContainer.appendChild(createInfoIcon(labelText, infoHtml));
+  return labelContainer;
+}
+
+/**
+ * Just the ⓘ, for callers composing their own label.
+ *
+ * Keyboard-reachable and labelled, because a tooltip only reachable by mouse
+ * hover hides the explanation from exactly the users most likely to need it.
+ */
+export function createInfoIcon(labelText: string, infoHtml: string): HTMLSpanElement {
   const infoIcon = document.createElement('span');
   infoIcon.classList.add('info-icon');
   infoIcon.innerHTML = '&#x2139;&#xFE0F;';
@@ -77,8 +88,7 @@ export function createInfoLabel(labelText: string, infoHtml: string): HTMLDivEle
   infoIcon.setAttribute('aria-label', labelText);
   infoIcon.setAttribute('data-bs-toggle', 'tooltip');
   new Tooltip(infoIcon, { title: infoHtml, html: true, container: 'body' });
-  labelContainer.appendChild(infoIcon);
-  return labelContainer;
+  return infoIcon;
 }
 
 /**

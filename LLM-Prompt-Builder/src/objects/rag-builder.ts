@@ -27,6 +27,8 @@
 
 import {
   createModel,
+  deleteModel,
+  deleteModelProject,
   createModelContent,
   createModelProject,
   getModelContents,
@@ -56,11 +58,14 @@ import {
   launchJob,
 } from '../api/jobexec-api';
 import { getCasTableRows, getCaslibs } from '../api/cas-api';
+import Modal from 'bootstrap/js/dist/modal';
 import { getAppState } from '../state/app-state';
 import { showToast } from '../ui/toast';
 import { attachCombobox } from '../ui/combobox';
 import { createListFilter, renderFilteredOptions } from '../ui/list-filter';
-import { MODEL_CARD_FIELDS, createDocSection } from '../ui/doc-section';
+import { MODEL_CARD_FIELDS, createDocSection, createInfoIcon } from '../ui/doc-section';
+import { createCreateModal } from '../ui/create-modal';
+import { showConfirmModal } from '../ui/confirm-modal';
 import type { InterfaceText } from '../types';
 import type { DropdownOption } from '../types/models';
 import type { RagBuilderConfig, RagBuilderText, RagSetup } from '../types/rag';
@@ -74,11 +79,19 @@ const COLLECTION_PATTERN = /^[a-z][a-z0-9_]{0,62}$/;
 
 const EXTRACTORS = ['', 'plaintext', 'markdown', 'csv_json', 'html', 'pdf-text'];
 const CHUNKERS = ['recursive', 'paragraph'];
-/** Preselected when the deployment registers it; the accelerator's small,
- * open, CPU-friendly default. Only a preference — the offered list is what
- * the embedding project actually holds. */
-const DEFAULT_EMBEDDING = 'all_minilm_l6_v2';
-const DEFAULT_CASLIB = 'casuser';
+/**
+ * A caslib nobody but its owner can read.
+ *
+ * CAS presents the caller's personal library as CASUSER, and as
+ * CASUSER(<username>) once resolved. Either name is a dead end for a RAG
+ * corpus: the ledger, the element and chunk tables and the run history all
+ * land there, so a scheduled run under another identity — or a colleague
+ * reopening the setup — finds nothing, and the failure looks like a lost
+ * corpus rather than a permissions choice made months earlier.
+ */
+function isPersonalCaslib(name: string): boolean {
+  return /^casuser(\s*\(.*\))?$/i.test(String(name || '').trim());
+}
 
 /**
  * Set a picker to a saved value, keeping it even when the live listing does
@@ -142,8 +155,11 @@ function defaultSetup(config: RagBuilderConfig): RagSetup {
     extraction: { extractor: '' },
     chunking: { chunker: 'recursive', inputTokenLimit: 256, overlapTokens: 30 },
     embedding: {
-      model: DEFAULT_EMBEDDING,
-      dims: 384,
+      // No model and no width until one is chosen. A default here would put a
+      // model name and a vector width onto a corpus nobody selected them for,
+      // and the width cannot be changed once the collection exists.
+      model: '',
+      dims: 0,
       deploymentType: config.deploymentType || 'k8s',
       scrEndpoint: '',
     },
@@ -156,7 +172,7 @@ function defaultSetup(config: RagBuilderConfig): RagSetup {
       sslmode: config.storeSslmode || 'prefer',
       collection: '',
     },
-    tables: { prefix: '', caslib: DEFAULT_CASLIB },
+    tables: { prefix: '', caslib: '' },
     pipelineVersion: 'v1',
     credentialDomain: config.credentialDomain || 'agentic-ai-keys',
     policies: policiesFrom(config),
@@ -339,12 +355,23 @@ export async function buildRagBuilder(
     return [wrapper, body];
   };
 
+  /**
+   * A labelled control.
+   *
+   * `info` adds the ⓘ whose tooltip explains what the setting actually does —
+   * most of these choices are irreversible once a collection is built, and a
+   * bare label cannot say that. `required` marks the field both visually and
+   * to assistive technology; validateSetup still enforces it, because the
+   * browser's own required handling never runs (nothing here is a <form>).
+   */
   const labeled = (
     parent: HTMLElement,
     id: string,
     labelText: string,
     element: HTMLElement,
-    columns = 'col-md-4'
+    columns = 'col-md-4',
+    info = '',
+    required = false
   ): void => {
     const column = document.createElement('div');
     column.className = columns;
@@ -352,8 +379,25 @@ export async function buildRagBuilder(
     label.className = 'form-label fw-bold mb-1';
     label.htmlFor = id;
     label.textContent = labelText;
+    if (required) {
+      const mark = document.createElement('span');
+      mark.className = 'text-danger ms-1';
+      mark.textContent = '*';
+      mark.setAttribute('aria-hidden', 'true');
+      label.appendChild(mark);
+      element.setAttribute('required', '');
+      element.setAttribute('aria-required', 'true');
+    }
     element.id = id;
-    column.appendChild(label);
+    if (info) {
+      const holder = document.createElement('div');
+      holder.className = 'info-container';
+      holder.appendChild(label);
+      holder.appendChild(createInfoIcon(labelText, info));
+      column.appendChild(holder);
+    } else {
+      column.appendChild(label);
+    }
     column.appendChild(element);
     parent.appendChild(column);
   };
@@ -451,26 +495,65 @@ export async function buildRagBuilder(
   // the selection rather than as a separate act.
   const selectionButtons = document.createElement('div');
   selectionButtons.className = 'd-flex flex-wrap align-items-center gap-2';
-  const newProjectName = textInput('', str('ragBuilderNewProjectPlaceholder', 'New project name'));
-  const newProjectButton = document.createElement('button');
-  newProjectButton.type = 'button';
-  newProjectButton.className = 'btn btn-secondary';
-  newProjectButton.textContent = str('ragBuilderNewProjectButton', 'Create project');
-  const newSetupName = textInput('', str('ragBuilderNewSetupPlaceholder', 'New setup name'));
-  const newSetupButton = document.createElement('button');
-  newSetupButton.type = 'button';
-  newSetupButton.className = 'btn btn-secondary';
-  newSetupButton.textContent = str('ragBuilderNewSetupButton', 'Create setup');
-  for (const [field, button] of [
-    [newProjectName, newProjectButton],
-    [newSetupName, newSetupButton],
-  ] as const) {
-    const group = document.createElement('div');
-    group.className = 'input-group w-auto';
-    group.appendChild(field);
-    group.appendChild(button);
-    selectionButtons.appendChild(group);
-  }
+  createCreateModal(
+    selectionButtons,
+    `${idOf('create-project')}`,
+    {
+      modalTitle: str('ragBuilderNewProjectButton', 'Create project'),
+      modalDescription: str(
+        'ragBuilderNewProjectModalHint',
+        'A RAG project groups related setups in SAS Model Manager. Its description is what a governance reviewer reads first.'
+      ),
+      nameLabel: str('ragBuilderNewProjectNameLabel', 'Project name'),
+      descriptionLabel: str('ragBuilderNewProjectDescriptionLabel', 'Description'),
+      closeButtonText: str('ragBuilderModalClose', 'Cancel'),
+      saveButtonText: str('ragBuilderModalSave', 'Create'),
+    },
+    () => void createProjectFromModal()
+  );
+  createCreateModal(
+    selectionButtons,
+    `${idOf('create-setup')}`,
+    {
+      modalTitle: str('ragBuilderNewSetupButton', 'Create setup'),
+      modalDescription: str(
+        'ragBuilderNewSetupModalHint',
+        'A setup is one document corpus wired to one vector-store collection. Choose a project first.'
+      ),
+      nameLabel: str('ragBuilderNewSetupNameLabel', 'Setup name'),
+      descriptionLabel: str('ragBuilderNewSetupDescriptionLabel', 'Description'),
+      closeButtonText: str('ragBuilderModalClose', 'Cancel'),
+      saveButtonText: str('ragBuilderModalSave', 'Create'),
+    },
+    () => void createSetupFromModal()
+  );
+
+  // Open in SAS Model Manager: the setup IS a Model Manager model, and its
+  // versions, history and permissions live there rather than here.
+  const openInMMButton = document.createElement('a');
+  openInMMButton.className = 'btn btn-outline-secondary disabled';
+  openInMMButton.target = '_blank';
+  openInMMButton.rel = 'noopener noreferrer';
+  openInMMButton.setAttribute('aria-disabled', 'true');
+  openInMMButton.textContent = str('ragBuilderOpenInMM', 'Open in SAS Model Manager');
+  selectionButtons.appendChild(openInMMButton);
+
+  // Destructive actions sit apart from the rest, right-aligned.
+  const destructive = document.createElement('div');
+  destructive.className = 'd-flex flex-wrap align-items-center gap-2 ms-auto';
+  const deleteSetupButton = document.createElement('button');
+  deleteSetupButton.type = 'button';
+  deleteSetupButton.className = 'btn btn-danger';
+  deleteSetupButton.disabled = true;
+  deleteSetupButton.textContent = str('ragBuilderDeleteSetupButton', 'Delete setup');
+  const deleteProjectButton = document.createElement('button');
+  deleteProjectButton.type = 'button';
+  deleteProjectButton.className = 'btn btn-danger';
+  deleteProjectButton.disabled = true;
+  deleteProjectButton.textContent = str('ragBuilderDeleteProjectButton', 'Delete project');
+  destructive.appendChild(deleteSetupButton);
+  destructive.appendChild(deleteProjectButton);
+  selectionButtons.appendChild(destructive);
   selectionSection.appendChild(selectionButtons);
   container.appendChild(selectionSection);
   // Typing in either picker narrows the open list live; the underlying
@@ -560,21 +643,27 @@ export async function buildRagBuilder(
   const pipelineRow = document.createElement('div');
   pipelineRow.className = 'row g-3';
   const sourcePathField = textInput('', '/data/documents');
-  labeled(pipelineRow, idOf('source-path'), str('ragBuilderSourcePathLabel', 'Document folder (compute-context path):'), sourcePathField, 'col-md-6');
+  labeled(pipelineRow, idOf('source-path'), str('ragBuilderSourcePathLabel', 'Document folder (compute-context path):'), sourcePathField, 'col-md-6',
+    str('ragBuilderSourcePathInfo', 'A path on the SAS Compute server, not on your workstation. The ingestion walks it recursively and treats every readable file as a candidate document. If the compute context cannot see this path, the run finds nothing rather than failing loudly.'), true);
   const extractorField = selectInput(EXTRACTORS, '', { '': str('ragBuilderExtractorAuto', 'Automatic (by file format)') });
-  labeled(pipelineRow, idOf('extractor'), str('ragBuilderExtractorLabel', 'Extractor:'), extractorField, 'col-md-3');
+  labeled(pipelineRow, idOf('extractor'), str('ragBuilderExtractorLabel', 'Extractor:'), extractorField, 'col-md-3',
+    str('ragBuilderExtractorInfo', 'How text is pulled out of each file. Automatic picks per file format and is almost always right; forcing one applies it to EVERY file, so a PDF read as plain text yields nonsense rather than an error. Some formats need optional Python packages — see the administration guide.'));
   const chunkerField = selectInput(CHUNKERS, 'recursive');
-  labeled(pipelineRow, idOf('chunker'), str('ragBuilderChunkerLabel', 'Chunker:'), chunkerField, 'col-md-3');
+  labeled(pipelineRow, idOf('chunker'), str('ragBuilderChunkerLabel', 'Chunker:'), chunkerField, 'col-md-3',
+    str('ragBuilderChunkerInfo', 'How a document is cut into retrievable pieces. Recursive splits on the largest natural boundary that fits the window (sections, then paragraphs, then sentences); paragraph keeps paragraphs whole and is better for short, well-structured documents.'));
   const tokenLimitField = numberInput(256, 16);
-  labeled(pipelineRow, idOf('token-limit'), str('ragBuilderTokenLimitLabel', 'Embedding token window:'), tokenLimitField, 'col-md-3');
+  labeled(pipelineRow, idOf('token-limit'), str('ragBuilderTokenLimitLabel', 'Embedding token window:'), tokenLimitField, 'col-md-3',
+    str('ragBuilderTokenLimitInfo', 'The largest chunk, in tokens. This should match what the embedding model actually accepts: text beyond the model window is silently dropped, so an oversized chunk is embedded from its opening only, and retrieval then matches on text the answer never sees.'), true);
   const overlapField = numberInput(30, 0);
-  labeled(pipelineRow, idOf('overlap'), str('ragBuilderOverlapLabel', 'Chunk overlap (tokens):'), overlapField, 'col-md-3');
-  // The embedding model is LISTED, not typed: only a model registered in the
-  // embedding project has a container behind it, and a name with nothing
-  // behind it does not fail until the first embed call — after the crawl and
-  // the chunking have already run, reported as an HTTP 404 rather than a typo.
-  // With no project configured the field degrades to free text rather than to
-  // an empty dropdown nobody can get past.
+  labeled(pipelineRow, idOf('overlap'), str('ragBuilderOverlapLabel', 'Chunk overlap (tokens):'), overlapField, 'col-md-3',
+    str('ragBuilderOverlapInfo', 'How much text each chunk repeats from the previous one, so a sentence split across a boundary is still retrievable whole. Must be smaller than the token window — an overlap at or above it would never advance through the document. Larger overlap means more chunks, more embedding cost and more near-duplicate hits.'), true);
+  // The embedding model is LISTED, and never defaulted. Only a model
+  // registered in the embedding project has a container behind it, and a name
+  // with nothing behind it does not fail until the first embed call — after
+  // the crawl and the chunking have already run, reported as an HTTP 404
+  // rather than as a wrong choice. Preselecting one would also silently
+  // decide the vector width for a corpus nobody had chosen a model for, so
+  // the picker starts empty and the setup will not validate until it is set.
   const embeddingProject = String(config.embeddingProjectID || '').trim();
   let registeredEmbeddings: string[] = [];
   if (embeddingProject) {
@@ -587,32 +676,51 @@ export async function buildRagBuilder(
       console.debug('RAG Builder: embedding model listing failed', error);
     }
   }
-  const embedModelField: HTMLSelectElement | HTMLInputElement = registeredEmbeddings.length
-    ? selectInput(
-        registeredEmbeddings,
-        registeredEmbeddings.includes(DEFAULT_EMBEDDING) ? DEFAULT_EMBEDDING : registeredEmbeddings[0]
-      )
-    : textInput(DEFAULT_EMBEDDING);
-  labeled(pipelineRow, idOf('embed-model'), str('ragBuilderEmbedModelLabel', 'Embedding model:'), embedModelField, 'col-md-3');
+  const embedModelField = selectInput(['', ...registeredEmbeddings], '', {
+    '': str('ragBuilderEmbedModelPlaceholder', 'Select an embedding model…'),
+  });
+  labeled(pipelineRow, idOf('embed-model'), str('ragBuilderEmbedModelLabel', 'Embedding model:'), embedModelField, 'col-md-3',
+    str('ragBuilderEmbedModelInfo', 'The model that turns each chunk into a vector, listed from the deployment\'s embedding model project. It cannot be changed later without re-embedding the whole corpus: a collection can only be searched with the model that built it, because vectors from two models are not comparable.'), true);
   const embedDimsField = numberInput(384, 1);
-  labeled(pipelineRow, idOf('embed-dims'), str('ragBuilderEmbedDimsLabel', 'Embedding dimensions:'), embedDimsField, 'col-md-3');
+  labeled(pipelineRow, idOf('embed-dims'), str('ragBuilderEmbedDimsLabel', 'Embedding dimensions:'), embedDimsField, 'col-md-3',
+    str('ragBuilderEmbedDimsInfo', 'The width of the vector column, taken from the chosen model — it is a property of the model, not a setting, so it is read-only whenever the model publishes one. It stays editable only for a model registered outside the shipped set, where no width is published. Getting it wrong makes the collection unusable and it cannot be widened afterwards.'), true);
   // The vector column is created at this width and cannot be widened
   // afterwards, so the dimension follows the model wherever the model's fact
   // sheet publishes one. It stays editable: a model registered outside the
   // shipped set publishes no width, and guessing one is worse than asking.
   const followEmbeddingModel = (): void => {
     const dims = embeddingDimensions(embedModelField.value);
-    if (dims) embedDimsField.value = String(dims);
+    // Read-only rather than merely prefilled: the width belongs to the model.
+    // A field that looks editable invites a value the store will accept and
+    // the embedding container will then contradict, one run later.
+    embedDimsField.readOnly = dims > 0;
+    embedDimsField.value = dims > 0 ? String(dims) : '';
   };
   embedModelField.addEventListener('change', followEmbeddingModel);
   followEmbeddingModel();
-  if (embeddingProject && !registeredEmbeddings.length) {
+  // Overlap is bounded by the window it overlaps within. Bounding the input
+  // as the window changes means the browser's own stepper cannot walk into an
+  // impossible value; validateSetup still checks, because typing bypasses it.
+  const boundOverlap = (): void => {
+    const window = Math.max(16, Number(tokenLimitField.value) || 0);
+    overlapField.max = String(Math.max(0, window - 1));
+    if (Number(overlapField.value) >= window) overlapField.value = String(window - 1);
+  };
+  tokenLimitField.addEventListener('change', boundOverlap);
+  tokenLimitField.addEventListener('input', boundOverlap);
+  boundOverlap();
+  if (!registeredEmbeddings.length) {
     const note = document.createElement('div');
-    note.className = 'alert alert-warning py-2 px-3 mt-2 mb-0';
-    note.textContent = str(
-      'ragBuilderNoEmbeddingModels',
-      'No embedding models could be listed from the configured project, so the model name has to be typed. Check the "Embedding model project ID" option and that you can read that project.'
-    );
+    note.className = 'alert alert-danger py-2 px-3 mt-2 mb-0';
+    note.textContent = embeddingProject
+      ? str(
+          'ragBuilderNoEmbeddingModels',
+          'No embedding models could be listed from the configured project, so no setup can be saved. Check that the project holds registered embedding models and that you can read it.'
+        )
+      : str(
+          'ragBuilderNoEmbeddingProject',
+          'No embedding model project is configured, so no embedding model can be chosen and no setup can be saved. Ask your administrator to set the "Embedding model project ID" option.'
+        );
     pipelineRow.appendChild(note);
   }
   pipelineBody.appendChild(pipelineRow);
@@ -642,10 +750,17 @@ export async function buildRagBuilder(
     !credentialDomain || backend.entries.every((entry) => Boolean(heldEntries[entry]));
   const usable = offered.filter(backendReachable);
 
+  // Nothing is preselected. Which store a corpus lands in is not a detail to
+  // inherit from list order — it decides where the data physically lives, and
+  // the two backends do not behave identically (see the administration
+  // guide's ANN warning). The user says which.
   const backendField = selectInput(
-    offered.map((backend) => backend.key),
-    (usable[0] ?? offered[0]).key,
-    Object.fromEntries(offered.map((backend) => [backend.key, backend.label]))
+    ['', ...offered.map((backend) => backend.key)],
+    '',
+    {
+      '': str('ragBuilderBackendPlaceholder', 'Select a vector database…'),
+      ...Object.fromEntries(offered.map((backend) => [backend.key, backend.label])),
+    }
   );
   for (const backend of offered) {
     if (backendReachable(backend)) continue;
@@ -664,7 +779,8 @@ export async function buildRagBuilder(
       .replace('{entries}', missing.join(' / '))
       .replace('{domain}', credentialDomain);
   }
-  labeled(storeRow, idOf('backend'), str('ragBuilderBackendLabel', 'Vector database:'), backendField, 'col-md-3');
+  labeled(storeRow, idOf('backend'), str('ragBuilderBackendLabel', 'Vector database:'), backendField, 'col-md-3',
+    str('ragBuilderBackendInfo', 'Where the chunks and their vectors are stored. Both backends carry the same features, but they are not interchangeable once built — moving a collection means re-ingesting it. A database you hold no credentials for is shown disabled rather than hidden, so you can see it exists and ask for access.'), true);
   if (!usable.length) {
     const warning = document.createElement('div');
     warning.className = 'alert alert-warning py-2 px-3 mt-2 mb-0';
@@ -702,6 +818,14 @@ export async function buildRagBuilder(
   storeLocation.appendChild(storeLocationText);
   storeRow.appendChild(storeLocation);
   const showStoreLocation = (): void => {
+    if (!backendField.value) {
+      storeLocationText.className = 'form-text mb-2';
+      storeLocationText.textContent = str(
+        'ragBuilderStoreChooseFirst',
+        'Choose a vector database to see where this setup would ingest.'
+      );
+      return;
+    }
     const { host, port, database } = resolvedStore();
     storeLocationText.className = host && database ? 'form-text mb-2' : 'form-text text-danger mb-2';
     storeLocationText.textContent =
@@ -721,9 +845,11 @@ export async function buildRagBuilder(
   showStoreLocation();
   // TLS is deliberately NOT offered here - see RagBuilderConfig.storeSslmode
   const collectionField = textInput('', 'rag_hr_policies_v1');
-  labeled(storeRow, idOf('collection'), str('ragBuilderCollectionLabel', 'Collection (lowercase identifier):'), collectionField, 'col-md-4');
+  labeled(storeRow, idOf('collection'), str('ragBuilderCollectionLabel', 'Collection (lowercase identifier):'), collectionField, 'col-md-4',
+    str('ragBuilderCollectionInfo', 'The table this corpus lives in inside the vector database. Two setups pointing at the same collection write into each other, so give each corpus its own — and a version suffix (…_v1) makes it possible to rebuild alongside the live one and cut over. Lowercase letters, digits and underscores, starting with a letter.'), true);
   const prefixField = textInput('', 'RAG_HR');
-  labeled(storeRow, idOf('tables-prefix'), str('ragBuilderTablesPrefixLabel', 'Pipeline table prefix (max 20 chars):'), prefixField, 'col-md-3');
+  labeled(storeRow, idOf('tables-prefix'), str('ragBuilderTablesPrefixLabel', 'Pipeline table prefix (max 20 chars):'), prefixField, 'col-md-3',
+    str('ragBuilderTablesPrefixInfo', 'Prefix for the CAS working tables this pipeline creates — the ledger, the element and chunk tables, the run history. Kept to 20 characters so every generated name stays inside the 32-character CAS limit. Two setups sharing a prefix overwrite each other\'s ledger.'), true);
   // Caslib picker over the CAS Management listing, the same interactive
   // selection the Prompt Builder's dataset picker uses. Only the caslib is
   // chosen here: the CAS SERVER is admin-set in the Options, so there is one
@@ -732,16 +858,17 @@ export async function buildRagBuilder(
   // to an empty dropdown nobody can get past.
   let caslibs: string[] = [];
   try {
-    caslibs = (await getCaslibs(config.casServer || 'cas-shared-default')).sort((left, right) =>
-      left.localeCompare(right)
-    );
+    caslibs = (await getCaslibs(config.casServer || 'cas-shared-default'))
+      .filter((name) => !isPersonalCaslib(name))
+      .sort((left, right) => left.localeCompare(right));
   } catch (error) {
     console.debug('RAG Builder: caslib listing failed', error);
   }
-  const caslibField: HTMLSelectElement | HTMLInputElement = caslibs.length
-    ? selectInput(caslibs, caslibs.includes(DEFAULT_CASLIB) ? DEFAULT_CASLIB : caslibs[0])
-    : textInput(DEFAULT_CASLIB);
-  labeled(storeRow, idOf('tables-caslib'), str('ragBuilderTablesCaslibLabel', 'Tables caslib:'), caslibField, 'col-md-3');
+  const caslibField = selectInput(['', ...caslibs], '', {
+    '': str('ragBuilderCaslibPlaceholder', 'Select a caslib…'),
+  });
+  labeled(storeRow, idOf('tables-caslib'), str('ragBuilderTablesCaslibLabel', 'Tables caslib:'), caslibField, 'col-md-3',
+    str('ragBuilderTablesCaslibInfo', 'The caslib holding this pipeline\'s working tables. It has to be one other people and scheduled jobs can reach: a personal caslib is not offered, because a corpus whose ledger only its author can see cannot be rerun by anyone else or by a schedule.'), true);
   const domainNote = document.createElement('p');
   domainNote.className = 'text-muted small mb-0 mt-2';
   domainNote.textContent = `${str('ragBuilderDomainNote', 'Credential domain:')} ${config.credentialDomain}`;
@@ -849,12 +976,14 @@ export async function buildRagBuilder(
     extraction: { extractor: extractorField.value },
     chunking: {
       chunker: chunkerField.value,
-      inputTokenLimit: Math.max(16, Number(tokenLimitField.value) || 256),
-      overlapTokens: Math.max(0, Number(overlapField.value) || 0),
+      // Read as typed. Clamping here would let an impossible pair save as a
+      // silently different one, and the author would never learn what ran.
+      inputTokenLimit: Number(tokenLimitField.value),
+      overlapTokens: Number(overlapField.value),
     },
     embedding: {
-      model: embedModelField.value.trim() || DEFAULT_EMBEDDING,
-      dims: Math.max(1, Number(embedDimsField.value) || 384),
+      model: embedModelField.value.trim(),
+      dims: Number(embedDimsField.value),
       deploymentType: config.deploymentType || 'k8s',
       scrEndpoint: '',
     },
@@ -871,7 +1000,7 @@ export async function buildRagBuilder(
     },
     tables: {
       prefix: prefixField.value.trim(),
-      caslib: caslibField.value.trim() || DEFAULT_CASLIB,
+      caslib: caslibField.value.trim(),
     },
     pipelineVersion: 'v1',
     credentialDomain: config.credentialDomain || 'agentic-ai-keys',
@@ -880,6 +1009,28 @@ export async function buildRagBuilder(
 
   const validateSetup = (setup: RagSetup): string | null => {
     if (!setup.source.path) return str('ragBuilderValidateSource', 'The document folder path is required.');
+    if (!setup.embedding.model)
+      return str(
+        'ragBuilderValidateEmbedModel',
+        'Choose an embedding model. It decides the vector width and cannot be changed later without re-embedding the whole corpus.'
+      );
+    if (!(setup.embedding.dims > 0))
+      return str('ragBuilderValidateEmbedDims', 'The embedding dimensions must be a positive number.');
+    if (!setup.store.backend)
+      return str('ragBuilderValidateBackend', 'Choose a vector database.');
+    if (!setup.tables.caslib)
+      return str('ragBuilderValidateCaslib', 'Choose a caslib for the pipeline tables.');
+    // A window below the floor, or an overlap that meets it, never advances
+    // through a document - the chunker would emit the same opening forever.
+    if (!(setup.chunking.inputTokenLimit >= 16))
+      return str('ragBuilderValidateTokenLimit', 'The embedding token window must be at least 16 tokens.');
+    if (setup.chunking.overlapTokens < 0)
+      return str('ragBuilderValidateOverlapNegative', 'The chunk overlap cannot be negative.');
+    if (setup.chunking.overlapTokens >= setup.chunking.inputTokenLimit)
+      return str(
+        'ragBuilderValidateOverlap',
+        'The chunk overlap must be smaller than the embedding token window - at or above it, chunking would never move forward through a document.'
+      );
     if (!setup.store.host || !setup.store.database)
       return str(
         'ragBuilderValidateStore',
@@ -917,6 +1068,101 @@ export async function buildRagBuilder(
     );
   }
 
+  /** Base URL for links out to SAS Model Manager. */
+  const viyaHost = (): string =>
+    (getAppState().config?.viyaHost as string | undefined) || window.location.origin;
+
+  /** Dismiss a Bootstrap modal we opened declaratively. */
+  const hideModal = (id: string): void => {
+    const element = document.getElementById(id);
+    if (element) Modal.getInstance(element)?.hide();
+  };
+
+  /** Reflect the current selection on the buttons that act on it. */
+  function updateSelectionActions(): void {
+    deleteProjectButton.disabled = !selectedProjectID;
+    deleteSetupButton.disabled = !selectedSetupID;
+    if (selectedSetupID) {
+      openInMMButton.href = `${viyaHost()}/SASModelManager/models/${selectedSetupID}/files`;
+      openInMMButton.classList.remove('disabled');
+      openInMMButton.removeAttribute('aria-disabled');
+    } else {
+      openInMMButton.removeAttribute('href');
+      openInMMButton.classList.add('disabled');
+      openInMMButton.setAttribute('aria-disabled', 'true');
+    }
+  }
+
+  async function createProjectFromModal(): Promise<void> {
+    const name = (document.getElementById(`${idOf('create-project')}Name`) as HTMLInputElement | null)?.value.trim() ?? '';
+    const description = (document.getElementById(`${idOf('create-project')}Description`) as HTMLInputElement | null)?.value.trim() ?? '';
+    if (!name) {
+      showStatus('danger', str('ragBuilderProjectNameRequired', 'A project name is required.'));
+      return;
+    }
+    try {
+      const repository = await getModelRepositoryInformation(config.modelRepositoryID);
+      const project = await createModelProject({
+        name,
+        description: description || str('ragBuilderProjectDescription', 'RAG setups of the SAS Agentic AI Accelerator'),
+        function: 'RAG',
+        repositoryId: config.modelRepositoryID,
+        folderId: (repository as { folderId?: string })?.folderId,
+        properties: [{ name: 'Origin', value: 'SAS Agentic AI Accelerator', type: 'string' }],
+        tags: ['LLM', 'RAG-Engineering'],
+      });
+      selectedProjectID = project?.id ?? '';
+      selectedSetupID = '';
+      await refreshProjects();
+      await refreshSetups();
+      await loadSetup();
+      hideModal(`${idOf('create-project')}Modal`);
+      showStatus('success', str('ragBuilderProjectCreated', 'RAG project created.'));
+    } catch (error) {
+      console.error('Creating the RAG project failed.', error);
+      showStatus('danger', str('ragBuilderProjectCreateFailed', 'Creating the RAG project failed - check your Model Manager permissions.'));
+    }
+  }
+
+  async function createSetupFromModal(): Promise<void> {
+    const name = (document.getElementById(`${idOf('create-setup')}Name`) as HTMLInputElement | null)?.value.trim() ?? '';
+    const description = (document.getElementById(`${idOf('create-setup')}Description`) as HTMLInputElement | null)?.value.trim() ?? '';
+    if (!selectedProjectID) {
+      showStatus('danger', str('ragBuilderSetupNeedsProject', 'Select a RAG project before creating a setup.'));
+      return;
+    }
+    if (!name) {
+      showStatus('danger', str('ragBuilderSetupNameRequired', 'A setup name is required.'));
+      return;
+    }
+    try {
+      const created = (await createModel({
+        name,
+        description,
+        function: 'RAG',
+        algorithm: 'RAG',
+        tool: 'SAS Agentic AI Accelerator RAG Builder',
+        modeler: getAppState().userName ?? '',
+        projectId: selectedProjectID,
+        scoreCodeType: 'python',
+        trainCodeType: 'python',
+        tags: ['LLM', 'RAG'],
+      })) as unknown as { id?: string; items?: Array<{ id?: string; name?: string }> };
+      // createModel answers with either the model or a collection holding it,
+      // depending on the SAS Viya release - taking only `.id` silently yields
+      // an empty selection on the releases that wrap it.
+      selectedSetupID = created?.items?.[0]?.id ?? created?.id ?? '';
+      selectedSetupName = name;
+      await refreshSetups();
+      await loadSetup();
+      hideModal(`${idOf('create-setup')}Modal`);
+      showStatus('success', str('ragBuilderSetupCreated', 'RAG setup created. Author it below and save.'));
+    } catch (error) {
+      console.error('Creating the RAG setup failed.', error);
+      showStatus('danger', str('ragBuilderSetupCreateFailed', 'Creating the RAG setup failed - check your Model Manager permissions.'));
+    }
+  }
+
   async function refreshProjects(): Promise<void> {
     allProjects = await getModelProjects("contains(tags,'RAG-Engineering')");
     projectFilter.setUsers(allProjects);
@@ -929,6 +1175,7 @@ export async function buildRagBuilder(
     setupFilter.setUsers(allSetups);
     renderSetupOptions();
     if (selectedSetupID) setupSelect.value = selectedSetupID;
+    updateSelectionActions();
   }
 
   async function loadSetup(): Promise<void> {
@@ -981,7 +1228,9 @@ export async function buildRagBuilder(
         ...Object.fromEntries(
           MODEL_CARD_FIELDS.map((field) => [field, setup.documentation[field]])
         ),
-        trainTable: `${config.casServer}/${setup.tables.caslib.toUpperCase() === 'CASUSER' ? `CASUSER(${getAppState().userName ?? 'casuser'})` : setup.tables.caslib}/${setup.tables.prefix}_LEDGER`,
+        // No CASUSER special case: the picker does not offer a personal
+        // caslib, so the name here is always one others can resolve too.
+        trainTable: `${config.casServer}/${setup.tables.caslib}/${setup.tables.prefix}_LEDGER`,
         inputVariables: INPUT_VARIABLES,
         outputVariables: OUTPUT_VARIABLES,
         scoreCodeType: 'python',
@@ -1211,6 +1460,7 @@ export async function buildRagBuilder(
   // ---- events ---------------------------------------------------------------
   projectSelect.addEventListener('change', () => {
     selectedProjectID = projectSelect.value;
+    updateSelectionActions();
     selectedSetupID = '';
     selectedSetupName = '';
     void refreshSetups();
@@ -1220,69 +1470,90 @@ export async function buildRagBuilder(
   setupSelect.addEventListener('change', () => {
     selectedSetupID = setupSelect.value;
     selectedSetupName = setupSelect.selectedOptions[0]?.textContent ?? '';
+    updateSelectionActions();
     void loadSetup();
   });
 
-  newProjectButton.addEventListener('click', () => {
+  deleteSetupButton.addEventListener('click', () => {
     void (async () => {
-      const name = newProjectName.value.trim();
-      if (!name) return;
+      if (!selectedSetupID) return;
+      const confirmed = await showConfirmModal({
+        title: `${str('ragBuilderDeleteSetupButton', 'Delete setup')}: ${selectedSetupName}`,
+        body: [
+          str(
+            'ragBuilderDeleteSetupNote',
+            'This deletes the RAG setup and its generated artifacts from SAS Model Manager. The vector-store collection and its CAS tables are NOT touched - the data stays where it is, and the record of what built it is what disappears.'
+          ),
+        ],
+        confirmText: str('ragBuilderDeleteConfirm', 'Delete'),
+        cancelText: str('ragBuilderDeleteCancel', 'Cancel'),
+      });
+      if (!confirmed) return;
       clearStatus();
-      newProjectButton.disabled = true;
+      deleteSetupButton.disabled = true;
       try {
-        const repository = await getModelRepositoryInformation(config.modelRepositoryID);
-        const project = await createModelProject({
-          name,
-          description: str('ragBuilderProjectDescription', 'RAG setups of the SAS Agentic AI Accelerator'),
-          function: 'RAG',
-          repositoryId: config.modelRepositoryID,
-          folderId: (repository as { folderId?: string })?.folderId,
-          properties: [{ name: 'Origin', value: 'SAS Agentic AI Accelerator', type: 'string' }],
-          tags: ['LLM', 'RAG-Engineering'],
-        });
-        selectedProjectID = project?.id ?? '';
-        newProjectName.value = '';
-        await refreshProjects();
+        const status = await deleteModel(selectedSetupID);
+        if (status !== 204) throw new Error(`HTTP ${status}`);
+        selectedSetupID = '';
+        selectedSetupName = '';
         await refreshSetups();
         await loadSetup();
+        showStatus('success', str('ragBuilderSetupDeleted', 'RAG setup deleted.'));
       } catch (error) {
-        console.error('Creating the RAG project failed.', error);
-        showStatus('danger', str('ragBuilderProjectCreateError', 'Creating the RAG project failed - check your Model Manager permissions.'));
+        console.error('Deleting the RAG setup failed.', error);
+        showStatus('danger', str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.'));
       } finally {
-        newProjectButton.disabled = false;
+        updateSelectionActions();
       }
     })();
   });
 
-  newSetupButton.addEventListener('click', () => {
+  deleteProjectButton.addEventListener('click', () => {
     void (async () => {
-      const name = newSetupName.value.trim();
-      if (!name || !selectedProjectID) return;
+      if (!selectedProjectID) return;
+      // Every setup goes first, explicitly: whether a project DELETE cascades
+      // to its models varies by SAS Viya release, and one at a time is
+      // deterministic. The count is named so nobody deletes twelve corpora
+      // believing they are deleting an empty project.
+      const setups = allSetups;
+      const confirmed = await showConfirmModal({
+        title: `${str('ragBuilderDeleteProjectButton', 'Delete project')}: ${projectSelect.selectedOptions[0]?.textContent ?? ''}`,
+        body: [
+          setups.length
+            ? str(
+                'ragBuilderDeleteProjectNote',
+                'This deletes the project and the {count} setup(s) it holds from SAS Model Manager. Vector-store collections and CAS tables are NOT touched.'
+              ).replace('{count}', String(setups.length))
+            : str(
+                'ragBuilderDeleteProjectEmptyNote',
+                'This project holds no setups. Deleting it removes the project from SAS Model Manager.'
+              ),
+        ],
+        confirmText: str('ragBuilderDeleteConfirm', 'Delete'),
+        cancelText: str('ragBuilderDeleteCancel', 'Cancel'),
+      });
+      if (!confirmed) return;
       clearStatus();
-      newSetupButton.disabled = true;
+      deleteProjectButton.disabled = true;
       try {
-        const created = (await createModel({
-          name,
-          description: '',
-          function: 'RAG',
-          algorithm: 'RAG',
-          tool: 'SAS Agentic AI Accelerator RAG Builder',
-          modeler: getAppState().userName ?? '',
-          projectId: selectedProjectID,
-          scoreCodeType: 'python',
-          trainCodeType: 'python',
-          tags: ['LLM', 'RAG'],
-        })) as unknown as { id?: string; items?: Array<{ id?: string; name?: string }> };
-        selectedSetupID = created?.items?.[0]?.id ?? created?.id ?? '';
-        selectedSetupName = name;
-        newSetupName.value = '';
+        for (const setup of setups) {
+          const status = await deleteModel(setup.value);
+          if (status !== 204) throw new Error(`setup ${setup.innerHTML}: HTTP ${status}`);
+        }
+        const status = await deleteModelProject(selectedProjectID);
+        if (status !== 204) throw new Error(`project: HTTP ${status}`);
+        selectedProjectID = '';
+        selectedSetupID = '';
+        selectedSetupName = '';
+        await refreshProjects();
         await refreshSetups();
         await loadSetup();
+        showStatus('success', str('ragBuilderProjectDeleted', 'RAG project deleted.'));
       } catch (error) {
-        console.error('Creating the RAG setup failed.', error);
-        showStatus('danger', str('ragBuilderSetupCreateError', 'Creating the RAG setup failed - check your Model Manager permissions.'));
+        console.error('Deleting the RAG project failed.', error);
+        showStatus('danger', str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.'));
       } finally {
-        newSetupButton.disabled = false;
+        updateSelectionActions();
       }
     })();
   });

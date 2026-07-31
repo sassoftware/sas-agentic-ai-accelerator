@@ -45,6 +45,7 @@ import { createAccordionItem } from '../ui/accordion';
 import { attachCombobox } from '../ui/combobox';
 import { createListFilter, renderFilteredOptions } from '../ui/list-filter';
 import { createDocSection, createInfoLabel } from '../ui/doc-section';
+import { createCreateModal } from '../ui/create-modal';
 import { showConfirmModal } from '../ui/confirm-modal';
 import { showToast } from '../ui/toast';
 import { escapeHtml } from '../ui/dom-helpers';
@@ -1148,103 +1149,9 @@ export async function buildPromptBuilder(
       }
     }
 
-    function promptBuilderCreateModal(
-      tmpModalContainer: HTMLElement,
-      tmpPrefix: string,
-      tmpModalText: ModalText,
-      tmpActionFunction: () => void
-    ): void {
-      // Create the button that triggers the modal
-      const createModalButtonToggle = document.createElement('button');
-      createModalButtonToggle.type = 'button';
-      createModalButtonToggle.classList.add('btn', 'btn-primary');
-      createModalButtonToggle.setAttribute('data-bs-toggle', 'modal');
-      createModalButtonToggle.setAttribute('data-bs-target', `#${tmpPrefix}Modal`);
-      createModalButtonToggle.innerHTML = tmpModalText?.modalTitle ?? '';
-      // Create the modal wrapper
-      const createModalWrapper = document.createElement('div');
-      createModalWrapper.classList.add('modal', 'fade');
-      createModalWrapper.setAttribute('id', `${tmpPrefix}Modal`);
-      createModalWrapper.setAttribute('tabindex', '-1');
-      // Create the modal dialog
-      const createModalModalDialog = document.createElement('div');
-      createModalModalDialog.classList.add('modal-dialog');
-      // Create the modal content
-      const createModalModalContent = document.createElement('div');
-      createModalModalContent.classList.add('modal-content');
-      // Create the modal header
-      const createModalModalHeader = document.createElement('div');
-      createModalModalHeader.classList.add('modal-header');
-      // Create the modal title
-      const createModalModalTitle = document.createElement('h2');
-      createModalModalTitle.classList.add('modal-title', 'fs-5');
-      createModalModalTitle.innerHTML = tmpModalText?.modalTitle ?? '';
-      // Create the modal close button
-      const createModalModalCloseButton = document.createElement('button');
-      createModalModalCloseButton.type = 'button';
-      createModalModalCloseButton.classList.add('btn-close');
-      createModalModalCloseButton.setAttribute('data-bs-dismiss', 'modal');
-      createModalModalCloseButton.setAttribute('aria-label', 'Close');
-      // Create the modal body
-      const createModalModalBody = document.createElement('div');
-      createModalModalBody.classList.add('modal-body');
-      // Optional explanatory description shown above the inputs
-      if (tmpModalText?.modalDescription) {
-        const createModalModalDescription = document.createElement('p');
-        createModalModalDescription.innerText = tmpModalText.modalDescription;
-        createModalModalBody.appendChild(createModalModalDescription);
-      }
-      // Create the first modal input
-      const createModalBodyInput1Text = document.createElement('span');
-      createModalBodyInput1Text.innerHTML = `${tmpModalText?.nameLabel}:`;
-      const createModalBodyInput1 = document.createElement('input');
-      createModalBodyInput1.setAttribute('type', 'text');
-      createModalBodyInput1.setAttribute('placeholder', tmpModalText?.nameLabel ?? '');
-      createModalBodyInput1.setAttribute('id', `${tmpPrefix}Name`);
-      // Create the second modal input
-      const createModalBodyInput2Text = document.createElement('span');
-      createModalBodyInput2Text.innerHTML = `${tmpModalText?.descriptionLabel}:`;
-      const createModalBodyInput2 = document.createElement('input');
-      createModalBodyInput2.setAttribute('type', 'text');
-      createModalBodyInput2.setAttribute('placeholder', tmpModalText?.descriptionLabel ?? '');
-      createModalBodyInput2.setAttribute('id', `${tmpPrefix}Description`);
-      // Create the modal footer
-      const createModalModalFooter = document.createElement('div');
-      createModalModalFooter.classList.add('modal-footer');
-      // Create the modal footer close button
-      const createModalModalFooterButton = document.createElement('button');
-      createModalModalFooterButton.type = 'button';
-      createModalModalFooterButton.classList.add('btn', 'btn-secondary');
-      createModalModalFooterButton.setAttribute('data-bs-dismiss', 'modal');
-      createModalModalFooterButton.innerHTML = tmpModalText?.closeButtonText ?? '';
-      // Create the modal footer save button
-      const createModalModalFooterButton2 = document.createElement('button');
-      createModalModalFooterButton2.type = 'button';
-      createModalModalFooterButton2.classList.add('btn', 'btn-primary');
-      createModalModalFooterButton2.innerHTML = tmpModalText?.saveButtonText ?? '';
-      createModalModalFooterButton2.onclick = () => {
-        tmpActionFunction();
-      };
-      // Append elements together
-      createModalModalHeader.appendChild(createModalModalTitle);
-      createModalModalHeader.appendChild(createModalModalCloseButton);
-      createModalModalContent.appendChild(createModalModalHeader);
-      createModalModalBody.appendChild(createModalBodyInput1Text);
-      createModalModalBody.appendChild(createModalBodyInput1);
-      createModalModalBody.appendChild(document.createElement('br'));
-      createModalModalBody.appendChild(createModalBodyInput2Text);
-      createModalModalBody.appendChild(createModalBodyInput2);
-      createModalModalContent.appendChild(createModalModalBody);
-      createModalModalFooter.appendChild(createModalModalFooterButton);
-      createModalModalFooter.appendChild(createModalModalFooterButton2);
-      createModalModalContent.appendChild(createModalModalFooter);
-      createModalModalDialog.appendChild(createModalModalContent);
-      createModalWrapper.appendChild(createModalModalDialog);
-
-      // Add to the modal container
-      tmpModalContainer.appendChild(createModalButtonToggle);
-      tmpModalContainer.appendChild(createModalWrapper);
-    }
+    // The create dialog is shared with the RAG Builder; kept as a local alias
+    // because this file calls it by its original name in several places.
+    const promptBuilderCreateModal = createCreateModal;
 
     // Create the modals for project/prompt creation
     promptBuilderCreateModal(
