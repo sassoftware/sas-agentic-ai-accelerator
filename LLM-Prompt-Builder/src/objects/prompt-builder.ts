@@ -44,6 +44,7 @@ import { resolveDomainSecrets } from '../api/credentials-api';
 import { createAccordionItem } from '../ui/accordion';
 import { attachCombobox } from '../ui/combobox';
 import { createListFilter, renderFilteredOptions } from '../ui/list-filter';
+import { createDocSection, createInfoLabel } from '../ui/doc-section';
 import { showConfirmModal } from '../ui/confirm-modal';
 import { showToast } from '../ui/toast';
 import { escapeHtml } from '../ui/dom-helpers';
@@ -306,11 +307,6 @@ const PROMPT_FUNCTION = 'prompt template';
 const LEGACY_PROMPT_FUNCTION = 'Prompting';
 /** Server-side filter that surfaces prompt models of either function value. */
 const PROMPT_FUNCTION_FILTER = `or(eq(function,'${PROMPT_FUNCTION}'),eq(function,'${LEGACY_PROMPT_FUNCTION}'))`;
-/** Documentation attributes captured per prompt, mirroring mdb model-card keys. */
-const PROMPT_DOC_FIELDS = [
-  'modelPurpose', 'intendedUse', 'expectedBenefit', 'outOfScopeUseCases', 'limitations',
-] as const;
-type PromptDocField = (typeof PROMPT_DOC_FIELDS)[number];
 /** Names an output variable must not use. */
 const RESERVED_OUTPUT_NAMES = [...DEFAULT_LLM_OUTPUTS, 'parse_status'];
 
@@ -613,51 +609,33 @@ export async function buildPromptBuilder(
     // selected prompt's SAS Model Manager attributes and editable for any
     // selected prompt. Collapsed by default; entirely optional.
     let currentDocPromptId = '';
-    const promptDocSection = document.createElement('details');
-    promptDocSection.classList.add('pb-doc-section', 'mt-2', 'mb-2');
-    const promptDocSummary = document.createElement('summary');
-    promptDocSummary.classList.add('fw-semibold');
-    promptDocSummary.innerText = promptBuilderInterfaceText?.promptBuilderDocSectionLabel as string;
-    promptDocSection.appendChild(promptDocSummary);
-    const promptDocHint = document.createElement('p');
-    promptDocHint.classList.add('small', 'text-muted', 'mt-1', 'mb-2');
-    promptDocHint.innerText = promptBuilderInterfaceText?.promptBuilderDocSectionHint as string;
-    promptDocSection.appendChild(promptDocHint);
-    const DOC_FIELD_I18N: Record<PromptDocField, { label: string; info: string }> = {
-      modelPurpose: {
-        label: promptBuilderInterfaceText?.promptBuilderDocModelPurpose as string,
-        info: promptBuilderInterfaceText?.promptBuilderDocModelPurposeInfo as string,
+    const promptDoc = createDocSection(`${promptBuilderObject?.id}`, {
+      sectionLabel: promptBuilderInterfaceText?.promptBuilderDocSectionLabel as string,
+      sectionHint: promptBuilderInterfaceText?.promptBuilderDocSectionHint as string,
+      fields: {
+        modelPurpose: {
+          label: promptBuilderInterfaceText?.promptBuilderDocModelPurpose as string,
+          info: promptBuilderInterfaceText?.promptBuilderDocModelPurposeInfo as string,
+        },
+        intendedUse: {
+          label: promptBuilderInterfaceText?.promptBuilderDocIntendedUse as string,
+          info: promptBuilderInterfaceText?.promptBuilderDocIntendedUseInfo as string,
+        },
+        expectedBenefit: {
+          label: promptBuilderInterfaceText?.promptBuilderDocExpectedBenefit as string,
+          info: promptBuilderInterfaceText?.promptBuilderDocExpectedBenefitInfo as string,
+        },
+        outOfScopeUseCases: {
+          label: promptBuilderInterfaceText?.promptBuilderDocOutOfScope as string,
+          info: promptBuilderInterfaceText?.promptBuilderDocOutOfScopeInfo as string,
+        },
+        limitations: {
+          label: promptBuilderInterfaceText?.promptBuilderDocLimitations as string,
+          info: promptBuilderInterfaceText?.promptBuilderDocLimitationsInfo as string,
+        },
       },
-      intendedUse: {
-        label: promptBuilderInterfaceText?.promptBuilderDocIntendedUse as string,
-        info: promptBuilderInterfaceText?.promptBuilderDocIntendedUseInfo as string,
-      },
-      expectedBenefit: {
-        label: promptBuilderInterfaceText?.promptBuilderDocExpectedBenefit as string,
-        info: promptBuilderInterfaceText?.promptBuilderDocExpectedBenefitInfo as string,
-      },
-      outOfScopeUseCases: {
-        label: promptBuilderInterfaceText?.promptBuilderDocOutOfScope as string,
-        info: promptBuilderInterfaceText?.promptBuilderDocOutOfScopeInfo as string,
-      },
-      limitations: {
-        label: promptBuilderInterfaceText?.promptBuilderDocLimitations as string,
-        info: promptBuilderInterfaceText?.promptBuilderDocLimitationsInfo as string,
-      },
-    };
-    const promptDocFieldEls = {} as Record<PromptDocField, HTMLTextAreaElement>;
-    for (const field of PROMPT_DOC_FIELDS) {
-      const wrap = document.createElement('div');
-      wrap.classList.add('mb-2');
-      wrap.appendChild(createOptionLabel(DOC_FIELD_I18N[field].label, DOC_FIELD_I18N[field].info));
-      const textarea = document.createElement('textarea');
-      textarea.classList.add('form-control');
-      textarea.rows = 2;
-      textarea.id = `${promptBuilderObject?.id}-doc-${field}`;
-      promptDocFieldEls[field] = textarea;
-      wrap.appendChild(textarea);
-      promptDocSection.appendChild(wrap);
-    }
+    });
+    const promptDocSection = promptDoc.section;
     const promptDocSaveButton = document.createElement('button');
     promptDocSaveButton.type = 'button';
     promptDocSaveButton.classList.add('btn', 'btn-outline-primary', 'btn-sm');
@@ -665,8 +643,7 @@ export async function buildPromptBuilder(
     promptDocSaveButton.disabled = true;
     promptDocSaveButton.onclick = async () => {
       if (!currentDocPromptId) return;
-      const attrs: Record<string, unknown> = {};
-      for (const field of PROMPT_DOC_FIELDS) attrs[field] = promptDocFieldEls[field].value;
+      const attrs: Record<string, unknown> = { ...promptDoc.values() };
       const previousLabel = promptDocSaveButton.innerText;
       promptDocSaveButton.disabled = true;
       promptDocSaveButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>`;
@@ -691,7 +668,7 @@ export async function buildPromptBuilder(
     // a fetch failure just leaves the section empty and disabled.
     async function loadPromptDocumentation(promptId: string): Promise<void> {
       currentDocPromptId = '';
-      for (const field of PROMPT_DOC_FIELDS) promptDocFieldEls[field].value = '';
+      promptDoc.clear();
       promptDocSaveButton.disabled = true;
       if (!promptId || promptId === `${promptBuilderInterfaceText?.promptSelect}`) return;
       let details: Record<string, unknown> | null = null;
@@ -702,10 +679,7 @@ export async function buildPromptBuilder(
         return;
       }
       if (!details) return;
-      for (const field of PROMPT_DOC_FIELDS) {
-        const value = details[field];
-        promptDocFieldEls[field].value = value == null ? '' : String(value);
-      }
+      promptDoc.setValues(details);
       currentDocPromptId = promptId;
       promptDocSaveButton.disabled = false;
       if (details.function === LEGACY_PROMPT_FUNCTION) {
@@ -1327,21 +1301,9 @@ export async function buildPromptBuilder(
 
     // Label + info icon for an LLM option; the explanation is a Bootstrap
     // tooltip so it also works with keyboard focus and touch.
-    function createOptionLabel(labelText: string, infoHtml: string): HTMLDivElement {
-      const labelContainer = document.createElement('div');
-      labelContainer.classList.add('info-container');
-      labelContainer.append(`${labelText}: `);
-      const infoIcon = document.createElement('span');
-      infoIcon.classList.add('info-icon');
-      infoIcon.innerHTML = '&#x2139;&#xFE0F;';
-      infoIcon.setAttribute('tabindex', '0');
-      infoIcon.setAttribute('role', 'button');
-      infoIcon.setAttribute('aria-label', labelText);
-      infoIcon.setAttribute('data-bs-toggle', 'tooltip');
-      new Tooltip(infoIcon, { title: infoHtml, html: true, container: 'body' });
-      labelContainer.appendChild(infoIcon);
-      return labelContainer;
-    }
+    // The info-icon label is shared with the RAG Builder; kept as a local
+    // alias because it is used throughout this file's option rendering.
+    const createOptionLabel = createInfoLabel;
 
     function generateModelSelection(availableModels: AvailableLLM[]): void {
       availableModels.forEach((model, index) => {

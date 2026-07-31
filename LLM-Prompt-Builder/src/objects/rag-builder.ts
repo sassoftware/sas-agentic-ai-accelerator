@@ -60,6 +60,7 @@ import { getAppState } from '../state/app-state';
 import { showToast } from '../ui/toast';
 import { attachCombobox } from '../ui/combobox';
 import { createListFilter, renderFilteredOptions } from '../ui/list-filter';
+import { MODEL_CARD_FIELDS, createDocSection } from '../ui/doc-section';
 import type { InterfaceText } from '../types';
 import type { DropdownOption } from '../types/models';
 import type { RagBuilderConfig, RagBuilderText, RagSetup } from '../types/rag';
@@ -133,7 +134,10 @@ const OUTPUT_VARIABLES = [
 function defaultSetup(config: RagBuilderConfig): RagSetup {
   return {
     version: 1,
-    documentation: { description: '', intendedUse: '', limitations: '' },
+    documentation: {
+      description: '', modelPurpose: '', intendedUse: '', expectedBenefit: '',
+      outOfScopeUseCases: '', limitations: '',
+    },
     source: { path: '' },
     extraction: { extractor: '' },
     chunking: { chunker: 'recursive', inputTokenLimit: 256, overlapTokens: 30 },
@@ -226,6 +230,15 @@ function renderPipelineYaml(setup: RagSetup): string {
   return lines.join('\n') + '\n';
 }
 
+/** Section headings for documentation.md, in MODEL_CARD_FIELDS order. */
+const MODEL_CARD_HEADINGS: Record<(typeof MODEL_CARD_FIELDS)[number], string> = {
+  modelPurpose: 'Purpose',
+  intendedUse: 'Intended use',
+  expectedBenefit: 'Expected benefit',
+  outOfScopeUseCases: 'Out-of-scope uses',
+  limitations: 'Limitations',
+};
+
 function renderDocumentationMarkdown(setup: RagSetup, setupName: string): string {
   return [
     `# ${setupName}`,
@@ -234,14 +247,12 @@ function renderDocumentationMarkdown(setup: RagSetup, setupName: string): string
     '',
     setup.documentation.description || '_Not documented yet._',
     '',
-    '## Intended use',
-    '',
-    setup.documentation.intendedUse || '_Not documented yet._',
-    '',
-    '## Limitations',
-    '',
-    setup.documentation.limitations || '_Not documented yet._',
-    '',
+    ...MODEL_CARD_FIELDS.flatMap((field) => [
+      `## ${MODEL_CARD_HEADINGS[field]}`,
+      '',
+      setup.documentation[field] || '_Not documented yet._',
+      '',
+    ]),
   ].join('\n');
 }
 
@@ -486,11 +497,56 @@ export async function buildRagBuilder(
   documentationRow.className = 'row g-3';
   const descriptionField = textArea(2, str('ragBuilderDocDescriptionPlaceholder', 'What does this RAG setup contain?'));
   labeled(documentationRow, idOf('doc-description'), str('ragBuilderDocDescriptionLabel', 'Description:'), descriptionField, 'col-12');
-  const intendedUseField = textArea(2, str('ragBuilderDocIntendedUsePlaceholder', 'Which questions/decisions should it serve?'));
-  labeled(documentationRow, idOf('doc-intended'), str('ragBuilderDocIntendedUseLabel', 'Intended use:'), intendedUseField, 'col-md-6');
-  const limitationsField = textArea(2, str('ragBuilderDocLimitationsPlaceholder', 'Known gaps: coverage, freshness, languages, document quality…'));
-  labeled(documentationRow, idOf('doc-limitations'), str('ragBuilderDocLimitationsLabel', 'Limitations:'), limitationsField, 'col-md-6');
   documentationBody.appendChild(documentationRow);
+  // The five mdb model-card fields, in the Prompt Builder's collapsible block
+  // with the same info tooltips. Optional and collapsed on purpose: the
+  // description is what a consumer needs to recognise the corpus, and the
+  // model card is what a governance review asks for later.
+  const ragDoc = createDocSection(idOf('setup'), {
+    sectionLabel: str('ragBuilderDocSectionLabel', 'Optional documentation'),
+    sectionHint: str(
+      'ragBuilderDocSectionHint',
+      'Model-card fields, saved onto the Model Manager model as attributes so they appear wherever the setup is opened. Every field is optional — a blank one honestly reads as not stated.'
+    ),
+    fields: {
+      modelPurpose: {
+        label: str('ragBuilderDocModelPurpose', 'Purpose'),
+        info: str(
+          'ragBuilderDocModelPurposeInfo',
+          'Why this corpus exists and the decision it supports. A reviewer reads this first, to judge whether everything else is proportionate.'
+        ),
+      },
+      intendedUse: {
+        label: str('ragBuilderDocIntendedUse', 'Intended use'),
+        info: str(
+          'ragBuilderDocIntendedUseInfo',
+          'Which questions this collection should be asked, and by whom. Retrieval will happily answer questions the corpus cannot support — this is where you say which those are.'
+        ),
+      },
+      expectedBenefit: {
+        label: str('ragBuilderDocExpectedBenefit', 'Expected benefit'),
+        info: str(
+          'ragBuilderDocExpectedBenefitInfo',
+          'What improves because this corpus exists — faster answers, fewer escalations, wider coverage — and how you would know.'
+        ),
+      },
+      outOfScopeUseCases: {
+        label: str('ragBuilderDocOutOfScope', 'Out-of-scope uses'),
+        info: str(
+          'ragBuilderDocOutOfScopeInfo',
+          'Uses this collection must NOT be put to, even though it would return something. Naming them is what makes a later misuse a deviation rather than a surprise.'
+        ),
+      },
+      limitations: {
+        label: str('ragBuilderDocLimitations', 'Limitations'),
+        info: str(
+          'ragBuilderDocLimitationsInfo',
+          'Known gaps: coverage, freshness, languages, document quality, anything the extractor or the chunker handles badly. Consumers inherit these whether or not they are written down.'
+        ),
+      },
+    },
+  });
+  documentationBody.appendChild(ragDoc.section);
   editor.appendChild(documentationCard);
 
   // Pipeline
@@ -741,8 +797,7 @@ export async function buildRagBuilder(
 
   const applySetup = (setup: RagSetup): void => {
     descriptionField.value = setup.documentation.description;
-    intendedUseField.value = setup.documentation.intendedUse;
-    limitationsField.value = setup.documentation.limitations;
+    ragDoc.setValues(setup.documentation);
     sourcePathField.value = setup.source.path;
     extractorField.value = setup.extraction.extractor;
     chunkerField.value = setup.chunking.chunker;
@@ -788,8 +843,7 @@ export async function buildRagBuilder(
     policies: currentPolicies ?? policiesFrom(config),
     documentation: {
       description: descriptionField.value.trim(),
-      intendedUse: intendedUseField.value.trim(),
-      limitations: limitationsField.value.trim(),
+      ...ragDoc.values(),
     },
     source: { path: sourcePathField.value.trim() },
     extraction: { extractor: extractorField.value },
@@ -922,6 +976,11 @@ export async function buildRagBuilder(
       //    trainTable = the ingestion ledger, and the retrieval in/out contract
       await updateModelAttributes(selectedSetupID, {
         description: setup.documentation.description.slice(0, 1000),
+        // the model card, under the same attribute names a prompt uses, so
+        // one governance query reads both kinds of artifact
+        ...Object.fromEntries(
+          MODEL_CARD_FIELDS.map((field) => [field, setup.documentation[field]])
+        ),
         trainTable: `${config.casServer}/${setup.tables.caslib.toUpperCase() === 'CASUSER' ? `CASUSER(${getAppState().userName ?? 'casuser'})` : setup.tables.caslib}/${setup.tables.prefix}_LEDGER`,
         inputVariables: INPUT_VARIABLES,
         outputVariables: OUTPUT_VARIABLES,

@@ -298,10 +298,6 @@
     "ragBuilderDocumentationHint": "Vom Setup-Autor geschrieben, für alle Konsumenten sichtbar: Was dieser Korpus ist, wofür er gedacht ist und wo seine Grenzen liegen. Wird am Model-Manager-Modell gespeichert, damit Governance-Reviews Ihre eigenen Einschränkungen lesen.",
     "ragBuilderDocDescriptionLabel": "Beschreibung:",
     "ragBuilderDocDescriptionPlaceholder": "Was enthält dieses RAG-Setup?",
-    "ragBuilderDocIntendedUseLabel": "Vorgesehene Nutzung:",
-    "ragBuilderDocIntendedUsePlaceholder": "Welche Fragen/Entscheidungen soll es bedienen?",
-    "ragBuilderDocLimitationsLabel": "Einschränkungen:",
-    "ragBuilderDocLimitationsPlaceholder": "Bekannte Lücken: Abdeckung, Aktualität, Sprachen, Dokumentqualität…",
     "ragBuilderPipelineHeading": "Ingestion-Pipeline",
     "ragBuilderPipelineHint": "Das führt der generierte Studio Flow / Job-Execution-Job aus: crawlen, extrahieren, chunken und über den governten SCR-Embedding-Container einbetten.",
     "ragBuilderSourcePathLabel": "Dokumentordner (Pfad im Compute-Kontext):",
@@ -356,6 +352,18 @@
     "ragBuilderUnlistedCaslib": "nicht gefunden",
     "ragBuilderFilterNamePlaceholder": "Nach Name filtern…",
     "ragBuilderFilterUserLabel": "Nach Benutzer filtern",
-    "ragBuilderFilterUserAll": "Alle Benutzer"
+    "ragBuilderFilterUserAll": "Alle Benutzer",
+    "ragBuilderDocSectionLabel": "Optionale Dokumentation",
+    "ragBuilderDocSectionHint": "Model-Card-Felder, die als Attribute am Model-Manager-Modell gespeichert werden und damit überall dort erscheinen, wo die Konfiguration geöffnet wird. Alle Felder sind optional — ein leeres Feld bedeutet ehrlich „nicht angegeben“.",
+    "ragBuilderDocModelPurpose": "Zweck",
+    "ragBuilderDocModelPurposeInfo": "Warum dieser Korpus existiert und welche Entscheidung er unterstützt. Prüfende lesen dies zuerst, um zu beurteilen, ob alles Weitere angemessen ist.",
+    "ragBuilderDocExpectedBenefit": "Erwarteter Nutzen",
+    "ragBuilderDocExpectedBenefitInfo": "Was sich durch diesen Korpus verbessert — schnellere Antworten, weniger Eskalationen, größere Abdeckung — und woran Sie das erkennen würden.",
+    "ragBuilderDocOutOfScope": "Nicht vorgesehene Verwendungen",
+    "ragBuilderDocOutOfScopeInfo": "Verwendungen, für die diese Sammlung NICHT eingesetzt werden darf, auch wenn sie etwas zurückliefern würde. Sie hier zu benennen macht einen späteren Fehlgebrauch zur Abweichung statt zur Überraschung.",
+    "ragBuilderDocIntendedUseInfo": "Welche Fragen an diese Sammlung gestellt werden sollen und von wem. Die Suche beantwortet bereitwillig auch Fragen, die der Korpus nicht tragen kann — hier benennen Sie diese.",
+    "ragBuilderDocLimitationsInfo": "Bekannte Lücken: Abdeckung, Aktualität, Sprachen, Dokumentqualität, alles, was Extraktor oder Chunker schlecht verarbeiten. Konsumenten erben diese, ob dokumentiert oder nicht.",
+    "ragBuilderDocIntendedUse": "Vorgesehene Verwendung",
+    "ragBuilderDocLimitations": "Einschränkungen"
   }
 }

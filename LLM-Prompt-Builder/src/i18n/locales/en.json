@@ -298,10 +298,6 @@
     "ragBuilderDocumentationHint": "Written by the setup author, shown to every consumer: what this corpus is, what it should be used for, and where its limits are. Saved onto the Model Manager model so governance reviews read your own caveats.",
     "ragBuilderDocDescriptionLabel": "Description:",
     "ragBuilderDocDescriptionPlaceholder": "What does this RAG setup contain?",
-    "ragBuilderDocIntendedUseLabel": "Intended use:",
-    "ragBuilderDocIntendedUsePlaceholder": "Which questions/decisions should it serve?",
-    "ragBuilderDocLimitationsLabel": "Limitations:",
-    "ragBuilderDocLimitationsPlaceholder": "Known gaps: coverage, freshness, languages, document quality…",
     "ragBuilderPipelineHeading": "Ingestion pipeline",
     "ragBuilderPipelineHint": "What the generated Studio Flow / Job Execution job will run: crawl, extract, chunk and embed through the governed SCR embedding container.",
     "ragBuilderSourcePathLabel": "Document folder (compute-context path):",
@@ -359,6 +355,18 @@
     "ragBuilderUnlistedCaslib": "not found",
     "ragBuilderFilterNamePlaceholder": "Filter by name…",
     "ragBuilderFilterUserLabel": "Filter by user",
-    "ragBuilderFilterUserAll": "All users"
+    "ragBuilderFilterUserAll": "All users",
+    "ragBuilderDocSectionLabel": "Optional documentation",
+    "ragBuilderDocSectionHint": "Model-card fields, saved onto the Model Manager model as attributes so they appear wherever the setup is opened. Every field is optional — a blank one honestly reads as not stated.",
+    "ragBuilderDocModelPurpose": "Purpose",
+    "ragBuilderDocModelPurposeInfo": "Why this corpus exists and the decision it supports. A reviewer reads this first, to judge whether everything else is proportionate.",
+    "ragBuilderDocExpectedBenefit": "Expected benefit",
+    "ragBuilderDocExpectedBenefitInfo": "What improves because this corpus exists — faster answers, fewer escalations, wider coverage — and how you would know.",
+    "ragBuilderDocOutOfScope": "Out-of-scope uses",
+    "ragBuilderDocOutOfScopeInfo": "Uses this collection must NOT be put to, even though it would return something. Naming them is what makes a later misuse a deviation rather than a surprise.",
+    "ragBuilderDocIntendedUseInfo": "Which questions this collection should be asked, and by whom. Retrieval will happily answer questions the corpus cannot support — this is where you say which those are.",
+    "ragBuilderDocLimitationsInfo": "Known gaps: coverage, freshness, languages, document quality, anything the extractor or the chunker handles badly. Consumers inherit these whether or not they are written down.",
+    "ragBuilderDocIntendedUse": "Intended use",
+    "ragBuilderDocLimitations": "Limitations"
   }
 }

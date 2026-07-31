@@ -78,10 +78,21 @@ export interface RagBuilderConfig {
  */
 export interface RagSetup {
   version: 1;
-  /** User-authored documentation (also rendered to documentation.md). */
+  /**
+   * User-authored documentation (also rendered to documentation.md and
+   * written onto the model as SAS Model Manager attributes).
+   *
+   * `description` is the model's own description. The other five are the mdb
+   * model-card keys the Prompt Builder already captures per prompt - a RAG
+   * setup is the same kind of governed artifact and answers the same
+   * questions, so it answers them under the same names.
+   */
   documentation: {
     description: string;
+    modelPurpose: string;
     intendedUse: string;
+    expectedBenefit: string;
+    outOfScopeUseCases: string;
     limitations: string;
   };
   source: {
