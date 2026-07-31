@@ -313,11 +313,8 @@
     "ragBuilderEmbedModelLabel": "Embedding-Modell:",
     "ragBuilderEmbedDimsLabel": "Embedding-Dimensionen:",
     "ragBuilderStoreHeading": "Vektordatenbank und Pipeline-Tabellen",
-    "ragBuilderStoreHint": "Nur Verbindungseinstellungen - Benutzer und Passwort der Datenbank werden serverseitig aus der Credential-Domain aufgelöst (<BACKEND>_RAG_USER / <BACKEND>_RAG_PW) und gelangen nie in diesen Browser.",
+    "ragBuilderStoreHint": "Sowohl der Ort der Datenbank als auch die Zugriffsberechtigung stammen aus der Credential-Domain - die Verbindung wird serverseitig aufgelöst und gelangt nie als Geheimnis in diesen Browser.",
     "ragBuilderBackendLabel": "Vektordatenbank:",
-    "ragBuilderStoreHostLabel": "Host:",
-    "ragBuilderStorePortLabel": "Port:",
-    "ragBuilderStoreDbLabel": "Datenbank:",
     "ragBuilderStoreSslmodeLabel": "SSL-Modus:",
     "ragBuilderCollectionLabel": "Collection (Kleinbuchstaben-Bezeichner):",
     "ragBuilderTablesPrefixLabel": "Präfix der Pipeline-Tabellen (max. 20 Zeichen):",
@@ -330,7 +327,7 @@
     "ragBuilderComingSoon": "Kommt mit Register Setup (P2)",
     "ragBuilderLoadSetupError": "Die gespeicherte rag-setup.json konnte nicht gelesen werden - es wird mit Standardwerten begonnen.",
     "ragBuilderValidateSource": "Der Pfad zum Dokumentordner ist erforderlich.",
-    "ragBuilderValidateStore": "Host und Datenbank der Vektordatenbank sind erforderlich.",
+    "ragBuilderValidateStore": "Für diese Datenbank sind in der Credential-Domain kein Host und keine Datenbank hinterlegt; eine hier gespeicherte Konfiguration kann nicht laden.",
     "ragBuilderValidateCollection": "Die Collection muss ein Kleinbuchstaben-Bezeichner sein (Buchstaben, Ziffern, Unterstriche; beginnt mit einem Buchstaben).",
     "ragBuilderValidatePrefix": "Das Tabellen-Präfix muss 1-20 Zeichen lang sein (Buchstaben, Ziffern, Unterstriche; beginnt mit einem Buchstaben), damit jeder Tabellenname innerhalb von 32 Zeichen bleibt.",
     "ragBuilderSaveSuccess": "RAG-Setup in Model Manager gespeichert (rag-setup.json, pipeline.yaml, documentation.md, Tags, Ledger-Referenz und Variablendefinitionen).",
@@ -351,6 +348,11 @@
     "ragBuilderJobGenerateError": "Das Generieren des Ingestion-Jobs ist fehlgeschlagen - prüfen Sie die Browser-Konsole und Ihre Berechtigungen auf dem Content-Root.",
     "ragBuilderLedgerHeading": "Ingestion-Ledger",
     "ragBuilderLedgerEmpty": "Der Ledger enthält noch keine Zeilen - führen Sie zuerst eine Ingestion aus.",
-    "ragBuilderLedgerMissing": "Für dieses Setup wurde keine geladene Ledger-Tabelle gefunden - sie erscheint nach dem ersten Ingestion-Lauf (ein gespeicherter Ledger wird vom Lauf selbst geladen)."
+    "ragBuilderLedgerMissing": "Für dieses Setup wurde keine geladene Ledger-Tabelle gefunden - sie erscheint nach dem ersten Ingestion-Lauf (ein gespeicherter Ledger wird vom Lauf selbst geladen).",
+    "ragBuilderStoreResolved": "Schreibt nach {host}:{port}/{database}, aus der Credential-Domain {domain}.",
+    "ragBuilderStoreUnresolved": "Für diese Datenbank sind in der Credential-Domain {domain} kein Host und keine Datenbank hinterlegt. Bitten Sie Ihre Administration, {prefix}_HOST und {prefix}_DB zu ergänzen.",
+    "ragBuilderNoEmbeddingModels": "Aus dem konfigurierten Projekt konnten keine Embedding-Modelle geladen werden; der Modellname muss daher eingegeben werden. Prüfen Sie die Option \"Embedding model project ID\" und Ihre Leseberechtigung für das Projekt.",
+    "ragBuilderUnlistedModel": "nicht registriert",
+    "ragBuilderUnlistedCaslib": "nicht gefunden"
   }
 }

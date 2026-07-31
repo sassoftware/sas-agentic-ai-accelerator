@@ -10,13 +10,15 @@
  *
  *   ...?viyaHost=https://viya.example.com
  *      &modelRepositoryID=<uuid>
+ *      &embeddingProjectID=<uuid>
  *      &SCREndpoint=https://viya.example.com/llm
  *      &credentialDomain=agentic-ai-keys
  *
  * Vector-store credentials never appear here or in the URL: ingestion and
  * retrieval resolve them server-side from the credential domain (entries
- * <BACKEND>_RAG_USER / <BACKEND>_RAG_PW) — the browser only ever handles
- * connection CONFIG (host/port/database).
+ * <BACKEND>_RAG_USER / <BACKEND>_RAG_PW). Where a store LIVES is resolved
+ * from that same domain (<BACKEND>_HOST / _PORT / _DB, falling back to the
+ * unprefixed RAGSTORE_* names), so no one has to type a hostname into a form.
  */
 
 import { RAG_BACKENDS, backendOptionKey } from './objects/rag-backends';
@@ -37,6 +39,9 @@ const DEFAULTS: RagRuntimeConfig = {
     // Environment-specific and MUST be supplied per deployment — left blank so
     // the app never calls SAS Viya with someone else's IDs (see isRagConfigured).
     modelRepositoryID: '',
+    // Model Manager project holding the registered embedding models. Blank =
+    // the Builder cannot list them and falls back to a free-text model name.
+    embeddingProjectID: '',
     // Blank = <viyaHost>/llm at runtime.
     SCREndpoint: '',
     deploymentType: 'k8s',
@@ -72,6 +77,7 @@ const DEFAULTS: RagRuntimeConfig = {
 /** URL-overridable keys of the RAG Builder config. */
 const URL_OVERRIDABLE = [
   'modelRepositoryID',
+  'embeddingProjectID',
   'SCREndpoint',
   'deploymentType',
   'credentialDomain',

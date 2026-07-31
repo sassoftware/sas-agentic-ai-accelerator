@@ -81,16 +81,46 @@ def store_config_from_secrets(secrets: dict, backend: str, host: str, port,
 
     An unset port follows the backend rather than Postgres: a SingleStore
     setup that left the field blank must reach 3306.
+
+    Host, port, database and sslmode may ALSO live in the domain, under
+    ``{BACKEND}_HOST`` / ``_PORT`` / ``_DB`` / ``_SSLMODE``, falling back to
+    the unprefixed ``RAGSTORE_*`` names - the same precedence ``env.py``
+    already uses, so a .env and a domain spell a deployment the same way. An explicitly
+    passed value still wins - a step author who typed a host gets that host -
+    but a caller that passes nothing gets the deployment's own settings
+    instead of having to know them. That is what lets the RAG Builder stop
+    asking users for connection details they should never have to hold.
     """
     from .env import default_port
 
     prefix = str(backend or "").upper()
-    user = (secrets or {}).get(f"{prefix}_RAG_USER", "")
-    password = (secrets or {}).get(f"{prefix}_RAG_PW", "")
+    entries = secrets or {}
+    user = entries.get(f"{prefix}_RAG_USER", "")
+    password = entries.get(f"{prefix}_RAG_PW", "")
     if not user or not password:
         raise KeyError(f"the credential domain has no {prefix}_RAG_USER / "
                        f"{prefix}_RAG_PW entries - add them to your .env and "
                        "rerun the create-credential-domain script")
-    return {"host": host, "port": int(port or default_port(backend)),
+
+    def settle(given, entry: str) -> str:
+        """What the caller passed, else what the domain holds."""
+        if str(given or "").strip():
+            return str(given).strip()
+        for name in (f"{prefix}_{entry}", f"RAGSTORE_{entry}"):
+            value = str(entries.get(name, "") or "").strip()
+            if value:
+                return value
+        return ""
+
+    host = settle(host, "HOST")
+    dbname = settle(dbname, "DB")
+    if not host or not dbname:
+        missing = [name for name, value in (("host", host), ("database", dbname))
+                   if not value]
+        raise KeyError(
+            "no " + " or ".join(missing) + " for the " + str(backend)
+            + " store: pass it, or add " + prefix + "_HOST / " + prefix
+            + "_DB to the credential domain")
+    return {"host": host, "port": int(settle(port, "PORT") or default_port(backend)),
             "dbname": dbname, "user": user, "password": password,
-            "sslmode": sslmode or "prefer"}
+            "sslmode": settle(sslmode, "SSLMODE") or "prefer"}

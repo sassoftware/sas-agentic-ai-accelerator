@@ -313,11 +313,8 @@
     "ragBuilderEmbedModelLabel": "Embedding model:",
     "ragBuilderEmbedDimsLabel": "Embedding dimensions:",
     "ragBuilderStoreHeading": "Vector store and pipeline tables",
-    "ragBuilderStoreHint": "Connection settings only - the store user and password are resolved server-side from the credential domain (<BACKEND>_RAG_USER / <BACKEND>_RAG_PW) and never enter this browser.",
+    "ragBuilderStoreHint": "Where the store lives and who may reach it both come from the credential domain - the connection is resolved server-side and never enters this browser as a secret.",
     "ragBuilderBackendLabel": "Vector database:",
-    "ragBuilderStoreHostLabel": "Host:",
-    "ragBuilderStorePortLabel": "Port:",
-    "ragBuilderStoreDbLabel": "Database:",
     "ragBuilderStoreSslmodeLabel": "SSL mode:",
     "ragBuilderCollectionLabel": "Collection (lowercase identifier):",
     "ragBuilderTablesPrefixLabel": "Pipeline table prefix (max 20 chars):",
@@ -330,7 +327,7 @@
     "ragBuilderComingSoon": "Arrives with Register Setup (P2)",
     "ragBuilderLoadSetupError": "The stored rag-setup.json could not be read - starting from defaults.",
     "ragBuilderValidateSource": "The document folder path is required.",
-    "ragBuilderValidateStore": "Vector store host and database are required.",
+    "ragBuilderValidateStore": "This store has no host or database in the credential domain, so a setup saved here cannot ingest.",
     "ragBuilderValidateCollection": "The collection must be a lowercase identifier (letters, digits, underscores; starts with a letter).",
     "ragBuilderValidatePrefix": "The table prefix must be 1-20 characters (letters, digits, underscores; starts with a letter) so every table name stays within 32 characters.",
     "ragBuilderSaveSuccess": "RAG setup saved to Model Manager (rag-setup.json, pipeline.yaml, documentation.md, tags, ledger reference and variable definitions).",
@@ -354,6 +351,11 @@
     "ragBuilderLedgerMissing": "No loaded ledger table was found for this setup - it appears after the first ingestion run (a saved ledger is loaded by the run itself).",
     "ragBuilderBackendNoCredential": "no credential",
     "ragBuilderBackendNoCredentialNote": "No {entries} in the {domain} credential domain - ask your administrator for access.",
-    "ragBuilderNoBackendCredential": "You hold no vector-store credentials in the {domain} credential domain, so a setup saved here cannot ingest. Ask your administrator to add the entries for the database you need."
+    "ragBuilderNoBackendCredential": "You hold no vector-store credentials in the {domain} credential domain, so a setup saved here cannot ingest. Ask your administrator to add the entries for the database you need.",
+    "ragBuilderStoreResolved": "Ingests into {host}:{port}/{database}, from the {domain} credential domain.",
+    "ragBuilderStoreUnresolved": "No host or database for this store in the {domain} credential domain. Ask your administrator to add {prefix}_HOST and {prefix}_DB.",
+    "ragBuilderNoEmbeddingModels": "No embedding models could be listed from the configured project, so the model name has to be typed. Check the \"Embedding model project ID\" option and that you can read that project.",
+    "ragBuilderUnlistedModel": "not registered",
+    "ragBuilderUnlistedCaslib": "not found"
   }
 }

@@ -40,6 +40,7 @@ import {
 import { getFileContent } from '../api/files-api';
 import { resolveDomainSecrets } from '../api/credentials-api';
 import { RAG_BACKENDS, backendOptionKey, type RagBackend } from './rag-backends';
+import { embeddingDimensions } from './embedding-models';
 import { ensureChildFolder, getFolderByPath, getFolderMembers } from '../api/folders-api';
 import {
   createJobDefinition,
@@ -54,8 +55,9 @@ import {
   isTerminalJobState,
   launchJob,
 } from '../api/jobexec-api';
-import { getCasTableRows } from '../api/cas-api';
+import { getCasTableRows, getCaslibs } from '../api/cas-api';
 import { getAppState } from '../state/app-state';
+import { showToast } from '../ui/toast';
 import type { InterfaceText } from '../types';
 import type { DropdownOption } from '../types/models';
 import type { RagBuilderConfig, RagBuilderText, RagSetup } from '../types/rag';
@@ -69,6 +71,34 @@ const COLLECTION_PATTERN = /^[a-z][a-z0-9_]{0,62}$/;
 
 const EXTRACTORS = ['', 'plaintext', 'markdown', 'csv_json', 'html', 'pdf-text'];
 const CHUNKERS = ['recursive', 'paragraph'];
+/** Preselected when the deployment registers it; the accelerator's small,
+ * open, CPU-friendly default. Only a preference — the offered list is what
+ * the embedding project actually holds. */
+const DEFAULT_EMBEDDING = 'all_minilm_l6_v2';
+const DEFAULT_CASLIB = 'casuser';
+
+/**
+ * Set a picker to a saved value, keeping it even when the live listing does
+ * not carry it (a model retired from the project, a caslib the user can no
+ * longer see). The alternative is a select silently snapping to its first
+ * option, which is how a saved corpus starts writing somewhere else.
+ */
+function keepUnlisted(
+  field: HTMLSelectElement | HTMLInputElement,
+  value: string,
+  missingNote: string
+): void {
+  if (field instanceof HTMLSelectElement && value) {
+    const listed = Array.from(field.options).some((option) => option.value === value);
+    if (!listed) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = `${value} — ${missingNote}`;
+      field.insertBefore(option, field.firstChild);
+    }
+  }
+  field.value = value;
+}
 /**
  * The backends this deployment offers, in list order. Each has its own
  * Options flag; '0' withholds it. If an administrator turns every one off we
@@ -106,7 +136,7 @@ function defaultSetup(config: RagBuilderConfig): RagSetup {
     extraction: { extractor: '' },
     chunking: { chunker: 'recursive', inputTokenLimit: 256, overlapTokens: 30 },
     embedding: {
-      model: 'all_minilm_l6_v2',
+      model: DEFAULT_EMBEDDING,
       dims: 384,
       deploymentType: config.deploymentType || 'k8s',
       scrEndpoint: '',
@@ -120,7 +150,7 @@ function defaultSetup(config: RagBuilderConfig): RagSetup {
       sslmode: config.storeSslmode || 'prefer',
       collection: '',
     },
-    tables: { prefix: '', caslib: 'casuser' },
+    tables: { prefix: '', caslib: DEFAULT_CASLIB },
     pipelineVersion: 'v1',
     credentialDomain: config.credentialDomain || 'agentic-ai-keys',
     policies: policiesFrom(config),
@@ -258,7 +288,16 @@ export async function buildRagBuilder(
   const status = document.createElement('div');
   status.id = idOf('status');
   container.appendChild(status);
+  // Success is transient, failure is not. A confirmation the user has already
+  // seen should not sit on the page competing with the next one, so it goes
+  // through the same toast the Prompt Builder uses; anything the user still
+  // has to act on stays in the inline alert until it is resolved.
   const showStatus = (variant: 'success' | 'danger' | 'info', message: string): void => {
+    if (variant === 'success') {
+      status.replaceChildren();
+      showToast(message);
+      return;
+    }
     const alert = document.createElement('div');
     alert.className = `alert alert-${variant} py-2`;
     alert.setAttribute('role', 'alert');
@@ -440,10 +479,52 @@ export async function buildRagBuilder(
   labeled(pipelineRow, idOf('token-limit'), str('ragBuilderTokenLimitLabel', 'Embedding token window:'), tokenLimitField, 'col-md-3');
   const overlapField = numberInput(30, 0);
   labeled(pipelineRow, idOf('overlap'), str('ragBuilderOverlapLabel', 'Chunk overlap (tokens):'), overlapField, 'col-md-3');
-  const embedModelField = textInput('all_minilm_l6_v2');
+  // The embedding model is LISTED, not typed: only a model registered in the
+  // embedding project has a container behind it, and a name with nothing
+  // behind it does not fail until the first embed call — after the crawl and
+  // the chunking have already run, reported as an HTTP 404 rather than a typo.
+  // With no project configured the field degrades to free text rather than to
+  // an empty dropdown nobody can get past.
+  const embeddingProject = String(config.embeddingProjectID || '').trim();
+  let registeredEmbeddings: string[] = [];
+  if (embeddingProject) {
+    try {
+      registeredEmbeddings = (await getModelProjectModels(embeddingProject))
+        .map((option) => String(option.innerHTML ?? '').trim())
+        .filter(Boolean)
+        .sort((left, right) => left.localeCompare(right));
+    } catch (error) {
+      console.debug('RAG Builder: embedding model listing failed', error);
+    }
+  }
+  const embedModelField: HTMLSelectElement | HTMLInputElement = registeredEmbeddings.length
+    ? selectInput(
+        registeredEmbeddings,
+        registeredEmbeddings.includes(DEFAULT_EMBEDDING) ? DEFAULT_EMBEDDING : registeredEmbeddings[0]
+      )
+    : textInput(DEFAULT_EMBEDDING);
   labeled(pipelineRow, idOf('embed-model'), str('ragBuilderEmbedModelLabel', 'Embedding model:'), embedModelField, 'col-md-3');
   const embedDimsField = numberInput(384, 1);
   labeled(pipelineRow, idOf('embed-dims'), str('ragBuilderEmbedDimsLabel', 'Embedding dimensions:'), embedDimsField, 'col-md-3');
+  // The vector column is created at this width and cannot be widened
+  // afterwards, so the dimension follows the model wherever the model's fact
+  // sheet publishes one. It stays editable: a model registered outside the
+  // shipped set publishes no width, and guessing one is worse than asking.
+  const followEmbeddingModel = (): void => {
+    const dims = embeddingDimensions(embedModelField.value);
+    if (dims) embedDimsField.value = String(dims);
+  };
+  embedModelField.addEventListener('change', followEmbeddingModel);
+  followEmbeddingModel();
+  if (embeddingProject && !registeredEmbeddings.length) {
+    const note = document.createElement('div');
+    note.className = 'alert alert-warning py-2 px-3 mt-2 mb-0';
+    note.textContent = str(
+      'ragBuilderNoEmbeddingModels',
+      'No embedding models could be listed from the configured project, so the model name has to be typed. Check the "Embedding model project ID" option and that you can read that project.'
+    );
+    pipelineRow.appendChild(note);
+  }
   pipelineBody.appendChild(pipelineRow);
   editor.appendChild(pipelineCard);
 
@@ -452,7 +533,7 @@ export async function buildRagBuilder(
     str('ragBuilderStoreHeading', 'Vector store and pipeline tables'),
     str(
       'ragBuilderStoreHint',
-      'Connection settings only — the store user and password are resolved server-side from the credential domain (<BACKEND>_RAG_USER / <BACKEND>_RAG_PW) and never enter this browser.'
+      'Where the store lives and who may reach it both come from the credential domain — the connection is resolved server-side and never enters this browser as a secret.'
     )
   );
   const storeRow = document.createElement('div');
@@ -503,28 +584,74 @@ export async function buildRagBuilder(
     ).replace('{domain}', credentialDomain);
     storeRow.appendChild(warning);
   }
-  const hostField = textInput('', 'db.example.com');
-  labeled(storeRow, idOf('store-host'), str('ragBuilderStoreHostLabel', 'Host:'), hostField, 'col-md-4');
-  const portField = numberInput(5432, 1);
-  labeled(storeRow, idOf('store-port'), str('ragBuilderStorePortLabel', 'Port:'), portField, 'col-md-2');
-  const databaseField = textInput('');
-  labeled(storeRow, idOf('store-db'), str('ragBuilderStoreDbLabel', 'Database:'), databaseField, 'col-md-3');
-  // the port follows the backend unless the user typed one, matching the
-  // Load step's blank-port behaviour (5432 pgvector, 3306 SingleStore)
+  // WHERE a store lives is deployment configuration, not something a person
+  // building a corpus knows or should have to retype per setup. It is carried
+  // in the same credential domain that already holds the store's user and
+  // password (<BACKEND>_HOST / _PORT / _DB, falling back to the unprefixed
+  // RAGSTORE_* names — the precedence rag_core.env already uses), so the
+  // Builder resolves it instead of asking. Shown read-only so the setup is
+  // still legible: a form that silently targets an unnamed database is worse
+  // than one that asks.
   const DEFAULT_PORTS: Record<string, number> = { pgvector: 5432, singlestore: 3306 };
-  backendField.addEventListener('change', () => {
-    const previous = Object.values(DEFAULT_PORTS).map(String);
-    if (!portField.value || previous.includes(portField.value)) {
-      portField.value = String(DEFAULT_PORTS[backendField.value] ?? 5432);
-    }
-  });
+  const storeSetting = (backend: string, setting: string): string => {
+    const prefix = backend.toUpperCase();
+    return String(heldEntries[`${prefix}_${setting}`] ?? heldEntries[`RAGSTORE_${setting}`] ?? '').trim();
+  };
+  const resolvedStore = (): { host: string; port: number; database: string } => {
+    const backend = backendField.value;
+    return {
+      host: storeSetting(backend, 'HOST'),
+      port: Number(storeSetting(backend, 'PORT')) || DEFAULT_PORTS[backend] || 5432,
+      database: storeSetting(backend, 'DB'),
+    };
+  };
+  const storeLocation = document.createElement('div');
+  storeLocation.className = 'col-md-9 d-flex align-items-end';
+  const storeLocationText = document.createElement('p');
+  storeLocationText.className = 'form-text mb-2';
+  storeLocation.appendChild(storeLocationText);
+  storeRow.appendChild(storeLocation);
+  const showStoreLocation = (): void => {
+    const { host, port, database } = resolvedStore();
+    storeLocationText.className = host && database ? 'form-text mb-2' : 'form-text text-danger mb-2';
+    storeLocationText.textContent =
+      host && database
+        ? str('ragBuilderStoreResolved', 'Ingests into {host}:{port}/{database}, from the {domain} credential domain.')
+            .replace('{host}', host)
+            .replace('{port}', String(port))
+            .replace('{database}', database)
+        : str(
+            'ragBuilderStoreUnresolved',
+            'No host or database for this store in the {domain} credential domain. Ask your administrator to add {prefix}_HOST and {prefix}_DB.'
+          )
+            .replace(/\{domain\}/g, credentialDomain)
+            .replace(/\{prefix\}/g, backendField.value.toUpperCase());
+  };
+  backendField.addEventListener('change', showStoreLocation);
+  showStoreLocation();
   // TLS is deliberately NOT offered here - see RagBuilderConfig.storeSslmode
   const collectionField = textInput('', 'rag_hr_policies_v1');
   labeled(storeRow, idOf('collection'), str('ragBuilderCollectionLabel', 'Collection (lowercase identifier):'), collectionField, 'col-md-4');
   const prefixField = textInput('', 'RAG_HR');
   labeled(storeRow, idOf('tables-prefix'), str('ragBuilderTablesPrefixLabel', 'Pipeline table prefix (max 20 chars):'), prefixField, 'col-md-3');
-  const caslibField = textInput('casuser');
-  labeled(storeRow, idOf('tables-caslib'), str('ragBuilderTablesCaslibLabel', 'Tables caslib:'), caslibField, 'col-md-2');
+  // Caslib picker over the CAS Management listing, the same interactive
+  // selection the Prompt Builder's dataset picker uses. Only the caslib is
+  // chosen here: the CAS SERVER is admin-set in the Options, so there is one
+  // fewer question to answer and no way to name a server the ingestion will
+  // not use. Degrades to free text if the listing cannot be read, rather than
+  // to an empty dropdown nobody can get past.
+  let caslibs: string[] = [];
+  try {
+    caslibs = (await getCaslibs(config.casServer || 'cas-shared-default')).sort((left, right) =>
+      left.localeCompare(right)
+    );
+  } catch (error) {
+    console.debug('RAG Builder: caslib listing failed', error);
+  }
+  const caslibField: HTMLSelectElement | HTMLInputElement = caslibs.length
+    ? selectInput(caslibs, caslibs.includes(DEFAULT_CASLIB) ? DEFAULT_CASLIB : caslibs[0])
+    : textInput(DEFAULT_CASLIB);
+  labeled(storeRow, idOf('tables-caslib'), str('ragBuilderTablesCaslibLabel', 'Tables caslib:'), caslibField, 'col-md-3');
   const domainNote = document.createElement('p');
   domainNote.className = 'text-muted small mb-0 mt-2';
   domainNote.textContent = `${str('ragBuilderDomainNote', 'Credential domain:')} ${config.credentialDomain}`;
@@ -600,18 +727,19 @@ export async function buildRagBuilder(
     chunkerField.value = setup.chunking.chunker;
     tokenLimitField.value = String(setup.chunking.inputTokenLimit);
     overlapField.value = String(setup.chunking.overlapTokens);
-    embedModelField.value = setup.embedding.model;
+    // A saved value the listing does not carry is kept and marked, never
+    // dropped: silently retargeting a corpus at whatever the dropdown happens
+    // to show first is how a setup starts writing somewhere else.
+    keepUnlisted(embedModelField, setup.embedding.model, str('ragBuilderUnlistedModel', 'not registered'));
     embedDimsField.value = String(setup.embedding.dims);
     backendField.value = setup.store.backend;
     // a setup saved before policies existed carries none
     currentPolicies = setup.policies ?? policiesFrom(config);
-    hostField.value = setup.store.host;
-    portField.value = String(setup.store.port);
-    databaseField.value = setup.store.database;
+    showStoreLocation();
 
     collectionField.value = setup.store.collection;
     prefixField.value = setup.tables.prefix;
-    caslibField.value = setup.tables.caslib;
+    keepUnlisted(caslibField, setup.tables.caslib, str('ragBuilderUnlistedCaslib', 'not found'));
     managedTags = [setup.embedding.model, setup.store.backend].filter(Boolean);
     currentJobUri = setup.job?.definitionUri ?? '';
     updateLaunchState();
@@ -650,23 +778,25 @@ export async function buildRagBuilder(
       overlapTokens: Math.max(0, Number(overlapField.value) || 0),
     },
     embedding: {
-      model: embedModelField.value.trim() || 'all_minilm_l6_v2',
+      model: embedModelField.value.trim() || DEFAULT_EMBEDDING,
       dims: Math.max(1, Number(embedDimsField.value) || 384),
       deploymentType: config.deploymentType || 'k8s',
       scrEndpoint: '',
     },
     store: {
       backend: backendField.value,
-      host: hostField.value.trim(),
-      port: Math.max(1, Number(portField.value) || 5432),
-      database: databaseField.value.trim(),
+      // resolved from the credential domain, then RECORDED on the setup: a
+      // setup that names no store cannot be read back or audited, and the
+      // runtime prefers an explicit value over the domain anyway, so a
+      // recorded one keeps working if the domain later changes.
+      ...resolvedStore(),
       // admin-set, carried through unchanged
       sslmode: config.storeSslmode || 'prefer',
       collection: collectionField.value.trim(),
     },
     tables: {
       prefix: prefixField.value.trim(),
-      caslib: caslibField.value.trim() || 'casuser',
+      caslib: caslibField.value.trim() || DEFAULT_CASLIB,
     },
     pipelineVersion: 'v1',
     credentialDomain: config.credentialDomain || 'agentic-ai-keys',
@@ -676,7 +806,10 @@ export async function buildRagBuilder(
   const validateSetup = (setup: RagSetup): string | null => {
     if (!setup.source.path) return str('ragBuilderValidateSource', 'The document folder path is required.');
     if (!setup.store.host || !setup.store.database)
-      return str('ragBuilderValidateStore', 'Vector store host and database are required.');
+      return str(
+        'ragBuilderValidateStore',
+        'This store has no host or database in the credential domain, so a setup saved here cannot ingest.'
+      );
     if (!COLLECTION_PATTERN.test(setup.store.collection))
       return str('ragBuilderValidateCollection', 'The collection must be a lowercase identifier (letters, digits, underscores; starts with a letter).');
     if (!PREFIX_PATTERN.test(setup.tables.prefix))

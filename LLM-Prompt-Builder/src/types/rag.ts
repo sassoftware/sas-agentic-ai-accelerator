@@ -21,6 +21,15 @@ export interface RagBuilderConfig {
   name: string;
   /** SAS Model Manager repository that new RAG projects are created in. */
   modelRepositoryID: string;
+  /**
+   * SAS Model Manager project holding the REGISTERED embedding models.
+   *
+   * The Builder lists this project rather than asking for a model name,
+   * because only a registered model has a container behind it: a typed name
+   * that is not deployed fails at the first embed call, after the crawl and
+   * the chunking have already run.
+   */
+  embeddingProjectID: string;
   /** SAS Container Runtime endpoint hosting the embedding containers. */
   SCREndpoint: string;
   /** 'k8s' (default) or 'aca' (Azure Container Apps). */

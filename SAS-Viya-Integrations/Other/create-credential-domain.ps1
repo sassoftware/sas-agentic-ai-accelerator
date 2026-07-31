@@ -12,11 +12,17 @@
 #   PGVECTOR_RAG_USER, PGVECTOR_RAG_PW   RAG vector-store credentials - the
 #   SINGLESTORE_RAG_USER, ...            prefix names the vector DB backend,
 #                                        so one domain serves several stores
+#   PGVECTOR_HOST/_PORT/_DB/_SSLMODE     where that store LIVES. Not secret,
+#   SINGLESTORE_HOST, RAGSTORE_HOST, ... but carried here so the RAG Builder
+#                                        need not ask a user for a hostname
+#                                        they should never have to hold. The
+#                                        unprefixed RAGSTORE_* names are the
+#                                        fallback for every backend.
 #
 # By default the entries are read from the accelerator's .env file (git-
 # ignored - secrets never live inside a script): provider key variables like
 # OPENAI_API_KEY map onto their provider entry names, and every *_RAG_USER /
-# *_RAG_PW variable is carried over verbatim. Point -EnvFile at any other
+# *_RAG_PW and *_HOST/_PORT/_DB/_SSLMODE variable is carried over verbatim. Point -EnvFile at any other
 # .env to manage multiple environments from separate files. Everything else
 # in the .env is ignored.
 #
@@ -32,6 +38,8 @@
 #   HUGGINGFACE_API_KEY      HuggingFace
 #   AWS_BEDROCK_API_KEY      AWS Bedrock
 #   <BACKEND>_RAG_USER/_PW   <BACKEND>_RAG_USER/_PW (uppercased)
+#   <BACKEND>_HOST/PORT/     <BACKEND>_HOST/PORT/DB/SSLMODE (uppercased)
+#   DB/SSLMODE               - RAGSTORE_* included, as the shared fallback
 #
 # For full control pass -KeysFile instead: a plain NAME=VALUE file whose
 # entries are stored verbatim, no mapping applied.
@@ -138,9 +146,15 @@ else {
         elseif ($name -match '^[A-Za-z][A-Za-z0-9]*_RAG_(USER|PW)$') {
             $secrets[$name.ToUpper()] = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($entry.Value))
         }
+        # connection settings: not secret, but the domain is the one place
+        # every identity can already read, so the Builder resolves them from
+        # here instead of making users type a hostname
+        elseif ($name -match '^[A-Za-z][A-Za-z0-9]*_(HOST|PORT|DB|SSLMODE)$') {
+            $secrets[$name.ToUpper()] = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($entry.Value))
+        }
     }
     if ($secrets.Count -eq 0) {
-        throw "No credential entries recognized in '$EnvFile' - expected provider keys (OPENAI_API_KEY, ...) and/or <BACKEND>_RAG_USER/<BACKEND>_RAG_PW pairs"
+        throw "No credential entries recognized in '$EnvFile' - expected provider keys (OPENAI_API_KEY, ...), <BACKEND>_RAG_USER/<BACKEND>_RAG_PW pairs and/or <BACKEND>_HOST/_PORT/_DB/_SSLMODE settings"
     }
     Write-Host "Mapped $($secrets.Count) entries from $EnvFile."
 }

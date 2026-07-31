@@ -10,7 +10,10 @@
 # provider key variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, ...) map onto
 # their provider entry names (OpenAI, Anthropic, ...), and every
 # <BACKEND>_RAG_USER / <BACKEND>_RAG_PW variable is carried over verbatim
-# (uppercased) so one domain serves several vector stores. Use -e to point
+# (uppercased) so one domain serves several vector stores, as is every
+# <BACKEND>_HOST / _PORT / _DB / _SSLMODE connection setting (RAGSTORE_* is
+# the shared fallback) so no UI has to ask a user where a store lives.
+# Use -e to point
 # at a different .env (multiple environments); use -k for a raw NAME=VALUE
 # file stored verbatim without any mapping.
 #
@@ -72,6 +75,10 @@ PROVIDER_MAP = {
     "AWS_BEDROCK_API_KEY": "AWS Bedrock",
 }
 RAG_ENTRY = re.compile(r"^[A-Za-z][A-Za-z0-9]*_RAG_(USER|PW)$")
+# connection settings: not secret, but the domain is the one place every
+# identity can already read, so the RAG Builder resolves them from here
+# instead of making users type a hostname they should never have to hold
+STORE_SETTING = re.compile(r"^[A-Za-z][A-Za-z0-9]*_(HOST|PORT|DB|SSLMODE)$")
 
 def read_pairs(path):
     pairs = {}
@@ -104,11 +111,12 @@ else:
             continue
         if name in PROVIDER_MAP:
             secrets[PROVIDER_MAP[name]] = base64.b64encode(value.encode()).decode()
-        elif RAG_ENTRY.match(name):
+        elif RAG_ENTRY.match(name) or STORE_SETTING.match(name):
             secrets[name.upper()] = base64.b64encode(value.encode()).decode()
     if not secrets:
         sys.exit("No credential entries recognized in '" + env_file + "' - expected "
-                 "provider keys (OPENAI_API_KEY, ...) and/or <BACKEND>_RAG_USER/_PW pairs")
+                 "provider keys (OPENAI_API_KEY, ...), <BACKEND>_RAG_USER/_PW pairs "
+                 "and/or <BACKEND>_HOST/_PORT/_DB/_SSLMODE settings")
 
 print(json.dumps({"id": domain, "type": "base64",
                   "description": "Keys for the SAS Agentic AI Accelerator "

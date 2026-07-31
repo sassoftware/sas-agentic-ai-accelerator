@@ -95,6 +95,12 @@ function buildOptionsConfig(config: RagRuntimeConfig): Record<string, unknown> {
         'SAS Model Manager repository new RAG projects are created in.'
       ),
       textField(
+        'embeddingProjectID',
+        'Embedding model project ID',
+        rb.embeddingProjectID,
+        'SAS Model Manager project holding the registered embedding models. The Builder lists that project instead of asking users to type a model name - a name with no container behind it fails at the first embed call, long after the crawl and chunking have run. Leave blank only if you have no such project; the Builder then falls back to free text.'
+      ),
+      textField(
         'SCREndpoint',
         'SCR endpoint',
         rb.SCREndpoint,

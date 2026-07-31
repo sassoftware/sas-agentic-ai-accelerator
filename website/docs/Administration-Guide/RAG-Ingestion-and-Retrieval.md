@@ -70,11 +70,35 @@ build base64-encodes its inline scripts so the Go template engine cannot
 corrupt them, and the CSP has to allow the decoded bundle to run.
 
 Configure the Builder from its **Options** pane in Visual Analytics: the
-Model Manager repository, SCR endpoint, credential domain, content root, CAS
-server, the ingestion compute context, a Yes/No per vector database the deployment offers, and the operational policy (TLS, deleted-document handling, history
-retention, run-history recording, embedding replicas, table persistence).
-Those policy values are recorded onto each setup as it is created, so a
-setup keeps what it was built with.
+Model Manager repository, the **embedding model project**, SCR endpoint,
+credential domain, content root, CAS server, the ingestion compute context, a
+Yes/No per vector database the deployment offers, and the operational policy
+(TLS, deleted-document handling, history retention, run-history recording,
+embedding replicas, table persistence). Those policy values are recorded onto
+each setup as it is created, so a setup keeps what it was built with.
+
+Served standalone rather than embedded, the same settings are query
+parameters:
+
+```
+.../SASJobExecution/?_program=<path>&_action=form&embeddingProjectID=<uuid>&modelRepositoryID=<uuid>
+```
+
+:::note What the Builder never asks a user
+Three things a person building a corpus should not have to know are resolved
+rather than typed:
+
+| | Comes from |
+| --- | --- |
+| Vector store host, port, database | The credential domain — see below |
+| Embedding model | Listed from the embedding model project |
+| Embedding dimensions | The chosen model's fact sheet |
+
+A typed model name has nothing behind it until a container is published, and
+the failure surfaces as an HTTP 404 at the first embed call — after the crawl
+and the chunking have already run. A vector column is created at the model's
+width and cannot be widened afterwards. Both are better resolved than typed.
+:::
 
 ## Two prerequisites that are not optional
 
@@ -114,6 +138,23 @@ one domain can serve several stores:
 PGVECTOR_RAG_USER      PGVECTOR_RAG_PW
 SINGLESTORE_RAG_USER   SINGLESTORE_RAG_PW
 ```
+
+The same domain also carries **where** each store lives. These are not
+secrets, but the domain is the one place every identity can already read, so
+the Builder resolves the connection instead of asking users for a hostname
+they should never have to hold:
+
+```
+PGVECTOR_HOST     PGVECTOR_PORT     PGVECTOR_DB     PGVECTOR_SSLMODE
+SINGLESTORE_HOST  SINGLESTORE_PORT  SINGLESTORE_DB  SINGLESTORE_SSLMODE
+RAGSTORE_HOST     RAGSTORE_PORT     RAGSTORE_DB     RAGSTORE_SSLMODE
+```
+
+`RAGSTORE_*` is the unprefixed fallback for any backend, the same precedence
+the runtime already applies to a `.env`. A value passed explicitly — a host
+typed into a step — still wins over the domain, so the steps are unaffected.
+Without `<BACKEND>_HOST` and `<BACKEND>_DB` the Builder shows the store as
+unresolved and refuses to save a setup that could not ingest.
 
 Author them with `create-credential-domain.ps1`/`.sh`, which reads your
 git-ignored `.env`. See [Managing Credentials](./Managing-Credentials.md).
@@ -246,3 +287,5 @@ PostgreSQL, on/off for SingleStore) and defaults to enabled.
 | Code generation returns HTTP 500 | The `.flw` was uploaded as a file, or a node declares an input port nothing is wired into |
 | Retrieval returns fewer chunks than exist | A SingleStore ANN index is enabled — see the warning above |
 | The run refuses to start | Another run holds the ledger lock; it expires after 30 minutes |
+| The Builder says the store is unresolved | The domain has no `<BACKEND>_HOST` / `_DB` — rerun `create-credential-domain` after adding them to your `.env` |
+| The embedding model has to be typed | No **embedding model project** is configured, or the user cannot read it |
