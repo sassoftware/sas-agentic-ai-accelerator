@@ -134,6 +134,82 @@ function buildOptionsConfig(config: RagRuntimeConfig): Record<string, unknown> {
         rb.computeContext,
         'SAS Compute context the ingestion job runs in (passed to Job Execution as _contextName). It MUST run as the requesting user: the stock "SAS Job Execution compute context" runs its servers as a service account, and the ingestion steps cannot reuse the CAS session they need there. "SAS Studio compute context" works. Its Python also needs the packages from the RAG administration guide.'
       ),
+      {
+        name: 'storeSslmode',
+        label: 'Vector store TLS',
+        type: 'String',
+        value: rb.storeSslmode ?? 'prefer',
+        tooltip:
+          'How the ingestion connects to the vector store. The six values are a PostgreSQL concept; other stores read "disable" as no TLS and anything else as TLS on. Set here rather than per setup, because a value that does not mean what it says is worse than no choice.',
+        dataProvider: [
+          { key: 'prefer', text: 'prefer' },
+          { key: 'require', text: 'require' },
+          { key: 'verify-ca', text: 'verify-ca' },
+          { key: 'verify-full', text: 'verify-full' },
+          { key: 'allow', text: 'allow' },
+          { key: 'disable', text: 'disable (no TLS)' },
+        ],
+      } as OptionField,
+      {
+        name: 'deletedPolicy',
+        label: 'When a document disappears from the source',
+        type: 'String',
+        value: rb.deletedPolicy ?? 'retire',
+        tooltip:
+          'Retire keeps its chunks as unretrievable history, so the collection can still be read as of an earlier date and the run rolled back. Purge removes them for good.',
+        dataProvider: [
+          { key: 'retire', text: 'Keep its chunks as history' },
+          { key: 'purge', text: 'Remove its chunks permanently' },
+        ],
+      } as OptionField,
+      textField(
+        'retainDays',
+        'Keep retired chunks for (days)',
+        rb.retainDays,
+        'Retired chunk generations older than this are dropped after each load. 0 keeps them forever. Live rows are never touched, so retrieval cannot change - only how far back an as-of read can reach. Matters more on SingleStore, where a vector index cannot be limited to live rows.'
+      ),
+      {
+        name: 'recordHistory',
+        label: 'Record run history',
+        type: 'String',
+        value: rb.recordHistory ?? '1',
+        tooltip:
+          'Writes rag_runs, rag_doc_events and rag_configs beside the collection and publishes the first two to CAS for reporting. Without it there is no record of what a run did.',
+        dataProvider: [
+          { key: '1', text: 'Record each run' },
+          { key: '0', text: 'Do not record' },
+        ],
+      } as OptionField,
+      textField(
+        'embedReplicas',
+        'Embedding container replicas',
+        rb.embedReplicas,
+        'How many replicas of the embedding container this deployment runs. The ingestion sizes its parallel calls from this, so setting it to what you actually run is the difference between saturating the container and leaving it idle.'
+      ),
+      {
+        name: 'persistElements',
+        label: 'Save the element table to disk',
+        type: 'String',
+        value: rb.persistElements ?? '1',
+        tooltip:
+          'The <prefix>_ELEMENTS table is rebuilt from the documents on the next run, so it need not survive a restart, and on a large corpus it is one of the biggest things the pipeline writes. Applies to the Studio Flow path - the generated ingestion job does not build this table.',
+        dataProvider: [
+          { key: '1', text: 'Save to disk' },
+          { key: '0', text: 'Keep in memory only' },
+        ],
+      } as OptionField,
+      {
+        name: 'persistChunks',
+        label: 'Save the chunk table to disk',
+        type: 'String',
+        value: rb.persistChunks ?? '1',
+        tooltip:
+          'As above for <prefix>_CHUNKS, and likewise applies to the Studio Flow path. The ledger and the embedded chunks are always saved - the incremental diff and the embedding checkpoint depend on them.',
+        dataProvider: [
+          { key: '1', text: 'Save to disk' },
+          { key: '0', text: 'Keep in memory only' },
+        ],
+      } as OptionField,
       textField(
         'enabledBackends',
         'Vector databases offered',

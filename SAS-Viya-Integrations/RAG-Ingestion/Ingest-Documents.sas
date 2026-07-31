@@ -79,6 +79,8 @@
 %_rag_default(overlapTokens, 30);
 %_rag_default(deletedPolicy, retire);   /* retire (keep history) | purge */
 %_rag_default(retainDays, 0);           /* 0 = keep retired chunks forever */
+%_rag_default(replicas, 1);             /* embedding container replicas */
+%_rag_default(recordHistory, 1);        /* 1 = write rag_runs / rag_doc_events */
 %_rag_default(pipelineVersion, v1);
 %_rag_default(configHash, );
 %_rag_default(ledgerCaslib, casuser);
@@ -174,7 +176,7 @@ def main():
         "storeDb", "storeSslmode", "credentialDomain", "scrEndpoint",
         "embedModel", "deploymentType", "inputTokenLimit", "chunker",
         "overlapTokens", "pipelineVersion", "configHash", "ragCorePath",
-        "deletedPolicy", "retainDays",
+        "deletedPolicy", "retainDays", "replicas", "recordHistory",
     ]}
 
     try:
@@ -297,7 +299,10 @@ def main():
                            int(float(P["inputTokenLimit"] or 256)),
                            P["pipelineVersion"],
                            overlap_tokens=int(float(P["overlapTokens"] or 30)), log=M)
-        embedded, embed_failures = run_embed(chunks, client, max_workers=8, log=M)
+        # four parallel calls per replica, as the Embed step sizes it
+        workers = max(1, int(float(P["replicas"] or 1)) * 4)
+        embedded, embed_failures = run_embed(chunks, client,
+                                             max_workers=workers, log=M)
         discovered = [dict(row) for row in inventory]   # before run_load
         load_stats = {}
         inventory = run_load(embedded, inventory, adapter, P["collection"], dims,
@@ -309,20 +314,21 @@ def main():
         for row in new_ledger:
             row["config_hash"] = cfg_hash
         total = adapter.count(P["collection"])
-        record_history(
-            adapter, inventory, real_rows, run_id, P["collection"],
-            config_id=cfg_hash, discovery=discovered,
-            settings={"chunker": P["chunker"] or "recursive",
-                      "input_token_limit": int(float(P["inputTokenLimit"] or 256)),
-                      "overlap_tokens": int(float(P["overlapTokens"] or 30)),
-                      "pipeline_version": P["pipelineVersion"],
-                      "embed_model": P["embedModel"]},
-            metrics={"backend": P["backend"], "collection_chunks": total,
-                     "embed_dims": dims, **load_stats,
-                     "embed_calls": int(client.usage.get("calls") or 0),
-                     "embed_tokens": int(client.usage.get("tokens") or 0),
-                     "embed_seconds": float(client.usage.get("run_time") or 0)},
-            log=M)
+        if P["recordHistory"] != "0":
+            record_history(
+                adapter, inventory, real_rows, run_id, P["collection"],
+                config_id=cfg_hash, discovery=discovered,
+                settings={"chunker": P["chunker"] or "recursive",
+                          "input_token_limit": int(float(P["inputTokenLimit"] or 256)),
+                          "overlap_tokens": int(float(P["overlapTokens"] or 30)),
+                          "pipeline_version": P["pipelineVersion"],
+                          "embed_model": P["embedModel"]},
+                metrics={"backend": P["backend"], "collection_chunks": total,
+                         "embed_dims": dims, **load_stats,
+                         "embed_calls": int(client.usage.get("calls") or 0),
+                         "embed_tokens": int(client.usage.get("tokens") or 0),
+                         "embed_seconds": float(client.usage.get("run_time") or 0)},
+                log=M)
         adapter.close()
 
         # ---- hand the new ledger back to SAS -------------------------------

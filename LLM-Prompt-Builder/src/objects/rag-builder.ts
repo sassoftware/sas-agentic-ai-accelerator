@@ -97,7 +97,6 @@ function offeredBackends(enabled: string): typeof BACKENDS {
   const offered = BACKENDS.filter((backend) => wanted.includes(backend.key));
   return offered.length ? offered : BACKENDS;
 }
-const SSLMODES = ['prefer', 'require', 'disable'];
 
 /** The retrieval model's fixed in/out contract (owner requirement: the model
  * page must show clear variable definitions like manifested prompts do). */
@@ -133,12 +132,34 @@ function defaultSetup(config: RagBuilderConfig): RagSetup {
       host: '',
       port: 5432,
       database: '',
-      sslmode: 'prefer',
+      // admin-set: see RagBuilderConfig.storeSslmode
+      sslmode: config.storeSslmode || 'prefer',
       collection: '',
     },
     tables: { prefix: '', caslib: 'casuser' },
     pipelineVersion: 'v1',
     credentialDomain: config.credentialDomain || 'agentic-ai-keys',
+    policies: policiesFrom(config),
+  };
+}
+
+/** The deployment's operational policy, recorded onto the setup so the
+ * generated artifacts say what THIS corpus does rather than deferring to a
+ * central setting that may since have changed. */
+function policiesFrom(config: RagBuilderConfig): RagSetup['policies'] {
+  const flag = (value: string, fallback: boolean): boolean =>
+    value === '' || value === undefined ? fallback : value !== '0';
+  const count = (value: string, fallback: number): number => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  };
+  return {
+    deletedPolicy: config.deletedPolicy === 'purge' ? 'purge' : 'retire',
+    retainDays: count(config.retainDays, 0),
+    recordHistory: flag(config.recordHistory, true),
+    embedReplicas: Math.max(1, count(config.embedReplicas, 1)),
+    persistElements: flag(config.persistElements, true),
+    persistChunks: flag(config.persistChunks, true),
   };
 }
 
@@ -178,6 +199,13 @@ function renderPipelineYaml(setup: RagSetup): string {
     `  caslib: ${scalar(setup.tables.caslib)}`,
     `pipelineVersion: ${scalar(setup.pipelineVersion)}`,
     `credentialDomain: ${scalar(setup.credentialDomain)}`,
+    'policies:',
+    `  deletedPolicy: ${scalar(setup.policies?.deletedPolicy ?? 'retire')}`,
+    `  retainDays: ${setup.policies?.retainDays ?? 0}`,
+    `  recordHistory: ${setup.policies?.recordHistory !== false}`,
+    `  embedReplicas: ${setup.policies?.embedReplicas ?? 1}`,
+    `  persistElements: ${setup.policies?.persistElements !== false}`,
+    `  persistChunks: ${setup.policies?.persistChunks !== false}`,
   ];
   return lines.join('\n') + '\n';
 }
@@ -220,6 +248,10 @@ export async function buildRagBuilder(
   let managedTags: string[] = [];
   /** URI of the setup's generated ingestion job definition ('' = none yet). */
   let currentJobUri = '';
+  // the operational policy of the setup currently open. Authored centrally in
+  // the Options, but carried on the setup so re-saving an existing corpus does
+  // not silently re-baseline it onto a policy that changed since.
+  let currentPolicies: RagSetup['policies'] | null = null;
   /** Poll timer of a running ingestion launch. */
   let pollTimer: number | null = null;
 
@@ -502,8 +534,7 @@ export async function buildRagBuilder(
       portField.value = String(DEFAULT_PORTS[backendField.value] ?? 5432);
     }
   });
-  const sslmodeField = selectInput(SSLMODES, 'prefer');
-  labeled(storeRow, idOf('store-sslmode'), str('ragBuilderStoreSslmodeLabel', 'SSL mode:'), sslmodeField, 'col-md-3');
+  // TLS is deliberately NOT offered here - see RagBuilderConfig.storeSslmode
   const collectionField = textInput('', 'rag_hr_policies_v1');
   labeled(storeRow, idOf('collection'), str('ragBuilderCollectionLabel', 'Collection (lowercase identifier):'), collectionField, 'col-md-4');
   const prefixField = textInput('', 'RAG_HR');
@@ -588,10 +619,12 @@ export async function buildRagBuilder(
     embedModelField.value = setup.embedding.model;
     embedDimsField.value = String(setup.embedding.dims);
     backendField.value = setup.store.backend;
+    // a setup saved before policies existed carries none
+    currentPolicies = setup.policies ?? policiesFrom(config);
     hostField.value = setup.store.host;
     portField.value = String(setup.store.port);
     databaseField.value = setup.store.database;
-    sslmodeField.value = setup.store.sslmode;
+
     collectionField.value = setup.store.collection;
     prefixField.value = setup.tables.prefix;
     caslibField.value = setup.tables.caslib;
@@ -616,6 +649,10 @@ export async function buildRagBuilder(
 
   const collectSetup = (): RagSetup => ({
     version: 1,
+    // authored centrally in the Options; a setup keeps the values it was
+    // created with, so re-saving does not silently re-baseline an existing
+    // corpus onto a policy that changed after it was built
+    policies: currentPolicies ?? policiesFrom(config),
     documentation: {
       description: descriptionField.value.trim(),
       intendedUse: intendedUseField.value.trim(),
@@ -639,7 +676,8 @@ export async function buildRagBuilder(
       host: hostField.value.trim(),
       port: Math.max(1, Number(portField.value) || 5432),
       database: databaseField.value.trim(),
-      sslmode: sslmodeField.value,
+      // admin-set, carried through unchanged
+      sslmode: config.storeSslmode || 'prefer',
       collection: collectionField.value.trim(),
     },
     tables: {
@@ -770,6 +808,13 @@ export async function buildRagBuilder(
     ledgerCaslib: setup.tables.caslib,
     ledgerTable: `${setup.tables.prefix}_LEDGER`,
     ragCorePath: `${config.contentRoot}/rag_core`,
+    // the operational policy has to reach the JOB, not just pipeline.yaml -
+    // a setting recorded in the governance artifact and ignored at run time
+    // is worse than no setting at all
+    deletedPolicy: setup.policies?.deletedPolicy ?? 'retire',
+    retainDays: String(setup.policies?.retainDays ?? 0),
+    replicas: String(setup.policies?.embedReplicas ?? 1),
+    recordHistory: setup.policies?.recordHistory === false ? '0' : '1',
   });
 
   /**

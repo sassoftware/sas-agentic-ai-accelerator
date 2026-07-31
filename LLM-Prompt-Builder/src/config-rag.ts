@@ -52,6 +52,15 @@ const DEFAULTS: RagRuntimeConfig = {
     // Blank = every backend the runtime supports. Set to e.g. 'pgvector' on a
     // site that operates only one store, so the others never appear.
     enabledBackends: '',
+    // Admin-set operational policy. Users do not see these per setup; a setup
+    // records the values it was created with.
+    storeSslmode: 'prefer',
+    deletedPolicy: 'retire',
+    retainDays: '0',
+    recordHistory: '1',
+    embedReplicas: '1',
+    persistElements: '1',
+    persistChunks: '1',
   },
 };
 
@@ -65,6 +74,13 @@ const URL_OVERRIDABLE = [
   'casServer',
   'computeContext',
   'enabledBackends',
+  'storeSslmode',
+  'deletedPolicy',
+  'retainDays',
+  'recordHistory',
+  'embedReplicas',
+  'persistElements',
+  'persistChunks',
   'id',
 ] as const;
 

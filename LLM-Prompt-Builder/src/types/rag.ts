@@ -39,6 +39,27 @@ export interface RagBuilderConfig {
    * USER can reach.
    */
   enabledBackends: string;
+  /**
+   * TLS to the vector store. Admin-set, not offered per setup: the six
+   * PostgreSQL sslmode values are a Postgres concept, and offering them for a
+   * store that only knows encrypted-or-not shows the user a setting that does
+   * not mean what it says.
+   */
+  storeSslmode: string;
+  /** A document that vanished from the source: 'retire' (keep as history)
+   * or 'purge' (remove its chunks for good). */
+  deletedPolicy: string;
+  /** Drop retired chunk generations older than this many days; 0 = keep. */
+  retainDays: string;
+  /** '1' records each run in rag_runs / rag_doc_events, '0' does not. */
+  recordHistory: string;
+  /** Replicas of the embedding container, so the step can size its
+   * parallelism to what the deployment actually runs. */
+  embedReplicas: string;
+  /** '1' saves the <prefix>_ELEMENTS table to disk, '0' keeps it in memory. */
+  persistElements: string;
+  /** '1' saves the <prefix>_CHUNKS table to disk, '0' keeps it in memory. */
+  persistChunks: string;
   [key: string]: string;
 }
 
@@ -90,6 +111,20 @@ export interface RagSetup {
   };
   pipelineVersion: string;
   credentialDomain: string;
+  /**
+   * Operational policy for this setup, seeded from the deployment Options at
+   * creation. Recorded per setup so pipeline.yaml and the generated job say
+   * what this corpus actually does, rather than deferring to a central
+   * setting that may have changed since.
+   */
+  policies: {
+    deletedPolicy: string;
+    retainDays: number;
+    recordHistory: boolean;
+    embedReplicas: number;
+    persistElements: boolean;
+    persistChunks: boolean;
+  };
   /** Set once the ingestion job has been generated for this setup. */
   job?: {
     /** URI of the generated Job Execution definition. */
