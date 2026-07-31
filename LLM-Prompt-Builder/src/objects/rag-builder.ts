@@ -647,6 +647,16 @@ export async function buildRagBuilder(
       },
     },
   });
+  // Its own save, like the Prompt Builder's: documentation is worth writing
+  // down long before a setup is complete enough to pass validation, and
+  // making someone finish choosing a vector database first is how the
+  // governance fields end up empty.
+  const docSaveButton = document.createElement('button');
+  docSaveButton.type = 'button';
+  docSaveButton.classList.add('btn', 'btn-outline-primary', 'btn-sm');
+  docSaveButton.textContent = str('ragBuilderSaveDocumentationButton', 'Save documentation');
+  docSaveButton.disabled = true;
+  ragDoc.section.appendChild(docSaveButton);
   documentationBody.appendChild(ragDoc.section);
   editor.appendChild(documentationCard);
 
@@ -1044,16 +1054,79 @@ export async function buildRagBuilder(
     }
   };
 
+  /** The documentation block as the form currently has it. */
+  const collectDocumentation = (): RagSetup['documentation'] => ({
+    description: descriptionField.value.trim(),
+    ...ragDoc.values(),
+  });
+
+  /**
+   * Save the documentation ALONE.
+   *
+   * The model-card attributes are written, documentation.md is regenerated,
+   * and the documentation block inside the stored rag-setup.json is merged -
+   * that last part matters: rag-setup.json is what loadSetup reads back, so
+   * writing only the attributes would make the edit reappear as lost the next
+   * time the setup was opened. Everything else in the stored file is left
+   * exactly as the last full save left it, so this never persists a
+   * half-finished editor.
+   */
+  async function saveDocumentation(): Promise<void> {
+    if (!selectedSetupID) return;
+    const documentation = collectDocumentation();
+    clearStatus();
+    const previous = docSaveButton.textContent;
+    docSaveButton.disabled = true;
+    docSaveButton.innerHTML =
+      '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+    try {
+      const stored = await readStoredSetup();
+      if (stored) {
+        await createModelContent(
+          selectedSetupID,
+          { ...stored, documentation },
+          SETUP_FILE,
+          'documentation'
+        );
+      }
+      await createModelContent(
+        selectedSetupID,
+        renderDocumentationMarkdown({ ...(stored ?? defaultSetup(config)), documentation }, selectedSetupName),
+        DOCUMENTATION_FILE,
+        'documentation',
+        'text/markdown'
+      );
+      await updateModelAttributes(selectedSetupID, {
+        description: documentation.description.slice(0, 1000),
+        ...Object.fromEntries(MODEL_CARD_FIELDS.map((field) => [field, documentation[field]])),
+      });
+      showStatus('success', str('ragBuilderDocSaved', 'Documentation saved to the Model Manager model.'));
+    } catch (error) {
+      console.error('Saving the RAG documentation failed.', error);
+      showStatus('danger', str('ragBuilderDocSaveFailed', 'Saving the documentation failed - check your Model Manager permissions.'));
+    } finally {
+      docSaveButton.textContent = previous;
+      docSaveButton.disabled = !selectedSetupID;
+    }
+  }
+
+  /** The setup as it is stored on the model, or null when never saved. */
+  async function readStoredSetup(): Promise<RagSetup | null> {
+    const contents = await getModelContents(selectedSetupID);
+    const setupItem = contents.find((item) => item.name === SETUP_FILE);
+    if (!setupItem?.fileUri) return null;
+    const response = await getFileContent(setupItem.fileUri);
+    if (!response.ok) return null;
+    return { ...defaultSetup(config), ...(await response.json()) } as RagSetup;
+  }
+
   const collectSetup = (): RagSetup => ({
     version: 1,
     // authored centrally in the Options; a setup keeps the values it was
     // created with, so re-saving does not silently re-baseline an existing
     // corpus onto a policy that changed after it was built
     policies: currentPolicies ?? policiesFrom(config),
-    documentation: {
-      description: descriptionField.value.trim(),
-      ...ragDoc.values(),
-    },
+    documentation: collectDocumentation(),
     source: { path: sourcePathField.value.trim() },
     extraction: { extractor: extractorField.value },
     chunking: {
@@ -1271,6 +1344,8 @@ export async function buildRagBuilder(
     runCard.style.display = 'none';
     ledgerCard.style.display = 'none';
     editor.style.display = selectedSetupID ? '' : 'none';
+    // set before the early return: deselecting must disable the button too
+    docSaveButton.disabled = !selectedSetupID;
     if (!selectedSetupID) return;
     applySetup(defaultSetup(config));
     const contents = await getModelContents(selectedSetupID);
@@ -1283,6 +1358,20 @@ export async function buildRagBuilder(
         }
       } catch {
         showStatus('danger', str('ragBuilderLoadSetupError', 'The stored rag-setup.json could not be read - starting from defaults.'));
+      }
+    } else {
+      // No stored setup yet, but documentation may already have been saved on
+      // its own. The attributes are then the only copy, so read them back
+      // rather than showing empty fields over text that exists.
+      try {
+        const details = await getModelDetails(selectedSetupID);
+        if (details) {
+          ragDoc.setValues(details as Record<string, unknown>);
+          const description = (details as Record<string, unknown>).description;
+          if (typeof description === 'string') descriptionField.value = description;
+        }
+      } catch (error) {
+        console.debug('RAG Builder: reading documentation attributes failed', error);
       }
     }
   }
@@ -1646,6 +1735,7 @@ export async function buildRagBuilder(
     })();
   });
 
+  docSaveButton.addEventListener('click', () => void saveDocumentation());
   saveButton.addEventListener('click', () => void saveSetup());
   generateJobButton.addEventListener('click', () => void generateIngestionJob());
   launchButton.addEventListener('click', () => void launchIngestion());

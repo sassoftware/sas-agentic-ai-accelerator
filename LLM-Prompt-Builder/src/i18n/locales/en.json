@@ -422,6 +422,9 @@
     "ragBuilderEmbeddingHeading": "3. Embedding",
     "ragBuilderEmbeddingHint": "The model that turns each chunk into a vector, run as a governed SCR container inside your deployment. Both settings here are fixed for the life of the collection: changing either means rebuilding it.",
     "ragBuilderTablesHeading": "5. Pipeline tables",
-    "ragBuilderTablesHint": "The CAS tables this pipeline writes as it runs — the ingestion ledger, the element and chunk tables and the run history. They are rebuilt by each run and are what you read to see what a run did."
+    "ragBuilderTablesHint": "The CAS tables this pipeline writes as it runs — the ingestion ledger, the element and chunk tables and the run history. They are rebuilt by each run and are what you read to see what a run did.",
+    "ragBuilderSaveDocumentationButton": "Save documentation",
+    "ragBuilderDocSaved": "Documentation saved to the Model Manager model.",
+    "ragBuilderDocSaveFailed": "Saving the documentation failed - check your Model Manager permissions."
   }
 }

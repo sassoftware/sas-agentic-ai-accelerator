@@ -422,6 +422,9 @@
     "ragBuilderEmbeddingHeading": "3. Embedding",
     "ragBuilderEmbeddingHint": "Das Modell, das jeden Chunk in einen Vektor überführt, ausgeführt als governter SCR-Container innerhalb Ihrer Installation. Beide Einstellungen sind für die Lebensdauer der Collection fest: Eine Änderung bedeutet Neuaufbau.",
     "ragBuilderTablesHeading": "5. Pipeline-Tabellen",
-    "ragBuilderTablesHint": "Die CAS-Tabellen, die diese Pipeline im Lauf schreibt — das Ingestion-Ledger, die Element- und Chunk-Tabellen sowie die Laufhistorie. Sie werden bei jedem Lauf neu aufgebaut und sind das, was Sie lesen, um zu sehen, was ein Lauf getan hat."
+    "ragBuilderTablesHint": "Die CAS-Tabellen, die diese Pipeline im Lauf schreibt — das Ingestion-Ledger, die Element- und Chunk-Tabellen sowie die Laufhistorie. Sie werden bei jedem Lauf neu aufgebaut und sind das, was Sie lesen, um zu sehen, was ein Lauf getan hat.",
+    "ragBuilderSaveDocumentationButton": "Dokumentation speichern",
+    "ragBuilderDocSaved": "Dokumentation am Model-Manager-Modell gespeichert.",
+    "ragBuilderDocSaveFailed": "Das Speichern der Dokumentation ist fehlgeschlagen — prüfen Sie Ihre Berechtigungen im Model Manager."
   }
 }
