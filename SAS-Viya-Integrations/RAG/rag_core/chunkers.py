@@ -76,7 +76,7 @@ def recursive_chunks(texts: list, max_tokens: int, max_bytes: int = 24000,
     then prepend the previous tail), so the final chunks never exceed the
     model-window budget the caller passed.
     """
-    joined = "\n\n".join(t for t in texts if t and t.strip())
+    joined = document_text(texts)
     if not joined.strip():
         return []
     overlap_tokens = max(0, min(overlap_tokens, max_tokens // 3))
@@ -125,6 +125,18 @@ CHUNKERS = {
 JOIN = "\n\n"      # how run_chunk joins element texts into one document text
 
 
+def document_text(texts: list) -> str:
+    """The document exactly as the chunkers see it.
+
+    The chunkers drop blank elements before joining. Anything locating chunks
+    afterwards MUST filter identically, or the offsets describe a different
+    string than the one that was chunked — which produced spans pointing at
+    the wrong text, one character off and half a chunk short, whenever an
+    extractor emitted a whitespace-only element (HTML and PDF do).
+    """
+    return JOIN.join(t for t in texts if t and t.strip())
+
+
 def locate(joined: str, contents: list) -> list:
     """Where each chunk sits in the document text: [(start, end) or None].
 
@@ -136,24 +148,36 @@ def locate(joined: str, contents: list) -> list:
     A cursor moves forward so repeated text matches the occurrence in reading
     order. An overlapped chunk does not appear verbatim — it starts with the
     tail of its predecessor — so the first line is dropped and the remainder
-    located, which is the part of the chunk that is genuinely new. Anything
-    still not found returns None rather than a guess: a wrong citation is
-    worse than an absent one.
+    located, which is the part of the chunk that is genuinely new.
+
+    That fallback is GUARDED: it only applies when the dropped line really is
+    text from the previous chunk. Unguarded, it fired for any chunk that could
+    not be found for any reason, chopped its first line and located the
+    remainder — a plausible, wrong, silent citation. Anything not confidently
+    located returns None: a wrong citation is worse than an absent one.
     """
     spans: list = []
     cursor = 0
+    previous = ""
     for content in contents:
         found = joined.find(content, cursor) if content else -1
         text = content
-        if found < 0 and content and "\n" in content:
-            # recursive overlap: the leading tail came from the chunk before
-            text = content.split("\n", 1)[1]
-            found = joined.find(text, cursor) if text else -1
+        if found < 0 and content and previous and "\n" in content:
+            head, _, rest = content.partition("\n")
+            # the overlap tail is words taken from the END of the previous
+            # chunk; if it is not there, this is not an overlap and the chunk
+            # simply is not in the document text
+            if head and rest and head in previous:
+                candidate = joined.find(rest, cursor)
+                if candidate >= 0:
+                    text, found = rest, candidate
         if found < 0:
             spans.append(None)
+            previous = content
             continue
         spans.append((found, found + len(text)))
         cursor = found + len(text)
+        previous = content
     return spans
 
 

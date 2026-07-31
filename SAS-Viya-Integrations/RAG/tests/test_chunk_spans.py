@@ -137,3 +137,38 @@ def test_a_span_is_a_dict_the_retrieval_layer_understands():
     span = chunks[0]["span"]
     assert set(span) <= {"page", "start", "end"}
     assert isinstance(span["start"], int) and isinstance(span["end"], int)
+
+
+# ---------------------------------------------------------------------------
+# the wrong-citation defect (found by adversarial review, 2026-07-31)
+# ---------------------------------------------------------------------------
+def test_a_blank_element_does_not_shift_every_span():
+    """The chunkers drop blank elements before joining. When run_chunk did
+    not, the chunk was no longer findable, the overlap fallback fired on a
+    chunk that was never overlapped, and the span pointed one character early
+    at half the chunk - a plausible, wrong, silent citation."""
+    texts = ["First real paragraph here.", "   ", "Second real paragraph here."]
+    chunks = run_chunk(_elements("d1", texts), _inventory(), "recursive",
+                       32, "v1", log=lambda *_: None)
+    joined = JOIN.join(t for t in texts if t.strip())
+    for chunk in chunks:
+        span = chunk["span"]
+        assert span is not None
+        located = joined[span["start"]:span["end"]]
+        assert located in chunk["content"], (
+            f"span points at {located!r}, which is not part of the chunk")
+
+
+def test_the_overlap_fallback_does_not_fire_on_unrelated_text():
+    """Unguarded, it located any unfindable chunk by chopping its first line."""
+    joined = "alpha line\n\nbeta line"
+    # a chunk that simply is not in the document, whose first line is not a
+    # tail of anything before it
+    assert locate(joined, ["nowhere line\nbeta line"]) == [None]
+
+
+def test_a_genuine_overlap_is_still_located():
+    joined = "first part here\n\nsecond part here"
+    spans = locate(joined, ["first part here", "here\nsecond part here"])
+    assert spans[0] is not None and spans[1] is not None
+    assert joined[spans[1][0]:spans[1][1]] == "second part here"

@@ -80,6 +80,26 @@ def _now() -> str:
         "%Y-%m-%d %H:%M:%S")
 
 
+def started_at_from_run_id(run_id: str) -> str:
+    """When the run began, recovered from its own id.
+
+    The id is minted as `run-<unix seconds>[-<session>]` at the moment the run
+    lock is taken, which IS the start of the run. Without this the row is
+    created when the run closes and `started_at` takes its column default, so
+    every run appeared to take zero seconds - a fabricated measurement that
+    looks like a real one.
+    """
+    parts = str(run_id or "").split("-")
+    if len(parts) < 2 or not parts[1].isdigit():
+        return ""
+    seconds = int(parts[1])
+    # sanity: a plausible epoch, not a counter that happens to be numeric
+    if not 1_000_000_000 < seconds < 4_000_000_000:
+        return ""
+    moment = datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc)
+    return moment.strftime("%Y-%m-%d %H:%M:%S")
+
+
 class History:
     """Reads and writes the three history tables on an open connection.
 
@@ -178,6 +198,10 @@ class History:
                   counts: dict = None, **fields) -> None:
         """Record how a run ended, with its document counts and cost."""
         values = {"run_id": run_id, "status": status, "finished_at": _now()}
+        # the run began when its id was minted, not when it closed
+        began = started_at_from_run_id(run_id)
+        if began:
+            values["started_at"] = began
         for name in _STATUS_COUNTS:
             values["docs_" + name] = int((counts or {}).get(name, 0))
         values.update({k: v for k, v in fields.items() if k in RUN_COLUMNS})
@@ -206,15 +230,21 @@ class History:
             return 0
         columns = EVENT_COLUMNS
         marks = "(" + ", ".join(["%s"] * len(columns)) + ")"
-        params: list = []
-        for event in rows:
-            for column in columns:
-                params.append(run_id if column == "run_id" else event.get(column))
-        with self._conn.cursor() as cursor:
-            cursor.execute(
-                f"INSERT INTO rag_doc_events ({', '.join(columns)}) VALUES "
-                + ", ".join([marks] * len(rows)), params)
-        self._commit()
+        # paged like upsert: a first ingestion of 10,000 documents in one
+        # statement is 100,000 placeholders, which the driver or the server
+        # refuses long before the data is large
+        for start in range(0, len(rows), 200):
+            page = rows[start:start + 200]
+            params: list = []
+            for event in page:
+                for column in columns:
+                    params.append(run_id if column == "run_id"
+                                  else event.get(column))
+            with self._conn.cursor() as cursor:
+                cursor.execute(
+                    f"INSERT INTO rag_doc_events ({', '.join(columns)}) VALUES "
+                    + ", ".join([marks] * len(page)), params)
+            self._commit()
         return len(rows)
 
     def record_config(self, config_id: str, settings) -> None:

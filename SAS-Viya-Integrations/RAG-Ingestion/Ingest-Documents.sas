@@ -220,7 +220,7 @@ def main():
         from rag_core.credentials import fetch_secrets, store_config_from_secrets
         from rag_core.extractors import ExtractorRegistry
         from rag_core.scr import EmbeddingClient
-        from rag_core.steps import (LEDGER_COLUMNS, config_hash, merge_ledger,
+        from rag_core.steps import (record_history, LEDGER_COLUMNS, config_hash, merge_ledger,
                                     run_chunk, run_embed, run_extract, run_list,
                                     run_load)
 
@@ -267,7 +267,9 @@ def main():
                 raise RuntimeError("another ingestion run appears active for "
                                    "this ledger (run lock held) - retry later")
             M("stale run lock ignored (held > 30 minutes)")
-        run_id = f"run-{int(time.time())}"
+        # run-<epoch>-<pid>: the epoch alone collided when two projects
+        # sharing a database started in the same second
+        run_id = f"run-{int(time.time())}-{os.getpid()}"
         M(f"run {run_id}: ledger has {len(real_rows)} documents, config {cfg_hash}")
 
         # ---- connections ----------------------------------------------------
@@ -296,15 +298,31 @@ def main():
                            P["pipelineVersion"],
                            overlap_tokens=int(float(P["overlapTokens"] or 30)), log=M)
         embedded, embed_failures = run_embed(chunks, client, max_workers=8, log=M)
+        discovered = [dict(row) for row in inventory]   # before run_load
+        load_stats = {}
         inventory = run_load(embedded, inventory, adapter, P["collection"], dims,
                              P["pipelineVersion"],
                              deleted_policy=P["deletedPolicy"] or "retire",
                              retain_days=int(float(P["retainDays"] or 0)),
-                             log=M)
+                             stats=load_stats, log=M)
         new_ledger = merge_ledger(real_rows, inventory)
         for row in new_ledger:
             row["config_hash"] = cfg_hash
         total = adapter.count(P["collection"])
+        record_history(
+            adapter, inventory, real_rows, run_id, P["collection"],
+            config_id=cfg_hash, discovery=discovered,
+            settings={"chunker": P["chunker"] or "recursive",
+                      "input_token_limit": int(float(P["inputTokenLimit"] or 256)),
+                      "overlap_tokens": int(float(P["overlapTokens"] or 30)),
+                      "pipeline_version": P["pipelineVersion"],
+                      "embed_model": P["embedModel"]},
+            metrics={"backend": P["backend"], "collection_chunks": total,
+                     "embed_dims": dims, **load_stats,
+                     "embed_calls": int(client.usage.get("calls") or 0),
+                     "embed_tokens": int(client.usage.get("tokens") or 0),
+                     "embed_seconds": float(client.usage.get("run_time") or 0)},
+            log=M)
         adapter.close()
 
         # ---- hand the new ledger back to SAS -------------------------------

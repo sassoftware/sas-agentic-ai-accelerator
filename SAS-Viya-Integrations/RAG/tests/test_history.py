@@ -314,3 +314,63 @@ def test_a_failure_outcome_beats_the_discovery_status():
                    log=lambda *_: None)
     events = [(s, p) for s, p in conn.statements if s.startswith("INSERT INTO rag_doc_events")][0]
     assert "failed" in events[1]
+
+
+# ---------------------------------------------------------------------------
+# the empty-column defects (found by adversarial review, 2026-07-31)
+# ---------------------------------------------------------------------------
+def test_the_cost_columns_are_actually_populated():
+    """'What did last month's ingestion cost' was the reason these tables
+    exist, and every real run recorded calls=0 tokens=0 seconds=0 because the
+    EmbeddingClient's numbers were logged in the Embed step and discarded."""
+    from rag_core.steps import record_history, stamp_usage
+    conn = FakeConnection()
+    inventory = [{"doc_id": "d1", "status": "ingested"}]
+    stamp_usage(inventory, {"calls": 4, "tokens": 140, "run_time": 0.75})
+    record_history(FakeAdapter(conn), inventory, [], "run-1785488641", "coll",
+                   settings={"chunker": "recursive", "input_token_limit": 256,
+                             "overlap_tokens": 30},
+                   metrics={"chunks_written": 3, "chunks_retired": 1},
+                   log=lambda *_: None)
+    close = [(s, p) for s, p in conn.statements
+             if s.startswith("INSERT INTO rag_runs")][-1]
+    columns = close[0].split("(")[1].split(")")[0].replace(" ", "").split(",")
+    values = dict(zip(columns, close[1]))
+    assert values["embed_calls"] == 4
+    assert values["embed_tokens"] == 140
+    assert values["embed_seconds"] == 0.75
+    assert values["chunks_written"] == 3 and values["chunks_retired"] == 1
+    assert values["chunker"] == "recursive"
+    assert values["input_token_limit"] == 256
+    assert values["overlap_tokens"] == 30
+
+
+def test_started_at_comes_from_the_run_id_not_the_close():
+    """Created at close, started_at took its column default and every run
+    appeared to take zero seconds - a fabricated measurement."""
+    from rag_core.history import started_at_from_run_id
+    from rag_core.steps import record_history
+    assert started_at_from_run_id("run-1785488641") == "2026-07-31 09:04:01"
+    assert started_at_from_run_id("run-1785488641-31428") == "2026-07-31 09:04:01"
+    assert started_at_from_run_id("run-notanumber") == ""
+    assert started_at_from_run_id("run-42") == ""      # not a plausible epoch
+
+    conn = FakeConnection()
+    record_history(FakeAdapter(conn), [], [], "run-1785488641", "coll",
+                   log=lambda *_: None)
+    close = [(s, p) for s, p in conn.statements
+             if s.startswith("INSERT INTO rag_runs")][-1]
+    columns = close[0].split("(")[1].split(")")[0].replace(" ", "").split(",")
+    values = dict(zip(columns, close[1]))
+    assert values["started_at"] == "2026-07-31 09:04:01"
+    assert values["started_at"] < values["finished_at"]
+
+
+def test_document_events_are_written_in_pages():
+    """One statement for 10,000 documents is 100,000 placeholders."""
+    history, conn = _history()
+    events = [{"doc_id": f"d{i}", "status": "changed"} for i in range(450)]
+    assert history.record_events("run-1", events) == 450
+    inserts = [s for s, _ in conn.statements
+               if s.startswith("INSERT INTO rag_doc_events")]
+    assert len(inserts) == 3, "expected 200 + 200 + 50"

@@ -22,7 +22,8 @@ import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 
-from .chunkers import CHUNKERS, JOIN, element_pages, locate, page_at
+from .chunkers import (CHUNKERS, document_text, element_pages, locate,
+                       page_at)
 from .schema import Chunk, link_neighbors
 from .sources import FileSystemSource
 from .tokens import token_budget
@@ -36,7 +37,8 @@ LEDGER_COLUMNS = ["doc_id", "source_uri", "source_kind", "content_hash", "mtime"
 # knows which extractor ran and WHERE the pipeline tables live - nobody
 # should have to retype the project name into five steps.
 INVENTORY_COLUMNS = LEDGER_COLUMNS + ["extractor", "rag_project",
-                                      "tables_caslib", "config_json"]
+                                      "tables_caslib", "config_json",
+                                      "embed_usage"]
 
 ELEMENT_COLUMNS = ["doc_id", "type", "text", "level", "page", "heading_path"]
 
@@ -66,6 +68,7 @@ COLUMN_LABELS = {
     "rag_project": "RAG project",
     "tables_caslib": "Pipeline tables caslib",
     "config_json": "Pipeline configuration (JSON)",
+    "embed_usage": "Embedding usage (JSON)",
     # elements
     "type": "Element type",
     "text": "Element text",
@@ -141,6 +144,21 @@ def merge_config(existing, additions: dict) -> str:
         if value not in (None, ""):
             config[str(key)] = value
     return json.dumps(config, sort_keys=True, separators=(",", ":"))
+
+
+def stamp_usage(rows: list, usage) -> list:
+    """Carry the embedding cost forward to the step that records history.
+
+    The EmbeddingClient accumulates calls, tokens and seconds in the Embed
+    step, and the Load step is where a run is written to rag_runs - so the
+    numbers have to travel between them. They ride in their OWN column
+    rather than in config_json, because anything added there changes the
+    configuration fingerprint and would make every run look like drift.
+    """
+    payload = json.dumps(usage or {}, sort_keys=True, separators=(",", ":"))
+    for row in rows:
+        row["embed_usage"] = payload
+    return rows
 
 
 def stamp_config(rows: list, additions: dict) -> list:
@@ -364,12 +382,19 @@ def run_chunk(elements: list, inventory: list, chunker: str, input_token_limit: 
             if el.get("type") != "heading" and el.get("text"):
                 texts.append(el["text"])
                 pages.append(el.get("page"))
+        # the chunkers drop blank elements before joining; the page map and
+        # the text spans are located against are filtered the SAME way, or
+        # they describe a different string than the one that was chunked
+        kept = [(text, page) for text, page in zip(texts, pages)
+                if text and text.strip()]
+        texts = [text for text, _ in kept]
+        pages = [page for _, page in kept]
         kwargs = {"max_tokens": budget, "max_bytes": max_bytes}
         if chunk_fn is CHUNKERS["recursive"]:
             kwargs["overlap_tokens"] = overlap_tokens
         contents = chunk_fn(texts, **kwargs)
         # where each chunk came from, so a citation can be opened there
-        joined = JOIN.join(texts)
+        joined = document_text(texts)
         spans = locate(joined, contents)
         offsets = element_pages(texts, pages)
         chunks = [
@@ -452,7 +477,7 @@ def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
              dims: int, pipeline_version: str, sparse: bool = False,
              run_id: str = "", config_id: str = "", embed_model: str = "",
              embed_dims: int = 0, deleted_policy: str = "retire",
-             retain_days: int = 0, log=print) -> list:
+             retain_days: int = 0, stats: dict = None, log=print) -> list:
     """Upsert-first-then-RETIRE-stale per document; tombstone deleted docs.
 
     Retiring rather than deleting is what makes the collection answerable
@@ -487,16 +512,19 @@ def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
 
     updated: list = []
     loaded = failed = removed = 0
+    written = retired = 0
     for row in inventory:
         row = dict(row)
         status = row.get("status")
         try:
             if status == "deleted":
                 if deleted_policy == "purge":
-                    adapter.delete(collection, filter={"doc_id": row["doc_id"]})
+                    retired += adapter.delete(
+                        collection, filter={"doc_id": row["doc_id"]}) or 0
                 else:
-                    adapter.retire(collection, filter={"doc_id": row["doc_id"]},
-                                   run_id=run_id)
+                    retired += adapter.retire(
+                        collection, filter={"doc_id": row["doc_id"]},
+                        run_id=run_id) or 0
                 removed += 1
             elif status in ("new", "changed"):
                 chunks = by_doc.get(row["doc_id"], [])
@@ -506,14 +534,14 @@ def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
                                or "no embedded chunks reached the load step")
                     failed += 1
                 else:
-                    adapter.upsert(collection, chunks)          # new first (§2)
+                    written += adapter.upsert(collection, chunks) or 0
                     # retire what this document's previous generation left
                     # behind: anything live for the doc that is not one of
                     # the chunk ids we just wrote
-                    adapter.retire(collection,
-                                   filter={"doc_id": row["doc_id"]},
-                                   keep_ids=[c["chunk_id"] for c in chunks],
-                                   run_id=run_id)
+                    retired += adapter.retire(
+                        collection, filter={"doc_id": row["doc_id"]},
+                        keep_ids=[c["chunk_id"] for c in chunks],
+                        run_id=run_id) or 0
                     row["status"] = "ingested"
                     loaded += 1
         except Exception as exc:
@@ -532,6 +560,9 @@ def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
                 f"{retain_days} days")
         except Exception as exc:
             log(f"rag load: history pruning skipped: {exc}")
+    if stats is not None:
+        stats["chunks_written"] = written
+        stats["chunks_retired"] = retired
     log(f"rag load: {loaded} docs loaded, {removed} removed "
         f"({deleted_policy}), {failed} failed "
         f"-> collection '{collection}' now {adapter.count(collection)} chunks")
@@ -614,6 +645,21 @@ def run_retrieve(questions: list, embedder, adapter, collection: str,
     return rows
 
 
+def _embedding_usage(rows: list) -> dict:
+    """The embedding usage the Embed step stamped onto the inventory."""
+    for row in rows or []:
+        raw = row.get("embed_usage")
+        if not raw:
+            continue
+        try:
+            usage = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(usage, dict) and usage:
+            return usage
+    return {}
+
+
 def record_history(adapter, inventory: list, previous_ledger: list,
                    run_id: str, collection: str, config_id: str = "",
                    settings=None, metrics=None, status: str = "completed",
@@ -657,9 +703,28 @@ def record_history(adapter, inventory: list, previous_ledger: list,
         counts = status_counts(discovery or inventory)     # what it found
         for name in ("ingested", "failed"):                # what it achieved
             counts[name] = status_counts(inventory)[name]
+        recorded = dict(metrics or {})
+        # the configuration columns are convenience copies of what is already
+        # in `settings`; without them every rag_runs row read null for the
+        # chunker and its token budget
+        if isinstance(settings, dict):
+            for column, key in (("chunker", "chunker"),
+                                ("input_token_limit", "input_token_limit"),
+                                ("overlap_tokens", "overlap_tokens"),
+                                ("pipeline_version", "pipeline_version"),
+                                ("embed_model", "embed_model")):
+                if settings.get(key) not in (None, "") and column not in recorded:
+                    recorded[column] = settings[key]
+        # embedding cost, carried from the Embed step in its own column
+        usage = _embedding_usage(inventory) or _embedding_usage(discovery or [])
+        if usage:
+            recorded.setdefault("embed_calls", int(usage.get("calls") or 0))
+            recorded.setdefault("embed_tokens", int(usage.get("tokens") or 0))
+            recorded.setdefault("embed_seconds",
+                                float(usage.get("run_time") or 0.0))
         history.close_run(run_id, status=status, counts=counts,
                           collection=collection, config_id=config_id,
-                          **{k: v for k, v in (metrics or {}).items()})
+                          **{k: v for k, v in recorded.items()})
         written["runs"] = 1
         log(f"rag history: run {run_id} recorded, {written['events']} document "
             f"events")
