@@ -103,11 +103,17 @@ rather than typed:
 | Vector store host, port, database | The credential domain — see below |
 | Embedding model | Listed from the embedding model project |
 | Embedding dimensions | The chosen model's fact sheet |
+| Maximum chunk size | Capped at the chosen model's published token window |
 
 A typed model name has nothing behind it until a container is published, and
 the failure surfaces as an HTTP 404 at the first embed call — after the crawl
 and the chunking have already run. A vector column is created at the model's
-width and cannot be widened afterwards. Both are better resolved than typed.
+width and cannot be widened afterwards. And text beyond a model's token window
+is dropped by the model silently rather than rejected, so an oversized chunk
+is embedded from its opening only — retrieval then matches on text the answer
+never sees, with nothing in the run reporting a problem. The Builder asks for
+the model first for that reason: the ceiling has to be known before anyone
+picks a chunk size under it.
 :::
 
 ## Two prerequisites that are not optional

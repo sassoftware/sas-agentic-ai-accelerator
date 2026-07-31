@@ -42,7 +42,7 @@ import {
 import { getFileContent } from '../api/files-api';
 import { resolveDomainSecrets } from '../api/credentials-api';
 import { RAG_BACKENDS, backendOptionKey, type RagBackend } from './rag-backends';
-import { embeddingDimensions } from './embedding-models';
+import { embeddingDimensions, embeddingTokenLimit } from './embedding-models';
 import { ensureChildFolder, getFolderByPath, getFolderMembers } from '../api/folders-api';
 import {
   createJobDefinition,
@@ -685,29 +685,8 @@ export async function buildRagBuilder(
   documentsBody.appendChild(documentsRow);
   editor.appendChild(documentsCard);
 
-  const [chunkingCard, chunkingBody] = card(
-    str('ragBuilderChunkingHeading', '2. Chunking'),
-    str(
-      'ragBuilderChunkingHint',
-      'How each document is cut into the pieces that get embedded and retrieved. A chunk is the unit an answer is built from, so these settings decide how much context a single hit carries.'
-    )
-  );
-  const chunkingRow = document.createElement('div');
-  chunkingRow.className = 'row g-3';
-  const chunkerField = selectInput(CHUNKERS, 'recursive');
-  labeled(chunkingRow, idOf('chunker'), str('ragBuilderChunkerLabel', 'Chunker:'), chunkerField, 'col-md-4',
-    str('ragBuilderChunkerInfo', 'How a document is cut into retrievable pieces. Recursive splits on the largest natural boundary that fits the window (sections, then paragraphs, then sentences); paragraph keeps paragraphs whole and is better for short, well-structured documents.'));
-  const tokenLimitField = numberInput(256, 16);
-  labeled(chunkingRow, idOf('token-limit'), str('ragBuilderTokenLimitLabel', 'Embedding token window:'), tokenLimitField, 'col-md-4',
-    str('ragBuilderTokenLimitInfo', 'The largest chunk, in tokens. This should match what the embedding model actually accepts: text beyond the model window is silently dropped, so an oversized chunk is embedded from its opening only, and retrieval then matches on text the answer never sees.'), true);
-  const overlapField = numberInput(30, 0);
-  const overlapColumn = labeled(chunkingRow, idOf('overlap'), str('ragBuilderOverlapLabel', 'Chunk overlap (tokens):'), overlapField, 'col-md-4',
-    str('ragBuilderOverlapInfo', 'How much text each chunk repeats from the previous one, so a sentence split across a boundary is still retrievable whole. Must be smaller than the token window — an overlap at or above it would never advance through the document. Larger overlap means more chunks, more embedding cost and more near-duplicate hits.'), true);
-  chunkingBody.appendChild(chunkingRow);
-  editor.appendChild(chunkingCard);
-
   const [embeddingCard, embeddingBody] = card(
-    str('ragBuilderEmbeddingHeading', '3. Embedding'),
+    str('ragBuilderEmbeddingHeading', '2. Embedding'),
     str(
       'ragBuilderEmbeddingHint',
       'The model that turns each chunk into a vector, run as a governed SCR container inside your deployment. Both settings here are fixed for the life of the collection: changing either means rebuilding it.'
@@ -757,29 +736,6 @@ export async function buildRagBuilder(
   };
   embedModelField.addEventListener('change', followEmbeddingModel);
   followEmbeddingModel();
-  // Overlap is bounded by the window it overlaps within. Bounding the input
-  // as the window changes means the browser's own stepper cannot walk into an
-  // impossible value; validateSetup still checks, because typing bypasses it.
-  const boundOverlap = (): void => {
-    const window = Math.max(16, Number(tokenLimitField.value) || 0);
-    overlapField.max = String(Math.max(0, window - 1));
-    if (Number(overlapField.value) >= window) overlapField.value = String(window - 1);
-  };
-  tokenLimitField.addEventListener('change', boundOverlap);
-  tokenLimitField.addEventListener('input', boundOverlap);
-  boundOverlap();
-
-  // Overlap is a property of the recursive chunker alone — run_chunk passes
-  // overlap_tokens only to that one, and paragraph_chunks does not even
-  // accept it. Leaving the field visible for a chunker that ignores it
-  // invites tuning a number that does nothing.
-  const followChunker = (): void => {
-    const uses = CHUNKERS_WITH_OVERLAP.has(chunkerField.value);
-    overlapColumn.style.display = uses ? '' : 'none';
-    if (!uses) overlapField.value = '0';
-  };
-  chunkerField.addEventListener('change', followChunker);
-  followChunker();
   if (!registeredEmbeddings.length) {
     const note = document.createElement('div');
     note.className = 'alert alert-danger py-2 px-3 mt-2 mb-0';
@@ -796,6 +752,85 @@ export async function buildRagBuilder(
   }
   embeddingBody.appendChild(embeddingRow);
   editor.appendChild(embeddingCard);
+
+  const [chunkingCard, chunkingBody] = card(
+    str('ragBuilderChunkingHeading', '3. Chunking'),
+    str(
+      'ragBuilderChunkingHint',
+      'How each document is cut into the pieces that get embedded and retrieved. A chunk is the unit an answer is built from, so these settings decide how much context a single hit carries — within whatever the embedding model above can accept.'
+    )
+  );
+  const chunkingRow = document.createElement('div');
+  chunkingRow.className = 'row g-3';
+  const chunkerField = selectInput(CHUNKERS, 'recursive');
+  labeled(chunkingRow, idOf('chunker'), str('ragBuilderChunkerLabel', 'Chunker:'), chunkerField, 'col-md-4',
+    str('ragBuilderChunkerInfo', 'How a document is cut into retrievable pieces. Recursive splits on the largest natural boundary that fits the window (sections, then paragraphs, then sentences); paragraph keeps paragraphs whole and is better for short, well-structured documents.'));
+  const tokenLimitField = numberInput(256, 16);
+  const tokenWindowColumn = labeled(chunkingRow, idOf('token-limit'), str('ragBuilderTokenLimitLabel', 'Embedding token window:'), tokenLimitField, 'col-md-4',
+    str('ragBuilderTokenLimitInfo', 'The largest chunk, in tokens. Capped by the embedding model chosen above: text beyond a model window is silently dropped rather than rejected, so an oversized chunk would be embedded from its opening only, and retrieval would then match on text the answer never sees. The ingestion applies a further safety margin below this, because token counts are estimates.'), true);
+  const overlapField = numberInput(30, 0);
+  const tokenWindowNote = document.createElement('div');
+  tokenWindowNote.className = 'form-text';
+  tokenWindowColumn.appendChild(tokenWindowNote);
+  const overlapColumn = labeled(chunkingRow, idOf('overlap'), str('ragBuilderOverlapLabel', 'Chunk overlap (tokens):'), overlapField, 'col-md-4',
+    str('ragBuilderOverlapInfo', 'How much text each chunk repeats from the previous one, so a sentence split across a boundary is still retrievable whole. Must be smaller than the token window — an overlap at or above it would never advance through the document. Larger overlap means more chunks, more embedding cost and more near-duplicate hits.'), true);
+  // Overlap is bounded by the window it overlaps within. Bounding the input
+  // as the window changes means the browser's own stepper cannot walk into an
+  // impossible value; validateSetup still checks, because typing bypasses it.
+  const boundOverlap = (): void => {
+    const window = Math.max(16, Number(tokenLimitField.value) || 0);
+    overlapField.max = String(Math.max(0, window - 1));
+    if (Number(overlapField.value) >= window) overlapField.value = String(window - 1);
+  };
+  tokenLimitField.addEventListener('change', boundOverlap);
+  tokenLimitField.addEventListener('input', boundOverlap);
+  boundOverlap();
+
+  // The window a model can actually read is a property OF the model, which
+  // is why the embedding card sits above this one: choosing the model first
+  // means the ceiling is known before anyone picks a number under it. An
+  // unknown model publishes no ceiling, and then nothing is imposed.
+  const capTokenWindow = (): void => {
+    const ceiling = embeddingTokenLimit(embedModelField.value);
+    if (ceiling > 0) {
+      tokenLimitField.max = String(ceiling);
+      if (Number(tokenLimitField.value) > ceiling) tokenLimitField.value = String(ceiling);
+      tokenWindowNote.textContent = str(
+        'ragBuilderTokenLimitCeiling',
+        'This model accepts at most {max} tokens per chunk.'
+      ).replace('{max}', String(ceiling));
+    } else {
+      tokenLimitField.removeAttribute('max');
+      tokenWindowNote.textContent = embedModelField.value
+        ? str(
+            'ragBuilderTokenLimitUnknown',
+            'This model publishes no token limit, so the window is not capped here - check the model card.'
+          )
+        : '';
+    }
+    boundOverlap();
+  };
+
+  // Overlap is a property of the recursive chunker alone — run_chunk passes
+  // overlap_tokens only to that one, and paragraph_chunks does not even
+  // accept it. Leaving the field visible for a chunker that ignores it
+  // invites tuning a number that does nothing.
+  const followChunker = (): void => {
+    const uses = CHUNKERS_WITH_OVERLAP.has(chunkerField.value);
+    overlapColumn.style.display = uses ? '' : 'none';
+    if (!uses) overlapField.value = '0';
+  };
+  chunkerField.addEventListener('change', followChunker);
+  followChunker();
+  // The embedding card is built first, so the model's ceiling is wired here,
+  // where the window field it caps exists. Changing the model re-applies it.
+  embedModelField.addEventListener('change', capTokenWindow);
+  capTokenWindow();
+
+  chunkingBody.appendChild(chunkingRow);
+  editor.appendChild(chunkingCard);
+
+
 
   // Vector store + pipeline tables
   const [storeCard, storeBody] = card(
@@ -1179,6 +1214,14 @@ export async function buildRagBuilder(
     // through a document - the chunker would emit the same opening forever.
     if (!(setup.chunking.inputTokenLimit >= 16))
       return str('ragBuilderValidateTokenLimit', 'The embedding token window must be at least 16 tokens.');
+    const ceiling = embeddingTokenLimit(setup.embedding.model);
+    if (ceiling > 0 && setup.chunking.inputTokenLimit > ceiling)
+      return str(
+        'ragBuilderValidateTokenCeiling',
+        'The embedding token window exceeds what {model} accepts ({max} tokens). Text beyond a model window is dropped silently, so the excess would never reach the vector.'
+      )
+        .replace('{model}', setup.embedding.model)
+        .replace('{max}', String(ceiling));
     if (CHUNKERS_WITH_OVERLAP.has(setup.chunking.chunker) && setup.chunking.overlapTokens < 0)
       return str('ragBuilderValidateOverlapNegative', 'The chunk overlap cannot be negative.');
     if (

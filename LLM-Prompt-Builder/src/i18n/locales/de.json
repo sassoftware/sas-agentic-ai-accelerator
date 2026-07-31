@@ -404,7 +404,7 @@
     "ragBuilderStoreChooseFirst": "Wählen Sie eine Vektordatenbank, um zu sehen, wohin diese Konfiguration schreiben würde.",
     "ragBuilderTablesCaslibInfo": "Die Caslib mit den Arbeitstabellen dieser Pipeline. Sie muss für andere Personen und für geplante Jobs erreichbar sein: Eine persönliche Caslib wird nicht angeboten, denn ein Korpus, dessen Ledger nur die erstellende Person sieht, kann weder von anderen noch von einer Zeitsteuerung erneut ausgeführt werden.",
     "ragBuilderTablesPrefixInfo": "Präfix für die CAS-Arbeitstabellen dieser Pipeline — Ledger, Element- und Chunk-Tabellen, Laufhistorie. Auf 20 Zeichen begrenzt, damit jeder erzeugte Name innerhalb des CAS-Limits von 32 Zeichen bleibt. Zwei Konfigurationen mit demselben Präfix überschreiben gegenseitig ihr Ledger.",
-    "ragBuilderTokenLimitInfo": "Die maximale Chunk-Größe in Token. Sie sollte dem entsprechen, was das Embedding-Modell tatsächlich annimmt: Text jenseits des Modellfensters wird stillschweigend verworfen. Ein zu großer Chunk wird also nur aus seinem Anfang eingebettet, und die Suche trifft dann auf Text, den die Antwort nie sieht.",
+    "ragBuilderTokenLimitInfo": "Die maximale Chunk-Größe in Token. Begrenzt durch das oben gewählte Embedding-Modell: Text jenseits des Modellfensters wird stillschweigend verworfen statt abgelehnt. Ein zu großer Chunk würde also nur aus seinem Anfang eingebettet, und die Suche träfe auf Text, den die Antwort nie sieht. Die Ingestion hält darunter zusätzlich einen Sicherheitsabstand, da Token-Zahlen geschätzt sind.",
     "ragBuilderValidateBackend": "Wählen Sie eine Vektordatenbank.",
     "ragBuilderValidateCaslib": "Wählen Sie eine Caslib für die Pipeline-Tabellen.",
     "ragBuilderValidateEmbedDims": "Die Embedding-Dimensionen müssen eine positive Zahl sein.",
@@ -417,14 +417,17 @@
     "ragBuilderNoBackendCredential": "Sie besitzen in der Credential-Domain {domain} keine Zugangsdaten für eine Vektordatenbank. Eine hier gespeicherte Konfiguration kann daher nicht laden. Bitten Sie Ihre Administration, die Einträge für die benötigte Datenbank zu ergänzen.",
     "ragBuilderDocumentsHeading": "1. Dokumente",
     "ragBuilderDocumentsHint": "Woher der Korpus stammt und wie Text daraus gelesen wird. Die Ingestion durchläuft diesen Ordner bei jedem Lauf und vergleicht den Fund mit dem Ledger — Dateien dort hinzuzufügen oder zu entfernen ist also der Weg, einen Korpus zu verändern.",
-    "ragBuilderChunkingHeading": "2. Chunking",
-    "ragBuilderChunkingHint": "Wie jedes Dokument in die Teile zerlegt wird, die eingebettet und abgerufen werden. Ein Chunk ist die Einheit, aus der eine Antwort entsteht; diese Einstellungen bestimmen also, wie viel Kontext ein einzelner Treffer trägt.",
-    "ragBuilderEmbeddingHeading": "3. Embedding",
+    "ragBuilderChunkingHeading": "3. Chunking",
+    "ragBuilderChunkingHint": "Wie jedes Dokument in die Teile zerlegt wird, die eingebettet und abgerufen werden. Ein Chunk ist die Einheit, aus der eine Antwort entsteht; diese Einstellungen bestimmen also, wie viel Kontext ein einzelner Treffer trägt — innerhalb dessen, was das oben gewählte Embedding-Modell annehmen kann.",
+    "ragBuilderEmbeddingHeading": "2. Embedding",
     "ragBuilderEmbeddingHint": "Das Modell, das jeden Chunk in einen Vektor überführt, ausgeführt als governter SCR-Container innerhalb Ihrer Installation. Beide Einstellungen sind für die Lebensdauer der Collection fest: Eine Änderung bedeutet Neuaufbau.",
     "ragBuilderTablesHeading": "5. Pipeline-Tabellen",
     "ragBuilderTablesHint": "Die CAS-Tabellen, die diese Pipeline im Lauf schreibt — das Ingestion-Ledger, die Element- und Chunk-Tabellen sowie die Laufhistorie. Sie werden bei jedem Lauf neu aufgebaut und sind das, was Sie lesen, um zu sehen, was ein Lauf getan hat.",
     "ragBuilderSaveDocumentationButton": "Dokumentation speichern",
     "ragBuilderDocSaved": "Dokumentation am Model-Manager-Modell gespeichert.",
-    "ragBuilderDocSaveFailed": "Das Speichern der Dokumentation ist fehlgeschlagen — prüfen Sie Ihre Berechtigungen im Model Manager."
+    "ragBuilderDocSaveFailed": "Das Speichern der Dokumentation ist fehlgeschlagen — prüfen Sie Ihre Berechtigungen im Model Manager.",
+    "ragBuilderTokenLimitCeiling": "Dieses Modell verarbeitet höchstens {max} Token pro Chunk.",
+    "ragBuilderTokenLimitUnknown": "Für dieses Modell ist kein Token-Limit hinterlegt; das Fenster wird hier daher nicht begrenzt — prüfen Sie die Model Card.",
+    "ragBuilderValidateTokenCeiling": "Das Token-Fenster überschreitet, was {model} annimmt ({max} Token). Text jenseits des Modellfensters wird stillschweigend verworfen — der Überschuss erreichte den Vektor also nie."
   }
 }
