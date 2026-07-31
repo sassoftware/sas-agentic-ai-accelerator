@@ -277,7 +277,8 @@ class ViyaClient:
         return code
 
     def put_job_definition(self, folder_id: str, name: str, code: str,
-                           flow_uri: str, description: str = "") -> str:
+                           flow_uri: str, description: str = "",
+                           compute_context: str = "") -> str:
         """Create or UPDATE the job definition for a flow.
 
         Updating matters: a new definition means a new URI, and anything that
@@ -291,9 +292,13 @@ class ViyaClient:
             "description": description[:1024],
             "code": code,
             "parameters": [
+                # NOT blank by default: an empty value lands the job in the
+                # stock SAS Job Execution context, which runs the server as a
+                # service account and cannot reuse the CAS session the steps
+                # need - so every generated job failed on its first step
                 {"version": 1, "name": "_contextName", "type": "CHARACTER",
                  "label": "Compute context", "required": False,
-                 "defaultValue": ""},
+                 "defaultValue": compute_context or DEFAULT_COMPUTE_CONTEXT},
             ],
             "properties": [
                 # ties the job to the flow it was generated from, so it can be
@@ -323,10 +328,16 @@ class ViyaClient:
         return self.created_id(created)
 
 
+#: a context that runs as the REQUESTING USER; the stock Job Execution
+#: context does not, and the steps cannot run there
+DEFAULT_COMPUTE_CONTEXT = "SAS Studio compute context"
+
+
 def register_setup(client: ViyaClient, settings: dict, template: str,
                    ledger_rows: list, content_root: str, setup_name: str,
                    mm_project: str = "RAG Engineering", ddl: str = "",
                    cas_server: str = "cas-shared-default", flow_path: str = "",
+                   compute_context: str = "",
                    log=print) -> dict:
     """Everything Register Setup does, in one call. Returns what it produced."""
     from .manifest import (collection_manifest, ingestion_manifest,
@@ -382,7 +393,8 @@ def register_setup(client: ViyaClient, settings: dict, template: str,
             client.folder_id(f"{content_root.rstrip('/')}/generated", create=True),
             job_name, code, reference["uri"],
             description=(f"Scheduled ingestion for the {setup_name} RAG setup, "
-                         f"generated from {flow_path}."))
+                         f"generated from {flow_path}."),
+            compute_context=compute_context)
         result.update({"job_id": job_id, "job_name": job_name,
                        "flow": reference["path"]})
         log(f"job definition {job_name} generated from {flow_path} ({job_id})")
