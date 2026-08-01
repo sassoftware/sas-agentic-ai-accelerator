@@ -939,6 +939,153 @@ def setup(
     console.print("Review sas-viya-cli-commands.txt before running it - it creates access groups and rules.")
 
 
+@app.command("options-save")
+def options_save(
+    file: str = typer.Option("builder-options.json", "--file", "-f",
+                             help="Where to write the options file"),
+    reports_only: bool = typer.Option(
+        False, "--reports-only",
+        help="Capture only what the live reports hold; skip repository/project discovery"),
+):
+    """Save this deployment's Prompt Builder / RAG Builder option values to a file.
+
+    Every option an admin sets on a builder object - repository and project
+    ids, the SCR endpoint, the credential domain, the content root, which
+    vector stores are offered - lives INSIDE the VA report. Importing a newer
+    report from a transfer package therefore replaces a site's configuration
+    with whatever the package was built against, and the report keeps working
+    while pointing at somebody else's environment.
+
+    Run this BEFORE importing a report package, and `mdb options-restore`
+    after.
+
+    The file supersedes the llm-prompt-builder.json / rag-builder.json seeds
+    that `mdb setup` writes: it starts from the same discovered values
+    (repository, projects, SCR endpoint) and overlays whatever the live
+    reports already hold, so a tuned deployment is captured as tuned.
+    """
+    import json as _json
+    from .core.options import BUILDER_REPORTS, merge_seed, options_file, read_options
+    from .viya.registry import builder_seed, ensure_repository_and_project
+    from .viya.reports import find_report, get_content
+
+    ctx = Context()
+    responsible_party = os.environ.get("SAS_RESPONSIBLE_PARTY", "")
+    deployment_type = os.environ.get("SAS_DEPLOYMENT_TYPE", "k8s")
+    scr_endpoint = _scr_endpoint()
+    captured: dict = {}
+    with _viya_session() as session:
+        seeds: dict = {}
+        if not reports_only:
+            for report_name, kind in BUILDER_REPORTS.items():
+                try:
+                    ensured = ensure_repository_and_project(
+                        session, kind, ctx.core, responsible_party)
+                    seeds[report_name] = builder_seed(
+                        kind, ensured.repository_id, ensured.project_id,
+                        scr_endpoint, deployment_type)
+                except Exception as exc:
+                    console.print(f"[yellow]{report_name}: could not discover "
+                                  f"repository/project ({exc}); capturing the report only.[/yellow]")
+        for report_name in BUILDER_REPORTS:
+            live = None
+            report = find_report(session, report_name)
+            if report:
+                try:
+                    content, _ = get_content(session, report["id"])
+                    live = read_options(content)
+                except Exception as exc:
+                    console.print(f"[yellow]{report_name}: content unreadable ({exc}).[/yellow]")
+            if live is None and report_name not in seeds:
+                console.print(f"[yellow]{report_name}: no live report and nothing "
+                              "discovered - skipped.[/yellow]")
+                continue
+            merged = merge_seed(seeds.get(report_name, {}), live)
+            captured[report_name] = merged
+            source = ("report + discovery" if (live and report_name in seeds)
+                      else ("report" if live else "discovery"))
+            console.print(f"[green]{report_name}: {len(merged)} options ({source}).[/green]")
+    if not captured:
+        console.print("[red]Nothing captured.[/red]")
+        raise typer.Exit(1)
+    deployment = os.environ.get("SAS_VIYA_URL", "")
+    out = Path(file)
+    if out.parent != Path(""):
+        out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(_json.dumps(options_file(deployment, captured), indent=2) + "\n",
+                   encoding="utf-8")
+    console.print(f"[green]Wrote {file}. Keep it with your deployment records and run "
+                  "`mdb options-restore` after importing a report package.[/green]")
+
+
+@app.command("options-restore")
+def options_restore(
+    file: str = typer.Option("builder-options.json", "--file", "-f",
+                             help="The options file written by `mdb options-save`"),
+    dry_run: bool = typer.Option(False, "--dry-run",
+                                 help="Report what would change without writing"),
+):
+    """Write saved option values back into the builder reports after an import.
+
+    Only the options named in the file are touched: a newly imported report
+    keeps its new layout, data items and objects, and gets this deployment's
+    configuration back. An option the report does not have is reported rather
+    than inserted - that usually means it was renamed or dropped between
+    versions, which is worth knowing.
+    """
+    import json as _json
+    from .core.options import write_options
+    from .viya.reports import find_report, get_content, put_content
+
+    path = Path(file)
+    if not path.exists():
+        console.print(f"[red]{file} not found - run `mdb options-save` first.[/red]")
+        raise typer.Exit(1)
+    document = _json.loads(path.read_text(encoding="utf-8"))
+    saved = document.get("reports", {})
+    if not saved:
+        console.print(f"[red]{file} names no reports.[/red]")
+        raise typer.Exit(1)
+    here = os.environ.get("SAS_VIYA_URL", "")
+    if document.get("deployment") and document["deployment"] != here:
+        # Not an error: moving options between environments is a legitimate
+        # deliberate act. It is worth saying out loud because doing it by
+        # ACCIDENT is the failure this command exists to prevent.
+        console.print(f"[yellow]Note: these options were saved from "
+                      f"{document['deployment']}, not {here}.[/yellow]")
+    failures = 0
+    with _viya_session() as session:
+        for report_name, values in saved.items():
+            report = find_report(session, report_name)
+            if not report:
+                console.print(f"[yellow]{report_name}: no such report here - skipped.[/yellow]")
+                continue
+            content, etag = get_content(session, report["id"])
+            updated, result = write_options(content, values)
+            for label in result.missing:
+                console.print(f"[yellow]  {report_name}: '{label}' is not an option of "
+                              "this report version - not written.[/yellow]")
+            if not result.changed:
+                console.print(f"[green]{report_name}: already matches "
+                              f"({len(result.unchanged)} options).[/green]")
+                continue
+            listing = ", ".join(sorted(result.applied))
+            if dry_run:
+                console.print(f"[cyan]{report_name}: would restore "
+                              f"{len(result.applied)} option(s): {listing}[/cyan]")
+                continue
+            try:
+                put_content(session, report["id"], updated, etag)
+            except Exception as exc:
+                console.print(f"[red]{report_name}: writing the report failed ({exc}).[/red]")
+                failures += 1
+                continue
+            console.print(f"[green]{report_name}: restored {len(result.applied)} "
+                          f"option(s): {listing}[/green]")
+    if failures:
+        raise typer.Exit(1)
+
+
 @app.command()
 def register(
     ids: Optional[list[str]] = typer.Argument(None),
