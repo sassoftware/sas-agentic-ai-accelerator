@@ -25,7 +25,17 @@ def options_string(options: dict) -> str:
 class EmbeddingClient:
     def __init__(self, scr_endpoint: str, model_name: str, deployment_type: str = "k8s",
                  project: str = "rag", timeout: float = 60.0, max_retries: int = 3,
-                 backoff: float = 1.5, verify_ssl: bool = True, session=None):
+                 backoff: float = 1.5, verify_ssl: bool = True, session=None,
+                 api_key: str = ""):
+        """`api_key` is the provider key for a model that calls a hosted API.
+
+        The score code of an API-backed embedding container reads it out of
+        the SCR ``options`` argument, so the secret travels per call and is
+        never baked into a container environment. Locally-served models
+        ignore it, which is why passing it is harmless and omitting it fails
+        only for the models that need it.
+        """
+        self.api_key = str(api_key or "")
         self.model_name = model_name
         self.project = project
         self.timeout = timeout
@@ -40,6 +50,14 @@ class EmbeddingClient:
             self.url = f"{scr_endpoint.rstrip('/')}/{model_name}/{model_name}"
         self.usage = {"calls": 0, "run_time": 0.0, "tokens": 0}
 
+    def _options(self, mode: str) -> dict:
+        """The SCR options map. API_KEY is included only when we hold one, so
+        a locally-served model never receives a key it has no use for."""
+        options = {"Embedding_Mode": mode}
+        if self.api_key:
+            options["API_KEY"] = self.api_key
+        return options
+
     def embed(self, text: str, mode: str = "document") -> list:
         """Embed one text; mode is 'document' (ingest) or 'query' (retrieval)."""
         if len(text) > MAX_DOCUMENT_CHARS:
@@ -47,7 +65,7 @@ class EmbeddingClient:
                              f"ceiling of {MAX_DOCUMENT_CHARS}")
         body = {"inputs": [
             {"name": "document", "value": text},
-            {"name": "options", "value": options_string({"Embedding_Mode": mode})},
+            {"name": "options", "value": options_string(self._options(mode))},
             {"name": "project", "value": self.project},
         ]}
         last_error: Exception = RuntimeError("no attempt made")

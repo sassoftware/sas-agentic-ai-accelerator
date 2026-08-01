@@ -224,6 +224,7 @@ def main():
         from rag_core.credentials import fetch_secrets, store_config_from_secrets
         from rag_core.extractors import ExtractorRegistry
         from rag_core.scr import EmbeddingClient
+        from rag_core.providers import api_key_for
         from rag_core.sources import make_source
         from rag_core.steps import (record_history, LEDGER_COLUMNS, config_hash, merge_ledger,
                                     run_chunk, run_embed, run_extract, run_list,
@@ -288,9 +289,12 @@ def main():
             P["storeDb"], P["storeSslmode"])
         adapter = get_adapter(P["backend"])
         adapter.connect(store_config)
+        # a model that forwards to a hosted API needs that provider's key,
+        # out of the same credential domain the store credentials came from
         client = EmbeddingClient(
             P["scrEndpoint"] or BASE + "/llm", P["embedModel"],
-            deployment_type=P["deploymentType"] or "k8s", verify_ssl=VERIFY)
+            deployment_type=P["deploymentType"] or "k8s", verify_ssl=VERIFY,
+            api_key=api_key_for(P["embedModel"], secrets))
         dims = client.smoke()
         M(f"connected: {P['backend']} + {P['embedModel']} ({dims} dims)")
 

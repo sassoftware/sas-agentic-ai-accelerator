@@ -27,6 +27,8 @@ The `create-api-key-table.sas` helper and the VA data-role assignment are gone; 
 - **The vector store's host and port are no longer displayed.** Only the absence of a configured store is worth saying, since that is a blocker to take to an administrator
 - **The documentation section drops its Description field** — the description is authored in the create dialog and owned by the model, so the Builder no longer duplicates it or overwrites it on every save
 
+- **Hosted-API embedding models work through the pipeline.** An API-backed embedding container reads its provider key from the SCR `options` argument, but the embedding client only ever sent `Embedding_Mode` — so an OpenAI or Gemini embedding model deployed correctly and then failed at the first embed call with HTTP 422. `rag_core.providers` maps a model to the credential-domain entry holding its provider key (`text_embedding_3_small` → `OpenAI`), the Embed and Retrieve steps and the ingestion job resolve it from the same domain the store credentials come from, and a locally-served model is passed no key at all. A model that needs a key the caller does not hold now fails immediately naming the missing entry, rather than after the crawl and the chunking have run
+
 ### RAG cost
 
 - **`Build-RAG-Cost-View.sas`** builds `RAG_RUN_COST` from the published run history joined to `EMBEDDING_FACT_SHEET`, applying `embed_tokens × input_token_price` for hosted APIs and `embed_seconds × second_cost` for SCR containers. `embed_seconds` meters the embedding time of the run itself — what that ingestion consumed — not the container's uptime bill. An unpriced model yields a missing cost rather than a zero, so it reads as unknown rather than free
