@@ -1,3 +1,4 @@
+import { optionFlag } from './rag-options';
 /**
  * Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
  * SPDX-License-Identifier: Apache-2.0
@@ -39,4 +40,21 @@ export const RAG_BACKENDS: ReadonlyArray<RagBackend> = [
 /** Config key carrying whether the deployment offers this backend. */
 export function backendOptionKey(backend: RagBackend): string {
   return `enable_${backend.key}`;
+}
+
+/**
+ * Whether the deployment offers this backend.
+ *
+ * The option is a CHECKBOX (VA `boolean`), so a fresh report stores a real
+ * `true`/`false`. It used to be a dropdown storing `'1'`/`'0'`, and reports
+ * configured back then still hold those strings - which is why this reads
+ * both. It matters more than it looks: `String(false) !== '0'` is true, so a
+ * naive check would read an unticked new-style box as ENABLED and offer a
+ * store the deployment deliberately withheld.
+ *
+ * Absent means offered: a deployment that has never opened the options pane
+ * gets every backend, which is what the pane's own defaults say.
+ */
+export function backendEnabled(config: Record<string, unknown>, backend: RagBackend): boolean {
+  return optionFlag(config[backendOptionKey(backend)], true);
 }

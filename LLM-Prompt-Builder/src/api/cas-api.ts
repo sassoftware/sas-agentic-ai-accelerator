@@ -90,11 +90,20 @@ export async function getCasTableRows(
   server = 'cas-shared-default',
   limit = 500
 ): Promise<CasTableRows> {
-  const base =
-    `/casManagement/servers/${encodeURIComponent(server)}` +
+  // Two DIFFERENT services, and the split is not cosmetic: casManagement
+  // describes a table (its columns, its metadata) but has no row handler at
+  // all - `/tables/<t>/rows` answers 404 "no handler defined for the path",
+  // which reads exactly like a missing table and sent every ledger read down
+  // the "no such table" branch. Rows come from casRowSets.
+  const path =
+    `/servers/${encodeURIComponent(server)}` +
     `/caslibs/${encodeURIComponent(caslib)}/tables/${encodeURIComponent(table)}`;
-  const columns = await viyaGet<{ items?: { name?: string }[] }>(`${base}/columns?limit=1000`);
-  const rows = await viyaGet<{ items?: { cells?: unknown[] }[] }>(`${base}/rows?limit=${limit}`);
+  const columns = await viyaGet<{ items?: { name?: string }[] }>(
+    `/casManagement${path}/columns?limit=1000`
+  );
+  const rows = await viyaGet<{ items?: { cells?: unknown[] }[] }>(
+    `/casRowSets${path}/rows?limit=${limit}`
+  );
   return {
     columns: (columns.items ?? []).map((column) => String(column.name ?? '')).filter(Boolean),
     rows: (rows.items ?? []).map((row) => row.cells ?? []),

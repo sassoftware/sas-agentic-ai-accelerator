@@ -29,7 +29,7 @@ import {
   createModel,
   deleteModel,
   deleteModelProject,
-  createModelContent,
+  createModelVersion, createModelContent,
   createModelProject,
   getModelContents,
   getModelDetails,
@@ -41,11 +41,14 @@ import {
 } from '../api/models-api';
 import { getFileContent } from '../api/files-api';
 import { resolveDomainSecrets } from '../api/credentials-api';
-import { RAG_BACKENDS, backendOptionKey, type RagBackend } from './rag-backends';
+import { RAG_BACKENDS, backendEnabled, type RagBackend } from './rag-backends';
+import { optionFlag } from './rag-options';
 import { embeddingDimensions, embeddingTokenLimit } from './embedding-models';
-import { ensureChildFolder, getFolderByPath, getFolderMembers } from '../api/folders-api';
+import { ensureFolderPath, getFolderByPath, getFolderMembers } from '../api/folders-api';
 import {
   createJobDefinition,
+  createTransientJobDefinition,
+  deleteJobDefinition,
   getJobDefinition,
   jobParameter,
   updateJobDefinition,
@@ -64,6 +67,10 @@ import { showToast } from '../ui/toast';
 import { attachCombobox } from '../ui/combobox';
 import { createListFilter, renderFilteredOptions } from '../ui/list-filter';
 import { MODEL_CARD_FIELDS, createDocSection, createInfoIcon } from '../ui/doc-section';
+import { manifestSettings, renderRetrievalModel } from './rag-manifest';
+import { macroSafeQuestion, parseRetrievalLog, type RetrievalTestLog } from './rag-retrieval-log';
+import { INGESTION_STEPS, buildFlow, ingestionChain } from './rag-flow';
+import { readStepSpec, registerFlow, resolveStepIds } from '../api/dataflows-api';
 import { createCreateModal } from '../ui/create-modal';
 import { showConfirmModal } from '../ui/confirm-modal';
 import type { InterfaceText } from '../types';
@@ -149,7 +156,7 @@ function keepUnlisted(
  */
 function offeredBackends(config: RagBuilderConfig): ReadonlyArray<RagBackend> {
   const offered = RAG_BACKENDS.filter(
-    (backend) => String(config[backendOptionKey(backend)] ?? '1') !== '0'
+    (backend) => backendEnabled(config as unknown as Record<string, unknown>, backend)
   );
   return offered.length ? offered : RAG_BACKENDS;
 }
@@ -177,7 +184,7 @@ function defaultSetup(config: RagBuilderConfig): RagSetup {
       modelPurpose: '', intendedUse: '', expectedBenefit: '',
       outOfScopeUseCases: '', limitations: '',
     },
-    source: { path: '' },
+    source: { path: '', includeCode: false },
     extraction: { extractor: '' },
     chunking: { chunker: 'recursive', inputTokenLimit: 256, overlapTokens: 30 },
     embedding: {
@@ -199,6 +206,7 @@ function defaultSetup(config: RagBuilderConfig): RagSetup {
       collection: '',
     },
     tables: { prefix: '', caslib: '' },
+    artifactsFolder: '',
     pipelineVersion: 'v1',
     credentialDomain: config.credentialDomain || 'agentic-ai-keys',
     policies: policiesFrom(config),
@@ -209,8 +217,9 @@ function defaultSetup(config: RagBuilderConfig): RagSetup {
  * generated artifacts say what THIS corpus does rather than deferring to a
  * central setting that may since have changed. */
 function policiesFrom(config: RagBuilderConfig): RagSetup['policies'] {
-  const flag = (value: string, fallback: boolean): boolean =>
-    value === '' || value === undefined ? fallback : value !== '0';
+  // optionFlag, not `value !== '0'`: recordHistory is a checkbox now and
+  // stores a real false, which the old test read as true.
+  const flag = optionFlag;
   const count = (value: string, fallback: number): number => {
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
@@ -238,6 +247,7 @@ function renderPipelineYaml(setup: RagSetup): string {
     'version: 1',
     'source:',
     `  path: ${scalar(setup.source.path)}`,
+    `  includeCode: ${setup.source.includeCode === true}`,
     'extraction:',
     `  extractor: ${scalar(setup.extraction.extractor || 'auto')}`,
     'chunking:',
@@ -319,6 +329,18 @@ export async function buildRagBuilder(
   let currentPolicies: RagSetup['policies'] | null = null;
   /** Poll timer of a running ingestion launch. */
   let pollTimer: number | null = null;
+  /**
+   * The live-run clock.
+   *
+   * An ingestion embeds one chunk per call, so a few hundred documents is
+   * minutes, not seconds. Without a visible elapsed time a running job and a
+   * finished one look identical, and the reasonable next move - open the
+   * ledger - then reports an empty corpus that is merely not written yet.
+   * These three carry "is a run in flight, and for how long" to whoever asks.
+   */
+  let runTicker: number | null = null;
+  let runStartedAt = 0;
+  let runActive = false;
 
   const container = document.createElement('div');
   container.className = 'container-fluid py-3';
@@ -698,6 +720,34 @@ export async function buildRagBuilder(
   const extractorField = selectInput(EXTRACTORS, '', { '': str('ragBuilderExtractorAuto', 'Automatic (by file format)') });
   labeled(documentsRow, idOf('extractor'), str('ragBuilderExtractorLabel', 'Extractor:'), extractorField, 'col-md-4',
     str('ragBuilderExtractorInfo', 'How text is pulled out of each file. Automatic picks per file format and is almost always right; forcing one applies it to EVERY file, so a PDF read as plain text yields nonsense rather than an error. Some formats need optional Python packages — see the administration guide.'));
+  // Source files are their own decision, not an extractor choice: the
+  // question is whether they belong in the corpus at all, and the answer is
+  // usually no. Off by default, and never a silent exclusion - a skipped file
+  // is listed in the ledger and the run log with its reason.
+  const includeCodeWrap = document.createElement('div');
+  includeCodeWrap.className = 'col-md-8 d-flex align-items-center';
+  const includeCodeCheck = document.createElement('div');
+  includeCodeCheck.className = 'form-check mb-0';
+  const includeCodeField = document.createElement('input');
+  includeCodeField.type = 'checkbox';
+  includeCodeField.className = 'form-check-input';
+  includeCodeField.id = idOf('include-code');
+  const includeCodeLabel = document.createElement('label');
+  includeCodeLabel.className = 'form-check-label';
+  includeCodeLabel.htmlFor = includeCodeField.id;
+  includeCodeLabel.textContent = str('ragBuilderIncludeCodeLabel', 'Ingest source-code files as plain text');
+  includeCodeCheck.append(includeCodeField, includeCodeLabel);
+  includeCodeWrap.appendChild(includeCodeCheck);
+  includeCodeWrap.appendChild(
+    createInfoIcon(
+      str('ragBuilderIncludeCodeLabel', 'Ingest source-code files as plain text'),
+      str(
+        'ragBuilderIncludeCodeInfo',
+        'Off by default. Source files (.py, .sas, .r, .js, .ts, .sql and ~30 more) are skipped, because a documents folder that sits inside a project would otherwise fill the collection with build scripts that answer no business question. Skipped files are always listed in the ledger and the run log with the reason, never dropped silently. Turn this on for a corpus that is ABOUT code: each file is then indexed as plain text, with its file name kept so a hit can be traced back.'
+      )
+    )
+  );
+  documentsRow.appendChild(includeCodeWrap);
   documentsBody.appendChild(documentsRow);
   editor.appendChild(documentsCard);
 
@@ -1041,6 +1091,10 @@ export async function buildRagBuilder(
   // the save is rejected wastes the whole form-filling effort.
   prefixField.maxLength = PREFIX_MAX;
   prefixField.pattern = '[A-Za-z_][A-Za-z0-9_]*';
+  prefixField.style.textTransform = 'uppercase';
+  prefixField.addEventListener('blur', () => {
+    prefixField.value = prefixField.value.trim().toUpperCase();
+  });
   labeled(tablesRow, idOf('tables-prefix'), str('ragBuilderTablesPrefixLabel', 'Pipeline table prefix (max 20 chars):'), prefixField, 'col-md-4',
     str('ragBuilderTablesPrefixInfo', 'Prefix for the CAS working tables this pipeline creates — the ledger, the element and chunk tables, the run history. Kept to 20 characters so every generated name stays inside the 32-character CAS limit. Two setups sharing a prefix overwrite each other\'s ledger.'), true);
   // Caslib picker over the CAS Management listing, the same interactive
@@ -1072,6 +1126,30 @@ export async function buildRagBuilder(
   tablesBody.appendChild(tablesRow);
   editor.appendChild(tablesCard);
 
+  // ---- where the generated artifacts go -------------------------------------
+  const [artifactsCard, artifactsBody] = card(
+    str('ragBuilderArtifactsHeading', '6. Generated artifacts'),
+    str(
+      'ragBuilderArtifactsHint',
+      'Where the RAG Builder writes the executables it generates from this setup. They are regenerated from the setup on every Generate, so this folder is safe to treat as output rather than source.'
+    )
+  );
+  const artifactsRow = document.createElement('div');
+  artifactsRow.className = 'row g-3';
+  const artifactsFolderField = textInput('', `${config.contentRoot}/generated`);
+  labeled(artifactsRow, idOf('artifacts-folder'), str('ragBuilderArtifactsFolderLabel', 'SAS Content folder:'),
+    artifactsFolderField, 'col-md-8',
+    str('ragBuilderArtifactsFolderInfo', 'The SAS Content folder receiving the generated ingestion job. Missing folders below the first level are created for you. Put it where the people who will schedule and run this pipeline already look - the default sits under the accelerator content root, which is convenient for the author and invisible to everyone else.'));
+  const artifactsNote = document.createElement('p');
+  artifactsNote.className = 'small text-body-secondary mb-0 mt-2';
+  artifactsBody.appendChild(artifactsRow);
+  artifactsBody.appendChild(artifactsNote);
+  editor.appendChild(artifactsCard);
+
+  /** The destination the user asked for, or the deployment default. */
+  const artifactsFolder = (): string =>
+    artifactsFolderField.value.trim().replace(/\/+$/, '') || `${config.contentRoot}/generated`;
+
   // ---- actions --------------------------------------------------------------
   const actions = document.createElement('div');
   actions.className = 'd-flex gap-2 flex-wrap mb-3';
@@ -1083,18 +1161,23 @@ export async function buildRagBuilder(
     actions.appendChild(button);
     return button;
   };
-  const saveButton = actionButton(str('ragBuilderSaveButton', 'Save setup'), 'btn-primary');
-  const generateJobButton = actionButton(str('ragBuilderGenerateJobButton', 'Generate ingestion job'));
+  const saveButton = actionButton(str('ragBuilderSaveButton', 'Save setup'));
+  // ONE button for "make this setup real", because the four it replaces had
+  // to be pressed in an order the UI never stated: a flow generated against a
+  // setup whose score code was never registered is a half-built thing, and
+  // nothing said so. Save stays separate for the still-editing case.
+  const manifestButton = actionButton(str('ragBuilderManifestButton', 'Manifest setup'), 'btn-primary');
+  manifestButton.title = str(
+    'ragBuilderManifestTitle',
+    'Save the setup, generate the ingestion job and the Studio flow, register the retrieval model, and record a new model version.'
+  );
   const launchButton = actionButton(str('ragBuilderLaunchButton', 'Launch ingestion'));
   launchButton.disabled = true;
-  launchButton.title = str('ragBuilderLaunchNeedsJob', 'Generate the ingestion job first.');
+  launchButton.title = str('ragBuilderLaunchNeedsJob', 'Manifest the setup first.');
   const ledgerButton = actionButton(str('ragBuilderLedgerButton', 'Browse ledger'));
-  const generateFlowButton = actionButton(str('ragBuilderGenerateFlowButton', 'Generate Studio Flow'));
-  generateFlowButton.disabled = true;
-  generateFlowButton.title = str('ragBuilderComingSoon', 'Arrives with Register Setup (P2)');
   const testButton = actionButton(str('ragBuilderTestButton', 'Test retrieval'));
   testButton.disabled = true;
-  testButton.title = str('ragBuilderComingSoon', 'Arrives with Register Setup (P2)');
+  testButton.title = str('ragBuilderTestNeedsManifest', 'Manifest the setup first.');
   editor.appendChild(actions);
 
   // Save feedback belongs beside the button that caused it. An alert at the
@@ -1150,10 +1233,22 @@ export async function buildRagBuilder(
   const [runCard, runBody] = card(str('ragBuilderRunHeading', 'Ingestion run'));
   runCard.style.display = 'none';
   const runState = document.createElement('p');
-  runState.className = 'fw-bold mb-2';
+  runState.className = 'fw-bold mb-1 d-flex align-items-center gap-2';
+  const runBadge = document.createElement('span');
+  runBadge.className = 'badge text-bg-secondary';
+  const runStateText = document.createElement('span');
+  const runClock = document.createElement('span');
+  runClock.className = 'text-body-secondary fw-normal small ms-auto';
+  runState.append(runBadge, runStateText, runClock);
+  // Why the milestone list is empty, when it is. An empty box reads as "the
+  // job is doing nothing"; the truthful reading is usually "the log has not
+  // been flushed yet", and those call for opposite reactions from the user.
+  const runNote = document.createElement('p');
+  runNote.className = 'small text-body-secondary mb-2';
   const runMilestones = document.createElement('ul');
   runMilestones.className = 'small mb-0';
   runBody.appendChild(runState);
+  runBody.appendChild(runNote);
   runBody.appendChild(runMilestones);
   editor.appendChild(runCard);
 
@@ -1164,6 +1259,49 @@ export async function buildRagBuilder(
   ledgerContent.className = 'table-responsive';
   ledgerBody.appendChild(ledgerContent);
   editor.appendChild(ledgerCard);
+
+  // ---- retrieval test panel -------------------------------------------------
+  // Hidden until asked for: it is a question box, and a question box sitting
+  // permanently under a long editor invites answering it before there is a
+  // corpus to answer from.
+  const [testCard, testBody] = card(
+    str('ragBuilderTestHeading', 'Test retrieval'),
+    str(
+      'ragBuilderTestHint',
+      'Ask the live collection a question and see the chunks it returns. This is how you tell whether the chunk size and embedding model suit the corpus - the chunks below are exactly what a retrieval would hand an LLM.'
+    )
+  );
+  testCard.style.display = 'none';
+  const testRow = document.createElement('div');
+  testRow.className = 'row g-3 align-items-end';
+  const testQuestionField = textInput(
+    '',
+    str('ragBuilderTestQuestionPlaceholder', 'What does the corpus say about…?')
+  );
+  labeled(testRow, idOf('test-question'), str('ragBuilderTestQuestionLabel', 'Question:'),
+    testQuestionField, 'col-md-7',
+    str('ragBuilderTestQuestionInfo', 'Asked the way a user would ask it. The question is embedded with the same model the corpus was built with and matched against the collection - so a question phrased unlike the documents is itself a finding.'), true);
+  const testTopKField = numberInput(5, 1);
+  testTopKField.max = '25';
+  labeled(testRow, idOf('test-topk'), str('ragBuilderTestTopKLabel', 'Chunks to return:'),
+    testTopKField, 'col-md-3',
+    str('ragBuilderTestTopKInfo', 'How many chunks come back, highest score first. Ask for more than the retrieval model will use when you are judging a corpus: the chunks just below the cut-off say more about the chunking than the ones above it.'));
+  const testRunColumn = document.createElement('div');
+  testRunColumn.className = 'col-md-2 d-grid';
+  const testRunButton = document.createElement('button');
+  testRunButton.type = 'button';
+  testRunButton.className = 'btn btn-primary';
+  testRunButton.textContent = str('ragBuilderTestRunButton', 'Run test');
+  testRunColumn.appendChild(testRunButton);
+  testRow.appendChild(testRunColumn);
+  const testStatus = document.createElement('p');
+  testStatus.className = 'small text-body-secondary mb-2 mt-3';
+  const testResults = document.createElement('div');
+  testResults.className = 'table-responsive';
+  testBody.appendChild(testRow);
+  testBody.appendChild(testStatus);
+  testBody.appendChild(testResults);
+  editor.appendChild(testCard);
 
   // ---- data plumbing --------------------------------------------------------
 
@@ -1179,6 +1317,7 @@ export async function buildRagBuilder(
     sourcePathField.value = storedPath.replace(/^sas(server|content):/i, '');
     sourcePlaceholder();
     extractorField.value = setup.extraction.extractor;
+    includeCodeField.checked = setup.source.includeCode === true;
     chunkerField.value = setup.chunking.chunker;
     tokenLimitField.value = String(setup.chunking.inputTokenLimit);
     overlapField.value = String(setup.chunking.overlapTokens);
@@ -1202,7 +1341,8 @@ export async function buildRagBuilder(
     showStoreLocation();
 
     collectionField.value = setup.store.collection;
-    prefixField.value = setup.tables.prefix;
+    prefixField.value = (setup.tables.prefix || '').toUpperCase();
+    artifactsFolderField.value = setup.artifactsFolder || `${config.contentRoot}/generated`;
     keepUnlisted(caslibField, setup.tables.caslib, str('ragBuilderUnlistedCaslib', 'not found'));
     managedTags = [setup.embedding.model, setup.store.backend].filter(Boolean);
     currentJobUri = setup.job?.definitionUri ?? '';
@@ -1214,6 +1354,17 @@ export async function buildRagBuilder(
     launchButton.title = currentJobUri
       ? ''
       : str('ragBuilderLaunchNeedsJob', 'Generate the ingestion job first.');
+    // Test retrieval reads the COLLECTION, so what it truly needs is an
+    // ingested corpus - which nothing in the browser can prove exists. A
+    // manifested setup is the honest proxy: it is the point from which the
+    // values the probe runs with are the ones on the server.
+    testButton.disabled = !currentJobUri;
+    testButton.title = currentJobUri
+      ? str(
+          'ragBuilderTestTitle',
+          'Ask this collection a question and see the chunks that come back. It queries the collection through rag_core, not the registered score code, so a broken retrieve_context.py would still pass here. Nothing is left behind: the job definition it runs is unfiled and deleted afterwards.'
+        )
+      : str('ragBuilderTestNeedsManifest', 'Manifest the setup first.');
   };
 
   const stopPolling = (): void => {
@@ -1221,6 +1372,46 @@ export async function buildRagBuilder(
       window.clearInterval(pollTimer);
       pollTimer = null;
     }
+  };
+
+  /** "4m 12s" - the shape a person reads a run duration in. */
+  const formatElapsed = (ms: number): string => {
+    const total = Math.max(0, Math.round(ms / 1000));
+    const minutes = Math.floor(total / 60);
+    return minutes > 0 ? `${minutes}m ${String(total % 60).padStart(2, '0')}s` : `${total}s`;
+  };
+
+  const paintClock = (): void => {
+    if (!runStartedAt) return;
+    runClock.textContent = str('ragBuilderRunElapsed', 'running for {time}').replace(
+      '{time}',
+      formatElapsed(Date.now() - runStartedAt)
+    );
+  };
+
+  const startRunClock = (): void => {
+    stopRunClock();
+    runStartedAt = Date.now();
+    runActive = true;
+    paintClock();
+    // One second, because this is the only moving thing on the page while a
+    // ten-minute job runs - it is what says "still alive" without the user
+    // having to trust that the poll is working.
+    runTicker = window.setInterval(paintClock, 1000);
+  };
+
+  const stopRunClock = (): void => {
+    if (runTicker !== null) {
+      window.clearInterval(runTicker);
+      runTicker = null;
+    }
+    runActive = false;
+  };
+
+  const setRunBadge = (state: string, failed = false): void => {
+    const done = isTerminalJobState(state as never);
+    runBadge.className = `badge text-bg-${!done ? 'primary' : failed || state !== 'completed' ? 'danger' : 'success'}`;
+    runBadge.textContent = state;
   };
 
   /** The documentation block as the form currently has it. */
@@ -1292,7 +1483,10 @@ export async function buildRagBuilder(
     // corpus onto a policy that changed after it was built
     policies: currentPolicies ?? policiesFrom(config),
     documentation: collectDocumentation(),
-    source: { path: `${sourceKindField.value}:${sourcePathField.value.trim()}` },
+    source: {
+      path: `${sourceKindField.value}:${sourcePathField.value.trim()}`,
+      includeCode: includeCodeField.checked,
+    },
     extraction: { extractor: extractorField.value },
     chunking: {
       chunker: chunkerField.value,
@@ -1319,9 +1513,14 @@ export async function buildRagBuilder(
       collection: collectionField.value.trim(),
     },
     tables: {
-      prefix: prefixField.value.trim(),
+      // CAS upper-cases table names when it stores them, so a setup that
+      // held 'liti' produced LITI_LEDGER on the server and liti_LEDGER in
+      // every label, link and job parameter here. Normalising at the one
+      // place the value is read keeps the UI showing what CAS will show.
+      prefix: prefixField.value.trim().toUpperCase(),
       caslib: caslibField.value.trim(),
     },
+    artifactsFolder: artifactsFolder(),
     pipelineVersion: 'v1',
     credentialDomain: config.credentialDomain || 'agentic-ai-keys',
     ...(currentJobUri ? { job: { definitionUri: currentJobUri } } : {}),
@@ -1631,6 +1830,7 @@ export async function buildRagBuilder(
    *  definition's parameter defaults and the launch-time arguments. */
   const jobArguments = (setup: RagSetup): Record<string, string> => ({
     sourcePath: setup.source.path,
+    includeCode: setup.source.includeCode === true ? '1' : '0',
     collection: setup.store.collection,
     backend: setup.store.backend,
     storeHost: setup.store.host,
@@ -1664,10 +1864,15 @@ export async function buildRagBuilder(
    * the content root's `generated` subfolder. The definition URI is stored in
    * rag-setup.json so a later save/generate updates in place.
    */
-  async function generateIngestionJob(): Promise<void> {
-    if (!(await saveSetup())) return;
+  async function generateIngestionJob(): Promise<boolean> {
+    // Kept for the direct call: the job is generated FROM the saved setup, so
+    // generating without saving would emit a job for a setup that does not
+    // exist. Within manifestSetup the save has already run, and saveSetup is
+    // idempotent, so the second call costs one round trip and keeps this
+    // function correct on its own.
+    if (!(await saveSetup())) return false;
     const setup = collectSetup();
-    generateJobButton.disabled = true;
+    manifestButton.disabled = true;
     try {
       // the golden-path job source, exactly as deployed
       const jobsFolder = await getFolderByPath(`${config.contentRoot}/jobs`);
@@ -1678,13 +1883,13 @@ export async function buildRagBuilder(
         : undefined;
       if (!jobFile?.uri) {
         showStatus('danger', str('ragBuilderJobSourceMissing', 'Ingest-Documents.sas was not found under the content root - run the deploy-rag-content script first.'));
-        return;
+        return false;
       }
       const source = await (await getFileContent(String(jobFile.uri), 'text/plain')).text();
 
       const parameters = [
         ...Object.entries(jobArguments(setup)).map(([name, value]) => jobParameter(name, value)),
-        jobParameter('_contextName', config.computeContext || '', 'Compute context'),
+        jobParameter('_contextName', String(config.computeContext || ''), 'Compute context'),
       ];
       const definition: JobDefinition = {
         name: `RAG Ingest - ${selectedSetupName}`,
@@ -1704,10 +1909,17 @@ export async function buildRagBuilder(
         }
       }
       if (!definitionUri) {
-        const generatedFolder = await ensureChildFolder(config.contentRoot, 'generated');
+        const destination = artifactsFolder();
+        const generatedFolder = await ensureFolderPath(destination);
         if (!generatedFolder) {
-          showStatus('danger', str('ragBuilderJobFolderError', 'The generated-artifacts folder under the content root could not be created - check your permissions on it.'));
-          return;
+          showStatus(
+            'danger',
+            str('ragBuilderJobFolderError', 'The folder {folder} could not be created or reached - check the path and your permissions on it. The first level of the path has to exist already.').replace(
+              '{folder}',
+              destination
+            )
+          );
+          return false;
         }
         const created = await createJobDefinition(definition, generatedFolder.id);
         definitionUri = `/jobDefinitions/definitions/${created.id}`;
@@ -1717,12 +1929,83 @@ export async function buildRagBuilder(
       updateLaunchState();
       // persist the job reference with the setup
       await createModelContent(selectedSetupID, collectSetup(), SETUP_FILE, 'documentation');
-      showStatus('success', str('ragBuilderJobGenerated', 'Ingestion job generated in the content root (generated folder) and linked to this setup.'));
+      // Naming the destination matters more than it looks: this job is the
+      // artifact a schedule points at, and "somewhere under the content root"
+      // is not something a person can act on a month later.
+      artifactsNote.textContent = str('ragBuilderJobGeneratedAt', 'Ingestion job: {name} in {folder}')
+        .replace('{name}', `RAG Ingest - ${selectedSetupName}`)
+        .replace('{folder}', artifactsFolder());
+      showStatus(
+        'success',
+        str('ragBuilderJobGenerated', 'Ingestion job generated in {folder} and linked to this setup.').replace(
+          '{folder}',
+          artifactsFolder()
+        )
+      );
+      return true;
     } catch (error) {
       console.error('Generating the ingestion job failed.', error);
       showStatus('danger', str('ragBuilderJobGenerateError', 'Generating the ingestion job failed - check the browser console and your permissions on the content root.'));
+      return false;
     } finally {
-      generateJobButton.disabled = false;
+      manifestButton.disabled = false;
+    }
+  }
+
+  /**
+   * Make the setup real: save it, generate what runs it, register what serves
+   * it, and record a version.
+   *
+   * Ordered, and it STOPS at the first failure rather than pressing on. Each
+   * stage depends on the one before - the job and the flow are generated from
+   * the saved setup, the score code is manifested from the same values - so
+   * continuing after a failure produces artifacts that disagree with each
+   * other, which is worse than producing none.
+   */
+  async function manifestSetup(): Promise<void> {
+    if (!selectedSetupID) {
+      showStatus('danger', str('ragBuilderRegisterNeedsSetup', 'Select or create a RAG setup first.'));
+      return;
+    }
+    manifestButton.disabled = true;
+    try {
+      const stages: Array<[string, () => Promise<boolean>]> = [
+        [str('ragBuilderStageSave', 'saving the setup'), saveSetup],
+        [str('ragBuilderStageJob', 'generating the ingestion job'), generateIngestionJob],
+        [str('ragBuilderStageFlow', 'generating the Studio flow'), generateStudioFlow],
+        [str('ragBuilderStageRegister', 'registering the retrieval model'), registerRetrievalModel],
+      ];
+      for (const [label, run] of stages) {
+        manifestButton.textContent = `${str('ragBuilderManifestBusy', 'Manifesting')} — ${label}…`;
+        if (!(await run())) {
+          // The stage that failed has already said why, in the panel beside
+          // this button; repeating it would only push its detail off screen.
+          manifestButton.textContent = str('ragBuilderManifestButton', 'Manifest setup');
+          return;
+        }
+      }
+      // A new MINOR version, as manifesting a prompt does. Without it every
+      // manifest overwrote the same version and the model carried no history
+      // of what it used to be - which is most of the point of registering it
+      // in Model Manager rather than writing a file somewhere.
+      try {
+        await createModelVersion(selectedSetupID);
+      } catch (error) {
+        // The artifacts are written and correct; only the version marker is
+        // missing. Say so rather than reporting the manifest as failed.
+        console.error('Creating the model version failed.', error);
+        showStatus('info', str('ragBuilderVersionFailed', 'Everything was generated and registered, but recording a new model version failed - check your permissions on the setup model.'));
+        return;
+      }
+      showSaveSuccess(
+        str('ragBuilderManifested', 'Setup manifested: saved, ingestion job and Studio flow generated in {folder}, retrieval model registered, and a new model version recorded.').replace(
+          '{folder}',
+          artifactsFolder()
+        )
+      );
+    } finally {
+      manifestButton.textContent = str('ragBuilderManifestButton', 'Manifest setup');
+      manifestButton.disabled = false;
     }
   }
 
@@ -1730,14 +2013,25 @@ export async function buildRagBuilder(
   async function launchIngestion(): Promise<void> {
     if (!currentJobUri) return;
     clearStatus();
+    // Same precondition as the retrieval test: without a compute context the
+    // job is refused before it starts, and the run panel would show a failed
+    // state with no milestones and no log to explain it.
+    if (!config.computeContext) {
+      showStatus('danger', str('ragBuilderNeedsComputeContext', 'No ingestion compute context is configured, and SAS Job Execution refuses a job that does not name one. Set it in the Options pane of this report.'));
+      return;
+    }
     stopPolling();
     const setup = collectSetup();
     const args: Record<string, string> = { ...jobArguments(setup) };
-    if (config.computeContext) args._contextName = config.computeContext;
+    if (config.computeContext) args._contextName = String(config.computeContext);
     launchButton.disabled = true;
     runCard.style.display = '';
-    runState.textContent = str('ragBuilderRunLaunching', 'Launching…');
+    setRunBadge('launching');
+    runStateText.textContent = str('ragBuilderRunLaunching', 'Launching…');
+    runNote.textContent = '';
+    runClock.textContent = '';
     runMilestones.replaceChildren();
+    startRunClock();
     try {
       const job = await launchJob(currentJobUri, `RAG Ingest - ${selectedSetupName}`, args);
       const jobId = String(job.id ?? '');
@@ -1753,19 +2047,47 @@ export async function buildRagBuilder(
         try {
           const current = await getJob(jobId);
           const state = String(current.state ?? 'running');
-          runState.textContent = `${str('ragBuilderRunStateLabel', 'State:')} ${state}`;
+          setRunBadge(state);
+          runStateText.textContent = `${str('ragBuilderRunStateLabel', 'State:')} ${state}`;
           const progress = await getJobProgressMessages(current);
-          if (progress.messages.length > 0) renderMilestones(progress.messages);
-          else if (progress.liveStatus !== 'ok') {
-            runState.textContent += ` (${str('ragBuilderRunLogPending', 'full log at completion')})`;
+          if (progress.messages.length > 0) {
+            renderMilestones(progress.messages);
+            // The last milestone is the answer to "what is it doing right
+            // now", so it belongs where the eye already is.
+            runNote.textContent = str('ragBuilderRunLatest', 'Latest: {message}').replace(
+              '{message}',
+              progress.messages[progress.messages.length - 1].replace(/^RAGINGEST\s+/, '')
+            );
+          } else if (!isTerminalJobState(state as never)) {
+            runNote.textContent =
+              progress.liveStatus === 'no-milestones' || progress.liveStatus === 'no-session-refs'
+                ? str('ragBuilderRunLogWaiting', 'The job has started but has not reported a milestone yet. Embedding runs one call per chunk, so a large corpus can take several minutes before the first line appears.')
+                : str('ragBuilderRunLogPending', 'Live log streaming is unavailable here ({status}) - the full log appears when the run finishes.').replace(
+                    '{status}',
+                    String(progress.liveStatus)
+                  );
           }
           if (isTerminalJobState(state as never)) {
             stopPolling();
+            stopRunClock();
             launchButton.disabled = false;
             const failed = progress.messages.some((message) => message.toLowerCase().includes('failed'));
+            const ok = state === 'completed' && !failed;
+            setRunBadge(state, failed);
+            runClock.textContent = str('ragBuilderRunTook', 'took {time}').replace(
+              '{time}',
+              formatElapsed(Date.now() - runStartedAt)
+            );
+            if (ok) {
+              // The ledger is written by the run's last step, so the moment
+              // it becomes readable is exactly now. Showing it unprompted
+              // spares the round trip that started this whole confusion.
+              runNote.textContent = str('ragBuilderRunDoneNote', 'Run finished. The ingestion ledger is below.');
+              void browseLedger();
+            }
             showStatus(
-              state === 'completed' && !failed ? 'success' : 'danger',
-              state === 'completed' && !failed
+              ok ? 'success' : 'danger',
+              ok
                 ? str('ragBuilderRunDone', 'Ingestion run completed - see the milestones and browse the ledger.')
                 : str('ragBuilderRunFailed', 'The ingestion run did not succeed - see the milestones/log for the reason.')
             );
@@ -1778,9 +2100,160 @@ export async function buildRagBuilder(
       void poll();
     } catch (error) {
       console.error('Launching the ingestion job failed.', error);
+      stopRunClock();
+      runClock.textContent = '';
+      setRunBadge('failed', true);
       launchButton.disabled = false;
       showStatus('danger', str('ragBuilderRunLaunchError', 'Launching the ingestion job failed - check the browser console.'));
     }
+  }
+
+  /**
+   * Generate the SAS Studio flow for this setup.
+   *
+   * The visual twin of the generated job: same five steps, same values,
+   * wired in order. The job is what a schedule runs, so a break here costs
+   * visual editing and never ingestion - and the flow is regenerable from
+   * the setup at any time, so it is output rather than source.
+   */
+  async function generateStudioFlow(): Promise<boolean> {
+    clearStatus();
+    clearSaveResult();
+    const setup = collectSetup();
+    const problems = validateSetup(setup);
+    if (problems.length > 0) {
+      showSaveErrors(problems);
+      return false;
+    }
+    manifestButton.disabled = true;
+    try {
+      // Resolved fresh: a redeploy of the custom steps mints new ids, and a
+      // flow holding a stale one fails at code generation, far from the cause.
+      const stepIds = await resolveStepIds(`${config.contentRoot}/steps`);
+      const missing = INGESTION_STEPS.filter((name) => !stepIds[name]);
+      if (missing.length > 0) {
+        showSaveErrors([
+          str('ragBuilderFlowStepsMissing', 'These custom steps are not registered under the content root: {steps}. Run the deploy-rag-content script first.').replace(
+            '{steps}',
+            missing.join(', ')
+          ),
+        ]);
+        return false;
+      }
+      const specs = [];
+      for (const name of INGESTION_STEPS) specs.push(await readStepSpec(name, stepIds[name]));
+      const destination = artifactsFolder();
+      if (!(await ensureFolderPath(destination))) {
+        showSaveErrors([
+          str('ragBuilderJobFolderError', 'The folder {folder} could not be created or reached - check the path and your permissions on it. The first level of the path has to exist already.').replace(
+            '{folder}',
+            destination
+          ),
+        ]);
+        return false;
+      }
+      const flowName = `RAG Ingest - ${selectedSetupName}`;
+      const flow = buildFlow(
+        specs,
+        stepIds,
+        ingestionChain(setup, `${config.contentRoot}/rag_core`),
+        flowName,
+        String(config.userName || 'RAG Builder'),
+        new Date().toISOString()
+      );
+      await registerFlow(destination, flow);
+      artifactsNote.textContent = str('ragBuilderFlowGeneratedAt', 'Studio flow: {name} in {folder}')
+        .replace('{name}', flowName)
+        .replace('{folder}', destination);
+      showSaveSuccess(
+        str('ragBuilderFlowGenerated', 'Studio flow generated in {folder}. Open it in SAS Studio to see or edit the pipeline; regenerate here after changing the setup.').replace(
+          '{folder}',
+          destination
+        )
+      );
+      return true;
+    } catch (error) {
+      console.error('Generating the Studio flow failed.', error);
+      showSaveErrors([
+        str('ragBuilderFlowFailed', 'Generating the Studio flow failed: {reason}').replace(
+          '{reason}',
+          error instanceof Error ? error.message : String(error)
+        ),
+      ]);
+      return false;
+    } finally {
+      manifestButton.disabled = false;
+    }
+  }
+
+  /**
+   * Write the manifested retrieval score code onto the RAG Setup model.
+   *
+   * Until this runs the saved model carries its configuration but nothing
+   * executable, so it cannot be scored, published or tested - which is why a
+   * setup that saved cleanly still could not retrieve anything. The template
+   * is the deployed retrieve_context.py, so what is registered is the same
+   * code the Studio step would register, with this setup's values in it.
+   */
+  async function registerRetrievalModel(): Promise<boolean> {
+    if (!selectedSetupID) {
+      showStatus('danger', str('ragBuilderRegisterNeedsSetup', 'Select or create a RAG setup first.'));
+      return false;
+    }
+    clearStatus();
+    clearSaveResult();
+    const setup = collectSetup();
+    const problems = validateSetup(setup);
+    if (problems.length > 0) {
+      showSaveErrors(problems);
+      return false;
+    }
+    manifestButton.disabled = true;
+    try {
+      const modelsFolder = await getFolderByPath(`${config.contentRoot}/models`);
+      const templateFile = modelsFolder
+        ? (await getFolderMembers(modelsFolder.id)).find(
+            (member) => member.name === 'retrieve_context.py'
+          )
+        : undefined;
+      if (!templateFile?.uri) {
+        showStatus('danger', str('ragBuilderTemplateMissing', 'retrieve_context.py was not found under the content root - run the deploy-rag-content script first.'));
+        return false;
+      }
+      const template = await (
+        await getFileContent(String(templateFile.uri), 'text/plain')
+      ).text();
+      const endpoint = setup.embedding.scrEndpoint || `${viyaHost()}/llm`;
+      const code = renderRetrievalModel(template, manifestSettings(setup, endpoint));
+      await createModelContent(selectedSetupID, code, 'retrieve_context.py', 'score', 'text/x-python');
+      showSaveSuccess(
+        str('ragBuilderRegistered', 'Retrieval model registered: retrieve_context.py written as the score code of this setup, with its collection, backend and embedding model baked in.')
+      );
+      return true;
+    } catch (error) {
+      console.error('Registering the retrieval model failed.', error);
+      // renderRetrievalModel throws with the reason (a missing required
+      // value, a template that is not ours), and that reason is the useful
+      // half of the message - a generic failure would send the reader to the
+      // console for something the UI already knows.
+      showSaveErrors([
+        str('ragBuilderRegisterFailed', 'Registering the retrieval model failed: {reason}').replace(
+          '{reason}',
+          error instanceof Error ? error.message : String(error)
+        ),
+      ]);
+      return false;
+    } finally {
+      manifestButton.disabled = false;
+    }
+  }
+
+  /** What the ledger means while a run is still in flight. */
+  function runningLedgerNote(): string {
+    return str(
+      'ragBuilderLedgerRunning',
+      'An ingestion has been running for {time}. The ledger is written by the final step of the run, so it shows the PREVIOUS state until this run finishes - it will refresh here automatically.'
+    ).replace('{time}', formatElapsed(Date.now() - runStartedAt));
   }
 
   /** Show the promoted ledger table of this setup (page of rows). */
@@ -1820,11 +2293,245 @@ export async function buildRagBuilder(
       tableEl.appendChild(body);
       ledgerContent.replaceChildren(tableEl);
       if (data.rows.length === 0) {
-        ledgerContent.textContent = str('ragBuilderLedgerEmpty', 'The ledger has no rows yet - run an ingestion first.');
+        ledgerContent.textContent = runActive
+          ? runningLedgerNote()
+          : str('ragBuilderLedgerEmpty', 'The ledger has no rows yet - run an ingestion first.');
+      } else {
+        // A ledger read DURING a run shows the previous run's rows, and
+        // nothing distinguishes them from this run's. Say which they are.
+        const caption = document.createElement('p');
+        caption.className = 'small text-body-secondary mb-2';
+        caption.textContent = runActive
+          ? runningLedgerNote()
+          : str('ragBuilderLedgerCount', '{count} documents in {table}.')
+              .replace('{count}', String(data.rows.length))
+              .replace('{table}', `${setup.tables.caslib}.${table}`);
+        ledgerContent.prepend(caption);
       }
     } catch (error) {
       console.debug('RAG Builder: ledger read failed', error);
-      ledgerContent.textContent = str('ragBuilderLedgerMissing', 'No loaded ledger table was found for this setup - it appears after the first ingestion run (a saved ledger is loaded by the run itself).');
+      // The commonest cause is not a missing table but an unfinished run:
+      // the ledger is written by the run's LAST step, so it does not exist
+      // until then. Saying "no table was found" here sent the reader looking
+      // for a broken pipeline when the pipeline was simply still working.
+      ledgerContent.textContent = runActive
+        ? runningLedgerNote()
+        : str('ragBuilderLedgerMissing', 'No loaded ledger table was found for this setup - it appears after the first ingestion run (a saved ledger is loaded by the run itself).');
+    }
+  }
+
+  // ---- retrieval test -------------------------------------------------------
+
+  /** The probe's parameters: the store and embedding half of the ingestion
+   *  arguments - it reads the collection and writes nothing - plus the ask. */
+  const retrievalArguments = (
+    setup: RagSetup,
+    question: string,
+    topK: number
+  ): Record<string, string> => ({
+    question,
+    topK: String(topK),
+    collection: setup.store.collection,
+    backend: setup.store.backend,
+    storeHost: setup.store.host,
+    storePort: String(setup.store.port),
+    storeDb: setup.store.database,
+    storeSslmode: setup.store.sslmode,
+    credentialDomain: setup.credentialDomain,
+    scrEndpoint: config.SCREndpoint || '',
+    embedModel: setup.embedding.model,
+    deploymentType: setup.embedding.deploymentType,
+    ragCorePath: `${config.contentRoot}/rag_core`,
+  });
+
+  const pause = (ms: number): Promise<void> =>
+    new Promise((resolve) => window.setTimeout(resolve, ms));
+
+  /** Show the returned chunks - or say, precisely, why there are none. */
+  const renderRetrievalHits = (parsed: RetrievalTestLog, elapsed: number): void => {
+    testResults.replaceChildren();
+    // A rank-0 row is not a hit: it is the probe reporting that the question
+    // matched nothing, or that the search itself failed. Showing it as an
+    // empty row of a results table would read as a bad chunk.
+    const hits = parsed.hits.filter((hit) => hit.rank > 0);
+    const notes = parsed.hits.filter((hit) => hit.rank === 0 && hit.error);
+    if (hits.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'mb-0';
+      empty.textContent = notes.length > 0
+        ? notes[0].error
+        : str('ragBuilderTestNoHits', 'The probe returned no chunks. If the collection has just been ingested, check the ledger first - an empty collection and an unmatched question look the same from here.');
+      testResults.appendChild(empty);
+    } else {
+      const table = document.createElement('table');
+      table.className = 'table table-sm table-striped align-middle';
+      const head = document.createElement('thead');
+      const headRow = document.createElement('tr');
+      for (const column of [
+        str('ragBuilderTestColRank', '#'),
+        str('ragBuilderTestColScore', 'Score'),
+        str('ragBuilderTestColSource', 'Source'),
+        str('ragBuilderTestColHeading', 'Heading'),
+        str('ragBuilderTestColPage', 'Page'),
+        str('ragBuilderTestColContent', 'Chunk'),
+      ]) {
+        const cell = document.createElement('th');
+        cell.textContent = column;
+        headRow.appendChild(cell);
+      }
+      head.appendChild(headRow);
+      const body = document.createElement('tbody');
+      for (const hit of hits) {
+        const row = document.createElement('tr');
+        // The chunk text is the point of this table, so it gets the room:
+        // everything else is one short cell, and the source shows its file
+        // name with the full path on hover.
+        const cells = [
+          String(hit.rank),
+          hit.score.toFixed(4),
+          hit.source.replace(/\\/g, '/').split('/').pop() ?? hit.source,
+          hit.heading,
+          hit.page,
+          hit.content,
+        ];
+        cells.forEach((value, index) => {
+          const cell = document.createElement('td');
+          cell.textContent = value;
+          if (index === 2) cell.title = hit.source;
+          if (index === 5) cell.className = 'small';
+          row.appendChild(cell);
+        });
+        body.appendChild(row);
+      }
+      table.appendChild(head);
+      table.appendChild(body);
+      testResults.appendChild(table);
+    }
+    const summary: string[] = [
+      str('ragBuilderTestSummary', '{count} chunk(s) in {time}.')
+        .replace('{count}', String(hits.length))
+        .replace('{time}', formatElapsed(elapsed)),
+    ];
+    // The cost of one probe is a fraction of a cent, and saying so is the
+    // point: it is what makes iterating on a corpus something a person does
+    // without asking permission first.
+    if (parsed.cost) summary.push(parsed.cost);
+    testStatus.textContent = summary.join(' ');
+  };
+
+  /**
+   * Ask the collection a question through a job that does not outlive the
+   * asking.
+   *
+   * The whole sequence - create an unfiled definition, submit it, read the
+   * hits out of the log, delete the definition - exists to satisfy one
+   * requirement: testing a corpus must leave NOTHING behind (owner, 2026-08-01).
+   * That is also why the hits travel in the log instead of a CAS table, which
+   * would itself be an artifact of a test that is supposed to have none.
+   */
+  async function runRetrievalTest(): Promise<void> {
+    const asked = macroSafeQuestion(testQuestionField.value);
+    if (!asked.value) {
+      testStatus.textContent = str('ragBuilderTestNeedsQuestion', 'Type a question first.');
+      testQuestionField.focus();
+      return;
+    }
+    const setup = collectSetup();
+    const problems = validateSetup(setup);
+    if (problems.length > 0) {
+      showSaveErrors(problems);
+      return;
+    }
+    // Job Execution routes on _contextName and rejects a job that carries
+    // none - "Job routing failure", with no log and nothing else to go on
+    // (verified live). Saying which setting is blank beats that by a mile.
+    if (!config.computeContext) {
+      testStatus.textContent = str('ragBuilderNeedsComputeContext', 'No ingestion compute context is configured, and SAS Job Execution refuses a job that does not name one. Set it in the Options pane of this report.');
+      return;
+    }
+    clearStatus();
+    testRunButton.disabled = true;
+    testResults.replaceChildren();
+    testStatus.textContent = asked.changed
+      ? str('ragBuilderTestQuestionAdjusted', 'Asking without the ; & % characters - they cannot survive the trip to the job as a parameter.')
+      : str('ragBuilderTestStarting', 'Starting…');
+    const startedAt = Date.now();
+    let definitionUri = '';
+    try {
+      const jobsFolder = await getFolderByPath(`${config.contentRoot}/jobs`);
+      const jobFile = jobsFolder
+        ? (await getFolderMembers(jobsFolder.id)).find(
+            (member) => member.name === 'Test-Retrieval.sas'
+          )
+        : undefined;
+      if (!jobFile?.uri) {
+        testStatus.textContent = str('ragBuilderTestSourceMissing', 'Test-Retrieval.sas was not found under the content root - run the deploy-rag-content script first.');
+        return;
+      }
+      const source = await (await getFileContent(String(jobFile.uri), 'text/plain')).text();
+      const topK = Math.min(25, Math.max(1, Math.round(Number(testTopKField.value) || 5)));
+      const args = retrievalArguments(setup, asked.value, topK);
+      const jobName = `RAG Test retrieval - ${selectedSetupName}`;
+      const created = await createTransientJobDefinition({
+        name: jobName,
+        type: 'Compute',
+        code: source,
+        parameters: [
+          ...Object.entries(args).map(([name, value]) => jobParameter(name, value)),
+          jobParameter('_contextName', String(config.computeContext || ''), 'Compute context'),
+        ],
+        description: 'Transient: created by the RAG Builder for one retrieval test and deleted when it ends. Nothing references it.',
+      });
+      definitionUri = `/jobDefinitions/definitions/${created.id}`;
+      const launchArgs: Record<string, string> = { ...args };
+      if (config.computeContext) launchArgs._contextName = String(config.computeContext);
+      const job = await launchJob(definitionUri, jobName, launchArgs);
+      const jobId = String(job.id ?? '');
+
+      const deadline = startedAt + 5 * 60 * 1000;
+      let parsed = parseRetrievalLog([]);
+      for (;;) {
+        const current = await getJob(jobId);
+        const state = String(current.state ?? 'running');
+        parsed = parseRetrievalLog((await getJobProgressMessages(current)).messages);
+        if (isTerminalJobState(state as never)) break;
+        if (Date.now() > deadline) {
+          // The definition still goes, in the finally. The run itself is
+          // read-only, so leaving it to finish unobserved costs nothing.
+          testStatus.textContent = str('ragBuilderTestTimeout', 'The probe is still running after five minutes, which is far longer than a retrieval takes - stopping the wait. Check the compute context and the vector store.');
+          return;
+        }
+        testStatus.textContent = `${str('ragBuilderTestRunning', 'Asking the collection…')} (${state}, ${formatElapsed(Date.now() - startedAt)})`;
+        await pause(3000);
+      }
+      if (parsed.failure) {
+        testResults.replaceChildren();
+        testStatus.textContent = str('ragBuilderTestProbeFailed', 'The probe failed: {reason}').replace(
+          '{reason}',
+          parsed.failure
+        );
+        return;
+      }
+      renderRetrievalHits(parsed, Date.now() - startedAt);
+    } catch (error) {
+      console.error('The retrieval test failed.', error);
+      testStatus.textContent = str('ragBuilderTestFailed', 'The retrieval test could not be run - check the browser console and your permissions on the compute context.');
+    } finally {
+      // Unconditional: a failed, timed-out or abandoned test has to clean up
+      // exactly as a successful one does, or "leaves nothing behind" holds
+      // only on the happy path. The finished job's own record and log survive
+      // this, so nothing already read is lost by deleting now.
+      if (definitionUri) {
+        try {
+          const status = await deleteJobDefinition(definitionUri);
+          if (status !== 204 && status !== 404) {
+            console.warn(`RAG Builder: the transient test job definition was not deleted (HTTP ${status}).`);
+          }
+        } catch (error) {
+          console.warn('RAG Builder: deleting the transient test job definition failed.', error);
+        }
+      }
+      testRunButton.disabled = false;
     }
   }
 
@@ -1931,9 +2638,24 @@ export async function buildRagBuilder(
 
   docSaveButton.addEventListener('click', () => void saveDocumentation());
   saveButton.addEventListener('click', () => void saveSetup());
-  generateJobButton.addEventListener('click', () => void generateIngestionJob());
+  manifestButton.addEventListener('click', () => void manifestSetup());
   launchButton.addEventListener('click', () => void launchIngestion());
   ledgerButton.addEventListener('click', () => void browseLedger());
+  // The toolbar button opens the panel and puts the cursor in the question;
+  // running it is the panel's own button, so the question is always visible
+  // beside the chunks it produced.
+  testButton.addEventListener('click', () => {
+    testCard.style.display = '';
+    testCard.scrollIntoView({ block: 'nearest' });
+    testQuestionField.focus();
+  });
+  testRunButton.addEventListener('click', () => void runRetrievalTest());
+  testQuestionField.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void runRetrievalTest();
+    }
+  });
 
   // ---- initial load ---------------------------------------------------------
   await refreshProjects();

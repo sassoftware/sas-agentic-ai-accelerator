@@ -59,8 +59,15 @@ export interface RagBuilderConfig {
   deletedPolicy: string;
   /** Drop retired chunk generations older than this many days; 0 = keep. */
   retainDays: string;
-  /** '1' records each run in rag_runs / rag_doc_events, '0' does not. */
-  recordHistory: string;
+  /**
+   * Whether each run is recorded in rag_runs / rag_doc_events.
+   *
+   * A checkbox option, so VA stores a real boolean; a URL override and any
+   * report configured while this was a Yes/No dropdown arrive as strings.
+   * Read it through `optionFlag`, never with `!== '0'` - that test reads an
+   * unticked box as ON.
+   */
+  recordHistory: string | boolean;
   /** Replicas of the embedding container, so the step can size its
    * parallelism to what the deployment actually runs. */
   embedReplicas: string;
@@ -68,7 +75,12 @@ export interface RagBuilderConfig {
   persistElements: string;
   /** '1' saves the <prefix>_CHUNKS table to disk, '0' keeps it in memory. */
   persistChunks: string;
-  [key: string]: string;
+  /**
+   * The `enable_<backend>` flags and anything else the options pane adds.
+   * Checkbox options store booleans, everything else strings - so an
+   * index-signature read must narrow before use (see `optionFlag`).
+   */
+  [key: string]: string | boolean;
 }
 
 /**
@@ -97,9 +109,24 @@ export interface RagSetup {
     outOfScopeUseCases: string;
     limitations: string;
   };
+  /**
+   * SAS Content folder receiving the generated executables.
+   *
+   * Optional: a setup saved before this existed falls back to the
+   * deployment's `<contentRoot>/generated`, which is where those artifacts
+   * actually are.
+   */
+  artifactsFolder?: string;
   source: {
     /** Filesystem path visible from the ingestion compute context. */
     path: string;
+    /**
+     * Ingest source-code files (.py, .sas, .r, .js, ...) as plain text.
+     *
+     * Optional so a setup saved before this existed still loads; absent
+     * reads as false, which is also the default for a new setup.
+     */
+    includeCode?: boolean;
   };
   extraction: {
     /** '' = choose by file format. */

@@ -264,17 +264,68 @@ function readLogLines(logText: string): LogLine[] {
   });
 }
 
+/** A log line that opens with a SAS prefix is a line of its own, never the
+ *  continuation of the one above it. */
+const LOG_PREFIX = /^\s*(NOTE|WARNING|ERROR|INFO|MPRINT|SYMBOLGEN)[:\s]/;
+/** `200  %put ...` / `200! "…"` — the log's echo of the program's own source,
+ *  numbered, including the continuation lines of a wrapped statement. */
+const LINE_NUMBER = /^\s*\d+!?\s/;
+/** PROC PYTHON echoes the interpreter prompt around the submitted block. */
+const PYTHON_PROMPT = /^>{3,}\s*$/;
+
 /**
- * Pull the SAS.logMessage() milestone lines out of a SAS log. Source-echo
- * lines (the `%put NOTE: Python-Subprocess - ...;` statements the log echoes
- * before each NOTE) are skipped so every milestone appears exactly once.
+ * Pull the SAS.logMessage() milestone lines out of a SAS log.
+ *
+ * Two things have to be undone to get the message back.
+ *
+ * Source-echo lines (the `%put NOTE: Python-Subprocess - ...;` statements the
+ * log echoes before each NOTE) are skipped, so every milestone appears once.
+ *
+ * And a SAS log WRAPS at the line size: a milestone longer than ~132
+ * characters arrives as a first line carrying the NOTE prefix followed by
+ * unprefixed continuation lines. Verified live - a 700-character retrieval
+ * row spans eight log lines, and reading only the first fragment yields
+ * unparseable JSON, which is exactly how it fails: silently, as "no rows".
+ * SAS breaks after a space and keeps it, so plain concatenation restores the
+ * text; a log that strips trailing blanks costs one space inside the message
+ * and nothing structural.
  */
 export function extractProgressMessages(logText: string): string[] {
   const messages: string[] = [];
+  let open: string | null = null;
+  /** The kind of line the open message started on - a wrapped note continues
+   *  as a note, so anything else (PROC PYTHON's `>>>` echo, which the compute
+   *  log types as `normal`) ends it. */
+  let openType: string | undefined;
+  const flush = (): void => {
+    if (open !== null && open.trim() !== '') messages.push(open.trim());
+    open = null;
+  };
   for (const { line, type } of readLogLines(logText)) {
-    if (type === 'source' || line.includes('%put')) continue;
+    // A source echo ends whatever message was being assembled: the echo of
+    // the NEXT statement is what follows a finished note.
+    if (
+      type === 'source' ||
+      line.includes('%put') ||
+      LINE_NUMBER.test(line) ||
+      PYTHON_PROMPT.test(line)
+    ) {
+      flush();
+      continue;
+    }
     const match = PROGRESS_PREFIX.exec(line);
-    if (match && match[1].trim() !== '') messages.push(match[1].trim());
+    if (match) {
+      flush();
+      open = match[1];
+      openType = type;
+      continue;
+    }
+    if (open !== null && type === openType && line.trim() !== '' && !LOG_PREFIX.test(line)) {
+      open += line;
+      continue;
+    }
+    flush();
   }
+  flush();
   return messages;
 }

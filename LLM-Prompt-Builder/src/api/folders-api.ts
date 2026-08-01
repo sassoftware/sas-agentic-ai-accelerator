@@ -58,3 +58,35 @@ export async function ensureChildFolder(
     { name }
   );
 }
+
+/**
+ * Ensure a whole `/a/b/c` path exists, creating the missing tail.
+ *
+ * `ensureChildFolder` needs its parent to exist already, which is fine for a
+ * fixed deployment folder but not for a destination the user types. Walking
+ * the path lets someone name a folder two levels below anything that exists
+ * without first going to SAS Content to create it by hand.
+ *
+ * The FIRST segment is never created: it is a top-level SAS Content area
+ * (/Public, /Users, an application root) whose creation is an administrative
+ * act, and silently creating a sibling of /Public because of a typo would be
+ * worse than the error.
+ */
+export async function ensureFolderPath(path: string): Promise<FolderInfo | null> {
+  const segments = String(path || '')
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (segments.length === 0) return null;
+  const rootPath = `/${segments[0]}`;
+  let current = await getFolderByPath(rootPath);
+  if (!current) return null;
+  let walked = rootPath;
+  for (const segment of segments.slice(1)) {
+    const next = await ensureChildFolder(walked, segment);
+    if (!next) return null;
+    current = next;
+    walked = `${walked}/${segment}`;
+  }
+  return current;
+}

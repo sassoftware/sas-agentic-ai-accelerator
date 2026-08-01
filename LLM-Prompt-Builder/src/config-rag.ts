@@ -62,14 +62,14 @@ const DEFAULTS: RagRuntimeConfig = {
     storeSslmode: 'prefer',
     deletedPolicy: 'retire',
     retainDays: '0',
-    recordHistory: '1',
+    recordHistory: true,
     embedReplicas: '1',
     persistElements: '1',
     persistChunks: '1',
     // one enable flag per backend, generated from the single list so adding a
     // backend does not mean remembering to add a default here
     ...Object.fromEntries(
-      RAG_BACKENDS.map((backend) => [backendOptionKey(backend), '1'])
+      RAG_BACKENDS.map((backend) => [backendOptionKey(backend), true])
     ),
   },
 };

@@ -11,7 +11,8 @@
  */
 
 import type { RagRuntimeConfig } from '../config-rag';
-import { RAG_BACKENDS, backendOptionKey } from '../objects/rag-backends';
+import { RAG_BACKENDS, backendEnabled, backendOptionKey } from '../objects/rag-backends';
+import { optionFlag } from '../objects/rag-options';
 
 interface OptionField {
   name: string;
@@ -176,16 +177,15 @@ function buildOptionsConfig(config: RagRuntimeConfig): Record<string, unknown> {
         'Retired chunk generations older than this are dropped after each load. 0 keeps them forever. Live rows are never touched, so retrieval cannot change - only how far back an as-of read can reach. Matters more on SingleStore, where a vector index cannot be limited to live rows.'
       ),
       {
+        // A checkbox: one on/off decision, unlike the persist options below,
+        // whose two labels ("Save to disk" / "Keep in memory only") say more
+        // than a tick would.
         name: 'recordHistory',
         label: 'Record run history',
-        type: 'String',
-        value: rb.recordHistory ?? '1',
+        type: 'Boolean',
+        value: optionFlag(rb.recordHistory, true),
         tooltip:
           'Writes rag_runs, rag_doc_events and rag_configs beside the collection and publishes the first two to CAS for reporting. Without it there is no record of what a run did.',
-        dataProvider: [
-          { key: '1', text: 'Record each run' },
-          { key: '0', text: 'Do not record' },
-        ],
       } as OptionField,
       textField(
         'embedReplicas',
@@ -219,19 +219,21 @@ function buildOptionsConfig(config: RagRuntimeConfig): Record<string, unknown> {
       } as OptionField,
       // one enable/disable field per backend, generated from RAG_BACKENDS -
       // a comma-separated list meant typing store names by hand, and a typo
-      // silently offered nothing
+      // silently offered nothing.
+      //
+      // A CHECKBOX rather than a Yes/No dropdown: this is one on/off decision
+      // per store, which is what a checkbox is for, and it reads at a glance
+      // as a list of what the deployment offers. `backendEnabled` still
+      // accepts the '1'/'0' strings the dropdown wrote, so reports configured
+      // before this change keep their setting.
       ...RAG_BACKENDS.map(
         (backend) =>
           ({
             name: backendOptionKey(backend),
             label: `Offer ${backend.label}`,
-            type: 'String',
-            value: rb[backendOptionKey(backend)] ?? '1',
+            type: 'Boolean',
+            value: backendEnabled(rb, backend),
             tooltip: `Whether end users may choose ${backend.label} for a RAG setup. Independent of credentials: this is what the deployment offers, and a user who holds no ${backend.entries[0]} / ${backend.entries[1]} entry sees it disabled with the missing entry named.`,
-            dataProvider: [
-              { key: '1', text: 'Yes' },
-              { key: '0', text: 'No' },
-            ],
           }) as OptionField
       ),
     ],
