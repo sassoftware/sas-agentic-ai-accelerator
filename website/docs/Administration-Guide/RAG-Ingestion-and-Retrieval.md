@@ -21,7 +21,7 @@ Everything lives in one governed SAS Content folder, by default
 | `steps/` | The eight custom steps, registered as dataFlows resources |
 | `jobs/` | `Ingest-Documents.sas`, the standalone schedulable job |
 | `models/` | The retrieval model template, manifested per setup |
-| `generated/` | Per-setup artifacts written by **RAG - Register Setup** |
+| `generated/` | Default destination for per-setup artifacts — the ingestion job and the Studio flow the Builder generates, and what **RAG - Register Setup** writes. The Builder lets an author choose a different folder per setup |
 
 Deploy with the shipped script, which reads your local checkout and
 authenticates through the `sas-viya` CLI session:
@@ -75,17 +75,25 @@ The Prompt Builder is served the same way, from
 :::
 
 The Content Security Policy directives in
-[Setup Additional UIs](./Setup-Additional-UIs.md) apply here too — the
+[Deploying the Builder UIs](./Setup-Additional-UIs.md) apply here too — the
 build base64-encodes its inline scripts so the Go template engine cannot
 corrupt them, and the CSP has to allow the decoded bundle to run.
 
 Configure the Builder from its **Options** pane in Visual Analytics: the
 Model Manager repository, the **embedding model project**, SCR endpoint,
 credential domain, content root, CAS server, the ingestion compute context, a
-Yes/No per vector database the deployment offers, and the operational policy
+checkbox per vector database the deployment offers, and the operational policy
 (TLS, deleted-document handling, history retention, run-history recording,
 embedding replicas, table persistence). Those policy values are recorded onto
 each setup as it is created, so a setup keeps what it was built with.
+
+:::warning These options live inside the report
+Importing a newer Builder report from a transfer package replaces every value
+above with whatever the package was built against — silently, since the report
+still opens and the app still runs. Save them with `mdb options-save` before
+importing and restore them after: see
+[Preserving builder options across a report import](./Setup-Additional-UIs.md#preserving-builder-options-across-a-report-import).
+:::
 
 Served standalone rather than embedded, the same settings are query
 parameters:
@@ -115,6 +123,35 @@ never sees, with nothing in the run reporting a problem. The Builder asks for
 the model first for that reason: the ceiling has to be known before anyone
 picks a chunk size under it.
 :::
+
+### What the Builder's buttons create — and what they clean up
+
+| Button | What it leaves in your environment |
+| --- | --- |
+| **Save setup** | The RAG Setup model in SAS Model Manager |
+| **Manifest setup** | Saves, then the ingestion job definition and the Studio flow in the *Generated artifacts* folder, `retrieve_context.py` as the setup's score code, and a new minor model version |
+| **Launch ingestion** | A job run, the collection, and the pipeline tables in the chosen caslib |
+| **Browse ledger** | Nothing — reads the promoted ledger table |
+| **Test retrieval** | **Nothing.** See below |
+
+*Test retrieval* asks the live collection a question and shows the chunks that
+come back, with what the probe cost. It is deliberately built to leave no
+trace: the job definition it runs is created **without a parent folder**, so it
+never appears anywhere in SAS Content, and it is deleted when the run ends —
+including when the run fails or is abandoned. The hits travel back in the job
+**log** rather than in a CAS table, because an output table would itself be an
+artifact of a test meant to have none. The finished job's own record and log
+remain in SAS Job Execution, as for any job run.
+
+It exercises the **collection**, not the registered score code: it queries
+through `rag_core` exactly as the ingestion does, so a broken
+`retrieve_context.py` would still pass. Verifying that needs the published
+model.
+
+Both *Launch ingestion* and *Test retrieval* need the **ingestion compute
+context** option to be set — SAS Job Execution rejects a job that does not name
+one, and the rejection carries no log. The Builder checks first and names the
+missing setting.
 
 ## Two prerequisites that are not optional
 
@@ -194,6 +231,12 @@ The compute context's Python needs:
 only the extractor that needs it — the registry reports it rather than failing
 the run.
 
+**Source-code files are skipped by default.** `.py`, `.sas`, `.r`, `.js`,
+`.ts`, `.sql` and around thirty more are not ingested unless a setup ticks
+*Ingest source-code files as plain text*, because a documents folder that sits
+inside a project would otherwise fill the collection with build scripts. They
+are listed as skipped with the reason, never dropped silently.
+
 ## Choosing a vector store
 
 Both backends carry the same feature set: chunk history, as-of reads,
@@ -264,6 +307,24 @@ disposable and rebuildable.
 History never fails a load. If the store refuses the write, the ingestion still
 stands and the log says so.
 
+### Skipped is not failed
+
+A document the pipeline decided not to ingest — no extractor for its format, a
+source file with code ingestion off, a scanned PDF with no text layer — is
+recorded as `skipped` with the reason. `failed` is reserved for something a
+person can fix. Collapsing the two made every run look broken and hid the rows
+that were. Both are counted separately in `rag_runs` (`docs_skipped`,
+`docs_failed`), and every skipped document is **named in the run log**, grouped
+by reason.
+
+`docs_skipped` is added to an existing `rag_runs` table by an additive
+migration on the next run, so an upgraded deployment needs no manual DDL.
+
+The run log also states **what the embedding cost** while the run is still on
+screen, and spells out where the chunk token budget came from — it is the
+setup's chunk window minus the estimator's safety margin, not a limit the
+model imposed.
+
 ## Security posture
 
 **Secrets.** Store credentials live only in the credential domain, resolved
@@ -305,3 +366,6 @@ PostgreSQL, on/off for SingleStore) and defaults to enabled.
 | The run refuses to start | Another run holds the ledger lock; it expires after 30 minutes |
 | The Builder says the store is unresolved | The domain has no `<BACKEND>_HOST` / `_DB` — rerun `create-credential-domain` after adding them to your `.env` |
 | The embedding model has to be typed | No **embedding model project** is configured, or the user cannot read it |
+| Documents are missing from the collection | Read the run log's `rag skipped:` lines — they name every document and why. Code files are skipped unless the setup opts in |
+| The Builder points at the wrong environment after an upgrade | A report import replaced its Options — restore them with `mdb options-restore` |
+| Browsing the ledger shows nothing after a run | The ledger is written by the run's final step; a large corpus takes minutes. The run panel's clock shows whether it is still going |

@@ -56,7 +56,7 @@ sas-viya plugins install -repo SAS authorization
 sas-viya plugins install -repo SAS identities
 # Then the models plugin
 sas-viya plugins install -repo SAS models
-# Finally the transfer plugin - used to import content packages such as the optional Prompt Builder (see "Deploying the LLM Prompt Builder")
+# Finally the transfer plugin - used to import content packages such as the optional Prompt Builder (see "Deploying the Builder UIs")
 sas-viya plugins install -repo SAS transfer
 ```
 4. Now the CLI is ready and setup for you to continue on.

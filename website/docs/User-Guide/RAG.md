@@ -126,8 +126,9 @@ at its source, the next run adds it back — erasure has to happen there too.
 Every run is recorded. Two CAS tables appear next to your pipeline tables:
 
 - `<project>_RUNS` — one row per run: what it **found** (new, changed,
-  unchanged, deleted) and what it **achieved** (ingested, failed), plus chunk
-  counts and what the embedding actually cost in calls, tokens and seconds.
+  unchanged, deleted) and what it **achieved** (ingested, skipped, failed),
+  plus chunk counts and what the embedding actually cost in calls, tokens and
+  seconds.
 - `<project>_DOC_EVENTS` — the change log: one row per document per run *where
   something happened*, with the content hash and chunk count before and after.
 
@@ -145,6 +146,17 @@ minutes.
 recorded against that document's ledger row; everything else proceeds. Failed
 documents re-enter the pipeline on the next run until they succeed or
 disappear.
+
+**Skipped is not failed.** A document the pipeline decided not to ingest —
+an image with no extractor, a source-code file while code ingestion is off, a
+scanned PDF with no text layer — is marked `skipped` with the reason, not
+`failed`. Nothing is wrong with it and there is nothing to fix, so calling it
+a failure would train you to ignore the word and hide the rows that really did
+break. Skipped documents are always **listed by name in the run log**, grouped
+by reason, because a document silently missing from a collection is the
+failure that costs the most to find. They re-enter the pipeline on the next
+run too, so installing an extractor or turning code files on is enough to pick
+them up.
 
 **A step that fails does not abort the session.** The rest of the flow skips
 and forwards, which is what makes the same flow safe to schedule as a job.
