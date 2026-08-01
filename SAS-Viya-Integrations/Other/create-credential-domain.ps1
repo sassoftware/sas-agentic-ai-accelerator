@@ -83,6 +83,14 @@ if (-not $EnvFile) {
 
 # ---- sas-viya CLI session (token + endpoint) -------------------------------
 $sasDir = Join-Path $HOME '.sas'
+# Windows PowerShell 5.1 still negotiates TLS 1.0/1.1 by default, which a
+# current SAS Viya ingress refuses - and reports as a closed connection rather
+# than as a TLS failure.
+try {
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch {}
+
 $credentials = Get-Content (Join-Path $sasDir 'credentials.json') -Raw | ConvertFrom-Json
 $config = Get-Content (Join-Path $sasDir 'config.json') -Raw | ConvertFrom-Json
 $token = $credentials.$CliProfile.'access-token'
@@ -92,7 +100,22 @@ if (-not $token -or -not $endpoint) {
 }
 
 if ($Insecure) {
-    try { [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true } } catch {}
+    # NOT ServerCertificateValidationCallback: on Windows PowerShell 5.1 the
+    # scriptblock is invoked off the PowerShell thread and every request then
+    # fails with "the underlying connection was closed" - so -Insecure broke
+    # the very calls it was meant to enable (verified live in the RAG deploy
+    # script, same pattern). A certificate policy works on this runtime.
+    if (-not ('SasInsecureCertificatePolicy' -as [type])) {
+        Add-Type @'
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
+public class SasInsecureCertificatePolicy : ICertificatePolicy {
+    public bool CheckValidationResult(ServicePoint point, X509Certificate certificate,
+                                      WebRequest request, int problem) { return true; }
+}
+'@
+    }
+    [System.Net.ServicePointManager]::CertificatePolicy = New-Object SasInsecureCertificatePolicy
 }
 
 # ---- collect the entries (values never printed) ----------------------------

@@ -31,6 +31,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Windows PowerShell 5.1 still negotiates TLS 1.0/1.1 by default, which a
+# current SAS Viya ingress refuses - and the failure surfaces as "the
+# underlying connection was closed", which reads like a network or token
+# problem and sends the reader to the wrong place entirely. Seen live.
+try {
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch {}
+
 # ---- sas-viya CLI session (token + endpoint) -------------------------------
 $sasDir = Join-Path $HOME '.sas'
 $credentials = Get-Content (Join-Path $sasDir 'credentials.json') -Raw | ConvertFrom-Json
@@ -41,7 +50,23 @@ if (-not $token -or -not $endpoint) {
     throw "No sas-viya CLI session for profile '$CliProfile' - run: sas-viya auth login"
 }
 if ($Insecure) {
-    try { [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true } } catch {}
+    # NOT ServerCertificateValidationCallback: on Windows PowerShell 5.1 the
+    # scriptblock is invoked off the PowerShell thread and every request then
+    # dies with "the underlying connection was closed" - so -Insecure broke
+    # the deploy it was meant to rescue, and did it in language that reads
+    # like a network outage (verified live). A certificate policy is the
+    # mechanism that works on this runtime.
+    if (-not ('SasInsecureCertificatePolicy' -as [type])) {
+        Add-Type @'
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
+public class SasInsecureCertificatePolicy : ICertificatePolicy {
+    public bool CheckValidationResult(ServicePoint point, X509Certificate certificate,
+                                      WebRequest request, int problem) { return true; }
+}
+'@
+    }
+    [System.Net.ServicePointManager]::CertificatePolicy = New-Object SasInsecureCertificatePolicy
 }
 $headers = @{ Authorization = "Bearer $token" }
 
