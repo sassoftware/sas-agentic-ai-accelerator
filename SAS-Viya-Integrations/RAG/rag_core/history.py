@@ -42,11 +42,27 @@ RUN_COLUMNS = [
     "error_text",
 ]
 
+
+# Which of the above are MEASURES rather than labels.
+#
+# The CAS publish stages every column as varchar unless it is named here, and
+# a count published as text is a category in Visual Analytics: it cannot be
+# summed, averaged or multiplied by a price. That is the difference between a
+# reportable run history and a table someone has to cast by hand.
+RUN_NUMERIC = [
+    "embed_dims", "input_token_limit", "overlap_tokens",
+    "docs_new", "docs_changed", "docs_unchanged", "docs_deleted",
+    "docs_failed", "docs_ingested", "chunks_written", "chunks_retired",
+    "collection_chunks", "embed_calls", "embed_tokens", "embed_seconds",
+]
+
 EVENT_COLUMNS = [
     "run_id", "doc_id", "source_uri", "source_kind", "status",
     "previous_content_hash", "new_content_hash", "chunk_count_before",
     "chunk_count_after", "error_text",
 ]
+
+EVENT_NUMERIC = ["chunk_count_before", "chunk_count_after"]
 
 # what a run's document counts are keyed on
 _STATUS_COUNTS = ("new", "changed", "unchanged", "deleted", "failed", "ingested")

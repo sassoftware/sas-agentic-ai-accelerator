@@ -82,13 +82,15 @@ export interface RagSetup {
    * User-authored documentation (also rendered to documentation.md and
    * written onto the model as SAS Model Manager attributes).
    *
-   * `description` is the model's own description. The other five are the mdb
-   * model-card keys the Prompt Builder already captures per prompt - a RAG
-   * setup is the same kind of governed artifact and answers the same
+   * The mdb model-card keys the Prompt Builder already captures per prompt -
+   * a RAG setup is the same kind of governed artifact and answers the same
    * questions, so it answers them under the same names.
+   *
+   * The model's own DESCRIPTION is not here: it is authored in the create
+   * dialog and owned by the Model Manager model, so the Builder neither
+   * duplicates the field nor overwrites it on every save.
    */
   documentation: {
-    description: string;
     modelPurpose: string;
     intendedUse: string;
     expectedBenefit: string;

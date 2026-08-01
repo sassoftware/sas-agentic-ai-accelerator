@@ -97,6 +97,15 @@ const CHUNKERS = ['recursive', 'paragraph'];
  */
 const CHUNKERS_WITH_OVERLAP = new Set(['recursive']);
 /**
+ * Above this share of the token window, the overlap is flagged as expensive.
+ *
+ * 10-20% of the chunk size is the commonly published starting band for RAG
+ * chunking. Past it every boundary duplicates text that is embedded twice,
+ * stored twice and retrieved twice, so the warning names the cost rather
+ * than forbidding the choice - some corpora genuinely need it.
+ */
+const OVERLAP_WARN_SHARE = 0.2;
+/**
  * A caslib nobody but its owner can read.
  *
  * CAS presents the caller's personal library as CASUSER, and as
@@ -165,7 +174,7 @@ function defaultSetup(config: RagBuilderConfig): RagSetup {
   return {
     version: 1,
     documentation: {
-      description: '', modelPurpose: '', intendedUse: '', expectedBenefit: '',
+      modelPurpose: '', intendedUse: '', expectedBenefit: '',
       outOfScopeUseCases: '', limitations: '',
     },
     source: { path: '' },
@@ -275,10 +284,6 @@ const MODEL_CARD_HEADINGS: Record<(typeof MODEL_CARD_FIELDS)[number], string> = 
 function renderDocumentationMarkdown(setup: RagSetup, setupName: string): string {
   return [
     `# ${setupName}`,
-    '',
-    '## Description',
-    '',
-    setup.documentation.description || '_Not documented yet._',
     '',
     ...MODEL_CARD_FIELDS.flatMap((field) => [
       `## ${MODEL_CARD_HEADINGS[field]}`,
@@ -594,11 +599,6 @@ export async function buildRagBuilder(
       'Written by the setup author, shown to every consumer: what this corpus is, what it should be used for, and where its limits are. Saved onto the Model Manager model so governance reviews read your own caveats.'
     )
   );
-  const documentationRow = document.createElement('div');
-  documentationRow.className = 'row g-3';
-  const descriptionField = textArea(2, str('ragBuilderDocDescriptionPlaceholder', 'What does this RAG setup contain?'));
-  labeled(documentationRow, idOf('doc-description'), str('ragBuilderDocDescriptionLabel', 'Description:'), descriptionField, 'col-12');
-  documentationBody.appendChild(documentationRow);
   // The five mdb model-card fields, in the Prompt Builder's collapsible block
   // with the same info tooltips. Optional and collapsed on purpose: the
   // description is what a consumer needs to recognise the corpus, and the
@@ -676,9 +676,25 @@ export async function buildRagBuilder(
   );
   const documentsRow = document.createElement('div');
   documentsRow.className = 'row g-3';
+  // rag_core.sources takes the scheme a SAS Studio path selector emits -
+  // sasserver: for the compute file system, sascontent: for SAS Content - so
+  // both have always been readable. Only the Builder never offered the
+  // choice, which made SAS Content look unsupported.
+  const sourceKindField = selectInput(['sasserver', 'sascontent'], 'sasserver', {
+    sasserver: str('ragBuilderSourceKindServer', 'Compute server file system'),
+    sascontent: str('ragBuilderSourceKindContent', 'SAS Content'),
+  });
+  labeled(documentsRow, idOf('source-kind'), str('ragBuilderSourceKindLabel', 'Document location:'), sourceKindField, 'col-md-4',
+    str('ragBuilderSourceKindInfo', 'Where the corpus lives. The compute server file system is a path on the SAS Compute server (not your workstation) and suits large corpora already staged on disk. SAS Content is the governed folder tree you see in SAS Drive, read over the Files API - convenient, permission-aware, and slower per document.'), true);
   const sourcePathField = textInput('', '/data/documents');
-  labeled(documentsRow, idOf('source-path'), str('ragBuilderSourcePathLabel', 'Document folder (compute-context path):'), sourcePathField, 'col-md-8',
-    str('ragBuilderSourcePathInfo', 'A path on the SAS Compute server, not on your workstation. The ingestion walks it recursively and treats every readable file as a candidate document. If the compute context cannot see this path, the run finds nothing rather than failing loudly.'), true);
+  labeled(documentsRow, idOf('source-path'), str('ragBuilderSourcePathLabel', 'Document folder:'), sourcePathField, 'col-md-8',
+    str('ragBuilderSourcePathInfo', 'The folder to crawl, walked recursively, with every readable file treated as a candidate document. A path the ingestion cannot see yields a run that finds nothing rather than one that fails loudly, so check it against the location type on the left.'), true);
+  const sourcePlaceholder = (): void => {
+    sourcePathField.placeholder =
+      sourceKindField.value === 'sascontent' ? '/Public/Policies' : '/data/documents';
+  };
+  sourceKindField.addEventListener('change', sourcePlaceholder);
+  sourcePlaceholder();
   const extractorField = selectInput(EXTRACTORS, '', { '': str('ragBuilderExtractorAuto', 'Automatic (by file format)') });
   labeled(documentsRow, idOf('extractor'), str('ragBuilderExtractorLabel', 'Extractor:'), extractorField, 'col-md-4',
     str('ragBuilderExtractorInfo', 'How text is pulled out of each file. Automatic picks per file format and is almost always right; forcing one applies it to EVERY file, so a PDF read as plain text yields nonsense rather than an error. Some formats need optional Python packages — see the administration guide.'));
@@ -826,6 +842,62 @@ export async function buildRagBuilder(
   };
   chunkerField.addEventListener('change', () => followChunker(true));
   followChunker();
+
+  // Overlap feedback lands when focus leaves the field, not at save time.
+  // A number that cannot work should be said while the user is still looking
+  // at it. Two levels: impossible (blocks the save) and expensive (does not).
+  //
+  // The 10-20% band is the widely published starting range for RAG chunking;
+  // above it the duplicated text is embedded and stored twice for every
+  // chunk boundary, which is paid for in embedding cost, table size and
+  // near-duplicate hits at retrieval.
+  const overlapNote = document.createElement('div');
+  overlapNote.className = 'form-text';
+  overlapColumn.appendChild(overlapNote);
+  const judgeOverlap = (): void => {
+    if (!CHUNKERS_WITH_OVERLAP.has(chunkerField.value)) {
+      overlapNote.textContent = '';
+      overlapNote.className = 'form-text';
+      return;
+    }
+    const window = Number(tokenLimitField.value) || 0;
+    const overlap = Number(overlapField.value);
+    if (!Number.isFinite(overlap) || overlap < 0) {
+      overlapNote.className = 'form-text text-danger';
+      overlapNote.textContent = str('ragBuilderOverlapNegativeNote', 'The overlap cannot be negative.');
+      return;
+    }
+    if (window > 0 && overlap >= window) {
+      overlapNote.className = 'form-text text-danger';
+      overlapNote.textContent = str(
+        'ragBuilderOverlapTooLargeNote',
+        'The overlap must stay below the {window}-token window - at or above it, chunking never moves forward through a document.'
+      ).replace('{window}', String(window));
+      return;
+    }
+    const share = window > 0 ? overlap / window : 0;
+    if (share > OVERLAP_WARN_SHARE) {
+      overlapNote.className = 'form-text text-warning';
+      overlapNote.textContent = str(
+        'ragBuilderOverlapHighNote',
+        '{percent}% of the window. Usual practice is 10-20%; above that the repeated text is embedded and stored twice at every boundary, and retrieval returns more near-duplicates.'
+      ).replace('{percent}', String(Math.round(share * 100)));
+      return;
+    }
+    overlapNote.className = 'form-text';
+    overlapNote.textContent =
+      window > 0 && overlap > 0
+        ? str('ragBuilderOverlapShareNote', '{percent}% of the window.').replace(
+            '{percent}',
+            String(Math.round(share * 100))
+          )
+        : '';
+  };
+  overlapField.addEventListener('blur', judgeOverlap);
+  overlapField.addEventListener('change', judgeOverlap);
+  tokenLimitField.addEventListener('blur', judgeOverlap);
+  tokenLimitField.addEventListener('change', judgeOverlap);
+  judgeOverlap();
   // The embedding card is built first, so the model's ceiling is wired here,
   // where the window field it caps exists. Changing the model re-applies it.
   embedModelField.addEventListener('change', () => capTokenWindow(true));
@@ -935,35 +1007,28 @@ export async function buildRagBuilder(
       database: storeSetting(backend, 'DB'),
     };
   };
+  // The resolved connection is deliberately NOT shown. Hostnames and ports
+  // are infrastructure detail a corpus author neither needs nor should be
+  // handed - the credential domain supplies them server-side. Only the
+  // absence of one is worth saying, because that is a blocker the user has
+  // to take to an administrator.
   const storeLocation = document.createElement('div');
-  storeLocation.className = 'col-md-9 d-flex align-items-end';
+  storeLocation.className = 'col-12';
   const storeLocationText = document.createElement('p');
-  storeLocationText.className = 'form-text mb-2';
+  storeLocationText.className = 'form-text text-danger mb-0';
   storeLocation.appendChild(storeLocationText);
   storeRow.appendChild(storeLocation);
   const showStoreLocation = (): void => {
-    if (!backendField.value) {
-      storeLocationText.className = 'form-text mb-2';
-      storeLocationText.textContent = str(
-        'ragBuilderStoreChooseFirst',
-        'Choose a vector database to see where this setup would ingest.'
-      );
-      return;
-    }
-    const { host, port, database } = resolvedStore();
-    storeLocationText.className = host && database ? 'form-text mb-2' : 'form-text text-danger mb-2';
+    const { host, database } = backendField.value
+      ? resolvedStore()
+      : { host: 'x', database: 'x' };
     storeLocationText.textContent =
       host && database
-        ? str('ragBuilderStoreResolved', 'Ingests into {host}:{port}/{database}, from the {domain} credential domain.')
-            .replace('{host}', host)
-            .replace('{port}', String(port))
-            .replace('{database}', database)
+        ? ''
         : str(
             'ragBuilderStoreUnresolved',
-            'No host or database for this store in the {domain} credential domain. Ask your administrator to add {prefix}_HOST and {prefix}_DB.'
-          )
-            .replace(/\{domain\}/g, credentialDomain)
-            .replace(/\{prefix\}/g, backendField.value.toUpperCase());
+            'This vector database is not configured in the {domain} credential domain, so a setup saved here cannot ingest. Ask your administrator to add its connection entries.'
+          ).replace('{domain}', credentialDomain);
   };
   backendField.addEventListener('change', showStoreLocation);
   showStoreLocation();
@@ -1032,6 +1097,55 @@ export async function buildRagBuilder(
   testButton.title = str('ragBuilderComingSoon', 'Arrives with Register Setup (P2)');
   editor.appendChild(actions);
 
+  // Save feedback belongs beside the button that caused it. An alert at the
+  // top of a long editor is off-screen by the time anyone reaches Save, so
+  // the message arrives where the user is not looking.
+  const saveResult = document.createElement('div');
+  saveResult.className = 'mb-3';
+  editor.appendChild(saveResult);
+  const clearSaveResult = (): void => saveResult.replaceChildren();
+  const showSaveErrors = (problems: string[]): void => {
+    const alert = document.createElement('div');
+    alert.className = 'alert alert-danger py-2 px-3 mb-0';
+    alert.setAttribute('role', 'alert');
+    const heading = document.createElement('div');
+    heading.className = 'fw-semibold mb-1';
+    heading.textContent = problems.length === 1
+      ? str('ragBuilderSaveBlocked1', 'This setup cannot be saved yet:')
+      : str('ragBuilderSaveBlocked', 'This setup cannot be saved yet - {count} things need attention:')
+          .replace('{count}', String(problems.length));
+    alert.appendChild(heading);
+    const list = document.createElement('ul');
+    list.className = 'mb-0 ps-3';
+    for (const problem of problems) {
+      const item = document.createElement('li');
+      item.textContent = problem;
+      list.appendChild(item);
+    }
+    alert.appendChild(list);
+    saveResult.replaceChildren(alert);
+    saveResult.scrollIntoView({ block: 'nearest' });
+  };
+  const showSaveSuccess = (message: string): void => {
+    const alert = document.createElement('div');
+    alert.className = 'alert alert-success py-2 px-3 mb-0';
+    alert.setAttribute('role', 'status');
+    alert.append(`${message} `);
+    // The saved artifact is a Model Manager model, and its versions, history
+    // and permissions live there - so say where it went, as the Prompt
+    // Builder does after saving a prompt.
+    if (selectedSetupID) {
+      const link = document.createElement('a');
+      link.href = `${viyaHost()}/SASModelManager/models/${selectedSetupID}/files`;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = str('ragBuilderOpenInMM', 'Open in SAS Model Manager');
+      alert.appendChild(link);
+    }
+    saveResult.replaceChildren(alert);
+    saveResult.scrollIntoView({ block: 'nearest' });
+  };
+
   // ---- ingestion run panel --------------------------------------------------
   const [runCard, runBody] = card(str('ragBuilderRunHeading', 'Ingestion run'));
   runCard.style.display = 'none';
@@ -1054,9 +1168,16 @@ export async function buildRagBuilder(
   // ---- data plumbing --------------------------------------------------------
 
   const applySetup = (setup: RagSetup): void => {
-    descriptionField.value = setup.documentation.description;
     ragDoc.setValues(setup.documentation);
-    sourcePathField.value = setup.source.path;
+    const storedPath = String(setup.source.path || '');
+    const scheme = storedPath.toLowerCase().startsWith('sascontent:')
+      ? 'sascontent'
+      : 'sasserver';
+    sourceKindField.value = scheme;
+    // a setup saved before the location type existed carries a bare path,
+    // which the runtime has always read as a compute-server path
+    sourcePathField.value = storedPath.replace(/^sas(server|content):/i, '');
+    sourcePlaceholder();
     extractorField.value = setup.extraction.extractor;
     chunkerField.value = setup.chunking.chunker;
     tokenLimitField.value = String(setup.chunking.inputTokenLimit);
@@ -1103,10 +1224,7 @@ export async function buildRagBuilder(
   };
 
   /** The documentation block as the form currently has it. */
-  const collectDocumentation = (): RagSetup['documentation'] => ({
-    description: descriptionField.value.trim(),
-    ...ragDoc.values(),
-  });
+  const collectDocumentation = (): RagSetup['documentation'] => ({ ...ragDoc.values() });
 
   /**
    * Save the documentation ALONE.
@@ -1145,7 +1263,6 @@ export async function buildRagBuilder(
         'text/markdown'
       );
       await updateModelAttributes(selectedSetupID, {
-        description: documentation.description.slice(0, 1000),
         ...Object.fromEntries(MODEL_CARD_FIELDS.map((field) => [field, documentation[field]])),
       });
       showStatus('success', str('ragBuilderDocSaved', 'Documentation saved to the Model Manager model.'));
@@ -1175,7 +1292,7 @@ export async function buildRagBuilder(
     // corpus onto a policy that changed after it was built
     policies: currentPolicies ?? policiesFrom(config),
     documentation: collectDocumentation(),
-    source: { path: sourcePathField.value.trim() },
+    source: { path: `${sourceKindField.value}:${sourcePathField.value.trim()}` },
     extraction: { extractor: extractorField.value },
     chunking: {
       chunker: chunkerField.value,
@@ -1210,54 +1327,76 @@ export async function buildRagBuilder(
     ...(currentJobUri ? { job: { definitionUri: currentJobUri } } : {}),
   });
 
-  const validateSetup = (setup: RagSetup): string | null => {
-    if (!setup.source.path) return str('ragBuilderValidateSource', 'The document folder path is required.');
+  /**
+   * Every problem with the setup, not just the first.
+   *
+   * Fixing one field, saving, and being told about the next is a queue the
+   * user walks one round trip at a time. The whole list is cheaper to read
+   * and cheaper to act on.
+   */
+  const validateSetup = (setup: RagSetup): string[] => {
+    const errors: string[] = [];
+    if (!sourcePathField.value.trim())
+      errors.push(str('ragBuilderValidateSource', 'The document folder path is required.'));
     if (!setup.embedding.model)
-      return str(
-        'ragBuilderValidateEmbedModel',
-        'Choose an embedding model. It decides the vector width and cannot be changed later without re-embedding the whole corpus.'
+      errors.push(
+        str(
+          'ragBuilderValidateEmbedModel',
+          'Choose an embedding model. It decides the vector width and cannot be changed later without re-embedding the whole corpus.'
+        )
       );
     if (!(setup.embedding.dims > 0))
-      return str('ragBuilderValidateEmbedDims', 'The embedding dimensions must be a positive number.');
-    if (!setup.store.backend)
-      return str('ragBuilderValidateBackend', 'Choose a vector database.');
+      errors.push(str('ragBuilderValidateEmbedDims', 'The embedding dimensions must be a positive number.'));
+    if (!setup.store.backend) errors.push(str('ragBuilderValidateBackend', 'Choose a vector database.'));
     if (!setup.tables.caslib)
-      return str('ragBuilderValidateCaslib', 'Choose a caslib for the pipeline tables.');
+      errors.push(str('ragBuilderValidateCaslib', 'Choose a caslib for the pipeline tables.'));
     // A window below the floor, or an overlap that meets it, never advances
     // through a document - the chunker would emit the same opening forever.
     if (!(setup.chunking.inputTokenLimit >= 16))
-      return str('ragBuilderValidateTokenLimit', 'The embedding token window must be at least 16 tokens.');
+      errors.push(str('ragBuilderValidateTokenLimit', 'The embedding token window must be at least 16 tokens.'));
     const ceiling = embeddingTokenLimit(setup.embedding.model);
     if (ceiling > 0 && setup.chunking.inputTokenLimit > ceiling)
-      return str(
-        'ragBuilderValidateTokenCeiling',
-        'The embedding token window exceeds what {model} accepts ({max} tokens). Text beyond a model window is dropped silently, so the excess would never reach the vector.'
-      )
-        .replace('{model}', setup.embedding.model)
-        .replace('{max}', String(ceiling));
-    if (CHUNKERS_WITH_OVERLAP.has(setup.chunking.chunker) && setup.chunking.overlapTokens < 0)
-      return str('ragBuilderValidateOverlapNegative', 'The chunk overlap cannot be negative.');
-    if (
-      CHUNKERS_WITH_OVERLAP.has(setup.chunking.chunker) &&
-      setup.chunking.overlapTokens >= setup.chunking.inputTokenLimit
-    )
-      return str(
-        'ragBuilderValidateOverlap',
-        'The chunk overlap must be smaller than the embedding token window - at or above it, chunking would never move forward through a document.'
+      errors.push(
+        str(
+          'ragBuilderValidateTokenCeiling',
+          'The embedding token window exceeds what {model} accepts ({max} tokens). Text beyond a model window is dropped silently, so the excess would never reach the vector.'
+        )
+          .replace('{model}', setup.embedding.model)
+          .replace('{max}', String(ceiling))
       );
+    if (CHUNKERS_WITH_OVERLAP.has(setup.chunking.chunker)) {
+      if (!(setup.chunking.overlapTokens >= 0))
+        errors.push(str('ragBuilderValidateOverlapNegative', 'The chunk overlap cannot be negative.'));
+      else if (setup.chunking.overlapTokens >= setup.chunking.inputTokenLimit)
+        errors.push(
+          str(
+            'ragBuilderValidateOverlap',
+            'The chunk overlap must be smaller than the embedding token window - at or above it, chunking would never move forward through a document.'
+          )
+        );
+    }
     if (!setup.store.host || !setup.store.database)
-      return str(
-        'ragBuilderValidateStore',
-        'This store has no host or database in the credential domain, so a setup saved here cannot ingest.'
+      errors.push(
+        str(
+          'ragBuilderValidateStore',
+          'This store has no host or database in the credential domain, so a setup saved here cannot ingest.'
+        )
       );
     if (!COLLECTION_PATTERN.test(setup.store.collection))
-      return str('ragBuilderValidateCollection', 'The collection must be a lowercase identifier (letters, digits, underscores; starts with a letter).');
-    if (!PREFIX_PATTERN.test(setup.tables.prefix))
-      return str(
-        'ragBuilderValidatePrefix',
-        'The table prefix must be 1-20 characters — letters, digits and underscores only, starting with a letter or an underscore — so every generated table name stays within the 32-character CAS limit.'
+      errors.push(
+        str(
+          'ragBuilderValidateCollection',
+          'The collection must be a lowercase identifier (letters, digits, underscores; starts with a letter).'
+        )
       );
-    return null;
+    if (!PREFIX_PATTERN.test(setup.tables.prefix))
+      errors.push(
+        str(
+          'ragBuilderValidatePrefix',
+          'The table prefix must be 1-20 characters - letters, digits and underscores only, starting with a letter or an underscore - so every generated table name stays within the 32-character CAS limit.'
+        )
+      );
+    return errors;
   };
 
   // The full lists; the pickers render a filtered view of these, so narrowing
@@ -1421,11 +1560,7 @@ export async function buildRagBuilder(
       // rather than showing empty fields over text that exists.
       try {
         const details = await getModelDetails(selectedSetupID);
-        if (details) {
-          ragDoc.setValues(details as Record<string, unknown>);
-          const description = (details as Record<string, unknown>).description;
-          if (typeof description === 'string') descriptionField.value = description;
-        }
+        if (details) ragDoc.setValues(details as Record<string, unknown>);
       } catch (error) {
         console.debug('RAG Builder: reading documentation attributes failed', error);
       }
@@ -1434,10 +1569,11 @@ export async function buildRagBuilder(
 
   async function saveSetup(): Promise<boolean> {
     clearStatus();
+    clearSaveResult();
     const setup = collectSetup();
-    const problem = validateSetup(setup);
-    if (problem) {
-      showStatus('danger', problem);
+    const problems = validateSetup(setup);
+    if (problems.length) {
+      showSaveErrors(problems);
       return false;
     }
     saveButton.disabled = true;
@@ -1455,9 +1591,9 @@ export async function buildRagBuilder(
       // 2. registration metadata (owner requirements 2026-07-28): description,
       //    trainTable = the ingestion ledger, and the retrieval in/out contract
       await updateModelAttributes(selectedSetupID, {
-        description: setup.documentation.description.slice(0, 1000),
         // the model card, under the same attribute names a prompt uses, so
-        // one governance query reads both kinds of artifact
+        // one governance query reads both kinds of artifact. The model's own
+        // description is authored in the create dialog and left alone here.
         ...Object.fromEntries(
           MODEL_CARD_FIELDS.map((field) => [field, setup.documentation[field]])
         ),
@@ -1478,7 +1614,9 @@ export async function buildRagBuilder(
         setup.store.backend,
       ]);
       managedTags = [setup.embedding.model, setup.store.backend];
-      showStatus('success', str('ragBuilderSaveSuccess', 'RAG setup saved to Model Manager (rag-setup.json, pipeline.yaml, documentation.md, tags, ledger reference and variable definitions).'));
+      showSaveSuccess(
+        str('ragBuilderSaveSuccess', 'RAG setup saved to Model Manager (rag-setup.json, pipeline.yaml, documentation.md, tags, ledger reference and variable definitions).')
+      );
       return true;
     } catch (error) {
       console.error('Saving the RAG setup failed.', error);

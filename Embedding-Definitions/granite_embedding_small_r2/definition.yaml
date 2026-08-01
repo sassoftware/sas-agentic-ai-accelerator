@@ -37,6 +37,7 @@ metadata:
   deployment_type: SCR
   pricing:
     cost_type: Seconds
+    second_cost: 3.9178e-05
 modeler: gerdaw
 generation:
   overrides: []

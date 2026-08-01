@@ -20,7 +20,9 @@
  * (verified live).
  *
  * Parameters (all optional unless noted; defaults below):
- *   sourcePath       - REQUIRED. Filesystem path (visible from this compute
+ *   sourcePath       - REQUIRED. Where the documents are. A bare path or a
+ *                      sasserver:/path is the compute file system; a
+ *                      sascontent:/path is a SAS Content folder. (visible from this compute
  *                      context) whose documents are ingested
  *   collection       - REQUIRED. Vector-store collection (lowercase
  *                      identifier, e.g. rag_hr_policies_v1)
@@ -222,6 +224,7 @@ def main():
         from rag_core.credentials import fetch_secrets, store_config_from_secrets
         from rag_core.extractors import ExtractorRegistry
         from rag_core.scr import EmbeddingClient
+        from rag_core.sources import make_source
         from rag_core.steps import (record_history, LEDGER_COLUMNS, config_hash, merge_ledger,
                                     run_chunk, run_embed, run_extract, run_list,
                                     run_load)
@@ -292,9 +295,17 @@ def main():
         M(f"connected: {P['backend']} + {P['embedModel']} ({dims} dims)")
 
         # ---- the pipeline ---------------------------------------------------
-        inventory = run_list(P["sourcePath"], real_rows, run_id,
+        # sourcePath may name the compute file system or SAS Content -
+        # make_source reads the sasserver:/sascontent: prefix a SAS Studio
+        # path selector emits, and a bare path stays a filesystem path. The
+        # same source object is handed to the extract step, because a SAS
+        # Content document is fetched over the Files API rather than opened.
+        source = make_source(P["sourcePath"], BASE, TOKEN, VERIFY)
+        M(f"source: {source.describe()}")
+        inventory = run_list(source, real_rows, run_id,
                              P["pipelineVersion"], cfg_hash, log=M)
-        elements, inventory = run_extract(inventory, registry, log=M)
+        elements, inventory = run_extract(inventory, registry, source=source,
+                                          log=M)
         chunks = run_chunk(elements, inventory, P["chunker"] or "recursive",
                            int(float(P["inputTokenLimit"] or 256)),
                            P["pipelineVersion"],
