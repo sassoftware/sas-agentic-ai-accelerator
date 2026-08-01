@@ -267,6 +267,42 @@ class EmailExtractor:
         return elements
 
 
+#: Source files. Ingesting a repository's code alongside its documentation is
+#: almost never what someone means by "my documents" - it floods a collection
+#: with build scripts and boilerplate that answer no business question - so
+#: these are SKIPPED by default and only crawled when a setup opts in
+#: (`run_list(..., include_code=True)`). They stay a named class rather than a
+#: hard exclusion because a corpus ABOUT code is a legitimate corpus.
+CODE_SUFFIXES = {
+    ".py", ".sas", ".r", ".js", ".ts", ".jsx", ".tsx", ".sql", ".java", ".c",
+    ".h", ".hpp", ".cpp", ".cc", ".cs", ".go", ".rb", ".php", ".swift", ".kt",
+    ".scala", ".rs", ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".pl",
+    ".lua", ".vb", ".vbs", ".groovy", ".ipynb",
+}
+
+
+class CodeTextExtractor:
+    """Source files as plain text (owner directive 2026-08-01).
+
+    Code has structure worth parsing, but parsing it per language is a project
+    of its own and buys little for retrieval: what a reader searches for in a
+    script is usually a comment, an identifier or a literal, and all three
+    survive plain text intact. So the rule is deliberately dull - decode it,
+    keep it whole - and the file name rides along as heading_path so a hit can
+    be attributed to its file without opening it.
+    """
+    name = "code-text"
+    formats = CODE_SUFFIXES
+    requires: list = []
+
+    def extract(self, data: bytes, source_uri: str, **params) -> list:
+        text = data.decode(params.get("encoding", "utf-8"), errors="replace")
+        if not text.strip():
+            return []
+        filename = source_uri.replace("\\", "/").rsplit("/", 1)[-1]
+        return [element(text, heading_path=filename)]
+
+
 class MarkitdownExtractor:
     """Office-family formats via markitdown (owner-accepted default, OQ7).
 
@@ -297,4 +333,5 @@ BUILTINS = [
     PdfTextExtractor(),
     EmailExtractor(),
     MarkitdownExtractor(),
+    CodeTextExtractor(),
 ]

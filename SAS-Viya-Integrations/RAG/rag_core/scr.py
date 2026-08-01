@@ -36,6 +36,8 @@ class EmbeddingClient:
         only for the models that need it.
         """
         self.api_key = str(api_key or "")
+        # False only while smoke() runs; see its note.
+        self._metering = True
         self.model_name = model_name
         self.project = project
         self.timeout = timeout
@@ -83,9 +85,10 @@ class EmbeddingClient:
                 embedding = data["embedding"]
                 if isinstance(embedding, str):
                     embedding = json.loads(embedding)
-                self.usage["calls"] += 1
-                self.usage["run_time"] += float(data.get("run_time") or 0)
-                self.usage["tokens"] += int(data.get("tokens") or 0)
+                if self._metering:
+                    self.usage["calls"] += 1
+                    self.usage["run_time"] += float(data.get("run_time") or 0)
+                    self.usage["tokens"] += int(data.get("tokens") or 0)
                 return [float(v) for v in embedding]
             except (requests.RequestException, RuntimeError, KeyError, ValueError) as exc:
                 last_error = exc
@@ -95,8 +98,21 @@ class EmbeddingClient:
                            f"({self.url}): {last_error}") from last_error
 
     def smoke(self) -> int:
-        """One tiny call; returns the embedding dimension (fails fast on misconfig)."""
-        return len(self.embed("smoke test", mode="query"))
+        """One tiny call; returns the embedding dimension (fails fast on misconfig).
+
+        NOT metered (owner decision 2026-08-01). The probe measures the vector
+        width before any document is read, so it is setup rather than
+        ingestion - and counting it meant a run that embedded nothing still
+        reported one call and a non-zero cost, which across a schedule of
+        no-op runs makes `RAG_RUN_COST` read as though work happened. The
+        question that view answers is "what did this ingestion cost", and the
+        probe is not part of the answer.
+        """
+        self._metering = False
+        try:
+            return len(self.embed("smoke test", mode="query"))
+        finally:
+            self._metering = True
 
     @classmethod
     def from_env(cls, **overrides) -> "EmbeddingClient":

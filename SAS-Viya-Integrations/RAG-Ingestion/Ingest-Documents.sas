@@ -41,7 +41,12 @@
  *                      (default: <viya-host>/llm)
  *   embedModel       - embedding model name (default all_minilm_l6_v2)
  *   deploymentType   - k8s (default) or aca
- *   inputTokenLimit  - the embedding model's token window (default 256)
+ *   inputTokenLimit  - the chunk window in tokens; the chunker uses ~85% of
+ *                      it as its budget, and it may not exceed the embedding
+ *                      model's own limit (default 256)
+ *   includeCode      - 1 to ingest source files (.py, .sas, .r, .js, ...) as
+ *                      plain text. Default 0: they are listed as SKIPPED with
+ *                      the reason, never silently dropped
  *   chunker          - recursive (default) or paragraph
  *   overlapTokens    - chunk overlap for the recursive chunker (default 30)
  *   pipelineVersion  - bump to force a full re-embed (default v1)
@@ -82,6 +87,7 @@
 %_rag_default(deletedPolicy, retire);   /* retire (keep history) | purge */
 %_rag_default(retainDays, 0);           /* 0 = keep retired chunks forever */
 %_rag_default(replicas, 1);             /* embedding container replicas */
+%_rag_default(includeCode, 0);        /* 1 = ingest .py/.sas/... as text */
 %_rag_default(recordHistory, 1);        /* 1 = write rag_runs / rag_doc_events */
 %_rag_default(pipelineVersion, v1);
 %_rag_default(configHash, );
@@ -179,6 +185,7 @@ def main():
         "embedModel", "deploymentType", "inputTokenLimit", "chunker",
         "overlapTokens", "pipelineVersion", "configHash", "ragCorePath",
         "deletedPolicy", "retainDays", "replicas", "recordHistory",
+        "includeCode",
     ]}
 
     try:
@@ -225,6 +232,7 @@ def main():
         from rag_core.extractors import ExtractorRegistry
         from rag_core.scr import EmbeddingClient
         from rag_core.providers import api_key_for
+        from rag_core.pricing import log_cost
         from rag_core.sources import make_source
         from rag_core.steps import (record_history, LEDGER_COLUMNS, config_hash, merge_ledger,
                                     run_chunk, run_embed, run_extract, run_list,
@@ -307,7 +315,8 @@ def main():
         source = make_source(P["sourcePath"], BASE, TOKEN, VERIFY)
         M(f"source: {source.describe()}")
         inventory = run_list(source, real_rows, run_id,
-                             P["pipelineVersion"], cfg_hash, log=M)
+                             P["pipelineVersion"], cfg_hash,
+                             include_code=(P["includeCode"] == "1"), log=M)
         elements, inventory = run_extract(inventory, registry, source=source,
                                           log=M)
         chunks = run_chunk(elements, inventory, P["chunker"] or "recursive",
@@ -318,6 +327,8 @@ def main():
         workers = max(1, int(float(P["replicas"] or 1)) * 4)
         embedded, embed_failures = run_embed(chunks, client,
                                              max_workers=workers, log=M)
+        # what those calls cost, while the run is still on screen
+        log_cost(P["embedModel"], client.usage, log=M)
         discovered = [dict(row) for row in inventory]   # before run_load
         load_stats = {}
         inventory = run_load(embedded, inventory, adapter, P["collection"], dims,

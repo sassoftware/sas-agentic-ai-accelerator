@@ -12,8 +12,15 @@ per-document failure contract: a document failure marks its ledger row
 `failed` with `error_text` and NEVER raises out of the step.
 
 Ledger columns: doc_id, source_uri, source_kind, content_hash, mtime,
-status (new|changed|unchanged|deleted|failed), error_text, pipeline_version,
-config_hash, chunk_count, run_id, updated_at.
+status (new|changed|unchanged|deleted|skipped|failed|ingested), error_text,
+pipeline_version, config_hash, chunk_count, run_id, updated_at.
+
+`skipped` and `failed` are deliberately different states. Skipped means the
+pipeline decided not to ingest this document and nothing is wrong: an image,
+a source file with code ingestion off, a scanned PDF with no text layer.
+Failed means something broke that a person can fix. Collapsing the two - which
+is what this pipeline did until 2026-08-01 - makes every run look broken and
+hides the rows that are.
 """
 from __future__ import annotations
 
@@ -24,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .chunkers import (CHUNKERS, document_text, element_pages, locate,
                        page_at)
+from .extractors.builtin import CODE_SUFFIXES
 from .schema import Chunk, link_neighbors
 from .sources import FileSystemSource
 from .tokens import token_budget
@@ -211,13 +219,19 @@ def _doc_id(source_uri: str) -> str:
 # ---------------------------------------------------------------------------
 def run_list(source, ledger_rows: list, run_id: str,
              pipeline_version: str, config_hash: str,
-             include_suffixes=None, log=print) -> list:
+             include_suffixes=None, include_code: bool = False, log=print) -> list:
     """Crawl a document source, fingerprint it, diff against the ledger.
 
     `source` is a source object from rag_core.sources (filesystem or SAS
     Content); a plain string is taken as a filesystem path. ledger_rows is
     the previous ledger state. Returns the NEW inventory rows (one per
     discovered or disappeared document).
+
+    `include_code` opts the setup into source files (CODE_SUFFIXES). They are
+    skipped by default: a documents folder that happens to sit inside a
+    project would otherwise ingest its own build scripts. Skipped documents
+    are still LISTED, with the reason, because a document silently missing
+    from a collection is the failure mode that costs the most to diagnose.
     """
     if isinstance(source, str):
         source = FileSystemSource(source)
@@ -235,6 +249,15 @@ def run_list(source, ledger_rows: list, run_id: str,
                "mtime": entry.get("mtime", ""), "error_text": "",
                "pipeline_version": pipeline_version, "config_hash": config_hash,
                "chunk_count": 0, "run_id": run_id, "updated_at": now}
+        suffix = ("." + full.rsplit(".", 1)[-1].lower()) if "." in full else ""
+        if not include_code and suffix in CODE_SUFFIXES:
+            # decided before fingerprinting: there is no reason to read a file
+            # this run will not ingest
+            row.update(status="skipped", content_hash="",
+                       error_text=f"code file ({suffix}) - enable 'include code "
+                                  "files' on the setup to ingest it as text")
+            inventory.append(row)
+            continue
         try:
             row["content_hash"] = source.fingerprint(entry)
         except Exception as exc:  # unreadable file, files-service error, ...
@@ -245,9 +268,13 @@ def run_list(source, ledger_rows: list, run_id: str,
         old = previous.get(doc_id)
         if old is None:
             row["status"] = "new"
-        elif old.get("status") == "failed":
+        elif old.get("status") in ("failed", "skipped"):
             # failed docs re-enter the pipeline every run until they
-            # succeed or disappear — "unchanged" would hide them forever
+            # succeed or disappear — "unchanged" would hide them forever.
+            # Skipped ones re-enter for the same reason: the skip was a
+            # decision of the last run's configuration, not a property of
+            # the document, so installing an extractor or ticking "include
+            # code files" must be enough to pick it up.
             row["status"] = "changed"
         elif old.get("content_hash") != row["content_hash"] \
                 or old.get("pipeline_version") != pipeline_version:
@@ -268,7 +295,29 @@ def run_list(source, ledger_rows: list, run_id: str,
     for row in inventory:
         counts[row["status"]] = counts.get(row["status"], 0) + 1
     log(f"rag list: {len(inventory)} documents ({counts})")
+    log_skipped(inventory, log)
     return inventory
+
+
+def log_skipped(rows: list, log=print, limit: int = 25) -> None:
+    """Name every skipped document, grouped by reason.
+
+    A count alone ("2 skipped") tells someone that their corpus is incomplete
+    without telling them which part - the one question they will then ask. So
+    the reasons are grouped and the files listed under each, capped only so a
+    folder of ten thousand images cannot bury the rest of the log.
+    """
+    by_reason: dict = {}
+    for row in rows:
+        if row.get("status") == "skipped":
+            by_reason.setdefault(row.get("error_text") or "skipped",
+                                 []).append(row.get("source_uri", ""))
+    for reason, uris in by_reason.items():
+        log(f"rag skipped: {len(uris)} - {reason}")
+        for uri in uris[:limit]:
+            log(f"    {uri}")
+        if len(uris) > limit:
+            log(f"    ... and {len(uris) - limit} more (see the ledger)")
 
 
 def split_oversized_elements(elements: list, max_bytes: int = 24000) -> list:
@@ -314,6 +363,7 @@ def run_extract(inventory: list, registry, extractor_name=None, source=None,
     """
     elements: list = []
     updated: list = []
+    newly_skipped: list = []     # listed here; List already listed its own
     for row in inventory:
         row = dict(row)
         if row["status"] not in ("new", "changed"):
@@ -330,6 +380,19 @@ def run_extract(inventory: list, registry, extractor_name=None, source=None,
                     f"the {row.get('source_kind')!r} source is not available in "
                     "this step - point its document source at the same location "
                     "the List Documents step used")
+            if not registry.chain_for(row["source_uri"]) and not extractor_name:
+                # Nothing can read this format. That is a property of the
+                # corpus, not a fault of the run: an images folder next to the
+                # documents is normal. Calling it "failed" trains the user to
+                # ignore the word, so the row that actually broke stops being
+                # visible.
+                suffix = ("." + row["source_uri"].rsplit(".", 1)[-1].lower()
+                          ) if "." in row["source_uri"] else "(no extension)"
+                row.update(status="skipped",
+                           error_text=f"no extractor for {suffix} files")
+                updated.append(row)
+                newly_skipped.append(row)
+                continue
             doc_elements, used = registry.extract(data, row["source_uri"],
                                                   extractor_name=extractor_name)
             for el in split_oversized_elements(doc_elements):
@@ -338,16 +401,22 @@ def run_extract(inventory: list, registry, extractor_name=None, source=None,
                 elements.append(el)
             row["extractor"] = used
             if not doc_elements:
-                row.update(status="failed",
-                           error_text="extractor returned no elements "
+                # the extractor ran and found nothing to index - an empty file
+                # or a scanned-only PDF. Also not a failure: there is nothing
+                # to fix, and the text-density note is the actionable part.
+                row.update(status="skipped",
+                           error_text=f"{used} found no text "
                                       "(empty or scanned-only document)")
+                newly_skipped.append(row)
         except Exception as exc:  # per-doc failure contract (§2)
             row.update(status="failed", error_text=str(exc)[:500])
             log(f"rag extract: FAILED {row['source_uri']}: {exc}")
         updated.append(row)
-    done = sum(1 for r in updated if r.get("extractor") and r["status"] != "failed")
+    done = sum(1 for r in updated if r.get("extractor") and r["status"] not in ("failed", "skipped"))
+    skipped = sum(1 for r in updated if r["status"] == "skipped")
     failed = sum(1 for r in updated if r["status"] == "failed")
-    log(f"rag extract: {done} extracted, {failed} failed")
+    log(f"rag extract: {done} extracted, {skipped} skipped, {failed} failed")
+    log_skipped(newly_skipped, log)      # List already named the ones it skipped
     return elements, updated
 
 
@@ -371,7 +440,7 @@ def run_chunk(elements: list, inventory: list, chunker: str, input_token_limit: 
     now = _now()
     for doc_id, doc_elements in by_doc.items():
         row = row_by_doc.get(doc_id, {})
-        if row.get("status") == "failed":
+        if row.get("status") in ("failed", "skipped"):
             continue
         heading = None
         texts: list = []
@@ -416,8 +485,13 @@ def run_chunk(elements: list, inventory: list, chunker: str, input_token_limit: 
         link_neighbors(chunks)
         row["chunk_count"] = len(chunks)
         all_chunks.extend(c.__dict__ for c in chunks)
+    # Say where the budget came from. "budget 435" on its own reads like a
+    # limit the pipeline imposed; it is the chunk window the SETUP asked for,
+    # minus the estimator's safety margin, and it is unrelated to how many
+    # tokens the embedding model could accept.
     log(f"rag chunk: {len(all_chunks)} chunks from {len(by_doc)} documents "
-        f"(budget {budget} tokens)")
+        f"(budget {budget} tokens = the setup's {input_token_limit}-token "
+        f"chunk window x {margin:.0%} safety margin)")
     return all_chunks
 
 
@@ -695,13 +769,14 @@ def record_history(adapter, inventory: list, previous_ledger: list,
         for event in events:
             # what the document DID, unless the run failed on it - that
             # outcome is the more important fact
-            if event["status"] != "failed" and found.get(event["doc_id"]):
+            if event["status"] not in ("failed", "skipped") \
+                    and found.get(event["doc_id"]):
                 event["status"] = found[event["doc_id"]]
         written["events"] = history.record_events(run_id, events)
         if config_id and settings:
             history.record_config(config_id, settings)
         counts = status_counts(discovery or inventory)     # what it found
-        for name in ("ingested", "failed"):                # what it achieved
+        for name in ("ingested", "skipped", "failed"):     # what it achieved
             counts[name] = status_counts(inventory)[name]
         recorded = dict(metrics or {})
         # the configuration columns are convenience copies of what is already

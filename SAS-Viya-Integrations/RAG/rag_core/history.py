@@ -37,7 +37,8 @@ RUN_COLUMNS = [
     "finished_at", "status", "pipeline_version", "config_id", "embed_model",
     "embed_dims", "chunker", "input_token_limit", "overlap_tokens",
     "docs_new", "docs_changed", "docs_unchanged", "docs_deleted",
-    "docs_failed", "docs_ingested", "chunks_written", "chunks_retired",
+    "docs_skipped", "docs_failed", "docs_ingested", "chunks_written",
+    "chunks_retired",
     "collection_chunks", "embed_calls", "embed_tokens", "embed_seconds",
     "error_text",
 ]
@@ -52,7 +53,8 @@ RUN_COLUMNS = [
 RUN_NUMERIC = [
     "embed_dims", "input_token_limit", "overlap_tokens",
     "docs_new", "docs_changed", "docs_unchanged", "docs_deleted",
-    "docs_failed", "docs_ingested", "chunks_written", "chunks_retired",
+    "docs_skipped", "docs_failed", "docs_ingested", "chunks_written",
+    "chunks_retired",
     "collection_chunks", "embed_calls", "embed_tokens", "embed_seconds",
 ]
 
@@ -65,7 +67,8 @@ EVENT_COLUMNS = [
 EVENT_NUMERIC = ["chunk_count_before", "chunk_count_after"]
 
 # what a run's document counts are keyed on
-_STATUS_COUNTS = ("new", "changed", "unchanged", "deleted", "failed", "ingested")
+_STATUS_COUNTS = ("new", "changed", "unchanged", "deleted", "skipped",
+                  "failed", "ingested")
 
 _DIALECTS = {
     "postgres": {
@@ -155,6 +158,7 @@ class History:
     docs_changed      integer DEFAULT 0,
     docs_unchanged    integer DEFAULT 0,
     docs_deleted      integer DEFAULT 0,
+    docs_skipped      integer DEFAULT 0,
     docs_failed       integer DEFAULT 0,
     docs_ingested     integer DEFAULT 0,
     chunks_written    integer DEFAULT 0,
@@ -189,11 +193,38 @@ class History:
 )""",
         ]
 
+    def additive_migrations(self) -> list:
+        """Columns added after the first release, as best-effort ALTERs.
+
+        A history table created by an earlier version is already sitting in a
+        customer's database with rows in it, and CREATE TABLE IF NOT EXISTS
+        will not widen it. These statements run every time and are EXPECTED to
+        fail once the column is there - Postgres supports ADD COLUMN IF NOT
+        EXISTS but the MySQL-protocol stores do not, so the portable form is
+        "try it and ignore the duplicate-column error".
+        """
+        return [
+            "ALTER TABLE rag_runs ADD COLUMN docs_skipped integer DEFAULT 0",
+        ]
+
     def ensure_tables(self) -> None:
         with self._conn.cursor() as cursor:
             for statement in self.ddl():
                 cursor.execute(statement)
         self._commit()
+        for statement in self.additive_migrations():
+            try:
+                with self._conn.cursor() as cursor:
+                    cursor.execute(statement)
+                self._commit()
+            except Exception:
+                # already present - the only expected outcome after the first
+                # run. A genuinely broken ALTER surfaces at the INSERT, which
+                # names the column, rather than failing every run from here.
+                try:
+                    self._conn.rollback()     # Postgres poisons the txn
+                except Exception:
+                    pass
 
     def _commit(self):
         try:
