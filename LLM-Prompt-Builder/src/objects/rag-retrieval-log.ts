@@ -20,6 +20,15 @@ export interface RetrievalHit {
   distance: number;
   source: string;
   heading: string;
+  /**
+   * The context header the Enrich stage wrote, '' when the setup has none.
+   *
+   * Worth its own field rather than being folded into the content: it is the
+   * one thing enrichment changed, it was embedded WITH the chunk, and a
+   * hallucinated one is invisible at query time and permanent in the index.
+   * Reading a few here is the cheapest check there is.
+   */
+  header: string;
   page: string;
   content: string;
   error: string;
@@ -64,6 +73,8 @@ export function parseRetrievalLog(messages: string[]): RetrievalTestLog {
           distance: Number(row.distance ?? 0),
           source: String(row.source ?? ''),
           heading: String(row.heading ?? ''),
+          // absent from a probe deployed before enrichment existed
+          header: String(row.header ?? ''),
           page: row.page === null || row.page === undefined ? '' : String(row.page),
           content: String(row.content ?? ''),
           error: String(row.error ?? ''),

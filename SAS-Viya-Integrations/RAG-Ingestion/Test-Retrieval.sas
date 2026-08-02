@@ -180,6 +180,10 @@ def main():
                 "distance": round(float(row.get("distance") or 0), 4),
                 "source": str(row.get("source_uri") or ""),
                 "heading": str(row.get("heading_path") or ""),
+                # the Enrich stage's own output, so a header can be READ
+                # before a whole corpus is built on it - a hallucinated one is
+                # invisible at query time and permanent in the index
+                "header": str(row.get("context_header") or "")[:300],
                 "page": row.get("page"),
                 "content": str(row.get("content") or "")[:600],
                 "error": str(row.get("error_text") or ""),

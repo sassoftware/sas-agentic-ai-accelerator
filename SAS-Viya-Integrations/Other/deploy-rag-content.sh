@@ -132,6 +132,6 @@ deploy_tree "$SOURCE_ROOT/SAS-Viya-Integrations/RAG/rag_core" rag_core '*.py'
 deploy_tree "$SOURCE_ROOT/SAS-Viya-Integrations/RAG-Ingestion" jobs '*.sas'
 # retrieval model template (manifested per RAG Setup) - top level only
 deploy_tree "$SOURCE_ROOT/SAS-Viya-Integrations/RAG" models '*.py' 1
-# the five RAG custom steps - SAS Studio picks .step files up from SAS Content
+# every RAG custom step - SAS Studio picks .step files up from SAS Content
 deploy_tree "$SOURCE_ROOT/SAS-Viya-Integrations/Custom-Steps" steps 'RAG - *.step' 1
 echo "Deployed $uploaded files to $CONTENT_ROOT on $ENDPOINT."

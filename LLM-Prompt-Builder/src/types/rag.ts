@@ -137,6 +137,34 @@ export interface RagSetup {
     inputTokenLimit: number;
     overlapTokens: number;
   };
+  /**
+   * The Enrich stage: an LLM call per chunk between chunking and embedding.
+   *
+   * Optional so every setup saved before it existed still loads, and absent
+   * reads as off — which is also the default, because the stage costs one
+   * LLM call for every chunk of the corpus.
+   *
+   * The prompt is a manifested Prompt Builder model rather than a literal
+   * here (owner decision OQ14): it is then a governed artifact with its own
+   * documentation, versions and permissions, and improving it does not mean
+   * editing a RAG setup.
+   */
+  enrich?: {
+    /** The prompt project the model lives in, so the picker can reopen it. */
+    promptProjectId: string;
+    /** Model Manager id of the manifested prompt. '' = do not enrich. */
+    promptModelId: string;
+    /** Its name at the time of saving, for display when the id resolves late. */
+    promptModelName: string;
+    /** Prompt input name -> one of rag-enrich.ts's CHUNK_FIELDS keys. */
+    mapping: Record<string, string>;
+    /** Which output becomes the chunk's context_header. '' = none. */
+    headerOutput: string;
+    /** Which outputs are kept on the chunk as tags. */
+    tagOutputs: string[];
+    /** Parallel LLM calls during the stage. */
+    workers: number;
+  };
   embedding: {
     model: string;
     dims: number;

@@ -43,10 +43,10 @@ LEDGER_COLUMNS = ["doc_id", "source_uri", "source_kind", "content_hash", "mtime"
 # What travels between the steps. The ledger persists LEDGER_COLUMNS only;
 # the extra three ride along the flow so every step after List Documents
 # knows which extractor ran and WHERE the pipeline tables live - nobody
-# should have to retype the project name into five steps.
+# should have to retype the project name into every step.
 INVENTORY_COLUMNS = LEDGER_COLUMNS + ["extractor", "rag_project",
                                       "tables_caslib", "config_json",
-                                      "embed_usage"]
+                                      "embed_usage", "enrich_usage"]
 
 ELEMENT_COLUMNS = ["doc_id", "type", "text", "level", "page", "heading_path"]
 
@@ -77,6 +77,7 @@ COLUMN_LABELS = {
     "tables_caslib": "Pipeline tables caslib",
     "config_json": "Pipeline configuration (JSON)",
     "embed_usage": "Embedding usage (JSON)",
+    "enrich_usage": "Enrichment usage (JSON)",
     # elements
     "type": "Element type",
     "text": "Element text",
@@ -166,6 +167,24 @@ def stamp_usage(rows: list, usage) -> list:
     payload = json.dumps(usage or {}, sort_keys=True, separators=(",", ":"))
     for row in rows:
         row["embed_usage"] = payload
+    return rows
+
+
+def stamp_enrich_usage(rows: list, usage, model: str = "") -> list:
+    """The same for the Enrich stage's LLM calls.
+
+    Its own column for the same reason: the enrichment tally is a MEASUREMENT
+    of a run, and anything written into config_json becomes part of the
+    configuration fingerprint - which would make every run look like drift.
+    The LLM's name rides along here rather than in the configuration because
+    it is read off the prompt's score code at run time, not set on the setup.
+    """
+    payload = dict(usage or {})
+    if model:
+        payload["model"] = model
+    for row in rows:
+        row["enrich_usage"] = json.dumps(payload, sort_keys=True,
+                                         separators=(",", ":"))
     return rows
 
 
@@ -651,9 +670,10 @@ def _cutoff(days: int) -> str:
 
 
 RETRIEVE_COLUMNS = ["question", "rank", "doc_id", "chunk_id", "filename",
-                    "source_uri", "heading_path", "page", "span_start",
-                    "span_end", "ingestion_timestamp", "corpus_run_id",
-                    "distance", "score", "content", "error_text"]
+                    "source_uri", "heading_path", "context_header", "page",
+                    "span_start", "span_end", "ingestion_timestamp",
+                    "corpus_run_id", "distance", "score", "content",
+                    "error_text"]
 
 
 def run_retrieve(questions: list, embedder, adapter, collection: str,
@@ -704,6 +724,10 @@ def run_retrieve(questions: list, embedder, adapter, collection: str,
                 "filename": uri.replace("\\", "/").rsplit("/", 1)[-1],
                 "source_uri": uri,
                 "heading_path": record.get("heading_path") or "",
+                # what the Enrich stage wrote, and what was embedded WITH the
+                # chunk - retrieval that cannot show it leaves the one thing
+                # the stage changed invisible to the person judging it
+                "context_header": record.get("context_header") or "",
                 "page": span.get("page") or 0,
                 "span_start": span.get("start") or 0,
                 "span_end": span.get("end") or 0,
@@ -719,10 +743,10 @@ def run_retrieve(questions: list, embedder, adapter, collection: str,
     return rows
 
 
-def _embedding_usage(rows: list) -> dict:
-    """The embedding usage the Embed step stamped onto the inventory."""
+def _embedding_usage(rows: list, column: str = "embed_usage") -> dict:
+    """A usage tally a step stamped onto the inventory, by column."""
     for row in rows or []:
-        raw = row.get("embed_usage")
+        raw = row.get(column)
         if not raw:
             continue
         try:
@@ -797,6 +821,19 @@ def record_history(adapter, inventory: list, previous_ledger: list,
             recorded.setdefault("embed_tokens", int(usage.get("tokens") or 0))
             recorded.setdefault("embed_seconds",
                                 float(usage.get("run_time") or 0.0))
+        # what the Enrich stage spent, when the setup has one
+        enrichment = (_embedding_usage(inventory, "enrich_usage")
+                      or _embedding_usage(discovery or [], "enrich_usage"))
+        if enrichment:
+            recorded.setdefault("enrich_model", str(enrichment.get("model") or ""))
+            recorded.setdefault("enrich_calls", int(enrichment.get("calls") or 0))
+            recorded.setdefault("enrich_input_tokens",
+                                int(enrichment.get("input_tokens") or 0))
+            recorded.setdefault("enrich_output_tokens",
+                                int(enrichment.get("output_tokens") or 0))
+            recorded.setdefault("enrich_seconds",
+                                float(enrichment.get("run_time") or 0.0))
+            recorded.setdefault("enrich_failed", int(enrichment.get("failed") or 0))
         history.close_run(run_id, status=status, counts=counts,
                           collection=collection, config_id=config_id,
                           **{k: v for k, v in recorded.items()})

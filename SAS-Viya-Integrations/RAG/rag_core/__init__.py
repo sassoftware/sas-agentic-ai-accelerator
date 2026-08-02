@@ -10,4 +10,4 @@ lazily inside the pgvector adapter, `pypdfium2` lazily inside the pdf extractor.
 Steps log RAG_CORE_VERSION at startup so every run records the code it ran with.
 """
 
-RAG_CORE_VERSION = "0.1.0"
+RAG_CORE_VERSION = "0.2.0"

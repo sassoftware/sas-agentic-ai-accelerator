@@ -3,9 +3,9 @@
 /**
  * Build a SAS Studio flow (.flw) for one RAG Setup.
  *
- * The flow is the visual twin of the generated ingestion job: the same five
- * steps, the same values, wired List -> Extract -> Chunk -> Embed -> Load.
- * The JOB is what a schedule runs; the FLOW is what someone opens to see
+ * The flow is the visual twin of the generated ingestion job: the same steps,
+ * the same values, wired List -> Extract -> Chunk -> [Enrich ->] Embed ->
+ * Load. The JOB is what a schedule runs; the FLOW is what someone opens to see
  * what the pipeline does and to edit it by hand. Both are generated from the
  * setup, so a break in this file degrades visual editing and never ingestion.
  *
@@ -17,6 +17,7 @@
  */
 import type { RagSetup } from '../types/rag';
 import type { StepPorts } from '../api/dataflows-api';
+import { renderMapping } from './rag-enrich';
 
 /** The steps of the ingestion chain, in wiring order. */
 export const INGESTION_STEPS = [
@@ -26,6 +27,23 @@ export const INGESTION_STEPS = [
   'RAG - Embed Chunks',
   'RAG - Load Vector Store',
 ] as const;
+
+/**
+ * The chain THIS setup implies.
+ *
+ * Enrich only joins it when the setup has a prompt, for two reasons: a flow
+ * that carries a step doing nothing invites someone to fill it in without the
+ * setup knowing, and a deployment that has not redeployed its custom steps
+ * does not have the Enrich step registered at all — generating a flow that
+ * names it would fail for every setup rather than only the enriching ones.
+ */
+export function ingestionSteps(setup: RagSetup): string[] {
+  const steps: string[] = [...INGESTION_STEPS];
+  if (setup.enrich?.promptModelId) {
+    steps.splice(steps.indexOf('RAG - Embed Chunks'), 0, 'RAG - Enrich Chunks');
+  }
+  return steps;
+}
 
 export type StepValues = Record<string, string | number>;
 
@@ -59,11 +77,25 @@ export function ingestionChain(setup: RagSetup, corePath: string): Record<string
       _rgch_overlapTokens: setup.chunking.overlapTokens,
       _rgch_ragCorePath: corePath,
     },
+    'RAG - Enrich Chunks': {
+      _rgen_promptModel: setup.enrich?.promptModelId ?? '',
+      _rgen_mapping: renderMapping(setup.enrich?.mapping ?? {}),
+      _rgen_headerOutput: setup.enrich?.headerOutput ?? '',
+      _rgen_tagOutputs: (setup.enrich?.tagOutputs ?? []).join(','),
+      _rgen_workers: setup.enrich?.workers ?? 4,
+      _rgen_credentialDomain: setup.credentialDomain,
+      // the same table the Chunk step wrote, so the two must agree on whether
+      // it survives a restart
+      _rgen_persist: setup.policies?.persistChunks === false ? '0' : '1',
+      _rgen_ragCorePath: corePath,
+    },
     'RAG - Embed Chunks': {
       _rgem_embedModel: setup.embedding.model,
       _rgem_scrEndpoint: setup.embedding.scrEndpoint || '',
       _rgem_deploymentType: setup.embedding.deploymentType || 'k8s',
-      _rgem_replicas: 1,
+      _rgem_replicas: setup.policies?.embedReplicas ?? 1,
+      // an API-backed embedding model resolves its provider key from here
+      _rgem_credentialDomain: setup.credentialDomain,
       _rgem_ragCorePath: corePath,
     },
     'RAG - Load Vector Store': {

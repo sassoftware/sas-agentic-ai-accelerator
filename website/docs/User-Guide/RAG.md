@@ -25,11 +25,11 @@ between is bookkeeping — but the bookkeeping is what makes it operable:
 
 ## Build the pipeline
 
-Create a Studio Flow and chain five steps. Each passes a document inventory to
+Create a Studio Flow and chain the steps. Each passes a document inventory to
 the next; the bulk data travels through CAS tables named after your project.
 
 ```
-RAG - List Documents → Extract Text → Chunk Documents → Embed Chunks → Load Vector Store
+RAG - List Documents → Extract Text → Chunk Documents → [Enrich Chunks] → Embed Chunks → Load Vector Store
 ```
 
 **RAG - List Documents** is where you name things. Pick the folder holding your
@@ -45,6 +45,16 @@ Office family. Leave the extractor on *Automatic* unless you have a reason.
 The default recursive chunker splits on paragraphs, then lines, then sentences,
 and overlaps consecutive chunks slightly so a sentence cut in half is still
 findable. The token window must match your embedding model.
+
+**RAG - Enrich Chunks** is optional, and skipped entirely unless you name a
+prompt. It calls a prompt you built in the Prompt Builder once per chunk and
+keeps what comes back: one output becomes the chunk's **context header**, which
+is embedded together with the chunk, and any others are kept as tags. That is
+the fix for a chunk that reads perfectly in place and means nothing on its own
+— *"revenue grew 12%"* does not say whose, or when. It is also the most
+expensive thing in the pipeline, one LLM call per chunk on every re-chunk, so
+the log prices it while the run happens. See the administration guide before
+turning it on.
 
 **RAG - Embed Chunks** calls the SCR container. Re-running is cheap: chunks
 whose content has not changed keep their vectors, so a second run embeds only

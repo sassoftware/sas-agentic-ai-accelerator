@@ -69,7 +69,17 @@ import { createListFilter, renderFilteredOptions } from '../ui/list-filter';
 import { MODEL_CARD_FIELDS, createDocSection, createInfoIcon } from '../ui/doc-section';
 import { manifestSettings, renderRetrievalModel } from './rag-manifest';
 import { macroSafeQuestion, parseRetrievalLog, type RetrievalTestLog } from './rag-retrieval-log';
-import { INGESTION_STEPS, buildFlow, ingestionChain } from './rag-flow';
+import { buildFlow, ingestionChain, ingestionSteps } from './rag-flow';
+import {
+  CHUNK_FIELDS,
+  defaultMapping,
+  headerCandidates,
+  mappableInputs,
+  readPromptContract,
+  renderMapping,
+  validateEnrichment,
+  type PromptContract,
+} from './rag-enrich';
 import { readStepSpec, registerFlow, resolveStepIds } from '../api/dataflows-api';
 import { createCreateModal } from '../ui/create-modal';
 import { showConfirmModal } from '../ui/confirm-modal';
@@ -254,6 +264,19 @@ function renderPipelineYaml(setup: RagSetup): string {
     `  chunker: ${scalar(setup.chunking.chunker)}`,
     `  inputTokenLimit: ${setup.chunking.inputTokenLimit}`,
     `  overlapTokens: ${setup.chunking.overlapTokens}`,
+    // Only written when the setup enriches: an `enrich: {}` block on every
+    // corpus would read as a stage that exists and does nothing.
+    ...(setup.enrich?.promptModelId
+      ? [
+          'enrich:',
+          `  promptModel: ${scalar(setup.enrich.promptModelId)}`,
+          `  promptName: ${scalar(setup.enrich.promptModelName || '')}`,
+          `  mapping: ${scalar(renderMapping(setup.enrich.mapping))}`,
+          `  headerOutput: ${scalar(setup.enrich.headerOutput || '')}`,
+          `  tagOutputs: ${scalar(setup.enrich.tagOutputs.join(','))}`,
+          `  workers: ${setup.enrich.workers}`,
+        ]
+      : []),
     'embedding:',
     `  model: ${scalar(setup.embedding.model)}`,
     `  dims: ${setup.embedding.dims}`,
@@ -956,11 +979,353 @@ export async function buildRagBuilder(
   chunkingBody.appendChild(chunkingRow);
   editor.appendChild(chunkingCard);
 
+  // ---- 4. Enrichment --------------------------------------------------------
+  // The slot between chunking and embedding. A chunk that reads perfectly in
+  // place is often meaningless alone ("revenue grew 12%" - whose? when?), and
+  // the published remedy is to prepend a short LLM-written statement situating
+  // it, then embed the two together. What the call actually does is decided by
+  // the PROMPT, not here: the same slot classifies, extracts a date, or flags
+  // personal data. Off by default, because it costs one LLM call per chunk.
+  const [enrichCard, enrichBody] = card(
+    str('ragBuilderEnrichHeading', '4. Enrichment (optional)'),
+    str(
+      'ragBuilderEnrichHint',
+      'Call a prompt you built in the Prompt Builder once per chunk, and keep what it returns: one output becomes the chunk\'s context header, which is embedded together with the chunk, and any others are stored as tags. It costs one LLM call for every chunk, every time the corpus is re-chunked.'
+    )
+  );
+  const enrichRow = document.createElement('div');
+  enrichRow.className = 'row g-3';
 
+  /** The prompt contract currently loaded, or null when nothing is selected. */
+  let enrichContract: PromptContract | null = null;
+  /** Prompt input -> chunk field, as the form has it. */
+  let enrichMapping: Record<string, string> = {};
+  /** Its name at load time, so a saved setup reads even before the id resolves. */
+  let enrichPromptName = '';
+
+  let promptProjects: DropdownOption[] = [];
+  try {
+    // The same list the Prompt Builder shows: a prompt project is a Model
+    // Manager project tagged Prompt-Engineering.
+    promptProjects = await getModelProjects("contains(tags,'Prompt-Engineering')");
+  } catch (error) {
+    console.debug('RAG Builder: prompt project listing failed', error);
+  }
+  const promptProjectField = selectInput(
+    ['', ...promptProjects.map((project) => project.value)],
+    '',
+    {
+      '': str('ragBuilderEnrichProjectPlaceholder', 'Do not enrich'),
+      ...Object.fromEntries(
+        promptProjects.map((project) => [project.value, String(project.innerHTML ?? '')])
+      ),
+    }
+  );
+  labeled(enrichRow, idOf('enrich-project'), str('ragBuilderEnrichProjectLabel', 'Prompt project:'),
+    promptProjectField, 'col-md-4',
+    str('ragBuilderEnrichProjectInfo', 'The Prompt Builder project holding the prompt to call. Leaving this on "Do not enrich" is the default and costs nothing: chunks are embedded exactly as the chunker produced them.'));
+  const promptModelField = selectInput([''], '', {
+    '': str('ragBuilderEnrichPromptPlaceholder', 'Select a prompt…'),
+  });
+  promptModelField.disabled = true;
+  labeled(enrichRow, idOf('enrich-prompt'), str('ragBuilderEnrichPromptLabel', 'Prompt:'),
+    promptModelField, 'col-md-5',
+    str('ragBuilderEnrichPromptInfo', 'A prompt that has been MANIFESTED in the Prompt Builder, with the integrated LLM call - the ingestion runs its score code and reads the answer. A prompt manifested for the Call LLM node of SAS Intelligent Decisioning returns the request instead of making it, and is refused by name.'));
+  const enrichWorkersField = numberInput(4, 1);
+  labeled(enrichRow, idOf('enrich-workers'), str('ragBuilderEnrichWorkersLabel', 'Parallel calls:'),
+    enrichWorkersField, 'col-md-3',
+    str('ragBuilderEnrichWorkersInfo', 'How many chunks are enriched at once. Higher finishes sooner and pushes harder on the LLM: a hosted API will rate-limit, and a locally served container queues past roughly four calls per replica.'));
+
+  // What the selected prompt actually is - read from its score code, so the
+  // form describes the thing that will run rather than what it is called.
+  const enrichNote = document.createElement('div');
+  enrichNote.className = 'col-12';
+  const enrichNoteText = document.createElement('p');
+  enrichNoteText.className = 'form-text mb-0';
+  enrichNote.appendChild(enrichNoteText);
+  enrichRow.appendChild(enrichNote);
+
+  const enrichDetail = document.createElement('div');
+  enrichDetail.className = 'row g-3 mt-0';
+  enrichDetail.style.display = 'none';
+  const mappingColumn = document.createElement('div');
+  mappingColumn.className = 'col-md-6';
+  const mappingHeading = document.createElement('div');
+  mappingHeading.className = 'info-container';
+  const mappingLabel = document.createElement('label');
+  mappingLabel.className = 'form-label fw-bold mb-1';
+  mappingLabel.textContent = str('ragBuilderEnrichMappingLabel', 'What each prompt input is given:');
+  mappingHeading.appendChild(mappingLabel);
+  mappingHeading.appendChild(
+    createInfoIcon(
+      mappingLabel.textContent,
+      str('ragBuilderEnrichMappingInfo', 'Every input of the prompt has to be filled from something the pipeline already holds about the chunk. Nothing is guessed for an input whose name is unfamiliar: a silently wrong mapping would produce a whole corpus of confident nonsense. "Whole document" is capped at 20,000 characters, and a longer document reaches the prompt truncated - the run log says how many.')
+    )
+  );
+  mappingColumn.appendChild(mappingHeading);
+  const mappingRows = document.createElement('div');
+  mappingRows.className = 'vstack gap-2';
+  mappingColumn.appendChild(mappingRows);
+  const outputColumn = document.createElement('div');
+  outputColumn.className = 'col-md-6';
+  const headerOutputField = selectInput([''], '', {
+    '': str('ragBuilderEnrichNoHeader', 'Do not store a context header'),
+  });
+  const outputRow = document.createElement('div');
+  outputRow.className = 'row g-3';
+  labeled(outputRow, idOf('enrich-header'), str('ragBuilderEnrichHeaderLabel', 'Output stored as the context header:'),
+    headerOutputField, 'col-12',
+    str('ragBuilderEnrichHeaderInfo', 'This output is prepended to the chunk and embedded WITH it - it is what makes a standalone chunk say where it came from. It is also what costs the accuracy claim its money, so it is worth reading a few in the retrieval test before ingesting a whole corpus. Longer than 1,000 characters and it is cut, because a header that fills the token window pushes the chunk itself out of its own vector.'));
+  outputColumn.appendChild(outputRow);
+  const tagHeading = document.createElement('div');
+  tagHeading.className = 'info-container mt-2';
+  const tagLabel = document.createElement('label');
+  tagLabel.className = 'form-label fw-bold mb-1';
+  tagLabel.textContent = str('ragBuilderEnrichTagsLabel', 'Outputs kept as tags:');
+  tagHeading.appendChild(tagLabel);
+  tagHeading.appendChild(
+    createInfoIcon(
+      tagLabel.textContent,
+      str('ragBuilderEnrichTagsInfo', 'Stored on the chunk as metadata rather than embedded - a department, a date, a sensitivity flag. They travel into the vector store with the chunk and can be filtered on at retrieval. An output the LLM was asked to produce as JSON is only stored when the response actually parsed: a default value that no model generated is dropped rather than kept.')
+    )
+  );
+  outputColumn.appendChild(tagHeading);
+  const tagChoices = document.createElement('div');
+  tagChoices.className = 'd-flex flex-wrap gap-3';
+  outputColumn.appendChild(tagChoices);
+  enrichDetail.appendChild(mappingColumn);
+  enrichDetail.appendChild(outputColumn);
+
+  enrichBody.appendChild(enrichRow);
+  enrichBody.appendChild(enrichDetail);
+  editor.appendChild(enrichCard);
+
+  /** The tag outputs currently ticked. */
+  const selectedTagOutputs = (): string[] =>
+    Array.from(tagChoices.querySelectorAll<HTMLInputElement>('input:checked')).map(
+      (box) => box.value
+    );
+
+  /** Draw one row per prompt input, and the output choices beside them. */
+  const renderEnrichDetail = (headerOutput: string, tagOutputs: string[]): void => {
+    mappingRows.replaceChildren();
+    tagChoices.replaceChildren();
+    if (!enrichContract) {
+      enrichDetail.style.display = 'none';
+      return;
+    }
+    enrichDetail.style.display = '';
+    for (const name of mappableInputs(enrichContract)) {
+      const group = document.createElement('div');
+      group.className = 'input-group input-group-sm';
+      const tag = document.createElement('span');
+      tag.className = 'input-group-text font-monospace';
+      tag.textContent = name;
+      const field = selectInput(
+        ['', ...CHUNK_FIELDS.map((entry) => entry.key)],
+        enrichMapping[name] ?? '',
+        {
+          '': str('ragBuilderEnrichFieldPlaceholder', 'Choose…'),
+          ...Object.fromEntries(
+            CHUNK_FIELDS.map((entry) => [
+              entry.key,
+              str(`ragBuilderEnrichField_${entry.key}`, entry.label),
+            ])
+          ),
+        }
+      );
+      field.addEventListener('change', () => {
+        enrichMapping[name] = field.value;
+      });
+      group.appendChild(tag);
+      group.appendChild(field);
+      mappingRows.appendChild(group);
+    }
+
+    const candidates = headerCandidates(enrichContract);
+    headerOutputField.replaceChildren();
+    for (const value of ['', ...candidates]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value || str('ragBuilderEnrichNoHeader', 'Do not store a context header');
+      headerOutputField.appendChild(option);
+    }
+    headerOutputField.value = candidates.includes(headerOutput) ? headerOutput : '';
+
+    for (const name of enrichContract.outputs) {
+      const check = document.createElement('div');
+      check.className = 'form-check';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.className = 'form-check-input';
+      box.id = idOf(`enrich-tag-${name}`);
+      box.value = name;
+      box.checked = tagOutputs.includes(name);
+      const label = document.createElement('label');
+      label.className = 'form-check-label font-monospace small';
+      label.htmlFor = box.id;
+      label.textContent = name;
+      check.append(box, label);
+      tagChoices.appendChild(check);
+    }
+  };
+
+  /**
+   * Describe the selected prompt, or why it cannot be used.
+   *
+   * Read from the score code rather than from the model's registered
+   * variables: the score code is what runs, and a model whose declarations
+   * disagree with its function would otherwise fail one chunk at a time,
+   * deep inside a run.
+   */
+  const describePrompt = (): void => {
+    if (!promptModelField.value) {
+      enrichNoteText.className = 'form-text mb-0';
+      enrichNoteText.textContent = '';
+      return;
+    }
+    if (!enrichContract) {
+      enrichNoteText.className = 'form-text text-danger mb-0';
+      enrichNoteText.textContent = str(
+        'ragBuilderEnrichNotManifested',
+        'This model carries no readable prompt score code, so there is nothing to call. Manifest it in the Prompt Builder first.'
+      );
+      return;
+    }
+    if (!enrichContract.integrated) {
+      enrichNoteText.className = 'form-text text-danger mb-0';
+      enrichNoteText.textContent = str(
+        'ragBuilderEnrichNotIntegrated',
+        'This prompt was manifested for the Call LLM node of SAS Intelligent Decisioning: it returns the request to make rather than the answer, so an ingestion has nothing to store. Re-manifest it with the integrated LLM call.'
+      );
+      return;
+    }
+    enrichNoteText.className = 'form-text mb-0';
+    enrichNoteText.textContent = str(
+      'ragBuilderEnrichContract',
+      'Calls {llm}. Takes {inputs}; returns {outputs}.'
+    )
+      .replace('{llm}', enrichContract.llm || str('ragBuilderEnrichUnknownLlm', 'an unnamed LLM'))
+      .replace('{inputs}', mappableInputs(enrichContract).join(', ') || '—')
+      .replace('{outputs}', enrichContract.outputs.join(', ') || '—');
+  };
+
+  /** Read the selected model's score code and derive its contract. */
+  async function loadPromptContract(modelId: string): Promise<void> {
+    enrichContract = null;
+    if (!modelId) return;
+    try {
+      const contents = await getModelContents(modelId);
+      const score =
+        contents.find((item) => String(item.role ?? '').toLowerCase() === 'score') ??
+        contents.find((item) => String(item.name ?? '').toLowerCase().endsWith('.py'));
+      if (!score?.fileUri) return;
+      const response = await getFileContent(String(score.fileUri), 'text/plain');
+      if (!response.ok) return;
+      enrichContract = readPromptContract(await response.text());
+    } catch (error) {
+      console.debug('RAG Builder: reading the prompt score code failed', error);
+    }
+  }
+
+  async function refreshPrompts(selectId = ''): Promise<void> {
+    const projectId = promptProjectField.value;
+    promptModelField.replaceChildren();
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = str('ragBuilderEnrichPromptPlaceholder', 'Select a prompt…');
+    promptModelField.appendChild(placeholder);
+    promptModelField.disabled = !projectId;
+    if (!projectId) {
+      enrichContract = null;
+      renderEnrichDetail('', []);
+      describePrompt();
+      return;
+    }
+    let prompts: DropdownOption[] = [];
+    try {
+      prompts = await getModelProjectModels(projectId);
+    } catch (error) {
+      console.debug('RAG Builder: prompt listing failed', error);
+    }
+    for (const prompt of prompts) {
+      const option = document.createElement('option');
+      option.value = prompt.value;
+      option.textContent = String(prompt.innerHTML ?? '');
+      promptModelField.appendChild(option);
+    }
+    // A prompt the listing no longer carries is kept and marked, as everywhere
+    // else here: silently dropping it would quietly turn enrichment off. It is
+    // shown by the NAME the setup recorded, because the id is a uuid nobody
+    // can recognise - with the marker kept, so it is clear it is not there.
+    if (selectId && !prompts.some((prompt) => prompt.value === selectId)) {
+      const missing = document.createElement('option');
+      missing.value = selectId;
+      missing.textContent = `${enrichPromptName || selectId} — ${str('ragBuilderUnlistedPrompt', 'not found')}`;
+      promptModelField.insertBefore(missing, promptModelField.firstChild);
+    }
+    promptModelField.value = selectId;
+  }
+
+  promptProjectField.addEventListener('change', () => {
+    void (async () => {
+      enrichMapping = {};
+      await refreshPrompts();
+      renderEnrichDetail('', []);
+      describePrompt();
+    })();
+  });
+
+  promptModelField.addEventListener('change', () => {
+    void (async () => {
+      enrichPromptName = promptModelField.selectedOptions[0]?.textContent ?? '';
+      await loadPromptContract(promptModelField.value);
+      // A new prompt gets the obvious mapping filled in; unfamiliar input
+      // names stay blank and validateSetup asks for them.
+      enrichMapping = enrichContract ? defaultMapping(enrichContract) : {};
+      const candidates = enrichContract ? headerCandidates(enrichContract) : [];
+      renderEnrichDetail(candidates.includes('response') ? 'response' : candidates[0] ?? '', []);
+      describePrompt();
+    })();
+  });
+
+  /** Put a saved setup's enrichment back on the form. */
+  async function restoreEnrichment(setup: RagSetup): Promise<void> {
+    const stored = setup.enrich;
+    enrichPromptName = stored?.promptModelName ?? '';
+    enrichMapping = { ...(stored?.mapping ?? {}) };
+    enrichWorkersField.value = String(stored?.workers ?? 4);
+    keepUnlisted(promptProjectField, stored?.promptProjectId ?? '', str('ragBuilderUnlistedPromptProject', 'not found'));
+    await refreshPrompts(stored?.promptModelId ?? '');
+    await loadPromptContract(stored?.promptModelId ?? '');
+    renderEnrichDetail(stored?.headerOutput ?? '', stored?.tagOutputs ?? []);
+    describePrompt();
+  }
+
+  /** The enrichment block as the form has it, or undefined when off. */
+  const collectEnrichment = (): RagSetup['enrich'] => {
+    if (!promptModelField.value) return undefined;
+    const workers = Number(enrichWorkersField.value);
+    return {
+      promptProjectId: promptProjectField.value,
+      promptModelId: promptModelField.value,
+      promptModelName: enrichPromptName,
+      // only the inputs this prompt actually has: a mapping left over from a
+      // previously selected prompt would be rejected by the ingestion
+      mapping: Object.fromEntries(
+        (enrichContract ? mappableInputs(enrichContract) : [])
+          .filter((name) => enrichMapping[name])
+          .map((name) => [name, enrichMapping[name]])
+      ),
+      headerOutput: headerOutputField.value,
+      tagOutputs: selectedTagOutputs(),
+      workers: Number.isFinite(workers) && workers >= 1 ? Math.floor(workers) : 4,
+    };
+  };
 
   // Vector store + pipeline tables
   const [storeCard, storeBody] = card(
-    str('ragBuilderStoreHeading', '4. Vector store'),
+    str('ragBuilderStoreHeading', '5. Vector store'),
     str(
       'ragBuilderStoreHint',
       'Where the store lives and who may reach it both come from the credential domain — the connection is resolved server-side and never enters this browser as a secret.'
@@ -974,7 +1339,7 @@ export async function buildRagBuilder(
   // collection. Grouping them with the store made two unrelated naming
   // decisions look like one.
   const [tablesCard, tablesBody] = card(
-    str('ragBuilderTablesHeading', '5. Pipeline tables'),
+    str('ragBuilderTablesHeading', '6. Pipeline tables'),
     str(
       'ragBuilderTablesHint',
       'The CAS tables this pipeline writes as it runs — the ingestion ledger, the element and chunk tables and the run history. They are rebuilt by each run and are what you read to see what a run did.'
@@ -1128,7 +1493,7 @@ export async function buildRagBuilder(
 
   // ---- where the generated artifacts go -------------------------------------
   const [artifactsCard, artifactsBody] = card(
-    str('ragBuilderArtifactsHeading', '6. Generated artifacts'),
+    str('ragBuilderArtifactsHeading', '7. Generated artifacts'),
     str(
       'ragBuilderArtifactsHint',
       'Where the RAG Builder writes the executables it generates from this setup. They are regenerated from the setup on every Generate, so this folder is safe to treat as output rather than source.'
@@ -1347,6 +1712,9 @@ export async function buildRagBuilder(
     managedTags = [setup.embedding.model, setup.store.backend].filter(Boolean);
     currentJobUri = setup.job?.definitionUri ?? '';
     updateLaunchState();
+    // The enrichment has to read the prompt's score code back before it can
+    // draw its inputs, so it settles a round trip after the rest of the form.
+    void restoreEnrichment(setup);
   };
 
   const updateLaunchState = (): void => {
@@ -1488,6 +1856,9 @@ export async function buildRagBuilder(
       includeCode: includeCodeField.checked,
     },
     extraction: { extractor: extractorField.value },
+    // absent when nothing is selected, so a setup that does not enrich saves
+    // exactly the file it always did
+    ...(collectEnrichment() ? { enrich: collectEnrichment() } : {}),
     chunking: {
       chunker: chunkerField.value,
       // Read as typed. Clamping here would let an impossible pair save as a
@@ -1595,6 +1966,19 @@ export async function buildRagBuilder(
           'The table prefix must be 1-20 characters - letters, digits and underscores only, starting with a letter or an underscore - so every generated table name stays within the 32-character CAS limit.'
         )
       );
+    // Only when a prompt is selected: enrichment is optional, and a setup that
+    // does not use it has nothing to get wrong here.
+    if (setup.enrich?.promptModelId) {
+      errors.push(
+        ...validateEnrichment(
+          enrichContract,
+          setup.enrich.mapping,
+          setup.enrich.headerOutput,
+          setup.enrich.tagOutputs,
+          str
+        )
+      );
+    }
     return errors;
   };
 
@@ -1844,6 +2228,14 @@ export async function buildRagBuilder(
     inputTokenLimit: String(setup.chunking.inputTokenLimit),
     chunker: setup.chunking.chunker,
     overlapTokens: String(setup.chunking.overlapTokens),
+    // Always present, blank when the setup does not enrich: a parameter that
+    // exists only sometimes makes an existing job definition keep the last
+    // value it was generated with when enrichment is turned back off.
+    enrichPromptModel: setup.enrich?.promptModelId ?? '',
+    enrichMapping: renderMapping(setup.enrich?.mapping ?? {}),
+    enrichHeaderOutput: setup.enrich?.headerOutput ?? '',
+    enrichTagOutputs: (setup.enrich?.tagOutputs ?? []).join(','),
+    enrichWorkers: String(setup.enrich?.workers ?? 4),
     pipelineVersion: setup.pipelineVersion,
     ledgerCaslib: setup.tables.caslib,
     ledgerTable: `${setup.tables.prefix}_LEDGER`,
@@ -2111,7 +2503,7 @@ export async function buildRagBuilder(
   /**
    * Generate the SAS Studio flow for this setup.
    *
-   * The visual twin of the generated job: same five steps, same values,
+   * The visual twin of the generated job: the same steps, the same values,
    * wired in order. The job is what a schedule runs, so a break here costs
    * visual editing and never ingestion - and the flow is regenerable from
    * the setup at any time, so it is output rather than source.
@@ -2130,7 +2522,8 @@ export async function buildRagBuilder(
       // Resolved fresh: a redeploy of the custom steps mints new ids, and a
       // flow holding a stale one fails at code generation, far from the cause.
       const stepIds = await resolveStepIds(`${config.contentRoot}/steps`);
-      const missing = INGESTION_STEPS.filter((name) => !stepIds[name]);
+      const wanted = ingestionSteps(setup);
+      const missing = wanted.filter((name) => !stepIds[name]);
       if (missing.length > 0) {
         showSaveErrors([
           str('ragBuilderFlowStepsMissing', 'These custom steps are not registered under the content root: {steps}. Run the deploy-rag-content script first.').replace(
@@ -2141,7 +2534,7 @@ export async function buildRagBuilder(
         return false;
       }
       const specs = [];
-      for (const name of INGESTION_STEPS) specs.push(await readStepSpec(name, stepIds[name]));
+      for (const name of wanted) specs.push(await readStepSpec(name, stepIds[name]));
       const destination = artifactsFolder();
       if (!(await ensureFolderPath(destination))) {
         showSaveErrors([
@@ -2367,11 +2760,16 @@ export async function buildRagBuilder(
       table.className = 'table table-sm table-striped align-middle';
       const head = document.createElement('thead');
       const headRow = document.createElement('tr');
+      // The header column appears only for a collection that HAS headers.
+      // Enrichment is optional and most setups do not use it; an always-empty
+      // column would take room from the chunk text, which is the point here.
+      const enriched = hits.some((hit) => hit.header);
       for (const column of [
         str('ragBuilderTestColRank', '#'),
         str('ragBuilderTestColScore', 'Score'),
         str('ragBuilderTestColSource', 'Source'),
         str('ragBuilderTestColHeading', 'Heading'),
+        ...(enriched ? [str('ragBuilderTestColHeader', 'Context header')] : []),
         str('ragBuilderTestColPage', 'Page'),
         str('ragBuilderTestColContent', 'Chunk'),
       ]) {
@@ -2391,6 +2789,7 @@ export async function buildRagBuilder(
           hit.score.toFixed(4),
           hit.source.replace(/\\/g, '/').split('/').pop() ?? hit.source,
           hit.heading,
+          ...(enriched ? [hit.header] : []),
           hit.page,
           hit.content,
         ];
@@ -2398,7 +2797,9 @@ export async function buildRagBuilder(
           const cell = document.createElement('td');
           cell.textContent = value;
           if (index === 2) cell.title = hit.source;
-          if (index === 5) cell.className = 'small';
+          // the header and the chunk are both prose; the rest are short values
+          if (enriched && index === 4) cell.className = 'small fst-italic';
+          if (index === cells.length - 1) cell.className = 'small';
           row.appendChild(cell);
         });
         body.appendChild(row);

@@ -40,6 +40,8 @@ RUN_COLUMNS = [
     "docs_skipped", "docs_failed", "docs_ingested", "chunks_written",
     "chunks_retired",
     "collection_chunks", "embed_calls", "embed_tokens", "embed_seconds",
+    "enrich_model", "enrich_calls", "enrich_input_tokens",
+    "enrich_output_tokens", "enrich_seconds", "enrich_failed",
     "error_text",
 ]
 
@@ -56,6 +58,8 @@ RUN_NUMERIC = [
     "docs_skipped", "docs_failed", "docs_ingested", "chunks_written",
     "chunks_retired",
     "collection_chunks", "embed_calls", "embed_tokens", "embed_seconds",
+    "enrich_calls", "enrich_input_tokens", "enrich_output_tokens",
+    "enrich_seconds", "enrich_failed",
 ]
 
 EVENT_COLUMNS = [
@@ -167,6 +171,12 @@ class History:
     embed_calls       integer DEFAULT 0,
     embed_tokens      integer DEFAULT 0,
     embed_seconds     double precision DEFAULT 0,
+    enrich_model      {short},
+    enrich_calls      integer DEFAULT 0,
+    enrich_input_tokens  integer DEFAULT 0,
+    enrich_output_tokens integer DEFAULT 0,
+    enrich_seconds    double precision DEFAULT 0,
+    enrich_failed     integer DEFAULT 0,
     error_text        {d['text']},
     PRIMARY KEY (run_id){d['shard'].format(shard='run_id')}
 )""",
@@ -203,8 +213,17 @@ class History:
         EXISTS but the MySQL-protocol stores do not, so the portable form is
         "try it and ignore the duplicate-column error".
         """
+        short = "VARCHAR(128)" if self.dialect == "mysql" else self._d["text"]
         return [
             "ALTER TABLE rag_runs ADD COLUMN docs_skipped integer DEFAULT 0",
+            # the Enrich stage (2026-08-02): a collection built before it
+            # existed keeps answering, and its runs simply record no LLM cost
+            f"ALTER TABLE rag_runs ADD COLUMN enrich_model {short}",
+            "ALTER TABLE rag_runs ADD COLUMN enrich_calls integer DEFAULT 0",
+            "ALTER TABLE rag_runs ADD COLUMN enrich_input_tokens integer DEFAULT 0",
+            "ALTER TABLE rag_runs ADD COLUMN enrich_output_tokens integer DEFAULT 0",
+            "ALTER TABLE rag_runs ADD COLUMN enrich_seconds double precision DEFAULT 0",
+            "ALTER TABLE rag_runs ADD COLUMN enrich_failed integer DEFAULT 0",
         ]
 
     def ensure_tables(self) -> None:

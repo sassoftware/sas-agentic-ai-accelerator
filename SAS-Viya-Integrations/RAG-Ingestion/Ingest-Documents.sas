@@ -49,6 +49,16 @@
  *                      the reason, never silently dropped
  *   chunker          - recursive (default) or paragraph
  *   overlapTokens    - chunk overlap for the recursive chunker (default 30)
+ *   enrichPromptModel   - Model Manager id of a manifested Prompt Builder
+ *                      prompt, called once per chunk between chunking and
+ *                      embedding. Blank (default) = no enrichment
+ *   enrichMapping    - which chunk field fills each prompt input, as
+ *                      input=field;input=field. Fields: chunk, document,
+ *                      neighbours, heading, filename, source, position
+ *   enrichHeaderOutput  - the prompt output stored as the chunk's context
+ *                      header, which the Embed step prepends before embedding
+ *   enrichTagOutputs - prompt outputs kept as chunk tags, comma separated
+ *   enrichWorkers    - parallel LLM calls during enrichment (default 4)
  *   pipelineVersion  - bump to force a full re-embed (default v1)
  *   configHash       - config fingerprint stamped into the ledger; a run
  *                      whose value differs from the ledger's last run fails
@@ -84,6 +94,11 @@
 %_rag_default(inputTokenLimit, 256);
 %_rag_default(chunker, recursive);
 %_rag_default(overlapTokens, 30);
+%_rag_default(enrichPromptModel, );    /* blank = no Enrich stage */
+%_rag_default(enrichMapping, );        /* input=field;input=field */
+%_rag_default(enrichHeaderOutput, );
+%_rag_default(enrichTagOutputs, );     /* comma separated */
+%_rag_default(enrichWorkers, 4);
 %_rag_default(deletedPolicy, retire);   /* retire (keep history) | purge */
 %_rag_default(retainDays, 0);           /* 0 = keep retired chunks forever */
 %_rag_default(replicas, 1);             /* embedding container replicas */
@@ -185,7 +200,8 @@ def main():
         "embedModel", "deploymentType", "inputTokenLimit", "chunker",
         "overlapTokens", "pipelineVersion", "configHash", "ragCorePath",
         "deletedPolicy", "retainDays", "replicas", "recordHistory",
-        "includeCode",
+        "includeCode", "enrichPromptModel", "enrichMapping",
+        "enrichHeaderOutput", "enrichTagOutputs", "enrichWorkers",
     ]}
 
     try:
@@ -229,10 +245,12 @@ def main():
 
         from rag_core.adapters import get_adapter
         from rag_core.credentials import fetch_secrets, store_config_from_secrets
+        from rag_core.enrich import (PromptModel, parse_mapping, parse_names,
+                                     run_enrich, validate_selection)
         from rag_core.extractors import ExtractorRegistry
         from rag_core.scr import EmbeddingClient
-        from rag_core.providers import api_key_for
-        from rag_core.pricing import log_cost
+        from rag_core.providers import api_key_for, llm_api_key_for
+        from rag_core.pricing import log_cost, log_enrich_cost
         from rag_core.sources import make_source
         from rag_core.steps import (record_history, LEDGER_COLUMNS, config_hash, merge_ledger,
                                     run_chunk, run_embed, run_extract, run_list,
@@ -247,12 +265,49 @@ def main():
         if missing:
             M(f"extractors unavailable (packages missing): {missing}")
 
-        cfg_hash = P["configHash"] or config_hash({
+        # ---- the Enrich stage, when this setup has one ----------------------
+        # Loaded here rather than where it is used: a prompt that has been
+        # deleted, was manifested for the Call LLM node, or whose inputs the
+        # mapping does not match is a five-second failure at this point and a
+        # twenty-minute one after the corpus has been crawled and chunked.
+        prompt = None
+        enrich_mapping = parse_mapping(P["enrichMapping"])
+        enrich_tags = parse_names(P["enrichTagOutputs"])
+        if P["enrichPromptModel"]:
+            prompt = PromptModel.from_model_manager(BASE, TOKEN,
+                                                    P["enrichPromptModel"],
+                                                    verify=VERIFY)
+            problems = validate_selection(prompt, enrich_mapping,
+                                          P["enrichHeaderOutput"], enrich_tags)
+            if problems:
+                raise RuntimeError("this setup cannot enrich with "
+                                   + (prompt.name or P["enrichPromptModel"])
+                                   + ": " + "; ".join(problems))
+            M("enrich prompt: " + prompt.describe())
+
+        fingerprint = {
             "backend": P["backend"], "collection": P["collection"],
             "chunker": P["chunker"], "tokens": P["inputTokenLimit"],
             "overlap": P["overlapTokens"], "embedModel": P["embedModel"],
             "pipelineVersion": P["pipelineVersion"],
-        })
+        }
+        if prompt is not None:
+            # A context header changes what a chunk IS, exactly as the chunker
+            # and the embedding model do - so it belongs in the fingerprint the
+            # drift guard compares, INCLUDING the prompt's own code. Editing
+            # the prompt and re-running would otherwise leave a collection half
+            # of whose chunks were written by a prompt that no longer exists.
+            # These keys are absent when nothing enriches, so a setup that does
+            # not use the stage keeps the fingerprint it already had.
+            fingerprint.update({
+                "enrichPrompt": P["enrichPromptModel"],
+                "enrichCode": prompt.code_hash,
+                "enrichMapping": ";".join(f"{name}={enrich_mapping[name]}"
+                                          for name in sorted(enrich_mapping)),
+                "enrichHeader": P["enrichHeaderOutput"],
+                "enrichTags": ",".join(enrich_tags),
+            })
+        cfg_hash = P["configHash"] or config_hash(fingerprint)
 
         # ---- previous ledger + drift guard + run lock ----------------------
         ledger = []
@@ -305,6 +360,12 @@ def main():
             api_key=api_key_for(P["embedModel"], secrets))
         dims = client.smoke()
         M(f"connected: {P['backend']} + {P['embedModel']} ({dims} dims)")
+        # An enrichment prompt that calls a hosted LLM needs that provider's
+        # key out of the same domain; one served by a local container takes no
+        # API_KEY parameter at all, and its signature is what says which.
+        enrich_key = ""
+        if prompt is not None and prompt.needs_api_key:
+            enrich_key = llm_api_key_for(prompt.llm, secrets)
 
         # ---- the pipeline ---------------------------------------------------
         # sourcePath may name the compute file system or SAS Content -
@@ -323,6 +384,18 @@ def main():
                            int(float(P["inputTokenLimit"] or 256)),
                            P["pipelineVersion"],
                            overlap_tokens=int(float(P["overlapTokens"] or 30)), log=M)
+        # The Enrich stage sits here, between chunking and embedding, because
+        # the header it writes is embedded WITH the chunk - after this point
+        # the text is already a vector and nothing can be added to it.
+        enrich_failures = []
+        if prompt is not None:
+            chunks, enrich_failures = run_enrich(
+                chunks, prompt, enrich_mapping,
+                header_output=P["enrichHeaderOutput"], tag_outputs=enrich_tags,
+                api_key=enrich_key,
+                max_workers=int(float(P["enrichWorkers"] or 4)), log=M)
+            # what those calls cost, in the same place the embedding cost is
+            log_enrich_cost(prompt.llm, prompt.usage, log=M)
         # four parallel calls per replica, as the Embed step sizes it
         workers = max(1, int(float(P["replicas"] or 1)) * 4)
         embedded, embed_failures = run_embed(chunks, client,
@@ -348,12 +421,23 @@ def main():
                           "input_token_limit": int(float(P["inputTokenLimit"] or 256)),
                           "overlap_tokens": int(float(P["overlapTokens"] or 30)),
                           "pipeline_version": P["pipelineVersion"],
-                          "embed_model": P["embedModel"]},
+                          "embed_model": P["embedModel"],
+                          # so the configuration behind the hash names the
+                          # prompt that wrote these chunks' headers
+                          **({k: v for k, v in fingerprint.items()
+                              if k.startswith("enrich")} if prompt else {})},
                 metrics={"backend": P["backend"], "collection_chunks": total,
                          "embed_dims": dims, **load_stats,
                          "embed_calls": int(client.usage.get("calls") or 0),
                          "embed_tokens": int(client.usage.get("tokens") or 0),
-                         "embed_seconds": float(client.usage.get("run_time") or 0)},
+                         "embed_seconds": float(client.usage.get("run_time") or 0),
+                         **({"enrich_model": prompt.llm,
+                             "enrich_calls": int(prompt.usage.get("calls") or 0),
+                             "enrich_input_tokens": int(prompt.usage.get("input_tokens") or 0),
+                             "enrich_output_tokens": int(prompt.usage.get("output_tokens") or 0),
+                             "enrich_seconds": float(prompt.usage.get("run_time") or 0),
+                             "enrich_failed": int(prompt.usage.get("failed") or 0)}
+                            if prompt else {})},
                 log=M)
         adapter.close()
 
@@ -366,7 +450,12 @@ def main():
             statuses[row["status"]] = statuses.get(row["status"], 0) + 1
         summary = (f"collection {P['collection']}: {total} chunks; documents "
                    + ", ".join(f"{k}={v}" for k, v in sorted(statuses.items()))
-                   + (f"; embed failures {len(embed_failures)}" if embed_failures else ""))
+                   + (f"; embed failures {len(embed_failures)}" if embed_failures else "")
+                   # named in the summary, not just the detail: chunks that
+                   # went in without a header retrieve differently from the
+                   # ones that did not, and that is a property of the corpus
+                   + (f"; {len(enrich_failures)} chunks embedded without a "
+                      "context header" if enrich_failures else ""))
         M(summary)
         SAS.symput("_rag_summary", sas_safe(summary)[:400])
         SAS.symput("_rag_rc", "0")

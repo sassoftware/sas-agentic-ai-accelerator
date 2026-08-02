@@ -251,7 +251,11 @@ function readLogLines(logText: string): LogLine[] {
       /* not a single JSON document — fall through to per-line handling */
     }
   }
-  return logText.split('\n').map((rawLine) => {
+  // Split on either ending. A carriage return left on the end of every line
+  // is not cosmetic here: the prefix match anchors with $, and `.` does not
+  // match \r, so ONE stray character would make every milestone in the log
+  // unreadable rather than merely untidy.
+  return logText.split(/\r?\n/).map((rawLine) => {
     if (rawLine.trimStart().startsWith('{')) {
       try {
         const parsed = JSON.parse(rawLine) as { line?: string; type?: string };

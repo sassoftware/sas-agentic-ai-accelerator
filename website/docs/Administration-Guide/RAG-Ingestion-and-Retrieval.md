@@ -18,7 +18,7 @@ Everything lives in one governed SAS Content folder, by default
 | Folder | Contents |
 | --- | --- |
 | `rag_core/` | The Python runtime every step and job imports at run time |
-| `steps/` | The eight custom steps, registered as dataFlows resources |
+| `steps/` | The nine custom steps, registered as dataFlows resources |
 | `jobs/` | `Ingest-Documents.sas`, the standalone schedulable job |
 | `models/` | The retrieval model template, manifested per setup |
 | `generated/` | Default destination for per-setup artifacts — the ingestion job and the Studio flow the Builder generates, and what **RAG - Register Setup** writes. The Builder lets an author choose a different folder per setup |
@@ -152,6 +152,94 @@ Both *Launch ingestion* and *Test retrieval* need the **ingestion compute
 context** option to be set — SAS Job Execution rejects a job that does not name
 one, and the rejection carries no log. The Builder checks first and names the
 missing setting.
+
+## Enrichment: an LLM call per chunk
+
+Off by default. A chunk that reads perfectly in place is often meaningless on
+its own — *"revenue grew 12%"* says nothing about whose revenue, or when — and
+the published remedy is to prepend a short LLM-written statement situating it
+in its document, then embed the two together. The Builder's **Enrichment**
+section is that slot, and it is general: the same call can classify a chunk,
+pull out an effective date, or flag personal data. Which of those it does is
+decided by the **prompt**, not by the pipeline.
+
+**The prompt is a Prompt Builder artifact, not a setting here.** Build and
+evaluate it in the Prompt Builder, manifest it, and point the RAG setup at that
+Model Manager model. The prompt then has its own documentation, versions and
+permissions, and improving it does not mean editing a RAG setup.
+
+It must be manifested with the **integrated LLM call**. That option makes the
+score code perform the call and return the answer, which is what the ingestion
+reads. The other form returns `llmBody`/`llmURL` for the Call LLM node of SAS
+Intelligent Decisioning — the request to make rather than its result — and the
+Builder and the ingestion both refuse it by name.
+
+| You choose | What it does |
+| --- | --- |
+| **Prompt project** and **prompt** | Which manifested prompt is called, once per chunk |
+| A chunk field for each **prompt input** | What the prompt is given: the chunk, the whole document (capped at 20,000 characters), the neighbouring chunks, the heading path, the file name, the full source location, or the position (*"chunk 3 of 42"*) |
+| The output stored as the **context header** | Prepended to the chunk and embedded **with** it — this is the part that changes retrieval |
+| Outputs kept as **tags** | Stored as chunk metadata, filterable at retrieval, not embedded |
+
+Nothing is guessed for a prompt input whose name is unfamiliar: a silently
+wrong mapping produces a whole corpus of confident nonsense, so the setup will
+not save until every input is mapped.
+
+### What it costs, and what that buys
+
+**One LLM call per chunk, repeated on every re-chunk** — this is normally the
+largest line in an ingestion, an order of magnitude above the embedding. It is
+priced in the run log while the run is happening, and recorded per run in
+`rag_runs` (`enrich_calls`, `enrich_input_tokens`, `enrich_output_tokens`,
+`enrich_seconds`, `enrich_failed`) so `RAG_RUN_COST` reports embedding and
+enrichment side by side with a total.
+
+A prompt manifested **without** the `prompt_length` and `output_length` outputs
+returns no token counts, and a token-priced model then has nothing to multiply.
+That reads as *unknown* rather than as zero — select those outputs when you
+manifest the prompt if you want the cost.
+
+On the benefit: the widely cited 35–49% reduction in retrieval failures comes
+from one vendor on one corpus, with a Claude-class model generating the
+headers, and the affordable price in that write-up depends on prompt caching
+over the parent document, which a self-hosted container does not have. Treat it
+as a technique to measure on your own corpus, not as a number to expect. The
+cheapest first check is *Test retrieval*, which shows the stored header beside
+each chunk once a collection has been enriched.
+
+### Consequences worth knowing before you turn it on
+
+- **Turning enrichment on, off, or changing it triggers the drift guard.** A
+  context header changes what a chunk *is*, exactly as the chunker and the
+  embedding model do, so the prompt, the mapping, the selected outputs **and
+  the prompt's own score code** are part of the configuration fingerprint. The
+  next run is refused until the pipeline version is bumped — which re-ingests
+  the corpus, which is the point: half a collection with headers and half
+  without retrieves unpredictably.
+- **A hallucinated header is permanent and invisible at query time.** It is
+  baked into the vector and into the stored chunk. Read a few through *Test
+  retrieval* before building a large corpus on a new prompt.
+- **Failure is per chunk.** A call that fails, or a response that was not the
+  JSON the prompt asked for, leaves that chunk **without** a header and it is
+  embedded plain rather than failing the run. A parsed output is never stored
+  from the prompt author's default value — a plausible answer no model
+  generated is worse than none. The count is named in the run log and in the
+  run summary, because a corpus where a tenth of the chunks have no header
+  retrieves differently from one where all of them do.
+- **The prompt's score code is executed** in the ingestion compute session,
+  exactly as SAS Container Runtime would execute it. That is what scoring a
+  model is; the control is Model Manager permissions on the prompt project.
+  Do not point a setup at a model you would not run.
+- **A prompt calling a hosted LLM needs that provider's key** in the same
+  credential domain as the store credentials, under the provider's name
+  (`OpenAI`, `Anthropic`, …). A prompt whose LLM runs as a local container
+  takes no API key and needs nothing. The mapping from model to provider lives
+  in `rag_core/providers.py`; a model missing from it fails at load with that
+  said, rather than sending a wrong key on its behalf.
+
+In a SAS Studio flow the stage is the **RAG - Enrich Chunks** step, wired
+between *Chunk Documents* and *Embed Chunks*. The Builder adds it to the
+generated flow only for a setup that enriches.
 
 ## Two prerequisites that are not optional
 
@@ -292,7 +380,7 @@ beside the chunks they describe:
 
 | Table | Contents |
 | --- | --- |
-| `rag_runs` | One row per run: document counts, chunk counts, embedding cost |
+| `rag_runs` | One row per run: document counts, chunk counts, embedding cost, and the enrichment cost when the setup has an Enrich stage |
 | `rag_doc_events` | Append-only; one row per document per run *where something happened* |
 | `rag_configs` | The parameters behind a `config_id`, so the hash has an inverse |
 
@@ -318,12 +406,14 @@ that were. Both are counted separately in `rag_runs` (`docs_skipped`,
 by reason.
 
 `docs_skipped` is added to an existing `rag_runs` table by an additive
-migration on the next run, so an upgraded deployment needs no manual DDL.
+migration on the next run, so an upgraded deployment needs no manual DDL. The
+same applies to the six enrichment columns: a collection built before the
+Enrich stage existed keeps answering, and its runs simply record no LLM cost.
 
-The run log also states **what the embedding cost** while the run is still on
-screen, and spells out where the chunk token budget came from — it is the
-setup's chunk window minus the estimator's safety margin, not a limit the
-model imposed.
+The run log also states **what the embedding and the enrichment cost** while
+the run is still on screen, and spells out where the chunk token budget came
+from — it is the setup's chunk window minus the estimator's safety margin, not
+a limit the model imposed.
 
 ## Security posture
 
@@ -335,8 +425,19 @@ SAS Viya session — the same names are supplied as environment variables.
 
 **What crosses which boundary.** Document text leaves the source only to reach
 the extractor, the embedding container and the vector store, all inside your
-deployment. Nothing is sent to an external service. The embedding model runs
-as a governed SCR container you publish.
+deployment. The embedding model runs as a governed SCR container you publish.
+
+Two settings can change that, and both are explicit choices:
+
+- an **embedding model that forwards to a hosted API** (the fact sheet's
+  `deployment_type` says which) sends the chunk text to that provider;
+- an **Enrich stage whose prompt calls a hosted LLM** sends the chunk, and
+  whatever else the mapping gives it — including up to 20,000 characters of the
+  surrounding document — to that provider, once per chunk.
+
+Both are visible on the setup, and neither happens by default: the shipped
+embedding default and every enrichment prompt built on a locally served model
+stay inside the deployment.
 
 **Identity.** Everything runs as the identity that launched it, which is why
 the run-as-requesting-user context matters: it keeps the audit trail truthful
