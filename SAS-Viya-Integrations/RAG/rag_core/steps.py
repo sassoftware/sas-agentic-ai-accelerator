@@ -53,7 +53,8 @@ ELEMENT_COLUMNS = ["doc_id", "type", "text", "level", "page", "heading_path"]
 CHUNK_COLUMNS = ["chunk_id", "doc_id", "source_uri", "chunk_index", "content",
                  "content_hash", "extractor", "pipeline_version", "ingested_at",
                  "span", "heading_path", "tags", "prev_id", "next_id",
-                 "context_header", "entities", "relations", "embedding"]
+                 "context_header", "attributes", "enrich_version",
+                 "entities", "relations", "embedding"]
 
 # Every column the accelerator ships carries a label: the steps put them on
 # the SAS output tables and on the promoted CAS tables, so a table opened in
@@ -94,6 +95,8 @@ COLUMN_LABELS = {
     "prev_id": "Previous chunk ID",
     "next_id": "Next chunk ID",
     "context_header": "Context header",
+    "attributes": "Extracted attributes (JSON)",
+    "enrich_version": "Enriched by (prompt@version)",
     "entities": "Entities (JSON)",
     "relations": "Relations (JSON)",
     "embedding": "Embedding vector (JSON)",
@@ -170,7 +173,8 @@ def stamp_usage(rows: list, usage) -> list:
     return rows
 
 
-def stamp_enrich_usage(rows: list, usage, model: str = "") -> list:
+def stamp_enrich_usage(rows: list, usage, model: str = "",
+                       attributes: dict = None) -> list:
     """The same for the Enrich stage's LLM calls.
 
     Its own column for the same reason: the enrichment tally is a MEASUREMENT
@@ -182,6 +186,12 @@ def stamp_enrich_usage(rows: list, usage, model: str = "") -> list:
     payload = dict(usage or {})
     if model:
         payload["model"] = model
+    if attributes:
+        # The columns the Enrich step's outputs need. They travel here because
+        # the LOAD step is what holds the collection open, and it is the only
+        # stage that can add a column - but the ENRICH step is the only one
+        # that knows which outputs a setup stores.
+        payload["attributes"] = dict(attributes)
     for row in rows:
         row["enrich_usage"] = json.dumps(payload, sort_keys=True,
                                          separators=(",", ":"))
@@ -570,7 +580,8 @@ def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
              dims: int, pipeline_version: str, sparse: bool = False,
              run_id: str = "", config_id: str = "", embed_model: str = "",
              embed_dims: int = 0, deleted_policy: str = "retire",
-             retain_days: int = 0, stats: dict = None, log=print) -> list:
+             retain_days: int = 0, attributes: dict = None,
+             stats: dict = None, log=print) -> list:
     """Upsert-first-then-RETIRE-stale per document; tombstone deleted docs.
 
     Retiring rather than deleting is what makes the collection answerable
@@ -594,9 +605,31 @@ def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
         raise ValueError(f"unknown deleted_policy {deleted_policy!r} "
                          "(expected 'retire' or 'purge')")
     adapter.ensure_collection(collection, dims, schema={"sparse": sparse})
+    # The Enrich stage's outputs are real columns. They are added here rather
+    # than in the Enrich step because the collection is what has a schema, and
+    # this is the only stage that holds it open.
+    if attributes:
+        delta = adapter.sync_attributes(collection, attributes)
+        if delta.get("added"):
+            # Said plainly, because it is the one thing a person will get
+            # wrong: the column exists from now on and is EMPTY for every
+            # chunk written before it, which looks exactly like an LLM that
+            # had nothing to say. Only a full re-ingestion fills it.
+            log("rag load: added column(s) " + ", ".join(delta["added"])
+                + " to '" + collection + "'. Existing chunks are NOT "
+                "backfilled - they keep a null there until the corpus is "
+                "re-ingested (bump the pipeline version to force that)")
+        if delta.get("kept"):
+            log("rag load: column(s) " + ", ".join(delta["kept"])
+                + " are no longer produced by this setup. They are KEPT, not "
+                "dropped, and hold whatever the prompt that wrote them said")
     by_doc: dict = {}
     for chunk in embedded_chunks:
         chunk = dict(chunk)
+        # each extracted attribute is its own column, so it travels as its own
+        # key rather than as a nested map the adapter would have to know about
+        for name, value in (chunk.pop("attributes", None) or {}).items():
+            chunk[name] = value
         chunk.setdefault("run_id", run_id)
         chunk.setdefault("config_id", config_id)
         chunk.setdefault("embed_model", embed_model)

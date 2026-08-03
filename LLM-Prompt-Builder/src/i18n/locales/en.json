@@ -513,8 +513,6 @@
     "ragBuilderEnrichHeaderLabel": "Output stored as the context header:",
     "ragBuilderEnrichNoHeader": "Do not store a context header",
     "ragBuilderEnrichHeaderInfo": "This output is prepended to the chunk and embedded WITH it - it is what makes a standalone chunk say where it came from. It is also what costs the accuracy claim its money, so it is worth reading a few in the retrieval test before ingesting a whole corpus. Longer than 1,000 characters and it is cut, because a header that fills the token window pushes the chunk itself out of its own vector.",
-    "ragBuilderEnrichTagsLabel": "Outputs kept as tags:",
-    "ragBuilderEnrichTagsInfo": "Stored on the chunk as metadata rather than embedded - a department, a date, a sensitivity flag. They travel into the vector store with the chunk and can be filtered on at retrieval. An output the LLM was asked to produce as JSON is only stored when the response actually parsed: a default value that no model generated is dropped rather than kept.",
     "ragBuilderEnrichContract": "Calls {llm}. Takes {inputs}; returns {outputs}.",
     "ragBuilderEnrichUnknownLlm": "an unnamed LLM",
     "ragBuilderEnrichNotManifested": "This model carries no readable prompt score code, so there is nothing to call. Manifest it in the Prompt Builder first.",
@@ -523,9 +521,17 @@
     "ragBuilderEnrichValidateIntegrated": "This prompt was manifested for the Call LLM node of SAS Intelligent Decisioning: it returns the request to make rather than the answer, so an ingestion has nothing to store. Re-manifest it with the integrated LLM call.",
     "ragBuilderEnrichValidateMapping": "Choose what fills the prompt input(s) {inputs}.",
     "ragBuilderEnrichValidateOutputs": "This prompt does not return {outputs} - it returns {available}.",
-    "ragBuilderEnrichValidateNothing": "Nothing would be stored: choose the output that becomes the context header, or at least one output to keep as a tag.",
+    "ragBuilderEnrichValidateNothing": "Nothing would be stored: choose the output that becomes the context header, or at least one output to store as a column.",
     "ragBuilderUnlistedPrompt": "not found",
     "ragBuilderUnlistedPromptProject": "not found",
-    "ragBuilderTestColHeader": "Context header"
+    "ragBuilderTestColHeader": "Context header",
+    "ragBuilderEnrichVersionLabel": "Prompt version:",
+    "ragBuilderEnrichVersionLatest": "Latest",
+    "ragBuilderEnrichVersionInfo": "Latest follows the prompt: re-manifesting it in the Prompt Builder changes what the next ingestion writes, without re-processing anything already stored. Pinning a version freezes exactly the prompt that version carried, which is what you want once a corpus is in production. Versions are shown as major.minor with the date they were cut, because the labels are not unique.",
+    "ragBuilderEnrichColumnsLabel": "Outputs stored as columns:",
+    "ragBuilderEnrichColumnsInfo": "Each of these becomes its own column on the chunk table, named after the output and typed from the prompt's registered variables - so a department can be filtered on and a score can be averaged. Adding one later does NOT fill it in for chunks already stored; removing one does not drop the column or its values. The run log says both, each time. An output the LLM was asked to produce as JSON is stored only when the response actually parsed: a default value that no model generated is dropped rather than kept.",
+    "ragBuilderEnrichReserved": "the chunk table already has a column called {name}",
+    "ragBuilderEnrichBadName": "{name} cannot be a column name - letters, digits and underscores only, starting with a letter",
+    "ragBuilderEnrichValidateColumns": "These outputs cannot be stored as columns: {reasons}. Rename them in the prompt, or do not store them."
   }
 }

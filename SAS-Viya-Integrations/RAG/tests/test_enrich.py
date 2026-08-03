@@ -9,9 +9,10 @@ ingestion.
 """
 import pytest
 
-from rag_core.enrich import (CHUNK_FIELDS, PromptModel, document_context,
-                             field_values, parse_mapping, parse_names,
-                             render_mapping, run_enrich, validate_selection)
+from rag_core.enrich import (CHUNK_FIELDS, PromptModel, attribute_schema,
+                             document_context, field_values, list_versions,
+                             parse_mapping, parse_names, render_mapping,
+                             run_enrich, validate_selection)
 from rag_core.pricing import estimate_enrich_cost
 from rag_core.providers import llm_api_key_entry, llm_api_key_for
 
@@ -156,14 +157,16 @@ def test_the_header_lands_where_the_embed_step_reads_it():
                             "run_time": 0.5, "failed": 0}
 
 
-def test_selected_outputs_are_kept_as_tags():
+def test_selected_outputs_are_kept_as_columns():
     prompt = PromptModel(PARSING_PROMPT)
     rows, failures = run_enrich(chunks(1), prompt, {"chunk": "chunk"},
-                                tag_outputs=["department"], log=lambda m: None)
+                                column_outputs=["department"], log=lambda m: None)
     assert failures == []
-    assert rows[0]["tags"]["department"] == "finance"
-    # tags only: nothing was asked to become a header, so none is written
+    assert rows[0]["attributes"] == {"department": "finance"}
+    # columns only: nothing was asked to become a header, so none is written
     assert rows[0].get("context_header") is None
+    # and the chunk records which prompt wrote it
+    assert rows[0]["enrich_version"].endswith("@" + prompt.code_hash)
 
 
 def test_a_failed_call_is_never_stored_as_a_header():
@@ -181,10 +184,11 @@ def test_an_unparsed_response_does_not_store_the_prompt_authors_defaults():
     prompt = PromptModel(PARSING_PROMPT)
     rows = [dict(row, content="nothing to classify here") for row in chunks(1)]
     rows, failures = run_enrich(rows, prompt, {"chunk": "chunk"},
-                                tag_outputs=["department"], log=lambda m: None)
+                                column_outputs=["department"], log=lambda m: None)
     assert len(failures) == 1
     assert "JSON" in failures[0][1]
-    assert rows[0]["tags"] == {}         # "unknown" was a default, not an answer
+    # "unknown" was the prompt author's default, not an answer
+    assert rows[0].get("attributes") is None
 
 
 def test_checkpointed_chunks_are_not_re_enriched():
@@ -257,29 +261,278 @@ def test_the_header_is_what_gets_embedded():
     assert all(chunk["embedding"] == [0.1, 0.2] for chunk in embedded)
 
 
-def test_a_setup_that_does_not_enrich_keeps_the_fingerprint_it_had():
-    """The upgrade guarantee.
+def test_enrichment_is_not_part_of_the_drift_fingerprint():
+    """Changing a prompt must not demand a full re-ingest (owner, 2026-08-03).
 
-    The enrichment settings join the configuration fingerprint, which is what
-    makes the drift guard refuse a half-enriched collection. That is only
-    acceptable if a corpus which does NOT enrich hashes exactly as it did
-    before the stage existed - otherwise every existing collection would
-    refuse its next run after an upgrade.
+    The fingerprint covers what would make a collection unreadable - the
+    chunker, the window, the embedding model. Enrichment is deliberately
+    outside it, so a corpus may carry headers from two prompt versions and
+    each chunk records which one wrote it. The pinned value is what deployed
+    ledgers already hold: a change here refuses every existing collection's
+    next run.
     """
     from rag_core.steps import config_hash
 
     plain = {"backend": "pgvector", "collection": "liti", "chunker": "recursive",
              "tokens": "256", "overlap": "30", "embedModel": "all_minilm_l6_v2",
              "pipelineVersion": "v1"}
-    # pinned: this value is what deployed ledgers already carry, so a change
-    # to it is a change that would refuse every existing collection's next run
     assert config_hash(plain) == "8905e7ef1e4f9205"
-    enriched = dict(plain, enrichPrompt="abc", enrichCode="deadbeef0001",
-                    enrichMapping="chunk=chunk", enrichHeader="response",
-                    enrichTags="")
-    assert config_hash(enriched) != config_hash(plain)
-    # and editing the prompt alone moves it, which is the point
-    assert config_hash(dict(enriched, enrichCode="deadbeef0002")) != config_hash(enriched)
+
+
+# ---- columns --------------------------------------------------------------
+def test_stored_outputs_are_typed_from_the_registered_variables():
+    prompt = PromptModel(PARSING_PROMPT)
+    prompt.output_types = {"department": "string", "confidence": "decimal"}
+    assert attribute_schema(prompt, ["department", "confidence"]) == {
+        "department": "string", "confidence": "decimal"}
+    # an output the model never declared is text: readable, not summable
+    assert attribute_schema(prompt, ["mystery"]) == {"mystery": "string"}
+
+
+def test_a_decimal_output_is_stored_as_a_number_and_a_gap_as_null():
+    numeric = ('def scoreModel(chunk):\n'
+               '    "Output: response, confidence, parse_status"\n'
+               '    llm = "gpt_5_mini"\n'
+               '    if "invoices" in str(chunk):\n'
+               '        return "{}", "0.75", 1\n'
+               '    return "{}", "", 1\n')
+    prompt = PromptModel(numeric)
+    prompt.output_types = {"confidence": "decimal"}
+    rows, failures = run_enrich(chunks(1), prompt, {"chunk": "chunk"},
+                                column_outputs=["confidence"], log=lambda m: None)
+    assert failures == []
+    assert rows[0]["attributes"]["confidence"] == 0.75
+    blank = [dict(row, content="nothing here") for row in chunks(1)]
+    blank, _ = run_enrich(blank, prompt, {"chunk": "chunk"},
+                          column_outputs=["confidence"], log=lambda m: None)
+    # NULL, not 0 - "the prompt did not say" is not a measurement of zero
+    assert blank[0]["attributes"]["confidence"] is None
+
+
+def test_an_output_that_collides_with_a_chunk_column_is_refused_by_name():
+    colliding = ('def scoreModel(chunk):\n'
+                 '    "Output: response, score, content"\n'
+                 '    llm = "gpt_5_mini"\n'
+                 '    return "{}", 1, "x"\n')
+    problems = validate_selection(PromptModel(colliding), {"chunk": "chunk"},
+                                  "response", ["score", "content"])
+    joined = " | ".join(problems)
+    assert "score" in joined and "content" in joined
+    assert "already uses those names" in joined
+
+
+def test_an_output_name_that_is_not_an_identifier_is_refused():
+    odd = ('def scoreModel(chunk):\n'
+           '    "Output: response, Total Spend"\n'
+           '    llm = "gpt_5_mini"\n'
+           '    return "{}", 1\n')
+    problems = validate_selection(PromptModel(odd), {"chunk": "chunk"},
+                                  "response", ["Total Spend"])
+    assert any("cannot be a column name" in problem for problem in problems)
+
+
+# ---- the columns on the collection ----------------------------------------
+class FakeCursor:
+    """Just enough cursor to watch what DDL an adapter would run."""
+
+    def __init__(self, owner):
+        self.owner = owner
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.owner.executed.append((" ".join(sql.split()), params))
+
+    def fetchall(self):
+        return [(name,) for name in self.owner.existing]
+
+
+class FakeStore:
+    """A stand-in for whichever adapter, exercising the shared base logic."""
+
+    _COLUMNS = ["chunk_id", "content", "embedding"]
+
+    def __init__(self, existing):
+        self.existing = existing
+        self.executed = []
+        self._conn = None
+
+    def _cursor(self):
+        return FakeCursor(self)
+
+
+def _adapter(existing):
+    from rag_core.adapters.base import VectorStoreAdapter
+
+    store = FakeStore(existing)
+    store.__class__ = type("Probe", (FakeStore, VectorStoreAdapter),
+                           {"__abstractmethods__": frozenset()})
+    return store
+
+
+def test_new_outputs_become_columns_and_say_they_are_not_backfilled():
+    store = _adapter(["chunk_id", "content", "embedding", "id", "valid_to"])
+    delta = store.sync_attributes("liti", {"department": "string",
+                                           "confidence": "decimal"})
+    assert delta["added"] == ["confidence", "department", "enrich_version"]
+    assert delta["kept"] == []
+    ddl = [sql for sql, _ in store.executed if sql.startswith("ALTER")]
+    assert "ALTER TABLE liti ADD COLUMN confidence double precision" in ddl
+    assert "ALTER TABLE liti ADD COLUMN department text" in ddl
+
+
+def test_a_column_that_already_exists_is_not_added_twice():
+    store = _adapter(["chunk_id", "content", "embedding", "department",
+                      "enrich_version"])
+    delta = store.sync_attributes("liti", {"department": "string"})
+    assert delta["added"] == []
+    assert not [sql for sql, _ in store.executed if sql.startswith("ALTER")]
+
+
+def test_a_column_the_setup_no_longer_produces_is_kept_not_dropped():
+    store = _adapter(["chunk_id", "content", "embedding", "department",
+                      "sentiment", "enrich_version"])
+    delta = store.sync_attributes("liti", {"department": "string"})
+    assert delta["kept"] == ["sentiment"]
+    assert not [sql for sql, _ in store.executed if "DROP" in sql]
+
+
+def test_the_collections_own_columns_are_what_a_write_uses():
+    store = _adapter(["chunk_id", "content", "embedding", "department", "id"])
+    # `id` is the table's own, not an enrichment column
+    assert store.attribute_columns("liti") == ["department"]
+    assert store._columns_for("liti") == ["chunk_id", "content", "embedding",
+                                          "department"]
+
+
+def test_a_column_name_that_reached_the_adapter_unchecked_is_refused():
+    store = _adapter(["chunk_id"])
+    with pytest.raises(ValueError, match="cannot be a column name"):
+        store.sync_attributes("liti", {"drop table x; --": "string"})
+
+
+# ---- version pinning ------------------------------------------------------
+#
+# The shapes below are what a live SAS Viya answered on 2026-08-02, including
+# the two ways it says nothing: `/models/{versionId}/contents` returns 200 with
+# an empty collection, and a version whose snapshot lost its file body returns
+# 200 with zero bytes. Both would otherwise load as "a prompt with no code".
+class FakeResponse:
+    def __init__(self, status=200, payload=None, body=b""):
+        self.status_code = status
+        self._payload = payload
+        self.content = body
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class FakeViya:
+    """Serves the model-repository paths the loader uses, and nothing else."""
+
+    def __init__(self, code=HEADER_PROMPT, pinned_code=PARSING_PROMPT,
+                 empty_version=""):
+        self.code = code
+        self.pinned_code = pinned_code
+        self.empty_version = empty_version
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append(url)
+        path = url.replace("https://viya", "")
+        if path.endswith("/modelVersions"):
+            return FakeResponse(payload={"items": [
+                {"id": "v-old", "modelVersionName": "1.0",
+                 "creationTimeStamp": "2026-07-01T09:00:00Z"},
+                {"id": "v-new", "modelVersionName": "1.1",
+                 "creationTimeStamp": "2026-08-01T09:00:00Z"},
+            ]})
+        if "/history/" in path and path.endswith("/contents"):
+            version = path.split("/history/")[1].split("/")[0]
+            if version == self.empty_version:
+                return FakeResponse(payload={"items": []})
+            return FakeResponse(payload={"items": [
+                {"name": "prompt.py", "role": "score", "fileUri": "",
+                 "links": [{"rel": "content",
+                            "uri": f"/history/{version}/score/content"}]},
+                {"name": "outputVar.json", "role": "outputVariables",
+                 "fileUri": "",
+                 "links": [{"rel": "content",
+                            "uri": f"/history/{version}/out/content"}]},
+            ]})
+        if path.endswith("/contents"):
+            return FakeResponse(payload={"items": [
+                {"name": "prompt.py", "role": "score",
+                 "fileUri": "/files/files/abc"},
+                {"name": "outputVar.json", "role": "outputVariables",
+                 "fileUri": "/files/files/def"},
+            ]})
+        if path.endswith("/score/content"):
+            return FakeResponse(body=self.pinned_code.encode("utf-8"))
+        if path.endswith("/out/content"):
+            return FakeResponse(body=b'[{"name": "department", "type": "string"}]')
+        if path.endswith("/files/files/abc/content"):
+            return FakeResponse(body=self.code.encode("utf-8"))
+        if path.endswith("/files/files/def/content"):
+            return FakeResponse(body=b'[{"name": "response", "type": "string"}]')
+        return FakeResponse(payload={"name": "Situate the chunk"})
+
+
+def test_latest_reads_the_model_and_pinned_reads_the_version():
+    viya = FakeViya()
+    latest = PromptModel.from_model_manager("https://viya", "t", "m1", session=viya)
+    assert latest.version_id == ""
+    assert latest.inputs == ["chunk", "document"]        # HEADER_PROMPT
+    assert latest.name == "Situate the chunk"
+    assert not any("/history/" in call for call in viya.calls)
+
+    viya = FakeViya()
+    pinned = PromptModel.from_model_manager("https://viya", "t", "m1",
+                                            version_id="v-new", session=viya)
+    assert pinned.version_id == "v-new"
+    assert pinned.outputs == ["response", "department", "parse_status"]
+    assert any("/history/v-new/contents" in call for call in viya.calls)
+    # the version's own outputVar.json is what types its columns
+    assert pinned.output_types == {"department": "string"}
+    assert attribute_schema(pinned, ["department"]) == {"department": "string"}
+
+
+def test_the_stamp_says_which_prompt_and_which_version_wrote_a_chunk():
+    viya = FakeViya()
+    pinned = PromptModel.from_model_manager("https://viya", "t", "m1",
+                                            version_id="v-new", session=viya)
+    assert pinned.stamp == "m1@v-new"
+    floating = PromptModel.from_model_manager("https://viya", "t", "m1", session=viya)
+    # following the model, the code hash is what identifies what ran
+    assert floating.stamp == "m1@" + floating.code_hash
+
+
+def test_a_version_whose_snapshot_kept_nothing_is_refused():
+    viya = FakeViya(empty_version="v-old")
+    with pytest.raises(RuntimeError, match="lists no content"):
+        PromptModel.from_model_manager("https://viya", "t", "m1",
+                                       version_id="v-old", session=viya)
+
+
+def test_an_empty_score_body_is_refused_rather_than_run_as_an_empty_prompt():
+    viya = FakeViya(pinned_code="")
+    with pytest.raises(RuntimeError, match="EMPTY"):
+        PromptModel.from_model_manager("https://viya", "t", "m1",
+                                       version_id="v-new", session=viya)
+
+
+def test_versions_come_back_oldest_first_with_their_labels():
+    versions = list_versions("https://viya", "t", "m1", session=FakeViya())
+    assert [v["label"] for v in versions] == ["1.0", "1.1"]
+    assert [v["id"] for v in versions] == ["v-old", "v-new"]
 
 
 # ---- cost and credentials -------------------------------------------------

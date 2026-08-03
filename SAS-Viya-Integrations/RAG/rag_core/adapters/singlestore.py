@@ -276,12 +276,22 @@ class SingleStoreAdapter(VectorStoreAdapter):
                 "context_header", "entities", "relations",
                 "run_id", "config_id", "embed_model", "embed_dims", "embedding"]
     _JSON_COLUMNS = {"span", "tags", "entities", "relations"}
+    # TEXT rather than VARCHAR: an extracted value has no length anyone can
+    # promise, and a DOUBLE keeps a numeric output summable in a report.
+    _ATTRIBUTE_SQL = {"string": "TEXT", "decimal": "DOUBLE"}
     _LIVE = f"valid_to = '{SENTINEL}'"
     _DIALECT = "mysql"
 
-    def _row(self, record: dict, normalize: bool) -> tuple:
+    def _table(self, collection: str) -> str:
+        return _ident(collection)
+
+    def _schema_predicate(self) -> str:
+        # the MySQL-protocol spelling of "the database this connection is on"
+        return "table_schema = DATABASE()"
+
+    def _row(self, record: dict, normalize: bool, columns=None) -> tuple:
         values = []
-        for column in self._COLUMNS:
+        for column in (columns or self._COLUMNS):
             value = record.get(column)
             if column in self._JSON_COLUMNS:
                 values.append(json.dumps(value) if value is not None else
@@ -300,10 +310,12 @@ class SingleStoreAdapter(VectorStoreAdapter):
             return 0
         _, _, normalize, _ = _metric(metric or self._metric)
         table = _ident(collection)
-        columns = ", ".join(self._COLUMNS)
-        marks = "(" + ", ".join(["%s"] * len(self._COLUMNS)) + ")"
+        # whatever the Enrich stage added to THIS collection rides along
+        all_columns = self._columns_for(collection)
+        columns = ", ".join(all_columns)
+        marks = "(" + ", ".join(["%s"] * len(all_columns)) + ")"
         updates = ", ".join(f"{c} = VALUES({c})"
-                            for c in self._COLUMNS if c != "chunk_id")
+                            for c in all_columns if c != "chunk_id")
         written = 0
         for start in range(0, len(records), 200):
             page = records[start:start + 200]
@@ -312,7 +324,7 @@ class SingleStoreAdapter(VectorStoreAdapter):
                 + ", ".join([marks] * len(page))
                 + f" ON DUPLICATE KEY UPDATE {updates}",
                 [value for record in page
-                 for value in self._row(record, normalize)])
+                 for value in self._row(record, normalize, all_columns)])
             # MySQL's affected-rows counts an update as 2 and an unchanged row
             # as 0, so it cannot answer "how many chunks were written" — the
             # batch either succeeded whole or raised
@@ -381,7 +393,8 @@ class SingleStoreAdapter(VectorStoreAdapter):
         if raw_filter:
             condition = f"({condition}) AND ({raw_filter})"   # documented escape hatch
         literal = _vector_literal(vector, normalize)
-        columns = ", ".join(c for c in self._COLUMNS if c != "embedding")
+        columns = ", ".join(c for c in self._columns_for(collection)
+                            if c != "embedding")
         # the query vector needs an explicit cast: a bare string parameter is
         # accepted where the target column types it, but not as a function
         # argument

@@ -11,6 +11,7 @@ transactional rename or pointer and say so in capabilities().
 """
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -26,6 +27,105 @@ class SearchHit:
 
 class VectorStoreAdapter(ABC):
     name: str = "base"
+
+    # -- enrichment attribute columns ---------------------------------------
+    #
+    # What the Enrich stage extracts is stored in REAL columns, one per output,
+    # so it can be selected, filtered and aggregated like any other column
+    # rather than being buried in a JSON blob (owner decision 2026-08-03).
+    # The mechanics are identical on both backends - only the type names and
+    # the schema predicate differ - so they live here.
+
+    #: Prompt Builder output type -> SQL type. Overridden per dialect.
+    _ATTRIBUTE_SQL = {"string": "text", "decimal": "double precision"}
+    #: Written alongside the first stored output: which prompt, at which
+    #: version, produced this chunk's enrichment.
+    _ENRICH_STAMP = "enrich_version"
+    #: A column name this adapter will create. Anything else is refused rather
+    #: than interpolated - these names reach DDL, so they are never user text.
+    _ATTRIBUTE_OK = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+
+    def _schema_predicate(self) -> str:
+        """SQL for "in the schema this connection writes to"."""
+        return "table_schema = current_schema()"
+
+    def _existing_columns(self, collection: str) -> set:
+        with self._cursor() as cur:            # type: ignore[attr-defined]
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                f"WHERE table_name = %s AND {self._schema_predicate()}",
+                [collection])
+            return {str(row[0]).lower() for row in cur.fetchall()}
+
+    def _canonical_columns(self) -> set:
+        """Every column the pipeline itself owns on a chunk table."""
+        return {c.lower() for c in getattr(self, "_COLUMNS", [])} | {
+            "id", "valid_from", "valid_to", "retired_in_run", "tsv"}
+
+    def attribute_columns(self, collection: str) -> list:
+        """The extra columns THIS collection carries, cached per collection.
+
+        Read from the table rather than from the setup: a collection keeps
+        columns from prompts it no longer runs, and a write that named a
+        column the table does not have would fail the whole batch.
+        """
+        cache = getattr(self, "_attribute_cache", None)
+        if cache is None:
+            cache = {}
+            self._attribute_cache = cache
+        if collection not in cache:
+            cache[collection] = sorted(
+                self._existing_columns(collection) - self._canonical_columns())
+        return cache[collection]
+
+    def sync_attributes(self, collection: str, wanted: dict) -> dict:
+        """Add a column for every stored output that does not have one.
+
+        Returns `{"added": [...], "kept": [...]}` — `kept` being columns the
+        collection already has that this setup no longer produces. NOTHING is
+        ever dropped and nothing is backfilled: an added column is NULL for
+        every chunk written before it existed, and the caller says so in the
+        run log, because a column that is empty for the first half of a corpus
+        is otherwise indistinguishable from one the LLM had nothing to say for.
+        """
+        if not wanted:
+            return {"added": [], "kept": []}
+        existing = self._existing_columns(collection)
+        desired = dict(wanted)
+        desired.setdefault(self._ENRICH_STAMP, "string")
+        added: list = []
+        with self._cursor() as cur:            # type: ignore[attr-defined]
+            for column, kind in sorted(desired.items()):
+                name = str(column).lower()
+                if not self._ATTRIBUTE_OK.match(name):
+                    raise ValueError(
+                        f"{column!r} cannot be a column name - use letters, "
+                        "digits and underscores, starting with a letter")
+                if name in existing:
+                    continue
+                sql_type = self._ATTRIBUTE_SQL.get(str(kind), self._ATTRIBUTE_SQL["string"])
+                cur.execute(f"ALTER TABLE {self._table(collection)} "
+                            f"ADD COLUMN {name} {sql_type}")
+                added.append(name)
+        if added:
+            self._commit()
+            getattr(self, "_attribute_cache", {}).pop(collection, None)
+        kept = sorted((existing - self._canonical_columns())
+                      - {str(c).lower() for c in desired})
+        return {"added": added, "kept": kept}
+
+    def _columns_for(self, collection: str) -> list:
+        """The canonical columns plus whatever enrichment added."""
+        return list(getattr(self, "_COLUMNS", [])) + self.attribute_columns(collection)
+
+    def _table(self, collection: str) -> str:
+        """The quoted table name; adapters that quote differently override."""
+        return collection
+
+    def _commit(self) -> None:
+        connection = getattr(self, "_conn", None)
+        if connection is not None:
+            connection.commit()
 
     @abstractmethod
     def connect(self, config: dict) -> None: ...

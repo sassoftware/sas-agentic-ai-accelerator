@@ -177,13 +177,57 @@ Builder and the ingestion both refuse it by name.
 | You choose | What it does |
 | --- | --- |
 | **Prompt project** and **prompt** | Which manifested prompt is called, once per chunk |
+| **Prompt version** | *Latest* follows the prompt; a pinned version freezes exactly the prompt that version carried |
 | A chunk field for each **prompt input** | What the prompt is given: the chunk, the whole document (capped at 20,000 characters), the neighbouring chunks, the heading path, the file name, the full source location, or the position (*"chunk 3 of 42"*) |
 | The output stored as the **context header** | Prepended to the chunk and embedded **with** it — this is the part that changes retrieval |
-| Outputs kept as **tags** | Stored as chunk metadata, filterable at retrieval, not embedded |
+| Outputs stored as **columns** | Each becomes its own typed column on the chunk table, so it can be selected, filtered and aggregated |
 
 Nothing is guessed for a prompt input whose name is unfamiliar: a silently
 wrong mapping produces a whole corpus of confident nonsense, so the setup will
 not save until every input is mapped.
+
+### What the extracted values become
+
+A stored output is a **real column**, named after the output and typed from the
+prompt's registered output variables — a `string` becomes text, a `decimal`
+becomes a double, so a confidence score can be averaged rather than parsed out
+of a JSON blob. Retrieval returns them alongside the chunk.
+
+Three rules govern the schema, and all three are reported in the run log rather
+than applied quietly:
+
+- **A new column is not backfilled.** Add an output to the prompt and the
+  column appears on the next run, holding null for every chunk written before
+  it. That is indistinguishable from an LLM that had nothing to say, so the log
+  states it explicitly; only a full re-ingestion (bump the pipeline version)
+  fills it in.
+- **A column you stop producing is not dropped.** It keeps whatever the prompt
+  that wrote it said. Removing data is never a side effect of editing a prompt.
+- **A name the table already uses is refused**, by name, in the Builder and in
+  the ingestion. `score`, `content`, `page` and `rank` are all plausible things
+  to ask an LLM for and all belong to the chunk schema — rename the output in
+  the prompt, or don't store it.
+
+### Latest, or pinned
+
+*Latest* re-reads the prompt on every run, so improving it in the Prompt
+Builder changes what the next ingestion writes — **without** re-processing
+anything already stored. Pinning freezes a version, which is what you want once
+a corpus is in production and you want a prompt change to be a deliberate act.
+
+Either way, every enriched chunk records **which prompt at which version wrote
+it** in `enrich_version`, so a collection that legitimately holds work from two
+prompts can be read that way rather than merely being that way.
+
+Version labels (`1.0`, `1.1`) are **not unique** — the Builder shows the date
+beside each and stores the version's id.
+
+:::warning A pinned version can lose its files
+A version's snapshot does not always keep its score code — an older model on
+our own environment returned its file listing but no content. Both the Builder
+and the ingestion refuse an empty prompt rather than running one, naming the
+version. If a pin stops working, pin a different version or return to *Latest*.
+:::
 
 ### What it costs, and what that buys
 
@@ -209,13 +253,13 @@ each chunk once a collection has been enriched.
 
 ### Consequences worth knowing before you turn it on
 
-- **Turning enrichment on, off, or changing it triggers the drift guard.** A
-  context header changes what a chunk *is*, exactly as the chunker and the
-  embedding model do, so the prompt, the mapping, the selected outputs **and
-  the prompt's own score code** are part of the configuration fingerprint. The
-  next run is refused until the pipeline version is bumped — which re-ingests
-  the corpus, which is the point: half a collection with headers and half
-  without retrieves unpredictably.
+- **Enrichment is deliberately NOT part of the drift fingerprint.** Changing
+  the prompt, the mapping or the stored outputs applies from the next run
+  onward and never demands a re-ingest. The trade is explicit: a collection can
+  hold headers written by two different prompt versions, and `enrich_version`
+  on each chunk is what makes that visible. The drift guard still covers the
+  chunker, the token window and the embedding model — the settings that change
+  the vectors themselves and would make a collection unreadable.
 - **A hallucinated header is permanent and invisible at query time.** It is
   baked into the vector and into the stored chunk. Read a few through *Test
   retrieval* before building a large corpus on a new prompt.

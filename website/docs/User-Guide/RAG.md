@@ -49,7 +49,8 @@ findable. The token window must match your embedding model.
 **RAG - Enrich Chunks** is optional, and skipped entirely unless you name a
 prompt. It calls a prompt you built in the Prompt Builder once per chunk and
 keeps what comes back: one output becomes the chunk's **context header**, which
-is embedded together with the chunk, and any others are kept as tags. That is
+is embedded together with the chunk, and any others become their own **columns**
+on the chunk table, so they can be filtered and aggregated. That is
 the fix for a chunk that reads perfectly in place and means nothing on its own
 — *"revenue grew 12%"* does not say whose, or when. It is also the most
 expensive thing in the pipeline, one LLM call per chunk on every re-chunk, so

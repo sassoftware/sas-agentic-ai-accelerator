@@ -79,9 +79,11 @@ export function ingestionChain(setup: RagSetup, corePath: string): Record<string
     },
     'RAG - Enrich Chunks': {
       _rgen_promptModel: setup.enrich?.promptModelId ?? '',
+      // blank follows the model; an id pins the setup to that version
+      _rgen_promptVersion: setup.enrich?.promptVersionId ?? '',
       _rgen_mapping: renderMapping(setup.enrich?.mapping ?? {}),
       _rgen_headerOutput: setup.enrich?.headerOutput ?? '',
-      _rgen_tagOutputs: (setup.enrich?.tagOutputs ?? []).join(','),
+      _rgen_columns: (setup.enrich?.columnOutputs ?? []).join(','),
       _rgen_workers: setup.enrich?.workers ?? 4,
       _rgen_credentialDomain: setup.credentialDomain,
       // the same table the Chunk step wrote, so the two must agree on whether

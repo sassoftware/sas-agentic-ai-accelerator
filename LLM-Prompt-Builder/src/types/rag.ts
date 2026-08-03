@@ -156,12 +156,25 @@ export interface RagSetup {
     promptModelId: string;
     /** Its name at the time of saving, for display when the id resolves late. */
     promptModelName: string;
+    /**
+     * Version to read the prompt from. '' follows the model, so re-manifesting
+     * the prompt changes what the next run writes; an id pins this setup to
+     * exactly the prompt that version carried.
+     */
+    promptVersionId?: string;
+    /** Its major.minor, for display — version labels are not unique. */
+    promptVersionLabel?: string;
     /** Prompt input name -> one of rag-enrich.ts's CHUNK_FIELDS keys. */
     mapping: Record<string, string>;
     /** Which output becomes the chunk's context_header. '' = none. */
     headerOutput: string;
-    /** Which outputs are kept on the chunk as tags. */
-    tagOutputs: string[];
+    /**
+     * Which outputs are stored as their own COLUMNS on the chunk table.
+     *
+     * A column added later is not backfilled, and one no longer produced is
+     * not dropped — the run log says so each time either happens.
+     */
+    columnOutputs: string[];
     /** Parallel LLM calls during the stage. */
     workers: number;
   };

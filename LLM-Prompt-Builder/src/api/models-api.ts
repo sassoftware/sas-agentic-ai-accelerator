@@ -357,6 +357,32 @@ export async function deleteModelProject(projectID: string): Promise<number> {
 }
 
 /**
+ * A model's versions, oldest first.
+ *
+ * `modelVersionName` is the major.minor a person recognises — but it is NOT
+ * unique: two versions labelled 1.0 were seen on one live model, so the id is
+ * the identity and the label is only for display. Reading a version's CONTENT
+ * is a different endpoint again (`/models/{id}/history/{versionId}/contents`);
+ * `/models/{versionId}/contents` answers 200 with an empty collection, which
+ * reads like a version that carries nothing.
+ */
+export async function getModelVersions(
+  modelID: string
+): Promise<Array<{ id: string; label: string; created: string }>> {
+  const data = await viyaGet<SasApiCollection<Record<string, unknown>>>(
+    `/modelRepository/models/${modelID}/modelVersions?limit=100`
+  );
+  return (data?.items ?? [])
+    .map((item) => ({
+      id: String(item.id ?? ''),
+      label: String(item.modelVersionName ?? ''),
+      created: String(item.creationTimeStamp ?? ''),
+    }))
+    .filter((version) => version.id)
+    .sort((left, right) => left.created.localeCompare(right.created));
+}
+
+/**
  * Create a new model version.
  */
 export async function createModelVersion(

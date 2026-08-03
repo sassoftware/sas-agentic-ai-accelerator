@@ -513,8 +513,6 @@
     "ragBuilderEnrichHeaderLabel": "Ausgabe, die als Kontext-Header gespeichert wird:",
     "ragBuilderEnrichNoHeader": "Keinen Kontext-Header speichern",
     "ragBuilderEnrichHeaderInfo": "Diese Ausgabe wird dem Chunk vorangestellt und MIT ihm eingebettet – sie ist es, die einen für sich stehenden Chunk sagen lässt, woher er stammt. Sie ist zugleich der teure Teil, deshalb lohnt es sich, im Abruftest einige zu lesen, bevor ein ganzer Korpus verarbeitet wird. Über 1.000 Zeichen wird gekürzt, denn ein Header, der das Token-Fenster füllt, drängt den Chunk aus seinem eigenen Vektor.",
-    "ragBuilderEnrichTagsLabel": "Ausgaben, die als Tags erhalten bleiben:",
-    "ragBuilderEnrichTagsInfo": "Werden als Metadaten am Chunk gespeichert statt eingebettet – eine Abteilung, ein Datum, eine Vertraulichkeitsmarkierung. Sie wandern mit dem Chunk in die Vektordatenbank und können beim Abruf gefiltert werden. Eine Ausgabe, die das LLM als JSON liefern sollte, wird nur gespeichert, wenn die Antwort tatsächlich geparst werden konnte: Ein Vorgabewert, den kein Modell erzeugt hat, wird verworfen statt gespeichert.",
     "ragBuilderEnrichContract": "Ruft {llm} auf. Erwartet {inputs}; liefert {outputs}.",
     "ragBuilderEnrichUnknownLlm": "ein nicht benanntes LLM",
     "ragBuilderEnrichNotManifested": "Dieses Modell enthält keinen lesbaren Prompt-Score-Code, es gibt also nichts aufzurufen. Manifestieren Sie es zuerst im Prompt Builder.",
@@ -523,9 +521,17 @@
     "ragBuilderEnrichValidateIntegrated": "Dieser Prompt wurde für den Call-LLM-Knoten von SAS Intelligent Decisioning manifestiert: Er gibt die auszuführende Anfrage zurück statt der Antwort, eine Ingestion hat also nichts zu speichern. Manifestieren Sie ihn erneut mit integriertem LLM-Aufruf.",
     "ragBuilderEnrichValidateMapping": "Wählen Sie, womit die Prompt-Eingabe(n) {inputs} gefüllt werden.",
     "ragBuilderEnrichValidateOutputs": "Dieser Prompt liefert {outputs} nicht – er liefert {available}.",
-    "ragBuilderEnrichValidateNothing": "Es würde nichts gespeichert: Wählen Sie die Ausgabe, die zum Kontext-Header wird, oder mindestens eine Ausgabe, die als Tag erhalten bleibt.",
+    "ragBuilderEnrichValidateNothing": "Es würde nichts gespeichert: Wählen Sie die Ausgabe, die zum Kontext-Header wird, oder mindestens eine Ausgabe, die als Spalte gespeichert wird.",
     "ragBuilderUnlistedPrompt": "nicht gefunden",
     "ragBuilderUnlistedPromptProject": "nicht gefunden",
-    "ragBuilderTestColHeader": "Kontext-Header"
+    "ragBuilderTestColHeader": "Kontext-Header",
+    "ragBuilderEnrichVersionLabel": "Prompt-Version:",
+    "ragBuilderEnrichVersionLatest": "Neueste",
+    "ragBuilderEnrichVersionInfo": "„Neueste“ folgt dem Prompt: Ein erneutes Manifestieren im Prompt Builder ändert, was die nächste Ingestion schreibt – ohne bereits Gespeichertes neu zu verarbeiten. Das Anheften einer Version friert genau den Prompt ein, den diese Version enthielt; das ist der richtige Zustand, sobald ein Korpus produktiv ist. Versionen werden als major.minor mit ihrem Datum angezeigt, weil die Bezeichnungen nicht eindeutig sind.",
+    "ragBuilderEnrichColumnsLabel": "Ausgaben, die als Spalten gespeichert werden:",
+    "ragBuilderEnrichColumnsInfo": "Jede dieser Ausgaben wird zu einer eigenen Spalte der Chunk-Tabelle – benannt nach der Ausgabe und typisiert aus den registrierten Variablen des Prompts. So lässt sich eine Abteilung filtern und ein Score mitteln. Eine später hinzugefügte Spalte wird für bereits gespeicherte Chunks NICHT nachgefüllt; eine entfernte Spalte wird weder gelöscht noch geleert. Das Ausführungsprotokoll nennt beides jedes Mal. Eine Ausgabe, die das LLM als JSON liefern sollte, wird nur gespeichert, wenn die Antwort tatsächlich geparst werden konnte: Ein Vorgabewert, den kein Modell erzeugt hat, wird verworfen.",
+    "ragBuilderEnrichReserved": "die Chunk-Tabelle hat bereits eine Spalte namens {name}",
+    "ragBuilderEnrichBadName": "{name} ist als Spaltenname nicht möglich – nur Buchstaben, Ziffern und Unterstriche, beginnend mit einem Buchstaben",
+    "ragBuilderEnrichValidateColumns": "Diese Ausgaben können nicht als Spalten gespeichert werden: {reasons}. Benennen Sie sie im Prompt um, oder speichern Sie sie nicht."
   }
 }

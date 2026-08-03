@@ -171,6 +171,48 @@ export function parseMapping(raw: string): Record<string, string> {
  */
 const MEASUREMENTS = new Set(['run_time', 'prompt_length', 'output_length', 'parse_status']);
 
+/**
+ * Column names a stored output may not take.
+ *
+ * Mirrors `enrich.RESERVED_COLUMNS`, which is the authority: an output is
+ * stored as a REAL column, and `score`, `content`, `page` and `rank` are all
+ * plausible things to ask an LLM for. The collision is refused by name rather
+ * than silently prefixed — a column that is not called what the prompt calls
+ * it is a trap for whoever reads the table later.
+ */
+export const RESERVED_COLUMNS = new Set([
+  'id', 'chunk_id', 'doc_id', 'source_uri', 'chunk_index', 'content',
+  'content_hash', 'extractor', 'pipeline_version', 'ingested_at', 'span',
+  'heading_path', 'tags', 'prev_id', 'next_id', 'context_header',
+  'entities', 'relations', 'embedding', 'tsv',
+  'run_id', 'config_id', 'embed_model', 'embed_dims',
+  'valid_from', 'valid_to', 'retired_in_run', 'enrich_version',
+  'distance', 'score', 'rank', 'question', 'filename', 'error_text',
+]);
+
+const COLUMN_OK = /^[a-z_][a-z0-9_]{0,62}$/;
+
+/** Why this output cannot be a column, or '' when it can. */
+export function columnProblem(
+  name: string,
+  text: (key: string, fallback: string) => string
+): string {
+  const lowered = name.toLowerCase();
+  if (RESERVED_COLUMNS.has(lowered)) {
+    return text(
+      'ragBuilderEnrichReserved',
+      'the chunk table already has a column called {name}'
+    ).replace('{name}', name);
+  }
+  if (!COLUMN_OK.test(lowered)) {
+    return text(
+      'ragBuilderEnrichBadName',
+      '{name} cannot be a column name - letters, digits and underscores only, starting with a letter'
+    ).replace('{name}', name);
+  }
+  return '';
+}
+
 export function headerCandidates(contract: PromptContract): string[] {
   return contract.outputs.filter((name) => !MEASUREMENTS.has(name));
 }
@@ -186,7 +228,7 @@ export function validateEnrichment(
   contract: PromptContract | null,
   mapping: Record<string, string>,
   headerOutput: string,
-  tagOutputs: string[],
+  columnOutputs: string[],
   text: (key: string, fallback: string) => string
 ): string[] {
   const problems: string[] = [];
@@ -216,7 +258,7 @@ export function validateEnrichment(
       ).replace('{inputs}', unmapped.join(', '))
     );
   }
-  const wanted = (headerOutput ? [headerOutput] : []).concat(tagOutputs);
+  const wanted = (headerOutput ? [headerOutput] : []).concat(columnOutputs);
   const missing = wanted.filter((name) => !contract.outputs.includes(name));
   if (missing.length > 0) {
     problems.push(
@@ -228,11 +270,22 @@ export function validateEnrichment(
         .replace('{available}', contract.outputs.join(', ') || '—')
     );
   }
-  if (!headerOutput && tagOutputs.length === 0) {
+  const unusable = columnOutputs
+    .map((name) => columnProblem(name, text))
+    .filter(Boolean);
+  if (unusable.length > 0) {
+    problems.push(
+      text(
+        'ragBuilderEnrichValidateColumns',
+        'These outputs cannot be stored as columns: {reasons}. Rename them in the prompt, or do not store them.'
+      ).replace('{reasons}', unusable.join('; '))
+    );
+  }
+  if (!headerOutput && columnOutputs.length === 0) {
     problems.push(
       text(
         'ragBuilderEnrichValidateNothing',
-        'Nothing would be stored: choose the output that becomes the context header, or at least one output to keep as a tag.'
+        'Nothing would be stored: choose the output that becomes the context header, or at least one output to store as a column.'
       )
     );
   }

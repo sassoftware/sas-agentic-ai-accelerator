@@ -36,6 +36,7 @@ import {
   getModelProjectModels,
   getModelProjects,
   getModelRepositoryInformation,
+  getModelVersions,
   updateModelAttributes,
   updateModelTags,
 } from '../api/models-api';
@@ -72,6 +73,7 @@ import { macroSafeQuestion, parseRetrievalLog, type RetrievalTestLog } from './r
 import { buildFlow, ingestionChain, ingestionSteps } from './rag-flow';
 import {
   CHUNK_FIELDS,
+  columnProblem,
   defaultMapping,
   headerCandidates,
   mappableInputs,
@@ -271,9 +273,10 @@ function renderPipelineYaml(setup: RagSetup): string {
           'enrich:',
           `  promptModel: ${scalar(setup.enrich.promptModelId)}`,
           `  promptName: ${scalar(setup.enrich.promptModelName || '')}`,
+          `  promptVersion: ${scalar(setup.enrich.promptVersionId || 'latest')}`,
           `  mapping: ${scalar(renderMapping(setup.enrich.mapping))}`,
           `  headerOutput: ${scalar(setup.enrich.headerOutput || '')}`,
-          `  tagOutputs: ${scalar(setup.enrich.tagOutputs.join(','))}`,
+          `  columns: ${scalar(setup.enrich.columnOutputs.join(','))}`,
           `  workers: ${setup.enrich.workers}`,
         ]
       : []),
@@ -1002,6 +1005,8 @@ export async function buildRagBuilder(
   let enrichMapping: Record<string, string> = {};
   /** Its name at load time, so a saved setup reads even before the id resolves. */
   let enrichPromptName = '';
+  /** The pinned version's major.minor, for display when the id resolves late. */
+  let enrichVersionLabel = '';
 
   let promptProjects: DropdownOption[] = [];
   try {
@@ -1029,11 +1034,18 @@ export async function buildRagBuilder(
   });
   promptModelField.disabled = true;
   labeled(enrichRow, idOf('enrich-prompt'), str('ragBuilderEnrichPromptLabel', 'Prompt:'),
-    promptModelField, 'col-md-5',
+    promptModelField, 'col-md-3',
     str('ragBuilderEnrichPromptInfo', 'A prompt that has been MANIFESTED in the Prompt Builder, with the integrated LLM call - the ingestion runs its score code and reads the answer. A prompt manifested for the Call LLM node of SAS Intelligent Decisioning returns the request instead of making it, and is refused by name.'));
+  const promptVersionField = selectInput([''], '', {
+    '': str('ragBuilderEnrichVersionLatest', 'Latest'),
+  });
+  promptVersionField.disabled = true;
+  labeled(enrichRow, idOf('enrich-version'), str('ragBuilderEnrichVersionLabel', 'Prompt version:'),
+    promptVersionField, 'col-md-3',
+    str('ragBuilderEnrichVersionInfo', 'Latest follows the prompt: re-manifesting it in the Prompt Builder changes what the next ingestion writes, without re-processing anything already stored. Pinning a version freezes exactly the prompt that version carried, which is what you want once a corpus is in production. Versions are shown as major.minor with the date they were cut, because the labels are not unique.'));
   const enrichWorkersField = numberInput(4, 1);
   labeled(enrichRow, idOf('enrich-workers'), str('ragBuilderEnrichWorkersLabel', 'Parallel calls:'),
-    enrichWorkersField, 'col-md-3',
+    enrichWorkersField, 'col-md-2',
     str('ragBuilderEnrichWorkersInfo', 'How many chunks are enriched at once. Higher finishes sooner and pushes harder on the LLM: a hosted API will rate-limit, and a locally served container queues past roughly four calls per replica.'));
 
   // What the selected prompt actually is - read from its score code, so the
@@ -1081,12 +1093,12 @@ export async function buildRagBuilder(
   tagHeading.className = 'info-container mt-2';
   const tagLabel = document.createElement('label');
   tagLabel.className = 'form-label fw-bold mb-1';
-  tagLabel.textContent = str('ragBuilderEnrichTagsLabel', 'Outputs kept as tags:');
+  tagLabel.textContent = str('ragBuilderEnrichColumnsLabel', 'Outputs stored as columns:');
   tagHeading.appendChild(tagLabel);
   tagHeading.appendChild(
     createInfoIcon(
       tagLabel.textContent,
-      str('ragBuilderEnrichTagsInfo', 'Stored on the chunk as metadata rather than embedded - a department, a date, a sensitivity flag. They travel into the vector store with the chunk and can be filtered on at retrieval. An output the LLM was asked to produce as JSON is only stored when the response actually parsed: a default value that no model generated is dropped rather than kept.')
+      str('ragBuilderEnrichColumnsInfo', 'Each of these becomes its own column on the chunk table, named after the output and typed from the prompt\'s registered variables - so a department can be filtered on and a score can be averaged. Adding one later does NOT fill it in for chunks already stored; removing one does not drop the column or its values. The run log says both, each time. An output the LLM was asked to produce as JSON is stored only when the response actually parsed: a default value that no model generated is dropped rather than kept.')
     )
   );
   outputColumn.appendChild(tagHeading);
@@ -1100,14 +1112,14 @@ export async function buildRagBuilder(
   enrichBody.appendChild(enrichDetail);
   editor.appendChild(enrichCard);
 
-  /** The tag outputs currently ticked. */
-  const selectedTagOutputs = (): string[] =>
+  /** The outputs currently ticked for storage as columns. */
+  const selectedColumnOutputs = (): string[] =>
     Array.from(tagChoices.querySelectorAll<HTMLInputElement>('input:checked')).map(
       (box) => box.value
     );
 
   /** Draw one row per prompt input, and the output choices beside them. */
-  const renderEnrichDetail = (headerOutput: string, tagOutputs: string[]): void => {
+  const renderEnrichDetail = (headerOutput: string, columnOutputs: string[]): void => {
     mappingRows.replaceChildren();
     tagChoices.replaceChildren();
     if (!enrichContract) {
@@ -1158,13 +1170,22 @@ export async function buildRagBuilder(
       const box = document.createElement('input');
       box.type = 'checkbox';
       box.className = 'form-check-input';
-      box.id = idOf(`enrich-tag-${name}`);
+      box.id = idOf(`enrich-column-${name}`);
       box.value = name;
-      box.checked = tagOutputs.includes(name);
+      box.checked = columnOutputs.includes(name);
       const label = document.createElement('label');
       label.className = 'form-check-label font-monospace small';
       label.htmlFor = box.id;
       label.textContent = name;
+      // An output whose name the chunk table cannot take is shown disabled
+      // with the reason, rather than accepted here and refused at save.
+      const problem = columnProblem(name, str);
+      if (problem) {
+        box.disabled = true;
+        box.checked = false;
+        label.classList.add('text-body-secondary', 'text-decoration-line-through');
+        check.title = problem;
+      }
       check.append(box, label);
       tagChoices.appendChild(check);
     }
@@ -1209,6 +1230,38 @@ export async function buildRagBuilder(
       .replace('{inputs}', mappableInputs(enrichContract).join(', ') || '—')
       .replace('{outputs}', enrichContract.outputs.join(', ') || '—');
   };
+
+  /** Fill the version picker for the selected prompt. */
+  async function refreshVersions(selectId = ''): Promise<void> {
+    promptVersionField.replaceChildren();
+    const latest = document.createElement('option');
+    latest.value = '';
+    latest.textContent = str('ragBuilderEnrichVersionLatest', 'Latest');
+    promptVersionField.appendChild(latest);
+    promptVersionField.disabled = !promptModelField.value;
+    if (!promptModelField.value) return;
+    let versions: Array<{ id: string; label: string; created: string }> = [];
+    try {
+      versions = await getModelVersions(promptModelField.value);
+    } catch (error) {
+      console.debug('RAG Builder: prompt version listing failed', error);
+    }
+    // Newest first: the version someone wants to pin is almost always the one
+    // they just cut. Labels repeat, so the date is part of the display.
+    for (const version of [...versions].reverse()) {
+      const option = document.createElement('option');
+      option.value = version.id;
+      option.textContent = `${version.label} — ${version.created.slice(0, 10)}`;
+      promptVersionField.appendChild(option);
+    }
+    if (selectId && !versions.some((version) => version.id === selectId)) {
+      const missing = document.createElement('option');
+      missing.value = selectId;
+      missing.textContent = `${enrichVersionLabel || selectId} — ${str('ragBuilderUnlistedPrompt', 'not found')}`;
+      promptVersionField.insertBefore(missing, promptVersionField.firstChild);
+    }
+    promptVersionField.value = selectId;
+  }
 
   /** Read the selected model's score code and derive its contract. */
   async function loadPromptContract(modelId: string): Promise<void> {
@@ -1271,7 +1324,19 @@ export async function buildRagBuilder(
     void (async () => {
       enrichMapping = {};
       await refreshPrompts();
+      await refreshVersions();
       renderEnrichDetail('', []);
+      describePrompt();
+    })();
+  });
+
+  // Pinning reads a DIFFERENT copy of the prompt, so the contract on screen
+  // has to be the pinned one - its outputs may differ from the latest.
+  promptVersionField.addEventListener('change', () => {
+    void (async () => {
+      enrichVersionLabel = promptVersionField.selectedOptions[0]?.textContent ?? '';
+      await loadPromptContract(promptModelField.value);
+      renderEnrichDetail(headerOutputField.value, selectedColumnOutputs());
       describePrompt();
     })();
   });
@@ -1279,6 +1344,8 @@ export async function buildRagBuilder(
   promptModelField.addEventListener('change', () => {
     void (async () => {
       enrichPromptName = promptModelField.selectedOptions[0]?.textContent ?? '';
+      enrichVersionLabel = '';
+      await refreshVersions();
       await loadPromptContract(promptModelField.value);
       // A new prompt gets the obvious mapping filled in; unfamiliar input
       // names stay blank and validateSetup asks for them.
@@ -1293,12 +1360,14 @@ export async function buildRagBuilder(
   async function restoreEnrichment(setup: RagSetup): Promise<void> {
     const stored = setup.enrich;
     enrichPromptName = stored?.promptModelName ?? '';
+    enrichVersionLabel = stored?.promptVersionLabel ?? '';
     enrichMapping = { ...(stored?.mapping ?? {}) };
     enrichWorkersField.value = String(stored?.workers ?? 4);
     keepUnlisted(promptProjectField, stored?.promptProjectId ?? '', str('ragBuilderUnlistedPromptProject', 'not found'));
     await refreshPrompts(stored?.promptModelId ?? '');
+    await refreshVersions(stored?.promptVersionId ?? '');
     await loadPromptContract(stored?.promptModelId ?? '');
-    renderEnrichDetail(stored?.headerOutput ?? '', stored?.tagOutputs ?? []);
+    renderEnrichDetail(stored?.headerOutput ?? '', stored?.columnOutputs ?? []);
     describePrompt();
   }
 
@@ -1310,6 +1379,8 @@ export async function buildRagBuilder(
       promptProjectId: promptProjectField.value,
       promptModelId: promptModelField.value,
       promptModelName: enrichPromptName,
+      promptVersionId: promptVersionField.value,
+      promptVersionLabel: promptVersionField.value ? enrichVersionLabel : '',
       // only the inputs this prompt actually has: a mapping left over from a
       // previously selected prompt would be rejected by the ingestion
       mapping: Object.fromEntries(
@@ -1318,7 +1389,7 @@ export async function buildRagBuilder(
           .map((name) => [name, enrichMapping[name]])
       ),
       headerOutput: headerOutputField.value,
-      tagOutputs: selectedTagOutputs(),
+      columnOutputs: selectedColumnOutputs(),
       workers: Number.isFinite(workers) && workers >= 1 ? Math.floor(workers) : 4,
     };
   };
@@ -1974,7 +2045,7 @@ export async function buildRagBuilder(
           enrichContract,
           setup.enrich.mapping,
           setup.enrich.headerOutput,
-          setup.enrich.tagOutputs,
+          setup.enrich.columnOutputs,
           str
         )
       );
@@ -2232,9 +2303,10 @@ export async function buildRagBuilder(
     // exists only sometimes makes an existing job definition keep the last
     // value it was generated with when enrichment is turned back off.
     enrichPromptModel: setup.enrich?.promptModelId ?? '',
+    enrichPromptVersion: setup.enrich?.promptVersionId ?? '',
     enrichMapping: renderMapping(setup.enrich?.mapping ?? {}),
     enrichHeaderOutput: setup.enrich?.headerOutput ?? '',
-    enrichTagOutputs: (setup.enrich?.tagOutputs ?? []).join(','),
+    enrichColumns: (setup.enrich?.columnOutputs ?? []).join(','),
     enrichWorkers: String(setup.enrich?.workers ?? 4),
     pipelineVersion: setup.pipelineVersion,
     ledgerCaslib: setup.tables.caslib,

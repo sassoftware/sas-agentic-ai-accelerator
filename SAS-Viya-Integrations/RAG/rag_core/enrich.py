@@ -87,6 +87,32 @@ LLM_NATIVE_OUTPUTS = frozenset(
 #: see the manifested template in the Prompt Builder.
 CALL_FAILED_PREFIX = "LLM call failed"
 
+#: Column names a stored output may NOT take.
+#:
+#: An output is stored as a REAL column on the chunk table, so its name has to
+#: be one the table does not already use - and `score`, `content`, `page` and
+#: `rank` are all plausible things to ask an LLM for. The collision is refused
+#: by name at validation rather than silently prefixed: a column that is not
+#: called what the prompt calls it is a trap for whoever reads the table later.
+#: Covers the canonical chunk schema, the lineage columns the adapters add, and
+#: the names retrieval computes.
+RESERVED_COLUMNS = frozenset((
+    "id", "chunk_id", "doc_id", "source_uri", "chunk_index", "content",
+    "content_hash", "extractor", "pipeline_version", "ingested_at", "span",
+    "heading_path", "tags", "prev_id", "next_id", "context_header",
+    "entities", "relations", "embedding", "tsv",
+    "run_id", "config_id", "embed_model", "embed_dims",
+    "valid_from", "valid_to", "retired_in_run",
+    "enrich_version",
+    "distance", "score", "rank", "question", "filename", "error_text",
+))
+
+#: A stored output's column name must be a plain SQL identifier.
+_COLUMN_OK = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+
+#: The two types a Prompt Builder output variable can have.
+ATTRIBUTE_TYPES = {"decimal": "decimal", "string": "string"}
+
 _LLM_LITERAL = re.compile(r'^\s*llm\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
 _OUTPUT_DOC = re.compile(r"^\s*Output\s*:\s*(.+)$", re.IGNORECASE)
 
@@ -232,9 +258,25 @@ class PromptModel:
                 "with 'integrated LLM call' ticked")
         self.llm = _llm_of(code)
         self.needs_api_key = "API_KEY" in self.inputs
+        #: output name -> "string" | "decimal", from the model's outputVar.json.
+        #: What makes a stored output a TYPED column instead of text.
+        self.output_types: dict = {}
+        #: '' when the setup follows the model rather than pinning a version.
+        self.version_id = ""
         self.usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0,
                       "run_time": 0.0, "failed": 0}
         self._meter = threading.Lock()
+
+    @property
+    def stamp(self) -> str:
+        """What identifies the prompt that wrote a chunk's enrichment.
+
+        Stored on every enriched chunk. Since a prompt may now change without
+        forcing a re-ingest, a collection can legitimately hold work from two
+        prompts at once - and this is what makes that visible rather than
+        merely true.
+        """
+        return f"{self.model_id or self.name}@{self.version_id or self.code_hash}"
 
     @property
     def variables(self) -> list:
@@ -278,42 +320,147 @@ class PromptModel:
     # -- loading -------------------------------------------------------------
     @classmethod
     def from_model_manager(cls, base: str, token: str, model_id: str,
-                           verify=True, timeout: float = 60.0,
-                           session=None) -> "PromptModel":
-        """Download a model's score code from SAS Model Manager and load it."""
+                           version_id: str = "", verify=True,
+                           timeout: float = 60.0, session=None) -> "PromptModel":
+        """Load a manifested prompt from SAS Model Manager.
+
+        `version_id` empty follows the model — whatever the prompt author last
+        manifested. Given, it pins the setup to one version, which is read from
+        a DIFFERENT endpoint: a version's contents live under the model's
+        `history`, not under the version's own id.
+
+        Two shapes of nothing are refused rather than accepted (both seen live
+        on 2026-08-02, on a model an older tool wrote):
+
+        * `GET /models/{versionId}/contents` — the path that looks right —
+          answers **200 with an empty collection**, which reads like a prompt
+          that has no score code rather than like the wrong URL;
+        * a version whose snapshot lost the file body answers **200 with zero
+          bytes**, which would otherwise load as an empty prompt module.
+        """
         import requests
 
         http = session or requests
+        root = base.rstrip("/")
         headers = {"Authorization": "Bearer " + str(token or ""),
                    "Accept": "application/json"}
-        listing = http.get(f"{base.rstrip('/')}/modelRepository/models/{model_id}"
-                           "/contents", params={"limit": 100}, headers=headers,
+        where = (f"/modelRepository/models/{model_id}/history/{version_id}/contents"
+                 if version_id else
+                 f"/modelRepository/models/{model_id}/contents")
+        listing = http.get(root + where, params={"limit": 100}, headers=headers,
                            verify=verify, timeout=timeout)
         if listing.status_code == 404:
             raise RuntimeError(
-                f"no Model Manager model with id {model_id} - the prompt this "
-                "setup enriches with has been deleted or moved")
+                (f"model {model_id} has no version {version_id}" if version_id
+                 else f"no Model Manager model with id {model_id}")
+                + " - the prompt this setup enriches with has been deleted, "
+                  "moved, or its pinned version removed")
         listing.raise_for_status()
         items = listing.json().get("items") or []
+        pinned = f" version {version_id}" if version_id else ""
+        if not items:
+            raise RuntimeError(
+                f"the prompt model {model_id}{pinned} lists no content at all. "
+                "A version whose snapshot did not keep its files cannot be "
+                "used - pin a different version, or follow the latest")
         score = _score_content(items)
         if not score:
             raise RuntimeError(
-                f"the model {model_id} carries no score code - manifest the "
-                "prompt in the Prompt Builder before enriching with it")
-        file_uri = str(score.get("fileUri") or "")
-        if not file_uri:
-            raise RuntimeError(f"the score code of model {model_id} has no file "
-                               "reference to read")
-        content = http.get(base.rstrip("/") + file_uri + "/content",
-                           headers={"Authorization": "Bearer " + str(token or "")},
-                           verify=verify, timeout=timeout)
-        content.raise_for_status()
+                f"the model {model_id}{pinned} carries no score code - manifest "
+                "the prompt in the Prompt Builder before enriching with it")
+        code = _content_of(http, root, token, score, verify, timeout)
+        if not code.strip():
+            raise RuntimeError(
+                f"the score code of prompt model {model_id}{pinned} came back "
+                "EMPTY. Its file body is not in the version snapshot, so there "
+                "is nothing to run - pin a different version, or follow the "
+                "latest")
         name = ""
-        detail = http.get(f"{base.rstrip('/')}/modelRepository/models/{model_id}",
+        detail = http.get(f"{root}/modelRepository/models/{model_id}",
                           headers=headers, verify=verify, timeout=timeout)
         if detail.status_code == 200:
             name = str(detail.json().get("name") or "")
-        return cls(content.content.decode("utf-8"), name=name, model_id=model_id)
+        prompt = cls(code, name=name, model_id=model_id)
+        prompt.version_id = version_id
+        # The registered output variables carry each output's TYPE, which is
+        # what lets a stored output become a typed column rather than text.
+        # Absent (an older manifest), everything falls back to text - readable,
+        # just not summable.
+        variables = _named_content(items, "outputvariables", "outputVar.json")
+        if variables:
+            try:
+                declared = json.loads(
+                    _content_of(http, root, token, variables, verify, timeout))
+                for entry in declared if isinstance(declared, list) else []:
+                    if entry.get("name"):
+                        prompt.output_types[str(entry["name"])] = (
+                            "decimal" if str(entry.get("type")) == "decimal"
+                            else "string")
+            except (ValueError, TypeError):
+                pass          # unreadable declarations never fail a run
+        return prompt
+
+
+def list_versions(base: str, token: str, model_id: str, verify=True,
+                  timeout: float = 60.0, session=None) -> list:
+    """A prompt's versions, oldest first: [{"id", "label", "created"}].
+
+    `modelVersionName` is the major.minor a person recognises, but it is NOT
+    unique - two versions labelled 1.0 were seen on one live model - so the id
+    is the identity and the label is only for display.
+    """
+    import requests
+
+    http = session or requests
+    response = http.get(
+        f"{base.rstrip('/')}/modelRepository/models/{model_id}/modelVersions",
+        params={"limit": 100},
+        headers={"Authorization": "Bearer " + str(token or ""),
+                 "Accept": "application/json"},
+        verify=verify, timeout=timeout)
+    if response.status_code != 200:
+        return []
+    versions = [
+        {"id": str(item.get("id") or ""),
+         "label": str(item.get("modelVersionName") or ""),
+         "created": str(item.get("creationTimeStamp") or "")}
+        for item in (response.json().get("items") or []) if item.get("id")
+    ]
+    return sorted(versions, key=lambda v: v["created"])
+
+
+def _content_of(http, root: str, token: str, item: dict, verify, timeout) -> str:
+    """The bytes behind a content item, by whichever reference it carries.
+
+    A version's item advertises its own `content` link and may have an EMPTY
+    fileUri, while a current model's item has the fileUri and no such link -
+    so both are tried rather than assuming either.
+    """
+    for link in item.get("links") or []:
+        if str(link.get("rel")) == "content" and link.get("uri"):
+            response = http.get(root + str(link["uri"]),
+                                headers={"Authorization": "Bearer " + str(token or "")},
+                                verify=verify, timeout=timeout)
+            if response.status_code == 200 and response.content:
+                return response.content.decode("utf-8", "replace")
+    file_uri = str(item.get("fileUri") or "").rstrip("/")
+    if file_uri and not file_uri.endswith("/files/files"):
+        response = http.get(root + file_uri + "/content",
+                            headers={"Authorization": "Bearer " + str(token or "")},
+                            verify=verify, timeout=timeout)
+        if response.status_code == 200:
+            return response.content.decode("utf-8", "replace")
+    return ""
+
+
+def _named_content(items: list, role: str, filename: str) -> dict:
+    for item in items:
+        if str(item.get("role") or "").lower() == role:
+            return item
+    for item in items:
+        if str(item.get("name") or "") == filename:
+            return item
+    return {}
 
 
 def _score_content(items: list) -> dict:
@@ -366,8 +513,24 @@ def _as_float(value) -> float:
 # ---------------------------------------------------------------------------
 # RAG - Enrich Chunks
 # ---------------------------------------------------------------------------
+def attribute_schema(prompt: PromptModel, outputs) -> dict:
+    """column name -> "string" | "decimal" for the outputs a setup stores.
+
+    The column IS the output name: an output called `department` becomes a
+    `department` column, so the table reads the way the prompt does. Types
+    come from the prompt's registered output variables; anything undeclared
+    is text, which is readable but not summable.
+    """
+    schema: dict = {}
+    for name in outputs or []:
+        schema[str(name)] = ("decimal"
+                             if prompt.output_types.get(name) == "decimal"
+                             else "string")
+    return schema
+
+
 def validate_selection(prompt: PromptModel, mapping: dict, header_output: str,
-                       tag_outputs: list) -> list:
+                       column_outputs: list) -> list:
     """Everything wrong with a setup's use of this prompt, by name.
 
     Called BEFORE the corpus is crawled - a mapping that names an input the
@@ -388,34 +551,60 @@ def validate_selection(prompt: PromptModel, mapping: dict, header_output: str,
     if unknown_fields:
         problems.append("no such chunk field(s): " + ", ".join(unknown_fields)
                         + " - available: " + ", ".join(sorted(CHUNK_FIELDS)))
-    wanted = ([header_output] if header_output else []) + list(tag_outputs or [])
+    columns = list(column_outputs or [])
+    wanted = ([header_output] if header_output else []) + columns
     missing = [name for name in wanted if name not in prompt.outputs]
     if missing:
         problems.append("the prompt does not return " + ", ".join(missing)
                         + " - it returns " + (", ".join(prompt.outputs) or "nothing"))
-    if not header_output and not tag_outputs:
+    # A stored output becomes a real column, so its name has to be one the
+    # chunk table can take. Refused by name rather than renamed for the user:
+    # a column that is not called what the prompt calls it is a trap for
+    # whoever reads the table six months later.
+    taken = sorted({name for name in columns if name.lower() in RESERVED_COLUMNS})
+    if taken:
+        problems.append("these output(s) cannot be stored as columns because "
+                        "the chunk table already uses those names: "
+                        + ", ".join(taken)
+                        + " - rename them in the prompt, or do not store them")
+    malformed = sorted({name for name in columns
+                        if name.lower() not in RESERVED_COLUMNS
+                        and not _COLUMN_OK.match(name.lower())})
+    if malformed:
+        problems.append("these output name(s) cannot be a column name: "
+                        + ", ".join(malformed)
+                        + " - use letters, digits and underscores, starting "
+                          "with a letter")
+    if not header_output and not columns:
         problems.append("nothing would be stored: choose the output that "
                         "becomes the context header, or at least one output to "
-                        "keep as a tag")
+                        "store as a column")
     return problems
 
 
 def run_enrich(chunks: list, prompt: PromptModel, mapping: dict,
-               header_output: str = "", tag_outputs=(), api_key: str = "",
+               header_output: str = "", column_outputs=(), api_key: str = "",
                max_workers: int = 4, already_enriched: set = frozenset(),
                document_chars: int = DOCUMENT_CONTEXT_CHARS, log=print) -> tuple:
     """Enrich every chunk through the prompt. Returns (chunks, failures).
 
-    The returned list is the SAME chunks, with `context_header` and `tags`
-    filled in where the call succeeded - the Embed step then prepends the
-    header before embedding, which is the whole point of the stage.
+    The returned list is the SAME chunks, with `context_header` and an
+    `attributes` map filled in where the call succeeded. The Embed step
+    prepends the header before embedding; the Load step writes each attribute
+    into its own COLUMN on the chunk table, so what the LLM extracted is
+    queryable and filterable rather than buried in a JSON blob.
+
+    Every enriched chunk also records `enrich_version` - which prompt, at
+    which version, wrote it. A prompt may now change without forcing a
+    re-ingest, so a collection can hold work from two prompts at once, and
+    this is what makes that visible rather than merely true.
 
     `already_enriched` is the checkpoint set the Embed step has too: a chunk
     whose vector is being reused was enriched by the run that embedded it, and
     calling the LLM again for a header nobody will store is pure cost.
     """
-    tag_outputs = list(tag_outputs or [])
-    problems = validate_selection(prompt, mapping, header_output, tag_outputs)
+    column_outputs = list(column_outputs or [])
+    problems = validate_selection(prompt, mapping, header_output, column_outputs)
     if problems:
         raise ValueError("this setup cannot enrich with "
                          f"{prompt.name or prompt.model_id!r}: "
@@ -439,7 +628,7 @@ def run_enrich(chunks: list, prompt: PromptModel, mapping: dict,
     # Only the parsed outputs depend on the response being valid JSON; asking
     # for none of them means parse_status is irrelevant to this setup.
     parsed_wanted = [name for name in ([header_output] if header_output else [])
-                     + tag_outputs if name not in LLM_NATIVE_OUTPUTS]
+                     + column_outputs if name not in LLM_NATIVE_OUTPUTS]
     failures: list = []
     truncated_headers = 0
 
@@ -470,12 +659,20 @@ def run_enrich(chunks: list, prompt: PromptModel, mapping: dict,
                     header = header[:MAX_HEADER_CHARS]
                     truncated_headers += 1
                 chunk["context_header"] = header or None
-            if tag_outputs:
-                tags = dict(chunk.get("tags") or {})
-                for name in tag_outputs:
+            if column_outputs:
+                attributes = dict(chunk.get("attributes") or {})
+                for name in column_outputs:
                     value = result.get(name)
-                    tags[name] = "" if value is None else value
-                chunk["tags"] = tags
+                    # A decimal column must not receive the empty string; a
+                    # missing number is NULL, which is what "the prompt did
+                    # not say" means in a column somebody will average.
+                    if prompt.output_types.get(name) == "decimal":
+                        attributes[name] = _as_float(value) if value not in (None, "") else None
+                    else:
+                        attributes[name] = None if value is None else str(value)
+                chunk["attributes"] = attributes
+            # which prompt, at which version, wrote this chunk's enrichment
+            chunk["enrich_version"] = prompt.stamp
 
     if truncated_headers:
         log(f"rag enrich: {truncated_headers} header(s) longer than "

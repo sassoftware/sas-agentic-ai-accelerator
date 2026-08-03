@@ -206,9 +206,12 @@ class PgVectorAdapter(VectorStoreAdapter):
     _JSON_COLUMNS = {"span", "tags", "entities", "relations"}
     _LIVE = "valid_to IS NULL"
 
-    def _row(self, record: dict) -> tuple:
+    def _table(self, collection: str) -> str:
+        return _ident(collection)
+
+    def _row(self, record: dict, columns=None) -> tuple:
         values = []
-        for column in self._COLUMNS:
+        for column in (columns or self._COLUMNS):
             value = record.get(column)
             if column in self._JSON_COLUMNS:
                 values.append(json.dumps(value) if value is not None else
@@ -225,10 +228,12 @@ class PgVectorAdapter(VectorStoreAdapter):
         from psycopg2.extras import execute_values
 
         table = _ident(collection)
-        columns = ", ".join(self._COLUMNS)
-        updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in self._COLUMNS if c != "chunk_id")
+        # whatever the Enrich stage added to THIS collection rides along
+        all_columns = self._columns_for(collection)
+        columns = ", ".join(all_columns)
+        updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in all_columns if c != "chunk_id")
         template = "(" + ", ".join(
-            "%s::vector" if c == "embedding" else "%s" for c in self._COLUMNS) + ")"
+            "%s::vector" if c == "embedding" else "%s" for c in all_columns) + ")"
         with self._cursor() as cur:
             # the conflict target is the LIVE-row constraint, named explicitly
             # rather than inferred: with NULLS NOT DISTINCT the inference rules
@@ -239,7 +244,8 @@ class PgVectorAdapter(VectorStoreAdapter):
                 f"INSERT INTO {table} ({columns}) VALUES %s "
                 f"ON CONFLICT ON CONSTRAINT {collection}_live_uk "
                 f"DO UPDATE SET {updates}",
-                [self._row(r) for r in records], template=template, page_size=200,
+                [self._row(r, all_columns) for r in records],
+                template=template, page_size=200,
             )
             affected = cur.rowcount
         self._conn.commit()
@@ -305,7 +311,8 @@ class PgVectorAdapter(VectorStoreAdapter):
         if raw_filter:
             condition = f"({condition}) AND ({raw_filter})"   # documented escape hatch
         vec_literal = "[" + ",".join(repr(float(v)) for v in vector) + "]"
-        columns = ", ".join(c for c in self._COLUMNS if c != "embedding")
+        columns = ", ".join(c for c in self._columns_for(collection)
+                            if c != "embedding")
         with self._cursor() as cur:
             cur.execute(
                 f"SELECT {columns}, (embedding <=> %s::vector) AS distance "

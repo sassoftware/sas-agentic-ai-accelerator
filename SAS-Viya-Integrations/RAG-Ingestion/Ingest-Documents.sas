@@ -55,9 +55,14 @@
  *   enrichMapping    - which chunk field fills each prompt input, as
  *                      input=field;input=field. Fields: chunk, document,
  *                      neighbours, heading, filename, source, position
+ *   enrichPromptVersion - Model Manager version id to PIN the prompt to.
+ *                      Blank (default) follows the model, so re-manifesting
+ *                      the prompt changes what the next run writes
  *   enrichHeaderOutput  - the prompt output stored as the chunk's context
  *                      header, which the Embed step prepends before embedding
- *   enrichTagOutputs - prompt outputs kept as chunk tags, comma separated
+ *   enrichColumns    - prompt outputs stored as their own columns on the
+ *                      chunk table, comma separated. A column added later is
+ *                      NOT backfilled; one no longer produced is not dropped
  *   enrichWorkers    - parallel LLM calls during enrichment (default 4)
  *   pipelineVersion  - bump to force a full re-embed (default v1)
  *   configHash       - config fingerprint stamped into the ledger; a run
@@ -96,8 +101,9 @@
 %_rag_default(overlapTokens, 30);
 %_rag_default(enrichPromptModel, );    /* blank = no Enrich stage */
 %_rag_default(enrichMapping, );        /* input=field;input=field */
+%_rag_default(enrichPromptVersion, );  /* blank = follow the model */
 %_rag_default(enrichHeaderOutput, );
-%_rag_default(enrichTagOutputs, );     /* comma separated */
+%_rag_default(enrichColumns, );        /* comma separated */
 %_rag_default(enrichWorkers, 4);
 %_rag_default(deletedPolicy, retire);   /* retire (keep history) | purge */
 %_rag_default(retainDays, 0);           /* 0 = keep retired chunks forever */
@@ -200,8 +206,9 @@ def main():
         "embedModel", "deploymentType", "inputTokenLimit", "chunker",
         "overlapTokens", "pipelineVersion", "configHash", "ragCorePath",
         "deletedPolicy", "retainDays", "replicas", "recordHistory",
-        "includeCode", "enrichPromptModel", "enrichMapping",
-        "enrichHeaderOutput", "enrichTagOutputs", "enrichWorkers",
+        "includeCode", "enrichPromptModel", "enrichPromptVersion",
+        "enrichMapping", "enrichHeaderOutput", "enrichColumns",
+        "enrichWorkers",
     ]}
 
     try:
@@ -245,8 +252,9 @@ def main():
 
         from rag_core.adapters import get_adapter
         from rag_core.credentials import fetch_secrets, store_config_from_secrets
-        from rag_core.enrich import (PromptModel, parse_mapping, parse_names,
-                                     run_enrich, validate_selection)
+        from rag_core.enrich import (PromptModel, attribute_schema,
+                                     parse_mapping, parse_names, run_enrich,
+                                     validate_selection)
         from rag_core.extractors import ExtractorRegistry
         from rag_core.scr import EmbeddingClient
         from rag_core.providers import api_key_for, llm_api_key_for
@@ -272,42 +280,33 @@ def main():
         # twenty-minute one after the corpus has been crawled and chunked.
         prompt = None
         enrich_mapping = parse_mapping(P["enrichMapping"])
-        enrich_tags = parse_names(P["enrichTagOutputs"])
+        enrich_columns = parse_names(P["enrichColumns"])
         if P["enrichPromptModel"]:
-            prompt = PromptModel.from_model_manager(BASE, TOKEN,
-                                                    P["enrichPromptModel"],
-                                                    verify=VERIFY)
+            prompt = PromptModel.from_model_manager(
+                BASE, TOKEN, P["enrichPromptModel"],
+                version_id=P["enrichPromptVersion"], verify=VERIFY)
             problems = validate_selection(prompt, enrich_mapping,
-                                          P["enrichHeaderOutput"], enrich_tags)
+                                          P["enrichHeaderOutput"], enrich_columns)
             if problems:
                 raise RuntimeError("this setup cannot enrich with "
                                    + (prompt.name or P["enrichPromptModel"])
                                    + ": " + "; ".join(problems))
             M("enrich prompt: " + prompt.describe())
 
-        fingerprint = {
+        # Enrichment is deliberately NOT part of the fingerprint (owner
+        # decision 2026-08-03). Changing the prompt applies from the next run
+        # onward instead of demanding a full re-ingest: a corpus may hold
+        # headers from two prompt versions, and every enriched chunk records
+        # which one wrote it (enrich_version) so the mix is visible rather
+        # than merely true. The guard still covers what would make the
+        # collection unreadable - the chunker, the window and the embedding
+        # model, which change the vectors themselves.
+        cfg_hash = P["configHash"] or config_hash({
             "backend": P["backend"], "collection": P["collection"],
             "chunker": P["chunker"], "tokens": P["inputTokenLimit"],
             "overlap": P["overlapTokens"], "embedModel": P["embedModel"],
             "pipelineVersion": P["pipelineVersion"],
-        }
-        if prompt is not None:
-            # A context header changes what a chunk IS, exactly as the chunker
-            # and the embedding model do - so it belongs in the fingerprint the
-            # drift guard compares, INCLUDING the prompt's own code. Editing
-            # the prompt and re-running would otherwise leave a collection half
-            # of whose chunks were written by a prompt that no longer exists.
-            # These keys are absent when nothing enriches, so a setup that does
-            # not use the stage keeps the fingerprint it already had.
-            fingerprint.update({
-                "enrichPrompt": P["enrichPromptModel"],
-                "enrichCode": prompt.code_hash,
-                "enrichMapping": ";".join(f"{name}={enrich_mapping[name]}"
-                                          for name in sorted(enrich_mapping)),
-                "enrichHeader": P["enrichHeaderOutput"],
-                "enrichTags": ",".join(enrich_tags),
-            })
-        cfg_hash = P["configHash"] or config_hash(fingerprint)
+        })
 
         # ---- previous ledger + drift guard + run lock ----------------------
         ledger = []
@@ -391,8 +390,8 @@ def main():
         if prompt is not None:
             chunks, enrich_failures = run_enrich(
                 chunks, prompt, enrich_mapping,
-                header_output=P["enrichHeaderOutput"], tag_outputs=enrich_tags,
-                api_key=enrich_key,
+                header_output=P["enrichHeaderOutput"],
+                column_outputs=enrich_columns, api_key=enrich_key,
                 max_workers=int(float(P["enrichWorkers"] or 4)), log=M)
             # what those calls cost, in the same place the embedding cost is
             log_enrich_cost(prompt.llm, prompt.usage, log=M)
@@ -408,6 +407,8 @@ def main():
                              P["pipelineVersion"],
                              deleted_policy=P["deletedPolicy"] or "retire",
                              retain_days=int(float(P["retainDays"] or 0)),
+                             attributes=(attribute_schema(prompt, enrich_columns)
+                                         if prompt is not None else None),
                              stats=load_stats, log=M)
         new_ledger = merge_ledger(real_rows, inventory)
         for row in new_ledger:
@@ -422,10 +423,12 @@ def main():
                           "overlap_tokens": int(float(P["overlapTokens"] or 30)),
                           "pipeline_version": P["pipelineVersion"],
                           "embed_model": P["embedModel"],
-                          # so the configuration behind the hash names the
-                          # prompt that wrote these chunks' headers
-                          **({k: v for k, v in fingerprint.items()
-                              if k.startswith("enrich")} if prompt else {})},
+                          # recorded, not hashed: which prompt a run used is
+                          # history, and no longer part of what a chunk IS
+                          **({"enrich_prompt": prompt.stamp,
+                              "enrich_header": P["enrichHeaderOutput"],
+                              "enrich_columns": ",".join(enrich_columns)}
+                             if prompt else {})},
                 metrics={"backend": P["backend"], "collection_chunks": total,
                          "embed_dims": dims, **load_stats,
                          "embed_calls": int(client.usage.get("calls") or 0),
