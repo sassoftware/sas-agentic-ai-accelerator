@@ -162,6 +162,7 @@ class PgVectorAdapter(VectorStoreAdapter):
         would have added. Columns first, then the live-row constraint, then
         the indexes that depend on both.
         """
+        self._forget_attributes(name)   # this call may CREATE the table
         statements = self._statements(name, dims, metric, schema)
         table = _ident(name)
         with self._cursor() as cur:
@@ -378,6 +379,7 @@ class PgVectorAdapter(VectorStoreAdapter):
         return affected
 
     def drop_collection(self, name: str) -> None:
+        self._forget_attributes(name)
         with self._cursor() as cur:
             cur.execute(f"DROP TABLE IF EXISTS {_ident(name)}")
         self._conn.commit()

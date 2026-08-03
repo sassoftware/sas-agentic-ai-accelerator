@@ -686,6 +686,32 @@ def test_re_running_the_same_prompt_replaces_its_own_stamp():
     assert rows[0]["enrich_version"].count("mm-1@") == 1
 
 
+UPPERCASE_PROMPT = '''
+def scoreModel(chunk):
+    "Output: response, Department, parse_status"
+    llm = "gpt_5_mini"
+    return "{}", "finance", 1
+'''
+
+
+def test_an_uppercase_output_name_becomes_a_lowercase_column_and_keeps_its_value():
+    """Found live 2026-08-03, and silent.
+
+    `Department` is a legal output name and both engines fold the identifier
+    to `department` — but the value was then looked up under the original
+    spelling, so the column existed and stayed NULL for the whole corpus.
+    One spelling, everywhere: the column name is the lowercased output name.
+    """
+    prompt = PromptModel(UPPERCASE_PROMPT, name="Classify", model_id="mm-1")
+    assert attribute_schema(prompt, ["Department"]) == {"department": "string"}
+
+    rows, failures = run_enrich(chunks(1), prompt, {"chunk": "chunk"},
+                                column_outputs=["Department"], log=lambda _: None)
+    assert failures == []
+    # keyed by the COLUMN name, which is what the adapter will ask for
+    assert rows[0]["attributes"] == {"department": "finance"}
+
+
 def test_the_column_lists_of_several_steps_become_one():
     first = PromptModel(PARSING_PROMPT)
     second = PromptModel(SECOND_PROMPT)

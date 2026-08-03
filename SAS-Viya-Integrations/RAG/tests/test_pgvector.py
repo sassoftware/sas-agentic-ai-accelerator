@@ -239,6 +239,114 @@ def test_live_retrieval_returns_everything_when_k_exceeds_the_collection(
         assert found == min(k, 5), f"k={k} returned {found} of 5 live chunks"
 
 
+SCRATCH = "rag_pytest_scratch"
+
+
+def test_live_enrichment_columns_are_created_typed_and_written(live_adapter):
+    """The Enrich stage's outputs become REAL columns on the chunk table.
+
+    pgvector is the default backend, so this is the path most corpora take.
+    Until 2026-08-03 it was covered only by a fake cursor, which could prove
+    which SQL was emitted but not that the database accepts it, that the new
+    columns come back through information_schema, or that a `double precision`
+    column really takes a number and gives one back.
+    """
+    a = live_adapter
+    a.drop_collection(SCRATCH)
+    a.ensure_collection(SCRATCH, dims=8)
+    assert a.attribute_columns(SCRATCH) == []
+
+    delta = a.sync_attributes(SCRATCH, {"department": "string",
+                                        "confidence": "decimal"})
+    # enrich_version is added alongside the first stored output, unasked
+    assert delta["added"] == ["confidence", "department", "enrich_version"]
+    assert delta["kept"] == []
+    assert a.attribute_columns(SCRATCH) == ["confidence", "department",
+                                            "enrich_version"]
+    assert a.sync_attributes(SCRATCH, {"department": "string"})["added"] == []
+
+    chunks = _make_chunks("docA", "hashv1", ["alpha text", "beta text"])
+    records = []
+    for index, chunk in enumerate(chunks):
+        record = dict(chunk.__dict__)
+        record["department"] = "legal" if index == 0 else "hr"
+        record["confidence"] = 0.75 if index == 0 else None
+        record["enrich_version"] = "mm-1@v-2"
+        records.append(record)
+    assert a.upsert(SCRATCH, records) == 2
+
+    query = [0.0] * 8
+    query[0] = 1.0
+    hit = a.search(SCRATCH, query, k=1)[0]
+    assert hit.record["department"] == "legal"
+    # a decimal column returns a NUMBER, which is the whole point of typing it
+    assert float(hit.record["confidence"]) == pytest.approx(0.75)
+    assert hit.record["enrich_version"] == "mm-1@v-2"
+
+    # "the prompt did not say" is NULL, not zero - a zero would be averaged
+    other = [h for h in a.search(SCRATCH, query, k=2)
+             if h.record["department"] == "hr"][0]
+    assert other.record["confidence"] is None
+
+
+def test_live_a_column_no_longer_produced_is_kept_not_dropped(live_adapter):
+    """Removing an output from a prompt must never remove data."""
+    a = live_adapter
+    a.drop_collection(SCRATCH)
+    a.ensure_collection(SCRATCH, dims=8)
+    a.sync_attributes(SCRATCH, {"department": "string", "confidence": "decimal"})
+
+    delta = a.sync_attributes(SCRATCH, {"department": "string"})
+    assert delta["added"] == []
+    assert delta["kept"] == ["confidence"]              # reported, not dropped
+    assert "confidence" in a.attribute_columns(SCRATCH)
+
+
+def test_live_a_column_added_later_is_not_backfilled(live_adapter):
+    """The rule the run log states out loud, proved against the database."""
+    a = live_adapter
+    a.drop_collection(SCRATCH)
+    a.ensure_collection(SCRATCH, dims=8)
+
+    early = _make_chunks("docA", "hashv1", ["written before the column existed"])
+    a.upsert(SCRATCH, [c.__dict__ for c in early])
+
+    assert a.sync_attributes(SCRATCH, {"tone": "string"})["added"] == [
+        "enrich_version", "tone"]
+    query = [0.0] * 8
+    query[0] = 1.0
+    assert a.search(SCRATCH, query, k=1)[0].record["tone"] is None
+
+
+def test_live_a_refused_column_name_leaves_the_table_untouched(live_adapter):
+    """These names reach DDL, so they are refused before anything is created."""
+    a = live_adapter
+    a.drop_collection(SCRATCH)
+    a.ensure_collection(SCRATCH, dims=8)
+    for bad in ("drop table x", 'tone"; DROP TABLE y;--', "1tone", "a-b"):
+        with pytest.raises(ValueError):
+            a.sync_attributes(SCRATCH, {bad: "string"})
+    # not even enrich_version: validation precedes every ALTER
+    assert a.attribute_columns(SCRATCH) == []
+
+
+def test_live_dropping_a_collection_forgets_its_columns(live_adapter):
+    """The cache outlived the table until 2026-08-03, and the next write then
+    named columns the new table did not have - failing the whole batch."""
+    a = live_adapter
+    a.drop_collection(SCRATCH)
+    a.ensure_collection(SCRATCH, dims=8)
+    a.sync_attributes(SCRATCH, {"tone": "string"})
+    assert "tone" in a.attribute_columns(SCRATCH)
+
+    a.drop_collection(SCRATCH)
+    a.ensure_collection(SCRATCH, dims=8)
+    assert a.attribute_columns(SCRATCH) == []
+    # and a write against the recreated table succeeds
+    fresh = _make_chunks("docB", "hashv2", ["after the recreate"])
+    assert a.upsert(SCRATCH, [c.__dict__ for c in fresh]) == 1
+
+
 def test_live_cutover_rename(live_adapter):
     a = live_adapter
     a.drop_collection("rag_pytest_scratch_v2")

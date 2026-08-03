@@ -240,6 +240,10 @@ than applied quietly:
   the ingestion. `score`, `content`, `page` and `rank` are all plausible things
   to ask an LLM for and all belong to the chunk schema — rename the output in
   the prompt, or don't store it.
+- **The column is the output name in lower case.** Both pgvector and
+  SingleStore fold an unquoted identifier, so an output called `Department`
+  becomes a `department` column. Nothing else about the name changes — a
+  stored output is never prefixed or abbreviated.
 
 ### Latest, or pinned
 

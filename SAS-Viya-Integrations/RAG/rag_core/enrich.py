@@ -600,9 +600,13 @@ def attribute_schema(prompt: PromptModel, outputs) -> dict:
     """
     schema: dict = {}
     for name in outputs or []:
-        schema[str(name)] = ("decimal"
-                             if prompt.output_types.get(name) == "decimal"
-                             else "string")
+        # LOWERCASED: both engines fold an unquoted identifier, so `Department`
+        # would become a `department` column - and every later lookup went by
+        # the original name and found nothing, leaving the column null for the
+        # whole corpus (found live 2026-08-03). One spelling, everywhere.
+        schema[str(name).lower()] = ("decimal"
+                                     if prompt.output_types.get(name) == "decimal"
+                                     else "string")
     return schema
 
 
@@ -823,14 +827,17 @@ def run_enrich(chunks: list, prompt: PromptModel, mapping: dict,
             if column_outputs:
                 attributes = dict(chunk.get("attributes") or {})
                 for name in column_outputs:
+                    # read by the prompt's own spelling, stored by the
+                    # column's - see attribute_schema
+                    column = str(name).lower()
                     value = result.get(name)
                     # A decimal column must not receive the empty string; a
                     # missing number is NULL, which is what "the prompt did
                     # not say" means in a column somebody will average.
                     if prompt.output_types.get(name) == "decimal":
-                        attributes[name] = _as_float(value) if value not in (None, "") else None
+                        attributes[column] = _as_float(value) if value not in (None, "") else None
                     else:
-                        attributes[name] = None if value is None else str(value)
+                        attributes[column] = None if value is None else str(value)
                 chunk["attributes"] = attributes
             # which prompt, at which version, wrote this chunk's enrichment -
             # appended, because a setup may run several prompts over the same

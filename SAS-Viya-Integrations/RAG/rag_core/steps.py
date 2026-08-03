@@ -675,7 +675,9 @@ def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
         # each extracted attribute is its own column, so it travels as its own
         # key rather than as a nested map the adapter would have to know about
         for name, value in (chunk.pop("attributes", None) or {}).items():
-            chunk[name] = value
+            # the adapter addresses columns by their lowercase name, and an
+            # attributes map that came back through JSON may not be
+            chunk[str(name).lower()] = value
         chunk.setdefault("run_id", run_id)
         chunk.setdefault("config_id", config_id)
         chunk.setdefault("embed_model", embed_model)

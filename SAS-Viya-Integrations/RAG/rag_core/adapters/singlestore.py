@@ -251,6 +251,7 @@ class SingleStoreAdapter(VectorStoreAdapter):
 
     def ensure_collection(self, name: str, dims: int, metric: str = "cosine",
                           schema: Optional[dict] = None) -> None:
+        self._forget_attributes(name)   # this call may CREATE the table
         statements = self._statements(name, dims, metric, schema)
         self._metric = metric
         existed = bool(self._columns_present(name))
@@ -464,6 +465,7 @@ class SingleStoreAdapter(VectorStoreAdapter):
         return self._execute(f"DELETE FROM {table} WHERE {condition}", [cutoff])
 
     def drop_collection(self, name: str) -> None:
+        self._forget_attributes(name)
         self._execute(f"DROP TABLE IF EXISTS {_ident(name)}")
 
     def list_collections(self) -> list:

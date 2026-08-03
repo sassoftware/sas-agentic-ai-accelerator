@@ -78,6 +78,23 @@ class VectorStoreAdapter(ABC):
                 self._existing_columns(collection) - self._canonical_columns())
         return cache[collection]
 
+    def _forget_attributes(self, collection: str = "") -> None:
+        """Drop the cached column list — this table's shape just changed.
+
+        Found live 2026-08-03: without this, dropping a collection and
+        recreating it in the same process left the cache naming columns the
+        new table does not have, and the next write failed the whole batch
+        with "Unknown column". Reachable from purge, cutover and re-register,
+        none of which open a new connection.
+        """
+        cache = getattr(self, "_attribute_cache", None)
+        if cache is None:
+            return
+        if collection:
+            cache.pop(collection, None)
+        else:
+            cache.clear()
+
     def sync_attributes(self, collection: str, wanted: dict) -> dict:
         """Add a column for every stored output that does not have one.
 
@@ -93,14 +110,19 @@ class VectorStoreAdapter(ABC):
         existing = self._existing_columns(collection)
         desired = dict(wanted)
         desired.setdefault(self._ENRICH_STAMP, "string")
+        # EVERY name is checked before ANY column is created. Validating
+        # inside the loop below meant an alphabetically earlier name had
+        # already been added by the time a later one was refused, leaving the
+        # table half-migrated - and DDL does not roll back on either engine.
+        for column in desired:
+            if not self._ATTRIBUTE_OK.match(str(column).lower()):
+                raise ValueError(
+                    f"{column!r} cannot be a column name - use letters, "
+                    "digits and underscores, starting with a letter")
         added: list = []
         with self._cursor() as cur:            # type: ignore[attr-defined]
             for column, kind in sorted(desired.items()):
                 name = str(column).lower()
-                if not self._ATTRIBUTE_OK.match(name):
-                    raise ValueError(
-                        f"{column!r} cannot be a column name - use letters, "
-                        "digits and underscores, starting with a letter")
                 if name in existing:
                     continue
                 sql_type = self._ATTRIBUTE_SQL.get(str(kind), self._ATTRIBUTE_SQL["string"])
