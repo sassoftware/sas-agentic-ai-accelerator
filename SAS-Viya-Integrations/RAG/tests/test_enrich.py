@@ -11,8 +11,11 @@ import pytest
 
 from rag_core.enrich import (CHUNK_FIELDS, PromptModel, attribute_schema,
                              document_context, field_values, list_versions,
-                             parse_mapping, parse_names, render_mapping,
-                             run_enrich, validate_selection)
+                             merge_attribute_schemas, parse_mapping,
+                             parse_names, parse_steps, render_mapping,
+                             render_steps, run_enrich, validate_pipeline,
+                             validate_selection)
+from rag_core.steps import stamp_enrich_usage
 from rag_core.pricing import estimate_enrich_cost
 from rag_core.providers import llm_api_key_entry, llm_api_key_for
 
@@ -572,3 +575,145 @@ def test_a_missing_provider_key_names_the_entry_to_add():
         llm_api_key_for("gpt_5_mini", {})
     with pytest.raises(KeyError, match="fact sheet"):
         llm_api_key_for("some_private_llm", {})
+
+
+# ---- several prompts, one after the other ---------------------------------
+SECOND_PROMPT = '''
+def scoreModel(chunk):
+    "Output: response, sentiment, parse_status"
+    llm = "gpt_4o_mini_2024_07_18"
+    sentiment = "positive" if "invoice" in str(chunk) else "neutral"
+    parse_status = 1
+    return "{}", sentiment, 1
+'''
+
+
+def test_the_packed_step_parameter_round_trips():
+    packed = ("m1|v1|chunk=chunk;doc=document|response|department,tone|8"
+              "~m2||chunk=chunk||sentiment|4")
+    steps = parse_steps(packed)
+    assert [step["model_id"] for step in steps] == ["m1", "m2"]
+    assert steps[0]["version_id"] == "v1"
+    assert steps[0]["mapping"] == {"chunk": "chunk", "doc": "document"}
+    assert steps[0]["header_output"] == "response"
+    assert steps[0]["column_outputs"] == ["department", "tone"]
+    assert steps[0]["workers"] == 8
+    # the second follows the model rather than a version, and stores no header
+    assert steps[1]["version_id"] == ""
+    assert steps[1]["header_output"] == ""
+    assert steps[1]["workers"] == 4
+    assert render_steps(steps) == packed
+
+
+def test_a_step_list_survives_being_parsed_twice():
+    steps = parse_steps("m1||chunk=chunk|response||4")
+    assert parse_steps(steps) == steps
+
+
+def test_a_record_with_no_model_is_dropped_not_refused():
+    # how an enrichment that was configured and then turned off arrives
+    assert parse_steps("~~") == []
+    assert parse_steps("|||||") == []
+    assert parse_steps("") == []
+    assert len(parse_steps("m1||chunk=chunk||department|4~")) == 1
+
+
+def test_a_truncated_record_keeps_its_defaults():
+    step = parse_steps("m1|v2")[0]
+    assert step["mapping"] == {} and step["column_outputs"] == []
+    assert step["workers"] == 4                 # not zero, and not a crash
+
+
+def test_only_one_step_may_write_the_context_header():
+    stages = [
+        {"prompt": PromptModel(HEADER_PROMPT, name="Situate"),
+         "header_output": "response", "column_outputs": []},
+        {"prompt": PromptModel(SECOND_PROMPT, name="Classify"),
+         "header_output": "response", "column_outputs": ["sentiment"]},
+    ]
+    problems = validate_pipeline(stages)
+    assert len(problems) == 1
+    assert "only one enrichment step" in problems[0]
+    # both are named, because "one of them is wrong" is not actionable
+    assert "Situate" in problems[0] and "Classify" in problems[0]
+
+
+def test_two_steps_may_not_store_the_same_column():
+    stages = [
+        {"prompt": PromptModel(PARSING_PROMPT, name="First"),
+         "header_output": "", "column_outputs": ["department"]},
+        {"prompt": PromptModel(SECOND_PROMPT, name="Second"),
+         "header_output": "", "column_outputs": ["department", "sentiment"]},
+    ]
+    problems = validate_pipeline(stages)
+    assert len(problems) == 1
+    assert "department" in problems[0]
+    assert "sentiment" not in problems[0]       # only the contested one
+
+
+def test_a_header_step_followed_by_a_column_step_is_fine():
+    stages = [
+        {"prompt": PromptModel(HEADER_PROMPT), "header_output": "response",
+         "column_outputs": []},
+        {"prompt": PromptModel(SECOND_PROMPT), "header_output": "",
+         "column_outputs": ["sentiment"]},
+    ]
+    assert validate_pipeline(stages) == []
+
+
+def test_every_prompt_that_enriched_a_chunk_is_recorded():
+    rows = chunks(2)
+    first = PromptModel(HEADER_PROMPT, name="Situate", model_id="mm-1")
+    second = PromptModel(SECOND_PROMPT, name="Classify", model_id="mm-2")
+    rows, _ = run_enrich(rows, first, {"chunk": "chunk", "document": "document"},
+                         header_output="response", log=lambda _: None)
+    rows, _ = run_enrich(rows, second, {"chunk": "chunk"},
+                         column_outputs=["sentiment"], log=lambda _: None)
+    stamps = rows[0]["enrich_version"].split(",")
+    assert len(stamps) == 2
+    assert stamps[0].startswith("mm-1@") and stamps[1].startswith("mm-2@")
+    # and both prompts' work survives: the header AND the column
+    assert rows[0]["context_header"].startswith("This chunk is from")
+    assert rows[0]["attributes"]["sentiment"] == "positive"
+
+
+def test_re_running_the_same_prompt_replaces_its_own_stamp():
+    rows = chunks(1)
+    prompt = PromptModel(PARSING_PROMPT, name="Classify", model_id="mm-1")
+    for _ in range(3):
+        rows, _ = run_enrich(rows, prompt, {"chunk": "chunk"},
+                             column_outputs=["department"], log=lambda _: None)
+    assert rows[0]["enrich_version"].count("mm-1@") == 1
+
+
+def test_the_column_lists_of_several_steps_become_one():
+    first = PromptModel(PARSING_PROMPT)
+    second = PromptModel(SECOND_PROMPT)
+    merged = merge_attribute_schemas([
+        attribute_schema(first, ["department"]),
+        attribute_schema(second, ["sentiment"]),
+    ])
+    assert merged == {"department": "string", "sentiment": "string"}
+
+
+def test_a_second_enrich_step_does_not_erase_the_first_ones_columns():
+    # The Load step learns which columns to add from enrich_usage. Overwriting
+    # it would have silently dropped the first prompt's columns and values.
+    rows = [{"doc_id": "d1"}]
+    stamp_enrich_usage(rows, {"calls": 4, "input_tokens": 100, "run_time": 1.5},
+                       "gpt_5_mini", {"department": "string"})
+    stamp_enrich_usage(rows, {"calls": 6, "input_tokens": 200, "run_time": 2.5},
+                       "gpt_4o_mini_2024_07_18", {"tone": "decimal"})
+    import json
+    usage = json.loads(rows[0]["enrich_usage"])
+    assert usage["attributes"] == {"department": "string", "tone": "decimal"}
+    assert usage["calls"] == 10 and usage["input_tokens"] == 300
+    assert usage["run_time"] == pytest.approx(4.0)
+    assert usage["model"] == "gpt_5_mini,gpt_4o_mini_2024_07_18"
+
+
+def test_an_unreadable_earlier_tally_never_fails_a_run():
+    rows = [{"doc_id": "d1", "enrich_usage": "not json"}]
+    stamp_enrich_usage(rows, {"calls": 2}, "gpt_5_mini", {"tone": "string"})
+    import json
+    assert json.loads(rows[0]["enrich_usage"])["calls"] == 2

@@ -29,7 +29,7 @@ Create a Studio Flow and chain the steps. Each passes a document inventory to
 the next; the bulk data travels through CAS tables named after your project.
 
 ```
-RAG - List Documents → Extract Text → Chunk Documents → [Enrich Chunks] → Embed Chunks → Load Vector Store
+RAG - List Documents → Extract Text → Chunk Documents → [Enrich Chunks …] → Embed Chunks → Load Vector Store
 ```
 
 **RAG - List Documents** is where you name things. Pick the folder holding your
@@ -52,10 +52,15 @@ keeps what comes back: one output becomes the chunk's **context header**, which
 is embedded together with the chunk, and any others become their own **columns**
 on the chunk table, so they can be filtered and aggregated. That is
 the fix for a chunk that reads perfectly in place and means nothing on its own
-— *"revenue grew 12%"* does not say whose, or when. It is also the most
-expensive thing in the pipeline, one LLM call per chunk on every re-chunk, so
-the log prices it while the run happens. See the administration guide before
-turning it on.
+— *"revenue grew 12%"* does not say whose, or when.
+
+Chain the step to run **several prompts, one after the other** — one to situate
+the chunk, another to pull out the fields you want to filter on. Only one of
+them may write the context header, because a chunk has one.
+
+It is also the most expensive thing in the pipeline, one LLM call per chunk per
+prompt on every re-chunk, so the log prices it while the run happens. See the
+administration guide before turning it on.
 
 **RAG - Embed Chunks** calls the SCR container. Re-running is cheap: chunks
 whose content has not changed keep their vectors, so a second run embeds only

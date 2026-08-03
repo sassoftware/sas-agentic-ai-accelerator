@@ -84,6 +84,44 @@ export interface RagBuilderConfig {
 }
 
 /**
+ * One enrichment stage: a manifested prompt called once per chunk.
+ *
+ * The prompt is a Model Manager model rather than a literal here (owner
+ * decision OQ14): it is then a governed artifact with its own documentation,
+ * versions and permissions, and improving it does not mean editing a RAG
+ * setup.
+ */
+export interface RagEnrichStep {
+  /** The prompt project the model lives in, so the picker can reopen it. */
+  promptProjectId: string;
+  /** Model Manager id of the manifested prompt. '' = do not enrich. */
+  promptModelId: string;
+  /** Its name at the time of saving, for display when the id resolves late. */
+  promptModelName: string;
+  /**
+   * Version to read the prompt from. '' follows the model, so re-manifesting
+   * the prompt changes what the next run writes; an id pins this setup to
+   * exactly the prompt that version carried.
+   */
+  promptVersionId?: string;
+  /** Its major.minor, for display — version labels are not unique. */
+  promptVersionLabel?: string;
+  /** Prompt input name -> one of rag-enrich.ts's CHUNK_FIELDS keys. */
+  mapping: Record<string, string>;
+  /** Which output becomes the chunk's context_header. '' = none. */
+  headerOutput: string;
+  /**
+   * Which outputs are stored as their own COLUMNS on the chunk table.
+   *
+   * A column added later is not backfilled, and one no longer produced is
+   * not dropped — the run log says so each time either happens.
+   */
+  columnOutputs: string[];
+  /** Parallel LLM calls during this stage. */
+  workers: number;
+}
+
+/**
  * The RAG Setup as the UI round-trips it (`rag-setup.json` on the RAG Setup
  * model). `pipeline.yaml` is GENERATED from this on every save — the yaml is
  * the governance artifact, this JSON is the editor state. Version the shape.
@@ -140,44 +178,17 @@ export interface RagSetup {
   /**
    * The Enrich stage: an LLM call per chunk between chunking and embedding.
    *
-   * Optional so every setup saved before it existed still loads, and absent
-   * reads as off — which is also the default, because the stage costs one
-   * LLM call for every chunk of the corpus.
+   * A LIST, run in order — a setup may situate a chunk with one prompt and
+   * then extract fields from it with another, and each call is priced and
+   * logged separately. Optional so every setup saved before it existed still
+   * loads, and absent (or empty) reads as off, which is also the default:
+   * every entry costs one LLM call for every chunk of the corpus.
    *
-   * The prompt is a manifested Prompt Builder model rather than a literal
-   * here (owner decision OQ14): it is then a governed artifact with its own
-   * documentation, versions and permissions, and improving it does not mean
-   * editing a RAG setup.
+   * Two rules hold ACROSS the list, and both are refused rather than resolved
+   * silently: only one step may write the context header (a chunk has one),
+   * and two steps may not store the same column.
    */
-  enrich?: {
-    /** The prompt project the model lives in, so the picker can reopen it. */
-    promptProjectId: string;
-    /** Model Manager id of the manifested prompt. '' = do not enrich. */
-    promptModelId: string;
-    /** Its name at the time of saving, for display when the id resolves late. */
-    promptModelName: string;
-    /**
-     * Version to read the prompt from. '' follows the model, so re-manifesting
-     * the prompt changes what the next run writes; an id pins this setup to
-     * exactly the prompt that version carried.
-     */
-    promptVersionId?: string;
-    /** Its major.minor, for display — version labels are not unique. */
-    promptVersionLabel?: string;
-    /** Prompt input name -> one of rag-enrich.ts's CHUNK_FIELDS keys. */
-    mapping: Record<string, string>;
-    /** Which output becomes the chunk's context_header. '' = none. */
-    headerOutput: string;
-    /**
-     * Which outputs are stored as their own COLUMNS on the chunk table.
-     *
-     * A column added later is not backfilled, and one no longer produced is
-     * not dropped — the run log says so each time either happens.
-     */
-    columnOutputs: string[];
-    /** Parallel LLM calls during the stage. */
-    workers: number;
-  };
+  enrich?: RagEnrichStep[];
   embedding: {
     model: string;
     dims: number;

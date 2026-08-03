@@ -173,29 +173,75 @@ def stamp_usage(rows: list, usage) -> list:
     return rows
 
 
+#: The enrichment measurements that ADD UP across several prompts.
+_ENRICH_TALLIES = ("calls", "input_tokens", "output_tokens", "run_time", "failed")
+
+
 def stamp_enrich_usage(rows: list, usage, model: str = "",
                        attributes: dict = None) -> list:
-    """The same for the Enrich stage's LLM calls.
+    """The same for the Enrich stage's LLM calls, ACCUMULATED.
 
     Its own column for the same reason: the enrichment tally is a MEASUREMENT
     of a run, and anything written into config_json becomes part of the
     configuration fingerprint - which would make every run look like drift.
     The LLM's name rides along here rather than in the configuration because
     it is read off the prompt's score code at run time, not set on the setup.
+
+    It MERGES with whatever is already on the rows, because a flow may chain
+    several `RAG - Enrich Chunks` steps and each one stamps as it finishes.
+    Overwriting would have cost more than a wrong number: the `attributes` map
+    is how the Load step learns which columns to add, so the second step would
+    have silently dropped the first step's columns and every value in them.
     """
-    payload = dict(usage or {})
+    previous: dict = {}
+    for row in rows:
+        raw = row.get("enrich_usage")
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        except Exception:
+            parsed = {}          # unreadable history never fails a run
+        if isinstance(parsed, dict) and parsed:
+            previous = parsed
+            break
+
+    payload = dict(previous)
+    fresh = dict(usage or {})
+    for key in _ENRICH_TALLIES:
+        if key not in fresh and key not in previous:
+            continue
+        total = _as_number(previous.get(key)) + _as_number(fresh.get(key))
+        payload[key] = total if key == "run_time" else int(total)
+    for key, value in fresh.items():
+        payload.setdefault(key, value)
     if model:
-        payload["model"] = model
+        # every LLM this run's enrichment called, in the order it called them
+        called = [name for name in str(previous.get("model") or "").split(",")
+                  if name.strip()]
+        if model not in called:
+            called.append(model)
+        payload["model"] = ",".join(called)
     if attributes:
         # The columns the Enrich step's outputs need. They travel here because
         # the LOAD step is what holds the collection open, and it is the only
         # stage that can add a column - but the ENRICH step is the only one
         # that knows which outputs a setup stores.
-        payload["attributes"] = dict(attributes)
+        columns = dict(previous.get("attributes") or {})
+        columns.update(attributes)
+        payload["attributes"] = columns
     for row in rows:
         row["enrich_usage"] = json.dumps(payload, sort_keys=True,
                                          separators=(",", ":"))
     return rows
+
+
+def _as_number(value) -> float:
+    """A tally that arrived as text, or as nothing at all."""
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def stamp_config(rows: list, additions: dict) -> list:

@@ -49,21 +49,29 @@
  *                      the reason, never silently dropped
  *   chunker          - recursive (default) or paragraph
  *   overlapTokens    - chunk overlap for the recursive chunker (default 30)
- *   enrichPromptModel   - Model Manager id of a manifested Prompt Builder
- *                      prompt, called once per chunk between chunking and
- *                      embedding. Blank (default) = no enrichment
- *   enrichMapping    - which chunk field fills each prompt input, as
- *                      input=field;input=field. Fields: chunk, document,
- *                      neighbours, heading, filename, source, position
- *   enrichPromptVersion - Model Manager version id to PIN the prompt to.
- *                      Blank (default) follows the model, so re-manifesting
- *                      the prompt changes what the next run writes
- *   enrichHeaderOutput  - the prompt output stored as the chunk's context
- *                      header, which the Embed step prepends before embedding
- *   enrichColumns    - prompt outputs stored as their own columns on the
- *                      chunk table, comma separated. A column added later is
- *                      NOT backfilled; one no longer produced is not dropped
- *   enrichWorkers    - parallel LLM calls during enrichment (default 4)
+ *   enrichSteps      - the enrichment stages, run in the order given, one
+ *                      LLM call per chunk EACH. Packed as
+ *                      model|version|mapping|header|columns|workers with the
+ *                      records separated by ~; see rag_core.enrich
+ *                      .parse_steps. Blank (default) = no enrichment.
+ *                      Within one record: model is a manifested Prompt
+ *                      Builder prompt; version pins it (blank follows the
+ *                      model, so re-manifesting changes what the next run
+ *                      writes); mapping is input=field;input=field over the
+ *                      fields chunk, document, neighbours, heading, filename,
+ *                      source, position; header is the output stored as the
+ *                      chunk's context header, which the Embed step prepends
+ *                      before embedding; columns are the outputs stored as
+ *                      their own columns on the chunk table, comma separated
+ *                      (a column added later is NOT backfilled and one no
+ *                      longer produced is not dropped); workers is the
+ *                      parallel LLM calls for that step. Only ONE step may
+ *                      write the context header, and two steps may not store
+ *                      the same column
+ *   enrichPromptModel/enrichPromptVersion/enrichMapping/enrichHeaderOutput/
+ *   enrichColumns/enrichWorkers - the one-prompt shorthand for the above,
+ *                      read only when enrichSteps is blank, so a job or flow
+ *                      written before enrichment could chain still runs
  *   pipelineVersion  - bump to force a full re-embed (default v1)
  *   configHash       - config fingerprint stamped into the ledger; a run
  *                      whose value differs from the ledger's last run fails
@@ -99,8 +107,9 @@
 %_rag_default(inputTokenLimit, 256);
 %_rag_default(chunker, recursive);
 %_rag_default(overlapTokens, 30);
-%_rag_default(enrichPromptModel, );    /* blank = no Enrich stage */
-%_rag_default(enrichMapping, );        /* input=field;input=field */
+%_rag_default(enrichSteps, );          /* blank = no Enrich stage */
+%_rag_default(enrichPromptModel, );    /* the one-prompt shorthand, read */
+%_rag_default(enrichMapping, );        /* only when enrichSteps is blank */
 %_rag_default(enrichPromptVersion, );  /* blank = follow the model */
 %_rag_default(enrichHeaderOutput, );
 %_rag_default(enrichColumns, );        /* comma separated */
@@ -206,9 +215,9 @@ def main():
         "embedModel", "deploymentType", "inputTokenLimit", "chunker",
         "overlapTokens", "pipelineVersion", "configHash", "ragCorePath",
         "deletedPolicy", "retainDays", "replicas", "recordHistory",
-        "includeCode", "enrichPromptModel", "enrichPromptVersion",
-        "enrichMapping", "enrichHeaderOutput", "enrichColumns",
-        "enrichWorkers",
+        "includeCode", "enrichSteps", "enrichPromptModel",
+        "enrichPromptVersion", "enrichMapping", "enrichHeaderOutput",
+        "enrichColumns", "enrichWorkers",
     ]}
 
     try:
@@ -253,7 +262,8 @@ def main():
         from rag_core.adapters import get_adapter
         from rag_core.credentials import fetch_secrets, store_config_from_secrets
         from rag_core.enrich import (PromptModel, attribute_schema,
-                                     parse_mapping, parse_names, run_enrich,
+                                     merge_attribute_schemas, parse_steps,
+                                     run_enrich, validate_pipeline,
                                      validate_selection)
         from rag_core.extractors import ExtractorRegistry
         from rag_core.scr import EmbeddingClient
@@ -273,25 +283,48 @@ def main():
         if missing:
             M(f"extractors unavailable (packages missing): {missing}")
 
-        # ---- the Enrich stage, when this setup has one ----------------------
-        # Loaded here rather than where it is used: a prompt that has been
+        # ---- the Enrich stages, when this setup has any ---------------------
+        # Loaded here rather than where they are used: a prompt that has been
         # deleted, was manifested for the Call LLM node, or whose inputs the
         # mapping does not match is a five-second failure at this point and a
         # twenty-minute one after the corpus has been crawled and chunked.
-        prompt = None
-        enrich_mapping = parse_mapping(P["enrichMapping"])
-        enrich_columns = parse_names(P["enrichColumns"])
-        if P["enrichPromptModel"]:
-            prompt = PromptModel.from_model_manager(
-                BASE, TOKEN, P["enrichPromptModel"],
-                version_id=P["enrichPromptVersion"], verify=VERIFY)
-            problems = validate_selection(prompt, enrich_mapping,
-                                          P["enrichHeaderOutput"], enrich_columns)
+        # ALL of them load before ANY runs, for the same reason - a broken
+        # second prompt should not be discovered after the first has already
+        # been paid for once per chunk.
+        specs = parse_steps(P["enrichSteps"])
+        if not specs and P["enrichPromptModel"]:
+            specs = parse_steps([{"model_id": P["enrichPromptModel"],
+                                  "version_id": P["enrichPromptVersion"],
+                                  "mapping": P["enrichMapping"],
+                                  "header_output": P["enrichHeaderOutput"],
+                                  "column_outputs": P["enrichColumns"],
+                                  "workers": P["enrichWorkers"]}])
+        stages = []
+        for position, spec in enumerate(specs):
+            loaded = PromptModel.from_model_manager(
+                BASE, TOKEN, spec["model_id"],
+                version_id=spec["version_id"], verify=VERIFY)
+            problems = validate_selection(loaded, spec["mapping"],
+                                          spec["header_output"],
+                                          spec["column_outputs"])
             if problems:
-                raise RuntimeError("this setup cannot enrich with "
-                                   + (prompt.name or P["enrichPromptModel"])
+                raise RuntimeError(f"enrichment step {position + 1} cannot use "
+                                   + (loaded.name or spec["model_id"])
                                    + ": " + "; ".join(problems))
-            M("enrich prompt: " + prompt.describe())
+            stages.append(dict(spec, prompt=loaded))
+            M(f"enrich step {position + 1} of {len(specs)}: " + loaded.describe()
+              + (" [pinned]" if spec["version_id"] else " [latest]"))
+        # and the problems that only exist BETWEEN steps: two prompts writing
+        # the context header, or both claiming the same column
+        problems = validate_pipeline(stages)
+        if problems:
+            raise RuntimeError("these enrichment steps cannot run together: "
+                               + "; ".join(problems))
+
+        def enrich_total(key):
+            """One measurement summed over every prompt this run called."""
+            return sum(float(stage["prompt"].usage.get(key) or 0)
+                       for stage in stages)
 
         # Enrichment is deliberately NOT part of the fingerprint (owner
         # decision 2026-08-03). Changing the prompt applies from the next run
@@ -362,9 +395,10 @@ def main():
         # An enrichment prompt that calls a hosted LLM needs that provider's
         # key out of the same domain; one served by a local container takes no
         # API_KEY parameter at all, and its signature is what says which.
-        enrich_key = ""
-        if prompt is not None and prompt.needs_api_key:
-            enrich_key = llm_api_key_for(prompt.llm, secrets)
+        # Each step is asked separately: two prompts may call two providers.
+        for stage in stages:
+            stage["api_key"] = (llm_api_key_for(stage["prompt"].llm, secrets)
+                                if stage["prompt"].needs_api_key else "")
 
         # ---- the pipeline ---------------------------------------------------
         # sourcePath may name the compute file system or SAS Content -
@@ -386,15 +420,18 @@ def main():
         # The Enrich stage sits here, between chunking and embedding, because
         # the header it writes is embedded WITH the chunk - after this point
         # the text is already a vector and nothing can be added to it.
+        # One stage after the other, each seeing what the last one wrote.
         enrich_failures = []
-        if prompt is not None:
-            chunks, enrich_failures = run_enrich(
-                chunks, prompt, enrich_mapping,
-                header_output=P["enrichHeaderOutput"],
-                column_outputs=enrich_columns, api_key=enrich_key,
-                max_workers=int(float(P["enrichWorkers"] or 4)), log=M)
+        for stage in stages:
+            chunks, failures = run_enrich(
+                chunks, stage["prompt"], stage["mapping"],
+                header_output=stage["header_output"],
+                column_outputs=stage["column_outputs"],
+                api_key=stage["api_key"],
+                max_workers=stage["workers"], log=M)
+            enrich_failures.extend(failures)
             # what those calls cost, in the same place the embedding cost is
-            log_enrich_cost(prompt.llm, prompt.usage, log=M)
+            log_enrich_cost(stage["prompt"].llm, stage["prompt"].usage, log=M)
         # four parallel calls per replica, as the Embed step sizes it
         workers = max(1, int(float(P["replicas"] or 1)) * 4)
         embedded, embed_failures = run_embed(chunks, client,
@@ -407,8 +444,10 @@ def main():
                              P["pipelineVersion"],
                              deleted_policy=P["deletedPolicy"] or "retire",
                              retain_days=int(float(P["retainDays"] or 0)),
-                             attributes=(attribute_schema(prompt, enrich_columns)
-                                         if prompt is not None else None),
+                             attributes=merge_attribute_schemas(
+                                 [attribute_schema(stage["prompt"],
+                                                   stage["column_outputs"])
+                                  for stage in stages]) or None,
                              stats=load_stats, log=M)
         new_ledger = merge_ledger(real_rows, inventory)
         for row in new_ledger:
@@ -425,22 +464,29 @@ def main():
                           "embed_model": P["embedModel"],
                           # recorded, not hashed: which prompt a run used is
                           # history, and no longer part of what a chunk IS
-                          **({"enrich_prompt": prompt.stamp,
-                              "enrich_header": P["enrichHeaderOutput"],
-                              "enrich_columns": ",".join(enrich_columns)}
-                             if prompt else {})},
+                          **({"enrich_prompt": ",".join(
+                                  stage["prompt"].stamp for stage in stages),
+                              "enrich_header": next(
+                                  (stage["header_output"] for stage in stages
+                                   if stage["header_output"]), ""),
+                              "enrich_columns": ",".join(
+                                  name for stage in stages
+                                  for name in stage["column_outputs"])}
+                             if stages else {})},
                 metrics={"backend": P["backend"], "collection_chunks": total,
                          "embed_dims": dims, **load_stats,
                          "embed_calls": int(client.usage.get("calls") or 0),
                          "embed_tokens": int(client.usage.get("tokens") or 0),
                          "embed_seconds": float(client.usage.get("run_time") or 0),
-                         **({"enrich_model": prompt.llm,
-                             "enrich_calls": int(prompt.usage.get("calls") or 0),
-                             "enrich_input_tokens": int(prompt.usage.get("input_tokens") or 0),
-                             "enrich_output_tokens": int(prompt.usage.get("output_tokens") or 0),
-                             "enrich_seconds": float(prompt.usage.get("run_time") or 0),
-                             "enrich_failed": int(prompt.usage.get("failed") or 0)}
-                            if prompt else {})},
+                         **({"enrich_model": ",".join(dict.fromkeys(
+                                 stage["prompt"].llm for stage in stages
+                                 if stage["prompt"].llm)),
+                             "enrich_calls": int(enrich_total("calls")),
+                             "enrich_input_tokens": int(enrich_total("input_tokens")),
+                             "enrich_output_tokens": int(enrich_total("output_tokens")),
+                             "enrich_seconds": enrich_total("run_time"),
+                             "enrich_failed": int(enrich_total("failed"))}
+                            if stages else {})},
                 log=M)
         adapter.close()
 

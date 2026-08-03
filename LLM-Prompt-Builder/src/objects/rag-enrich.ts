@@ -18,6 +18,8 @@
  * actually uses, and a mismatch there is silent.
  */
 
+import type { RagEnrichStep } from '../types/rag';
+
 /**
  * What a prompt input can be filled with, mirroring `enrich.CHUNK_FIELDS`.
  *
@@ -215,6 +217,91 @@ export function columnProblem(
 
 export function headerCandidates(contract: PromptContract): string[] {
   return contract.outputs.filter((name) => !MEASUREMENTS.has(name));
+}
+
+/**
+ * The tag a prompt must carry to be offered for enrichment.
+ *
+ * Written by the Prompt Builder when a prompt is manifested with output
+ * parsing (see `prompt-builder.ts`), which is exactly the shape this stage
+ * can store: parsed variables become columns. A prompt without it returns
+ * only `response` and its measurements.
+ */
+export const ENRICH_PROMPT_TAG = 'Output-Parsing';
+
+/**
+ * The enrichment steps, packed as the job parameter carries them.
+ *
+ * `model|version|mapping|header|columns|workers`, records separated by `~` —
+ * the exact inverse of `rag_core.enrich.parse_steps`, which is the authority.
+ * Deliberately not JSON: the value travels as a SAS macro variable, where a
+ * brace or a quote is one more thing that can arrive mangled, and `&`, `%`
+ * and `;` are all spoken for already.
+ */
+export function renderEnrichSteps(steps: readonly RagEnrichStep[]): string {
+  return steps
+    .filter((step) => step.promptModelId)
+    .map((step) =>
+      [
+        step.promptModelId,
+        step.promptVersionId ?? '',
+        renderMapping(step.mapping),
+        step.headerOutput ?? '',
+        (step.columnOutputs ?? []).join(','),
+        String(step.workers ?? 4),
+      ].join('|')
+    )
+    .join('~');
+}
+
+/**
+ * Everything wrong BETWEEN enrichment steps, in the user's words.
+ *
+ * Mirrors `enrich.validate_pipeline`, which is the authority. Both problems
+ * are invisible from inside a single step and expensive to discover after a
+ * run: the header and the columns are each written once per chunk, at the
+ * price of one LLM call per chunk, and a silent overwrite would throw away
+ * work that was already paid for.
+ */
+export function validateEnrichPipeline(
+  steps: readonly RagEnrichStep[],
+  text: (key: string, fallback: string) => string
+): string[] {
+  const problems: string[] = [];
+  const named = (step: RagEnrichStep, index: number): string =>
+    step.promptModelName || `${text('ragBuilderEnrichStep', 'Prompt {n}').replace('{n}', String(index + 1))}`;
+
+  const headers = steps
+    .map((step, index) => ({ step, index }))
+    .filter((entry) => entry.step.headerOutput);
+  if (headers.length > 1) {
+    problems.push(
+      text(
+        'ragBuilderEnrichValidateTwoHeaders',
+        'Only one prompt can write the context header, and {prompts} both do. A chunk has one header, so the later prompt would overwrite the earlier one after you have paid for it.'
+      ).replace('{prompts}', headers.map((entry) => named(entry.step, entry.index)).join(', '))
+    );
+  }
+
+  const claimed = new Map<string, string[]>();
+  steps.forEach((step, index) => {
+    for (const name of step.columnOutputs ?? []) {
+      claimed.set(name, [...(claimed.get(name) ?? []), named(step, index)]);
+    }
+  });
+  const contested = [...claimed.entries()].filter(([, owners]) => owners.length > 1);
+  if (contested.length > 0) {
+    problems.push(
+      text(
+        'ragBuilderEnrichValidateTwoColumns',
+        'Two prompts store the same column: {columns}. Rename the output in one of the prompts, or store it once.'
+      ).replace(
+        '{columns}',
+        contested.map(([name, owners]) => `${name} (${owners.join(', ')})`).join('; ')
+      )
+    );
+  }
+  return problems;
 }
 
 /**

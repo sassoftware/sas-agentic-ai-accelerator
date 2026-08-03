@@ -174,13 +174,46 @@ reads. The other form returns `llmBody`/`llmURL` for the Call LLM node of SAS
 Intelligent Decisioning — the request to make rather than its result — and the
 Builder and the ingestion both refuse it by name.
 
-| You choose | What it does |
+**Only prompts manifested with output parsing are offered.** Those are the ones
+whose answer is a set of named variables, which is exactly what this stage
+stores — the Prompt Builder tags them `Output-Parsing` when you manifest them
+that way. The project list is built from those prompts, so a prompt project
+holding none of them never appears rather than appearing and then being empty.
+If a prompt you expect is missing, re-manifest it with output parsing.
+
+### Several prompts, one after the other
+
+The stage is a **list**. Situating a chunk and extracting fields from it are
+different jobs, and one prompt asked to do both is worse at each — so *Add
+another prompt* runs a second, a third, over the same chunks, in the order
+shown. Each sees the chunk as the chunker produced it, not as the previous
+prompt left it.
+
+Two rules hold across the chain, and both are refused rather than resolved
+silently, in the Builder and again in the ingestion:
+
+- **Only one prompt may write the context header.** A chunk has one, so a
+  second would overwrite the first — after you had already paid for it, one LLM
+  call per chunk.
+- **Two prompts may not store the same column**, for the same reason and with
+  no way to tell afterwards which prompt wrote what.
+
+`enrich_version` holds **every** prompt that contributed to a chunk, comma
+separated, so a chunk can say that its header came from one prompt and its
+`clause_type` from another.
+
+The cost is the obvious one: **each prompt is its own LLM call per chunk**, so
+two prompts cost twice as much as one. The run log prices each separately and
+`rag_runs` records the total.
+
+| You choose, per prompt | What it does |
 | --- | --- |
 | **Prompt project** and **prompt** | Which manifested prompt is called, once per chunk |
 | **Prompt version** | *Latest* follows the prompt; a pinned version freezes exactly the prompt that version carried |
 | A chunk field for each **prompt input** | What the prompt is given: the chunk, the whole document (capped at 20,000 characters), the neighbouring chunks, the heading path, the file name, the full source location, or the position (*"chunk 3 of 42"*) |
 | The output stored as the **context header** | Prepended to the chunk and embedded **with** it — this is the part that changes retrieval |
 | Outputs stored as **columns** | Each becomes its own typed column on the chunk table, so it can be selected, filtered and aggregated |
+| **Parallel calls** | How many chunks this prompt enriches at once — per prompt, because two prompts may call two different LLMs |
 
 Nothing is guessed for a prompt input whose name is unfamiliar: a silently
 wrong mapping produces a whole corpus of confident nonsense, so the setup will
@@ -282,8 +315,10 @@ each chunk once a collection has been enriched.
   said, rather than sending a wrong key on its behalf.
 
 In a SAS Studio flow the stage is the **RAG - Enrich Chunks** step, wired
-between *Chunk Documents* and *Embed Chunks*. The Builder adds it to the
-generated flow only for a setup that enriches.
+between *Chunk Documents* and *Embed Chunks*. The Builder adds **one step per
+prompt** to the generated flow, in order, and adds none at all for a setup that
+does not enrich. Chaining the step by hand does the same thing: each run adds
+to what the last one wrote rather than replacing it.
 
 ## Two prerequisites that are not optional
 

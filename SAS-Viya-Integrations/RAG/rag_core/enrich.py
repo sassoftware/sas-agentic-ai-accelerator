@@ -211,6 +211,83 @@ def parse_names(raw) -> list:
     return [value for value in values if value]
 
 
+#: Field and record separators for the packed `enrichSteps` job parameter.
+#:
+#: A setup may now run SEVERAL prompts one after the other, so the six
+#: single-prompt parameters could no longer carry it. Neither could JSON: this
+#: value travels as a SAS macro variable, where a brace or a quote is one more
+#: thing that can arrive mangled, and `&`/`%`/`;` are all spoken for. `|` and
+#: `~` are not, and they are already outside the `input=field;input=field`
+#: alphabet the mapping uses - so the three levels never collide.
+STEP_SEPARATOR = "~"
+FIELD_SEPARATOR = "|"
+
+#: The fields of one packed record, in order. Positional rather than named
+#: because the string is written and read by this file alone.
+STEP_FIELDS = ("model_id", "version_id", "mapping", "header_output",
+               "column_outputs", "workers")
+
+
+def parse_steps(raw) -> list:
+    """`model|version|mapping|header|columns|workers~...` -> [{...}, ...].
+
+    The enrichment stages a setup runs, in the order they run. A list of
+    dicts passes through unchanged, so a caller holding the structure already
+    does not have to render it just to have it parsed back.
+
+    A record with no model id is dropped rather than refused: that is how an
+    enrichment that was configured and then turned off arrives, and a job
+    parameter whose value is a leftover separator should not fail a run.
+    """
+    if isinstance(raw, (list, tuple)):
+        steps = []
+        for item in raw:
+            step = dict(item or {})
+            if str(step.get("model_id") or "").strip():
+                steps.append(_normalised_step(step))
+        return steps
+    steps = []
+    for record in str(raw or "").split(STEP_SEPARATOR):
+        if not record.strip():
+            continue
+        pieces = record.split(FIELD_SEPARATOR)
+        step = {name: (pieces[index].strip() if index < len(pieces) else "")
+                for index, name in enumerate(STEP_FIELDS)}
+        if step["model_id"]:
+            steps.append(_normalised_step(step))
+    return steps
+
+
+def _normalised_step(step: dict) -> dict:
+    """One parsed record with its sub-fields already in their real types."""
+    mapping = step.get("mapping")
+    columns = step.get("column_outputs")
+    try:
+        workers = max(1, int(float(step.get("workers") or 4)))
+    except (TypeError, ValueError):
+        workers = 4
+    return {
+        "model_id": str(step.get("model_id") or "").strip(),
+        "version_id": str(step.get("version_id") or "").strip(),
+        "mapping": mapping if isinstance(mapping, dict) else parse_mapping(mapping),
+        "header_output": str(step.get("header_output") or "").strip(),
+        "column_outputs": parse_names(columns),
+        "workers": workers,
+    }
+
+
+def render_steps(steps) -> str:
+    """The inverse of parse_steps, for a caller that holds the structure."""
+    records = []
+    for step in parse_steps(steps):
+        records.append(FIELD_SEPARATOR.join([
+            step["model_id"], step["version_id"],
+            render_mapping(step["mapping"]), step["header_output"],
+            ",".join(step["column_outputs"]), str(step["workers"]),
+        ]))
+    return STEP_SEPARATOR.join(records)
+
+
 # ---------------------------------------------------------------------------
 # The manifested prompt
 # ---------------------------------------------------------------------------
@@ -582,6 +659,86 @@ def validate_selection(prompt: PromptModel, mapping: dict, header_output: str,
     return problems
 
 
+def validate_pipeline(stages: list) -> list:
+    """Everything wrong BETWEEN enrichment steps, by name.
+
+    A setup may run several prompts one after the other, and two of the
+    problems that creates cannot be seen from inside a single step:
+
+    * a chunk has ONE ``context_header``, so a second prompt writing one would
+      silently overwrite the first - and the overwritten one was still paid
+      for, one LLM call per chunk;
+    * two prompts claiming the same column would do the same to a value, with
+      no way to tell afterwards which prompt wrote what.
+
+    Both are refused by name rather than resolved by a rule like "the last one
+    wins": a rule would be applied silently to a corpus that costs money to
+    rebuild.
+
+    Each stage is ``{"prompt", "header_output", "column_outputs"}``.
+    """
+    problems: list = []
+
+    def label(stage, index):
+        prompt = stage.get("prompt")
+        name = getattr(prompt, "name", "") or getattr(prompt, "model_id", "")
+        return f"step {index + 1} ({name})" if name else f"step {index + 1}"
+
+    headers = [(index, stage) for index, stage in enumerate(stages)
+               if stage.get("header_output")]
+    if len(headers) > 1:
+        problems.append(
+            "only one enrichment step can write the context header, and "
+            + str(len(headers)) + " do: "
+            + ", ".join(f"{label(stage, index)} stores "
+                        f"'{stage['header_output']}'" for index, stage in headers)
+            + " - a chunk has one header, so the later one would overwrite the "
+              "earlier one after paying for it")
+
+    claimed: dict = {}
+    for index, stage in enumerate(stages):
+        for name in stage.get("column_outputs") or []:
+            claimed.setdefault(name, []).append(label(stage, index))
+    contested = sorted(name for name, owners in claimed.items() if len(owners) > 1)
+    if contested:
+        problems.append(
+            "two enrichment steps store the same column(s): "
+            + "; ".join(f"{name} ({', '.join(claimed[name])})"
+                        for name in contested)
+            + " - rename the output in one of the prompts, or store it once")
+    return problems
+
+
+def merge_attribute_schemas(schemas) -> dict:
+    """One column list for a setup that runs several prompts.
+
+    The Load step adds columns once, for the whole stage, so the schemas of
+    the individual steps have to be one dict by the time it sees them.
+    validate_pipeline has already refused the case where two steps disagree
+    about a column, so a plain merge cannot lose a type here.
+    """
+    merged: dict = {}
+    for schema in schemas or []:
+        merged.update(schema or {})
+    return merged
+
+
+def _add_stamp(existing, stamp: str) -> str:
+    """Record that this prompt enriched this chunk, keeping the earlier ones.
+
+    Several prompts may write to one chunk, and `enrich_version` is what makes
+    a mixed collection readable - so it holds EVERY prompt that contributed,
+    comma separated, in the order they ran. Re-running the same prompt
+    replaces its own entry (matched on the model, not the version) instead of
+    appending a second one, so the value cannot grow without bound.
+    """
+    model = stamp.split("@", 1)[0]
+    kept = [entry for entry in str(existing or "").split(",")
+            if entry.strip() and entry.split("@", 1)[0] != model]
+    kept.append(stamp)
+    return ",".join(kept)
+
+
 def run_enrich(chunks: list, prompt: PromptModel, mapping: dict,
                header_output: str = "", column_outputs=(), api_key: str = "",
                max_workers: int = 4, already_enriched: set = frozenset(),
@@ -609,10 +766,14 @@ def run_enrich(chunks: list, prompt: PromptModel, mapping: dict,
         raise ValueError("this setup cannot enrich with "
                          f"{prompt.name or prompt.model_id!r}: "
                          + "; ".join(problems))
+    # Every line this stage logs names its prompt: a setup may run several one
+    # after the other, and "12 chunks failed" is not actionable until you know
+    # which prompt failed them.
+    tag = f"rag enrich [{prompt.name or prompt.model_id or 'prompt'}]:"
     todo = [chunk for chunk in chunks if chunk["chunk_id"] not in already_enriched]
     reused = len(chunks) - len(todo)
     if reused:
-        log(f"rag enrich: {reused} chunks already embedded with a header "
+        log(f"{tag} {reused} chunks already embedded with a header "
             f"(checkpoint), {len(todo)} to enrich")
     if not todo:
         return chunks, []
@@ -623,7 +784,7 @@ def run_enrich(chunks: list, prompt: PromptModel, mapping: dict,
     context = document_context(chunks, document_chars)
     truncated_docs = sum(1 for doc in context.values() if doc.get("truncated"))
     if truncated_docs:
-        log(f"rag enrich: {truncated_docs} document(s) longer than "
+        log(f"{tag} {truncated_docs} document(s) longer than "
             f"{document_chars} characters are passed to the prompt truncated")
     # Only the parsed outputs depend on the response being valid JSON; asking
     # for none of them means parse_status is irrelevant to this setup.
@@ -671,21 +832,25 @@ def run_enrich(chunks: list, prompt: PromptModel, mapping: dict,
                     else:
                         attributes[name] = None if value is None else str(value)
                 chunk["attributes"] = attributes
-            # which prompt, at which version, wrote this chunk's enrichment
-            chunk["enrich_version"] = prompt.stamp
+            # which prompt, at which version, wrote this chunk's enrichment -
+            # appended, because a setup may run several prompts over the same
+            # chunk and each of them is part of the answer to "what wrote
+            # this?"
+            chunk["enrich_version"] = _add_stamp(chunk.get("enrich_version"),
+                                                 prompt.stamp)
 
     if truncated_headers:
-        log(f"rag enrich: {truncated_headers} header(s) longer than "
+        log(f"{tag} {truncated_headers} header(s) longer than "
             f"{MAX_HEADER_CHARS} characters were cut to fit - the prompt is "
             "asking for more text than a header can carry")
     enriched = len(todo) - len(failures)
-    log(f"rag enrich: {enriched} chunks enriched, {len(failures)} failed, "
+    log(f"{tag} {enriched} chunks enriched, {len(failures)} failed, "
         f"usage {prompt.usage}")
     if failures:
         # Named, not just counted: a collection where a tenth of the chunks
         # have no header retrieves differently from one where all of them do,
         # and the run log is where that becomes visible.
-        log(f"rag enrich: {len(failures)} chunk(s) were embedded WITHOUT a "
+        log(f"{tag} {len(failures)} chunk(s) were embedded WITHOUT a "
             f"header - first reason: {failures[0][1]}")
     return chunks, failures
 

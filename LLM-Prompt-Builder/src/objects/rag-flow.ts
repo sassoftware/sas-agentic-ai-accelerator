@@ -15,9 +15,19 @@
  * generate from them - the comments record what failed, because the failure
  * mode throughout is a bare HTTP 500 with no diagnostic.
  */
-import type { RagSetup } from '../types/rag';
+import type { RagEnrichStep, RagSetup } from '../types/rag';
 import type { StepPorts } from '../api/dataflows-api';
 import { renderMapping } from './rag-enrich';
+
+/**
+ * The enrichment chain of a setup, tolerant of the shape saved before it
+ * could hold more than one prompt.
+ */
+export function enrichSteps(setup: RagSetup): RagEnrichStep[] {
+  const stored = setup.enrich;
+  const steps = Array.isArray(stored) ? stored : stored ? [stored as RagEnrichStep] : [];
+  return steps.filter((step) => step?.promptModelId);
+}
 
 /** The steps of the ingestion chain, in wiring order. */
 export const INGESTION_STEPS = [
@@ -39,9 +49,11 @@ export const INGESTION_STEPS = [
  */
 export function ingestionSteps(setup: RagSetup): string[] {
   const steps: string[] = [...INGESTION_STEPS];
-  if (setup.enrich?.promptModelId) {
-    steps.splice(steps.indexOf('RAG - Embed Chunks'), 0, 'RAG - Enrich Chunks');
-  }
+  // One node per prompt, in order: a Studio flow chains the stage by REPEATING
+  // the step, which is the same thing the job does with its step list and is
+  // what makes the flow readable - you can see the two calls.
+  const enrichment = enrichSteps(setup).map(() => 'RAG - Enrich Chunks');
+  steps.splice(steps.indexOf('RAG - Embed Chunks'), 0, ...enrichment);
   return steps;
 }
 
@@ -54,6 +66,24 @@ export type StepValues = Record<string, string | number>;
  * inherits them from the inventory table travelling down the chain, which is
  * why they have no such control to set.
  */
+export function enrichValues(setup: RagSetup, corePath: string, position: number): StepValues {
+  const step = enrichSteps(setup)[position];
+  return {
+    _rgen_promptModel: step?.promptModelId ?? '',
+    // blank follows the model; an id pins the setup to that version
+    _rgen_promptVersion: step?.promptVersionId ?? '',
+    _rgen_mapping: renderMapping(step?.mapping ?? {}),
+    _rgen_headerOutput: step?.headerOutput ?? '',
+    _rgen_columns: (step?.columnOutputs ?? []).join(','),
+    _rgen_workers: step?.workers ?? 4,
+    _rgen_credentialDomain: setup.credentialDomain,
+    // the same table the Chunk step wrote, so the two must agree on whether
+    // it survives a restart
+    _rgen_persist: setup.policies?.persistChunks === false ? '0' : '1',
+    _rgen_ragCorePath: corePath,
+  };
+}
+
 export function ingestionChain(setup: RagSetup, corePath: string): Record<string, StepValues> {
   const project = setup.tables.prefix;
   return {
@@ -77,20 +107,7 @@ export function ingestionChain(setup: RagSetup, corePath: string): Record<string
       _rgch_overlapTokens: setup.chunking.overlapTokens,
       _rgch_ragCorePath: corePath,
     },
-    'RAG - Enrich Chunks': {
-      _rgen_promptModel: setup.enrich?.promptModelId ?? '',
-      // blank follows the model; an id pins the setup to that version
-      _rgen_promptVersion: setup.enrich?.promptVersionId ?? '',
-      _rgen_mapping: renderMapping(setup.enrich?.mapping ?? {}),
-      _rgen_headerOutput: setup.enrich?.headerOutput ?? '',
-      _rgen_columns: (setup.enrich?.columnOutputs ?? []).join(','),
-      _rgen_workers: setup.enrich?.workers ?? 4,
-      _rgen_credentialDomain: setup.credentialDomain,
-      // the same table the Chunk step wrote, so the two must agree on whether
-      // it survives a restart
-      _rgen_persist: setup.policies?.persistChunks === false ? '0' : '1',
-      _rgen_ragCorePath: corePath,
-    },
+    'RAG - Enrich Chunks': enrichValues(setup, corePath, 0),
     'RAG - Embed Chunks': {
       _rgem_embedModel: setup.embedding.model,
       _rgem_scrEndpoint: setup.embedding.scrEndpoint || '',
@@ -201,14 +218,22 @@ export function buildFlow(
   values: Record<string, StepValues>,
   flowName: string,
   author: string,
-  timestamp: string
+  timestamp: string,
+  /**
+   * Values for a node the step NAME cannot address.
+   *
+   * A chain may hold the Enrich step twice, and `values` is keyed by name -
+   * so the second one would silently get the first one's prompt. This is
+   * keyed by POSITION in `specs` and wins where it is set.
+   */
+  byPosition: Record<number, StepValues> = {}
 ): Record<string, unknown> {
   const nodes: Record<string, FlowNode> = {};
   const ordered: { node: FlowNode; spec: StepPorts }[] = [];
   specs.forEach((spec, order) => {
     const stepId = stepIds[spec.name];
     if (!stepId) throw new Error(`no registered step id for '${spec.name}'`);
-    const node = buildNode(spec, stepId, values[spec.name] ?? {}, order);
+    const node = buildNode(spec, stepId, byPosition[order] ?? values[spec.name] ?? {}, order);
     nodes[node.id] = node;
     ordered.push({ node, spec });
   });
