@@ -12,11 +12,13 @@
  *   - author the setup: documentation (description, intended use,
  *     LIMITATIONS — owner requirement 2026-07-28), source, extraction,
  *     chunking, embedding, vector store and pipeline-table settings;
- *   - save: writes rag-setup.json (round-trip state), pipeline.yaml
- *     (generated governance artifact) and documentation.md onto the model,
- *     and sets the model's registration metadata — description, tags
- *     (LLM/RAG + embedding model + vector database), trainTable (the
- *     ingestion ledger reference) and the retrieval variable definitions.
+ *   - save: writes rag-setup.json (round-trip state) and pipeline.yaml
+ *     (generated governance artifact) onto the model, and sets the model's
+ *     registration metadata — the MODEL CARD (purpose, intended use,
+ *     limitations …) as model attributes, exactly as a Prompt Builder prompt
+ *     records it, plus tags (LLM/RAG + embedding model + vector database),
+ *     trainTable (the ingestion ledger reference) and the retrieval variable
+ *     definitions.
  *
  * Later phases (buttons visible but disabled, so the roadmap is honest):
  * generate the Studio Flow + Job Execution job from the yaml, launch and
@@ -31,6 +33,7 @@ import {
   deleteModelProject,
   createModelVersion, createModelContent,
   createModelProject,
+  deleteModelContent,
   getModelContents,
   getModelDetails,
   getModelProjectModels,
@@ -96,6 +99,8 @@ import type { RagBuilderConfig, RagBuilderText, RagEnrichStep, RagSetup } from '
 
 const SETUP_FILE = 'rag-setup.json';
 const PIPELINE_FILE = 'pipeline.yaml';
+/** Written by earlier versions; now removed on save (the model card lives
+ *  in the model's attributes). Kept only so the stale copy can be found. */
 const DOCUMENTATION_FILE = 'documentation.md';
 
 /**
@@ -316,28 +321,6 @@ function renderPipelineYaml(setup: RagSetup): string {
     `  persistChunks: ${setup.policies?.persistChunks !== false}`,
   ];
   return lines.join('\n') + '\n';
-}
-
-/** Section headings for documentation.md, in MODEL_CARD_FIELDS order. */
-const MODEL_CARD_HEADINGS: Record<(typeof MODEL_CARD_FIELDS)[number], string> = {
-  modelPurpose: 'Purpose',
-  intendedUse: 'Intended use',
-  expectedBenefit: 'Expected benefit',
-  outOfScopeUseCases: 'Out-of-scope uses',
-  limitations: 'Limitations',
-};
-
-function renderDocumentationMarkdown(setup: RagSetup, setupName: string): string {
-  return [
-    `# ${setupName}`,
-    '',
-    ...MODEL_CARD_FIELDS.flatMap((field) => [
-      `## ${MODEL_CARD_HEADINGS[field]}`,
-      '',
-      setup.documentation[field] || '_Not documented yet._',
-      '',
-    ]),
-  ].join('\n');
 }
 
 export async function buildRagBuilder(
@@ -2019,8 +2002,8 @@ export async function buildRagBuilder(
   /**
    * Save the documentation ALONE.
    *
-   * The model-card attributes are written, documentation.md is regenerated,
-   * and the documentation block inside the stored rag-setup.json is merged -
+   * The model-card attributes are written and the documentation block inside
+   * the stored rag-setup.json is merged -
    * that last part matters: rag-setup.json is what loadSetup reads back, so
    * writing only the attributes would make the edit reappear as lost the next
    * time the setup was opened. Everything else in the stored file is left
@@ -2045,16 +2028,13 @@ export async function buildRagBuilder(
           'documentation'
         );
       }
-      await createModelContent(
-        selectedSetupID,
-        renderDocumentationMarkdown({ ...(stored ?? defaultSetup(config)), documentation }, selectedSetupName),
-        DOCUMENTATION_FILE,
-        'documentation',
-        'text/markdown'
-      );
+      // The model's own attributes ARE the documentation - the same fields a
+      // prompt records, so one governance query reads both kinds of artifact
+      // and there is no second copy to drift.
       await updateModelAttributes(selectedSetupID, {
         ...Object.fromEntries(MODEL_CARD_FIELDS.map((field) => [field, documentation[field]])),
       });
+      await removeStaleDocumentation();
       showStatus('success', str('ragBuilderDocSaved', 'Documentation saved to the Model Manager model.'));
     } catch (error) {
       console.error('Saving the RAG documentation failed.', error);
@@ -2062,6 +2042,25 @@ export async function buildRagBuilder(
     } finally {
       docSaveButton.textContent = previous;
       docSaveButton.disabled = !selectedSetupID;
+    }
+  }
+
+  /**
+   * Drop a documentation.md left by an earlier version of this Builder.
+   *
+   * The model card lives in the model's ATTRIBUTES now, which is where the
+   * Prompt Builder has always kept it and what Model Manager reports on. A
+   * markdown copy is a second source of truth that nothing updates, so it is
+   * removed rather than left to disagree. Best-effort: failing to delete an
+   * obsolete file must never fail a save.
+   */
+  async function removeStaleDocumentation(): Promise<void> {
+    try {
+      const contents = await getModelContents(selectedSetupID);
+      const stale = contents.find((item) => item.name === DOCUMENTATION_FILE);
+      if (stale?.id) await deleteModelContent(selectedSetupID, String(stale.id));
+    } catch (error) {
+      console.debug('RAG Builder: removing the obsolete documentation.md failed', error);
     }
   }
 
@@ -2409,16 +2408,14 @@ export async function buildRagBuilder(
     }
     saveButton.disabled = true;
     try {
-      // 1. the three artifacts (onConflict=update keeps one copy each)
+      // 1. the two artifacts (onConflict=update keeps one copy each)
       await createModelContent(selectedSetupID, setup, SETUP_FILE, 'documentation');
       await createModelContent(selectedSetupID, renderPipelineYaml(setup), PIPELINE_FILE, 'documentation', 'text/plain');
-      await createModelContent(
-        selectedSetupID,
-        renderDocumentationMarkdown(setup, selectedSetupName),
-        DOCUMENTATION_FILE,
-        'documentation',
-        'text/markdown'
-      );
+      // A setup saved before the model card moved into the model's own
+      // attributes carries a documentation.md that no longer gets updated.
+      // Left alone it would sit beside the attributes disagreeing with them,
+      // which is worse than either version on its own.
+      await removeStaleDocumentation();
       // 2. registration metadata (owner requirements 2026-07-28): description,
       //    trainTable = the ingestion ledger, and the retrieval in/out contract
       await updateModelAttributes(selectedSetupID, {
@@ -2446,7 +2443,7 @@ export async function buildRagBuilder(
       ]);
       managedTags = [setup.embedding.model, setup.store.backend];
       showSaveSuccess(
-        str('ragBuilderSaveSuccess', 'RAG setup saved to Model Manager (rag-setup.json, pipeline.yaml, documentation.md, tags, ledger reference and variable definitions).')
+        str('ragBuilderSaveSuccess', 'RAG setup saved to Model Manager (rag-setup.json, pipeline.yaml, the model card as model properties, tags, ledger reference and variable definitions).')
       );
       return true;
     } catch (error) {
@@ -2821,11 +2818,17 @@ export async function buildRagBuilder(
         enrichPositions
       );
       await registerFlow(destination, flow);
+      // …and onto the model itself, so the setup carries the pipeline it
+      // generated. The registered flow is what SAS Studio opens; this copy is
+      // the ASSET - it travels with the model through versions, export and
+      // promotion, which the Content folder's copy does not.
+      await createModelContent(selectedSetupID, flow, `${flowName}.flw`,
+                               'documentation', 'application/json');
       artifactsNote.textContent = str('ragBuilderFlowGeneratedAt', 'Studio flow: {name} in {folder}')
         .replace('{name}', flowName)
         .replace('{folder}', destination);
       showSaveSuccess(
-        str('ragBuilderFlowGenerated', 'Studio flow generated in {folder}. Open it in SAS Studio to see or edit the pipeline; regenerate here after changing the setup.').replace(
+        str('ragBuilderFlowGenerated', 'Studio flow generated in {folder} and attached to the model as an asset. Open it in SAS Studio to see or edit the pipeline; regenerate here after changing the setup.').replace(
           '{folder}',
           destination
         )
