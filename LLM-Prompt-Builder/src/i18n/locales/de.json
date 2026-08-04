@@ -538,6 +538,11 @@
     "ragBuilderEnrichAdd": "Weiteren Prompt hinzufügen",
     "ragBuilderEnrichChainNote": "Die Prompts laufen in dieser Reihenfolge und sehen jeweils den Chunk, wie der Chunker ihn erzeugt hat. Jeder Prompt ist ein eigener LLM-Aufruf pro Chunk – zwei Prompts kosten also doppelt so viel wie einer.",
     "ragBuilderEnrichValidateTwoHeaders": "Nur ein Prompt kann den Kontext-Header schreiben, aber {prompts} tun es beide. Ein Chunk hat einen Header, der spätere Prompt würde den früheren also überschreiben, nachdem Sie ihn bezahlt haben.",
-    "ragBuilderEnrichValidateTwoColumns": "Zwei Prompts speichern dieselbe Spalte: {columns}. Benennen Sie die Ausgabe in einem der Prompts um, oder speichern Sie sie nur einmal."
+    "ragBuilderEnrichValidateTwoColumns": "Zwei Prompts speichern dieselbe Spalte: {columns}. Benennen Sie die Ausgabe in einem der Prompts um, oder speichern Sie sie nur einmal.",
+    "ragBuilderDeleteUsageUnknown": "Ob dies noch verwendet wird, konnte nicht geprüft werden - der Relationships-Dienst hat nicht geantwortet. Ein Löschen kann eine Entscheidung zurücklassen, die auf ein nicht mehr vorhandenes Modell verweist.",
+    "ragBuilderDeleteNoUsage": "Keine Entscheidung verweist darauf.",
+    "ragBuilderDeleteUsageFound": "{count} Entscheidung(en) verweisen darauf und werden dadurch unbrauchbar:",
+    "ragBuilderDeleteProjectUsageFound": "Auf {count} dieser Setups verweisen Entscheidungen, die dadurch unbrauchbar werden:",
+    "ragBuilderDeleteProjectUsageUnknown": "Für {count} Setup(s) konnte die Verwendung nicht geprüft werden - der Relationships-Dienst hat nicht geantwortet."
   }
 }

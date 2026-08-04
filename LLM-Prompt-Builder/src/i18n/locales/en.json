@@ -538,6 +538,11 @@
     "ragBuilderEnrichAdd": "Add another prompt",
     "ragBuilderEnrichChainNote": "Prompts run in this order, each seeing the chunk as the chunker produced it. Every prompt is a separate LLM call per chunk, so two prompts cost twice as much as one.",
     "ragBuilderEnrichValidateTwoHeaders": "Only one prompt can write the context header, and {prompts} both do. A chunk has one header, so the later prompt would overwrite the earlier one after you have paid for it.",
-    "ragBuilderEnrichValidateTwoColumns": "Two prompts store the same column: {columns}. Rename the output in one of the prompts, or store it once."
+    "ragBuilderEnrichValidateTwoColumns": "Two prompts store the same column: {columns}. Rename the output in one of the prompts, or store it once.",
+    "ragBuilderDeleteUsageUnknown": "Whether anything still uses this could not be checked - the relationships service did not answer. Deleting may leave a decision pointing at a model that is gone.",
+    "ragBuilderDeleteNoUsage": "No decision references this.",
+    "ragBuilderDeleteUsageFound": "{count} decision(s) reference this and will break:",
+    "ragBuilderDeleteProjectUsageFound": "{count} of these setup(s) are referenced by decisions, which will break:",
+    "ragBuilderDeleteProjectUsageUnknown": "Usage could not be checked for {count} setup(s) - the relationships service did not answer."
   }
 }

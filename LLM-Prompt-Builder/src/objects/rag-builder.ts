@@ -46,6 +46,8 @@ import {
   updateModelTags,
 } from '../api/models-api';
 import { getFileContent } from '../api/files-api';
+import { getModelDependentDecisions } from '../api/relationships-api';
+import type { DependentDecision } from '../types/relationships';
 import { resolveDomainSecrets } from '../api/credentials-api';
 import { RAG_BACKENDS, backendEnabled, type RagBackend } from './rag-backends';
 import { optionFlag } from './rag-options';
@@ -2258,6 +2260,60 @@ export async function buildRagBuilder(
   const viyaHost = (): string =>
     (getAppState().config?.viyaHost as string | undefined) || window.location.origin;
 
+  /**
+   * What still depends on a setup, or null when that could not be established.
+   *
+   * A RAG Setup is a scoreable model: manifesting writes `retrieve_context.py`
+   * onto it, so a decision flow can reference it exactly as it references a
+   * prompt. Deleting one out from under a decision leaves the decision
+   * pointing at nothing, and the failure surfaces at score time rather than
+   * here - so this is asked BEFORE the confirmation, and the answer goes into
+   * the dialog.
+   *
+   * null is deliberately different from an empty list: "nothing uses this" and
+   * "I could not find out" must not read the same in a delete dialog.
+   */
+  async function dependentDecisions(modelID: string): Promise<DependentDecision[] | null> {
+    try {
+      return await getModelDependentDecisions(modelID);
+    } catch (error) {
+      console.error('Checking what depends on the RAG setup failed.', error);
+      return null;
+    }
+  }
+
+  /** The usage paragraph of a delete dialog, with links to what it names. */
+  function usageBody(decisions: DependentDecision[] | null,
+                     prefix = ''): (HTMLElement | string)[] {
+    if (decisions === null) {
+      return [prefix + str(
+        'ragBuilderDeleteUsageUnknown',
+        'Whether anything still uses this could not be checked - the relationships service did not answer. Deleting may leave a decision pointing at a model that is gone.'
+      )];
+    }
+    if (decisions.length === 0) {
+      return [prefix + str('ragBuilderDeleteNoUsage',
+                           'No decision references this.')];
+    }
+    const list = document.createElement('ul');
+    for (const decision of decisions) {
+      const item = document.createElement('li');
+      const link = document.createElement('a');
+      link.href = `${viyaHost()}/SASDecisionManager/decisions/${decision.id}`;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = decision.name;
+      item.appendChild(link);
+      list.appendChild(item);
+    }
+    return [
+      prefix + str('ragBuilderDeleteUsageFound',
+                   '{count} decision(s) reference this and will break:'
+      ).replace('{count}', String(decisions.length)),
+      list,
+    ];
+  }
+
   /** Dismiss a Bootstrap modal we opened declaratively. */
   const hideModal = (id: string): void => {
     const element = document.getElementById(id);
@@ -3225,6 +3281,9 @@ export async function buildRagBuilder(
   deleteSetupButton.addEventListener('click', () => {
     void (async () => {
       if (!selectedSetupID) return;
+      deleteSetupButton.disabled = true;
+      const decisions = await dependentDecisions(selectedSetupID);
+      deleteSetupButton.disabled = false;
       const confirmed = await showConfirmModal({
         title: `${str('ragBuilderDeleteSetupButton', 'Delete setup')}: ${selectedSetupName}`,
         body: [
@@ -3232,6 +3291,7 @@ export async function buildRagBuilder(
             'ragBuilderDeleteSetupNote',
             'This deletes the RAG setup and its generated artifacts from SAS Model Manager. The vector-store collection and its CAS tables are NOT touched - the data stays where it is, and the record of what built it is what disappears.'
           ),
+          ...usageBody(decisions),
         ],
         confirmText: str('ragBuilderDeleteConfirm', 'Delete'),
         cancelText: str('ragBuilderDeleteCancel', 'Cancel'),
@@ -3264,6 +3324,44 @@ export async function buildRagBuilder(
       // deterministic. The count is named so nobody deletes twelve corpora
       // believing they are deleting an empty project.
       const setups = allSetups;
+      // Every setup is asked about, not just a sample: a project delete takes
+      // them all, so one referenced setup among twelve is exactly the case
+      // worth stopping for.
+      deleteProjectButton.disabled = true;
+      const perSetup = await Promise.all(
+        setups.map(async (setup) => ({
+          name: String(setup.innerHTML ?? setup.value),
+          decisions: await dependentDecisions(setup.value),
+        }))
+      );
+      deleteProjectButton.disabled = false;
+      const used = perSetup.filter((entry) => entry.decisions && entry.decisions.length);
+      const unchecked = perSetup.filter((entry) => entry.decisions === null);
+      const usageLines: (HTMLElement | string)[] = [];
+      if (used.length) {
+        usageLines.push(
+          str('ragBuilderDeleteProjectUsageFound',
+              '{count} of these setup(s) are referenced by decisions, which will break:'
+          ).replace('{count}', String(used.length))
+        );
+        const list = document.createElement('ul');
+        for (const entry of used) {
+          const item = document.createElement('li');
+          item.textContent = `${entry.name}: ${(entry.decisions ?? []).map((d) => d.name).join(', ')}`;
+          list.appendChild(item);
+        }
+        usageLines.push(list);
+      }
+      if (unchecked.length) {
+        usageLines.push(
+          str('ragBuilderDeleteProjectUsageUnknown',
+              'Usage could not be checked for {count} setup(s) - the relationships service did not answer.'
+          ).replace('{count}', String(unchecked.length))
+        );
+      }
+      if (setups.length && !used.length && !unchecked.length) {
+        usageLines.push(str('ragBuilderDeleteNoUsage', 'No decision references this.'));
+      }
       const confirmed = await showConfirmModal({
         title: `${str('ragBuilderDeleteProjectButton', 'Delete project')}: ${projectSelect.selectedOptions[0]?.textContent ?? ''}`,
         body: [
@@ -3276,6 +3374,7 @@ export async function buildRagBuilder(
                 'ragBuilderDeleteProjectEmptyNote',
                 'This project holds no setups. Deleting it removes the project from SAS Model Manager.'
               ),
+          ...usageLines,
         ],
         confirmText: str('ragBuilderDeleteConfirm', 'Delete'),
         cancelText: str('ragBuilderDeleteCancel', 'Cancel'),
