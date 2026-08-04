@@ -109,10 +109,16 @@ else:
         # and mask the real "no credential" case
         if not value.strip():
             continue
-        if name in PROVIDER_MAP:
-            secrets[PROVIDER_MAP[name]] = base64.b64encode(value.encode()).decode()
-        elif RAG_ENTRY.match(name) or STORE_SETTING.match(name):
-            secrets[name.upper()] = base64.b64encode(value.encode()).decode()
+        # Matched on the UPPERCASED name: PowerShell's -match and its
+        # hashtables are case-insensitive while Python's re and dicts are
+        # not, so this script used to DROP a lowercase singlestore_rag_user
+        # that the .ps1 stored (found 2026-08-04). The two must agree - an
+        # identity equipped on Windows and read on Linux is the same identity.
+        upper = name.upper()
+        if upper in PROVIDER_MAP:
+            secrets[PROVIDER_MAP[upper]] = base64.b64encode(value.encode()).decode()
+        elif RAG_ENTRY.match(upper) or STORE_SETTING.match(upper):
+            secrets[upper] = base64.b64encode(value.encode()).decode()
     if not secrets:
         sys.exit("No credential entries recognized in '" + env_file + "' - expected "
                  "provider keys (OPENAI_API_KEY, ...), <BACKEND>_RAG_USER/_PW pairs "

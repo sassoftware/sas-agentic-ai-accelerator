@@ -92,6 +92,56 @@ the identity should keep, not only new ones). Creating the domain and any
 the script for their **own** user credential in an existing domain. Secret
 values are never printed.
 
+## Equipping many identities at once
+
+The scripts above equip **one** identity per run, which is right for a demo
+and wrong for a rollout. `mdb` does a whole deployment from a manifest, and
+reports what it did:
+
+```bash
+mdb credentials-apply --manifest credentials.yaml --dry-run   # see the plan
+mdb credentials-apply --manifest credentials.yaml             # do it
+mdb credentials-report --manifest credentials.yaml            # who holds one
+```
+
+The manifest says **who** gets keys and **where those keys come from**. It
+never contains a key, so unlike the `.env` it is meant to be committed and
+reviewed in a diff — who may call which provider is a decision worth having a
+history of. See
+[`credentials.example.yaml`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/Other/credentials.example.yaml):
+
+```yaml
+domain: agentic-ai-keys
+source: ../../.env          # relative to the manifest
+
+identities:
+  - {type: group, id: PromptEngineers}
+  - {type: group, id: RAGEngineers, only: [PGVECTOR_RAG_USER, PGVECTOR_RAG_PW]}
+  - {type: user,  id: sas-be-sa}
+  - {type: group, id: FraudAnalytics, source: ../../envs/production.env}
+```
+
+`only` narrows an identity to some of the entries, named the way the **domain**
+spells them (`OpenAI`, `PGVECTOR_RAG_PW`) rather than the way the `.env` does
+(`OPENAI_API_KEY`); a name the source does not carry is refused rather than
+quietly dropped. A single identity needs no manifest at all:
+
+```bash
+mdb credentials-apply --identity-type group --identity PromptEngineers --dry-run
+mdb credentials-report --identity gerdaw --identity-type user
+```
+
+:::note A dry run cannot show you a diff
+Reading a credential returns its metadata — who wrote it, and when — and
+**never its contents, not even the entry names**. So a dry run tells you an
+identity will be created or replaced, but not what it holds today. That is a
+privacy property rather than a gap: no identity can ever see another's keys.
+
+For the same reason there is no way to list who holds a credential. Both
+commands report on the identities you **name**, which is why passing the same
+manifest you applied gives you the after-picture of that rollout.
+:::
+
 ## Inspecting and deleting: CLI and Environment Manager
 
 Day-2 administration works with the standard tools (they can list and delete,

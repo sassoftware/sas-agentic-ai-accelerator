@@ -1659,6 +1659,222 @@ def provider_check(adapter_id: str = typer.Argument(...)):
     console.print(f"[green]{adapter_id}: conformance checks passed.[/green]")
 
 
+def _credential_manifest(manifest: Optional[str], domain: str,
+                         identity_type: str, identities: Optional[list[str]],
+                         env_file: Optional[str], keys_file: Optional[str]):
+    """A manifest from a file, or one assembled from the flags."""
+    from .viya.credentials import CredentialError, Identity, Manifest
+
+    if manifest:
+        path = Path(manifest)
+        if not path.is_file():
+            console.print(f"[red]No credentials manifest at {manifest}.[/red]")
+            raise typer.Exit(2)
+        return Manifest.load(path)
+    if not identities:
+        console.print(
+            "[red]Name at least one identity with --identity, or pass "
+            "--manifest for a bulk run.[/red]")
+        raise typer.Exit(2)
+    source = Path(keys_file or env_file or ".env").resolve()
+    try:
+        return Manifest(
+            domain=domain,
+            source=source,
+            identities=[Identity(type=identity_type, id=who,
+                                 verbatim=bool(keys_file))
+                        for who in identities],
+        )
+    except CredentialError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+
+
+@app.command("credentials-apply")
+def credentials_apply(
+    manifest: Optional[str] = typer.Option(
+        None, "--manifest", "-m",
+        help="YAML naming every identity to equip (bulk mode)"),
+    identity: Optional[list[str]] = typer.Option(
+        None, "--identity", "-i",
+        help="Identity id to equip; repeat for several (without --manifest)"),
+    identity_type: str = typer.Option(
+        "group", "--identity-type",
+        help="user or group. A user credential overrides a group one"),
+    domain: str = typer.Option(
+        "agentic-ai-keys", "--domain", help="Credential domain to write into"),
+    env_file: Optional[str] = typer.Option(
+        None, "--env-file", help="Source .env (default: ./.env)"),
+    keys_file: Optional[str] = typer.Option(
+        None, "--keys-file",
+        help="Raw NAME=VALUE file stored verbatim, no provider mapping"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report what would change; write nothing"),
+    skip_domain: bool = typer.Option(
+        False, "--skip-domain",
+        help="Do not create/update the domain itself (needs admin rights)"),
+):
+    """Equip identities with the accelerator's keys — many at once.
+
+    One domain holds every key the accelerator needs: the LLM provider keys
+    under their provider names, the vector-store user/password pairs under
+    their backend prefix, and where each store lives. A USER credential
+    overrides a GROUP one, so a department can share a key while one person
+    keeps their own.
+
+    The shell scripts under SAS-Viya-Integrations/Other equip one identity per
+    run; this does a whole rollout from a manifest, and reports it.
+
+    Three things worth knowing before you run it:
+
+    * A PUT REPLACES an identity's whole credential — the source file must
+      list everything that identity should end up with.
+    * The service returns NO secrets on a read, not even the entry names, so
+      --dry-run can tell you an identity will be created or replaced but never
+      what it currently holds. That is a privacy property, not a gap.
+    * Creating the domain, or any GROUP credential, needs SAS administrator
+      rights. A user may always (re)write their own.
+
+    Secret values are never printed, logged or written anywhere by this
+    command — only entry names and counts.
+    """
+    from .viya.credentials import (
+        CredentialError, build_steps, ensure_domain, entries_for,
+        fetch_credential, put_credential,
+    )
+
+    if identity_type not in ("user", "group"):
+        console.print("[red]--identity-type must be user or group.[/red]")
+        raise typer.Exit(2)
+    try:
+        plan = _credential_manifest(manifest, domain, identity_type, identity,
+                                    env_file, keys_file)
+    except CredentialError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+
+    with _viya_session() as session:
+        try:
+            steps = build_steps(plan, lambda who: fetch_credential(session, plan.domain, who))
+        except CredentialError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(2)
+
+        table = Table(title=f"Credential domain '{plan.domain}'")
+        table.add_column("Identity")
+        table.add_column("Type")
+        table.add_column("Action")
+        table.add_column("Entries", justify="right")
+        table.add_column("Currently")
+        for step in steps:
+            if not step.ok:
+                table.add_row(step.identity.id, step.identity.type,
+                              "[red]skip[/red]", "-", step.problem)
+                continue
+            held = (f"written by {step.existing_by} {step.existing_at[:10]}"
+                    if step.action == "replace" else "no credential")
+            table.add_row(step.identity.id, step.identity.type,
+                          "replace" if step.action == "replace" else "create",
+                          str(len(step.entry_names)), held)
+        console.print(table)
+        usable = [step for step in steps if step.ok]
+        if usable:
+            console.print("Entries: " + ", ".join(usable[0].entry_names))
+            if any(set(s.entry_names) != set(usable[0].entry_names) for s in usable):
+                console.print("[yellow]…and different sets for some identities; "
+                              "see the manifest.[/yellow]")
+        broken = [step for step in steps if not step.ok]
+        if broken:
+            console.print(f"[yellow]{len(broken)} identity(ies) skipped.[/yellow]")
+        if not usable:
+            console.print("[red]Nothing to do.[/red]")
+            raise typer.Exit(1)
+        if dry_run:
+            console.print("[yellow]Dry run — nothing was written. The current "
+                          "contents of an existing credential cannot be read "
+                          "back, so a replace is reported without a diff.[/yellow]")
+            raise typer.Exit(0)
+
+        if not skip_domain:
+            try:
+                ensure_domain(session, plan.domain)
+                console.print(f"[green]Domain '{plan.domain}' is in place.[/green]")
+            except CredentialError as exc:
+                console.print(f"[yellow]{exc}[/yellow]")
+                console.print("[yellow]Continuing: the domain may already exist "
+                              "and only an administrator can (re)create it. Pass "
+                              "--skip-domain to stop trying.[/yellow]")
+
+        failed = 0
+        for step in usable:
+            try:
+                put_credential(session, plan.domain, step.identity,
+                               entries_for(plan, step.identity))
+                console.print(
+                    f"[green]{step.identity.type} {step.identity.id}: "
+                    f"{len(step.entry_names)} entries stored.[/green]")
+            except CredentialError as exc:
+                failed += 1
+                console.print(f"[red]{exc}[/red]")
+        if failed:
+            raise typer.Exit(1)
+        console.print("[green]Done. Check it with `mdb credentials-report`.[/green]")
+
+
+@app.command("credentials-report")
+def credentials_report(
+    manifest: Optional[str] = typer.Option(
+        None, "--manifest", "-m", help="YAML naming the identities to ask about"),
+    identity: Optional[list[str]] = typer.Option(
+        None, "--identity", "-i", help="Identity id to ask about; repeat for several"),
+    identity_type: str = typer.Option(
+        "group", "--identity-type", help="user or group"),
+    domain: str = typer.Option(
+        "agentic-ai-keys", "--domain", help="Credential domain to inspect"),
+):
+    """Who holds a credential in the domain, and who wrote it.
+
+    It reports on the identities you NAME, because the credentials service has
+    no collection endpoint — /credentials/domains/{domain}/users and /groups
+    both answer 404, so there is no way to enumerate holders. Pass the same
+    manifest you applied and this becomes the after-picture of that rollout.
+
+    It cannot show what a credential contains: a read returns metadata only,
+    never the secrets and not even their names.
+    """
+    from .viya.credentials import CredentialError, fetch_credential
+
+    plan = _credential_manifest(manifest, domain, identity_type, identity,
+                                None, None)
+    table = Table(title=f"Credential domain '{plan.domain}'")
+    table.add_column("Identity")
+    table.add_column("Type")
+    table.add_column("Credential")
+    table.add_column("Last written by")
+    table.add_column("When")
+    held = 0
+    with _viya_session() as session:
+        for who in plan.identities:
+            try:
+                body = fetch_credential(session, plan.domain, who)
+            except CredentialError as exc:
+                table.add_row(who.id, who.type, "[red]unreadable[/red]", str(exc)[:40], "")
+                continue
+            if body is None:
+                table.add_row(who.id, who.type, "[yellow]none[/yellow]", "", "")
+                continue
+            held += 1
+            table.add_row(
+                who.id, who.type, "[green]yes[/green]",
+                str(body.get("modifiedBy") or body.get("createdBy") or ""),
+                str(body.get("modifiedTimeStamp") or body.get("creationTimeStamp") or "")[:19],
+            )
+    console.print(table)
+    console.print(f"{held} of {len(plan.identities)} named identities hold a credential.")
+    console.print("[dim]Contents are never shown: a credential read returns "
+                  "metadata only, so no identity can see another's keys.[/dim]")
+
+
 @app.command("schema-export")
 def schema_export():
     """Regenerate definition-core/schema/manifest.schema.json from the pydantic models."""
