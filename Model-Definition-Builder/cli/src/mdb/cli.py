@@ -1663,19 +1663,25 @@ def _credential_manifest(manifest: Optional[str], domain: str,
                          identity_type: str, identities: Optional[list[str]],
                          env_file: Optional[str], keys_file: Optional[str]):
     """A manifest from a file, or one assembled from the flags."""
-    from .viya.credentials import CredentialError, Identity, Manifest
+    from .viya.credentials import (
+        DEFAULT_MANIFEST, CredentialError, Identity, Manifest,
+    )
 
-    if manifest:
-        path = Path(manifest)
+    # Naming identities on the command line is the single-identity mode and
+    # wins; otherwise this is a manifest run, and an unnamed manifest means
+    # the conventional file in the working directory.
+    if not identities:
+        path = Path(manifest or DEFAULT_MANIFEST)
         if not path.is_file():
-            console.print(f"[red]No credentials manifest at {manifest}.[/red]")
+            console.print(f"[red]No credentials manifest at {path}.[/red]")
+            console.print(
+                "Write one with [bold]mdb credentials-init[/bold], or equip a "
+                "single identity with [bold]--identity[/bold].")
             raise typer.Exit(2)
         return Manifest.load(path)
-    if not identities:
-        console.print(
-            "[red]Name at least one identity with --identity, or pass "
-            "--manifest for a bulk run.[/red]")
-        raise typer.Exit(2)
+    if manifest:
+        console.print("[yellow]--identity was given, so --manifest is "
+                      "ignored.[/yellow]")
     source = Path(keys_file or env_file or ".env").resolve()
     try:
         return Manifest(
@@ -1688,6 +1694,63 @@ def _credential_manifest(manifest: Optional[str], domain: str,
     except CredentialError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(2)
+
+
+@app.command("credentials-init")
+def credentials_init(
+    file: str = typer.Option(
+        "credentials.yaml", "--file", "-f",
+        help="Where to write the manifest — anywhere you keep deployment records"),
+    env_file: str = typer.Option(
+        ".env", "--env-file", help="The .env whose entries it should point at"),
+    domain: str = typer.Option(
+        "agentic-ai-keys", "--domain", help="Credential domain the manifest targets"),
+    force: bool = typer.Option(
+        False, "--force", help="Overwrite an existing manifest"),
+):
+    """Write a starter credentials manifest, listing what your .env carries.
+
+    Keep it wherever your deployment records live: paths inside a manifest
+    resolve against the manifest's own directory, so it and the `.env` files
+    it names travel together.
+
+    The manifest holds no secrets — only identities and the paths to the files
+    that do — which is what makes it the piece you commit and review, while
+    the `.env` stays git-ignored.
+    """
+    from .viya.credentials import (
+        CredentialError, map_entries, read_name_value_file, scaffold,
+    )
+
+    target = Path(file)
+    if target.exists() and not force:
+        console.print(f"[red]{target} already exists.[/red] Pass --force to overwrite it.")
+        raise typer.Exit(2)
+    source = Path(env_file)
+    if not source.is_file():
+        console.print(f"[red]No .env at {source}.[/red] Pass --env-file to point at one.")
+        raise typer.Exit(2)
+    try:
+        entries = map_entries(read_name_value_file(source))
+    except CredentialError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+    if not entries:
+        console.print(
+            f"[yellow]{source} carries no recognised entries — expected provider "
+            "keys (OPENAI_API_KEY, …), <BACKEND>_RAG_USER/_PW pairs and/or "
+            "<BACKEND>_HOST/_PORT/_DB/_SSLMODE settings. Writing the manifest "
+            "anyway.[/yellow]")
+
+    if target.parent != Path(""):
+        target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        scaffold(source.resolve(), target.resolve(), domain, tuple(sorted(entries))),
+        encoding="utf-8")
+    console.print(f"[green]Wrote {target} listing {len(entries)} available "
+                  "entries (names only — no values).[/green]")
+    console.print("Name the groups and users to equip, then run "
+                  f"[bold]mdb credentials-apply --manifest {target} --dry-run[/bold].")
 
 
 @app.command("credentials-apply")

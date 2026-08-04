@@ -83,6 +83,9 @@ STORE_CREDENTIAL = re.compile(r"^[A-Za-z][A-Za-z0-9]*_RAG_(USER|PW)$")
 STORE_LOCATION = re.compile(r"^[A-Za-z][A-Za-z0-9]*_(HOST|PORT|DB|SSLMODE)$")
 
 DEFAULT_DOMAIN = "agentic-ai-keys"
+#: The manifest a command reads when none is named, matching the convention
+#: `options-save`/`options-restore` already set with builder-options.json.
+DEFAULT_MANIFEST = "credentials.yaml"
 DOMAIN_TYPE = "base64"
 DOMAIN_DESCRIPTION = (
     "Keys for the SAS Agentic AI Accelerator (LLM providers and RAG vector stores)."
@@ -235,6 +238,94 @@ class Manifest:
             source=(base / str(default_source)).resolve() if default_source else None,
             identities=identities,
         )
+
+
+#: How far up a relative source may reach before an absolute path reads better.
+#: Two covers the shipped layout (`../../.env` from a folder beside the repo);
+#: beyond that a `../../../../../..` chain is technically correct and useless
+#: to the person reviewing the manifest — and it breaks the moment either end
+#: moves, which is the opposite of what relative paths are for.
+MAX_RELATIVE_HOPS = 2
+
+
+def relative_source(source: Path, manifest: Path) -> str:
+    """How the manifest should spell its source path.
+
+    Relative when the `.env` is NEAR the manifest, because a pair kept
+    together should survive being moved or checked out elsewhere. Absolute
+    otherwise — including when no relative path can be formed at all, as
+    happens across drives on Windows.
+    """
+    import os
+
+    try:
+        relative = Path(os.path.relpath(source, manifest.parent))
+    except ValueError:
+        return Path(source).as_posix()
+    if sum(1 for part in relative.parts if part == "..") > MAX_RELATIVE_HOPS:
+        return Path(source).as_posix()
+    return relative.as_posix()
+
+
+def scaffold(source: Path, manifest: Path, domain: str = DEFAULT_DOMAIN,
+             entry_names: tuple = ()) -> str:
+    """A starter manifest, listing what the source actually carries.
+
+    The entry names are written as a COMMENT rather than as configuration:
+    they are what an author needs in front of them to write an `only:` list,
+    and putting them in the document itself would make the manifest go stale
+    the moment a key is added to the `.env`. No value is ever written.
+    """
+    listed = "\n".join(f"#   {name}" for name in entry_names) or "#   (none found)"
+    return f"""# Credentials manifest for `mdb credentials-apply --manifest`.
+#
+# It says WHO gets keys and WHERE THOSE KEYS COME FROM. It never contains a
+# key, so unlike the .env it is meant to be committed and reviewed in a diff:
+# who may call which provider is a decision worth having a history of.
+#
+#   mdb credentials-apply  --manifest {manifest.name} --dry-run
+#   mdb credentials-apply  --manifest {manifest.name}
+#   mdb credentials-report --manifest {manifest.name}
+#
+# A USER credential overrides a GROUP one, which is how "the department shares
+# a key, except the one person with their own quota" is expressed. Writing a
+# credential REPLACES it whole, so each source must carry everything that
+# identity should end up with. Creating the domain, or any group credential,
+# needs SAS administrator rights.
+
+domain: {domain}
+
+# Relative paths resolve against THIS file, so the manifest and the .env files
+# it names can be moved together.
+source: {relative_source(source, manifest)}
+
+# Entries that source carries today. Use these names in an `only:` list - they
+# are how the DOMAIN spells them, not how the .env does (OpenAI, not
+# OPENAI_API_KEY). This list is a comment because it goes stale the moment a
+# key is added; `mdb credentials-init --force` refreshes it.
+{listed}
+
+identities:
+  # Replace with the groups and users this deployment should equip.
+  - type: group
+    id: CHANGE-ME-to-a-real-group
+
+  # Narrow an identity to some of the entries:
+  # - type: group
+  #   id: RAGEngineers
+  #   only: [PGVECTOR_RAG_USER, PGVECTOR_RAG_PW]
+
+  # The service account a scheduled flow runs as - without it, a job launched
+  # in a context that runs servers as a service account resolves the domain as
+  # THAT identity and finds nothing:
+  # - type: user
+  #   id: sas-be-sa
+
+  # A different key set for one team:
+  # - type: group
+  #   id: FraudAnalytics
+  #   source: envs/production.env
+"""
 
 
 # ---------------------------------------------------------------------------

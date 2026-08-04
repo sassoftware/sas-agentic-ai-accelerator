@@ -99,15 +99,22 @@ and wrong for a rollout. `mdb` does a whole deployment from a manifest, and
 reports what it did:
 
 ```bash
-mdb credentials-apply --manifest credentials.yaml --dry-run   # see the plan
-mdb credentials-apply --manifest credentials.yaml             # do it
-mdb credentials-report --manifest credentials.yaml            # who holds one
+mdb credentials-init                    # write a starter manifest
+mdb credentials-apply --dry-run         # see the plan
+mdb credentials-apply                   # do it
+mdb credentials-report                  # who holds one
 ```
+
+`credentials-init` reads your `.env` and writes a manifest listing the entries
+it actually carries — names only, never a value — so you can see what is
+available to hand out before deciding who gets it. All four commands default
+to `credentials.yaml` in the working directory; `--file` and `--manifest` put
+it anywhere you keep deployment records.
 
 The manifest says **who** gets keys and **where those keys come from**. It
 never contains a key, so unlike the `.env` it is meant to be committed and
 reviewed in a diff — who may call which provider is a decision worth having a
-history of. See
+history of. A fuller example is
 [`credentials.example.yaml`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/Other/credentials.example.yaml):
 
 ```yaml
@@ -120,6 +127,13 @@ identities:
   - {type: user,  id: sas-be-sa}
   - {type: group, id: FraudAnalytics, source: ../../envs/production.env}
 ```
+
+Paths inside a manifest resolve against **the manifest's own directory**, not
+your working directory, so a manifest and the `.env` files it names can be
+kept together and moved together. `credentials-init` writes the source path
+relative when the two are near each other and absolute when they are not — a
+`../../../../../..` chain is correct and unreadable, and breaks the moment
+either end moves.
 
 `only` narrows an identity to some of the entries, named the way the **domain**
 spells them (`OpenAI`, `PGVECTOR_RAG_PW`) rather than the way the `.env` does

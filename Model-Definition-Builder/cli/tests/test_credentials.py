@@ -16,7 +16,7 @@ import pytest
 
 from mdb.viya.credentials import (
     CredentialError, Identity, Manifest, build_steps, credential_path, encode,
-    entries_for, map_entries, read_name_value_file,
+    entries_for, map_entries, read_name_value_file, relative_source, scaffold,
 )
 
 ENV_BODY = """
@@ -187,6 +187,66 @@ identities:
   - {type: group, id: RAGEngineers, only: [PGVECTOR_RAG_PW]}
 """)
     assert entries_for(manifest, manifest.identities[0]) == {"PGVECTOR_RAG_PW": "pg-secret"}
+
+
+# ---- where the manifest lives ---------------------------------------------
+def test_a_manifests_paths_resolve_against_itself_not_the_shell(tmp_path):
+    """What makes a manifest portable: keep it beside the .env files it names
+    and both can be moved, or checked out somewhere else, together."""
+    (tmp_path / "config").mkdir()
+    (tmp_path / "envs").mkdir()
+    (tmp_path / "envs" / "prod.env").write_text(ENV_BODY, encoding="utf-8")
+    path = tmp_path / "config" / "credentials.yaml"
+    path.write_text("source: ../envs/prod.env\nidentities:\n  - {type: group, id: Team}\n",
+                    encoding="utf-8")
+
+    manifest = Manifest.load(path)
+    assert manifest.source == (tmp_path / "envs" / "prod.env").resolve()
+    assert build_steps(manifest, lambda who: None)[0].ok
+
+
+def test_a_source_beside_the_manifest_is_written_relative(tmp_path):
+    source = tmp_path / "envs" / "prod.env"
+    manifest = tmp_path / "config" / "credentials.yaml"
+    assert relative_source(source, manifest) == "../envs/prod.env"
+    # the shipped layout: a records folder beside the repository
+    assert relative_source(tmp_path / ".env",
+                           tmp_path / "a" / "b" / "credentials.yaml") == "../../.env"
+
+
+def test_a_distant_source_is_written_absolute(tmp_path):
+    """A ../../../../../.. chain is technically correct and useless to the
+    person reviewing the manifest — and it breaks the moment either end moves,
+    which is the opposite of what a relative path is for."""
+    manifest = tmp_path / "a" / "b" / "c" / "d" / "e" / "credentials.yaml"
+    written = relative_source(tmp_path / ".env", manifest)
+    assert ".." not in written
+    assert written.endswith("/.env")
+
+
+def test_a_scaffold_lists_the_entry_names_and_no_values(tmp_path, env_file):
+    entries = map_entries(read_name_value_file(env_file))
+    text = scaffold(env_file, tmp_path / "credentials.yaml",
+                    "agentic-ai-keys", tuple(sorted(entries)))
+    for name in ("OpenAI", "PGVECTOR_RAG_PW", "RAGSTORE_HOST"):
+        assert name in text
+    for secret in ("sk-live-openai", "pg-secret", "rag_ingest"):
+        assert secret not in text, f"{secret} leaked into the scaffold"
+
+
+def test_a_scaffold_is_a_manifest_this_tool_can_read_back(tmp_path, env_file):
+    """A starter file that does not parse is worse than no starter file."""
+    path = tmp_path / "credentials.yaml"
+    path.write_text(scaffold(env_file, path, "agentic-ai-keys", ("OpenAI",)),
+                    encoding="utf-8")
+
+    manifest = Manifest.load(path)
+    assert manifest.domain == "agentic-ai-keys"
+    assert manifest.source == env_file.resolve()
+    assert [who.type for who in manifest.identities] == ["group"]
+    # it plans, so the only thing standing between the scaffold and a run is
+    # the author replacing the placeholder identity
+    assert build_steps(manifest, lambda who: None)[0].ok
 
 
 # ---- the property that matters most ---------------------------------------
