@@ -47,6 +47,24 @@ THREE API FACTS THIS MODULE IS SHAPED BY, each established live 2026-08-04:
    with, which is why a manifest entry names a source file rather than a
    patch.
 
+4. **A group credential is only found when the reader asks for it**
+   (established live 2026-08-05, by removing a real user credential and
+   watching what happened). Resolution goes through
+   `GET /credentials/domains/{d}/secrets`, which returns the CALLER's own
+   credential and, without more, nothing else: with the user credential
+   removed it answered 404 `"The credential for the user ... in the domain
+   ..."` even though the group credential existed and the caller was a member.
+   The group is consulted only with `?lookupInGroup=true`, which then answers
+   200 with `identityType: group`.
+
+   This is the single most consequential fact about group credentials, because
+   getting it wrong fails OPEN in the worst direction: provisioning looks
+   perfect - the credential is written, `credentials-report` says the group
+   holds it - and every call still behaves as though the group had nothing.
+   Anything that reads this domain must pass the flag; every caller in this
+   repository does, which is worth re-checking whenever a new one is added.
+   `?lookupInGroup=false` is equivalent to omitting it.
+
 SECRET VALUES NEVER LEAVE THIS MODULE. Nothing here returns, prints, logs or
 formats a value; the planning types carry entry NAMES and counts only. The
 values are read from the source file and base64-encoded straight into the

@@ -786,10 +786,18 @@ def run_enrich(chunks: list, prompt: PromptModel, mapping: dict,
     # half of whose chunks came from the checkpoint would otherwise be
     # described to the prompt as half a document.
     context = document_context(chunks, document_chars)
-    truncated_docs = sum(1 for doc in context.values() if doc.get("truncated"))
-    if truncated_docs:
-        log(f"{tag} {truncated_docs} document(s) longer than "
-            f"{document_chars} characters are passed to the prompt truncated")
+    # Warned about ONLY when the mapping actually asks for `document`. The
+    # context is built either way - `neighbours` and `position` need the same
+    # per-document work - so a corpus with long documents used to report
+    # truncation even when no prompt input was fed from `document` and the cap
+    # therefore changed nothing the LLM saw. A run log is only worth reading if
+    # everything in it bears on the run, and a warning that is routinely
+    # meaningless teaches the reader to skip the ones that are not.
+    if "document" in mapping.values():
+        truncated_docs = sum(1 for doc in context.values() if doc.get("truncated"))
+        if truncated_docs:
+            log(f"{tag} {truncated_docs} document(s) longer than "
+                f"{document_chars} characters are passed to the prompt truncated")
     # Only the parsed outputs depend on the response being valid JSON; asking
     # for none of them means parse_status is irrelevant to this setup.
     parsed_wanted = [name for name in ([header_output] if header_output else [])

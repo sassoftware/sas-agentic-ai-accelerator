@@ -312,6 +312,33 @@ def test_a_decimal_output_is_stored_as_a_number_and_a_gap_as_null():
     assert blank[0]["attributes"]["confidence"] is None
 
 
+def test_truncation_is_reported_only_when_the_prompt_is_actually_given_the_document():
+    """A warning nobody can act on teaches people to skip the ones they can.
+
+    The document context is built for every run - `neighbours` and `position`
+    need the same per-document work - so the cap applies to text no prompt
+    necessarily sees. Reported unconditionally, a corpus of long documents
+    warned about truncation on every single run regardless of the mapping;
+    that is what the owner saw on the first live enrichment (2026-08-05),
+    where nothing was mapped to `document` and the message meant nothing.
+    """
+    long_chunks = [dict(row, content="x" * 400) for row in chunks(3)]
+
+    seen = []
+    run_enrich(long_chunks, PromptModel(PARSING_PROMPT), {"chunk": "chunk"},
+               column_outputs=["department"], document_chars=50,
+               log=seen.append)
+    assert not any("truncated" in line for line in seen), seen
+
+    # ...and it still warns when the mapping DOES feed `document`, which is
+    # the case where the cap silently changes what the LLM was asked about.
+    seen = []
+    run_enrich(long_chunks, PromptModel(HEADER_PROMPT),
+               {"chunk": "chunk", "document": "document"},
+               header_output="response", document_chars=50, log=seen.append)
+    assert any("truncated" in line for line in seen), seen
+
+
 def test_an_output_that_collides_with_a_chunk_column_is_refused_by_name():
     colliding = ('def scoreModel(chunk):\n'
                  '    "Output: response, score, content"\n'
