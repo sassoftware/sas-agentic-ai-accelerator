@@ -125,9 +125,26 @@ function Publish-File([string]$folderId, [System.IO.FileInfo]$file) {
             $definition = Get-Content $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
             $definition | Add-Member -NotePropertyName id -NotePropertyValue $stepId -Force
             $putHeaders = $stepHeaders + @{ 'If-Match' = '*' }
+            # The body is sent as UTF-8 BYTES, not as a string. Two PowerShell
+            # 5.1 behaviours combine badly otherwise, and only on this PUT path
+            # - the POST below uses -InFile and is unaffected:
+            #   1. ConvertTo-Json writes the LITERAL character, so a `©`
+            #      escape that was safe ASCII in the .step file comes back out
+            #      of the round-trip as a real ©.
+            #   2. Invoke-RestMethod encodes a string body using the content
+            #      type's charset, and there is none here, so it falls back to
+            #      ASCII and © becomes `?`.
+            # The result reached the server as U+FFFD in the copyright line of
+            # every deployed step (found 2026-08-05 by diffing the registered
+            # steps against the repo). Only comments were affected, but a
+            # redeploy quietly corrupting file content is worth closing off -
+            # the next non-ASCII character may not be in a comment.
+            $body = [Text.Encoding]::UTF8.GetBytes(
+                ($definition | ConvertTo-Json -Depth 30 -Compress))
             Invoke-RestMethod -Method Put -Headers $putHeaders `
-                -Uri "$endpoint/dataFlows/steps/$stepId" -ContentType $stepType `
-                -Body ($definition | ConvertTo-Json -Depth 30 -Compress) | Out-Null
+                -Uri "$endpoint/dataFlows/steps/$stepId" `
+                -ContentType "$stepType; charset=utf-8" `
+                -Body $body | Out-Null
             return
         }
         $uri = "$endpoint/dataFlows/steps?parentFolderUri=/folders/folders/$folderId"
