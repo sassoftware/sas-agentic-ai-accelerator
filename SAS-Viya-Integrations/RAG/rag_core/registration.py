@@ -44,6 +44,33 @@ RETRIEVAL_OUTPUTS = [
 ]
 
 
+def name_filter(name: str) -> str:
+    """`eq(name,…)` with the value safely delimited.
+
+    A name is a person's free text - "Bob's policies" is an ordinary thing to
+    call a RAG setup - and the filter grammar ends a string literal at the
+    first matching quote. Interpolated raw, that name either makes the service
+    answer 400 (an opaque failure, long after the corpus was ingested) or
+    parses as a different expression that matches nothing, which is worse:
+    `register_model` reads "no such model" as "create one", so every
+    re-registration adds another duplicate instead of updating the model that
+    is already there.
+
+    The grammar accepts either quote as the delimiter, so a name containing
+    one is wrapped in the other. Doubling the quote is NOT relied on - it is
+    not part of the documented grammar, and a wrong guess here fails in
+    exactly the silent way this function exists to prevent.
+    """
+    text = str(name)
+    if "'" not in text:
+        return f"eq(name,'{text}')"
+    if '"' not in text:
+        return f'eq(name,"{text}")'
+    raise ValueError(
+        f"{text!r} cannot be looked up: a name containing both ' and \" has no "
+        "safe form in a filter expression. Rename the project or setup.")
+
+
 class ViyaClient:
     """The few REST calls Register Setup needs, with readable failures."""
 
@@ -130,8 +157,11 @@ class ViyaClient:
     # -- Model Manager ------------------------------------------------------
     def ensure_project(self, name: str) -> str:
         found = self.json("GET", "/modelRepository/projects",
-                          params={"filter": f"eq(name,'{name}')", "limit": 1})
-        items = found.get("items") or []
+                          params={"filter": name_filter(name), "limit": 20})
+        # the name is compared here too: the filter narrows the page, it is
+        # not the match, and "no result" is the answer that creates a duplicate
+        items = [item for item in (found.get("items") or [])
+                 if item.get("name") == name]
         if items:
             return items[0]["id"]
         repositories = self.json("GET", "/modelRepository/repositories",
@@ -174,9 +204,9 @@ class ViyaClient:
                        description: str, train_table: str) -> str:
         """Create or update the scoreable retrieval model."""
         found = self.json("GET", "/modelRepository/models",
-                          params={"filter": f"eq(name,'{name}')", "limit": 5})
+                          params={"filter": name_filter(name), "limit": 20})
         existing = [m for m in (found.get("items") or [])
-                    if m.get("projectId") == project_id]
+                    if m.get("name") == name and m.get("projectId") == project_id]
         version_id = self.project_version_id(project_id)
         body = {
             "name": name,

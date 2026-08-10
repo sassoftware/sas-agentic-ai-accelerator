@@ -439,6 +439,43 @@ def test_the_collections_own_columns_are_what_a_write_uses():
                                           "department"]
 
 
+def test_a_write_names_only_the_enrichment_columns_it_carries():
+    """The KEPT promise, enforced where the write is actually assembled.
+
+    `sync_attributes` says a column this setup no longer produces is kept and
+    holds what the prompt that wrote it said. Naming it in the INSERT breaks
+    that: no record has a value, `_row` supplies None, and the upsert's
+    `SET col = EXCLUDED.col` writes that NULL over the stored value. Chunk ids
+    are stable across a re-ingestion, so editing the end of a document is
+    enough to rewrite its earlier chunks and erase the column there.
+    """
+    store = _adapter(["chunk_id", "content", "embedding", "department",
+                      "sentiment", "enrich_version"])
+    # this run's prompt produces `sentiment`; `department` came from an
+    # earlier one and is not in the records
+    records = [{"chunk_id": "c1", "content": "x", "embedding": [0.0],
+                "sentiment": "warm", "enrich_version": "header@1.1"}]
+    assert store._columns_for("liti", records) == [
+        "chunk_id", "content", "embedding", "enrich_version", "sentiment"]
+    # a READ still asks for everything the collection has
+    assert store._columns_for("liti") == [
+        "chunk_id", "content", "embedding", "department", "enrich_version",
+        "sentiment"]
+
+
+def test_a_chunk_the_llm_failed_on_still_writes_its_null():
+    """Absent key and null value are different things.
+
+    A chunk whose enrichment call failed carries the key with None, and that
+    null is this run's answer - it must be written. Only a column no record
+    mentions at all is left alone.
+    """
+    store = _adapter(["chunk_id", "content", "embedding", "sentiment"])
+    records = [{"chunk_id": "c1", "sentiment": "warm"},
+               {"chunk_id": "c2", "sentiment": None}]
+    assert "sentiment" in store._columns_for("liti", records)
+
+
 def test_a_column_name_that_reached_the_adapter_unchecked_is_refused():
     store = _adapter(["chunk_id"])
     with pytest.raises(ValueError, match="cannot be a column name"):

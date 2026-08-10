@@ -110,7 +110,13 @@ export function renderFilteredOptions(
   dropdown.innerHTML = '';
   const placeholderOption = document.createElement('option');
   placeholderOption.value = placeholderText;
-  placeholderOption.innerHTML = placeholderText;
+  // textContent, not innerHTML. `DropdownOption.innerHTML` is a field name
+  // this control inherited; the values behind it are SAS Model Manager
+  // project, model and setup names, which anyone with authoring rights can
+  // choose. Assigning one to innerHTML would run whatever markup they put in
+  // the name, in the viewer's session, with the viewer's Viya permissions.
+  // An option label has no use for markup, so nothing is lost by refusing it.
+  placeholderOption.textContent = placeholderText;
   dropdown.appendChild(placeholderOption);
   items
     .filter(
@@ -124,7 +130,7 @@ export function renderFilteredOptions(
     .forEach((item) => {
       const listOption = document.createElement('option');
       listOption.value = item.value;
-      listOption.innerHTML = item.innerHTML;
+      listOption.textContent = item.innerHTML;
       dropdown.appendChild(listOption);
     });
   dropdown.value = [...dropdown.options].some((option) => option.value === selectedValue)

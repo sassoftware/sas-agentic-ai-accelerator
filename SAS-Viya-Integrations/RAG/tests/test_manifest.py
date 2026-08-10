@@ -7,6 +7,7 @@ about refusing to produce a broken one rather than about formatting.
 """
 import json
 import pathlib
+import re
 
 import pytest
 
@@ -191,9 +192,22 @@ class _StubViya:
         self.existing_job = existing_job
         self.headers = {}
 
+    @staticmethod
+    def _asked_for(params) -> str:
+        """The name an `eq(name,…)` filter asked for.
+
+        The stub answers the way the service does - a filtered collection
+        comes back carrying the name it was filtered on - so the caller's
+        own check that the item really is the one it asked for is exercised
+        rather than bypassed.
+        """
+        found = re.match(r"""eq\(name,(['"])(.*)\1\)$""",
+                         str((params or {}).get("filter") or ""))
+        return found.group(2) if found else ""
+
     def request(self, method, url, **kwargs):
-        self.calls.append((method, url, kwargs.get("params") or {},
-                           kwargs.get("json")))
+        params = kwargs.get("params") or {}
+        self.calls.append((method, url, params, kwargs.get("json")))
         if "/folders/folders/@item" in url:
             return _Reply(200, {"id": "folder-1"})
         if url.endswith("/members"):
@@ -216,7 +230,8 @@ class _StubViya:
         if url.endswith("/modelRepository/projects/proj-1"):
             return _Reply(200, {"id": "proj-1", "latestVersion": "Version 1"})
         if "/modelRepository/projects" in url:
-            return _Reply(200, {"items": [{"id": "proj-1"}]})
+            return _Reply(200, {"items": [{"id": "proj-1",
+                                           "name": self._asked_for(params)}]})
         if "/modelRepository/models/" in url and url.endswith("/contents"):
             return _Reply(201, {})
         if url.endswith("/modelRepository/models/model-new") and method == "GET":
@@ -228,7 +243,8 @@ class _StubViya:
                                 "somethingTheServiceSet": "keep me"})
         if "/modelRepository/models" in url:
             if method == "GET":
-                items = ([{"id": "model-old", "projectId": "proj-1"}]
+                items = ([{"id": "model-old", "projectId": "proj-1",
+                           "name": self._asked_for(params)}]
                          if self.existing_model else [])
                 return _Reply(200, {"items": items})
             return _Reply(201, {"count": 1, "items": [{"id": "model-new"}]})

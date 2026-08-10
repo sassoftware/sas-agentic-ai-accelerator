@@ -52,24 +52,33 @@
 cas _rcvSess;
 caslib _all_ assign;
 
-/* ---- stack every published run table into one ---------------------------- */
-data work._rcv_runs;
-    length source_table $ 64;
-    set
-    %let _rcv_i = 1;
-    %do %while (%scan(&_rcv_runs_tables., &_rcv_i., %str(,)) ne );
-        %let _rcv_t = %scan(&_rcv_runs_tables., &_rcv_i., %str(,));
-        &_rcv_runs_caslib..&_rcv_t. (in=_in&_rcv_i.)
-        %let _rcv_i = %eval(&_rcv_i. + 1);
-    %end;
-    ;
-    %let _rcv_i = 1;
-    %do %while (%scan(&_rcv_runs_tables., &_rcv_i., %str(,)) ne );
-        %let _rcv_t = %scan(&_rcv_runs_tables., &_rcv_i., %str(,));
-        if _in&_rcv_i. then source_table = "&_rcv_t.";
-        %let _rcv_i = %eval(&_rcv_i. + 1);
-    %end;
-run;
+/* ---- stack every published run table into one ----------------------------
+   Wrapped in a macro because an ITERATIVE %DO is only valid inside a macro
+   definition: in open code the step never runs at all, it fails with "ERROR:
+   The %DO statement is not valid in open code" and leaves `set` with no table
+   list. (The open-code %IF..%THEN %DO further down is a different statement
+   and is supported.) `_rcv_i` and `_rcv_t` stay local to the macro, which is
+   why the %symdel at the end tolerates their absence.                      */
+%macro _rcv_stack_runs;
+    data work._rcv_runs;
+        length source_table $ 64;
+        set
+        %let _rcv_i = 1;
+        %do %while (%scan(&_rcv_runs_tables., &_rcv_i., %str(,)) ne );
+            %let _rcv_t = %scan(&_rcv_runs_tables., &_rcv_i., %str(,));
+            &_rcv_runs_caslib..&_rcv_t. (in=_in&_rcv_i.)
+            %let _rcv_i = %eval(&_rcv_i. + 1);
+        %end;
+        ;
+        %let _rcv_i = 1;
+        %do %while (%scan(&_rcv_runs_tables., &_rcv_i., %str(,)) ne );
+            %let _rcv_t = %scan(&_rcv_runs_tables., &_rcv_i., %str(,));
+            if _in&_rcv_i. then source_table = "&_rcv_t.";
+            %let _rcv_i = %eval(&_rcv_i. + 1);
+        %end;
+    run;
+%mend _rcv_stack_runs;
+%_rcv_stack_runs;
 
 /* ---- normalise the run measures to numeric --------------------------------
    The history publish stages its CAS tables as varchar (see the Load step's

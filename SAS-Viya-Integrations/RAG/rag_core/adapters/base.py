@@ -136,9 +136,31 @@ class VectorStoreAdapter(ABC):
                       - {str(c).lower() for c in desired})
         return {"added": added, "kept": kept}
 
-    def _columns_for(self, collection: str) -> list:
-        """The canonical columns plus whatever enrichment added."""
-        return list(getattr(self, "_COLUMNS", [])) + self.attribute_columns(collection)
+    def _columns_for(self, collection: str, records: Optional[list] = None) -> list:
+        """The canonical columns plus whatever enrichment added.
+
+        Given `records`, an enrichment column is named only when the batch
+        actually carries a key for it. That is what keeps the promise
+        `sync_attributes` makes about its `kept` columns: they belong to a
+        prompt this setup no longer runs, so no record holds a value for them,
+        `_row` would supply None, and `SET col = EXCLUDED.col` would write that
+        NULL over what the earlier prompt wrote. Since a chunk id is stable
+        across a re-ingestion, editing the end of a document is enough to
+        rewrite its earlier chunks and erase the column there - silently, and
+        with nothing left in the live rows to recover it from.
+
+        A read passes no records and gets every column, which is what a
+        SELECT wants.
+        """
+        canonical = list(getattr(self, "_COLUMNS", []))
+        attributes = self.attribute_columns(collection)
+        if records is None:
+            return canonical + attributes
+        # `run_load` flattens the enrichment map onto the chunk, so a key is
+        # present exactly when this run produced a value for it - including
+        # None for a chunk whose LLM call failed, which SHOULD be written.
+        carried = {key for record in records for key in record}
+        return canonical + [column for column in attributes if column in carried]
 
     def _table(self, collection: str) -> str:
         """The quoted table name; adapters that quote differently override."""

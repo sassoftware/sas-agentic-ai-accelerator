@@ -229,8 +229,10 @@ class PgVectorAdapter(VectorStoreAdapter):
         from psycopg2.extras import execute_values
 
         table = _ident(collection)
-        # whatever the Enrich stage added to THIS collection rides along
-        all_columns = self._columns_for(collection)
+        # whatever the Enrich stage added to THIS collection rides along - but
+        # only the columns these records actually carry, so a column an earlier
+        # prompt filled is left alone rather than overwritten with NULL
+        all_columns = self._columns_for(collection, records)
         columns = ", ".join(all_columns)
         updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in all_columns if c != "chunk_id")
         template = "(" + ", ".join(

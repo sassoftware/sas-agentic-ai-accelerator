@@ -74,12 +74,21 @@ class _StubService:
             {"id": "f3", "name": "old.txt", "fileVersion": 3, "size": 5,
              "modifiedTimeStamp": "2026-06-01T00:00:00Z"},
         ]),
+        # a folder that does not fit in one page, for the paging tests
+        "/Big": ("folder-big", [
+            {"id": f"b{n}", "name": f"doc-{n:02d}.md", "fileVersion": 1,
+             "size": n, "modifiedTimeStamp": "2026-07-01T00:00:00Z"}
+            for n in range(1, 13)
+        ]),
     }
     BYTES = {"f1": b"# Vacation\n\nThirty days.", "f3": b"legacy note"}
 
     def __init__(self):
         self.headers = {}
         self.calls = []
+        #: set by a test to imitate a service that ignores `start` - the shape
+        #: that would turn paging into an endless loop
+        self.ignore_start = False
 
     def _meta(self, file_id):
         for _path, (_fid, files) in self.TREE.items():
@@ -105,7 +114,11 @@ class _StubService:
                               "uri": "/files/files/" + f["id"]} for f in files]
             if folder_id == "folder-docs":
                 items.append({"name": "Old", "uri": "/folders/folders/folder-old"})
-            return _Response({"items": items})
+            # the real collection is paged, and answers with the full count
+            start = 0 if self.ignore_start else int(params.get("start") or 0)
+            limit = int(params.get("limit") or 500)
+            return _Response({"items": items[start:start + limit],
+                              "start": start, "count": len(items)})
         if "/files/files/" in url and url.endswith("/content"):
             file_id = url.split("/files/files/")[1].split("/")[0]
             return _Response(content=self.BYTES.get(file_id, b""))
@@ -150,6 +163,37 @@ def test_content_source_reads_bytes():
     source = content_source()
     source.entries()
     assert source.read("/Docs/policy.md").startswith(b"# Vacation")
+
+
+# -- paging -----------------------------------------------------------------
+# A partial listing here is not a partial result. `run_list` decides a document
+# was DELETED by not seeing it, so a crawl that stopped after one page would
+# have run_load retire - or with deleted_policy='purge' delete - every chunk of
+# every document on the pages nobody asked for, while those documents sit
+# untouched at the source.
+def test_a_folder_larger_than_one_page_is_listed_whole(monkeypatch):
+    monkeypatch.setattr(ContentSource, "_PAGE", 5)
+    entries = content_source("/Big").entries()
+    assert len(entries) == 12
+    assert entries[0]["source_uri"] == "/Big/doc-01.md"
+    assert entries[-1]["source_uri"] == "/Big/doc-12.md"
+
+
+def test_a_service_that_never_advances_is_refused_rather_than_looped(monkeypatch):
+    monkeypatch.setattr(ContentSource, "_PAGE", 5)
+    monkeypatch.setattr(ContentSource, "_MAX_PAGES", 3)
+    source = content_source("/Big")
+    source.session.ignore_start = True
+    with pytest.raises(RuntimeError, match="repeats itself"):
+        source.entries()
+
+
+def test_each_folder_is_listed_once_per_visit():
+    """The crawl asks two questions per folder; it must not page it twice."""
+    source = content_source()
+    source.entries()
+    assert len([call for call in source.session.calls
+                if "/members" in call]) == 2      # /Docs and /Docs/Old
 
 
 def test_content_reader_resolves_by_path_without_a_crawl():

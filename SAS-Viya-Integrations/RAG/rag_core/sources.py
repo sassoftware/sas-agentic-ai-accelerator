@@ -115,24 +115,71 @@ class ContentSource:
             raise ValueError(f"SAS Content folder not found: {path!r}")
         return folder_id
 
+    #: Members come one page at a time. The loop below is what makes this a
+    #: request size rather than a corpus size limit.
+    _PAGE = 500
+    #: Refuse rather than spin: a service that ignored `start` would otherwise
+    #: return the same page forever. 500 pages is 250,000 members.
+    _MAX_PAGES = 500
+
     def _members(self, folder_id: str) -> list:
-        """Folder members - the ONLY listing that respects the folder.
+        """EVERY folder member - the ONLY listing that respects the folder.
 
         `GET /files/files?parentFolderUri=...` silently ignores the parameter
         and returns every file on the server (verified live), which would
         turn a three-document folder into a thousand-document corpus.
-        """
-        return self._get(f"/folders/folders/{folder_id}/members",
-                         limit=500).get("items", [])
 
-    def _subfolders(self, folder_id: str) -> list:
-        return [item for item in self._members(folder_id)
+        Paged to exhaustion, because here a partial listing is not a partial
+        result. `run_list` decides a document was DELETED by not seeing it, so
+        stopping at the first page would make run_load retire - or with
+        deleted_policy='purge' delete - every chunk of every document on the
+        pages nobody asked for, while the documents sit untouched at the
+        source. A corpus one document larger than a page would start losing
+        the corpus.
+        """
+        items: list = []
+        start = 0
+        for _page in range(self._MAX_PAGES):
+            payload = self._get(f"/folders/folders/{folder_id}/members",
+                                start=start, limit=self._PAGE)
+            batch = payload.get("items") or []
+            # The collection echoes the offset it answered from. A service
+            # that ignored `start` would otherwise hand back page one every
+            # time, and the count check below would end the loop having
+            # collected the same documents several times and none of the rest.
+            echoed = payload.get("start")
+            if isinstance(echoed, int) and echoed != start:
+                raise RuntimeError(
+                    f"listing folder {folder_id} asked for start={start} and "
+                    f"was answered from {echoed} - refusing a listing that "
+                    "repeats itself, because the documents it never reached "
+                    "would be recorded as deleted")
+            items.extend(batch)
+            if len(batch) < self._PAGE:
+                return items
+            count = payload.get("count")
+            if isinstance(count, int) and len(items) >= count:
+                return items
+            start += len(batch)
+        raise RuntimeError(
+            f"listing folder {folder_id} did not finish after "
+            f"{self._MAX_PAGES} pages of {self._PAGE} - refusing to treat a "
+            "partial listing as the whole folder, because the documents it "
+            "never reached would be recorded as deleted")
+
+    def _subfolders(self, folder_id: str, members=None) -> list:
+        # `members` lets a caller that already has the listing reuse it -
+        # paging a large folder twice to ask two questions about it is pure
+        # waste, and the crawl asks both for every folder it visits
+        members = self._members(folder_id) if members is None else members
+        return [item for item in members
                 if str(item.get("uri", "")).startswith("/folders/folders/")]
 
-    def _files(self, folder_id: str) -> list:
+    def _files(self, folder_id: str, members=None) -> list:
         """File members with the metadata the fingerprint needs."""
+        members = self._members(folder_id) if members is None else members
         files = []
-        for item in self._members(folder_id):
+        for item in members:
             uri = str(item.get("uri", ""))
             if "/files/files/" not in uri:
                 continue
@@ -150,7 +197,8 @@ class ContentSource:
         pending = [(self.root, self._folder_id(self.root))]
         while pending:
             path, folder_id = pending.pop(0)
-            for item in self._files(folder_id):
+            members = self._members(folder_id)
+            for item in self._files(folder_id, members):
                 name = item.get("name") or ""
                 if include_suffixes and _suffix_of(name) not in include_suffixes:
                     continue
@@ -162,7 +210,7 @@ class ContentSource:
                     "_version": str(item.get("version") or ""),
                     "_size": str(item.get("size") or ""),
                 })
-            for member in self._subfolders(folder_id):
+            for member in self._subfolders(folder_id, members):
                 child = member.get("name") or ""
                 pending.append((f"{path.rstrip('/')}/{child}",
                                 str(member["uri"]).rsplit("/", 1)[-1]))
