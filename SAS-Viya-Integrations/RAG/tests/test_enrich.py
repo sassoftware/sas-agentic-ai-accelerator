@@ -273,13 +273,20 @@ def test_enrichment_is_not_part_of_the_drift_fingerprint():
     each chunk records which one wrote it. The pinned value is what deployed
     ledgers already hold: a change here refuses every existing collection's
     next run.
+
+    CHANGED ONCE, deliberately, when the job and the Studio flow were made to
+    fingerprint a setup identically (see test_config_parity). The previous pin
+    was this job's own parameter spelling - `tokens`, `embedModel` - which the
+    flow never produced, so the two paths could not share a ledger at all. Any
+    corpus ingested before that reports drift on its next run and needs its
+    pipeline version bumped, which is the sanctioned way to re-ingest.
     """
     from rag_core.steps import config_hash
 
     plain = {"backend": "pgvector", "collection": "liti", "chunker": "recursive",
-             "tokens": "256", "overlap": "30", "embedModel": "all_minilm_l6_v2",
-             "pipelineVersion": "v1"}
-    assert config_hash(plain) == "8905e7ef1e4f9205"
+             "input_token_limit": "256", "overlap_tokens": "30",
+             "embed_model": "all_minilm_l6_v2", "pipeline_version": "v1"}
+    assert config_hash(plain) == "8f599ec7c308766d"
 
 
 # ---- columns --------------------------------------------------------------

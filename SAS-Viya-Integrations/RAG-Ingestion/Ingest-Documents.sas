@@ -334,11 +334,18 @@ def main():
         # than merely true. The guard still covers what would make the
         # collection unreadable - the chunker, the window and the embedding
         # model, which change the vectors themselves.
+        # The keys are rag_core's canonical ones, not this job's parameter
+        # names: config_hash canonicalises what it is given, and a key it does
+        # not recognise is a value that silently does not count. The Studio
+        # flow reaches the same dict a step at a time, which is the point -
+        # both paths write this fingerprint to the SAME ledger.
         cfg_hash = P["configHash"] or config_hash({
             "backend": P["backend"], "collection": P["collection"],
-            "chunker": P["chunker"], "tokens": P["inputTokenLimit"],
-            "overlap": P["overlapTokens"], "embedModel": P["embedModel"],
-            "pipelineVersion": P["pipelineVersion"],
+            "chunker": P["chunker"],
+            "input_token_limit": P["inputTokenLimit"],
+            "overlap_tokens": P["overlapTokens"],
+            "embed_model": P["embedModel"],
+            "pipeline_version": P["pipelineVersion"],
         })
 
         # ---- previous ledger + drift guard + run lock ----------------------
@@ -440,8 +447,15 @@ def main():
         log_cost(P["embedModel"], client.usage, log=M)
         discovered = [dict(row) for row in inventory]   # before run_load
         load_stats = {}
+        # run_id/config_id/embed_model stamp the lineage on every chunk row
+        # and on every tombstone. Without them the job wrote blanks: the
+        # retrieval datagrid could not say which run produced a chunk, and
+        # restore(collection, "") - the documented rollback after a bad run -
+        # matched every chunk the job had ever written, all at once.
         inventory = run_load(embedded, inventory, adapter, P["collection"], dims,
                              P["pipelineVersion"],
+                             run_id=run_id, config_id=cfg_hash,
+                             embed_model=P["embedModel"], embed_dims=dims,
                              deleted_policy=P["deletedPolicy"] or "retire",
                              retain_days=int(float(P["retainDays"] or 0)),
                              attributes=merge_attribute_schemas(

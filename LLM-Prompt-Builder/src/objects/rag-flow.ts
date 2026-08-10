@@ -29,6 +29,15 @@ export function enrichSteps(setup: RagSetup): RagEnrichStep[] {
   return steps.filter((step) => step?.promptModelId);
 }
 
+/**
+ * TLS settings that mean "no TLS", mirroring `_SSL_DISABLED` in
+ * rag_core.adapters.singlestore. Kept in step with it: the Load step's
+ * SingleStore control is encrypted-or-not, while the setting the deployment
+ * holds is PostgreSQL's six-valued sslmode, so something has to map one onto
+ * the other and this is the only place that knows both.
+ */
+const SSL_DISABLED = new Set(['disable', 'false', 'off', 'no', '0']);
+
 /** The steps of the ingestion chain, in wiring order. */
 export const INGESTION_STEPS = [
   'RAG - List Documents',
@@ -90,6 +99,9 @@ export function ingestionChain(setup: RagSetup, corePath: string): Record<string
     'RAG - List Documents': {
       _rgls_sourcePath: setup.source.path,
       _rgls_pipelineVersion: setup.pipelineVersion || 'v1',
+      // the same setting the generated job receives as includeCode: a setup
+      // that opted in must ingest its source files whichever way it is run
+      _rgls_includeCode: setup.source.includeCode ? '1' : '0',
       _rgls_ragProject: project,
       _rgls_tablesCaslib: setup.tables.caslib,
       _rgls_ragCorePath: corePath,
@@ -124,6 +136,15 @@ export function ingestionChain(setup: RagSetup, corePath: string): Record<string
       _rgld_storePort: String(setup.store.port ?? ''),
       _rgld_storeDb: setup.store.database,
       _rgld_storeSslmode: setup.store.sslmode,
+      // The Load step reads a different control per backend: PostgreSQL has
+      // six sslmode values, the MySQL-protocol stores only encrypted-or-not.
+      // Setting only the pgvector spelling left a SingleStore flow connecting
+      // with TLS on however the deployment had chosen, and failing against a
+      // store with no TLS listener with an error that named nothing about it.
+      // The vocabulary here mirrors the adapter's _SSL_DISABLED set.
+      _rgld_storeSsl: SSL_DISABLED.has(String(setup.store.sslmode).toLowerCase())
+        ? 'disable'
+        : 'require',
       _rgld_deletedPolicy: setup.policies?.deletedPolicy || 'retire',
       _rgld_retainDays: setup.policies?.retainDays ?? 0,
       _rgld_credentialDomain: setup.credentialDomain,

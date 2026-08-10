@@ -151,7 +151,7 @@ def test_split_oversized_elements_preserves_text_and_metadata():
 
 
 def test_config_hash_is_order_insensitive():
-    a = config_hash({"chunker": "recursive", "k": 5})
-    b = config_hash({"k": 5, "chunker": "recursive"})
+    a = config_hash({"chunker": "recursive", "input_token_limit": 256})
+    b = config_hash({"input_token_limit": 256, "chunker": "recursive"})
     assert a == b
-    assert a != config_hash({"k": 6, "chunker": "recursive"})
+    assert a != config_hash({"input_token_limit": 512, "chunker": "recursive"})

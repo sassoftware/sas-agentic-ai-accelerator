@@ -251,6 +251,64 @@ def stamp_config(rows: list, additions: dict) -> list:
     return rows
 
 
+#: The parameters a chunk's identity depends on - the only ones the drift
+#: guard compares. `canonical_config` says why this set and not another.
+CONFIG_KEYS = ("backend", "collection", "chunker", "input_token_limit",
+               "overlap_tokens", "embed_model", "pipeline_version")
+
+#: Hashed as integers, so "256" from a job parameter and 256 from a step
+#: control are the same configuration.
+_CONFIG_NUMBERS = {"input_token_limit", "overlap_tokens"}
+
+#: Chunkers whose overlap setting actually changes a chunk. For any other
+#: chunker the number is inert, so it is zeroed before hashing rather than
+#: allowed to read as drift.
+_OVERLAPPING_CHUNKERS = {"recursive"}
+
+
+def canonical_config(config: dict) -> dict:
+    """The pipeline configuration in ONE shape, whoever assembled it.
+
+    Two paths produce a corpus - the generated ingestion job, which holds the
+    whole configuration in one program, and the generated Studio flow, which
+    accumulates it a step at a time - and the RAG Builder's Manifest button
+    generates both for the same setup, writing to the SAME ledger. So they
+    have to agree on the exact bytes being hashed. They disagreed on three
+    separate things: the key names (`tokens` against `input_token_limit`),
+    the value types ("256" against 256), and which keys counted at all. The
+    result was that running the flow once locked the scheduled job out of its
+    own ledger, and the message it got - "configuration drift" - described
+    nothing the person had changed.
+
+    WHY THIS SET. The drift guard exists for changes the LEDGER CANNOT SEE.
+    A different extractor produces different text, so `content_hash` changes,
+    so the ledger marks that document `changed` and re-ingests it unprompted.
+    Moving a corpus between the file system and SAS Content changes
+    `source_uri`, hence `doc_id`, so the ledger sees documents removed and
+    others added. Neither needs a fingerprint to be handled correctly. What
+    the ledger is blind to is a change to the chunker, the token window, the
+    overlap or the embedding model: every document is byte-identical, and
+    every vector is different. Those, plus which collection this is and the
+    pipeline version that releases a deliberate re-ingest, are the
+    fingerprint. `extractor` and `source_kind` still TRAVEL in config_json
+    and still reach the run history - they are simply not hashed.
+    """
+    source = {str(key): value for key, value in (config or {}).items()}
+    canonical: dict = {}
+    for key in CONFIG_KEYS:
+        value = source.get(key)
+        if key in _CONFIG_NUMBERS:
+            try:
+                canonical[key] = int(float(value))
+            except (TypeError, ValueError):
+                canonical[key] = 0
+        else:
+            canonical[key] = str(value if value is not None else "")
+    if canonical["chunker"] not in _OVERLAPPING_CHUNKERS:
+        canonical["overlap_tokens"] = 0
+    return canonical
+
+
 def check_config_drift(ledger_rows: list, config_id: str,
                        pipeline_version: str) -> str:
     """Refuse to mix two pipeline configurations into one collection.
@@ -1044,6 +1102,11 @@ def merge_ledger(previous_rows: list, updated_inventory: list) -> list:
 
 
 def config_hash(pipeline_config: dict) -> str:
-    """Stable hash of the pipeline parameters (the §2 drift guard)."""
-    canonical = json.dumps(pipeline_config, sort_keys=True, separators=(",", ":"))
+    """Stable hash of the pipeline parameters (the §2 drift guard).
+
+    Canonicalises first, so it cannot matter which path assembled the dict or
+    what else that path happened to put in it.
+    """
+    canonical = json.dumps(canonical_config(pipeline_config),
+                           sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
