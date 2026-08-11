@@ -13,6 +13,8 @@ step (it owns doc_id/hash/version context).
 """
 from __future__ import annotations
 
+import re
+
 from .tokens import estimate_tokens
 
 _SEPARATORS = ["\n\n", "\n", ". ", " "]  # recursive split hierarchy
@@ -137,6 +139,24 @@ def document_text(texts: list) -> str:
     return JOIN.join(t for t in texts if t and t.strip())
 
 
+def _words(text: str) -> str:
+    """Text with every whitespace run flattened to one space, for comparing
+    two copies that differ only in how they were re-joined."""
+    return " ".join(text.split())
+
+
+def _whitespace_flexible(content: str):
+    """`content` as a pattern where any whitespace run matches any other.
+
+    None when the text has no non-whitespace to anchor on - matching purely on
+    whitespace would land anywhere, which is the guessing this exists to avoid.
+    """
+    words = [re.escape(word) for word in content.split()]
+    if not words:
+        return None
+    return re.compile(r"\s+".join(words))
+
+
 def locate(joined: str, contents: list) -> list:
     """Where each chunk sits in the document text: [(start, end) or None].
 
@@ -166,11 +186,46 @@ def locate(joined: str, contents: list) -> list:
             head, _, rest = content.partition("\n")
             # the overlap tail is words taken from the END of the previous
             # chunk; if it is not there, this is not an overlap and the chunk
-            # simply is not in the document text
-            if head and rest and head in previous:
+            # simply is not in the document text.
+            #
+            # Compared as WORDS: _tail rebuilds the tail with single spaces,
+            # so a previous chunk holding "Alpha.\n\nGamma." yields the head
+            # "Alpha. Gamma.", and a byte comparison denied the overlap it was
+            # looking at. The chunk then had no span at all.
+            if head and rest and _words(head) in _words(previous):
                 candidate = joined.find(rest, cursor)
-                if candidate >= 0:
+                if candidate < 0:
+                    flexible = _whitespace_flexible(rest)
+                    hit = flexible.search(joined, cursor) if flexible else None
+                    if hit:
+                        spans.append((hit.start(), hit.end()))
+                        cursor = hit.end()
+                        previous = content
+                        continue
+                else:
                     text, found = rest, candidate
+        if found < 0 and text:
+            # The chunkers do not emit verbatim slices. `_split_recursive`
+            # drops empty parts and re-joins survivors with ONE separator, so
+            # a chunk spanning a run of blank lines comes back with that run
+            # collapsed; `paragraph_chunks` strips each paragraph, losing the
+            # padding around it. Either way the chunk is the document's text
+            # with its WHITESPACE rewritten, and an exact search misses it -
+            # which cost the span on every such chunk, and a chunk with no
+            # span cannot be cited at the place it came from.
+            #
+            # Matching whitespace-flexibly finds it and, better, returns the
+            # extent in the DOCUMENT rather than in the rewritten copy. Every
+            # non-whitespace character still has to match, in order, from the
+            # cursor - so this stays a confident location, not a guess.
+            match = _whitespace_flexible(text)
+            if match:
+                hit = match.search(joined, cursor)
+                if hit:
+                    spans.append((hit.start(), hit.end()))
+                    cursor = hit.end()
+                    previous = content
+                    continue
         if found < 0:
             spans.append(None)
             previous = content

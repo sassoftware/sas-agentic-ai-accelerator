@@ -12,15 +12,28 @@ per-document failure contract: a document failure marks its ledger row
 `failed` with `error_text` and NEVER raises out of the step.
 
 Ledger columns: doc_id, source_uri, source_kind, content_hash, mtime,
-status (new|changed|unchanged|deleted|skipped|failed|ingested), error_text,
-pipeline_version, config_hash, chunk_count, run_id, updated_at.
+status (new|changed|unchanged|deleted|skipped|excluded|failed|ingested),
+error_text, pipeline_version, config_hash, chunk_count, run_id, updated_at.
 
 `skipped` and `failed` are deliberately different states. Skipped means the
 pipeline decided not to ingest this document and nothing is wrong: an image,
-a source file with code ingestion off, a scanned PDF with no text layer.
-Failed means something broke that a person can fix. Collapsing the two - which
-is what this pipeline did until 2026-08-01 - makes every run look broken and
-hides the rows that are.
+a scanned PDF with no text layer. Failed means something broke that a person
+can fix. Collapsing the two - which is what this pipeline did until
+2026-08-01 - makes every run look broken and hides the rows that are.
+
+`excluded` splits one more case out of `skipped`, and the difference decides
+what happens to chunks the document already has:
+
+* EXCLUDED is the deployment's choice - a source file with code ingestion
+  turned off. Turning that setting off is how an administrator gets those
+  files OUT of the index, so its existing chunks are retired.
+* SKIPPED is the pipeline being unable - no extractor for the suffix, or an
+  extractor that found no text. Both can be true today and false tomorrow
+  (a missing package gets installed), so the chunks are LEFT ALONE. Retiring
+  on this would let one absent dependency quietly empty a corpus.
+
+Both are reported the same way to a reader, since both mean "not ingested,
+and here is why"; only their effect on existing chunks differs.
 """
 from __future__ import annotations
 
@@ -386,7 +399,7 @@ def run_list(source, ledger_rows: list, run_id: str,
         if not include_code and suffix in CODE_SUFFIXES:
             # decided before fingerprinting: there is no reason to read a file
             # this run will not ingest
-            row.update(status="skipped", content_hash="",
+            row.update(status="excluded", content_hash="",
                        error_text=f"code file ({suffix}) - enable 'include code "
                                   "files' on the setup to ingest it as text")
             inventory.append(row)
@@ -401,7 +414,7 @@ def run_list(source, ledger_rows: list, run_id: str,
         old = previous.get(doc_id)
         if old is None:
             row["status"] = "new"
-        elif old.get("status") in ("failed", "skipped"):
+        elif old.get("status") in ("failed", "skipped", "excluded"):
             # failed docs re-enter the pipeline every run until they
             # succeed or disappear — "unchanged" would hide them forever.
             # Skipped ones re-enter for the same reason: the skip was a
@@ -442,7 +455,7 @@ def log_skipped(rows: list, log=print, limit: int = 25) -> None:
     """
     by_reason: dict = {}
     for row in rows:
-        if row.get("status") == "skipped":
+        if row.get("status") in ("skipped", "excluded"):
             by_reason.setdefault(row.get("error_text") or "skipped",
                                  []).append(row.get("source_uri", ""))
     for reason, uris in by_reason.items():
@@ -712,8 +725,16 @@ def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
     # The Enrich stage's outputs are real columns. They are added here rather
     # than in the Enrich step because the collection is what has a schema, and
     # this is the only stage that holds it open.
-    if attributes:
-        delta = adapter.sync_attributes(collection, attributes)
+    # `attributes` is None for the headline enrichment - a contextual header
+    # with no stored columns - and sync_attributes is the ONLY place that
+    # creates enrich_version. Skipping it there meant the stamp run_enrich
+    # writes on every enriched chunk had nowhere to land, so the documented
+    # way to tell which prompt wrote which chunk answered "column does not
+    # exist". The call is made whenever this run enriched anything at all;
+    # with no columns wanted it adds just the stamp.
+    enriched = any(chunk.get("enrich_version") for chunk in embedded_chunks)
+    if attributes or enriched:
+        delta = adapter.sync_attributes(collection, attributes or {})
         if delta.get("added"):
             # Said plainly, because it is the one thing a person will get
             # wrong: the column exists from now on and is EMPTY for every
@@ -758,6 +779,23 @@ def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
                         collection, filter={"doc_id": row["doc_id"]},
                         run_id=run_id) or 0
                 removed += 1
+            elif status == "excluded":
+                # The deployment chose not to index this document, so any
+                # chunks it already has must stop being retrievable - turning
+                # code ingestion off is precisely how someone gets those files
+                # out of the index, and leaving the chunks live meant they
+                # kept coming back in answers with nothing in the ledger to
+                # explain it. Always RETIRED, never purged, whatever
+                # deleted_policy says: the document is still at the source and
+                # re-including it should not have cost its history.
+                gone = adapter.retire(collection,
+                                      filter={"doc_id": row["doc_id"]},
+                                      run_id=run_id) or 0
+                if gone:
+                    retired += gone
+                    log("rag load: " + row.get("source_uri", row["doc_id"])
+                        + " is excluded by this setup - retired " + str(gone)
+                        + " chunk(s) it had from an earlier run")
             elif status in ("new", "changed"):
                 chunks = by_doc.get(row["doc_id"], [])
                 if not chunks:

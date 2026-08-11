@@ -105,8 +105,13 @@ class VectorStoreAdapter(ABC):
         run log, because a column that is empty for the first half of a corpus
         is otherwise indistinguishable from one the LLM had nothing to say for.
         """
-        if not wanted:
-            return {"added": [], "kept": []}
+        # An EMPTY `wanted` still gets the stamp column. The headline
+        # enrichment - a contextual header with no stored outputs - wants no
+        # columns at all, and returning early here left `enrich_version` with
+        # nowhere to land, so a collection carrying headers from two prompt
+        # versions could not say which wrote which. Whether this run enriched
+        # anything is the CALLER's question, and run_load asks it before
+        # calling; reaching here means it did.
         existing = self._existing_columns(collection)
         desired = dict(wanted)
         desired.setdefault(self._ENRICH_STAMP, "string")

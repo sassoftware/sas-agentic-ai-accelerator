@@ -56,6 +56,13 @@ Connection resolution (design §4 destination boundary), per value:
   4. the manifested constants below
 A decision definition never stores a secret.
 
+The EMBEDDING provider key is different, and only step 1 or 3 can supply it:
+an API-backed embedding container reads API_KEY out of the SCR options, and a
+decision running in SAS Intelligent Decisioning has no SAS Viya session token,
+so step 2 cannot resolve anything there. Pass it as API_KEY in the options
+input, or set RAGEMBED_API_KEY on the destination. A locally-served embedding
+model needs none.
+
 Two backends are supported, and BACKEND above decides which SQL dialect and
 driver this copy uses. SingleStore has no cosine metric, so vectors are stored
 and queried L2-normalized and ranked by dot product; `distance` therefore
@@ -186,6 +193,33 @@ def _connect(store):
     return psycopg2.connect(connect_timeout=10, **store)
 
 
+def _embed_options(options):
+    """The SCR options for the query embedding, including the provider key.
+
+    An API-backed embedding container reads its key out of this argument, so
+    the key has to reach here or the container refuses every query - and the
+    degradation contract turns that refusal into an empty datagrid, so the
+    decision answers from no context at all while looking like it worked.
+
+    It arrives in the per-call `options` input, the way the LLM score code
+    receives its own API_KEY: `_domain_secrets()` is NOT reachable where this
+    runs. A decision executing in SAS Intelligent Decisioning has no SAS Viya
+    session token to resolve a credential domain with, so the lookup that
+    serves the store credentials in a compute session returns nothing here.
+    The environment variable is the SCR/MAS deploy-time route, matching the
+    other RAGEMBED_* settings.
+
+    A locally-served model needs no key, so one is sent only when held -
+    exactly as rag_core.scr.EmbeddingClient does it on the ingestion side.
+    """
+    embed = {"Embedding_Mode": "query"}
+    key = (options.get("API_KEY") or options.get("api_key")
+           or os.getenv("RAGEMBED_API_KEY", ""))
+    if key:
+        embed["API_KEY"] = key
+    return "{" + ",".join(str(k) + ":" + str(v) for k, v in embed.items()) + "}"
+
+
 def _embed_query(question, options):
     """Embed the question through the SCR embedding container (query mode)."""
     import requests
@@ -202,7 +236,7 @@ def _embed_query(question, options):
         url = endpoint + "/" + model + "/" + model
     body = {"inputs": [
         {"name": "document", "value": question},
-        {"name": "options", "value": "{Embedding_Mode:query}"},
+        {"name": "options", "value": _embed_options(options)},
         {"name": "project", "value": "rag"},
     ]}
     response = requests.post(

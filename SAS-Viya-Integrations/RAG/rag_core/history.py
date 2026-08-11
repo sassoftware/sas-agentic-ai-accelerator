@@ -72,6 +72,7 @@ EVENT_NUMERIC = ["chunk_count_before", "chunk_count_after"]
 
 # what a run's document counts are keyed on
 _STATUS_COUNTS = ("new", "changed", "unchanged", "deleted", "skipped",
+                  "excluded",
                   "failed", "ingested")
 
 _DIALECTS = {

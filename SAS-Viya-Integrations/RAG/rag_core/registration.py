@@ -34,7 +34,9 @@ RETRIEVAL_INPUTS = [
     ("k", "decimal", 8, "Number of chunks to return (0 = the setup default)"),
     ("filter_json", "string", 1024, "Optional JSON metadata filter"),
     ("retrieval_mode", "string", 16, "vector (hybrid arrives later)"),
-    ("options", "string", 2048, "Optional JSON connection overrides"),
+    ("options", "string", 2048,
+     "Optional JSON overrides: connection settings, and API_KEY for an "
+     "API-backed embedding model (a decision has no session to resolve one)"),
 ]
 RETRIEVAL_OUTPUTS = [
     ("context_dg", "string", 32000, "Retrieved context as a datagrid"),
