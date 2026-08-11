@@ -1,0 +1,14 @@
+{
+    "generator": "mdb 0.1.0",
+    "manifest_sha256": "d9e69b6fb81a8372eb5d4abc85cf0c5c6091dc6bc42ebe0731a715cfde0681a7",
+    "files": {
+        "Model-Card.md": "9ae4e0b07805474b315bbc9a67c7425c0b50782097926dff742e417434481611",
+        "README.md": "d37f8d18fcccc841e16d0decce92b1e75ec968ed69080b289468250bba09c05c",
+        "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
+        "modelConfiguration.json": "d2616fc0a324bd38ad3e9ff91778a205ccff4b5951ab112086dee3451221c1ea",
+        "options.json": "5aa5966378ed916966b955930e654bd2655ab03d8a688dd21bffbe34b2491ab6",
+        "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
+        "poolsideLagunaS21FreeScore.py": "caa8059f03fa6f9bd6ec0200dc83b7022e0a706577f9fbb0707a6ee43221701f",
+        "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"
+    }
+}

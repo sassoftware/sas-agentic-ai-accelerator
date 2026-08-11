@@ -1,0 +1,42 @@
+schema: 1
+kind: llm
+model_id: free_models_router
+display_name: Free Models Router
+provider:
+  adapter: openrouter
+  model_version: openrouter/free
+  endpoint: https://openrouter.ai/api/v1/chat/completions
+  params: {}
+  auth:
+    mode: api_key
+    key_name: OpenRouter
+runtime:
+  template: openai_chat
+  requirements_profile: api-wrapper
+  timeout_s: 60
+  weights_source: baked
+options:
+  temperature:
+    default: 1
+  top_p:
+    default: 1
+  max_tokens:
+    default: 1000
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: OpenRouter
+  scr_sizing: small
+  extra: []
+metadata:
+  description: Free Models Router by OpenRouter, served through the OpenRouter API.
+  context_length: 200000
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 0.0
+    output_token_price: 0.0
+modeler: david.weik@sas.com
+generation:
+  overrides: []
+  catalog_provenance: openrouter (live)
