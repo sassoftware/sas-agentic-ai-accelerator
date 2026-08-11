@@ -16,7 +16,7 @@ IBM Granite Embedding Small English R2: a 47M-parameter ModernBERT dense bi-enco
 
 ## Pricing
 
-Cost per second: unknown
+Cost per second: 3.9178e-05
 
 ## Intended Use
 
