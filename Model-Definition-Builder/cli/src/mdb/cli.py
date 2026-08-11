@@ -1086,6 +1086,87 @@ def options_restore(
         raise typer.Exit(1)
 
 
+@app.command("package-check")
+def package_check(
+    files: Optional[list[str]] = typer.Argument(
+        None, help="Transfer packages to check (default: the ones this repo ships)"),
+    fix: bool = typer.Option(
+        False, "--fix",
+        help="Rewrite any host found to the placeholder instead of only reporting it"),
+):
+    """Check exported transfer packages do not name the environment that built them.
+
+    A VA report keeps its options inside its own content, so an export always
+    carries the exporting deployment's hostname - in `viyaHost`, in
+    `SCREndpoint`, and in the Data-Driven Content URL. Re-exporting brings all
+    of it back, however carefully the last copy was cleaned.
+
+    It keeps getting through because the export stores report content as
+    `TRUE###<base64 zlib>`. Exactly one occurrence, the DDC URL lifted into
+    the substitution map, is plain text; the rest are inside the compressed
+    blob where no grep and no base64 scan will find them. A package can look
+    clean in review and still name an internal host seven times.
+
+    So this asks the question backwards: every host a report names must be the
+    documented placeholder or a known public address. Anything else fails,
+    whoever exported it - which is what lets this run in CI, on a machine that
+    has no .env and no idea which deployment produced the file.
+
+    Run it before committing a re-exported package; `--fix` does the rewrite.
+    """
+    from .core.packages import (ALLOWED_HOSTS, PLACEHOLDER_HOST, check_package,
+                                default_packages, sanitise_package)
+
+    targets = [Path(f) for f in files] if files else default_packages(find_repo_root())
+    if not targets:
+        console.print("[yellow]No transfer packages found to check.[/yellow]")
+        raise typer.Exit(0)
+
+    findings: list = []
+    checked = reports = 0
+    for path in targets:
+        if not path.is_file():
+            console.print(f"[red]{path}: not a file[/red]")
+            raise typer.Exit(2)
+        result = check_package(path)
+        checked += result.packages_checked
+        reports += result.reports_checked
+        findings.extend(result.findings)
+
+    if not findings:
+        console.print(f"[green]{checked} package(s), {reports} report(s): "
+                      f"no host named beyond the placeholder.[/green]")
+        raise typer.Exit(0)
+
+    table = Table(title="Hosts named by a transfer package")
+    for column in ("Package", "Report", "Host", "Count", "Where"):
+        table.add_column(column)
+    for f in findings:
+        table.add_row(f.package, f.report, f.host, str(f.occurrences), f.where)
+    console.print(table)
+
+    if not fix:
+        console.print(
+            f"\n[red]{len(findings)} host(s) would ship with these packages.[/red] "
+            f"Re-run with --fix to rewrite them to '{PLACEHOLDER_HOST}', or add a "
+            "genuinely public address to ALLOWED_HOSTS in mdb.core.packages.")
+        raise typer.Exit(1)
+
+    for path in targets:
+        text, fixed = sanitise_package(path)
+        if not fixed:
+            continue
+        path.write_text(text, encoding="utf-8", newline="")
+        for host, n in sorted(fixed.items()):
+            console.print(f"  {path.name}: {host} -> {PLACEHOLDER_HOST} ({n})")
+
+    after = [f for path in targets for f in check_package(path).findings]
+    if after:
+        console.print("[red]Still named after the rewrite - not fixed.[/red]")
+        raise typer.Exit(1)
+    console.print("[green]Rewritten, and re-checked clean.[/green]")
+
+
 @app.command()
 def register(
     ids: Optional[list[str]] = typer.Argument(None),

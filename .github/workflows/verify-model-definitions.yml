@@ -5,6 +5,11 @@ name: Verify generated model definitions
 # against those assets drifting from their manifest: it re-renders every
 # managed definition and fails if the committed files differ, and it runs the
 # mdb test suite (generation determinism, fleet fidelity, template-subset lint).
+#
+# It also guards the exported transfer packages under SAS-Viya-Integrations/,
+# which is why that path is watched here: an export always reintroduces the
+# exporting deployment's hostname, and all but one occurrence is hidden inside
+# zlib-compressed report content where no diff review will show it.
 
 on:
   push:
@@ -14,11 +19,13 @@ on:
       - "LLM-Definitions/**"
       - "Embedding-Definitions/**"
       - "Model-Definition-Builder/**"
+      - "SAS-Viya-Integrations/*.json"
   pull_request:
     paths:
       - "LLM-Definitions/**"
       - "Embedding-Definitions/**"
       - "Model-Definition-Builder/**"
+      - "SAS-Viya-Integrations/*.json"
 
 jobs:
   verify:
@@ -34,5 +41,7 @@ jobs:
         run: mdb generate --all --check
       - name: Validate managed definitions
         run: mdb validate --all
+      - name: Transfer packages name no environment
+        run: mdb package-check
       - name: Test suite
         run: python -m pytest Model-Definition-Builder/cli/tests -q
