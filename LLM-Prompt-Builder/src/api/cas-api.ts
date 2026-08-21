@@ -71,3 +71,41 @@ export async function getCasTableInfo(
     rowCount: Number(info.rowCount ?? 0),
   };
 }
+
+/** One page of a loaded CAS table, as column names + row value arrays. */
+export interface CasTableRows {
+  columns: string[];
+  rows: unknown[][];
+}
+
+/**
+ * Read rows of a LOADED (promoted) CAS table — the RAG Builder's ledger
+ * browser. casManagement only serves in-memory tables, which is exactly the
+ * promoted ledger's state; a table that exists only as a saved file answers
+ * 404 (the caller shows a hint). Cell order follows the columns listing.
+ */
+export async function getCasTableRows(
+  caslib: string,
+  table: string,
+  server = 'cas-shared-default',
+  limit = 500
+): Promise<CasTableRows> {
+  // Two DIFFERENT services, and the split is not cosmetic: casManagement
+  // describes a table (its columns, its metadata) but has no row handler at
+  // all - `/tables/<t>/rows` answers 404 "no handler defined for the path",
+  // which reads exactly like a missing table and sent every ledger read down
+  // the "no such table" branch. Rows come from casRowSets.
+  const path =
+    `/servers/${encodeURIComponent(server)}` +
+    `/caslibs/${encodeURIComponent(caslib)}/tables/${encodeURIComponent(table)}`;
+  const columns = await viyaGet<{ items?: { name?: string }[] }>(
+    `/casManagement${path}/columns?limit=1000`
+  );
+  const rows = await viyaGet<{ items?: { cells?: unknown[] }[] }>(
+    `/casRowSets${path}/rows?limit=${limit}`
+  );
+  return {
+    columns: (columns.items ?? []).map((column) => String(column.name ?? '')).filter(Boolean),
+    rows: (rows.items ?? []).map((row) => row.cells ?? []),
+  };
+}

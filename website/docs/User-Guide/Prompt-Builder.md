@@ -5,7 +5,7 @@ title: Prompt Builder
 
 The **LLM Prompt Builder** is a no-code tool for prompt engineers. You test a prompt across several LLMs at once, compare the responses side by side, let an LLM judge which one is best, keep a versioned history of every experiment, and turn the winning prompt into a scoreable model you can use elsewhere on the platform — for example in SAS Intelligent Decisioning. Everything is saved in SAS Model Manager, so your work is governed and shareable.
 
-This guide walks through using the tool. For installing and embedding it in a SAS Visual Analytics report (and the one-time configuration a report author does), see [Deploying the LLM Prompt Builder](../Administration-Guide/Setup-Additional-UIs.md).
+This guide walks through using the tool. For installing and embedding it in a SAS Visual Analytics report (and the one-time configuration a report author does), see [Deploying the Builder UIs](../Administration-Guide/Setup-Additional-UIs.md).
 
 ![The LLM Prompt Builder embedded in a Visual Analytics report](../../static/Prompt-Builder-Overview.png)
 
@@ -173,10 +173,10 @@ Everything you save lands in Model Manager as a `Prompt-Experiment-Tracker.json`
 
 ## A note on API keys
 
-Hosted models (OpenAI, Anthropic, Google, …) need an API key. Keys are **not** typed into the tool or the URL — they are supplied to the object through governed data by whoever sets up the report, so they never end up in a shareable link and access to running paid model calls can be restricted. If a model call fails with an authorization error, that key is missing or not readable for you; ask your administrator. See [Deploying the LLM Prompt Builder](../Administration-Guide/Setup-Additional-UIs.md) for the details.
+Hosted models (OpenAI, Anthropic, Google, …) need an API key. Keys are **not** typed into the tool or the URL — they are supplied to the object through governed data by whoever sets up the report, so they never end up in a shareable link and access to running paid model calls can be restricted. If a model call fails with an authorization error, that key is missing or not readable for you; ask your administrator. See [Deploying the Builder UIs](../Administration-Guide/Setup-Additional-UIs.md) for the details.
 
 ## Where to go next
 
-- [Deploying the LLM Prompt Builder](../Administration-Guide/Setup-Additional-UIs.md) — embedding it in a Visual Analytics report and the one-time configuration
+- [Deploying the Builder UIs](../Administration-Guide/Setup-Additional-UIs.md) — embedding it in a Visual Analytics report and the one-time configuration
 - [Model Definition Builder](./Model-Definition-Builder.md) — how the LLMs you test with get added to the environment
 - [Deployment of Decisions](../Administration-Guide/Deployment-of-Decisions.md) — using a manifested prompt in SAS Intelligent Decisioning

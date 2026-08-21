@@ -17,7 +17,7 @@ runtime:
   timeout_s: 60
 options:
   Embedding_Length:
-    default: 384
+    default: 1024
   Input_Token_Limit:
     default: 512
 tags:

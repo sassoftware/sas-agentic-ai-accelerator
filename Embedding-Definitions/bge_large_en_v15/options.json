@@ -1,7 +1,7 @@
 {
     "Embedding_Length": {
-        "default": 384,
-        "range": "384",
+        "default": 1024,
+        "range": "1024",
         "description": "The length of the returned embedding vector.",
         "label": "Embedding Length"
     },

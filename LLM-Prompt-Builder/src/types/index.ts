@@ -39,7 +39,11 @@ export interface PromptBuilderConfig {
    * report host — mirroring how mdb populates the same attributes.
    */
   modelCardReportURI?: string;
-  /** Map of API-key name (as referenced by an LLM's options.json) to key value. */
+  /**
+   * In-memory store for the domain-resolved provider keys, keyed by the name
+   * an LLM's options.json references via API_KEY.default (e.g. "Anthropic").
+   * Populated during buildPromptBuilder from the credential domain.
+   */
   API_KEYS?: Record<string, string>;
   /**
    * Master toggle for DSPy prompt optimization ('true' enables it). When off
@@ -61,12 +65,15 @@ export interface PromptBuilderConfig {
   /** Minimum dataset rows before an optimization run is allowed (default 30). */
   minOptimizeSamples?: string;
   /**
-   * Governed SAS library + table holding provider API keys (name → value) that
-   * the optimization job reads. Only the names travel in the job request —
-   * never the keys themselves.
+   * Credential domain provider API keys resolve from under the signed-in
+   * user's identity (user credential overrides group credential; the
+   * credential's secrets map holds one entry per provider name); models
+   * without an entry are disabled with a note. Defaults to the
+   * create-credential-domain.sas default (agentic-ai-keys) — a missing
+   * domain 404s harmlessly and assigned-data keys still apply. 'none'
+   * disables credential lookups entirely.
    */
-  optimizeKeyLibrary?: string;
-  optimizeKeyTable?: string;
+  credentialDomain?: string;
   [key: string]: unknown;
 }
 

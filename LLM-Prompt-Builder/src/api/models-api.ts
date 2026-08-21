@@ -357,6 +357,77 @@ export async function deleteModelProject(projectID: string): Promise<number> {
 }
 
 /**
+ * A model's versions, oldest first.
+ *
+ * `modelVersionName` is the major.minor a person recognises — but it is NOT
+ * unique: two versions labelled 1.0 were seen on one live model, so the id is
+ * the identity and the label is only for display. Reading a version's CONTENT
+ * is a different endpoint again (`/models/{id}/history/{versionId}/contents`);
+ * `/models/{versionId}/contents` answers 200 with an empty collection, which
+ * reads like a version that carries nothing.
+ */
+export async function getModelVersions(
+  modelID: string
+): Promise<Array<{ id: string; label: string; created: string }>> {
+  const data = await viyaGet<SasApiCollection<Record<string, unknown>>>(
+    `/modelRepository/models/${modelID}/modelVersions?limit=100`
+  );
+  return (data?.items ?? [])
+    .map((item) => ({
+      id: String(item.id ?? ''),
+      label: String(item.modelVersionName ?? ''),
+      created: String(item.creationTimeStamp ?? ''),
+    }))
+    .filter((version) => version.id)
+    .sort((left, right) => left.created.localeCompare(right.created));
+}
+
+/** A tagged model, with the project it lives in. */
+export interface TaggedModel {
+  id: string;
+  name: string;
+  projectId: string;
+  projectName: string;
+}
+
+/**
+ * Every model carrying a tag, across all projects, newest listing order.
+ *
+ * Probed live 2026-08-03 against 396 models: `/modelRepository/models`
+ * accepts the same `contains(tags,'…')` filter the project listing uses, and
+ * every item carries `projectId` and `projectName`. So ONE call answers both
+ * "which prompts qualify" and "which projects have any" — which is what lets
+ * the RAG Builder hide a project holding no usable prompt without asking the
+ * server about each project in turn.
+ *
+ * A tag nothing carries answers 200 with `count: 0` rather than an error, so
+ * an empty result means exactly that and is not a failure to report.
+ */
+export async function getTaggedModels(
+  tag: string,
+  start: number = 0,
+  limit: number = 100
+): Promise<TaggedModel[]> {
+  const data = await viyaGet<SasApiCollection<Model>>(
+    `/modelRepository/models?start=${start}&limit=${limit}` +
+      `&filter=${encodeURIComponent(`contains(tags,'${tag}')`)}`
+  );
+
+  let models: TaggedModel[] = (data?.items ?? []).map((item) => ({
+    id: String(item.id ?? ''),
+    name: String(item.name ?? ''),
+    projectId: String(item.projectId ?? ''),
+    projectName: String(item.projectName ?? ''),
+  }));
+
+  if (data?.items && data.items.length === limit) {
+    models = models.concat(await getTaggedModels(tag, start + limit, limit));
+  }
+
+  return models;
+}
+
+/**
  * Create a new model version.
  */
 export async function createModelVersion(

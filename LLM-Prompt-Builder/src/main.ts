@@ -57,9 +57,8 @@ async function main(): Promise<void> {
   const { viyaHost, promptBuilder } = getConfig();
   initAppState({ viyaHost });
 
-  // Ensure a mutable API_KEYS object. The Prompt Builder reads it lazily (only
-  // when an experiment is run), so keys that arrive later from the VA data table
-  // are picked up without rebuilding.
+  // Provider keys resolve from the configured credential domain during
+  // buildPromptBuilder; this map is their in-memory store.
   promptBuilder.API_KEYS = promptBuilder.API_KEYS ?? {};
 
   const interfaceText = getInterfaceLanguage();
@@ -69,12 +68,8 @@ async function main(): Promise<void> {
     return typeof value === 'string' ? value : fallback;
   };
 
-  // Drive the VA Properties panel (everything but the API key) and receive the
-  // API key(s) from the object's assigned data table. Both are handled by a
-  // single DDC message listener; this is a no-op outside a VA embed.
-  initVaIntegration({ viyaHost, promptBuilder }, (keys) => {
-    promptBuilder.API_KEYS = { ...(promptBuilder.API_KEYS ?? {}), ...keys };
-  });
+  // Drive the VA Properties panel; a no-op outside a VA embed.
+  initVaIntegration({ viyaHost, promptBuilder });
 
   // Do NOT call SAS Viya until the object has been configured. When the author
   // sets the values in the Options pane, VA mirrors them into the iframe URL and

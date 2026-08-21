@@ -2,17 +2,22 @@
 sidebar_position: 11
 ---
 
-# Deploying the LLM Prompt Builder
+# Deploying the Builder UIs
 
-This step is not required, but the LLM Prompt Builder is a no-code tool that lets prompt engineers test new prompts across LLMs, compare the results, version their experiments, and turn the best prompt into a model for further consumption in the platform (for example in SAS Intelligent Decisioning).
+Neither builder is required, but both are no-code tools that put an otherwise code-only workflow in front of the people who own the work:
+
+- the **LLM Prompt Builder** lets prompt engineers test new prompts across LLMs, compare the results, version their experiments, and turn the best prompt into a model for further consumption in the platform (for example in SAS Intelligent Decisioning);
+- the **RAG Builder** lets a data or decision engineer configure a document pipeline — sources, chunking, embedding model, vector store — save it as a governed RAG setup, and generate the ingestion job and SAS Studio flow that run it.
+
+The steps below are written for the Prompt Builder. The RAG Builder is deployed the same way — the same single-file build, the same Job Execution definition, the same Data-Driven Content object — with its own build target (`npm run build:rag`) and its own set of options; see [RAG Ingestion and Retrieval](./RAG-Ingestion-and-Retrieval.md) for what those options mean.
 
 :::note Standalone build
-The Prompt Builder is shipped as a **standalone application** in the [`LLM-Prompt-Builder`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/LLM-Prompt-Builder) directory of this repository. It has **no longer has any dependency on the SAS Portal Framework for SAS Viya** — it is a single self-contained HTML file that you embed directly in a SAS Visual Analytics report through SAS Job Execution.
+Both builders are shipped as **standalone applications** in the [`LLM-Prompt-Builder`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/LLM-Prompt-Builder) directory of this repository. Neither has any dependency on the SAS Portal Framework for SAS Viya — each is a single self-contained HTML file that you embed directly in a SAS Visual Analytics report through SAS Job Execution.
 :::
 
 ## Shortcut: import the transfer package (optional)
 
-Rather than building the app and wiring it up by hand (steps 1–2), you can import the [`SAS-Agentic-AI-Accelerator-Prompt-Builder.json`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json) transfer package. It bundles the whole UI ready to run — the **Prompt Builder** folder, the **SAS Job Execution** definition that serves the single-file app, the `create-api-key-table.sas` helper, and the **Visual Analytics report** that hosts the object. Import it and you can skip straight to [step 3](#3-create-the-api-key-data-source).
+Rather than building the app and wiring it up by hand (steps 1–2), you can import the [`SAS-Agentic-AI-Accelerator-Prompt-Builder.json`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json) transfer package. It bundles the whole UI ready to run — the **Prompt Builder** folder, the **SAS Job Execution** definition that serves the single-file app, and the **Visual Analytics report** that hosts the object. Import it and you can skip straight to [step 3](#3-provide-the-api-keys-via-the-credential-domain).
 
 The package ships the report's Prompt Builder object pointing at a **placeholder host, `https://your-sas-viya-host`** — point it at your own environment before or after import.
 
@@ -70,10 +75,43 @@ sas-viya transfer packages upload --file SAS-Agentic-AI-Accelerator-Prompt-Build
 sas-viya transfer packages import --id <package-id> --mapping mapping.json
 ```
 
-(The mapping file also lists the package's data-table connector, so the API-key CAS table can be remapped the same way. `sas-viya transfer get-mapping --id <package-id>` regenerates the file for an already-uploaded package.) If you do neither, the report still imports; you then correct the object's base URL in [step 5](#5-add-the-object-to-a-visual-analytics-report).
+(`sas-viya transfer get-mapping --id <package-id>` regenerates the file for an already-uploaded package.) If you do neither, the report still imports; you then correct the object's base URL in [step 5](#5-add-the-object-to-a-visual-analytics-report).
 :::
 
-After import, continue at [step 3](#3-create-the-api-key-data-source) — the Job Execution definition and report already exist under **SAS Content > SAS Agentic AI Accelerator > Prompt Builder**.
+After import, continue at [step 3](#3-provide-the-api-keys-via-the-credential-domain) — the Job Execution definition and report already exist under **SAS Content > SAS Agentic AI Accelerator > Prompt Builder**.
+
+## Preserving builder options across a report import
+
+:::danger Importing a report overwrites your configuration
+Every option you set on a Prompt Builder or RAG Builder object — repository and project IDs, the SCR endpoint, the credential domain, the content root, the compute context, which vector stores the deployment offers — is stored **inside the Visual Analytics report**, not alongside it. A transfer package carries those values too, so importing a newer version of the report **replaces your settings with whatever the package was built against**.
+
+This does not fail loudly. The report still opens and the app still runs; it simply points at somebody else's environment. Save your options before importing.
+:::
+
+Two `mdb` commands cover this (see [Model Definition Builder](./Model-Definition-Builder.md) for installing the CLI and its `[viya]` extra):
+
+```bash
+# BEFORE importing a new report package
+mdb options-save --file builder-options.json
+
+# AFTER the import
+mdb options-restore --file builder-options.json --dry-run   # check what would change
+mdb options-restore --file builder-options.json             # write it back
+```
+
+`options-save` discovers the Model Manager repository and the LLM/Embedding projects exactly as `mdb setup` does, then overlays whatever your live **Prompt Builder** and **RAG Builder** reports already hold — so a deployment that has been tuned is captured as tuned, not as freshly bootstrapped. Keep the resulting file with your deployment records; it supersedes the older `llm-prompt-builder.json` / `rag-builder.json` seeds as the record of how this environment is configured.
+
+`options-restore` writes back **only the options named in the file**. The newly imported report keeps its new layout, data items and objects, and regains your configuration.
+
+Points worth knowing:
+
+- **Reports are matched by name** (`Prompt Builder`, `RAG Builder`). If you have renamed a report in your deployment, rename it in the file to match, or the restore skips it.
+- **An option the report does not have is reported, not inserted.** That usually means the option was renamed or removed in the newer version of the app — worth reading the message rather than ignoring it.
+- **API keys are deliberately not saved.** This file is meant to be kept with deployment paperwork and reviewed in a diff, which is no place for a provider key. The builders read their keys from the credential domain at run time — see [Managing Credentials](./Managing-Credentials.md).
+- **The file records which deployment it came from.** Restoring it against a different SAS Viya URL still works — moving configuration between environments is a legitimate thing to do — but the command says so first, because doing it by accident is exactly the failure this guards against.
+- **Concurrent edits fail loudly.** The write is conditional on the report being unchanged since it was read, so a colleague editing the report in Visual Analytics at that moment causes an error rather than silently losing their work.
+
+On a brand-new environment with no live report to capture from, run `mdb options-save` anyway: with nothing to overlay it writes the discovered values alone, which is the same content the old seed files carried.
 
 ## 1. Get the single-file app
 
@@ -106,47 +144,12 @@ The single-file app is served to Visual Analytics through **SAS Job Execution**:
 SAS Job Execution serves HTML through a Go template engine that treats `{{ … }}` as directives. The build base64-encodes every inline `<script>` and decodes it at runtime so the minified bundle — which inevitably contains `{{`/`}}` — is not corrupted. This is automatic and requires no action.
 :::
 
-## 3. Create the API Key data source
+## 3. Provide the API keys via the credential domain
 
-The API keys used for the Prompt Builder are stored in a CAS table, this enables you to create one report with applied row-level-security (please add your own columns, the script below only provides the bare bones) and also enables easy key rotation by updating the table. Replace the key values with your API keys and also if you do not want store it in your CASUSER change the CAS Library.
+The Prompt Builder resolves provider API keys from a **SAS Viya credential domain** (default `agentic-ai-keys`) under the identity of the signed-in user — a user credential overrides a group credential, and models the user holds no key entry for are shown disabled with a note. Set the domain up once with the CLI-based scripts as described in [Managing Credentials](./Managing-Credentials.md); no data source, table, or report assignment is involved.
 
-```sas
-cas mySess;
-
-data work.LLM_API_KEYS;
-    length KeyName $ 64 KeyValue $ 512;
-    label KeyName  = "Key Name"
-          KeyValue = "API Key";
-    infile datalines dlm='|' truncover;
-    input KeyName $ KeyValue $;
-    datalines;
-Anthropic|REPLACE_WITH_YOUR_ANTHROPIC_API_KEY
-OpenAI|REPLACE_WITH_YOUR_OPENAI_API_KEY
-Google|REPLACE_WITH_YOUR_GOOGLE_API_KEY
-;
-run;
-
-proc casUtil inCASLib='casuser' outCASLib='casuser';
-    dropTable casData='LLM_API_KEYS' quiet;
-    load data=work.LLM_API_KEYS casOut='LLM_API_KEYS';
-    promote casData='LLM_API_KEYS' casOut='LLM_API_KEYS';
-    save casData='LLM_API_KEYS' casOut='LLM_API_KEYS' replace;
-quit;
-
-cas mySess terminate;
-```
-
-### API keys (assigned data)
-
-The API keys are the entries under `API_KEYS` in that same `llm-prompt-builder.json`. They are supplied through the object's **assigned data** — never the URL or Properties panel — so they never appear in the report definition or a shareable link. Assign a data source with **two columns**, one provider per row:
-
-| Column | Meaning |
-|---|---|
-| 1st | Key **name** — the `API_KEYS` entry name, which must match the `API_KEY.default` value referenced by an LLM's `options.json` (e.g. `Anthropic`, `OpenAI`, `Google`). |
-| 2nd | Key **value** — the actual API key. |
-
-:::warning Keep keys governed
-Keeping API keys in a governed CAS/data source (rather than the URL) means they are never persisted in the report definition or a shareable link. Restricting read access to that data source restricts who can run paid model calls.
+:::warning Keys stay governed
+Keys live encrypted in the Credentials service — never in the report definition, the URL, or a data table. Who holds a credential in the domain (directly or via group membership) is who can run paid model calls.
 :::
 
 ## 4. SAS Environment Manager configuration
@@ -188,8 +191,7 @@ kubectl get pods -n <your-namespace> -o name | grep -E 'pod/sas-job-execution|po
 If you imported the SAS-Agentic-AI-Accelerator-Prompt-Builder.json package then open up the SAS Visual Analytics report under SAS Content > SAS Agentic AI Accelerator > Prompt Builder > Prompt Builder and then continue.
 
 1. In a Visual Analytics report, add a **Data-Driven Content** object and in the **Options** pane under Web Content enter the URL from the previous step or if you imported it update the base URL to your SAS Viya server.
-2. **Assign the API-key data source** (see below) to the object's data role. If you moved the CAS table from CASUSER to another place you will have to replace the data source.
-3. Open the object's **Properties** panel and set the configuration values (see below).
+2. Open the object's **Properties** panel and set the configuration values (see below). No data assignment is needed — provider keys come from the credential domain (step 3).
 
 ### Configuration (Properties panel)
 
@@ -204,6 +206,7 @@ The core environment-specific values below are exactly those captured in your `l
 | Deployment type | `deploymentType` | `deploymentType` | `k8s` (default) or `aca` (Azure Container Apps / Instances). See [Container Deployment](./Container-Deployment.md). |
 | Default judge model | *(optional — not in the file)* | `judgeModel` | Optional. Name of an LLM in the LLM project used by default for the [LLM-as-a-Judge](../User-Guide/Prompt-Builder.md) comparison; prompt engineers can still override it in the app. Leave blank for no default. |
 | Model card report URI | *(optional — not in the file)* | `modelCardReportURI` | Optional. A SAS Visual Analytics report path (`/reports/reports/<uuid>`). When set, manifesting the best prompt embeds that report on its model card as the custom chart, hosted from the *SAS Viya host* above. Leave blank to omit. |
+| Credential domain | *(optional — not in the file)* | `credentialDomain` | Credential domain provider API keys resolve from (see step 3). Defaults to `agentic-ai-keys`; enter `none` when only key-less self-hosted models are used. |
 
 :::info
 Until the three required values (repository ID, LLM project ID, SCR endpoint) are supplied the object shows a **"Configuration required"** message and does not call SAS Viya, so it never fails against placeholder IDs. Every field can also be appended to the object's URL by hand using its **URL parameter** name above (for example `&judgeModel=...&modelCardReportURI=/reports/reports/<uuid>`), which is a reliable fallback if your Visual Analytics version does not render the options panel.

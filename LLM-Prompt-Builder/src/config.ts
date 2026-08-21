@@ -17,9 +17,9 @@
  *      &SCREndpoint=https://viya.example.com/llm
  *      &deploymentType=k8s
  *
- * The API key(s) are intentionally NOT set here and are NOT URL-overridable (a
- * secret must not appear in a shareable link). They are supplied at runtime via
- * the object's assigned DDC data table — see `src/va/ddc.ts` and the README.
+ * Provider API keys never appear here or in the URL: they resolve at runtime
+ * from the configured SAS Viya credential domain under the signed-in user —
+ * see `src/api/credentials-api.ts` and the Managing Credentials guide.
  */
 
 import type { PromptBuilderConfig } from './types';
@@ -58,9 +58,8 @@ const DEFAULTS: RuntimeConfig = {
     // set, the manifested best prompt embeds that report on its model card as
     // the custom chart (host = viyaHost). Blank = no chart attributes.
     modelCardReportURI: '',
-    // API keys are supplied at runtime from the object's assigned DDC data table
-    // (see src/va/ddc.ts), so they start empty here. Map is keyed by the name an
-    // LLM's options.json references via API_KEY.default (e.g. "Anthropic").
+    // In-memory store for the domain-resolved provider keys, keyed by the name
+    // an LLM's options.json references via API_KEY.default (e.g. "Anthropic").
     API_KEYS: {},
     // DSPy prompt optimization (all off/blank by default). enableOptimization
     // is the master toggle — the Optimize section only appears when it is
@@ -72,9 +71,14 @@ const DEFAULTS: RuntimeConfig = {
     optimizeJobProgram: '',
     // Minimum dataset rows before an optimization run is allowed.
     minOptimizeSamples: '30',
-    // Governed SAS library.table the job reads provider API keys from.
-    optimizeKeyLibrary: '',
-    optimizeKeyTable: '',
+    // Credential domain: provider API keys are resolved from this single SAS
+    // Viya credential domain under the identity of the signed-in user (the
+    // credential's secrets map holds one entry per provider name), and models
+    // without an entry are disabled with a note. The default matches the
+    // create-credential-domain.sas admin script; if the domain does not
+    // exist the lookup 404s harmlessly and assigned-data keys work as
+    // before. Set to 'none' to disable credential lookups entirely.
+    credentialDomain: 'agentic-ai-keys',
   },
 };
 
@@ -90,8 +94,7 @@ const URL_OVERRIDABLE = [
   'computeContext',
   'optimizeJobProgram',
   'minOptimizeSamples',
-  'optimizeKeyLibrary',
-  'optimizeKeyTable',
+  'credentialDomain',
   'id',
 ] as const;
 

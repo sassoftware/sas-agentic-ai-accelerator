@@ -21,7 +21,7 @@ The following options can be supplied at scoring time through the `options` inpu
 
 | Option | Default | Range | Description |
 | ------ | ------- | ----- | ----------- |
-| `Embedding_Length` | 384 | 384 | The length of the returned embedding vector. |
+| `Embedding_Length` | 1024 | 1024 | The length of the returned embedding vector. |
 | `Input_Token_Limit` | 512 | 512 | The limit of input tokens for the embedding model. |
 
 ## Register and publish

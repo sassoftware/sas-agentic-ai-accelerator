@@ -19,7 +19,7 @@ mdb setup
 
 `mdb setup` reads the SAS Viya connection from `SAS_VIYA_URL` / `SAS_VIYA_USER` / `SAS_VIYA_PASSWORD`, the point of contact from `SAS_RESPONSIBLE_PARTY`, the SCR base URL from `SAS_SCR_ENDPOINT`, and the deployment type from `SAS_DEPLOYMENT_TYPE` (`k8s` by default, or `aca` for Azure Container Apps/Instances). All of these live in your `.env`.
 
-Running it produces two additional json files as outputs, that are required for the steps on the page [Setup Additional UIs](Setup-Additional-UIs.md):
+Running it produces two additional json files as outputs, that are required for the steps on the page [Deploying the Builder UIs](Setup-Additional-UIs.md):
 - *llm-prompt-builder.json*, this will enable your users to do No-Code Prompt Engineering.
 - *rag-builder.json*, this will enable your users to do No-Code RAG pipeline setups.
 

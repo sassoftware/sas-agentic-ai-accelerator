@@ -128,7 +128,7 @@ def validate_folder(folder: Path, core: CoreAssets, fact_sheet: Path) -> list[Is
                 issues.append(Issue(
                     "V007", "error", model_id,
                     f"{name} contains a secret-shaped string ({pattern.pattern}).",
-                    "Remove the secret - keys belong in .env / LLM_API_KEYS, never in committed files.",
+                    "Remove the secret - keys belong in .env or the credential domain, never in committed files.",
                 ))
 
     # V009 - environment-specific hosts committed into a shareable definition

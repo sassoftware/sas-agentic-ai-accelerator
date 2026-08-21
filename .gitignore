@@ -21,3 +21,8 @@ SASViyaV4_*_deploymentAssets_*.tgz
 
 # Retired model definitions archived out of the active set by `mdb retire`
 _archive/
+
+# Design notes: thinking-in-progress for features not yet built, kept beside
+# the code while they are being worked out. They go stale the moment the
+# feature ships, and a stale design doc is read as documentation.
+LLM-Prompt-Builder/docs/

@@ -74,7 +74,7 @@ in the URL or report definition**:
 | `SCREndpoint` | VA properties panel | Base URL of the SCR endpoint hosting the LLM containers. |
 | `deploymentType` | VA properties panel | `k8s` (default) or `aca` (Azure Container Apps). |
 | `judgeModel` | VA properties panel | Optional default LLM (by name, from `llmProjectID`) used by the LLM-as-a-Judge. Not a secret; the in-app judge selector always overrides it. |
-| **API key(s)** | **Object's assigned data** | A small table mapping key name → key value (see below). |
+| `credentialDomain` | VA properties panel | SAS Viya credential domain provider API keys resolve from (default `agentic-ai-keys`; `none` disables). See below. |
 
 ### Everything-but-the-key: the VA properties panel
 
@@ -98,24 +98,20 @@ The same parameters — `viyaHost`, `modelRepositoryID`, `llmProjectID`,
 hand (e.g. `.../SASJobExecution/?_program=...&_action=form&llmProjectID=<uuid>&SCREndpoint=<url>`),
 which is a reliable fallback if your VA version does not render the options panel.
 
-### The API key: the object's assigned data
+### The API keys: the credential domain
 
-The API key(s) are supplied through the object's **assigned data**, so they stay
-out of the URL and the report. Assign a data source with **two columns**:
+Provider API keys resolve at load time from a **SAS Viya credential domain**
+(default `agentic-ai-keys`) under the **signed-in user's identity** — a user
+credential overrides a group credential, and the credential's secrets map holds
+one entry per provider name (matching the `API_KEY.default` value an LLM's
+`options.json` references, e.g. `Anthropic`, `OpenAI`). Models whose entry is
+missing for the current user render **disabled with a note**, so who can run
+paid model calls is an identity decision administered centrally — see the
+"Managing Credentials" administration guide and
+[`src/api/credentials-api.ts`](src/api/credentials-api.ts).
 
-| Column | Meaning |
-|---|---|
-| 1st | Key **name** — must match the `API_KEY.default` value referenced by an LLM's `options.json` (e.g. `Anthropic`, `OpenAI`, `Google`). |
-| 2nd | Key **value** — the actual API key. |
-
-One provider per row. VA sends this table to the iframe via the DDC data message
-([blog reference](https://davidweik.substack.com/p/creating-data-driven-content-in-sas-visual-analytics));
-the app reads it in [`src/va/ddc.ts`](src/va/ddc.ts) and injects the keys at
-experiment-run time.
-
-> Keeping API keys in a governed CAS/data source (rather than the URL) means they
-> are never persisted in the report definition or a shareable link. Restricting
-> read access to that data source restricts who can run paid model calls.
+> Keys are never persisted in the report definition, the URL, or a data source —
+> they live encrypted in the Credentials service and are fetched per session.
 
 ## Deploying to SAS Visual Analytics
 
@@ -126,11 +122,10 @@ The single-file build is embedded in Visual Analytics through **SAS Job Executio
    whose HTML body is the contents of `dist/index.html`.
 3. In a Visual Analytics report, add a **Data-Driven Content** object pointing at
    that job's execution URL.
-4. Assign the **API-key data source** (two columns: key name, key value) to the
-   object's data role so the key(s) reach the app.
-5. Configure the object from its **Properties panel** (Viya host, Model Manager
-   repository, LLM project, SCR endpoint, deployment type) — the panel is
-   rendered from the options group the app publishes on load.
+4. Configure the object from its **Properties panel** (Viya host, Model Manager
+   repository, LLM project, SCR endpoint, deployment type, credential domain) —
+   the panel is rendered from the options group the app publishes on load. No
+   data assignment is needed: provider keys come from the credential domain.
 
 Because SAS Job Execution serves HTML through a **Go template engine** (which
 treats `{{ … }}` as directives), the build base64-encodes every inline `<script>`
@@ -208,7 +203,7 @@ src/
     markdown.ts           Markdown rendering (marked + DOMPurify)
   util/validation.ts      DS2 / Python name validation
   i18n/                   Bundled locale files + loader
-  va/ddc.ts               VA DDC integration: options-group panel + API-key table
+  va/ddc.ts               VA DDC integration: options-group Properties panel
   objects/prompt-builder.ts  The Prompt Builder UI
   types/                  Shared TypeScript types + vendor module decls
 ```

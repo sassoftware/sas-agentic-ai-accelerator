@@ -1,0 +1,380 @@
+// Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+/**
+ * Reading a manifested prompt, in the browser.
+ *
+ * This is a deliberate second implementation of what `rag_core.enrich
+ * .PromptModel` does in Python, and the duplication is the same trade the
+ * manifest module already makes: the Python one runs where the ingestion runs
+ * and is the authority; this one exists so the RAG Builder can show a user
+ * which inputs a prompt takes and which outputs it returns WITHOUT running a
+ * job to find out. The browser cannot exec Python, so it reads the same two
+ * declarations out of the score code that Python reads off the function -
+ * the parameter list and the `"Output: ..."` docstring.
+ *
+ * The contract is narrow and stable because the Prompt Builder generates it
+ * (see the manifest block in prompt-builder.ts). If it ever changes, it
+ * changes in `rag_core/enrich.py` first: that copy is the one an ingestion
+ * actually uses, and a mismatch there is silent.
+ */
+
+import type { RagEnrichStep } from '../types/rag';
+
+/**
+ * What a prompt input can be filled with, mirroring `enrich.CHUNK_FIELDS`.
+ *
+ * A closed vocabulary: every entry is something the pipeline already holds
+ * for a chunk, so no mapping can ask the ingestion to go and fetch something
+ * per chunk. The keys must match the Python side exactly - they travel to the
+ * job as `input=field` pairs.
+ */
+export const CHUNK_FIELDS = [
+  { key: 'chunk', label: 'Chunk text' },
+  { key: 'document', label: 'Whole document (capped at 20,000 characters)' },
+  { key: 'neighbours', label: 'Previous and next chunk' },
+  { key: 'heading', label: 'Heading path' },
+  { key: 'filename', label: 'File name' },
+  { key: 'source', label: 'Full source location' },
+  { key: 'position', label: "Position, as 'chunk 3 of 42'" },
+] as const;
+
+export const CHUNK_FIELD_KEYS = CHUNK_FIELDS.map((field) => field.key) as readonly string[];
+
+/** What the Builder could learn about a prompt from its score code. */
+export interface PromptContract {
+  inputs: string[];
+  outputs: string[];
+  /** The LLM the prompt calls, for the cost estimate. '' when unreadable. */
+  llm: string;
+  /**
+   * Whether the prompt makes the LLM call itself.
+   *
+   * A prompt manifested for the Call LLM node of SAS Intelligent Decisioning
+   * returns `llmBody`/`llmURL` — the request to make, not its answer — so
+   * there is nothing for an ingestion to store. Detected here so the Builder
+   * can say that in the form rather than letting a run discover it.
+   */
+  integrated: boolean;
+}
+
+const SCORE_SIGNATURE = /def\s+scoreModel\s*\(([^)]*)\)/;
+const OUTPUT_DOC = /^\s*["']?\s*Output\s*:\s*(.+?)["']?\s*$/im;
+const LLM_LITERAL = /^\s*llm\s*=\s*["']([^"']+)["']/m;
+
+/**
+ * Read a manifested prompt's contract. Returns null when the file is not one.
+ */
+export function readPromptContract(code: string): PromptContract | null {
+  const signature = SCORE_SIGNATURE.exec(code);
+  if (!signature) return null;
+  const inputs = signature[1]
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean);
+  const declared = OUTPUT_DOC.exec(code);
+  if (!declared) return null;
+  const outputs = declared[1]
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean);
+  return {
+    inputs,
+    outputs,
+    llm: LLM_LITERAL.exec(code)?.[1] ?? '',
+    integrated: !outputs.includes('llmBody') && !outputs.includes('llmURL'),
+  };
+}
+
+/** The inputs a setup has to map — API_KEY is resolved, never mapped. */
+export function mappableInputs(contract: PromptContract): string[] {
+  return contract.inputs.filter((name) => name !== 'API_KEY');
+}
+
+/**
+ * A first mapping for a prompt nobody has mapped yet.
+ *
+ * Guessing by name is worth doing because prompt authors name variables after
+ * what they are — a `{{chunk}}` really is the chunk — and a form that opens
+ * with the obvious answer already filled in is the difference between
+ * enrichment being tried and not. Anything unrecognised stays BLANK rather
+ * than defaulting to the chunk text: a silently wrong mapping would produce a
+ * whole corpus of confident nonsense.
+ */
+const FIELD_BY_NAME: Record<string, string> = {
+  chunk: 'chunk',
+  text: 'chunk',
+  content: 'chunk',
+  passage: 'chunk',
+  excerpt: 'chunk',
+  document: 'document',
+  doc: 'document',
+  context: 'document',
+  wholedocument: 'document',
+  neighbours: 'neighbours',
+  neighbors: 'neighbours',
+  surrounding: 'neighbours',
+  heading: 'heading',
+  headings: 'heading',
+  section: 'heading',
+  title: 'heading',
+  filename: 'filename',
+  file: 'filename',
+  filepath: 'source',
+  source: 'source',
+  uri: 'source',
+  path: 'source',
+  position: 'position',
+  index: 'position',
+};
+
+export function defaultMapping(contract: PromptContract): Record<string, string> {
+  const mapping: Record<string, string> = {};
+  for (const name of mappableInputs(contract)) {
+    const key = name.toLowerCase().replace(/[^a-z]/g, '');
+    if (FIELD_BY_NAME[key]) mapping[name] = FIELD_BY_NAME[key];
+  }
+  return mapping;
+}
+
+/**
+ * `input=field;input=field` — how the mapping travels as a job parameter.
+ *
+ * Deliberately not JSON: this value crosses into a SAS macro variable, and a
+ * form with no quotes or braces is one fewer thing that can arrive mangled.
+ * Sorted, so the same mapping always produces the same string and therefore
+ * the same configuration fingerprint.
+ */
+export function renderMapping(mapping: Record<string, string>): string {
+  return Object.keys(mapping)
+    .filter((name) => mapping[name])
+    .sort()
+    .map((name) => `${name}=${mapping[name]}`)
+    .join(';');
+}
+
+export function parseMapping(raw: string): Record<string, string> {
+  const mapping: Record<string, string> = {};
+  for (const pair of String(raw || '').split(';')) {
+    const [name, field] = pair.split('=');
+    if (name?.trim() && field?.trim()) mapping[name.trim()] = field.trim();
+  }
+  return mapping;
+}
+
+/**
+ * Outputs a prompt returns that the LLM itself produced, rather than the
+ * plumbing around it.
+ *
+ * `parse_status` is a diagnostic and `run_time`/`prompt_length`/
+ * `output_length` are measurements — storing one as a chunk's context header
+ * would be a mistake nobody makes on purpose, so they are not offered as one.
+ * They stay available as tags, where a per-chunk latency is a fair thing to
+ * keep.
+ */
+const MEASUREMENTS = new Set(['run_time', 'prompt_length', 'output_length', 'parse_status']);
+
+/**
+ * Column names a stored output may not take.
+ *
+ * Mirrors `enrich.RESERVED_COLUMNS`, which is the authority: an output is
+ * stored as a REAL column, and `score`, `content`, `page` and `rank` are all
+ * plausible things to ask an LLM for. The collision is refused by name rather
+ * than silently prefixed — a column that is not called what the prompt calls
+ * it is a trap for whoever reads the table later.
+ */
+export const RESERVED_COLUMNS = new Set([
+  'id', 'chunk_id', 'doc_id', 'source_uri', 'chunk_index', 'content',
+  'content_hash', 'extractor', 'pipeline_version', 'ingested_at', 'span',
+  'heading_path', 'tags', 'prev_id', 'next_id', 'context_header',
+  'entities', 'relations', 'embedding', 'tsv',
+  'run_id', 'config_id', 'embed_model', 'embed_dims',
+  'valid_from', 'valid_to', 'retired_in_run', 'enrich_version',
+  'distance', 'score', 'rank', 'question', 'filename', 'error_text',
+]);
+
+const COLUMN_OK = /^[a-z_][a-z0-9_]{0,62}$/;
+
+/** Why this output cannot be a column, or '' when it can. */
+export function columnProblem(
+  name: string,
+  text: (key: string, fallback: string) => string
+): string {
+  const lowered = name.toLowerCase();
+  if (RESERVED_COLUMNS.has(lowered)) {
+    return text(
+      'ragBuilderEnrichReserved',
+      'the chunk table already has a column called {name}'
+    ).replace('{name}', name);
+  }
+  if (!COLUMN_OK.test(lowered)) {
+    return text(
+      'ragBuilderEnrichBadName',
+      '{name} cannot be a column name - letters, digits and underscores only, starting with a letter'
+    ).replace('{name}', name);
+  }
+  return '';
+}
+
+export function headerCandidates(contract: PromptContract): string[] {
+  return contract.outputs.filter((name) => !MEASUREMENTS.has(name));
+}
+
+/**
+ * The tag a prompt must carry to be offered for enrichment.
+ *
+ * Written by the Prompt Builder when a prompt is manifested with output
+ * parsing (see `prompt-builder.ts`), which is exactly the shape this stage
+ * can store: parsed variables become columns. A prompt without it returns
+ * only `response` and its measurements.
+ */
+export const ENRICH_PROMPT_TAG = 'Output-Parsing';
+
+/**
+ * The enrichment steps, packed as the job parameter carries them.
+ *
+ * `model|version|mapping|header|columns|workers`, records separated by `~` —
+ * the exact inverse of `rag_core.enrich.parse_steps`, which is the authority.
+ * Deliberately not JSON: the value travels as a SAS macro variable, where a
+ * brace or a quote is one more thing that can arrive mangled, and `&`, `%`
+ * and `;` are all spoken for already.
+ */
+export function renderEnrichSteps(steps: readonly RagEnrichStep[]): string {
+  return steps
+    .filter((step) => step.promptModelId)
+    .map((step) =>
+      [
+        step.promptModelId,
+        step.promptVersionId ?? '',
+        renderMapping(step.mapping),
+        step.headerOutput ?? '',
+        (step.columnOutputs ?? []).join(','),
+        String(step.workers ?? 4),
+      ].join('|')
+    )
+    .join('~');
+}
+
+/**
+ * Everything wrong BETWEEN enrichment steps, in the user's words.
+ *
+ * Mirrors `enrich.validate_pipeline`, which is the authority. Both problems
+ * are invisible from inside a single step and expensive to discover after a
+ * run: the header and the columns are each written once per chunk, at the
+ * price of one LLM call per chunk, and a silent overwrite would throw away
+ * work that was already paid for.
+ */
+export function validateEnrichPipeline(
+  steps: readonly RagEnrichStep[],
+  text: (key: string, fallback: string) => string
+): string[] {
+  const problems: string[] = [];
+  const named = (step: RagEnrichStep, index: number): string =>
+    step.promptModelName || `${text('ragBuilderEnrichStep', 'Prompt {n}').replace('{n}', String(index + 1))}`;
+
+  const headers = steps
+    .map((step, index) => ({ step, index }))
+    .filter((entry) => entry.step.headerOutput);
+  if (headers.length > 1) {
+    problems.push(
+      text(
+        'ragBuilderEnrichValidateTwoHeaders',
+        'Only one prompt can write the context header, and {prompts} both do. A chunk has one header, so the later prompt would overwrite the earlier one after you have paid for it.'
+      ).replace('{prompts}', headers.map((entry) => named(entry.step, entry.index)).join(', '))
+    );
+  }
+
+  const claimed = new Map<string, string[]>();
+  steps.forEach((step, index) => {
+    for (const name of step.columnOutputs ?? []) {
+      claimed.set(name, [...(claimed.get(name) ?? []), named(step, index)]);
+    }
+  });
+  const contested = [...claimed.entries()].filter(([, owners]) => owners.length > 1);
+  if (contested.length > 0) {
+    problems.push(
+      text(
+        'ragBuilderEnrichValidateTwoColumns',
+        'Two prompts store the same column: {columns}. Rename the output in one of the prompts, or store it once.'
+      ).replace(
+        '{columns}',
+        contested.map(([name, owners]) => `${name} (${owners.join(', ')})`).join('; ')
+      )
+    );
+  }
+  return problems;
+}
+
+/**
+ * Everything wrong with a setup's use of a prompt, in the user's words.
+ *
+ * Mirrors `enrich.validate_selection`, which is the authority — this copy
+ * exists so the Builder can refuse to save a setup that the ingestion would
+ * refuse to run, at the point where the fields are still on screen.
+ */
+export function validateEnrichment(
+  contract: PromptContract | null,
+  mapping: Record<string, string>,
+  headerOutput: string,
+  columnOutputs: string[],
+  text: (key: string, fallback: string) => string
+): string[] {
+  const problems: string[] = [];
+  if (!contract) {
+    problems.push(
+      text(
+        'ragBuilderEnrichValidateContract',
+        'The selected prompt carries no readable score code, so nothing can be called. Manifest it in the Prompt Builder first.'
+      )
+    );
+    return problems;
+  }
+  if (!contract.integrated) {
+    problems.push(
+      text(
+        'ragBuilderEnrichValidateIntegrated',
+        'This prompt was manifested for the Call LLM node of SAS Intelligent Decisioning: it returns the request to make rather than the answer, so an ingestion has nothing to store. Re-manifest it with the integrated LLM call.'
+      )
+    );
+  }
+  const unmapped = mappableInputs(contract).filter((name) => !mapping[name]);
+  if (unmapped.length > 0) {
+    problems.push(
+      text(
+        'ragBuilderEnrichValidateMapping',
+        'Choose what fills the prompt input(s) {inputs}.'
+      ).replace('{inputs}', unmapped.join(', '))
+    );
+  }
+  const wanted = (headerOutput ? [headerOutput] : []).concat(columnOutputs);
+  const missing = wanted.filter((name) => !contract.outputs.includes(name));
+  if (missing.length > 0) {
+    problems.push(
+      text(
+        'ragBuilderEnrichValidateOutputs',
+        'This prompt does not return {outputs} - it returns {available}.'
+      )
+        .replace('{outputs}', missing.join(', '))
+        .replace('{available}', contract.outputs.join(', ') || '—')
+    );
+  }
+  const unusable = columnOutputs
+    .map((name) => columnProblem(name, text))
+    .filter(Boolean);
+  if (unusable.length > 0) {
+    problems.push(
+      text(
+        'ragBuilderEnrichValidateColumns',
+        'These outputs cannot be stored as columns: {reasons}. Rename them in the prompt, or do not store them.'
+      ).replace('{reasons}', unusable.join('; '))
+    );
+  }
+  if (!headerOutput && columnOutputs.length === 0) {
+    problems.push(
+      text(
+        'ragBuilderEnrichValidateNothing',
+        'Nothing would be stored: choose the output that becomes the context header, or at least one output to store as a column.'
+      )
+    );
+  }
+  return problems;
+}

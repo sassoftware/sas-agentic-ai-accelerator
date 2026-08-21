@@ -1,0 +1,43 @@
+schema: 1
+kind: llm
+model_id: ling_3_0_flash_free
+display_name: Ling-3.0-flash (free)
+provider:
+  adapter: openrouter
+  model_version: inclusionai/ling-3.0-flash:free
+  endpoint: https://openrouter.ai/api/v1/chat/completions
+  params: {}
+  auth:
+    mode: api_key
+    key_name: OpenRouter
+runtime:
+  template: openai_chat
+  requirements_profile: api-wrapper
+  timeout_s: 60
+  weights_source: baked
+options:
+  temperature:
+    default: 0
+  top_p:
+    default: 0
+  max_tokens:
+    default: 5000
+    max: 32768.0
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: OpenRouter
+  scr_sizing: small
+  extra: []
+metadata:
+  description: Ling-3.0-flash (free) by OpenRouter, served through the OpenRouter API.
+  context_length: 262144
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 0.0
+    output_token_price: 0.0
+modeler: david.weik@sas.com
+generation:
+  overrides: []
+  catalog_provenance: openrouter (live)

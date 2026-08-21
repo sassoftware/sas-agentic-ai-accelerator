@@ -939,6 +939,234 @@ def setup(
     console.print("Review sas-viya-cli-commands.txt before running it - it creates access groups and rules.")
 
 
+@app.command("options-save")
+def options_save(
+    file: str = typer.Option("builder-options.json", "--file", "-f",
+                             help="Where to write the options file"),
+    reports_only: bool = typer.Option(
+        False, "--reports-only",
+        help="Capture only what the live reports hold; skip repository/project discovery"),
+):
+    """Save this deployment's Prompt Builder / RAG Builder option values to a file.
+
+    Every option an admin sets on a builder object - repository and project
+    ids, the SCR endpoint, the credential domain, the content root, which
+    vector stores are offered - lives INSIDE the VA report. Importing a newer
+    report from a transfer package therefore replaces a site's configuration
+    with whatever the package was built against, and the report keeps working
+    while pointing at somebody else's environment.
+
+    Run this BEFORE importing a report package, and `mdb options-restore`
+    after.
+
+    The file supersedes the llm-prompt-builder.json / rag-builder.json seeds
+    that `mdb setup` writes: it starts from the same discovered values
+    (repository, projects, SCR endpoint) and overlays whatever the live
+    reports already hold, so a tuned deployment is captured as tuned.
+    """
+    import json as _json
+    from .core.options import BUILDER_REPORTS, merge_seed, options_file, read_options
+    from .viya.registry import builder_seed, ensure_repository_and_project
+    from .viya.reports import find_report, get_content
+
+    ctx = Context()
+    responsible_party = os.environ.get("SAS_RESPONSIBLE_PARTY", "")
+    deployment_type = os.environ.get("SAS_DEPLOYMENT_TYPE", "k8s")
+    scr_endpoint = _scr_endpoint()
+    captured: dict = {}
+    with _viya_session() as session:
+        seeds: dict = {}
+        if not reports_only:
+            for report_name, kind in BUILDER_REPORTS.items():
+                try:
+                    ensured = ensure_repository_and_project(
+                        session, kind, ctx.core, responsible_party)
+                    seeds[report_name] = builder_seed(
+                        kind, ensured.repository_id, ensured.project_id,
+                        scr_endpoint, deployment_type)
+                except Exception as exc:
+                    console.print(f"[yellow]{report_name}: could not discover "
+                                  f"repository/project ({exc}); capturing the report only.[/yellow]")
+        for report_name in BUILDER_REPORTS:
+            live = None
+            report = find_report(session, report_name)
+            if report:
+                try:
+                    content, _ = get_content(session, report["id"])
+                    live = read_options(content)
+                except Exception as exc:
+                    console.print(f"[yellow]{report_name}: content unreadable ({exc}).[/yellow]")
+            if live is None and report_name not in seeds:
+                console.print(f"[yellow]{report_name}: no live report and nothing "
+                              "discovered - skipped.[/yellow]")
+                continue
+            merged = merge_seed(seeds.get(report_name, {}), live)
+            captured[report_name] = merged
+            source = ("report + discovery" if (live and report_name in seeds)
+                      else ("report" if live else "discovery"))
+            console.print(f"[green]{report_name}: {len(merged)} options ({source}).[/green]")
+    if not captured:
+        console.print("[red]Nothing captured.[/red]")
+        raise typer.Exit(1)
+    deployment = os.environ.get("SAS_VIYA_URL", "")
+    out = Path(file)
+    if out.parent != Path(""):
+        out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(_json.dumps(options_file(deployment, captured), indent=2) + "\n",
+                   encoding="utf-8")
+    console.print(f"[green]Wrote {file}. Keep it with your deployment records and run "
+                  "`mdb options-restore` after importing a report package.[/green]")
+
+
+@app.command("options-restore")
+def options_restore(
+    file: str = typer.Option("builder-options.json", "--file", "-f",
+                             help="The options file written by `mdb options-save`"),
+    dry_run: bool = typer.Option(False, "--dry-run",
+                                 help="Report what would change without writing"),
+):
+    """Write saved option values back into the builder reports after an import.
+
+    Only the options named in the file are touched: a newly imported report
+    keeps its new layout, data items and objects, and gets this deployment's
+    configuration back. An option the report does not have is reported rather
+    than inserted - that usually means it was renamed or dropped between
+    versions, which is worth knowing.
+    """
+    import json as _json
+    from .core.options import write_options
+    from .viya.reports import find_report, get_content, put_content
+
+    path = Path(file)
+    if not path.exists():
+        console.print(f"[red]{file} not found - run `mdb options-save` first.[/red]")
+        raise typer.Exit(1)
+    document = _json.loads(path.read_text(encoding="utf-8"))
+    saved = document.get("reports", {})
+    if not saved:
+        console.print(f"[red]{file} names no reports.[/red]")
+        raise typer.Exit(1)
+    here = os.environ.get("SAS_VIYA_URL", "")
+    if document.get("deployment") and document["deployment"] != here:
+        # Not an error: moving options between environments is a legitimate
+        # deliberate act. It is worth saying out loud because doing it by
+        # ACCIDENT is the failure this command exists to prevent.
+        console.print(f"[yellow]Note: these options were saved from "
+                      f"{document['deployment']}, not {here}.[/yellow]")
+    failures = 0
+    with _viya_session() as session:
+        for report_name, values in saved.items():
+            report = find_report(session, report_name)
+            if not report:
+                console.print(f"[yellow]{report_name}: no such report here - skipped.[/yellow]")
+                continue
+            content, etag = get_content(session, report["id"])
+            updated, result = write_options(content, values)
+            for label in result.missing:
+                console.print(f"[yellow]  {report_name}: '{label}' is not an option of "
+                              "this report version - not written.[/yellow]")
+            if not result.changed:
+                console.print(f"[green]{report_name}: already matches "
+                              f"({len(result.unchanged)} options).[/green]")
+                continue
+            listing = ", ".join(sorted(result.applied))
+            if dry_run:
+                console.print(f"[cyan]{report_name}: would restore "
+                              f"{len(result.applied)} option(s): {listing}[/cyan]")
+                continue
+            try:
+                put_content(session, report["id"], updated, etag)
+            except Exception as exc:
+                console.print(f"[red]{report_name}: writing the report failed ({exc}).[/red]")
+                failures += 1
+                continue
+            console.print(f"[green]{report_name}: restored {len(result.applied)} "
+                          f"option(s): {listing}[/green]")
+    if failures:
+        raise typer.Exit(1)
+
+
+@app.command("package-check")
+def package_check(
+    files: Optional[list[str]] = typer.Argument(
+        None, help="Transfer packages to check (default: the ones this repo ships)"),
+    fix: bool = typer.Option(
+        False, "--fix",
+        help="Rewrite any host found to the placeholder instead of only reporting it"),
+):
+    """Check exported transfer packages do not name the environment that built them.
+
+    A VA report keeps its options inside its own content, so an export always
+    carries the exporting deployment's hostname - in `viyaHost`, in
+    `SCREndpoint`, and in the Data-Driven Content URL. Re-exporting brings all
+    of it back, however carefully the last copy was cleaned.
+
+    It keeps getting through because the export stores report content as
+    `TRUE###<base64 zlib>`. Exactly one occurrence, the DDC URL lifted into
+    the substitution map, is plain text; the rest are inside the compressed
+    blob where no grep and no base64 scan will find them. A package can look
+    clean in review and still name an internal host seven times.
+
+    So this asks the question backwards: every host a report names must be the
+    documented placeholder or a known public address. Anything else fails,
+    whoever exported it - which is what lets this run in CI, on a machine that
+    has no .env and no idea which deployment produced the file.
+
+    Run it before committing a re-exported package; `--fix` does the rewrite.
+    """
+    from .core.packages import (ALLOWED_HOSTS, PLACEHOLDER_HOST, check_package,
+                                default_packages, sanitise_package)
+
+    targets = [Path(f) for f in files] if files else default_packages(find_repo_root())
+    if not targets:
+        console.print("[yellow]No transfer packages found to check.[/yellow]")
+        raise typer.Exit(0)
+
+    findings: list = []
+    checked = reports = 0
+    for path in targets:
+        if not path.is_file():
+            console.print(f"[red]{path}: not a file[/red]")
+            raise typer.Exit(2)
+        result = check_package(path)
+        checked += result.packages_checked
+        reports += result.reports_checked
+        findings.extend(result.findings)
+
+    if not findings:
+        console.print(f"[green]{checked} package(s), {reports} report(s): "
+                      f"no host named beyond the placeholder.[/green]")
+        raise typer.Exit(0)
+
+    table = Table(title="Hosts named by a transfer package")
+    for column in ("Package", "Report", "Host", "Count", "Where"):
+        table.add_column(column)
+    for f in findings:
+        table.add_row(f.package, f.report, f.host, str(f.occurrences), f.where)
+    console.print(table)
+
+    if not fix:
+        console.print(
+            f"\n[red]{len(findings)} host(s) would ship with these packages.[/red] "
+            f"Re-run with --fix to rewrite them to '{PLACEHOLDER_HOST}', or add a "
+            "genuinely public address to ALLOWED_HOSTS in mdb.core.packages.")
+        raise typer.Exit(1)
+
+    for path in targets:
+        text, fixed = sanitise_package(path)
+        if not fixed:
+            continue
+        path.write_text(text, encoding="utf-8", newline="")
+        for host, n in sorted(fixed.items()):
+            console.print(f"  {path.name}: {host} -> {PLACEHOLDER_HOST} ({n})")
+
+    after = [f for path in targets for f in check_package(path).findings]
+    if after:
+        console.print("[red]Still named after the rewrite - not fixed.[/red]")
+        raise typer.Exit(1)
+    console.print("[green]Rewritten, and re-checked clean.[/green]")
+
+
 @app.command()
 def register(
     ids: Optional[list[str]] = typer.Argument(None),
@@ -1510,6 +1738,285 @@ def provider_check(adapter_id: str = typer.Argument(...)):
             console.print(f"[red]FAIL: {problem}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]{adapter_id}: conformance checks passed.[/green]")
+
+
+def _credential_manifest(manifest: Optional[str], domain: str,
+                         identity_type: str, identities: Optional[list[str]],
+                         env_file: Optional[str], keys_file: Optional[str]):
+    """A manifest from a file, or one assembled from the flags."""
+    from .viya.credentials import (
+        DEFAULT_MANIFEST, CredentialError, Identity, Manifest,
+    )
+
+    # Naming identities on the command line is the single-identity mode and
+    # wins; otherwise this is a manifest run, and an unnamed manifest means
+    # the conventional file in the working directory.
+    if not identities:
+        path = Path(manifest or DEFAULT_MANIFEST)
+        if not path.is_file():
+            console.print(f"[red]No credentials manifest at {path}.[/red]")
+            console.print(
+                "Write one with [bold]mdb credentials-init[/bold], or equip a "
+                "single identity with [bold]--identity[/bold].")
+            raise typer.Exit(2)
+        return Manifest.load(path)
+    if manifest:
+        console.print("[yellow]--identity was given, so --manifest is "
+                      "ignored.[/yellow]")
+    source = Path(keys_file or env_file or ".env").resolve()
+    try:
+        return Manifest(
+            domain=domain,
+            source=source,
+            identities=[Identity(type=identity_type, id=who,
+                                 verbatim=bool(keys_file))
+                        for who in identities],
+        )
+    except CredentialError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+
+
+@app.command("credentials-init")
+def credentials_init(
+    file: str = typer.Option(
+        "credentials.yaml", "--file", "-f",
+        help="Where to write the manifest — anywhere you keep deployment records"),
+    env_file: str = typer.Option(
+        ".env", "--env-file", help="The .env whose entries it should point at"),
+    domain: str = typer.Option(
+        "agentic-ai-keys", "--domain", help="Credential domain the manifest targets"),
+    force: bool = typer.Option(
+        False, "--force", help="Overwrite an existing manifest"),
+):
+    """Write a starter credentials manifest, listing what your .env carries.
+
+    Keep it wherever your deployment records live: paths inside a manifest
+    resolve against the manifest's own directory, so it and the `.env` files
+    it names travel together.
+
+    The manifest holds no secrets — only identities and the paths to the files
+    that do — which is what makes it the piece you commit and review, while
+    the `.env` stays git-ignored.
+    """
+    from .viya.credentials import (
+        CredentialError, map_entries, read_name_value_file, scaffold,
+    )
+
+    target = Path(file)
+    if target.exists() and not force:
+        console.print(f"[red]{target} already exists.[/red] Pass --force to overwrite it.")
+        raise typer.Exit(2)
+    source = Path(env_file)
+    if not source.is_file():
+        console.print(f"[red]No .env at {source}.[/red] Pass --env-file to point at one.")
+        raise typer.Exit(2)
+    try:
+        entries = map_entries(read_name_value_file(source))
+    except CredentialError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+    if not entries:
+        console.print(
+            f"[yellow]{source} carries no recognised entries — expected provider "
+            "keys (OPENAI_API_KEY, …), <BACKEND>_RAG_USER/_PW pairs and/or "
+            "<BACKEND>_HOST/_PORT/_DB/_SSLMODE settings. Writing the manifest "
+            "anyway.[/yellow]")
+
+    if target.parent != Path(""):
+        target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        scaffold(source.resolve(), target.resolve(), domain, tuple(sorted(entries))),
+        encoding="utf-8")
+    console.print(f"[green]Wrote {target} listing {len(entries)} available "
+                  "entries (names only — no values).[/green]")
+    console.print("Name the groups and users to equip, then run "
+                  f"[bold]mdb credentials-apply --manifest {target} --dry-run[/bold].")
+
+
+@app.command("credentials-apply")
+def credentials_apply(
+    manifest: Optional[str] = typer.Option(
+        None, "--manifest", "-m",
+        help="YAML naming every identity to equip (bulk mode)"),
+    identity: Optional[list[str]] = typer.Option(
+        None, "--identity", "-i",
+        help="Identity id to equip; repeat for several (without --manifest)"),
+    identity_type: str = typer.Option(
+        "group", "--identity-type",
+        help="user or group. A user credential overrides a group one"),
+    domain: str = typer.Option(
+        "agentic-ai-keys", "--domain", help="Credential domain to write into"),
+    env_file: Optional[str] = typer.Option(
+        None, "--env-file", help="Source .env (default: ./.env)"),
+    keys_file: Optional[str] = typer.Option(
+        None, "--keys-file",
+        help="Raw NAME=VALUE file stored verbatim, no provider mapping"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report what would change; write nothing"),
+    skip_domain: bool = typer.Option(
+        False, "--skip-domain",
+        help="Do not create/update the domain itself (needs admin rights)"),
+):
+    """Equip identities with the accelerator's keys — many at once.
+
+    One domain holds every key the accelerator needs: the LLM provider keys
+    under their provider names, the vector-store user/password pairs under
+    their backend prefix, and where each store lives. A USER credential
+    overrides a GROUP one, so a department can share a key while one person
+    keeps their own.
+
+    The shell scripts under SAS-Viya-Integrations/Other equip one identity per
+    run; this does a whole rollout from a manifest, and reports it.
+
+    Three things worth knowing before you run it:
+
+    * A PUT REPLACES an identity's whole credential — the source file must
+      list everything that identity should end up with.
+    * The service returns NO secrets on a read, not even the entry names, so
+      --dry-run can tell you an identity will be created or replaced but never
+      what it currently holds. That is a privacy property, not a gap.
+    * Creating the domain, or any GROUP credential, needs SAS administrator
+      rights. A user may always (re)write their own.
+
+    Secret values are never printed, logged or written anywhere by this
+    command — only entry names and counts.
+    """
+    from .viya.credentials import (
+        CredentialError, build_steps, ensure_domain, entries_for,
+        fetch_credential, put_credential,
+    )
+
+    if identity_type not in ("user", "group"):
+        console.print("[red]--identity-type must be user or group.[/red]")
+        raise typer.Exit(2)
+    try:
+        plan = _credential_manifest(manifest, domain, identity_type, identity,
+                                    env_file, keys_file)
+    except CredentialError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+
+    with _viya_session() as session:
+        try:
+            steps = build_steps(plan, lambda who: fetch_credential(session, plan.domain, who))
+        except CredentialError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(2)
+
+        table = Table(title=f"Credential domain '{plan.domain}'")
+        table.add_column("Identity")
+        table.add_column("Type")
+        table.add_column("Action")
+        table.add_column("Entries", justify="right")
+        table.add_column("Currently")
+        for step in steps:
+            if not step.ok:
+                table.add_row(step.identity.id, step.identity.type,
+                              "[red]skip[/red]", "-", step.problem)
+                continue
+            held = (f"written by {step.existing_by} {step.existing_at[:10]}"
+                    if step.action == "replace" else "no credential")
+            table.add_row(step.identity.id, step.identity.type,
+                          "replace" if step.action == "replace" else "create",
+                          str(len(step.entry_names)), held)
+        console.print(table)
+        usable = [step for step in steps if step.ok]
+        if usable:
+            console.print("Entries: " + ", ".join(usable[0].entry_names))
+            if any(set(s.entry_names) != set(usable[0].entry_names) for s in usable):
+                console.print("[yellow]…and different sets for some identities; "
+                              "see the manifest.[/yellow]")
+        broken = [step for step in steps if not step.ok]
+        if broken:
+            console.print(f"[yellow]{len(broken)} identity(ies) skipped.[/yellow]")
+        if not usable:
+            console.print("[red]Nothing to do.[/red]")
+            raise typer.Exit(1)
+        if dry_run:
+            console.print("[yellow]Dry run — nothing was written. The current "
+                          "contents of an existing credential cannot be read "
+                          "back, so a replace is reported without a diff.[/yellow]")
+            raise typer.Exit(0)
+
+        if not skip_domain:
+            try:
+                ensure_domain(session, plan.domain)
+                console.print(f"[green]Domain '{plan.domain}' is in place.[/green]")
+            except CredentialError as exc:
+                console.print(f"[yellow]{exc}[/yellow]")
+                console.print("[yellow]Continuing: the domain may already exist "
+                              "and only an administrator can (re)create it. Pass "
+                              "--skip-domain to stop trying.[/yellow]")
+
+        failed = 0
+        for step in usable:
+            try:
+                put_credential(session, plan.domain, step.identity,
+                               entries_for(plan, step.identity))
+                console.print(
+                    f"[green]{step.identity.type} {step.identity.id}: "
+                    f"{len(step.entry_names)} entries stored.[/green]")
+            except CredentialError as exc:
+                failed += 1
+                console.print(f"[red]{exc}[/red]")
+        if failed:
+            raise typer.Exit(1)
+        console.print("[green]Done. Check it with `mdb credentials-report`.[/green]")
+
+
+@app.command("credentials-report")
+def credentials_report(
+    manifest: Optional[str] = typer.Option(
+        None, "--manifest", "-m", help="YAML naming the identities to ask about"),
+    identity: Optional[list[str]] = typer.Option(
+        None, "--identity", "-i", help="Identity id to ask about; repeat for several"),
+    identity_type: str = typer.Option(
+        "group", "--identity-type", help="user or group"),
+    domain: str = typer.Option(
+        "agentic-ai-keys", "--domain", help="Credential domain to inspect"),
+):
+    """Who holds a credential in the domain, and who wrote it.
+
+    It reports on the identities you NAME, because the credentials service has
+    no collection endpoint — /credentials/domains/{domain}/users and /groups
+    both answer 404, so there is no way to enumerate holders. Pass the same
+    manifest you applied and this becomes the after-picture of that rollout.
+
+    It cannot show what a credential contains: a read returns metadata only,
+    never the secrets and not even their names.
+    """
+    from .viya.credentials import CredentialError, fetch_credential
+
+    plan = _credential_manifest(manifest, domain, identity_type, identity,
+                                None, None)
+    table = Table(title=f"Credential domain '{plan.domain}'")
+    table.add_column("Identity")
+    table.add_column("Type")
+    table.add_column("Credential")
+    table.add_column("Last written by")
+    table.add_column("When")
+    held = 0
+    with _viya_session() as session:
+        for who in plan.identities:
+            try:
+                body = fetch_credential(session, plan.domain, who)
+            except CredentialError as exc:
+                table.add_row(who.id, who.type, "[red]unreadable[/red]", str(exc)[:40], "")
+                continue
+            if body is None:
+                table.add_row(who.id, who.type, "[yellow]none[/yellow]", "", "")
+                continue
+            held += 1
+            table.add_row(
+                who.id, who.type, "[green]yes[/green]",
+                str(body.get("modifiedBy") or body.get("createdBy") or ""),
+                str(body.get("modifiedTimeStamp") or body.get("creationTimeStamp") or "")[:19],
+            )
+    console.print(table)
+    console.print(f"{held} of {len(plan.identities)} named identities hold a credential.")
+    console.print("[dim]Contents are never shown: a credential read returns "
+                  "metadata only, so no identity can see another's keys.[/dim]")
 
 
 @app.command("schema-export")

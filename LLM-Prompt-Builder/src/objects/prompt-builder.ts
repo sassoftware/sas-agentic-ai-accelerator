@@ -40,8 +40,12 @@ import {
   type JobExecutionJob,
 } from '../api/jobexec-api';
 import { getCasServers, getCaslibs, getCasTables, getCasTableInfo } from '../api/cas-api';
+import { resolveDomainSecrets } from '../api/credentials-api';
 import { createAccordionItem } from '../ui/accordion';
 import { attachCombobox } from '../ui/combobox';
+import { createListFilter, renderFilteredOptions } from '../ui/list-filter';
+import { createDocSection, createInfoLabel } from '../ui/doc-section';
+import { createCreateModal } from '../ui/create-modal';
 import { showConfirmModal } from '../ui/confirm-modal';
 import { showToast } from '../ui/toast';
 import { escapeHtml } from '../ui/dom-helpers';
@@ -304,11 +308,6 @@ const PROMPT_FUNCTION = 'prompt template';
 const LEGACY_PROMPT_FUNCTION = 'Prompting';
 /** Server-side filter that surfaces prompt models of either function value. */
 const PROMPT_FUNCTION_FILTER = `or(eq(function,'${PROMPT_FUNCTION}'),eq(function,'${LEGACY_PROMPT_FUNCTION}'))`;
-/** Documentation attributes captured per prompt, mirroring mdb model-card keys. */
-const PROMPT_DOC_FIELDS = [
-  'modelPurpose', 'intendedUse', 'expectedBenefit', 'outOfScopeUseCases', 'limitations',
-] as const;
-type PromptDocField = (typeof PROMPT_DOC_FIELDS)[number];
 /** Names an output variable must not use. */
 const RESERVED_OUTPUT_NAMES = [...DEFAULT_LLM_OUTPUTS, 'parse_status'];
 
@@ -592,7 +591,7 @@ export async function buildPromptBuilder(
         console.error('Failed to load prompts for the selected project.', error);
         promptBuilderProjectPrompts = [];
       }
-      updateUserFilterOptions(promptFilter.userSelect, promptBuilderProjectPrompts);
+      promptFilter.setUsers(promptBuilderProjectPrompts);
       renderPromptOptions();
     };
     // Add the existing prompt selector
@@ -611,51 +610,33 @@ export async function buildPromptBuilder(
     // selected prompt's SAS Model Manager attributes and editable for any
     // selected prompt. Collapsed by default; entirely optional.
     let currentDocPromptId = '';
-    const promptDocSection = document.createElement('details');
-    promptDocSection.classList.add('pb-doc-section', 'mt-2', 'mb-2');
-    const promptDocSummary = document.createElement('summary');
-    promptDocSummary.classList.add('fw-semibold');
-    promptDocSummary.innerText = promptBuilderInterfaceText?.promptBuilderDocSectionLabel as string;
-    promptDocSection.appendChild(promptDocSummary);
-    const promptDocHint = document.createElement('p');
-    promptDocHint.classList.add('small', 'text-muted', 'mt-1', 'mb-2');
-    promptDocHint.innerText = promptBuilderInterfaceText?.promptBuilderDocSectionHint as string;
-    promptDocSection.appendChild(promptDocHint);
-    const DOC_FIELD_I18N: Record<PromptDocField, { label: string; info: string }> = {
-      modelPurpose: {
-        label: promptBuilderInterfaceText?.promptBuilderDocModelPurpose as string,
-        info: promptBuilderInterfaceText?.promptBuilderDocModelPurposeInfo as string,
+    const promptDoc = createDocSection(`${promptBuilderObject?.id}`, {
+      sectionLabel: promptBuilderInterfaceText?.promptBuilderDocSectionLabel as string,
+      sectionHint: promptBuilderInterfaceText?.promptBuilderDocSectionHint as string,
+      fields: {
+        modelPurpose: {
+          label: promptBuilderInterfaceText?.promptBuilderDocModelPurpose as string,
+          info: promptBuilderInterfaceText?.promptBuilderDocModelPurposeInfo as string,
+        },
+        intendedUse: {
+          label: promptBuilderInterfaceText?.promptBuilderDocIntendedUse as string,
+          info: promptBuilderInterfaceText?.promptBuilderDocIntendedUseInfo as string,
+        },
+        expectedBenefit: {
+          label: promptBuilderInterfaceText?.promptBuilderDocExpectedBenefit as string,
+          info: promptBuilderInterfaceText?.promptBuilderDocExpectedBenefitInfo as string,
+        },
+        outOfScopeUseCases: {
+          label: promptBuilderInterfaceText?.promptBuilderDocOutOfScope as string,
+          info: promptBuilderInterfaceText?.promptBuilderDocOutOfScopeInfo as string,
+        },
+        limitations: {
+          label: promptBuilderInterfaceText?.promptBuilderDocLimitations as string,
+          info: promptBuilderInterfaceText?.promptBuilderDocLimitationsInfo as string,
+        },
       },
-      intendedUse: {
-        label: promptBuilderInterfaceText?.promptBuilderDocIntendedUse as string,
-        info: promptBuilderInterfaceText?.promptBuilderDocIntendedUseInfo as string,
-      },
-      expectedBenefit: {
-        label: promptBuilderInterfaceText?.promptBuilderDocExpectedBenefit as string,
-        info: promptBuilderInterfaceText?.promptBuilderDocExpectedBenefitInfo as string,
-      },
-      outOfScopeUseCases: {
-        label: promptBuilderInterfaceText?.promptBuilderDocOutOfScope as string,
-        info: promptBuilderInterfaceText?.promptBuilderDocOutOfScopeInfo as string,
-      },
-      limitations: {
-        label: promptBuilderInterfaceText?.promptBuilderDocLimitations as string,
-        info: promptBuilderInterfaceText?.promptBuilderDocLimitationsInfo as string,
-      },
-    };
-    const promptDocFieldEls = {} as Record<PromptDocField, HTMLTextAreaElement>;
-    for (const field of PROMPT_DOC_FIELDS) {
-      const wrap = document.createElement('div');
-      wrap.classList.add('mb-2');
-      wrap.appendChild(createOptionLabel(DOC_FIELD_I18N[field].label, DOC_FIELD_I18N[field].info));
-      const textarea = document.createElement('textarea');
-      textarea.classList.add('form-control');
-      textarea.rows = 2;
-      textarea.id = `${promptBuilderObject?.id}-doc-${field}`;
-      promptDocFieldEls[field] = textarea;
-      wrap.appendChild(textarea);
-      promptDocSection.appendChild(wrap);
-    }
+    });
+    const promptDocSection = promptDoc.section;
     const promptDocSaveButton = document.createElement('button');
     promptDocSaveButton.type = 'button';
     promptDocSaveButton.classList.add('btn', 'btn-outline-primary', 'btn-sm');
@@ -663,8 +644,7 @@ export async function buildPromptBuilder(
     promptDocSaveButton.disabled = true;
     promptDocSaveButton.onclick = async () => {
       if (!currentDocPromptId) return;
-      const attrs: Record<string, unknown> = {};
-      for (const field of PROMPT_DOC_FIELDS) attrs[field] = promptDocFieldEls[field].value;
+      const attrs: Record<string, unknown> = { ...promptDoc.values() };
       const previousLabel = promptDocSaveButton.innerText;
       promptDocSaveButton.disabled = true;
       promptDocSaveButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>`;
@@ -689,7 +669,7 @@ export async function buildPromptBuilder(
     // a fetch failure just leaves the section empty and disabled.
     async function loadPromptDocumentation(promptId: string): Promise<void> {
       currentDocPromptId = '';
-      for (const field of PROMPT_DOC_FIELDS) promptDocFieldEls[field].value = '';
+      promptDoc.clear();
       promptDocSaveButton.disabled = true;
       if (!promptId || promptId === `${promptBuilderInterfaceText?.promptSelect}`) return;
       let details: Record<string, unknown> | null = null;
@@ -700,10 +680,7 @@ export async function buildPromptBuilder(
         return;
       }
       if (!details) return;
-      for (const field of PROMPT_DOC_FIELDS) {
-        const value = details[field];
-        promptDocFieldEls[field].value = value == null ? '' : String(value);
-      }
+      promptDoc.setValues(details);
       currentDocPromptId = promptId;
       promptDocSaveButton.disabled = false;
       if (details.function === LEGACY_PROMPT_FUNCTION) {
@@ -875,93 +852,16 @@ export async function buildPromptBuilder(
     // long, so each dropdown only renders the matching entries — filtering by
     // name and by who created or last modified an entry. The current selection
     // always stays in the list.
-    function createListFilter(
-      filterIdPrefix: string,
-      onFilterChange: () => void
-    ): { filterRow: HTMLDivElement; nameInput: HTMLInputElement; userSelect: HTMLSelectElement } {
-      const filterRow = document.createElement('div');
-      filterRow.classList.add('row', 'g-2', 'mb-2', 'pb-list-filter');
-      const nameColumn = document.createElement('div');
-      nameColumn.classList.add('col-md-8');
-      const nameInput = document.createElement('input');
-      nameInput.type = 'search';
-      nameInput.id = `${filterIdPrefix}-name`;
-      nameInput.classList.add('form-control', 'form-control-sm');
-      nameInput.placeholder = `${promptBuilderInterfaceText?.promptBuilderFilterNamePlaceholder}`;
-      nameInput.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderFilterNamePlaceholder}`);
-      nameInput.oninput = onFilterChange;
-      nameColumn.appendChild(nameInput);
-      const userColumn = document.createElement('div');
-      userColumn.classList.add('col-md-4');
-      const userSelect = document.createElement('select');
-      userSelect.id = `${filterIdPrefix}-user`;
-      userSelect.classList.add('form-select', 'form-select-sm');
-      userSelect.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderFilterUserLabel}`);
-      userSelect.onchange = onFilterChange;
-      userColumn.appendChild(userSelect);
-      filterRow.appendChild(nameColumn);
-      filterRow.appendChild(userColumn);
-      updateUserFilterOptions(userSelect, []);
-      return { filterRow, nameInput, userSelect };
-    }
-
-    // Rebuild a user filter from the distinct createdBy/modifiedBy values
-    function updateUserFilterOptions(userSelect: HTMLSelectElement, items: DropdownOption[]): void {
-      const previousUser = userSelect.value;
-      const users = new Set<string>();
-      items.forEach((item) => {
-        if (typeof item.createdBy === 'string' && item.createdBy) users.add(item.createdBy);
-        if (typeof item.modifiedBy === 'string' && item.modifiedBy) users.add(item.modifiedBy);
-      });
-      userSelect.innerHTML = '';
-      const allUsersOption = document.createElement('option');
-      allUsersOption.value = '';
-      allUsersOption.innerText = `${promptBuilderInterfaceText?.promptBuilderFilterUserAll}`;
-      userSelect.appendChild(allUsersOption);
-      [...users].sort().forEach((user) => {
-        const userOption = document.createElement('option');
-        userOption.value = user;
-        userOption.innerText = user;
-        userSelect.appendChild(userOption);
-      });
-      userSelect.value = users.has(previousUser) ? previousUser : '';
-    }
-
-    function renderFilteredOptions(
-      dropdown: HTMLSelectElement,
-      items: DropdownOption[],
-      nameInput: HTMLInputElement,
-      userSelect: HTMLSelectElement,
-      placeholderText: string
-    ): void {
-      const selectedValue = dropdown.value;
-      const nameFilter = nameInput.value.trim().toLowerCase();
-      const userFilter = userSelect.value;
-      dropdown.innerHTML = '';
-      const placeholderOption = document.createElement('option');
-      placeholderOption.value = placeholderText;
-      placeholderOption.innerHTML = placeholderText;
-      dropdown.appendChild(placeholderOption);
-      items
-        .filter(
-          (item) =>
-            item.value === selectedValue ||
-            (String(item.innerHTML ?? '').toLowerCase().includes(nameFilter) &&
-              (userFilter === '' || item.createdBy === userFilter || item.modifiedBy === userFilter))
-        )
-        .forEach((item) => {
-          const listOption = document.createElement('option');
-          listOption.value = item.value;
-          listOption.innerHTML = item.innerHTML;
-          dropdown.appendChild(listOption);
-        });
-      dropdown.value = [...dropdown.options].some((option) => option.value === selectedValue)
-        ? selectedValue
-        : placeholderText;
-    }
-
-    const projectFilter = createListFilter(`${promptBuilderObject?.id}-project-filter`, () => renderProjectOptions());
-    const promptFilter = createListFilter(`${promptBuilderObject?.id}-prompt-filter`, () => renderPromptOptions());
+    const projectFilter = createListFilter(`${promptBuilderObject?.id}-project-filter`, {
+      namePlaceholder: `${promptBuilderInterfaceText?.promptBuilderFilterNamePlaceholder}`,
+      userLabel: `${promptBuilderInterfaceText?.promptBuilderFilterUserLabel}`,
+      userAll: `${promptBuilderInterfaceText?.promptBuilderFilterUserAll}`,
+    }, () => renderProjectOptions());
+    const promptFilter = createListFilter(`${promptBuilderObject?.id}-prompt-filter`, {
+      namePlaceholder: `${promptBuilderInterfaceText?.promptBuilderFilterNamePlaceholder}`,
+      userLabel: `${promptBuilderInterfaceText?.promptBuilderFilterUserLabel}`,
+      userAll: `${promptBuilderInterfaceText?.promptBuilderFilterUserAll}`,
+    }, () => renderPromptOptions());
     function renderProjectOptions(): void {
       renderFilteredOptions(
         promptBuilderProjectSelectorDropdown,
@@ -983,7 +883,7 @@ export async function buildPromptBuilder(
 
     // Get all projects in the specified repository and render the filterable list
     promptBuilderAllProjects = await getModelProjects(`contains(tags,'Prompt-Engineering')`);
-    updateUserFilterOptions(projectFilter.userSelect, promptBuilderAllProjects);
+    projectFilter.setUsers(promptBuilderAllProjects);
     renderProjectOptions();
     renderPromptOptions();
 
@@ -1026,7 +926,7 @@ export async function buildPromptBuilder(
       // Clear the filters so the new project is visible, then select it
       projectFilter.nameInput.value = '';
       projectFilter.userSelect.value = '';
-      updateUserFilterOptions(projectFilter.userSelect, promptBuilderAllProjects);
+      projectFilter.setUsers(promptBuilderAllProjects);
       renderProjectOptions();
       // Set the newly created project as the currently selected project
       promptBuilderProjectSelectorDropdown.value = `${promptBuilderNewProjectObject?.id}`;
@@ -1067,7 +967,7 @@ export async function buildPromptBuilder(
       // Clear the filters so the new prompt is visible, then select it
       promptFilter.nameInput.value = '';
       promptFilter.userSelect.value = '';
-      updateUserFilterOptions(promptFilter.userSelect, promptBuilderProjectPrompts);
+      promptFilter.setUsers(promptBuilderProjectPrompts);
       renderPromptOptions();
       // Set the newly created project as the currently selected project
       promptBuilderPromptSelectorDropdown.value = `${promptBuilderNewPromptObject?.items?.[0]?.id}`;
@@ -1164,7 +1064,7 @@ export async function buildPromptBuilder(
         const deleteStatus = await deleteModel(promptModelID);
         if (deleteStatus === 204) {
           promptBuilderProjectPrompts = promptBuilderProjectPrompts.filter((item) => item.value !== promptModelID);
-          updateUserFilterOptions(promptFilter.userSelect, promptBuilderProjectPrompts);
+          promptFilter.setUsers(promptBuilderProjectPrompts);
           promptBuilderPromptSelectorDropdown.value = `${promptBuilderInterfaceText?.promptSelect}`;
           renderPromptOptions();
           resetExperimentTrackerState();
@@ -1230,12 +1130,12 @@ export async function buildPromptBuilder(
         const projectDeleteStatus = await deleteModelProject(projectID);
         if (projectDeleteStatus === 204) {
           promptBuilderAllProjects = promptBuilderAllProjects.filter((item) => item.value !== projectID);
-          updateUserFilterOptions(projectFilter.userSelect, promptBuilderAllProjects);
+          projectFilter.setUsers(promptBuilderAllProjects);
           promptBuilderProjectSelectorDropdown.value = `${promptBuilderInterfaceText?.projectSelect}`;
           renderProjectOptions();
           // Reset the prompt selector to the placeholder-only state
           promptBuilderProjectPrompts = [];
-          updateUserFilterOptions(promptFilter.userSelect, promptBuilderProjectPrompts);
+          promptFilter.setUsers(promptBuilderProjectPrompts);
           promptBuilderPromptSelectorDropdown.value = `${promptBuilderInterfaceText?.promptSelect}`;
           renderPromptOptions();
           resetExperimentTrackerState();
@@ -1249,103 +1149,9 @@ export async function buildPromptBuilder(
       }
     }
 
-    function promptBuilderCreateModal(
-      tmpModalContainer: HTMLElement,
-      tmpPrefix: string,
-      tmpModalText: ModalText,
-      tmpActionFunction: () => void
-    ): void {
-      // Create the button that triggers the modal
-      const createModalButtonToggle = document.createElement('button');
-      createModalButtonToggle.type = 'button';
-      createModalButtonToggle.classList.add('btn', 'btn-primary');
-      createModalButtonToggle.setAttribute('data-bs-toggle', 'modal');
-      createModalButtonToggle.setAttribute('data-bs-target', `#${tmpPrefix}Modal`);
-      createModalButtonToggle.innerHTML = tmpModalText?.modalTitle ?? '';
-      // Create the modal wrapper
-      const createModalWrapper = document.createElement('div');
-      createModalWrapper.classList.add('modal', 'fade');
-      createModalWrapper.setAttribute('id', `${tmpPrefix}Modal`);
-      createModalWrapper.setAttribute('tabindex', '-1');
-      // Create the modal dialog
-      const createModalModalDialog = document.createElement('div');
-      createModalModalDialog.classList.add('modal-dialog');
-      // Create the modal content
-      const createModalModalContent = document.createElement('div');
-      createModalModalContent.classList.add('modal-content');
-      // Create the modal header
-      const createModalModalHeader = document.createElement('div');
-      createModalModalHeader.classList.add('modal-header');
-      // Create the modal title
-      const createModalModalTitle = document.createElement('h2');
-      createModalModalTitle.classList.add('modal-title', 'fs-5');
-      createModalModalTitle.innerHTML = tmpModalText?.modalTitle ?? '';
-      // Create the modal close button
-      const createModalModalCloseButton = document.createElement('button');
-      createModalModalCloseButton.type = 'button';
-      createModalModalCloseButton.classList.add('btn-close');
-      createModalModalCloseButton.setAttribute('data-bs-dismiss', 'modal');
-      createModalModalCloseButton.setAttribute('aria-label', 'Close');
-      // Create the modal body
-      const createModalModalBody = document.createElement('div');
-      createModalModalBody.classList.add('modal-body');
-      // Optional explanatory description shown above the inputs
-      if (tmpModalText?.modalDescription) {
-        const createModalModalDescription = document.createElement('p');
-        createModalModalDescription.innerText = tmpModalText.modalDescription;
-        createModalModalBody.appendChild(createModalModalDescription);
-      }
-      // Create the first modal input
-      const createModalBodyInput1Text = document.createElement('span');
-      createModalBodyInput1Text.innerHTML = `${tmpModalText?.nameLabel}:`;
-      const createModalBodyInput1 = document.createElement('input');
-      createModalBodyInput1.setAttribute('type', 'text');
-      createModalBodyInput1.setAttribute('placeholder', tmpModalText?.nameLabel ?? '');
-      createModalBodyInput1.setAttribute('id', `${tmpPrefix}Name`);
-      // Create the second modal input
-      const createModalBodyInput2Text = document.createElement('span');
-      createModalBodyInput2Text.innerHTML = `${tmpModalText?.descriptionLabel}:`;
-      const createModalBodyInput2 = document.createElement('input');
-      createModalBodyInput2.setAttribute('type', 'text');
-      createModalBodyInput2.setAttribute('placeholder', tmpModalText?.descriptionLabel ?? '');
-      createModalBodyInput2.setAttribute('id', `${tmpPrefix}Description`);
-      // Create the modal footer
-      const createModalModalFooter = document.createElement('div');
-      createModalModalFooter.classList.add('modal-footer');
-      // Create the modal footer close button
-      const createModalModalFooterButton = document.createElement('button');
-      createModalModalFooterButton.type = 'button';
-      createModalModalFooterButton.classList.add('btn', 'btn-secondary');
-      createModalModalFooterButton.setAttribute('data-bs-dismiss', 'modal');
-      createModalModalFooterButton.innerHTML = tmpModalText?.closeButtonText ?? '';
-      // Create the modal footer save button
-      const createModalModalFooterButton2 = document.createElement('button');
-      createModalModalFooterButton2.type = 'button';
-      createModalModalFooterButton2.classList.add('btn', 'btn-primary');
-      createModalModalFooterButton2.innerHTML = tmpModalText?.saveButtonText ?? '';
-      createModalModalFooterButton2.onclick = () => {
-        tmpActionFunction();
-      };
-      // Append elements together
-      createModalModalHeader.appendChild(createModalModalTitle);
-      createModalModalHeader.appendChild(createModalModalCloseButton);
-      createModalModalContent.appendChild(createModalModalHeader);
-      createModalModalBody.appendChild(createModalBodyInput1Text);
-      createModalModalBody.appendChild(createModalBodyInput1);
-      createModalModalBody.appendChild(document.createElement('br'));
-      createModalModalBody.appendChild(createModalBodyInput2Text);
-      createModalModalBody.appendChild(createModalBodyInput2);
-      createModalModalContent.appendChild(createModalModalBody);
-      createModalModalFooter.appendChild(createModalModalFooterButton);
-      createModalModalFooter.appendChild(createModalModalFooterButton2);
-      createModalModalContent.appendChild(createModalModalFooter);
-      createModalModalDialog.appendChild(createModalModalContent);
-      createModalWrapper.appendChild(createModalModalDialog);
-
-      // Add to the modal container
-      tmpModalContainer.appendChild(createModalButtonToggle);
-      tmpModalContainer.appendChild(createModalWrapper);
-    }
+    // The create dialog is shared with the RAG Builder; kept as a local alias
+    // because this file calls it by its original name in several places.
+    const promptBuilderCreateModal = createCreateModal;
 
     // Create the modals for project/prompt creation
     promptBuilderCreateModal(
@@ -1402,21 +1208,9 @@ export async function buildPromptBuilder(
 
     // Label + info icon for an LLM option; the explanation is a Bootstrap
     // tooltip so it also works with keyboard focus and touch.
-    function createOptionLabel(labelText: string, infoHtml: string): HTMLDivElement {
-      const labelContainer = document.createElement('div');
-      labelContainer.classList.add('info-container');
-      labelContainer.append(`${labelText}: `);
-      const infoIcon = document.createElement('span');
-      infoIcon.classList.add('info-icon');
-      infoIcon.innerHTML = '&#x2139;&#xFE0F;';
-      infoIcon.setAttribute('tabindex', '0');
-      infoIcon.setAttribute('role', 'button');
-      infoIcon.setAttribute('aria-label', labelText);
-      infoIcon.setAttribute('data-bs-toggle', 'tooltip');
-      new Tooltip(infoIcon, { title: infoHtml, html: true, container: 'body' });
-      labelContainer.appendChild(infoIcon);
-      return labelContainer;
-    }
+    // The info-icon label is shared with the RAG Builder; kept as a local
+    // alias because it is used throughout this file's option rendering.
+    const createOptionLabel = createInfoLabel;
 
     function generateModelSelection(availableModels: AvailableLLM[]): void {
       availableModels.forEach((model, index) => {
@@ -1560,6 +1354,23 @@ export async function buildPromptBuilder(
 
         modelDiv.appendChild(checkbox);
         modelDiv.appendChild(label);
+        // A model whose provider has no key for this user is visible but not
+        // selectable — the note names the missing entry and the domain.
+        const missingProvider = llmMissingCredentialDomain(model);
+        if (missingProvider) {
+          checkbox.disabled = true;
+          label.classList.add('text-muted');
+          const note = document.createElement('small');
+          note.classList.add('text-muted', 'd-block', 'pb-credential-note');
+          note.innerText = String(
+            promptBuilderInterfaceText?.promptBuilderCredentialMissing ??
+              'No {provider} key available in the {domain} credential domain - ask your administrator for access.'
+          )
+            .replace('{provider}', missingProvider)
+            .replace('{domain}', credentialDomain);
+          modelDiv.title = note.innerText;
+          modelDiv.appendChild(note);
+        }
         modelDiv.appendChild(optionsDiv);
         promptBuilderModelSelectorContainer.appendChild(modelDiv);
       });
@@ -1598,6 +1409,32 @@ export async function buildPromptBuilder(
         }
       })
     );
+    // Resolve provider keys from the credential domain: a single secrets-map
+    // lookup under the signed-in user's identity (user credential overrides
+    // group credential). The domain is the ONLY key source — providers
+    // without an entry are disabled in every model selector with a note
+    // naming the domain, so access to a provider is an identity decision.
+    // 'none' skips the lookup (for deployments using only key-less models);
+    // with a non-blank default, an empty URL parameter cannot express "off".
+    const credentialDomainRaw = String(promptBuilderObject?.credentialDomain ?? '').trim();
+    const credentialDomain = credentialDomainRaw.toLowerCase() === 'none' ? '' : credentialDomainRaw;
+    const providersWithoutCredential = new Set<string>();
+    promptBuilderObject.API_KEYS = credentialDomain
+      ? await resolveDomainSecrets(credentialDomain)
+      : {};
+    {
+      const resolvedKeys = promptBuilderObject.API_KEYS as Record<string, string>;
+      promptBuilderAvailableLLMs
+        .map((llm) => llm.options?.API_KEY?.default as string | undefined)
+        .filter((name): name is string => Boolean(name))
+        .forEach((name) => {
+          if (!resolvedKeys[name]) providersWithoutCredential.add(name);
+        });
+    }
+    function llmMissingCredentialDomain(llm: AvailableLLM): string | null {
+      const provider = llm.options?.API_KEY?.default as string | undefined;
+      return provider && providersWithoutCredential.has(provider) ? provider : null;
+    }
     // Cost/governance attributes of a run's LLM (per-token / per-second prices,
     // provider, family, endpoint), resolved by model name. Fetched LAZILY — only
     // for the models actually used (run / judge / manifest) — so the initial load
@@ -1895,6 +1732,8 @@ export async function buildPromptBuilder(
     judgePlaceholderOption.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSelectPlaceholder}`;
     promptBuilderJudgeModelSelect.appendChild(judgePlaceholderOption);
     promptBuilderAvailableLLMs.forEach((availableLLM) => {
+      // Models without a resolvable credential cannot judge either.
+      if (llmMissingCredentialDomain(availableLLM)) return;
       const judgeOption = document.createElement('option');
       judgeOption.value = availableLLM.name;
       judgeOption.innerText = availableLLM.name;
@@ -1950,6 +1789,7 @@ export async function buildPromptBuilder(
     promptBuilderJudgePanel.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-panel`;
     promptBuilderJudgePanel.classList.add('pb-judge-panel', 'd-flex', 'flex-column', 'gap-1');
     promptBuilderAvailableLLMs.forEach((availableLLM, index) => {
+      if (llmMissingCredentialDomain(availableLLM)) return;
       const judgeItem = document.createElement('div');
       judgeItem.classList.add('form-check', 'mb-0');
       const judgeCheckbox = document.createElement('input');
@@ -5127,9 +4967,9 @@ ${scoreCodeReturn}`;
           const expectedCell = document.createElement('td');
           expectedCell.innerText = String(evaluation.expected ?? '');
           // Partial-credit metrics (token overlap) also carry a per-example
-          // score; show it next to the ✓/✗ when it is not simply 0 or 1.
+          // score; show it next to the âœ“/âœ— when it is not simply 0 or 1.
           const evalMark = (correct: boolean | undefined, score: number | undefined): string => {
-            const mark = correct ? '✓' : '✗';
+            const mark = correct ? 'âœ“' : 'âœ—';
             return typeof score === 'number' && score > 0 && score < 1 ? `${mark} ${score.toFixed(2)}` : mark;
           };
           const beforeCell = document.createElement('td');
@@ -5397,8 +5237,8 @@ ${scoreCodeReturn}`;
         }
         const jobDefinitionUri = await resolveJobDefinitionUri(String(promptBuilderObject?.optimizeJobProgram ?? ''));
         const maxDemos = Math.max(0, Math.min(16, Number(optimizeUI.maxDemosInput.value) || 4));
-        // Only names and ids travel in the request — provider keys stay in the
-        // governed library/table the job reads server-side.
+        // Only names and ids travel in the request — the job resolves provider
+        // keys server-side from the credential domain under the launching user.
         const job = await launchJob(jobDefinitionUri, `Optimize ${promptName}`, {
           _contextName: String(promptBuilderObject?.computeContext ?? ''),
           promptModelId,
@@ -5416,8 +5256,7 @@ ${scoreCodeReturn}`;
           optimizer,
           maxDemos: String(maxDemos),
           minSamples: String(optimizeMinSamples()),
-          keyLibrary: String(promptBuilderObject?.optimizeKeyLibrary ?? ''),
-          keyTable: String(promptBuilderObject?.optimizeKeyTable ?? ''),
+          keyDomain: credentialDomain,
         });
         startOptimizeJobMonitor(job);
       } catch (error) {
@@ -5526,6 +5365,9 @@ ${scoreCodeReturn}`;
       candidateList.classList.add('mb-2');
       const candidateBoxes: HTMLInputElement[] = [];
       promptBuilderAvailableLLMs.forEach((availableLLM, index) => {
+        // The job resolves the same credential domains server-side, so a
+        // model this user has no credential for cannot be a compare target.
+        if (llmMissingCredentialDomain(availableLLM)) return;
         const wrapper = document.createElement('div');
         wrapper.classList.add('form-check');
         const checkbox = document.createElement('input');
@@ -5675,8 +5517,7 @@ ${scoreCodeReturn}`;
           optimizer: sweepMode ? optimizer : 'bootstrap',
           maxDemos: sweepMode ? String(maxDemos) : '0',
           minSamples: String(sweepMode ? optimizeMinSamples() : COMPARE_MIN_SAMPLES),
-          keyLibrary: String(promptBuilderObject?.optimizeKeyLibrary ?? ''),
-          keyTable: String(promptBuilderObject?.optimizeKeyTable ?? ''),
+          keyDomain: credentialDomain,
         });
         startOptimizeJobMonitor(job);
       } catch (error) {
@@ -5700,13 +5541,13 @@ ${scoreCodeReturn}`;
       // metric/optimizer to pick, and the CAS dataset schema.
       const optimizeLearnMore = document.createElement('a');
       optimizeLearnMore.href =
-        'https://sassoftware.github.io/sas-agentic-ai-accelerator/docs/User-Guide/Prompt-Builder#choosing-the-dataset-metric-and-optimizer';
+        'https://sassoftware.github.io/sas-agentic-ai-accelerator/User-Guide/Prompt-Builder#choosing-the-dataset-metric-and-optimizer';
       optimizeLearnMore.target = '_blank';
       optimizeLearnMore.rel = 'noopener';
       optimizeLearnMore.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeLearnMore}`;
       optimizeDescription.appendChild(optimizeLearnMore);
 
-      // ℹ️ tooltip helper for the optimize controls (the app's judge toggles
+      // â„¹ï¸ tooltip helper for the optimize controls (the app's judge toggles
       // use the same pattern: keyboard-focusable Bootstrap tooltip).
       const makeOptimizeInfoIcon = (labelText: unknown, infoHtml: unknown): HTMLSpanElement => {
         const icon = document.createElement('span');
@@ -5739,6 +5580,8 @@ ${scoreCodeReturn}`;
       targetPlaceholder.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeTargetPlaceholder}`;
       optimizeTargetSelect.appendChild(targetPlaceholder);
       promptBuilderAvailableLLMs.forEach((availableLLM) => {
+        // The optimize job resolves the same credential domains server-side.
+        if (llmMissingCredentialDomain(availableLLM)) return;
         const targetOption = document.createElement('option');
         targetOption.value = availableLLM.name;
         targetOption.innerText = availableLLM.name;
@@ -5932,6 +5775,7 @@ ${scoreCodeReturn}`;
       optimizeJudgePlaceholder.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSelectPlaceholder}`;
       optimizeJudgeSelect.appendChild(optimizeJudgePlaceholder);
       promptBuilderAvailableLLMs.forEach((availableLLM) => {
+        if (llmMissingCredentialDomain(availableLLM)) return;
         const judgeOption = document.createElement('option');
         judgeOption.value = availableLLM.name;
         judgeOption.innerText = availableLLM.name;
