@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-Administration-Guide/RAG-Ingestion-and-Retrieval" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.7.0">
+<title data-rh="true">RAG Ingestion and Retrieval | SAS Agentic AI Accelerator Documentation</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="RAG Ingestion and Retrieval | SAS Agentic AI Accelerator Documentation"><meta data-rh="true" name="description" content="The accelerator ingests a document corpus into a vector store and serves it"><meta data-rh="true" property="og:description" content="The accelerator ingests a document corpus into a vector store and serves it"><link data-rh="true" rel="icon" href="https://raw.githubusercontent.com/sassoftware/sas-agentic-ai-accelerator/refs/heads/main/static/sas.png"><link data-rh="true" rel="canonical" href="https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval"><link data-rh="true" rel="alternate" href="https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval" hreflang="en"><link data-rh="true" rel="alternate" href="https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval" hreflang="x-default"><link rel="stylesheet" href="/sas-agentic-ai-accelerator/assets/css/styles.ecef51d9.css">
+<script src="/sas-agentic-ai-accelerator/assets/js/runtime~main.d5a03b71.js" defer="defer"></script>
+<script src="/sas-agentic-ai-accelerator/assets/js/main.ecbb8515.js" defer="defer"></script>
+</head>
+<body class="navigation-with-keyboard">
+<script>!function(){function t(t){document.documentElement.setAttribute("data-theme",t)}var e=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();t(null!==e?e:"light")}(),function(){try{const n=new URLSearchParams(window.location.search).entries();for(var[t,e]of n)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><link rel="preload" as="image" href="https://raw.githubusercontent.com/sassoftware/sas-agentic-ai-accelerator/refs/heads/main/static/sas.png"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="navbar navbar--fixed-top"><div class="navbar__inner"><div class="navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/sas-agentic-ai-accelerator/"><div class="navbar__logo"><img src="https://raw.githubusercontent.com/sassoftware/sas-agentic-ai-accelerator/refs/heads/main/static/sas.png" alt="SAS" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="https://raw.githubusercontent.com/sassoftware/sas-agentic-ai-accelerator/refs/heads/main/static/sas.png" alt="SAS" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">SAS Agentic AI Accelerator</b></a></div><div class="navbar__items navbar__items--right"><a href="https://github.com/sassoftware/sas-agentic-ai-accelerator" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link header-github-link" title="GitHub repository"></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="Switch between dark and light mode (currently light mode)" aria-label="Switch between dark and light mode (currently light mode)" aria-live="polite" aria-pressed="false"><svg viewBox="0 0 24 24" width="24" height="24" class="lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" class="darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"><div class="navbar__search searchBarContainer_NW3z" dir="ltr"><input placeholder="Search" aria-label="Search" class="navbar__search-input searchInput_YFbd" value=""><div class="loadingRing_RJI3 searchBarLoadingRing_YnHq"><div></div><div></div><div></div><div></div></div></div></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/sas-agentic-ai-accelerator/">SAS Agentic AI Accelerator</a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/sas-agentic-ai-accelerator/Administration-Guide/Introduction">Administration-Guide</a></div><ul style="display:block;overflow:visible;height:auto" class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/Introduction">Introduction</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/Container-Registry">Container Registry</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/Configuration-for-Publishing">Configuration for Publishing</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-SAS-Model-Manager">Setup SAS Model Manager</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/Register-&amp;-Publish-LLMs">Register &amp; Publish LLMs</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/LLM-Definitions">LLM Definitions</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/Register-&amp;-Publish-Embedding-Models">Registering Embedding Model Definitions</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/Container-Deployment">Container Deployment</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/Serving-Open-Weight-Models">Serving Open-Weight Models</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/Logging-&amp;-Monitoring">Logging &amp; Monitoring</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs">Deploying the Builder UIs</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/Enabling-Prompt-Optimization">Enabling Prompt Optimization</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials">Managing Credentials</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval">RAG Ingestion and Retrieval</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/Deployment-of-Decisions">Deployment of Decisions</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/Model-Definition-Builder">Model Definition Builder</a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/sas-agentic-ai-accelerator/Administration-Guide/Troubleshooting-Guide">Troubleshooting Guide</a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/sas-agentic-ai-accelerator/User-Guide/Introduction">User-Guide</a></div></li></ul></nav><button type="button" title="Collapse sidebar" aria-label="Collapse sidebar" class="button button--secondary button--outline collapseSidebarButton_PEFL"><svg width="20" height="20" aria-hidden="true" class="collapseSidebarButtonIcon_kv0_"><g fill="#7a7a7a"><path d="M9.992 10.023c0 .2-.062.399-.172.547l-4.996 7.492a.982.982 0 01-.828.454H1c-.55 0-1-.453-1-1 0-.2.059-.403.168-.551l4.629-6.942L.168 3.078A.939.939 0 010 2.528c0-.548.45-.997 1-.997h2.996c.352 0 .649.18.828.45L9.82 9.472c.11.148.172.347.172.55zm0 0"></path><path d="M19.98 10.023c0 .2-.058.399-.168.547l-4.996 7.492a.987.987 0 01-.828.454h-3c-.547 0-.996-.453-.996-1 0-.2.059-.403.168-.551l4.625-6.942-4.625-6.945a.939.939 0 01-.168-.55 1 1 0 01.996-.997h3c.348 0 .649.18.828.45l4.996 7.492c.11.148.168.347.168.55zm0 0"></path></g></svg></button></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs" itemscope="" itemtype="https://schema.org/BreadcrumbList"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/sas-agentic-ai-accelerator/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">Administration-Guide</span><meta itemprop="position" content="1"></li><li itemscope="" itemprop="itemListElement" itemtype="https://schema.org/ListItem" class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link" itemprop="name">RAG Ingestion and Retrieval</span><meta itemprop="position" content="2"></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><header><h1>RAG Ingestion and Retrieval</h1></header>
+<p>The accelerator ingests a document corpus into a vector store and serves it
+back to a decision. This page is the operations view: what to deploy, what the
+environment must provide, which knobs matter, and what the product does with
+your data. For building a pipeline, see the
+<a href="/sas-agentic-ai-accelerator/User-Guide/RAG">RAG user guide</a>.</p>
+<h2 class="anchor anchorWithStickyNavbar_LWe7" id="what-gets-deployed">What gets deployed<a href="#what-gets-deployed" class="hash-link" aria-label="Direct link to What gets deployed" title="Direct link to What gets deployed">​</a></h2>
+<p>Everything lives in one governed SAS Content folder, by default
+<code>/SAS Agentic AI Accelerator/RAG</code>:</p>
+<table><thead><tr><th>Folder</th><th>Contents</th></tr></thead><tbody><tr><td><code>rag_core/</code></td><td>The Python runtime every step and job imports at run time</td></tr><tr><td><code>steps/</code></td><td>The nine custom steps, registered as dataFlows resources</td></tr><tr><td><code>jobs/</code></td><td><code>Ingest-Documents.sas</code>, the standalone schedulable job</td></tr><tr><td><code>models/</code></td><td>The retrieval model template, manifested per setup</td></tr><tr><td><code>generated/</code></td><td>Default destination for per-setup artifacts — the ingestion job and the Studio flow the Builder generates, and what <strong>RAG - Register Setup</strong> writes. The Builder lets an author choose a different folder per setup</td></tr></tbody></table>
+<p>Deploy with the shipped script, which reads your local checkout and
+authenticates through the <code>sas-viya</code> CLI session:</p>
+<div class="language-powershell codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_biex"><pre tabindex="0" class="prism-code language-powershell codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><span class="token-line" style="color:#393A34"><span class="token plain">./SAS-Viya-Integrations/Other/deploy-rag-content.ps1</span><br></span></code></pre><div class="buttonGroup__atx"><button type="button" aria-label="Copy code to clipboard" title="Copy" class="clean-btn"><span class="copyButtonIcons_eSgA" aria-hidden="true"><svg viewBox="0 0 24 24" class="copyButtonIcon_y97N"><path fill="currentColor" d="M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z"></path></svg><svg viewBox="0 0 24 24" class="copyButtonSuccessIcon_LjdS"><path fill="currentColor" d="M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z"></path></svg></span></button></div></div></div>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_biex"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><span class="token-line" style="color:#393A34"><span class="token plain">./SAS-Viya-Integrations/Other/deploy-rag-content.sh</span><br></span></code></pre><div class="buttonGroup__atx"><button type="button" aria-label="Copy code to clipboard" title="Copy" class="clean-btn"><span class="copyButtonIcons_eSgA" aria-hidden="true"><svg viewBox="0 0 24 24" class="copyButtonIcon_y97N"><path fill="currentColor" d="M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z"></path></svg><svg viewBox="0 0 24 24" class="copyButtonSuccessIcon_LjdS"><path fill="currentColor" d="M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z"></path></svg></span></button></div></div></div>
+<p>Re-run it after every change. <strong>Nothing is ever fetched from the internet at
+run time</strong>, so the same script works in an air-gapped deployment: the SAS
+Content folder is the distribution channel, not GitHub.</p>
+<div class="theme-admonition theme-admonition-note admonition_xJq3 alert alert--secondary"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 14 16"><path fill-rule="evenodd" d="M6.3 5.69a.942.942 0 0 1-.28-.7c0-.28.09-.52.28-.7.19-.18.42-.28.7-.28.28 0 .52.09.7.28.18.19.28.42.28.7 0 .28-.09.52-.28.7a1 1 0 0 1-.7.3c-.28 0-.52-.11-.7-.3zM8 7.99c-.02-.25-.11-.48-.31-.69-.2-.19-.42-.3-.69-.31H6c-.27.02-.48.13-.69.31-.2.2-.3.44-.31.69h1v3c.02.27.11.5.31.69.2.2.42.31.69.31h1c.27 0 .48-.11.69-.31.2-.19.3-.42.31-.69H8V7.98v.01zM7 2.3c-3.14 0-5.7 2.54-5.7 5.68 0 3.14 2.56 5.7 5.7 5.7s5.7-2.55 5.7-5.7c0-3.15-2.56-5.69-5.7-5.69v.01zM7 .98c3.86 0 7 3.14 7 7s-3.14 7-7 7-7-3.12-7-7 3.14-7 7-7z"></path></svg></span>Why the script and not a manual upload</div><div class="admonitionContent_BuS1"><p>A <code>.step</code> file uploaded as a plain Content file renders as an empty step
+editor — steps are dataFlows <em>service</em> resources. The script also <strong>updates</strong>
+an already-registered step in place rather than replacing it. Re-registering a
+step mints a new id, and every saved flow referencing the old id breaks.</p></div></div>
+<h2 class="anchor anchorWithStickyNavbar_LWe7" id="serving-the-rag-builder">Serving the RAG Builder<a href="#serving-the-rag-builder" class="hash-link" aria-label="Direct link to Serving the RAG Builder" title="Direct link to Serving the RAG Builder">​</a></h2>
+<p>The Builder is a single-file app served through SAS Job Execution, the same
+way as the Prompt Builder. Build it with <code>npm run build:rag</code> (or take the
+prebuilt file) and create a job definition whose <strong>form</strong> is that HTML:</p>
+<table><thead><tr><th></th><th></th></tr></thead><tbody><tr><td>Job definition</td><td><code>&lt;content root&gt;/RAG-Builder-UI</code></td></tr><tr><td><code>code</code></td><td>empty — this job never runs SAS</td></tr><tr><td><code>properties</code> entry named <code>form</code></td><td>the contents of <code>dist-rag/rag.html</code></td></tr><tr><td>URL</td><td><code>https://&lt;host&gt;/SASJobExecution/?_program=&lt;path&gt;&amp;_action=form</code></td></tr></tbody></table>
+<div class="theme-admonition theme-admonition-note admonition_xJq3 alert alert--secondary"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 14 16"><path fill-rule="evenodd" d="M6.3 5.69a.942.942 0 0 1-.28-.7c0-.28.09-.52.28-.7.19-.18.42-.28.7-.28.28 0 .52.09.7.28.18.19.28.42.28.7 0 .28-.09.52-.28.7a1 1 0 0 1-.7.3c-.28 0-.52-.11-.7-.3zM8 7.99c-.02-.25-.11-.48-.31-.69-.2-.19-.42-.3-.69-.31H6c-.27.02-.48.13-.69.31-.2.2-.3.44-.31.69h1v3c.02.27.11.5.31.69.2.2.42.31.69.31h1c.27 0 .48-.11.69-.31.2-.19.3-.42.31-.69H8V7.98v.01zM7 2.3c-3.14 0-5.7 2.54-5.7 5.68 0 3.14 2.56 5.7 5.7 5.7s5.7-2.55 5.7-5.7c0-3.15-2.56-5.69-5.7-5.69v.01zM7 .98c3.86 0 7 3.14 7 7s-3.14 7-7 7-7-3.12-7-7 3.14-7 7-7z"></path></svg></span>The HTML is the FORM, not the code — and the form is a <em>property</em></div><div class="admonitionContent_BuS1"><p><code>&amp;_action=form</code> serves the job&#x27;s <strong>form</strong>. Two ways to get this wrong, both
+of which look like something else:</p><ul>
+<li>HTML in <code>code</code> produces <em>&quot;Parameter Error — HTML form file was not found&quot;</em>,
+which reads like a missing file rather than the wrong field.</li>
+<li>The form is an entry <strong>inside the definition&#x27;s <code>properties</code> list</strong>, named
+<code>form</code> — not a top-level <code>form</code> key. A PUT carrying a top-level key returns
+<strong>200 and silently drops it</strong>, so the deploy looks successful while the old
+app keeps serving. Verify by reading the property back, not by trusting the
+status code.</li>
+</ul><p>The Prompt Builder is served the same way, from
+<code>/SAS Agentic AI Accelerator/Prompt Builder/SAS-LLM-Prompt-Builder-UI</code>.</p></div></div>
+<p>The Content Security Policy directives in
+<a href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs">Deploying the Builder UIs</a> apply here too — the
+build base64-encodes its inline scripts so the Go template engine cannot
+corrupt them, and the CSP has to allow the decoded bundle to run.</p>
+<p>Configure the Builder from its <strong>Options</strong> pane in Visual Analytics: the
+Model Manager repository, the <strong>embedding model project</strong>, SCR endpoint,
+credential domain, content root, CAS server, the ingestion compute context, a
+checkbox per vector database the deployment offers, and the operational policy
+(TLS, deleted-document handling, history retention, run-history recording,
+embedding replicas, table persistence). Those policy values are recorded onto
+each setup as it is created, so a setup keeps what it was built with.</p>
+<div class="theme-admonition theme-admonition-warning admonition_xJq3 alert alert--warning"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 16 16"><path fill-rule="evenodd" d="M8.893 1.5c-.183-.31-.52-.5-.887-.5s-.703.19-.886.5L.138 13.499a.98.98 0 0 0 0 1.001c.193.31.53.501.886.501h13.964c.367 0 .704-.19.877-.5a1.03 1.03 0 0 0 .01-1.002L8.893 1.5zm.133 11.497H6.987v-2.003h2.039v2.003zm0-3.004H6.987V5.987h2.039v4.006z"></path></svg></span>These options live inside the report</div><div class="admonitionContent_BuS1"><p>Importing a newer Builder report from a transfer package replaces every value
+above with whatever the package was built against — silently, since the report
+still opens and the app still runs. Save them with <code>mdb options-save</code> before
+importing and restore them after: see
+<a href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#preserving-builder-options-across-a-report-import">Preserving builder options across a report import</a>.</p></div></div>
+<p>Served standalone rather than embedded, the same settings are query
+parameters:</p>
+<div class="codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_biex"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><span class="token-line" style="color:#393A34"><span class="token plain">.../SASJobExecution/?_program=&lt;path&gt;&amp;_action=form&amp;embeddingProjectID=&lt;uuid&gt;&amp;modelRepositoryID=&lt;uuid&gt;</span><br></span></code></pre><div class="buttonGroup__atx"><button type="button" aria-label="Copy code to clipboard" title="Copy" class="clean-btn"><span class="copyButtonIcons_eSgA" aria-hidden="true"><svg viewBox="0 0 24 24" class="copyButtonIcon_y97N"><path fill="currentColor" d="M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z"></path></svg><svg viewBox="0 0 24 24" class="copyButtonSuccessIcon_LjdS"><path fill="currentColor" d="M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z"></path></svg></span></button></div></div></div>
+<div class="theme-admonition theme-admonition-note admonition_xJq3 alert alert--secondary"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 14 16"><path fill-rule="evenodd" d="M6.3 5.69a.942.942 0 0 1-.28-.7c0-.28.09-.52.28-.7.19-.18.42-.28.7-.28.28 0 .52.09.7.28.18.19.28.42.28.7 0 .28-.09.52-.28.7a1 1 0 0 1-.7.3c-.28 0-.52-.11-.7-.3zM8 7.99c-.02-.25-.11-.48-.31-.69-.2-.19-.42-.3-.69-.31H6c-.27.02-.48.13-.69.31-.2.2-.3.44-.31.69h1v3c.02.27.11.5.31.69.2.2.42.31.69.31h1c.27 0 .48-.11.69-.31.2-.19.3-.42.31-.69H8V7.98v.01zM7 2.3c-3.14 0-5.7 2.54-5.7 5.68 0 3.14 2.56 5.7 5.7 5.7s5.7-2.55 5.7-5.7c0-3.15-2.56-5.69-5.7-5.69v.01zM7 .98c3.86 0 7 3.14 7 7s-3.14 7-7 7-7-3.12-7-7 3.14-7 7-7z"></path></svg></span>What the Builder never asks a user</div><div class="admonitionContent_BuS1"><p>Three things a person building a corpus should not have to know are resolved
+rather than typed:</p><table><thead><tr><th></th><th>Comes from</th></tr></thead><tbody><tr><td>Vector store host, port, database</td><td>The credential domain — see below</td></tr><tr><td>Embedding model</td><td>Listed from the embedding model project</td></tr><tr><td>Embedding dimensions</td><td>The chosen model&#x27;s fact sheet</td></tr><tr><td>Maximum chunk size</td><td>Capped at the chosen model&#x27;s published token window</td></tr></tbody></table><p>A typed model name has nothing behind it until a container is published, and
+the failure surfaces as an HTTP 404 at the first embed call — after the crawl
+and the chunking have already run. A vector column is created at the model&#x27;s
+width and cannot be widened afterwards. And text beyond a model&#x27;s token window
+is dropped by the model silently rather than rejected, so an oversized chunk
+is embedded from its opening only — retrieval then matches on text the answer
+never sees, with nothing in the run reporting a problem. The Builder asks for
+the model first for that reason: the ceiling has to be known before anyone
+picks a chunk size under it.</p></div></div>
+<h3 class="anchor anchorWithStickyNavbar_LWe7" id="what-the-builders-buttons-create--and-what-they-clean-up">What the Builder&#x27;s buttons create — and what they clean up<a href="#what-the-builders-buttons-create--and-what-they-clean-up" class="hash-link" aria-label="Direct link to What the Builder&#x27;s buttons create — and what they clean up" title="Direct link to What the Builder&#x27;s buttons create — and what they clean up">​</a></h3>
+<table><thead><tr><th>Button</th><th>What it leaves in your environment</th></tr></thead><tbody><tr><td><strong>Save setup</strong></td><td>The RAG Setup model in SAS Model Manager</td></tr><tr><td><strong>Manifest setup</strong></td><td>Saves, then the ingestion job definition and the Studio flow in the <em>Generated artifacts</em> folder, <code>retrieve_context.py</code> as the setup&#x27;s score code, and a new minor model version</td></tr><tr><td><strong>Launch ingestion</strong></td><td>A job run, the collection, and the pipeline tables in the chosen caslib</td></tr><tr><td><strong>Browse ledger</strong></td><td>Nothing — reads the promoted ledger table</td></tr><tr><td><strong>Test retrieval</strong></td><td><strong>Nothing.</strong> See below</td></tr></tbody></table>
+<p><em>Test retrieval</em> asks the live collection a question and shows the chunks that
+come back, with what the probe cost. It is deliberately built to leave no
+trace: the job definition it runs is created <strong>without a parent folder</strong>, so it
+never appears anywhere in SAS Content, and it is deleted when the run ends —
+including when the run fails or is abandoned. The hits travel back in the job
+<strong>log</strong> rather than in a CAS table, because an output table would itself be an
+artifact of a test meant to have none. The finished job&#x27;s own record and log
+remain in SAS Job Execution, as for any job run.</p>
+<p>It exercises the <strong>collection</strong>, not the registered score code: it queries
+through <code>rag_core</code> exactly as the ingestion does, so a broken
+<code>retrieve_context.py</code> would still pass. Verifying that needs the published
+model.</p>
+<p>Both <em>Launch ingestion</em> and <em>Test retrieval</em> need the <strong>ingestion compute
+context</strong> option to be set — SAS Job Execution rejects a job that does not name
+one, and the rejection carries no log. The Builder checks first and names the
+missing setting.</p>
+<h2 class="anchor anchorWithStickyNavbar_LWe7" id="enrichment-an-llm-call-per-chunk">Enrichment: an LLM call per chunk<a href="#enrichment-an-llm-call-per-chunk" class="hash-link" aria-label="Direct link to Enrichment: an LLM call per chunk" title="Direct link to Enrichment: an LLM call per chunk">​</a></h2>
+<p>Off by default. A chunk that reads perfectly in place is often meaningless on
+its own — <em>&quot;revenue grew 12%&quot;</em> says nothing about whose revenue, or when — and
+the published remedy is to prepend a short LLM-written statement situating it
+in its document, then embed the two together. The Builder&#x27;s <strong>Enrichment</strong>
+section is that slot, and it is general: the same call can classify a chunk,
+pull out an effective date, or flag personal data. Which of those it does is
+decided by the <strong>prompt</strong>, not by the pipeline.</p>
+<p><strong>The prompt is a Prompt Builder artifact, not a setting here.</strong> Build and
+evaluate it in the Prompt Builder, manifest it, and point the RAG setup at that
+Model Manager model. The prompt then has its own documentation, versions and
+permissions, and improving it does not mean editing a RAG setup.</p>
+<p>It must be manifested with the <strong>integrated LLM call</strong>. That option makes the
+score code perform the call and return the answer, which is what the ingestion
+reads. The other form returns <code>llmBody</code>/<code>llmURL</code> for the Call LLM node of SAS
+Intelligent Decisioning — the request to make rather than its result — and the
+Builder and the ingestion both refuse it by name.</p>
+<p><strong>Only prompts manifested with output parsing are offered.</strong> Those are the ones
+whose answer is a set of named variables, which is exactly what this stage
+stores — the Prompt Builder tags them <code>Output-Parsing</code> when you manifest them
+that way. The project list is built from those prompts, so a prompt project
+holding none of them never appears rather than appearing and then being empty.
+If a prompt you expect is missing, re-manifest it with output parsing.</p>
+<h3 class="anchor anchorWithStickyNavbar_LWe7" id="several-prompts-one-after-the-other">Several prompts, one after the other<a href="#several-prompts-one-after-the-other" class="hash-link" aria-label="Direct link to Several prompts, one after the other" title="Direct link to Several prompts, one after the other">​</a></h3>
+<p>The stage is a <strong>list</strong>. Situating a chunk and extracting fields from it are
+different jobs, and one prompt asked to do both is worse at each — so <em>Add
+another prompt</em> runs a second, a third, over the same chunks, in the order
+shown. Each sees the chunk as the chunker produced it, not as the previous
+prompt left it.</p>
+<p>Two rules hold across the chain, and both are refused rather than resolved
+silently, in the Builder and again in the ingestion:</p>
+<ul>
+<li><strong>Only one prompt may write the context header.</strong> A chunk has one, so a
+second would overwrite the first — after you had already paid for it, one LLM
+call per chunk.</li>
+<li><strong>Two prompts may not store the same column</strong>, for the same reason and with
+no way to tell afterwards which prompt wrote what.</li>
+</ul>
+<p><code>enrich_version</code> holds <strong>every</strong> prompt that contributed to a chunk, comma
+separated, so a chunk can say that its header came from one prompt and its
+<code>clause_type</code> from another.</p>
+<p>The cost is the obvious one: <strong>each prompt is its own LLM call per chunk</strong>, so
+two prompts cost twice as much as one. The run log prices each separately and
+<code>rag_runs</code> records the total.</p>
+<table><thead><tr><th>You choose, per prompt</th><th>What it does</th></tr></thead><tbody><tr><td><strong>Prompt project</strong> and <strong>prompt</strong></td><td>Which manifested prompt is called, once per chunk</td></tr><tr><td><strong>Prompt version</strong></td><td><em>Latest</em> follows the prompt; a pinned version freezes exactly the prompt that version carried</td></tr><tr><td>A chunk field for each <strong>prompt input</strong></td><td>What the prompt is given: the chunk, the whole document (capped at 20,000 characters), the neighbouring chunks, the heading path, the file name, the full source location, or the position (<em>&quot;chunk 3 of 42&quot;</em>)</td></tr><tr><td>The output stored as the <strong>context header</strong></td><td>Prepended to the chunk and embedded <strong>with</strong> it — this is the part that changes retrieval</td></tr><tr><td>Outputs stored as <strong>columns</strong></td><td>Each becomes its own typed column on the chunk table, so it can be selected, filtered and aggregated</td></tr><tr><td><strong>Parallel calls</strong></td><td>How many chunks this prompt enriches at once — per prompt, because two prompts may call two different LLMs</td></tr></tbody></table>
+<p>Nothing is guessed for a prompt input whose name is unfamiliar: a silently
+wrong mapping produces a whole corpus of confident nonsense, so the setup will
+not save until every input is mapped.</p>
+<h3 class="anchor anchorWithStickyNavbar_LWe7" id="what-the-extracted-values-become">What the extracted values become<a href="#what-the-extracted-values-become" class="hash-link" aria-label="Direct link to What the extracted values become" title="Direct link to What the extracted values become">​</a></h3>
+<p>A stored output is a <strong>real column</strong>, named after the output and typed from the
+prompt&#x27;s registered output variables — a <code>string</code> becomes text, a <code>decimal</code>
+becomes a double, so a confidence score can be averaged rather than parsed out
+of a JSON blob. Retrieval returns them alongside the chunk.</p>
+<p>Three rules govern the schema, and all three are reported in the run log rather
+than applied quietly:</p>
+<ul>
+<li><strong>A new column is not backfilled.</strong> Add an output to the prompt and the
+column appears on the next run, holding null for every chunk written before
+it. That is indistinguishable from an LLM that had nothing to say, so the log
+states it explicitly; only a full re-ingestion (bump the pipeline version)
+fills it in.</li>
+<li><strong>A column you stop producing is not dropped.</strong> It keeps whatever the prompt
+that wrote it said. Removing data is never a side effect of editing a prompt.</li>
+<li><strong>A name the table already uses is refused</strong>, by name, in the Builder and in
+the ingestion. <code>score</code>, <code>content</code>, <code>page</code> and <code>rank</code> are all plausible things
+to ask an LLM for and all belong to the chunk schema — rename the output in
+the prompt, or don&#x27;t store it.</li>
+<li><strong>The column is the output name in lower case.</strong> Both pgvector and
+SingleStore fold an unquoted identifier, so an output called <code>Department</code>
+becomes a <code>department</code> column. Nothing else about the name changes — a
+stored output is never prefixed or abbreviated.</li>
+</ul>
+<h3 class="anchor anchorWithStickyNavbar_LWe7" id="latest-or-pinned">Latest, or pinned<a href="#latest-or-pinned" class="hash-link" aria-label="Direct link to Latest, or pinned" title="Direct link to Latest, or pinned">​</a></h3>
+<p><em>Latest</em> re-reads the prompt on every run, so improving it in the Prompt
+Builder changes what the next ingestion writes — <strong>without</strong> re-processing
+anything already stored. Pinning freezes a version, which is what you want once
+a corpus is in production and you want a prompt change to be a deliberate act.</p>
+<p>Either way, every enriched chunk records <strong>which prompt at which version wrote
+it</strong> in <code>enrich_version</code>, so a collection that legitimately holds work from two
+prompts can be read that way rather than merely being that way.</p>
+<p>Version labels (<code>1.0</code>, <code>1.1</code>) are <strong>not unique</strong> — the Builder shows the date
+beside each and stores the version&#x27;s id.</p>
+<div class="theme-admonition theme-admonition-warning admonition_xJq3 alert alert--warning"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 16 16"><path fill-rule="evenodd" d="M8.893 1.5c-.183-.31-.52-.5-.887-.5s-.703.19-.886.5L.138 13.499a.98.98 0 0 0 0 1.001c.193.31.53.501.886.501h13.964c.367 0 .704-.19.877-.5a1.03 1.03 0 0 0 .01-1.002L8.893 1.5zm.133 11.497H6.987v-2.003h2.039v2.003zm0-3.004H6.987V5.987h2.039v4.006z"></path></svg></span>A pinned version can lose its files</div><div class="admonitionContent_BuS1"><p>A version&#x27;s snapshot does not always keep its score code — an older model on
+our own environment returned its file listing but no content. Both the Builder
+and the ingestion refuse an empty prompt rather than running one, naming the
+version. If a pin stops working, pin a different version or return to <em>Latest</em>.</p></div></div>
+<h3 class="anchor anchorWithStickyNavbar_LWe7" id="what-it-costs-and-what-that-buys">What it costs, and what that buys<a href="#what-it-costs-and-what-that-buys" class="hash-link" aria-label="Direct link to What it costs, and what that buys" title="Direct link to What it costs, and what that buys">​</a></h3>
+<p><strong>One LLM call per chunk, repeated on every re-chunk</strong> — this is normally the
+largest line in an ingestion, an order of magnitude above the embedding. It is
+priced in the run log while the run is happening, and recorded per run in
+<code>rag_runs</code> (<code>enrich_calls</code>, <code>enrich_input_tokens</code>, <code>enrich_output_tokens</code>,
+<code>enrich_seconds</code>, <code>enrich_failed</code>) so <code>RAG_RUN_COST</code> reports embedding and
+enrichment side by side with a total.</p>
+<p>A prompt manifested <strong>without</strong> the <code>prompt_length</code> and <code>output_length</code> outputs
+returns no token counts, and a token-priced model then has nothing to multiply.
+That reads as <em>unknown</em> rather than as zero — select those outputs when you
+manifest the prompt if you want the cost.</p>
+<p>On the benefit: the widely cited 35–49% reduction in retrieval failures comes
+from one vendor on one corpus, with a Claude-class model generating the
+headers, and the affordable price in that write-up depends on prompt caching
+over the parent document, which a self-hosted container does not have. Treat it
+as a technique to measure on your own corpus, not as a number to expect. The
+cheapest first check is <em>Test retrieval</em>, which shows the stored header beside
+each chunk once a collection has been enriched.</p>
+<h3 class="anchor anchorWithStickyNavbar_LWe7" id="consequences-worth-knowing-before-you-turn-it-on">Consequences worth knowing before you turn it on<a href="#consequences-worth-knowing-before-you-turn-it-on" class="hash-link" aria-label="Direct link to Consequences worth knowing before you turn it on" title="Direct link to Consequences worth knowing before you turn it on">​</a></h3>
+<ul>
+<li><strong>Enrichment is deliberately NOT part of the drift fingerprint.</strong> Changing
+the prompt, the mapping or the stored outputs applies from the next run
+onward and never demands a re-ingest. The trade is explicit: a collection can
+hold headers written by two different prompt versions, and <code>enrich_version</code>
+on each chunk is what makes that visible. The drift guard still covers the
+chunker, the token window and the embedding model — the settings that change
+the vectors themselves and would make a collection unreadable.</li>
+<li><strong>A hallucinated header is permanent and invisible at query time.</strong> It is
+baked into the vector and into the stored chunk. Read a few through <em>Test
+retrieval</em> before building a large corpus on a new prompt.</li>
+<li><strong>Failure is per chunk.</strong> A call that fails, or a response that was not the
+JSON the prompt asked for, leaves that chunk <strong>without</strong> a header and it is
+embedded plain rather than failing the run. A parsed output is never stored
+from the prompt author&#x27;s default value — a plausible answer no model
+generated is worse than none. The count is named in the run log and in the
+run summary, because a corpus where a tenth of the chunks have no header
+retrieves differently from one where all of them do.</li>
+<li><strong>The prompt&#x27;s score code is executed</strong> in the ingestion compute session,
+exactly as SAS Container Runtime would execute it. That is what scoring a
+model is; the control is Model Manager permissions on the prompt project.
+Do not point a setup at a model you would not run.</li>
+<li><strong>A prompt calling a hosted LLM needs that provider&#x27;s key</strong> in the same
+credential domain as the store credentials, under the provider&#x27;s name
+(<code>OpenAI</code>, <code>Anthropic</code>, …). A prompt whose LLM runs as a local container
+takes no API key and needs nothing. The mapping from model to provider lives
+in <code>rag_core/providers.py</code>; a model missing from it fails at load with that
+said, rather than sending a wrong key on its behalf.</li>
+</ul>
+<p>In a SAS Studio flow the stage is the <strong>RAG - Enrich Chunks</strong> step, wired
+between <em>Chunk Documents</em> and <em>Embed Chunks</em>. The Builder adds <strong>one step per
+prompt</strong> to the generated flow, in order, and adds none at all for a setup that
+does not enrich. Chaining the step by hand does the same thing: each run adds
+to what the last one wrote rather than replacing it.</p>
+<h2 class="anchor anchorWithStickyNavbar_LWe7" id="two-prerequisites-that-are-not-optional">Two prerequisites that are not optional<a href="#two-prerequisites-that-are-not-optional" class="hash-link" aria-label="Direct link to Two prerequisites that are not optional" title="Direct link to Two prerequisites that are not optional">​</a></h2>
+<p>Both of these produce confusing failures if missed, so check them first.</p>
+<h3 class="anchor anchorWithStickyNavbar_LWe7" id="1-a-compute-context-that-runs-as-the-requesting-user">1. A compute context that runs as the requesting user<a href="#1-a-compute-context-that-runs-as-the-requesting-user" class="hash-link" aria-label="Direct link to 1. A compute context that runs as the requesting user" title="Direct link to 1. A compute context that runs as the requesting user">​</a></h3>
+<p>The steps create a CAS session in SAS and reuse it from Python, because the
+staged table has to be visible to the promote that follows. CAS only lets an
+identity reconnect to its <strong>own</strong> session.</p>
+<p>The stock <strong>SAS Job Execution compute context</strong> runs the server as a service
+account (<code>sas-be-sa</code> on a default deployment) while the CAS session belongs to
+the user who launched the job. The two do not match, and the first step fails.
+The step detects this and says so, but the fix is environmental:</p>
+<blockquote>
+<p>Run RAG flows and jobs in a context that runs as the <strong>requesting user</strong>.
+The <strong>SAS Studio compute context</strong> does; a full five-step ingestion is
+verified running there as a job.</p>
+</blockquote>
+<p>Submit with that context explicitly:</p>
+<div class="language-json codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_biex"><pre tabindex="0" class="prism-code language-json codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><span class="token-line" style="color:#393A34"><span class="token punctuation" style="color:#393A34">{</span><span class="token plain"> </span><span class="token property" style="color:#36acaa">&quot;arguments&quot;</span><span class="token operator" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token plain"> </span><span class="token property" style="color:#36acaa">&quot;_contextName&quot;</span><span class="token operator" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;SAS Studio compute context&quot;</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">}</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">}</span><br></span></code></pre><div class="buttonGroup__atx"><button type="button" aria-label="Copy code to clipboard" title="Copy" class="clean-btn"><span class="copyButtonIcons_eSgA" aria-hidden="true"><svg viewBox="0 0 24 24" class="copyButtonIcon_y97N"><path fill="currentColor" d="M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z"></path></svg><svg viewBox="0 0 24 24" class="copyButtonSuccessIcon_LjdS"><path fill="currentColor" d="M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z"></path></svg></span></button></div></div></div>
+<p>The same service-account mismatch also prevents credential-domain lookups, so
+one context change fixes both.</p>
+<h3 class="anchor anchorWithStickyNavbar_LWe7" id="2-a-credential-domain-holding-the-store-credentials">2. A credential domain holding the store credentials<a href="#2-a-credential-domain-holding-the-store-credentials" class="hash-link" aria-label="Direct link to 2. A credential domain holding the store credentials" title="Direct link to 2. A credential domain holding the store credentials">​</a></h3>
+<p>Vector-store credentials come from a SAS Viya credential domain (default
+<code>agentic-ai-keys</code>), never from the flow. Entries are <strong>backend-prefixed</strong> so
+one domain can serve several stores:</p>
+<div class="codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_biex"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><span class="token-line" style="color:#393A34"><span class="token plain">PGVECTOR_RAG_USER      PGVECTOR_RAG_PW</span><br></span><span class="token-line" style="color:#393A34"><span class="token plain">SINGLESTORE_RAG_USER   SINGLESTORE_RAG_PW</span><br></span></code></pre><div class="buttonGroup__atx"><button type="button" aria-label="Copy code to clipboard" title="Copy" class="clean-btn"><span class="copyButtonIcons_eSgA" aria-hidden="true"><svg viewBox="0 0 24 24" class="copyButtonIcon_y97N"><path fill="currentColor" d="M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z"></path></svg><svg viewBox="0 0 24 24" class="copyButtonSuccessIcon_LjdS"><path fill="currentColor" d="M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z"></path></svg></span></button></div></div></div>
+<p>The same domain also carries <strong>where</strong> each store lives. These are not
+secrets, but the domain is the one place every identity can already read, so
+the Builder resolves the connection instead of asking users for a hostname
+they should never have to hold:</p>
+<div class="codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_biex"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><span class="token-line" style="color:#393A34"><span class="token plain">PGVECTOR_HOST     PGVECTOR_PORT     PGVECTOR_DB     PGVECTOR_SSLMODE</span><br></span><span class="token-line" style="color:#393A34"><span class="token plain">SINGLESTORE_HOST  SINGLESTORE_PORT  SINGLESTORE_DB  SINGLESTORE_SSLMODE</span><br></span><span class="token-line" style="color:#393A34"><span class="token plain">RAGSTORE_HOST     RAGSTORE_PORT     RAGSTORE_DB     RAGSTORE_SSLMODE</span><br></span></code></pre><div class="buttonGroup__atx"><button type="button" aria-label="Copy code to clipboard" title="Copy" class="clean-btn"><span class="copyButtonIcons_eSgA" aria-hidden="true"><svg viewBox="0 0 24 24" class="copyButtonIcon_y97N"><path fill="currentColor" d="M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z"></path></svg><svg viewBox="0 0 24 24" class="copyButtonSuccessIcon_LjdS"><path fill="currentColor" d="M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z"></path></svg></span></button></div></div></div>
+<p><code>RAGSTORE_*</code> is the unprefixed fallback for any backend, the same precedence
+the runtime already applies to a <code>.env</code>. A value passed explicitly — a host
+typed into a step — still wins over the domain, so the steps are unaffected.
+Without <code>&lt;BACKEND&gt;_HOST</code> and <code>&lt;BACKEND&gt;_DB</code> the Builder shows the store as
+unresolved and refuses to save a setup that could not ingest.</p>
+<p>Author them with <code>create-credential-domain.ps1</code>/<code>.sh</code>, which reads your
+git-ignored <code>.env</code>. See <a href="/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials">Managing Credentials</a>.
+Equip <strong>every identity that will run a flow or job</strong> — including the service
+account, if you are not using a run-as-requesting-user context.</p>
+<h2 class="anchor anchorWithStickyNavbar_LWe7" id="python-packages">Python packages<a href="#python-packages" class="hash-link" aria-label="Direct link to Python packages" title="Direct link to Python packages">​</a></h2>
+<p><code>rag_core</code> cannot install anything: <code>sas-pyconfig</code> environments are read-only.
+The compute context&#x27;s Python needs:</p>
+<table><thead><tr><th>Package</th><th>Needed for</th></tr></thead><tbody><tr><td><code>requests</code>, <code>pandas</code>, <code>swat</code></td><td>Always</td></tr><tr><td><code>psycopg2-binary</code></td><td>The pgvector backend</td></tr><tr><td><code>singlestoredb</code></td><td>The SingleStore backend (already present on many builds)</td></tr><tr><td><code>pypdfium2</code></td><td>PDF text extraction</td></tr><tr><td><code>markitdown</code></td><td><code>.docx</code>, <code>.xlsx</code>, <code>.pptx</code>, <code>.epub</code>, <code>.rtf</code>, <code>.msg</code></td></tr></tbody></table>
+<p><code>.eml</code> needs nothing beyond the standard library. A missing package disables
+only the extractor that needs it — the registry reports it rather than failing
+the run.</p>
+<p><strong>Source-code files are skipped by default.</strong> <code>.py</code>, <code>.sas</code>, <code>.r</code>, <code>.js</code>,
+<code>.ts</code>, <code>.sql</code> and around thirty more are not ingested unless a setup ticks
+<em>Ingest source-code files as plain text</em>, because a documents folder that sits
+inside a project would otherwise fill the collection with build scripts. They
+are listed as skipped with the reason, never dropped silently.</p>
+<h2 class="anchor anchorWithStickyNavbar_LWe7" id="choosing-a-vector-store">Choosing a vector store<a href="#choosing-a-vector-store" class="hash-link" aria-label="Direct link to Choosing a vector store" title="Direct link to Choosing a vector store">​</a></h2>
+<p>Both backends carry the same feature set: chunk history, as-of reads,
+rollback, the portable filter grammar and the governance DDL.</p>
+<table><thead><tr><th></th><th>pgvector</th><th>SingleStore</th></tr></thead><tbody><tr><td>Live-row marker</td><td><code>valid_to IS NULL</code></td><td>sentinel <code>9999-12-31</code></td></tr><tr><td>Cosine</td><td>native <code>&lt;=&gt;</code></td><td>normalized vectors, dot product</td></tr><tr><td>ANN index</td><td>HNSW, <strong>on by default</strong></td><td><strong>opt-in</strong> — see below</td></tr><tr><td>Index covers only live rows</td><td>yes (partial index)</td><td>no</td></tr><tr><td>Cutover</td><td>transactional rename</td><td>rename, not transactional</td></tr></tbody></table>
+<div class="theme-admonition theme-admonition-warning admonition_xJq3 alert alert--warning"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 16 16"><path fill-rule="evenodd" d="M8.893 1.5c-.183-.31-.52-.5-.887-.5s-.703.19-.886.5L.138 13.499a.98.98 0 0 0 0 1.001c.193.31.53.501.886.501h13.964c.367 0 .704-.19.877-.5a1.03 1.03 0 0 0 .01-1.002L8.893 1.5zm.133 11.497H6.987v-2.003h2.039v2.003zm0-3.004H6.987V5.987h2.039v4.006z"></path></svg></span>The SingleStore ANN index is opt-in for a reason</div><div class="admonitionContent_BuS1"><p>Measured on a live cluster, an HNSW index there <strong>loses rows</strong>: the same query
+returned 1, 2, 1, 0, 1 and 1 rows for <code>LIMIT</code> 1 to 9 on a six-row collection,
+where exact search returned the correct 4 every time. Neither <code>SEARCH_OPTIONS</code>
+nor <code>OPTIMIZE TABLE</code> changed it. Approximate search may return an imperfect
+<em>order</em>; returning fewer chunks than exist is a different thing, and for
+retrieval that feeds an answer it fails silently. Exact search is therefore the
+default. If a collection is large enough to need the index, enable it with
+<code>schema={&quot;ann&quot;: True}</code> and <strong>validate recall on your own data first</strong>.
+pgvector was checked for the same defect and does not have it.</p></div></div>
+<h2 class="anchor anchorWithStickyNavbar_LWe7" id="retention-and-erasure">Retention and erasure<a href="#retention-and-erasure" class="hash-link" aria-label="Direct link to Retention and erasure" title="Direct link to Retention and erasure">​</a></h2>
+<p>Three different operations, deliberately separate:</p>
+<table><thead><tr><th>Operation</th><th>Where</th><th>Reversible</th></tr></thead><tbody><tr><td>Retire (default)</td><td>Automatic on re-ingestion</td><td>Yes — <code>restore()</code></td></tr><tr><td>Deleted-document policy</td><td><strong>RAG - Load Vector Store</strong></td><td>No</td></tr><tr><td>Erasure</td><td><strong>RAG - Purge Documents</strong></td><td>No</td></tr><tr><td>History retention</td><td><code>retainDays</code> on the Load step</td><td>Live rows untouched</td></tr></tbody></table>
+<p>Retiring keeps previous chunk generations so a collection can be read as it
+stood on an earlier date and a bad run can be rolled back. Purging removes
+chunk rows <strong>including retired generations</strong> and drops the ledger entries.</p>
+<div class="theme-admonition theme-admonition-danger admonition_xJq3 alert alert--danger"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 12 16"><path fill-rule="evenodd" d="M5.05.31c.81 2.17.41 3.38-.52 4.31C3.55 5.67 1.98 6.45.9 7.98c-1.45 2.05-1.7 6.53 3.53 7.7-2.2-1.16-2.67-4.52-.3-6.61-.61 2.03.53 3.33 1.94 2.86 1.39-.47 2.3.53 2.27 1.67-.02.78-.31 1.44-1.13 1.81 3.42-.59 4.78-3.42 4.78-5.56 0-2.84-2.53-3.22-1.25-5.61-1.52.13-2.03 1.13-1.89 2.75.09 1.08-1.02 1.8-1.86 1.33-.67-.41-.66-1.19-.06-1.78C8.18 5.31 8.68 2.45 5.05.32L5.03.3l.02.01z"></path></svg></span>Erasure is not deletion from the source</div><div class="admonitionContent_BuS1"><p>If a purged document still exists at its source, the next ingestion run adds
+it again. Erasure has to happen at the source as well.</p></div></div>
+<p>On SingleStore, retention matters more than on pgvector: a vector index there
+cannot be limited to live rows, so retained history is index the search walks.</p>
+<h2 class="anchor anchorWithStickyNavbar_LWe7" id="run-history">Run history<a href="#run-history" class="hash-link" aria-label="Direct link to Run history" title="Direct link to Run history">​</a></h2>
+<p>Each run is recorded in three tables <strong>in the vector store&#x27;s own database</strong>,
+beside the chunks they describe:</p>
+<table><thead><tr><th>Table</th><th>Contents</th></tr></thead><tbody><tr><td><code>rag_runs</code></td><td>One row per run: document counts, chunk counts, embedding cost, and the enrichment cost when the setup has an Enrich stage</td></tr><tr><td><code>rag_doc_events</code></td><td>Append-only; one row per document per run <em>where something happened</em></td></tr><tr><td><code>rag_configs</code></td><td>The parameters behind a <code>config_id</code>, so the hash has an inverse</td></tr></tbody></table>
+<p>They are not in CAS because a CAS table here is overwrite-in-place by
+construction, has no transactional append and no constraints, and an empty run
+deletes the saved file outright. The cost of that choice — history invisible to
+Visual Analytics — is paid explicitly: the Load step <strong>publishes <code>rag_runs</code> and
+<code>rag_doc_events</code> to CAS</strong> after each run as <code>&lt;project&gt;_RUNS</code> and
+<code>&lt;project&gt;_DOC_EVENTS</code>. The database copy is authoritative; the CAS copy is
+disposable and rebuildable.</p>
+<p>History never fails a load. If the store refuses the write, the ingestion still
+stands and the log says so.</p>
+<h3 class="anchor anchorWithStickyNavbar_LWe7" id="skipped-is-not-failed">Skipped is not failed<a href="#skipped-is-not-failed" class="hash-link" aria-label="Direct link to Skipped is not failed" title="Direct link to Skipped is not failed">​</a></h3>
+<p>A document the pipeline decided not to ingest — no extractor for its format, a
+source file with code ingestion off, a scanned PDF with no text layer — is
+recorded as <code>skipped</code> with the reason. <code>failed</code> is reserved for something a
+person can fix. Collapsing the two made every run look broken and hid the rows
+that were. Both are counted separately in <code>rag_runs</code> (<code>docs_skipped</code>,
+<code>docs_failed</code>), and every skipped document is <strong>named in the run log</strong>, grouped
+by reason.</p>
+<p><code>docs_skipped</code> is added to an existing <code>rag_runs</code> table by an additive
+migration on the next run, so an upgraded deployment needs no manual DDL. The
+same applies to the six enrichment columns: a collection built before the
+Enrich stage existed keeps answering, and its runs simply record no LLM cost.</p>
+<p>The run log also states <strong>what the embedding and the enrichment cost</strong> while
+the run is still on screen, and spells out where the chunk token budget came
+from — it is the setup&#x27;s chunk window minus the estimator&#x27;s safety margin, not
+a limit the model imposed.</p>
+<h2 class="anchor anchorWithStickyNavbar_LWe7" id="security-posture">Security posture<a href="#security-posture" class="hash-link" aria-label="Direct link to Security posture" title="Direct link to Security posture">​</a></h2>
+<p><strong>Secrets.</strong> Store credentials live only in the credential domain, resolved
+per identity at run time. They are never written to a flow, a CAS table, a
+WORK file or a log. The <code>.env</code> file is git-ignored and is read only by the
+admin scripts on your workstation. On SCR and MAS destinations — which have no
+SAS Viya session — the same names are supplied as environment variables.</p>
+<p><strong>What crosses which boundary.</strong> Document text leaves the source only to reach
+the extractor, the embedding container and the vector store, all inside your
+deployment. The embedding model runs as a governed SCR container you publish.</p>
+<p>Two settings can change that, and both are explicit choices:</p>
+<ul>
+<li>an <strong>embedding model that forwards to a hosted API</strong> (the fact sheet&#x27;s
+<code>deployment_type</code> says which) sends the chunk text to that provider;</li>
+<li>an <strong>Enrich stage whose prompt calls a hosted LLM</strong> sends the chunk, and
+whatever else the mapping gives it — including up to 20,000 characters of the
+surrounding document — to that provider, once per chunk.</li>
+</ul>
+<p>Both are visible on the setup, and neither happens by default: the shipped
+embedding default and every enrichment prompt built on a locally served model
+stay inside the deployment.</p>
+<p><strong>Identity.</strong> Everything runs as the identity that launched it, which is why
+the run-as-requesting-user context matters: it keeps the audit trail truthful
+as well as making the steps work.</p>
+<p><strong>Error text.</strong> Database error messages are stored in the ledger&#x27;s
+<code>error_text</code> and shown in step summaries. Some stores put internal cluster
+hostnames in their own error messages, so that column can contain
+infrastructure detail. Treat the ledger table as internal, or restrict the
+caslib holding it.</p>
+<p><strong>What is not encrypted by the accelerator.</strong> Chunk text and embeddings sit in
+your vector store in the clear. Encryption at rest is the database&#x27;s
+responsibility. TLS to the store is configurable per backend (<code>sslmode</code> for
+PostgreSQL, on/off for SingleStore) and defaults to enabled.</p>
+<h2 class="anchor anchorWithStickyNavbar_LWe7" id="troubleshooting">Troubleshooting<a href="#troubleshooting" class="hash-link" aria-label="Direct link to Troubleshooting" title="Direct link to Troubleshooting">​</a></h2>
+<table><thead><tr><th>Symptom</th><th>Cause</th></tr></thead><tbody><tr><td><em>&quot;cannot run the RAG steps … different identities&quot;</em></td><td>Wrong compute context — see above</td></tr><tr><td><em>&quot;no credential resolved from domain&quot;</em></td><td>The running identity has no credential, or a service account is running the job</td></tr><tr><td>A step renders as an empty editor</td><td>The <code>.step</code> file was uploaded as a plain file instead of registered</td></tr><tr><td>A saved flow reports a missing step</td><td>A step was re-registered instead of updated, minting a new id</td></tr><tr><td>Code generation returns HTTP 500</td><td>The <code>.flw</code> was uploaded as a file, or a node declares an input port nothing is wired into</td></tr><tr><td>Retrieval returns fewer chunks than exist</td><td>A SingleStore ANN index is enabled — see the warning above</td></tr><tr><td>The run refuses to start</td><td>Another run holds the ledger lock; it expires after 30 minutes</td></tr><tr><td>The Builder says the store is unresolved</td><td>The domain has no <code>&lt;BACKEND&gt;_HOST</code> / <code>_DB</code> — rerun <code>create-credential-domain</code> after adding them to your <code>.env</code></td></tr><tr><td>The embedding model has to be typed</td><td>No <strong>embedding model project</strong> is configured, or the user cannot read it</td></tr><tr><td>Documents are missing from the collection</td><td>Read the run log&#x27;s <code>rag skipped:</code> lines — they name every document and why. Code files are skipped unless the setup opts in</td></tr><tr><td>The Builder points at the wrong environment after an upgrade</td><td>A report import replaced its Options — restore them with <code>mdb options-restore</code></td></tr><tr><td>Browsing the ledger shows nothing after a run</td><td>The ledger is written by the run&#x27;s final step; a large corpus takes minutes. The run panel&#x27;s clock shows whether it is still going</td></tr></tbody></table></div></article><nav class="pagination-nav docusaurus-mt-lg" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Managing Credentials</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/sas-agentic-ai-accelerator/Administration-Guide/Deployment-of-Decisions"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Deployment of Decisions</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#what-gets-deployed" class="table-of-contents__link toc-highlight">What gets deployed</a></li><li><a href="#serving-the-rag-builder" class="table-of-contents__link toc-highlight">Serving the RAG Builder</a><ul><li><a href="#what-the-builders-buttons-create--and-what-they-clean-up" class="table-of-contents__link toc-highlight">What the Builder&#39;s buttons create — and what they clean up</a></li></ul></li><li><a href="#enrichment-an-llm-call-per-chunk" class="table-of-contents__link toc-highlight">Enrichment: an LLM call per chunk</a><ul><li><a href="#several-prompts-one-after-the-other" class="table-of-contents__link toc-highlight">Several prompts, one after the other</a></li><li><a href="#what-the-extracted-values-become" class="table-of-contents__link toc-highlight">What the extracted values become</a></li><li><a href="#latest-or-pinned" class="table-of-contents__link toc-highlight">Latest, or pinned</a></li><li><a href="#what-it-costs-and-what-that-buys" class="table-of-contents__link toc-highlight">What it costs, and what that buys</a></li><li><a href="#consequences-worth-knowing-before-you-turn-it-on" class="table-of-contents__link toc-highlight">Consequences worth knowing before you turn it on</a></li></ul></li><li><a href="#two-prerequisites-that-are-not-optional" class="table-of-contents__link toc-highlight">Two prerequisites that are not optional</a><ul><li><a href="#1-a-compute-context-that-runs-as-the-requesting-user" class="table-of-contents__link toc-highlight">1. A compute context that runs as the requesting user</a></li><li><a href="#2-a-credential-domain-holding-the-store-credentials" class="table-of-contents__link toc-highlight">2. A credential domain holding the store credentials</a></li></ul></li><li><a href="#python-packages" class="table-of-contents__link toc-highlight">Python packages</a></li><li><a href="#choosing-a-vector-store" class="table-of-contents__link toc-highlight">Choosing a vector store</a></li><li><a href="#retention-and-erasure" class="table-of-contents__link toc-highlight">Retention and erasure</a></li><li><a href="#run-history" class="table-of-contents__link toc-highlight">Run history</a><ul><li><a href="#skipped-is-not-failed" class="table-of-contents__link toc-highlight">Skipped is not failed</a></li></ul></li><li><a href="#security-posture" class="table-of-contents__link toc-highlight">Security posture</a></li><li><a href="#troubleshooting" class="table-of-contents__link toc-highlight">Troubleshooting</a></li></ul></div></div></div></div></main></div></div></div><footer class="footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="col footer__col"><div class="footer__title">Support</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/sassoftware/sas-agentic-ai-accelerator" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub Repository<svg width="13.5" height="13.5" aria-hidden="true" viewBox="0 0 24 24" class="iconExternalLink_nPIU"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"></path></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Copyright © 2026, SAS Institute Inc., Cary, NC, USA. All Rights Reserved. Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>
