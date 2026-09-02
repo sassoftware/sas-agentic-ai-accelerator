@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-CONTENT_MEDIA = "application/vnd.sas.report.content+json"
+CONTENT_MEDIA = "application/vnd.sas.report.content+xml"
 
 
 def find_report(session, name: str) -> Optional[dict]:
