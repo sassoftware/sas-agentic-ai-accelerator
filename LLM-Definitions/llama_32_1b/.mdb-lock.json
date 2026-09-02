@@ -1,6 +1,6 @@
 {
     "generator": "mdb 0.1.0",
-    "manifest_sha256": "06a8b52efb64b6f46ee09da171ec6949807efb9bc425e0de07890d2cdf6d02e3",
+    "manifest_sha256": "080a4ee2d0ff6099eb105c04328318ea87579add150db4efe313bcf30af7351b",
     "files": {
         "Model-Card.md": "27fbb66ba5362883f5263787e3032f19f078b590159472aaa5506ea7a45529a7",
         "README.md": "190c5bca7e474489c3785b58d47662d43bd5857b9d91ce25b2fbc2bb44ba74a6",

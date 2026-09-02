@@ -1,0 +1,86 @@
+{{ generated_header }}import time
+import json
+import logging
+import os
+import sys
+import requests
+
+# Requires an Azure OpenAI / Azure AI Foundry embedding deployment.
+# The model is addressed by its DEPLOYMENT NAME, which you choose in Azure.
+# The target resource resolves per call: options override > AZURE_OPENAI_RESOURCE
+# container environment variable > the default baked into this file - so one
+# published image can serve different subscriptions/projects without a rebuild.
+# All Azure host flavors are accepted (<res>.openai.azure.com,
+# <res>.cognitiveservices.azure.com, <res>.services.ai.azure.com); when
+# azure_api_version is set the call uses the legacy deployment-scoped route
+# (/openai/deployments/<name>/embeddings?api-version=...) instead of the
+# GA v1 endpoint - some resources/policies still require it.
+deploymentName = '{{ deployment_name }}'
+
+# Initiate the logger to write output information to the log
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+    format='%(levelname)s - %(message)s'
+)
+logger = logging.getLogger("scoreModel")
+
+{% include "partials/_options_parser.py.j2" %}
+
+def scoreModel(document, project, options):
+    "Output: embedding, run_time, tokens"
+    started_timestamp = time.time()
+    optionsDefaults = {
+{{ options_defaults_block }}
+        "azure_openai_resource": os.environ.get("AZURE_OPENAI_RESOURCE", "{{ azure_resource }}"),
+        "azure_api_version": os.environ.get("AZURE_OPENAI_API_VERSION", "{{ azure_api_version }}"),
+        "endpoint_url": "",
+    }
+    options = {**optionsDefaults, **_parse_options(options)}
+    # Build the endpoint (a full endpoint_url option overrides the resource-based URL)
+    if options.get('endpoint_url'):
+        modelEndpoint = options['endpoint_url']
+    else:
+        host = (options.get('azure_openai_resource') or '').strip()
+        # Accept either a short resource name (my-openai-resource) or a full host
+        # of any Azure flavor (openai / cognitiveservices / services.ai)
+        if host and '.' not in host:
+            host = f"{host}.openai.azure.com"
+        apiVersion = (options.get('azure_api_version') or '').strip()
+        if apiVersion:
+            # Legacy deployment-scoped route (deployment in the path, api-version required)
+            modelEndpoint = f"https://{host}/openai/deployments/{deploymentName}/embeddings?api-version={apiVersion}"
+        else:
+            # GA v1 endpoint (deployment addressed via the model field in the body)
+            modelEndpoint = f"https://{host}/openai/v1/embeddings"
+    payload = {
+        "input": document[0],
+        "model": deploymentName,
+        "encoding_format": "float",
+{{ body_options_block }}
+    }
+    responseObject = requests.post(
+        modelEndpoint,
+        headers={
+            "Content-Type": "application/json",
+            "api-key": options["API_KEY"],
+        },
+        json=payload,
+        timeout={{ timeout_s }},
+    )
+    try:
+        responseJson = responseObject.json()
+    except Exception:
+        logger.error(f"Non-JSON response: {responseObject.status_code} - {responseObject.text}")
+        raise
+    if responseObject.status_code < 200 or responseObject.status_code >= 300:
+        logger.error(f"HTTP {responseObject.status_code}: {json.dumps(responseJson)}")
+        raise RuntimeError(f"Request failed: {responseObject.status_code}")
+    embedding = json.dumps(responseJson['data'][0]['embedding'])
+    tokens = responseJson['usage']['prompt_tokens']
+    run_time = time.time() - started_timestamp
+    # Logging the response
+    logger.info(f"project: {project[0]}")
+    logger.info(f"tokens: {tokens}")
+    logger.info(f"run_time: {run_time}")
+    return embedding, run_time, tokens

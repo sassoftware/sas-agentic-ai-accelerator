@@ -44,6 +44,8 @@ def _detect_family(score_text: str) -> tuple[str, str, str]:
             return "embedding", "emb_gemini", "google"
         if "bedrock-runtime" in score_text:
             return "embedding", "emb_bedrock_titan", "bedrock"
+        if "openai.azure.com" in score_text or "cognitive.microsoft.com" in score_text or "azure_openai_resource" in score_text:
+            return "embedding", "emb_azure_openai_v1", "azure-foundry"
         return "embedding", "emb_openai", "openai"
     if "AutoModelForCausalLM" in score_text:
         return "llm", "hf_transformers", "hf-selfhosted"
@@ -137,7 +139,7 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
             notes.append("Could not find the HF repo in requirements.json - fill provider.params.hf.repo by hand.")
         params["hf"] = {"repo": repo, "gated": gated}
         model_version = repo or model_id
-    if template == "azure_openai_v1":
+    if template in ("azure_openai_v1", "emb_azure_openai_v1"):
         resource_match = re.search(r'"azure_openai_resource"\s*:\s*"([^"]*)"', score_text)
         params["resource"] = resource_match.group(1) if resource_match else ""
         if params["resource"]:

@@ -133,7 +133,8 @@ def validate_folder(folder: Path, core: CoreAssets, fact_sheet: Path) -> list[Is
 
     # V009 - environment-specific hosts committed into a shareable definition
     params = manifest.provider.params
-    if manifest.runtime.template == "azure_openai_v1" and params.get("commit_resource") and params.get("resource"):
+    if manifest.runtime.template in ("azure_openai_v1", "emb_azure_openai_v1") \
+            and params.get("commit_resource") and params.get("resource"):
         issues.append(Issue(
             "V009", "warning", model_id,
             f"The Azure resource '{params['resource']}' is baked into the definition - "

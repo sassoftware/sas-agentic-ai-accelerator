@@ -300,6 +300,7 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
     """
 
     template = "azure_openai_v1"
+    embedding_template = "emb_azure_openai_v1"
 
     def __init__(self):
         super().__init__(
@@ -314,6 +315,9 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
 
     def endpoint(self, answers: dict) -> Optional[str]:
         return None  # runtime-configurable via options
+
+    def embedding_endpoint(self, answers: dict) -> Optional[str]:
+        return None  # runtime-configurable via options (same as endpoint())
 
     def questions(self) -> list[Question]:
         return [

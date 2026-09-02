@@ -24,7 +24,7 @@
     "endpoint_url": {
         "default": "",
         "range": "https://**** (optional)",
-        "description": "Optional full chat-completions URL that overrides the resource-based endpoint.",
+        "description": "Optional full chat/completions URL that overrides the resource-based endpoint.",
         "type": "string"
     },
     "API_KEY": {

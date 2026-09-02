@@ -272,7 +272,7 @@ def _render_score(manifest: ModelManifest, core: CoreAssets) -> str:
         "timeout_s": manifest.runtime.timeout_s,
         **_score_blocks(manifest, core),
     }
-    if manifest.runtime.template == "azure_openai_v1":
+    if manifest.runtime.template in ("azure_openai_v1", "emb_azure_openai_v1"):
         context["deployment_name"] = manifest.provider.model_version
         # The resource is only baked in when explicitly committed; otherwise the
         # definition stays environment-neutral (AZURE_OPENAI_RESOURCE env var /
@@ -338,7 +338,9 @@ def _render_options_json(manifest: ModelManifest, core: CoreAssets) -> str:
         if resolved.get("label"):
             entry["label"] = resolved["label"]
         entries[name] = entry
-    if manifest.runtime.template == "azure_openai_v1":
+    if manifest.runtime.template in ("azure_openai_v1", "emb_azure_openai_v1"):
+        is_embedding_template = manifest.runtime.template == "emb_azure_openai_v1"
+        route = "embeddings" if is_embedding_template else "chat/completions"
         params = manifest.provider.params
         entries["azure_openai_resource"] = {
             "default": params.get("resource", "") if params.get("commit_resource") else "",
@@ -356,9 +358,9 @@ def _render_options_json(manifest: ModelManifest, core: CoreAssets) -> str:
             "default": params.get("api_version", "") or "",
             "range": "2024-10-21 (empty = GA v1 endpoint)",
             "description": (
-                "Empty uses the GA v1 endpoint (/openai/v1/chat/completions). Set an API version "
+                f"Empty uses the GA v1 endpoint (/openai/v1/{route}). Set an API version "
                 "(e.g. 2024-10-21 or 2025-01-01-preview) to call the legacy deployment-scoped route "
-                "(/openai/deployments/<name>/chat/completions?api-version=...) that some resources "
+                f"(/openai/deployments/<name>/{route}?api-version=...) that some resources "
                 "or policies still require. Resolution order: this option > the "
                 "AZURE_OPENAI_API_VERSION environment variable of the container > this default."
             ),
@@ -367,7 +369,7 @@ def _render_options_json(manifest: ModelManifest, core: CoreAssets) -> str:
         entries["endpoint_url"] = {
             "default": "",
             "range": "https://**** (optional)",
-            "description": "Optional full chat-completions URL that overrides the resource-based endpoint.",
+            "description": f"Optional full {route} URL that overrides the resource-based endpoint.",
             "type": "string",
         }
     if manifest.runtime.template in ("openai_compat_selfhosted", "emb_openai_compat_selfhosted"):
