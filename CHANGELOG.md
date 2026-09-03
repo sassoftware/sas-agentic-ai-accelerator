@@ -2,7 +2,7 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [2.0.0] - Unreleased
+## [2.0.0] - 2026-09-03
 
 Provider secrets move to **SAS Viya credential domains** — centrally administered, per-user or per-group, encrypted at rest, and audited. One domain (default `agentic-ai-keys`) holds every key the accelerator needs in a named secrets map: `OpenAI`, `Anthropic`, … for the LLM providers, and backend-prefixed `<BACKEND>_RAG_USER`/`<BACKEND>_RAG_PW` entries for RAG vector stores — the prefix lets one domain serve several vector databases side by side. A **user credential overrides a group credential**, so who can call which provider becomes an identity decision instead of an application setting — the Prompt Builder shows each user exactly the models they hold a key for and disables the rest with a note naming the missing entry.
 
