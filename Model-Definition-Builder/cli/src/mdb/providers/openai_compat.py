@@ -286,8 +286,10 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
     """Azure AI Foundry / Azure OpenAI (key-only mode).
 
     Models are addressed by DEPLOYMENT NAME (chosen by the user in Azure),
-    and the endpoint is built at runtime from the azure_openai_resource
-    option so one registered model works across environments.
+    and the endpoint is built at run time from the container's environment
+    (AZURE_OPENAI_RESOURCE) so one registered model works across
+    environments - connection config is never a scoring option. Chat and
+    embedding deployments both work (--kind embedding).
 
     Every Azure host flavor is accepted — <res>.openai.azure.com (Azure
     OpenAI resource), <res>.cognitiveservices.azure.com (AI Services /
@@ -300,6 +302,9 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
     """
 
     template = "azure_openai_v1"
+    # Declared explicitly: the OpenAI-compat parent's emb_openai template bakes
+    # `{{ endpoint }}` and sends a bearer token, and inheriting it rendered an
+    # Azure embedding scorer that posted to the bare path '/embeddings'.
     embedding_template = "emb_azure_openai_v1"
 
     def __init__(self):
@@ -314,10 +319,11 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
         )
 
     def endpoint(self, answers: dict) -> Optional[str]:
-        return None  # runtime-configurable via options
+        return None  # built at run time from the container's environment
 
     def embedding_endpoint(self, answers: dict) -> Optional[str]:
-        return None  # runtime-configurable via options (same as endpoint())
+        # The parent derives this from base_url, which Azure has none of.
+        return None
 
     def questions(self) -> list[Question]:
         return [
@@ -337,7 +343,7 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
             "resource": answers.get("resource", ""),
             # False keeps the definition environment-neutral: the resource is only
             # used CLI-side (smoke tests), while deployed containers resolve it via
-            # the AZURE_OPENAI_RESOURCE environment variable or a per-call option.
+            # the AZURE_OPENAI_RESOURCE environment variable.
             "commit_resource": bool(answers.get("commit_resource")),
             # Empty = GA v1 endpoint; a version pins the legacy deployment-scoped
             # route. Part of the definition (the style belongs to the resource's
@@ -345,7 +351,8 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
             "api_version": (answers.get("api_version") or "").strip(),
         }
 
-    def _chat_url(self, manifest: ModelManifest) -> str:
+    def _url(self, manifest: ModelManifest, route: str) -> str:
+        """Mirror of the score code's _azure_endpoint() for mdb's own live calls."""
         host = (manifest.provider.params.get("resource")
                 or os.environ.get("AZURE_OPENAI_RESOURCE") or "").strip()
         if host and "." not in host:
@@ -354,8 +361,14 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
                        or os.environ.get("AZURE_OPENAI_API_VERSION") or "").strip()
         if api_version:
             return (f"https://{host}/openai/deployments/{manifest.provider.model_version}"
-                    f"/chat/completions?api-version={api_version}")
-        return f"https://{host}/openai/v1/chat/completions"
+                    f"/{route}?api-version={api_version}")
+        return f"https://{host}/openai/v1/{route}"
+
+    def _chat_url(self, manifest: ModelManifest) -> str:
+        return self._url(manifest, "chat/completions")
+
+    def _embeddings_url(self, manifest: ModelManifest) -> str:
+        return self._url(manifest, "embeddings")
 
     def live_catalog(self, session: requests.Session, api_key: Optional[str]) -> list[CatalogModel]:
         raise NotImplementedError(
@@ -368,6 +381,19 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
         if not api_key:
             return SmokeResult(ok=False, detail=f"No API key - set {self.env_key_var} in the environment or .env.")
         try:
+            if manifest.kind == "embedding":
+                response = session.post(
+                    self._embeddings_url(manifest),
+                    headers={"Content-Type": "application/json", "api-key": api_key},
+                    json={"model": manifest.provider.model_version, "input": "ping",
+                          "encoding_format": "float"},
+                    timeout=60,
+                )
+                body = response.json()
+                if response.status_code >= 300:
+                    return http_smoke_failure(response, body)
+                dims = len(body["data"][0]["embedding"])
+                return SmokeResult(ok=True, detail=f"Deployment returned a {dims}-dim embedding.")
             response = session.post(
                 self._chat_url(manifest),
                 headers={"Content-Type": "application/json", "api-key": api_key},
@@ -385,3 +411,42 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
             return SmokeResult(ok=True, detail=f"Deployment responded: {body['choices'][0]['message']['content'][:60]!r}")
         except Exception as exc:
             return SmokeResult(ok=False, detail=str(exc))
+
+
+class AzureFoundryEnvAdapter(AzureFoundryAdapter):
+    """Azure AI Foundry, configured entirely by the container's environment.
+
+    The specialist sibling of ``azure-foundry``. The same wire format and the
+    same endpoint styles, but nothing that binds the model to one subscription
+    is a scoring input: on top of the connection every Azure definition reads
+    from its container, the key and the deployment (model) resolve from the
+    environment too (environment variable > baked default), so ONE registered
+    model and ONE published image serve any Azure deployment - re-point a
+    container by changing its environment, with no regeneration, rebuild or
+    re-publish.
+
+      AZURE_OPENAI_API_KEY     the key
+      AZURE_OPENAI_RESOURCE    the resource/project host
+      AZURE_OPENAI_DEPLOYMENT  the deployment name
+
+    ``auth.mode`` is therefore ``none``: the definition declares no API_KEY
+    option, so UIs never gate the model on a credential-domain entry and never
+    send a key - the container supplies it. Passing an API_KEY option anyway
+    still wins, which keeps a credential-domain caller working unchanged.
+    """
+
+    template = "azure_openai_env"
+    # LLM only: there is no environment-keyed embedding template yet, and
+    # inheriting the parent's would produce a definition that still takes the
+    # key as a scoring input - the thing this adapter exists to avoid. Azure
+    # embedding deployments use `azure-foundry --kind embedding`.
+    embedding_template = None
+
+    def __init__(self):
+        super().__init__()
+        self.id = "azure-foundry-env"
+        self.display_name = "Azure AI Foundry (environment-configured)"
+        # Keeps mdb's own live surface (catalog hints, smoke test, mdb test)
+        # reading the key from the environment, while key_name=None makes the
+        # generated definition declare no API_KEY input at all.
+        self.key_name = None

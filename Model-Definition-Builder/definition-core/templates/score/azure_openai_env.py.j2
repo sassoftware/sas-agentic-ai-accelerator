@@ -5,11 +5,25 @@ import os
 import sys
 import requests
 
-# Requires an Azure OpenAI / Azure AI Foundry chat deployment. The model is
-# addressed by its DEPLOYMENT NAME, which you choose in Azure; the API key is the
-# API_KEY scoring option (a SAS Viya credential-domain entry). Where the request
-# goes is decided by the container's environment - see below.
-deploymentName = '{{ deployment_name }}'
+# Azure OpenAI / Azure AI Foundry, configured by the container's ENVIRONMENT.
+#
+# Nothing that binds this model to one subscription is a scoring input. On top
+# of the connection variables every Azure definition reads (further down), this
+# one also takes the key and the deployment name from the environment:
+#
+#   AZURE_OPENAI_API_KEY     the key - never baked into this file, and not a
+#                            required scoring input (no API_KEY option). A caller
+#                            that passes API_KEY anyway still wins, so a
+#                            credential-domain caller keeps working unchanged.
+#   AZURE_OPENAI_DEPLOYMENT  the deployment name - what Azure calls the model;
+#                            blank uses the default below
+#
+# so ONE published image serves any Azure deployment: re-point a container by
+# changing its environment, with no regeneration, rebuild or re-publish. A
+# missing value fails with the variable named, rather than as an opaque 401/404.
+API_KEY_ENV = 'AZURE_OPENAI_API_KEY'
+DEPLOYMENT_ENV = 'AZURE_OPENAI_DEPLOYMENT'
+defaultDeploymentName = '{{ deployment_name }}'
 
 {% include "partials/_azure_endpoint.py.j2" %}
 
@@ -30,6 +44,18 @@ def scoreModel(userPrompt, systemPrompt, options):
 {{ options_defaults_block }}
     }
     options = {**optionsDefaults, **_parse_options(options)}
+    # An explicitly passed key wins; a blank one is 'not set', not an override -
+    # UIs send empty strings for controls the user left alone.
+    apiKey = str(options.get("API_KEY") or '').strip() or _from_env(API_KEY_ENV)
+    if not apiKey:
+        raise RuntimeError(
+            f"No Azure API key: set the {API_KEY_ENV} environment variable on this container."
+        )
+    deploymentName = _from_env(DEPLOYMENT_ENV, defaultDeploymentName)
+    if not deploymentName:
+        raise RuntimeError(
+            f"No Azure deployment: set the {DEPLOYMENT_ENV} environment variable on this container."
+        )
     modelEndpoint = _azure_endpoint(deploymentName, 'chat/completions')
     payload = {
         "model": deploymentName,
@@ -37,14 +63,14 @@ def scoreModel(userPrompt, systemPrompt, options):
             {"role": "user", "content": userPrompt[0]}],
 {{ body_options_block }}
     }
-    # Which resource this container resolved to - the one thing a shared image
+    # Which deployment this container resolved to - the one thing a shared image
     # cannot be read off the definition, and the first question when it misbehaves.
     logger.info(f"endpoint: {modelEndpoint}")
     responseObject = requests.post(
         modelEndpoint,
         headers={
             "Content-Type": "application/json",
-            "api-key": options["API_KEY"],
+            "api-key": apiKey,
         },
         json=payload,
         timeout={{ timeout_s }},

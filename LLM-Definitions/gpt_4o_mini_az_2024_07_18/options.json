@@ -9,24 +9,6 @@
         "range": "0 - 1",
         "description": "An alternative to sampling with temperature, called nucleus sampling, where the model considers the results of the tokens with top_p probability mass. So 0.1 means only the tokens comprising the top 10% probability mass are considered."
     },
-    "azure_openai_resource": {
-        "default": "",
-        "range": "your-resource.openai.azure.com",
-        "description": "The Azure OpenAI / Azure AI Foundry resource host that serves the deployment. A short resource name is expanded to the full openai.azure.com host. Resolution order: this option > the AZURE_OPENAI_RESOURCE environment variable of the container > this default - set the environment variable per deployment to serve different subscriptions/projects from the same image.",
-        "type": "string"
-    },
-    "azure_api_version": {
-        "default": "",
-        "range": "2024-10-21 (empty = GA v1 endpoint)",
-        "description": "Empty uses the GA v1 endpoint (/openai/v1/chat/completions). Set an API version (e.g. 2024-10-21 or 2025-01-01-preview) to call the legacy deployment-scoped route (/openai/deployments/<name>/chat/completions?api-version=...) that some resources or policies still require. Resolution order: this option > the AZURE_OPENAI_API_VERSION environment variable of the container > this default.",
-        "type": "string"
-    },
-    "endpoint_url": {
-        "default": "",
-        "range": "https://**** (optional)",
-        "description": "Optional full chat/completions URL that overrides the resource-based endpoint.",
-        "type": "string"
-    },
     "API_KEY": {
         "default": "AzureOpenAI",
         "range": "sk-****",

@@ -20,6 +20,10 @@
                     "body_key": "temperature",
                     "cast": "float"
                 },
+                "azure_openai_env": {
+                    "body_key": "temperature",
+                    "cast": "float"
+                },
                 "anthropic_messages": {
                     "body_key": "temperature",
                     "cast": "float",
@@ -63,6 +67,10 @@
                     "cast": "float"
                 },
                 "azure_openai_v1": {
+                    "body_key": "top_p",
+                    "cast": "float"
+                },
+                "azure_openai_env": {
                     "body_key": "top_p",
                     "cast": "float"
                 },
@@ -136,6 +144,10 @@
                     "body_key": "max_tokens",
                     "cast": "int"
                 },
+                "azure_openai_env": {
+                    "body_key": "max_tokens",
+                    "cast": "int"
+                },
                 "anthropic_messages": {
                     "body_key": "max_tokens",
                     "cast": "int"
@@ -176,6 +188,10 @@
                 "azure_openai_v1": {
                     "body_key": "max_completion_tokens",
                     "cast": "int"
+                },
+                "azure_openai_env": {
+                    "body_key": "max_completion_tokens",
+                    "cast": "int"
                 }
             }
         },
@@ -195,6 +211,10 @@
                     "cast": "int"
                 },
                 "azure_openai_v1": {
+                    "body_key": "seed",
+                    "cast": "int"
+                },
+                "azure_openai_env": {
                     "body_key": "seed",
                     "cast": "int"
                 }
@@ -219,6 +239,10 @@
                 "azure_openai_v1": {
                     "body_key": "frequency_penalty",
                     "cast": "float"
+                },
+                "azure_openai_env": {
+                    "body_key": "frequency_penalty",
+                    "cast": "float"
                 }
             }
         },
@@ -239,6 +263,10 @@
                     "cast": "float"
                 },
                 "azure_openai_v1": {
+                    "body_key": "presence_penalty",
+                    "cast": "float"
+                },
+                "azure_openai_env": {
                     "body_key": "presence_penalty",
                     "cast": "float"
                 }
@@ -277,6 +305,18 @@
                         "medium": "medium",
                         "high": "high",
                         "maximum": "high"
+                    }
+                },
+                "azure_openai_env": {
+                    "_comment": "Azure's current GPT-5.x deployments expose 'none' | 'low' | 'medium' | 'high' | 'xhigh' and reject 'minimal', so the normalized scale maps its two ends onto that range - verified live against gpt-5.6-luna. A definition pointed at an older deployment should omit reasoning_effort instead.",
+                    "body_key": "reasoning_effort",
+                    "cast": "str",
+                    "value_map": {
+                        "minimal": "none",
+                        "low": "low",
+                        "medium": "medium",
+                        "high": "high",
+                        "maximum": "xhigh"
                     }
                 }
             }
@@ -341,6 +381,10 @@
             "description": "Number of dimensions the returned embedding should have (only for models that support shortening embeddings).",
             "families": {
                 "emb_openai": {
+                    "body_key": "dimensions",
+                    "cast": "int"
+                },
+                "emb_azure_openai_v1": {
                     "body_key": "dimensions",
                     "cast": "int"
                 },

@@ -1,0 +1,48 @@
+schema: 1
+kind: llm
+model_id: azure_openai_env
+display_name: Azure OpenAI (environment-configured)
+provider:
+  adapter: azure-foundry-env
+  model_version: gpt-5.6-luna
+  params:
+    resource: ''
+    commit_resource: false
+    api_version: ''
+  auth:
+    mode: none
+runtime:
+  template: azure_openai_env
+  requirements_profile: api-wrapper
+  timeout_s: 60
+  weights_source: baked
+options:
+  reasoning_effort:
+    default: medium
+  max_completion_tokens:
+    default: 4000
+    max: 128000.0
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: Azure OpenAI
+  scr_sizing: small
+  extra: []
+metadata:
+  description: 'Azure OpenAI / Azure AI Foundry chat deployment configured by the container environment:
+    AZURE_OPENAI_API_KEY, AZURE_OPENAI_RESOURCE and AZURE_OPENAI_DEPLOYMENT decide which key, project
+    and model a container uses, so one published image serves any Azure deployment. Defaults to the gpt-5.6-luna
+    deployment.'
+  release_date: '2026-07-09'
+  knowledge_cutoff: '2026-02-16'
+  context_length: 1050000
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 2.0e-07
+    output_token_price: 1.2e-06
+modeler: david.weik@sas.com
+generation:
+  overrides: []
+  catalog_provenance: manual entry; gpt-5.6-luna facts from the OpenRouter listing, request parameters
+    verified live against the Azure deployment

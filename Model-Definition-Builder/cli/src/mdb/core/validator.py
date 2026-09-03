@@ -15,7 +15,9 @@ from typing import Literal, Optional
 
 from .drift import FileStatus, classify
 from .facts import read_row
-from .generator import CoreAssets, GenerationError, list_custom_options, render_assets
+from .generator import (
+    AZURE_TEMPLATES, CoreAssets, GenerationError, list_custom_options, render_assets,
+)
 from .manifest import MANIFEST_FILENAME, ModelManifest, load_manifest
 
 Severity = Literal["error", "warning", "info"]
@@ -133,14 +135,13 @@ def validate_folder(folder: Path, core: CoreAssets, fact_sheet: Path) -> list[Is
 
     # V009 - environment-specific hosts committed into a shareable definition
     params = manifest.provider.params
-    if manifest.runtime.template in ("azure_openai_v1", "emb_azure_openai_v1") \
-            and params.get("commit_resource") and params.get("resource"):
+    if manifest.runtime.template in AZURE_TEMPLATES and params.get("commit_resource") and params.get("resource"):
         issues.append(Issue(
             "V009", "warning", model_id,
             f"The Azure resource '{params['resource']}' is baked into the definition - "
             "it is bound to that subscription/project.",
             "Set provider.params.commit_resource: false and regenerate; deployed containers then "
-            "resolve the resource via the AZURE_OPENAI_RESOURCE environment variable or a per-call option.",
+            "resolve the resource via the AZURE_OPENAI_RESOURCE environment variable.",
         ))
 
     # V010 - options outside the standardized vocabulary (allowed, but the

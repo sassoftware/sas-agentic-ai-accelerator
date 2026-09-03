@@ -23,9 +23,6 @@ The following options can be supplied at scoring time through the `options` inpu
 | ------ | ------- | ----- | ----------- |
 | `temperature` | 1 | 0 - 2 | What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic. |
 | `top_p` | 1 | 0 - 1 | An alternative to sampling with temperature, called nucleus sampling, where the model considers the results of the tokens with top_p probability mass. So 0.1 means only the tokens comprising the top 10% probability mass are considered. |
-| `azure_openai_resource` |  | your-resource.openai.azure.com | The Azure OpenAI / Azure AI Foundry resource host that serves the deployment. A short resource name is expanded to the full openai.azure.com host. Resolution order: this option > the AZURE_OPENAI_RESOURCE environment variable of the container > this default - set the environment variable per deployment to serve different subscriptions/projects from the same image. |
-| `azure_api_version` |  | 2024-10-21 (empty = GA v1 endpoint) | Empty uses the GA v1 endpoint (/openai/v1/chat/completions). Set an API version (e.g. 2024-10-21 or 2025-01-01-preview) to call the legacy deployment-scoped route (/openai/deployments/<name>/chat/completions?api-version=...) that some resources or policies still require. Resolution order: this option > the AZURE_OPENAI_API_VERSION environment variable of the container > this default. |
-| `endpoint_url` |  | https://**** (optional) | Optional full chat/completions URL that overrides the resource-based endpoint. |
 | `API_KEY` | AzureOpenAI | sk-**** | This is the AzureOpenAI key that is used to make the actual request. |
 
 ## Register and publish
