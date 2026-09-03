@@ -2,6 +2,14 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [2.0.2] - Unreleased
+
+`mdb options-restore` writes again.
+
+### Fixed
+
+- **`mdb options-restore` failed on every run with a 400 from the Reports service.** Report content is BIRD XML on both legs, but the write declared it as `application/vnd.sas.report.content+json`, so the service refused the body as "invalid, possibly in the wrong format" — the documented save/restore workflow around a report import never restored anything in 2.0.0 or 2.0.1. The write now declares `+xml`, and the read asks for `+xml` explicitly rather than trusting the server's default representation (the same endpoint serves JSON when asked, which would have left nothing for the option rewrite to find). A failed read or write now surfaces the service's own `errorCode` and message instead of the bare status line, and the report client and the option rewrite are covered by tests for the first time. Reported and fixed in #29
+
 ## [2.0.1] - 2026-09-03
 
 Azure definitions read their connection from the container rather than from the caller, Azure embedding deployments generate correctly, and one published image can serve any Azure deployment.
