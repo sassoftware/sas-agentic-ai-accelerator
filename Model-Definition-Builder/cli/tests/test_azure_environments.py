@@ -236,6 +236,21 @@ def test_endpoint_resolves_env_over_baked_and_names_the_missing_variable(core, t
     assert committed._azure_endpoint("dep", "chat/completions") == \
         "https://elsewhere.cognitiveservices.azure.com/openai/v1/chat/completions"
 
+    # The API version is different: EMPTY is a choice. A definition that bakes
+    # a version (the wizard took it from .env) follows it while the variable
+    # is unset, and a v1-only resource gets back to the GA route by setting
+    # the variable empty - without regenerating the definition (#26, bug 3).
+    _clear_azure_env(monkeypatch)
+    monkeypatch.setenv("AZURE_OPENAI_RESOURCE", "contoso")
+    pinned, _ = _score_module(_azure_manifest(commit_resource=False, api_version="2025-04-14"), core, tmp_path)
+    assert pinned._azure_endpoint("dep", "chat/completions") == \
+        "https://contoso.openai.azure.com/openai/deployments/dep/chat/completions?api-version=2025-04-14"
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "")
+    assert pinned._azure_endpoint("dep", "chat/completions") == \
+        "https://contoso.openai.azure.com/openai/v1/chat/completions"
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+    assert "api-version=2024-10-21" in pinned._azure_endpoint("dep", "chat/completions")
+
 
 def test_chat_scorer_posts_with_the_api_key_header_to_the_resolved_host(core, tmp_path, monkeypatch):
     _clear_azure_env(monkeypatch)

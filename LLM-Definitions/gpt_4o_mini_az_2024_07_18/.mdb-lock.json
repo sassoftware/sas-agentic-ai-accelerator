@@ -4,7 +4,7 @@
     "files": {
         "Model-Card.md": "568df5c01616dc0e89dcdd858180712799bfcd830a0cf28ce5b987a67029d7b6",
         "README.md": "c5013d1514df9fd05e5595c822fda57a846eb3c16d80894c418ab8db01b3d48c",
-        "gpt4oMiniScore.py": "223904478b54db274eadac6974176c454b8616e6f97366e05bb2aaacbb91e1a1",
+        "gpt4oMiniScore.py": "294c611f6ed69517dff15e484918d09729cbc426ada008922a8554df221d03bc",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
         "modelConfiguration.json": "57a51cd6922bf6f38c42cc3bccee0a2623491ee6962c247459a09a78293dc659",
         "options.json": "e1eb46732ebc37fb59ef7fab87a14b889692a801ab37078a53e82748c05aaea4",

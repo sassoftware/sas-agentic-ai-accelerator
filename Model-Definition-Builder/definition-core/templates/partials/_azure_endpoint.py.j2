@@ -8,11 +8,12 @@
 #   AZURE_OPENAI_RESOURCE     the resource/project host serving the deployment:
 #                             <res>.openai.azure.com, <res>.cognitiveservices.azure.com,
 #                             <res>.services.ai.azure.com, or the bare <res>
-#   AZURE_OPENAI_API_VERSION  empty = the GA v1 endpoint (/openai/v1/...); a version
-#                             selects the legacy /openai/deployments/<name>/... route
-#                             that some resources or org policies still require. A
-#                             v1-only resource answers that route with a bare 401 -
-#                             leave the version empty there.
+#   AZURE_OPENAI_API_VERSION  a version selects the legacy /openai/deployments/<name>/...
+#                             route that some resources or org policies still require;
+#                             unset = the default baked below; set but EMPTY = the GA
+#                             v1 endpoint (/openai/v1/...) even when a version is baked.
+#                             A v1-only resource answers the legacy route with a bare
+#                             401 - give it the empty value.
 #   AZURE_OPENAI_ENDPOINT     optional full URL that replaces the built one, for a
 #                             gateway in front of Azure - it must include the route
 RESOURCE_ENV = 'AZURE_OPENAI_RESOURCE'
@@ -43,7 +44,10 @@ def _azure_endpoint(deploymentName, route):
     # A short resource name expands to the classic Azure OpenAI host
     if '.' not in host:
         host = f"{host}.openai.azure.com"
-    apiVersion = _from_env(API_VERSION_ENV, defaultApiVersion)
+    # Unlike the resource, an EMPTY version is a meaningful choice - the GA route -
+    # so only an unset variable falls back to the baked default.
+    apiVersion = os.environ.get(API_VERSION_ENV)
+    apiVersion = (defaultApiVersion if apiVersion is None else apiVersion).strip()
     if apiVersion:
         # Legacy deployment-scoped route (deployment in the path, api-version required)
         return f"https://{host}/openai/deployments/{deploymentName}/{route}?api-version={apiVersion}"
