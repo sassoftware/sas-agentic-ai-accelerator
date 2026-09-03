@@ -2,7 +2,7 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [2.0.1] - Unreleased
+## [2.0.1] - 2026-09-03
 
 Azure definitions read their connection from the container rather than from the caller, Azure embedding deployments generate correctly, and one published image can serve any Azure deployment.
 
