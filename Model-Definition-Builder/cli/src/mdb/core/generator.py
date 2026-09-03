@@ -21,6 +21,14 @@ from .. import __version__
 from .manifest import ModelManifest, OptionSpec
 
 SCORE_TEMPLATE_SUFFIX = ".py.j2"
+# Score templates that address a model by Azure DEPLOYMENT NAME and build their
+# endpoint from a resource host at run time. They share the deployment/resource/
+# api-version render context and the same extra options.json entries;
+# azure_openai_env additionally resolves the deployment and the key from the
+# container's environment instead of taking them as scoring inputs.
+AZURE_TEMPLATES = ("azure_openai_v1", "azure_openai_env", "emb_azure_openai_v1")
+AZURE_ENV_TEMPLATE = "azure_openai_env"
+AZURE_EMBEDDING_TEMPLATE = "emb_azure_openai_v1"
 
 
 class GenerationError(RuntimeError):
@@ -272,11 +280,11 @@ def _render_score(manifest: ModelManifest, core: CoreAssets) -> str:
         "timeout_s": manifest.runtime.timeout_s,
         **_score_blocks(manifest, core),
     }
-    if manifest.runtime.template == "azure_openai_v1":
+    if manifest.runtime.template in AZURE_TEMPLATES:
         context["deployment_name"] = manifest.provider.model_version
         # The resource is only baked in when explicitly committed; otherwise the
-        # definition stays environment-neutral (AZURE_OPENAI_RESOURCE env var /
-        # per-call option decide at runtime).
+        # definition stays environment-neutral and the container's
+        # AZURE_OPENAI_RESOURCE decides at run time.
         params = manifest.provider.params
         context["azure_resource"] = params.get("resource", "") if params.get("commit_resource") else ""
         # Empty = the GA v1 endpoint; a version pins the legacy deployment-
@@ -313,6 +321,21 @@ def _render_score(manifest: ModelManifest, core: CoreAssets) -> str:
         context["chat_template"] = hf.get(
             "chat_template", "<|system|>\\n{systemPrompt}<|end|><|user|>\\n{userPrompt} <|end|>\\n<|assistant|>"
         )
+    # A template that bakes provider.endpoint into the score code must get an
+    # absolute URL. An adapter that builds its endpoint at run time (Azure) has
+    # none, and inheriting a static template from a generic parent used to
+    # render `modelEndpoint = '/embeddings'` - a scorer that only fails once a
+    # container calls it. Refuse at generation time instead, for any template.
+    if effective_score_file(manifest) not in manifest.generation.overrides:
+        source = env.loader.get_source(env, template_name)[0]
+        if "{{ endpoint }}" in source and not re.match(r"https?://", context["endpoint"]):
+            raise GenerationError(
+                f"{manifest.model_id}: score template '{manifest.runtime.template}' bakes "
+                f"provider.endpoint into the score code, but the manifest has "
+                f"{manifest.provider.endpoint!r} - the container would post to a bare path. "
+                "Set provider.endpoint to a full URL, or use a template that builds its "
+                "endpoint at run time (the azure-foundry templates do)."
+            )
     rendered = template.render(**context)
     if not rendered.endswith("\n"):
         rendered += "\n"
@@ -338,38 +361,10 @@ def _render_options_json(manifest: ModelManifest, core: CoreAssets) -> str:
         if resolved.get("label"):
             entry["label"] = resolved["label"]
         entries[name] = entry
-    if manifest.runtime.template == "azure_openai_v1":
-        params = manifest.provider.params
-        entries["azure_openai_resource"] = {
-            "default": params.get("resource", "") if params.get("commit_resource") else "",
-            "range": "your-resource.openai.azure.com",
-            "description": (
-                "The Azure OpenAI / Azure AI Foundry resource host that serves the deployment. "
-                "A short resource name is expanded to the full openai.azure.com host. Resolution order: "
-                "this option > the AZURE_OPENAI_RESOURCE environment variable of the container > "
-                "this default - set the environment variable per deployment to serve different "
-                "subscriptions/projects from the same image."
-            ),
-            "type": "string",
-        }
-        entries["azure_api_version"] = {
-            "default": params.get("api_version", "") or "",
-            "range": "2024-10-21 (empty = GA v1 endpoint)",
-            "description": (
-                "Empty uses the GA v1 endpoint (/openai/v1/chat/completions). Set an API version "
-                "(e.g. 2024-10-21 or 2025-01-01-preview) to call the legacy deployment-scoped route "
-                "(/openai/deployments/<name>/chat/completions?api-version=...) that some resources "
-                "or policies still require. Resolution order: this option > the "
-                "AZURE_OPENAI_API_VERSION environment variable of the container > this default."
-            ),
-            "type": "string",
-        }
-        entries["endpoint_url"] = {
-            "default": "",
-            "range": "https://**** (optional)",
-            "description": "Optional full chat-completions URL that overrides the resource-based endpoint.",
-            "type": "string",
-        }
+    # Azure connection config (resource, API version, endpoint) is deliberately
+    # NOT an option: where a container sends its requests is a property of the
+    # deployment, read from its environment (partials/_azure_endpoint.py.j2),
+    # not something a caller should be able to redirect per call.
     if manifest.runtime.template in ("openai_compat_selfhosted", "emb_openai_compat_selfhosted"):
         params = manifest.provider.params
         env_var = params.get("base_url_env", "OPENAI_COMPAT_BASE_URL")

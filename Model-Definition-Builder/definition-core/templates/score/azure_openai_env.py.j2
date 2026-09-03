@@ -1,0 +1,95 @@
+{{ generated_header }}import time
+import json
+import logging
+import os
+import sys
+import requests
+
+# Azure OpenAI / Azure AI Foundry, configured by the container's ENVIRONMENT.
+#
+# Nothing that binds this model to one subscription is a scoring input. On top
+# of the connection variables every Azure definition reads (further down), this
+# one also takes the key and the deployment name from the environment:
+#
+#   AZURE_OPENAI_API_KEY     the key - never baked into this file, and not a
+#                            required scoring input (no API_KEY option). A caller
+#                            that passes API_KEY anyway still wins, so a
+#                            credential-domain caller keeps working unchanged.
+#   AZURE_OPENAI_DEPLOYMENT  the deployment name - what Azure calls the model;
+#                            blank uses the default below
+#
+# so ONE published image serves any Azure deployment: re-point a container by
+# changing its environment, with no regeneration, rebuild or re-publish. A
+# missing value fails with the variable named, rather than as an opaque 401/404.
+API_KEY_ENV = 'AZURE_OPENAI_API_KEY'
+DEPLOYMENT_ENV = 'AZURE_OPENAI_DEPLOYMENT'
+defaultDeploymentName = '{{ deployment_name }}'
+
+{% include "partials/_azure_endpoint.py.j2" %}
+
+# Initiate the logger to write output information to the log
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+    format='%(levelname)s - %(message)s'
+)
+logger = logging.getLogger("scoreModel")
+
+{% include "partials/_options_parser.py.j2" %}
+
+def scoreModel(userPrompt, systemPrompt, options):
+    "Output: response, run_time, prompt_length, output_length"
+    started_timestamp = time.time()
+    optionsDefaults = {
+{{ options_defaults_block }}
+    }
+    options = {**optionsDefaults, **_parse_options(options)}
+    # An explicitly passed key wins; a blank one is 'not set', not an override -
+    # UIs send empty strings for controls the user left alone.
+    apiKey = str(options.get("API_KEY") or '').strip() or _from_env(API_KEY_ENV)
+    if not apiKey:
+        raise RuntimeError(
+            f"No Azure API key: set the {API_KEY_ENV} environment variable on this container."
+        )
+    deploymentName = _from_env(DEPLOYMENT_ENV, defaultDeploymentName)
+    if not deploymentName:
+        raise RuntimeError(
+            f"No Azure deployment: set the {DEPLOYMENT_ENV} environment variable on this container."
+        )
+    modelEndpoint = _azure_endpoint(deploymentName, 'chat/completions')
+    payload = {
+        "model": deploymentName,
+        "messages": [{"role": "system", "content": systemPrompt[0]},
+            {"role": "user", "content": userPrompt[0]}],
+{{ body_options_block }}
+    }
+    # Which deployment this container resolved to - the one thing a shared image
+    # cannot be read off the definition, and the first question when it misbehaves.
+    logger.info(f"endpoint: {modelEndpoint}")
+    responseObject = requests.post(
+        modelEndpoint,
+        headers={
+            "Content-Type": "application/json",
+            "api-key": apiKey,
+        },
+        json=payload,
+        timeout={{ timeout_s }},
+    )
+    try:
+        responseJson = responseObject.json()
+    except Exception:
+        logger.error(f"Non-JSON response: {responseObject.status_code} - {responseObject.text}")
+        raise
+    if responseObject.status_code < 200 or responseObject.status_code >= 300:
+        logger.error(f"HTTP {responseObject.status_code}: {json.dumps(responseJson)}")
+        raise RuntimeError(f"Request failed: {responseObject.status_code}")
+    response = responseJson['choices'][0]['message']['content']
+    prompt_length = responseJson['usage']['prompt_tokens']
+    output_length = responseJson['usage']['completion_tokens']
+    run_time = time.time() - started_timestamp
+    # Logging the response
+    logger.info(f"prompt_length: {prompt_length}")
+    logger.info(f"output_length: {output_length}")
+    logger.info(f"run_time: {run_time}")
+    logger.info(f"response: {response}")
+    return response, run_time, prompt_length, output_length

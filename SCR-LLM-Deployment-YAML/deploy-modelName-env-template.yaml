@@ -1,0 +1,148 @@
+---
+# Deployment for an AZURE definition - anything built on the azure-foundry or
+# azure-foundry-env providers (score templates azure_openai_v1,
+# emb_azure_openai_v1 and azure_openai_env).
+#
+# The difference from deploy-modelName-template.yaml is the env block below.
+# Where an Azure container sends its requests is a property of the deployment,
+# not a scoring option: every Azure definition reads its resource (and,
+# optionally, an API version or a full endpoint) from this container's
+# environment, and an environment-configured definition also reads its key and
+# deployment name here. Re-pointing a container at a different subscription,
+# project or model is an edit here plus a rollout restart - no regeneration,
+# rebuild or re-publish.
+#
+# An environment-configured definition needs the key secret once per namespace:
+#   kubectl create secret generic azure-openai \
+#     --from-literal=apikey='*yourAzureOpenAIKey*' -n llm
+# A definition that takes the key as its API_KEY scoring option does not use
+# it, which is why the reference below is optional.
+#
+# Every placeholder in this file is filled in for you by:
+#   mdb deploy <model_id> --registry <your-registry>
+# which reads the resource from AZURE_OPENAI_RESOURCE (or the definition's
+# committed resource) and the deployment from the definition. Filling them by
+# hand works too.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llmname
+  namespace: llm
+spec:
+  selector:
+    matchLabels:
+      app: llmname
+  template:
+    metadata:
+      labels:
+        app: llmname
+    spec:
+      containers:
+      - name: llmname
+        image: containerRegistry/llm_name:latest
+        resources:
+          requests:
+            memory: "4000Mi"
+            cpu: "1000m"
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        env:
+        - name: SAS_SCR_LOG_LEVEL_SCR_IO
+          value: TRACE
+        # -- what this container talks to -----------------------------------
+        # The key never appears in the image, the definition or this file. Read
+        # by environment-configured definitions; optional so a definition that
+        # takes the key as a scoring option starts without the secret.
+        - name: AZURE_OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: azure-openai
+              key: apikey
+              optional: true
+        # The resource/project host serving the deployment. Any Azure flavor
+        # works: <res>.openai.azure.com, <res>.cognitiveservices.azure.com,
+        # <res>.services.ai.azure.com, or the bare <res>.
+        - name: AZURE_OPENAI_RESOURCE
+          value: "{{ AZURE-RESOURCE-HOST }}"
+        # The deployment name as chosen in Azure AI Foundry - what Azure calls
+        # the model. Read by environment-configured definitions (omit it to use
+        # the definition's own default); a definition that names its own
+        # deployment ignores it.
+        - name: AZURE_OPENAI_DEPLOYMENT
+          value: "{{ AZURE-DEPLOYMENT-NAME }}"
+        # Optional. Leave unset for the GA v1 endpoint; set an API version
+        # (e.g. 2024-10-21) if the resource or an org policy requires the
+        # legacy /openai/deployments/<name>/... route.
+        # - name: AZURE_OPENAI_API_VERSION
+        #   value: "2024-10-21"
+        # Optional. A full URL that replaces the one built from the values
+        # above - for a gateway in front of Azure. It must include the route
+        # (.../chat/completions or .../embeddings).
+        # - name: AZURE_OPENAI_ENDPOINT
+        #   value: "https://my-gateway.example.com/openai/v1/chat/completions"
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - llm
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              preference:
+                matchExpressions:
+                - key: "kubernetes.azure.com/scalesetpriority"
+                  operator: In
+                  values:
+                  - spot
+      tolerations:
+      - key: app
+        operator: Equal
+        value: llm
+        effect: NoSchedule
+      - key: "kubernetes.azure.com/scalesetpriority"
+        operator: Equal
+        value: spot
+        effect: NoSchedule
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llmname
+  namespace: llm
+spec:
+  type: ClusterIP
+  selector:
+    app: llmname
+  ports:
+  - port: 443
+    targetPort: 8080
+    protocol: TCP
+---
+kind: Ingress
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: llmname
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - host
+    secretName: llm-tls-certs
+  rules:
+    - host: host
+      http:
+        paths:
+          - path: /llm/model_name(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: llmname
+                port:
+                  number: 443

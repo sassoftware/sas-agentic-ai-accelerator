@@ -33,6 +33,14 @@ class ImportResult:
     notes: list[str] = field(default_factory=list)
 
 
+def _looks_like_azure(score_text: str) -> bool:
+    """Any Azure OpenAI data-plane host flavor, or mdb's own Azure markers."""
+    return any(marker in score_text for marker in (
+        "openai.azure.com", "cognitiveservices.azure.com", "services.ai.azure.com",
+        "AZURE_OPENAI_RESOURCE", "azure_openai_resource",
+    ))
+
+
 def _detect_family(score_text: str) -> tuple[str, str, str]:
     """Returns (kind, template, adapter_id) guessed from score-script markers."""
     if "def scoreModel(document" in score_text:
@@ -44,12 +52,14 @@ def _detect_family(score_text: str) -> tuple[str, str, str]:
             return "embedding", "emb_gemini", "google"
         if "bedrock-runtime" in score_text:
             return "embedding", "emb_bedrock_titan", "bedrock"
+        if _looks_like_azure(score_text):
+            return "embedding", "emb_azure_openai_v1", "azure-foundry"
         return "embedding", "emb_openai", "openai"
     if "AutoModelForCausalLM" in score_text:
         return "llm", "hf_transformers", "hf-selfhosted"
     if "api.anthropic.com" in score_text:
         return "llm", "anthropic_messages", "anthropic"
-    if "openai.azure.com" in score_text or "cognitive.microsoft.com" in score_text or "azure_openai_resource" in score_text:
+    if _looks_like_azure(score_text):
         return "llm", "azure_openai_v1", "azure-foundry"
     if "generativelanguage.googleapis.com" in score_text:
         return "llm", "gemini_generate", "google"
@@ -137,8 +147,15 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
             notes.append("Could not find the HF repo in requirements.json - fill provider.params.hf.repo by hand.")
         params["hf"] = {"repo": repo, "gated": gated}
         model_version = repo or model_id
-    if template == "azure_openai_v1":
-        resource_match = re.search(r'"azure_openai_resource"\s*:\s*"([^"]*)"', score_text)
+    from .generator import AZURE_TEMPLATES
+    if template in AZURE_TEMPLATES:
+        # Hand-written folders baked the host as an option default; generated
+        # ones carry it as defaultResource (or the env-var fallback before that).
+        resource_match = (
+            re.search(r'"azure_openai_resource"\s*:\s*"([^"]*)"', score_text)
+            or re.search(r'"azure_openai_resource"\s*:\s*os\.environ\.get\("AZURE_OPENAI_RESOURCE",\s*"([^"]*)"\)', score_text)
+            or re.search(r"defaultResource\s*=\s*'([^']*)'", score_text)
+        )
         params["resource"] = resource_match.group(1) if resource_match else ""
         if params["resource"]:
             # Legacy folders baked their resource in; preserve that behavior and flag it
@@ -168,8 +185,11 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
         key_name = replacement
     option_specs: dict[str, OptionSpec] = {}
     for name, meta in options_doc.items():
-        if name in ("azure_openai_resource", "endpoint_url", "api_version"):
-            continue  # regenerated as azure connection-config options
+        if name in ("azure_openai_resource", "azure_api_version", "api_version",
+                    "endpoint_url", "azure_deployment"):
+            # Legacy Azure connection-config options. Where a container sends its
+            # requests is read from its environment now, never from an option.
+            continue
         if name not in CORE_OPTIONS:
             notes.append(f"Option '{name}' is outside the core set - verify it against the vocabulary.")
         option_specs[name] = OptionSpec(default=meta.get("default", 1))
@@ -178,7 +198,7 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
     if not row:
         notes.append("No fact-sheet row found - metadata defaults are minimal; fill definition.yaml by hand.")
 
-    if kind == "embedding" and template in ("emb_openai", "emb_voyage"):
+    if kind == "embedding" and template in ("emb_openai", "emb_azure_openai_v1", "emb_voyage"):
         notes.append("Embedding normalization: the generated scorer returns all three declared outputs "
                      "(embedding, run_time, tokens) - several legacy scorers only returned two.")
 

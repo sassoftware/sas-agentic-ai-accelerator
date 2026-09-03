@@ -51,7 +51,10 @@ def load_lock(folder: Path) -> dict | None:
 def write_lock(folder: Path, manifest_bytes: bytes, files: dict[str, bytes]) -> None:
     lock = {
         "generator": f"mdb {__version__}",
-        "manifest_sha256": _sha256(manifest_bytes),
+        # Hashed with LF line endings, like the generated files are compared:
+        # a Windows checkout (core.autocrlf) hands us CRLF bytes, and hashing
+        # them raw re-stamped every lock file on each change of contributor OS.
+        "manifest_sha256": _sha256(manifest_bytes.replace(b"\r\n", b"\n")),
         "files": {name: _sha256(content) for name, content in sorted(files.items())},
     }
     (folder / LOCK_FILENAME).write_bytes(

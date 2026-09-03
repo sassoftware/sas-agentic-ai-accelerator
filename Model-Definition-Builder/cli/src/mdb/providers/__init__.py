@@ -11,7 +11,8 @@ from .bedrock import BedrockAdapter
 from .google import GoogleAdapter
 from .hf_selfhosted import HuggingFaceAdapter
 from .openai_compat import (
-    AzureFoundryAdapter, OpenAICompatAdapter, SelfHostedOpenAICompatAdapter,
+    AzureFoundryAdapter, AzureFoundryEnvAdapter, OpenAICompatAdapter,
+    SelfHostedOpenAICompatAdapter,
 )
 from .voyage import VoyageAdapter
 
@@ -39,6 +40,7 @@ def _builtin_adapters() -> list[ProviderAdapter]:
             static_catalog_file="openai.json",
         ),
         AzureFoundryAdapter(),
+        AzureFoundryEnvAdapter(),
         OpenAICompatAdapter(
             id="mistral",
             display_name="Mistral",
