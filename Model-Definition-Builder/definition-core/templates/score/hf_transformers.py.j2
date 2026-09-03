@@ -38,13 +38,17 @@ logger = logging.getLogger("scoreModel")
 def scoreModel(userPrompt, systemPrompt, options):
     "Output: response, run_time, prompt_length, output_length"
     started_timestamp = time.time()
+    # One value per input, whatever the caller's convention: CAS/SCR pass
+    # one-element lists, the MAS REST API passes plain strings - and a str
+    # indexed with [0] silently becomes its first character.
+    userPrompt, systemPrompt = _scalar(userPrompt), _scalar(systemPrompt)
     optionsDefaults = {
 {{ options_defaults_block }}
     }
     options = {**optionsDefaults, **_parse_options(options)}
     messages = [
-        {"role": "system", "content": systemPrompt[0]},
-        {"role": "user", "content": userPrompt[0]}
+        {"role": "system", "content": systemPrompt},
+        {"role": "user", "content": userPrompt}
     ]
     text = tokenizer.apply_chat_template(
         messages,

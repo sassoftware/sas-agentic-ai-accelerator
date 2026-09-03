@@ -819,6 +819,11 @@ def test(
     model_id: str = typer.Argument(...),
     prompt: str = typer.Option("Reply with the single word OK.", "--prompt"),
     system: str = typer.Option("You are a helpful assistant.", "--system"),
+    mas: bool = typer.Option(
+        False, "--mas",
+        help="Call scoreModel() the way the MAS REST API does - plain strings - instead of the "
+             "one-element lists CAS and the SCR container pass (the default)",
+    ),
 ):
     """Invoke the generated scoreModel() locally (makes a real provider call for API models)."""
     ctx = Context()
@@ -842,17 +847,23 @@ def test(
     spec = importlib.util.spec_from_file_location(f"mdb_score_{model_id}", score_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)  # type: ignore[union-attr]
-    console.print(f"[dim]Calling scoreModel() from {score_path.name}...[/dim]")
+    # Both calling conventions reach the same scorer: SCR / CAS wrap each input
+    # in a one-element list, the MAS REST API passes the plain string (#26).
+    wrap = (lambda value: value) if mas else (lambda value: [value])
+    convention = "MAS REST (plain strings)" if mas else "SCR (one-element lists)"
+    console.print(f"[dim]Calling scoreModel() from {score_path.name} - {convention}...[/dim]")
     table = Table(show_header=False)
     if manifest.kind == "embedding":
-        embedding, run_time, tokens = module.scoreModel([prompt], ["mdb-test"], [json.dumps(options)])
+        embedding, run_time, tokens = module.scoreModel(
+            wrap(prompt), wrap("mdb-test"), wrap(json.dumps(options))
+        )
         vector = json.loads(embedding)
         table.add_row("embedding", f"{len(vector)}-dimension vector [{vector[0]:.5f}, {vector[1]:.5f}, ...]")
         table.add_row("run_time", f"{run_time:.2f}s")
         table.add_row("tokens", str(tokens))
     else:
         response, run_time, prompt_length, output_length = module.scoreModel(
-            [prompt], [system], [json.dumps(options)]
+            wrap(prompt), wrap(system), wrap(json.dumps(options))
         )
         table.add_row("response", str(response))
         table.add_row("run_time", f"{run_time:.2f}s")

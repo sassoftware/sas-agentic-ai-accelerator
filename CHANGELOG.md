@@ -2,6 +2,14 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [2.0.3] - Unreleased
+
+A model answers the whole prompt whichever API calls it.
+
+### Fixed
+
+- **Models invoked through the MAS REST API scored the first character of the prompt.** Every generated scorer — and the six hand-maintained ones — read its inputs with `[0]`, the CAS / DATA-step / SCR convention where each input arrives as a one-element list. The MAS REST API (`POST /microanalyticScore/modules/<module>/steps/<step>`) hands over plain strings, and a `str` answers `[0]` too: nothing failed, the model was asked "W" instead of "What is SAS Viya?" and returned a plausible answer to it, and the `options` string collapsed to `{` so every key in it — the API key included — was silently dropped and surfaced later as an unrelated `KeyError`. Inputs are now normalised once at the top of `scoreModel()` through a shared `_scalar()` (plain string, one-element list, tuple or pandas Series all yield the value), the options parser goes through the same helper, and no template indexes an input any more. `mdb test --mas` exercises the plain-string convention, and the tests call the rendered scorers both ways and require the identical request. Every definition is regenerated; a deployed model picks the fix up with `mdb register --update` and `mdb publish`. Reported in #26 — which also noted that a baked Azure API version sends a v1-only resource down the legacy route; since 2.0.1 that is the `AZURE_OPENAI_API_VERSION` container variable, and the score code and `.env.example` now say what the bare 401 there means
+
 ## [2.0.2] - 2026-09-03
 
 `mdb options-restore` writes again.

@@ -35,6 +35,7 @@ mdb add azure-foundry-env --deployment my-gpt41 --id azure_env --yes   # key/res
 
 mdb validate <model_id> --live   # one real provider call before anything touches Viya
 mdb test <model_id>              # run the generated scoreModel() locally - what SCR will execute
+mdb test <model_id> --mas        # ...called the way the MAS REST API calls it (plain strings)
 mdb generate --all --check       # CI drift gate: committed files match their manifests
 mdb sync --all                   # fact-sheet upsert (legacy rows preserved verbatim)
 mdb import <model_id>            # adopt an existing hand-written folder
