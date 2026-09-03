@@ -5,17 +5,13 @@ import os
 import sys
 import requests
 
-# Requires an Azure OpenAI / Azure AI Foundry deployment.
-# The model is addressed by its DEPLOYMENT NAME, which you choose in Azure.
-# The target resource resolves per call: options override > AZURE_OPENAI_RESOURCE
-# container environment variable > the default baked into this file - so one
-# published image can serve different subscriptions/projects without a rebuild.
-# All Azure host flavors are accepted (<res>.openai.azure.com,
-# <res>.cognitiveservices.azure.com, <res>.services.ai.azure.com); when
-# azure_api_version is set the call uses the legacy deployment-scoped route
-# (/openai/deployments/<name>/chat/completions?api-version=...) instead of the
-# GA v1 endpoint - some resources/policies still require it.
+# Requires an Azure OpenAI / Azure AI Foundry chat deployment. The model is
+# addressed by its DEPLOYMENT NAME, which you choose in Azure; the API key is the
+# API_KEY scoring option (a SAS Viya credential-domain entry). Where the request
+# goes is decided by the container's environment - see below.
 deploymentName = '{{ deployment_name }}'
+
+{% include "partials/_azure_endpoint.py.j2" %}
 
 # Initiate the logger to write output information to the log
 logging.basicConfig(
@@ -32,34 +28,18 @@ def scoreModel(userPrompt, systemPrompt, options):
     started_timestamp = time.time()
     optionsDefaults = {
 {{ options_defaults_block }}
-        "azure_openai_resource": os.environ.get("AZURE_OPENAI_RESOURCE", "{{ azure_resource }}"),
-        "azure_api_version": os.environ.get("AZURE_OPENAI_API_VERSION", "{{ azure_api_version }}"),
-        "endpoint_url": "",
     }
     options = {**optionsDefaults, **_parse_options(options)}
-    # Build the endpoint (a full endpoint_url option overrides the resource-based URL)
-    if options.get('endpoint_url'):
-        modelEndpoint = options['endpoint_url']
-    else:
-        host = (options.get('azure_openai_resource') or '').strip()
-        # Accept either a short resource name (my-openai-resource) or a full host
-        # of any Azure flavor (openai / cognitiveservices / services.ai)
-        if host and '.' not in host:
-            host = f"{host}.openai.azure.com"
-        apiVersion = (options.get('azure_api_version') or '').strip()
-        if apiVersion:
-            # Legacy deployment-scoped route (deployment in the path, api-version required)
-            modelEndpoint = (f"https://{host}/openai/deployments/{deploymentName}"
-                             f"/chat/completions?api-version={apiVersion}")
-        else:
-            # GA v1 endpoint (deployment addressed via the model field in the body)
-            modelEndpoint = f"https://{host}/openai/v1/chat/completions"
+    modelEndpoint = _azure_endpoint(deploymentName, 'chat/completions')
     payload = {
         "model": deploymentName,
         "messages": [{"role": "system", "content": systemPrompt[0]},
             {"role": "user", "content": userPrompt[0]}],
 {{ body_options_block }}
     }
+    # Which resource this container resolved to - the one thing a shared image
+    # cannot be read off the definition, and the first question when it misbehaves.
+    logger.info(f"endpoint: {modelEndpoint}")
     responseObject = requests.post(
         modelEndpoint,
         headers={

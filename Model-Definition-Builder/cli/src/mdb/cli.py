@@ -23,7 +23,8 @@ from rich.table import Table
 from . import __version__
 from .core import drift, facts
 from .core.generator import (
-    CoreAssets, GenerationError, effective_score_file, list_custom_options, render_assets,
+    AZURE_ENV_TEMPLATE, AZURE_TEMPLATES, CoreAssets, GenerationError, effective_score_file,
+    list_custom_options, render_assets,
 )
 from .core.importer import import_folder
 from .core.manifest import MANIFEST_FILENAME, ModelManifest, export_json_schema, load_manifest
@@ -369,8 +370,7 @@ def add(
     commit_resource: bool = typer.Option(
         False, "--commit-resource",
         help="Bake the Azure resource host into the definition as its default. Without this, the "
-             "definition stays environment-neutral: deployed containers read AZURE_OPENAI_RESOURCE "
-             "or a per-call option instead.",
+             "definition stays environment-neutral: deployed containers read AZURE_OPENAI_RESOURCE.",
     ),
     repo: Optional[str] = typer.Option(None, help="Hugging Face repo id (hf-selfhosted)"),
     gated: Optional[bool] = typer.Option(None, help="HF repo is gated (hf-selfhosted)"),
@@ -1475,20 +1475,48 @@ def deploy(
             continue
         manifest = load_manifest(folder)
         use_pv = pv or manifest.runtime.requirements_profile.startswith("hf-")
-        template = template_dir / ("deploy-modelName-PV-template.yaml" if use_pv
-                                   else "deploy-modelName-template.yaml")
+        # Every Azure definition reads its connection from the container -
+        # AZURE_OPENAI_RESOURCE (unless committed), AZURE_OPENAI_API_VERSION -
+        # and an environment-configured one also its key and deployment, so
+        # they all need the env block the plain template lacks. Rendering the
+        # plain template for one produces a pod that starts and then fails
+        # every call naming the missing variable.
+        is_azure = manifest.runtime.template in AZURE_TEMPLATES
+        is_env_configured = manifest.runtime.template == AZURE_ENV_TEMPLATE
+        if is_azure:
+            template = template_dir / "deploy-modelName-env-template.yaml"
+        else:
+            template = template_dir / ("deploy-modelName-PV-template.yaml" if use_pv
+                                       else "deploy-modelName-template.yaml")
+        params = manifest.provider.params
+        committed = (params.get("resource", "") if params.get("commit_resource") else "").strip()
+        azure_resource = os.environ.get("AZURE_OPENAI_RESOURCE", "").strip() or committed
+        if is_azure and not azure_resource:
+            console.print(f"[yellow]{manifest.model_id}: AZURE_OPENAI_RESOURCE is not set - the "
+                          "rendered YAML keeps the placeholder; fill it in before applying.[/yellow]")
         lines = []
         for line in template.read_text(encoding="utf-8").splitlines():
             line = line.replace("containerRegistry", registry)
             line = line.replace("llm_name", manifest.model_id)
             line = line.replace("llmname", manifest.model_id.replace("_", "-"))
             line = line.replace("model_name", manifest.model_id)
+            if is_azure:
+                if azure_resource:
+                    line = line.replace("{{ AZURE-RESOURCE-HOST }}", azure_resource)
+                # The definition's own deployment is the right default here: it
+                # is what the score code would fall back to anyway, so the
+                # rendered manifest states the model the pod will actually serve.
+                line = line.replace("{{ AZURE-DEPLOYMENT-NAME }}", manifest.provider.model_version)
             line = re.sub(r"host$", host, line)  # 'host' value slots only, never the 'hosts:' key
             lines.append(line)
         target = out_dir / f"deploy-{manifest.model_id}.yaml"
         target.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
-        console.print(f"[green]{manifest.model_id}: {target}[/green]"
-                      + (" (PV variant)" if use_pv else ""))
+        variant = " (PV variant)" if use_pv and not is_azure else ""
+        if is_env_configured:
+            variant = " (environment-configured variant)"
+        elif is_azure:
+            variant = " (Azure variant - connection from the container environment)"
+        console.print(f"[green]{manifest.model_id}: {target}[/green]" + variant)
     console.print(f"Apply with: kubectl apply -f {out_dir}/deploy-<model_id>.yaml -n <namespace>")
 
 

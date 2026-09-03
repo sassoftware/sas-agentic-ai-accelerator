@@ -30,6 +30,8 @@ For air-gapped sites, build a wheel bundle on a connected machine (`pip download
 mdb add                          # interactive wizard: provider -> model -> done
 mdb add openrouter deepseek/deepseek-v3.1 --yes
 mdb add azure-foundry --resource myres --deployment my-gpt41 --id gpt_41_az --yes
+mdb add azure-foundry --kind embedding --resource myres --deployment my-emb3 --id emb3_az --yes
+mdb add azure-foundry-env --deployment my-gpt41 --id azure_env --yes   # key/resource/deployment from the container env
 
 mdb validate <model_id> --live   # one real provider call before anything touches Viya
 mdb test <model_id>              # run the generated scoreModel() locally - what SCR will execute
@@ -38,7 +40,7 @@ mdb sync --all                   # fact-sheet upsert (legacy rows preserved verb
 mdb import <model_id>            # adopt an existing hand-written folder
 ```
 
-Provider API keys are read from the environment or a `.env` at the repo root (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `AZURE_OPENAI_API_KEY`, `MISTRAL_API_KEY`, `GEMINI_API_KEY`, `VOYAGE_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`). Keys never enter manifests or generated files — `mdb validate` scans for secret-shaped strings. Environment-specific hosts stay out of definitions by default: Azure resources, Bedrock regions and self-hosted Ollama/vLLM base URLs resolve per call via options or the `AZURE_OPENAI_RESOURCE` / `AWS_BEDROCK_REGION` / `OLLAMA_BASE_URL` / `VLLM_BASE_URL` container environment variables.
+Provider API keys are read from the environment or a `.env` at the repo root (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `AZURE_OPENAI_API_KEY`, `MISTRAL_API_KEY`, `GEMINI_API_KEY`, `VOYAGE_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`). Keys never enter manifests or generated files — `mdb validate` scans for secret-shaped strings. Environment-specific hosts stay out of definitions by default: an Azure resource is read from the `AZURE_OPENAI_RESOURCE` container environment variable and is never a scoring option (where a container sends its requests is a property of the deployment, not of the caller); Bedrock regions and self-hosted Ollama/vLLM base URLs resolve per call via options or the `AWS_BEDROCK_REGION` / `OLLAMA_BASE_URL` / `VLLM_BASE_URL` container environment variables. The `azure-foundry-env` adapter takes that one step further: the key and the deployment resolve the same way (`AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`), so the definition declares no `API_KEY` input at all and one published image serves any Azure deployment.
 
 **LLM vs embedding definitions.** Every definition has a *kind* — `llm` (chat) or `embedding` — which decides the score template, the destination folder (`LLM-Definitions/` vs `Embedding-Definitions/`) and the Model Manager project at register time. `mdb add` states the kind up front ("Adding an EMBEDDING model definition → …"), shows it first in the review table, and decides it from the catalog when it can (known embedding models are labeled `[embedding]` in the picker). To override or when entering an unknown model by hand, pass `--kind llm|embedding` — honored by every provider whose adapter has an embedding template (`mdb providers` shows a kinds column); embedding-only providers such as Voyage always produce embedding definitions. A kind/template mismatch fails validation (V012).
 

@@ -8,3 +8,12 @@ Each subfolder here contains the definition for one specific Embedding model - t
 
 ## Adding a new Embedding model
 
+## Azure embedding deployments
+
+`mdb add azure-foundry --kind embedding --resource <res> --deployment <name>` builds an
+embedding definition on the `emb_azure_openai_v1` template: the deployment name goes in
+the request body, the key travels in Azure's `api-key` header, and the resource, API
+style and optional gateway endpoint are read from the container's environment - never
+from a scoring option. See *Azure definitions and the container environment* in
+[LLM-Definitions/README.md](../LLM-Definitions/README.md) for the variables and the
+deploy template. `text-embedding-3-*` deployments may declare the `dimensions` option.

@@ -1,0 +1,49 @@
+# -- Azure connection: resolved from this container's ENVIRONMENT ---------------
+# Where the request goes is a property of the deployment, not of the caller, so
+# none of it is a scoring option. Each value resolves
+#     container environment variable > the default baked into this file
+# and one published image serves any subscription or project by changing its
+# environment - no regeneration, rebuild or re-publish.
+#
+#   AZURE_OPENAI_RESOURCE     the resource/project host serving the deployment:
+#                             <res>.openai.azure.com, <res>.cognitiveservices.azure.com,
+#                             <res>.services.ai.azure.com, or the bare <res>
+#   AZURE_OPENAI_API_VERSION  empty = the GA v1 endpoint (/openai/v1/...); a version
+#                             selects the legacy /openai/deployments/<name>/... route
+#                             that some resources or org policies still require
+#   AZURE_OPENAI_ENDPOINT     optional full URL that replaces the built one, for a
+#                             gateway in front of Azure - it must include the route
+RESOURCE_ENV = 'AZURE_OPENAI_RESOURCE'
+API_VERSION_ENV = 'AZURE_OPENAI_API_VERSION'
+ENDPOINT_ENV = 'AZURE_OPENAI_ENDPOINT'
+defaultResource = '{{ azure_resource }}'
+defaultApiVersion = '{{ azure_api_version }}'
+
+def _from_env(envName, bakedDefault=''):
+    "Container environment variable > baked default, trimmed; '' when neither is set."
+    value = (os.environ.get(envName) or '').strip()
+    return value if value else (bakedDefault or '').strip()
+
+def _azure_endpoint(deploymentName, route):
+    """The data-plane URL for one deployment; route is 'chat/completions' or 'embeddings'.
+
+    A missing resource fails naming the variable that would have supplied it,
+    rather than as a connection error against an empty host."""
+    endpoint = _from_env(ENDPOINT_ENV)
+    if endpoint:
+        return endpoint
+    host = _from_env(RESOURCE_ENV, defaultResource)
+    if not host:
+        raise RuntimeError(
+            f"No Azure resource: set the {RESOURCE_ENV} environment variable on this "
+            "container (any Azure host flavor, or the bare resource name)."
+        )
+    # A short resource name expands to the classic Azure OpenAI host
+    if '.' not in host:
+        host = f"{host}.openai.azure.com"
+    apiVersion = _from_env(API_VERSION_ENV, defaultApiVersion)
+    if apiVersion:
+        # Legacy deployment-scoped route (deployment in the path, api-version required)
+        return f"https://{host}/openai/deployments/{deploymentName}/{route}?api-version={apiVersion}"
+    # GA v1 endpoint (deployment addressed via the model field in the body)
+    return f"https://{host}/openai/v1/{route}"

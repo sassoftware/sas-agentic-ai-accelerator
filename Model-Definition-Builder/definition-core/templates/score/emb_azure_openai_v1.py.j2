@@ -1,0 +1,68 @@
+{{ generated_header }}import time
+import json
+import logging
+import os
+import sys
+import requests
+
+# Requires an Azure OpenAI / Azure AI Foundry EMBEDDING deployment. The model is
+# addressed by its DEPLOYMENT NAME, which you choose in Azure; the API key is the
+# API_KEY scoring option (a SAS Viya credential-domain entry) and travels in
+# Azure's api-key header, not an OpenAI-style bearer token. Where the request
+# goes is decided by the container's environment - see below.
+deploymentName = '{{ deployment_name }}'
+
+{% include "partials/_azure_endpoint.py.j2" %}
+
+# Initiate the logger to write output information to the log
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+    format='%(levelname)s - %(message)s'
+)
+logger = logging.getLogger("scoreModel")
+
+{% include "partials/_options_parser.py.j2" %}
+
+def scoreModel(document, project, options):
+    "Output: embedding, run_time, tokens"
+    started_timestamp = time.time()
+    optionsDefaults = {
+{{ options_defaults_block }}
+    }
+    options = {**optionsDefaults, **_parse_options(options)}
+    modelEndpoint = _azure_endpoint(deploymentName, 'embeddings')
+    payload = {
+        "input": document[0],
+        "model": deploymentName,
+        "encoding_format": "float",
+{{ body_options_block }}
+    }
+    # Which resource this container resolved to - the one thing a shared image
+    # cannot be read off the definition, and the first question when it misbehaves.
+    logger.info(f"endpoint: {modelEndpoint}")
+    responseObject = requests.post(
+        modelEndpoint,
+        headers={
+            "Content-Type": "application/json",
+            "api-key": options["API_KEY"],
+        },
+        json=payload,
+        timeout={{ timeout_s }},
+    )
+    try:
+        responseJson = responseObject.json()
+    except Exception:
+        logger.error(f"Non-JSON response: {responseObject.status_code} - {responseObject.text}")
+        raise
+    if responseObject.status_code < 200 or responseObject.status_code >= 300:
+        logger.error(f"HTTP {responseObject.status_code}: {json.dumps(responseJson)}")
+        raise RuntimeError(f"Request failed: {responseObject.status_code}")
+    embedding = json.dumps(responseJson['data'][0]['embedding'])
+    tokens = responseJson['usage']['prompt_tokens']
+    run_time = time.time() - started_timestamp
+    # Logging the response
+    logger.info(f"project: {project[0]}")
+    logger.info(f"tokens: {tokens}")
+    logger.info(f"run_time: {run_time}")
+    return embedding, run_time, tokens
