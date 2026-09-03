@@ -2,7 +2,7 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [2.0.2] - Unreleased
+## [2.0.2] - 2026-09-03
 
 `mdb options-restore` writes again.
 
