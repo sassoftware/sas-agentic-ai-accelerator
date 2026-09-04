@@ -68,7 +68,7 @@ PROVIDER_MAP = {
     "ANTHROPIC_API_KEY": "Anthropic",
     "GEMINI_API_KEY": "Google",
     "OPENROUTER_API_KEY": "OpenRouter",
-    "AZURE_OPENAI_API_KEY": "Azure OpenAI",
+    "AZURE_OPENAI_API_KEY": "AzureOpenAI",
     "MISTRAL_API_KEY": "Mistral",
     "VOYAGE_API_KEY": "Voyage.ai",
     "HUGGINGFACE_API_KEY": "HuggingFace",
