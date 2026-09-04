@@ -2,7 +2,7 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [2.0.3] - Unreleased
+## [2.0.3] - 2026-09-04
 
 A model answers the whole prompt whichever API calls it, and `mdb` signs in to SAS Viya without a password.
 
