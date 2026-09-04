@@ -98,7 +98,7 @@ mdb publish <model_id>             # publish to the SCR destination (or mdb ship
 
 ## Register, update and publish from the CLI
 
-`mdb` now owns the full Viya lifecycle for managed definitions (install the extra: `pip install -e Model-Definition-Builder/cli[viya]`):
+`mdb` now owns the full Viya lifecycle for managed definitions (install the extra: `pip install -e "Model-Definition-Builder/cli[viya]"`):
 
 ```bash
 mdb setup                            # create the LLM Repository + LLM/Embedding

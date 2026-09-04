@@ -19,8 +19,8 @@ See `Model-Definition-Builder/MIGRATION.md` for the full migration context.
 
 1. Install mdb with the Viya extra (once), from `Model-Definition-Builder/cli`:
    `pip install -e ".[viya]"` (pulls in `sasctl`).
-2. Ensure the repo-root `.env` has `SAS_VIYA_URL`, `SAS_VIYA_USER`,
-   `SAS_VIYA_PASSWORD` (and `SAS_VIYA_VERIFY_SSL=false` for a self-signed cert) —
+2. Ensure the repo-root `.env` has `SAS_VIYA_URL` and a credential (`SAS_VIYA_TOKEN`, or `SAS_VIYA_USER` +
+   `SAS_VIYA_PASSWORD`, or a `sas-viya auth loginCode` login) (and `SAS_VIYA_VERIFY_SSL=false` for a self-signed cert) —
    the same settings the `mdb` commands use.
 3. Run the audit (companion script next to this file):
    `python Model-Definition-Builder/.claude/skills/model-audit/audit-models.py`

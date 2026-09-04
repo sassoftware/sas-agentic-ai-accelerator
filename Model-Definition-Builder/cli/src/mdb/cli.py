@@ -888,7 +888,9 @@ def _scr_endpoint() -> str:
 def _viya_session():
     from .viya.session import ViyaConfigError, create_session
     try:
-        return create_session()
+        session = create_session()
+        console.print(f"[dim]SAS Viya: {session.auth_summary}[/dim]")
+        return session
     except ViyaConfigError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(2)

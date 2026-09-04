@@ -50,7 +50,8 @@ operation settings (CLI arguments override these; precedence is
 
 | Variable | Used by | Notes |
 |---|---|---|
-| `SAS_VIYA_URL` / `SAS_VIYA_USER` / `SAS_VIYA_PASSWORD` | every Viya command | connection + auth |
+| `SAS_VIYA_URL` | every Viya command | the server (or the SAS Viya CLI profile's endpoint) |
+| `SAS_VIYA_TOKEN`, or `SAS_VIYA_USER` / `SAS_VIYA_PASSWORD`, or neither | every Viya command | an access token, the password grant, or the SAS Viya CLI login (`sas-viya auth loginCode`) - tried in that order |
 | `SAS_VIYA_VERIFY_SSL` | every Viya command | `false` only for a self-signed cert |
 | `SAS_SCR_ENDPOINT` | `setup`, `register`, `endpoints`, `deploy` | e.g. `https://<host>/llm` |
 | `SAS_DEPLOYMENT_TYPE` | `setup` | `k8s` (default) or `aca` |
