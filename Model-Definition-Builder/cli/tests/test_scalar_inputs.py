@@ -31,6 +31,20 @@ class _Series:
         return self._items
 
 
+class _Array:
+    """Any other sequence (a numpy array, say): indexable, not a str, not a Series.
+    The old code took [0] of it; the helper must keep doing so."""
+
+    def __init__(self, *items):
+        self._items = list(items)
+
+    def __len__(self):
+        return len(self._items)
+
+    def __getitem__(self, index):
+        return self._items[index]
+
+
 class _Resp:
     status_code = 200
 
@@ -90,12 +104,17 @@ def test_hand_maintained_scorers_are_fixed_too():
 def test_scalar_and_options_accept_every_calling_convention(core, monkeypatch):
     ns, _ = _scorer(core, "llm", monkeypatch)
     scalar, parse = ns["_scalar"], ns["_parse_options"]
-    for shape in ("What is SAS Viya?", ["What is SAS Viya?"], ("What is SAS Viya?",), _Series("What is SAS Viya?")):
+    for shape in ("What is SAS Viya?", ["What is SAS Viya?"], ("What is SAS Viya?",),
+                  _Series("What is SAS Viya?"), _Array("What is SAS Viya?")):
         assert scalar(shape) == "What is SAS Viya?", shape
-    assert scalar(None) == "" and scalar([]) == "" and scalar(_Series()) == ""
+    numpy = pytest.importorskip("numpy")
+    assert scalar(numpy.array(["What is SAS Viya?"], dtype=object)) == "What is SAS Viya?"
+    assert scalar(None) == "" and scalar([]) == "" and scalar(_Series()) == "" and scalar(_Array()) == ""
+    # Not a sequence at all: passed through untouched, as before.
+    assert scalar(3) == 3
     opts = {"API_KEY": "k", "temperature": 0.2}
-    for shape in (json.dumps(opts), [json.dumps(opts)], _Series(json.dumps(opts)), opts, [opts],
-                  "{API_KEY:k,temperature:0.2}"):
+    for shape in (json.dumps(opts), [json.dumps(opts)], _Series(json.dumps(opts)), _Array(json.dumps(opts)),
+                  opts, [opts], "{API_KEY:k,temperature:0.2}"):
         assert parse(shape) == opts, shape
     for empty in (None, "", [], [""], _Series(), _Series("")):
         assert parse(empty) == {}, empty
@@ -121,6 +140,8 @@ def test_chat_scorer_reads_the_whole_prompt_under_both_conventions(core, monkeyp
     ns["scoreModel"]([PROMPT], [SYSTEM], [options])
     assert seen["body"] == mas_body
     ns["scoreModel"](_Series(PROMPT), _Series(SYSTEM), _Series(options))
+    assert seen["body"] == mas_body
+    ns["scoreModel"](_Array(PROMPT), _Array(SYSTEM), _Array(options))
     assert seen["body"] == mas_body
 
 

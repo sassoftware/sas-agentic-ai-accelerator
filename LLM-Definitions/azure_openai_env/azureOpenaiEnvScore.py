@@ -105,7 +105,8 @@ def _scalar(value):
         return value
     if hasattr(value, 'iloc'):  # pandas Series
         return value.iloc[0] if len(value) > 0 else ''
-    if isinstance(value, (list, tuple)):
+    if hasattr(value, '__len__') and hasattr(value, '__getitem__'):
+        # list, tuple, numpy array, ...: whatever answered [0] before still does
         return value[0] if len(value) > 0 else ''
     return value
 
