@@ -25,6 +25,13 @@ The following options can be supplied at scoring time through the `options` inpu
 | `Input_Token_Limit` | 8192 | 8192 | The limit of input tokens for the embedding model. |
 | `API_KEY` | AWSBedrock | sk-**** | This is the AWSBedrock key that is used to make the actual request. |
 
+## Deployment
+
+What the SCR container needs from its environment (the caller-side options are in the table above):
+
+- The key arrives per call in the `API_KEY` option as a Bedrock API key (bearer token); no AWS SDK is needed in the container.
+- `AWS_BEDROCK_REGION` selects the region (default `us-east-1`); an `aws_bedrock_region` option overrides it per call.
+
 ## Register and publish
 
 ```bash

@@ -10,7 +10,7 @@ The folder *LLM-Definitions* contains a definition per model, each packaged so t
 Registering and publishing is done with the **`mdb`** command line, part of the [Model Definition Builder](Model-Definition-Builder.md). If you have not installed it yet:
 
 ```bash
-pip install -e Model-Definition-Builder/cli[viya]
+pip install -e "Model-Definition-Builder/cli[viya]"
 ```
 
 To register one or more models into SAS Model Manager:

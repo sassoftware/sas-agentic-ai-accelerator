@@ -67,7 +67,7 @@ Azure definitions are environment-neutral by default: the resource host you ente
 | `<res>.cognitiveservices.azure.com` | Azure AI Services / Foundry resource |
 | `<res>.services.ai.azure.com` | Azure AI Foundry endpoint (sometimes region-qualified) |
 
-By default mdb calls the **GA v1 endpoint** (`/openai/v1/chat/completions`, deployment name in the body — Microsoft's recommended surface). If your resource or org policy still requires the **legacy deployment-scoped route** — recognizable by URLs like `…/openai/deployments/<name>/chat/completions?api-version=2025-01-01-preview` — answer the wizard's *API version* question (or set the `AZURE_OPENAI_API_VERSION` container environment variable) and the calls switch to that route, same resolution order as the resource. Embedding deployments work the same way: `mdb add azure-foundry --kind embedding --deployment <name>` builds on the `emb_azure_openai_v1` template (`/openai/v1/embeddings` or the legacy route, `api-key` header, `dimensions` supported).
+By default mdb calls the **GA v1 endpoint** (`/openai/v1/chat/completions`, deployment name in the body — Microsoft's recommended surface). If your resource or org policy still requires the **legacy deployment-scoped route** — recognizable by URLs like `…/openai/deployments/<name>/chat/completions?api-version=2025-01-01-preview` — answer the wizard's *API version* question (or set the `AZURE_OPENAI_API_VERSION` container environment variable) and the calls switch to that route. The reverse works too: a definition that bakes a version is forced back onto the GA route by setting `AZURE_OPENAI_API_VERSION` to an *empty* value in the container — a v1-only resource answers the legacy route with a bare 401 and no body, which is the symptom to look for. Embedding deployments work the same way: `mdb add azure-foundry --kind embedding --deployment <name>` builds on the `emb_azure_openai_v1` template (`/openai/v1/embeddings` or the legacy route, `api-key` header, `dimensions` supported).
 
 **Not just OpenAI models.** The whole Foundry Models catalog is served through this same OpenAI-compatible surface — a DeepSeek, Llama, Mistral, Phi or Grok deployment on a Foundry resource works exactly like a GPT one (mdb addresses the *deployment name*, not the vendor); Microsoft's older separate Model Inference API (`/models/chat/completions`) is deprecated in favor of it. The boundaries are API-surface ones: the deployment must serve **chat completions** — embedding, audio/image/realtime, and Responses-API-only models (`/openai/v1/responses`, a different request/response shape, e.g. computer-use previews) are outside the chat-completions score contract — and some non-OpenAI models reject specific OpenAI options (e.g. `temperature` on certain reasoning models), which you control per definition anyway.
 
@@ -98,7 +98,7 @@ mdb publish <model_id>             # publish to the SCR destination (or mdb ship
 
 ## Register, update and publish from the CLI
 
-`mdb` now owns the full Viya lifecycle for managed definitions (install the extra: `pip install -e Model-Definition-Builder/cli[viya]`):
+`mdb` now owns the full Viya lifecycle for managed definitions (install the extra: `pip install -e "Model-Definition-Builder/cli[viya]"`):
 
 ```bash
 mdb setup                            # create the LLM Repository + LLM/Embedding

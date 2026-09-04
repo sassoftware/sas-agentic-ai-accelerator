@@ -24,6 +24,10 @@ logger = logging.getLogger("scoreModel")
 def scoreModel(document, project, options):
     "Output: embedding, run_time, tokens"
     started_timestamp = time.time()
+    # One value per input, whatever the caller's convention: CAS/SCR pass
+    # one-element lists, the MAS REST API passes plain strings - and a str
+    # indexed with [0] silently becomes its first character.
+    document, project = _scalar(document), _scalar(project)
     optionsDefaults = {
 {{ options_defaults_block }}
         "aws_bedrock_region": os.environ.get("AWS_BEDROCK_REGION", "{{ region }}"),
@@ -35,7 +39,7 @@ def scoreModel(document, project, options):
         f"{urllib.parse.quote(modelId, safe='')}/invoke"
     )
     payload = {
-        "inputText": document[0],
+        "inputText": document,
 {{ body_options_block }}
     }
     responseObject = requests.post(
@@ -59,7 +63,7 @@ def scoreModel(document, project, options):
     tokens = responseJson.get('inputTextTokenCount', 0)
     run_time = time.time() - started_timestamp
     # Logging the response
-    logger.info(f"project: {project[0]}")
+    logger.info(f"project: {project}")
     logger.info(f"tokens: {tokens}")
     logger.info(f"run_time: {run_time}")
     return embedding, run_time, tokens

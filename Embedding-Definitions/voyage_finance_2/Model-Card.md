@@ -20,7 +20,13 @@ Input: $0.12 per 1M tokens - Output: unknown
 
 ## Intended Use
 
-This model is registered in SAS Model Manager as part of the SAS Agentic AI Accelerator and is intended to be used through the framework's scoring contract (`userPrompt`, `systemPrompt`, `options` → `response`, `run_time`, `prompt_length`, `output_length`), for example from the LLM Prompt Builder or SAS Intelligent Decisioning.
+This model is registered in SAS Model Manager as part of the SAS Agentic AI Accelerator and is intended to be used through the framework's scoring contract (`document`, `project`, `options` → `embedding`, `run_time`, `tokens`), for example from the RAG Builder or SAS Intelligent Decisioning.
+
+## Deployment
+
+The model runs as a SAS Container Runtime (SCR) image published from SAS Model Manager and is called through its SCR endpoint. What the container needs from its environment:
+
+- The key arrives per call in the `API_KEY` option; the container needs no environment configuration beyond network access to the provider.
 
 ## Limitations and Responsible Use
 

@@ -35,12 +35,15 @@ mdb add azure-foundry-env --deployment my-gpt41 --id azure_env --yes   # key/res
 
 mdb validate <model_id> --live   # one real provider call before anything touches Viya
 mdb test <model_id>              # run the generated scoreModel() locally - what SCR will execute
+mdb test <model_id> --mas        # ...called the way the MAS REST API calls it (plain strings)
 mdb generate --all --check       # CI drift gate: committed files match their manifests
 mdb sync --all                   # fact-sheet upsert (legacy rows preserved verbatim)
 mdb import <model_id>            # adopt an existing hand-written folder
 ```
 
 Provider API keys are read from the environment or a `.env` at the repo root (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `AZURE_OPENAI_API_KEY`, `MISTRAL_API_KEY`, `GEMINI_API_KEY`, `VOYAGE_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`). Keys never enter manifests or generated files — `mdb validate` scans for secret-shaped strings. Environment-specific hosts stay out of definitions by default: an Azure resource is read from the `AZURE_OPENAI_RESOURCE` container environment variable and is never a scoring option (where a container sends its requests is a property of the deployment, not of the caller); Bedrock regions and self-hosted Ollama/vLLM base URLs resolve per call via options or the `AWS_BEDROCK_REGION` / `OLLAMA_BASE_URL` / `VLLM_BASE_URL` container environment variables. The `azure-foundry-env` adapter takes that one step further: the key and the deployment resolve the same way (`AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`), so the definition declares no `API_KEY` input at all and one published image serves any Azure deployment.
+
+The Viya commands (`setup`, `register`, `publish`, ...) need `SAS_VIYA_URL` and one credential, tried in this order: `SAS_VIYA_TOKEN` (an OAuth access token), `SAS_VIYA_USER` + `SAS_VIYA_PASSWORD` (the password grant), or - with neither set - the SAS Viya CLI's own login (`sas-viya auth loginCode`, read from `~/.sas/credentials.json`). On an SSO / SCIM / OIDC site the CLI login is the route: no password is needed and everything is created in your name. Each command prints which one it used.
 
 **LLM vs embedding definitions.** Every definition has a *kind* — `llm` (chat) or `embedding` — which decides the score template, the destination folder (`LLM-Definitions/` vs `Embedding-Definitions/`) and the Model Manager project at register time. `mdb add` states the kind up front ("Adding an EMBEDDING model definition → …"), shows it first in the review table, and decides it from the catalog when it can (known embedding models are labeled `[embedding]` in the picker). To override or when entering an unknown model by hand, pass `--kind llm|embedding` — honored by every provider whose adapter has an embedding template (`mdb providers` shows a kinds column); embedding-only providers such as Voyage always produce embedding definitions. A kind/template mismatch fails validation (V012).
 

@@ -2,9 +2,9 @@
     "generator": "mdb 0.1.0",
     "manifest_sha256": "ac0f5417f34d5702e6c78947cef5a6c2024a8a6708369111c449e2d1fa649241",
     "files": {
-        "Model-Card.md": "e0987fa75b573d5dd6fdd7a7d19c51d782144744b7f1ed95eb82d0f226f05030",
-        "README.md": "1cdc4f7c0868fece93b115b6c64db0f6fab001214a47b71d621bf449331867f9",
-        "googleGemma431bFreeScore.py": "efc7f85fad2128e897ae3e5e2881a892070c693aba34a51dfc16a20e3a903edc",
+        "Model-Card.md": "750546aff57b21295bb514c4500031e7966f5d76dee971ce3e647fe741818505",
+        "README.md": "a35b169ec723f644f8ff6e64d297b996cc7dcc21c216889b236decaf4e821ac8",
+        "googleGemma431bFreeScore.py": "467a6d746f5a3b0bb74aac830d2286088922ad623c7252fa76be80951e4340f2",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
         "modelConfiguration.json": "cd0bc59ad129f358132ae9c031eb89df203f9af06f8706debef331fe1b14f110",
         "options.json": "5aa5966378ed916966b955930e654bd2655ab03d8a688dd21bffbe34b2491ab6",

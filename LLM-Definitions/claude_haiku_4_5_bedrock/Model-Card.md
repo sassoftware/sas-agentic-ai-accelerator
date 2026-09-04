@@ -22,6 +22,13 @@ Input: unknown - Output: unknown
 
 This model is registered in SAS Model Manager as part of the SAS Agentic AI Accelerator and is intended to be used through the framework's scoring contract (`userPrompt`, `systemPrompt`, `options` → `response`, `run_time`, `prompt_length`, `output_length`), for example from the LLM Prompt Builder or SAS Intelligent Decisioning.
 
+## Deployment
+
+The model runs as a SAS Container Runtime (SCR) image published from SAS Model Manager and is called through its SCR endpoint. What the container needs from its environment:
+
+- The key arrives per call in the `API_KEY` option as a Bedrock API key (bearer token); no AWS SDK is needed in the container.
+- `AWS_BEDROCK_REGION` selects the region (default `us-east-1`); an `aws_bedrock_region` option overrides it per call.
+
 ## Limitations and Responsible Use
 
 Refer to the `modelConfiguration.json` of this definition for the framework's documented purpose, intended use, expected benefits, out-of-scope use cases and limitations, and consult the provider's own model documentation for model-specific evaluations and safety characteristics.

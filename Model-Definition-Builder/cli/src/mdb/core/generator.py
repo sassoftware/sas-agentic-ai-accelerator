@@ -507,6 +507,87 @@ def _fmt_price_per_m(per_token: float | None) -> str:
     return f"${per_token * 1_000_000:g} per 1M tokens"
 
 
+SCORING_CONTRACT = {
+    "llm": "`userPrompt`, `systemPrompt`, `options` → `response`, `run_time`, `prompt_length`, `output_length`",
+    "embedding": "`document`, `project`, `options` → `embedding`, `run_time`, `tokens`",
+}
+CALLED_FROM = {
+    "llm": "the LLM Prompt Builder or SAS Intelligent Decisioning",
+    "embedding": "the RAG Builder or SAS Intelligent Decisioning",
+}
+
+AZURE_ROUTE_NOTE = (
+    "`AZURE_OPENAI_API_VERSION` is optional: unset keeps what this definition bakes{baked}, a version "
+    "selects the legacy `/openai/deployments/<name>/...` route that some resources or org policies still "
+    "require, and an explicitly *empty* value forces the GA `/openai/v1/...` route. A v1-only resource answers "
+    "the legacy route with a bare 401 and no body - that is the symptom to look for. `AZURE_OPENAI_ENDPOINT` "
+    "overrides the whole URL."
+)
+
+
+def deployment_notes(manifest: ModelManifest) -> str:
+    """What the SCR container needs from its environment - the part of the
+    contract that is not visible in the options table. One paragraph per
+    template family; the wording is what an operator reads in SAS Model
+    Manager when a container misbehaves, so it names the variables and the
+    symptom rather than the mechanism."""
+    template = manifest.runtime.template
+    params = manifest.provider.params
+    lines: list[str] = []
+    if template in AZURE_TEMPLATES:
+        committed = params.get("resource", "") if params.get("commit_resource") else ""
+        version = (params.get("api_version") or "").strip()
+        if committed:
+            lines.append(f"- `AZURE_OPENAI_RESOURCE` selects the Azure resource; this definition commits "
+                         f"`{committed}` as the default, so the variable is optional.")
+        else:
+            lines.append("- `AZURE_OPENAI_RESOURCE` is **required**: the Azure resource the container calls "
+                         "(any host flavor - `<res>.openai.azure.com`, `<res>.cognitiveservices.azure.com`, "
+                         "`<res>.services.ai.azure.com` - or the bare resource name). This definition commits no "
+                         "resource, so one image serves any Azure resource.")
+        baked = f" (`{version}`, the legacy route)" if version else " (nothing: the GA route)"
+        lines.append("- " + AZURE_ROUTE_NOTE.format(baked=baked))
+        if template == AZURE_ENV_TEMPLATE:
+            lines.append("- `AZURE_OPENAI_API_KEY` supplies the key (an `API_KEY` option, when present, still "
+                         "wins) and `AZURE_OPENAI_DEPLOYMENT` the deployment, defaulting to "
+                         f"`{manifest.provider.model_version}`. This definition declares no `API_KEY` option: "
+                         "the container, not the caller, holds the key.")
+        else:
+            lines.append("- The key arrives per call in the `API_KEY` option.")
+    elif template in ("openai_compat_selfhosted", "emb_openai_compat_selfhosted"):
+        base_env = params.get("base_url_env", "OPENAI_COMPAT_BASE_URL")
+        token_env = params.get("token_env", "OPENAI_COMPAT_API_KEY")
+        default = params.get("base_url", "")
+        lines.append(f"- `{base_env}` is the server's base URL (default `{default}`); an `endpoint_url` option "
+                     "overrides it per call. The weights stay on that server - this image ships only the API wrapper.")
+        lines.append(f"- `{token_env}` is an optional bearer token; leave it unset for an open server.")
+    elif template == "bedrock_converse_sigv4":
+        lines.append("- Credentials come from the standard AWS chain on the container (environment variables, IRSA, "
+                     "an instance profile) - no key travels through the options string. `boto3` is in the image.")
+        lines.append(f"- `AWS_BEDROCK_REGION` selects the region (default `{params.get('region', '')}`); an "
+                     "`aws_bedrock_region` option overrides it per call.")
+    elif "bedrock" in template:
+        lines.append("- The key arrives per call in the `API_KEY` option as a Bedrock API key (bearer token); "
+                     "no AWS SDK is needed in the container.")
+        lines.append(f"- `AWS_BEDROCK_REGION` selects the region (default `{params.get('region', '')}`); an "
+                     "`aws_bedrock_region` option overrides it per call.")
+    elif template in ("hf_transformers", "hf_onnx", "emb_sentence_transformers"):
+        if manifest.runtime.weights_source == "mounted":
+            lines.append(f"- The weights are read from the shared `llm-weights` volume at "
+                         f"`/pybox/model/mount/{manifest.model_id}` - stage them there once; the image itself "
+                         "carries no weights. Use the persistent-volume deployment YAML.")
+        else:
+            lines.append("- The weights are baked into the image at build time; the container needs no "
+                         "provider connection and no key.")
+        if template == "hf_transformers":
+            lines.append("- `CUDA_VISIBLE_DEVICES` (set by a GPU node) switches inference to the GPU; "
+                         "otherwise it runs on the CPU.")
+    else:
+        lines.append("- The key arrives per call in the `API_KEY` option; the container needs no environment "
+                     "configuration beyond network access to the provider.")
+    return "\n".join(lines)
+
+
 def _render_docs(manifest: ModelManifest, core: CoreAssets, options_json: str) -> dict[str, str]:
     env = core.jinja()
     entries = json.loads(options_json)
@@ -539,6 +620,9 @@ def _render_docs(manifest: ModelManifest, core: CoreAssets, options_json: str) -
         "options_table": "\n".join(table_lines),
         "pricing_line": pricing_line,
         "catalog_provenance": manifest.generation.catalog_provenance,
+        "scoring_contract": SCORING_CONTRACT[manifest.kind],
+        "called_from": CALLED_FROM[manifest.kind],
+        "deployment_notes": deployment_notes(manifest),
     }
     return {
         "README.md": env.get_template("files/README.md.j2").render(**context),

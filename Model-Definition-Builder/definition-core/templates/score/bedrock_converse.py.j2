@@ -25,6 +25,10 @@ logger = logging.getLogger("scoreModel")
 def scoreModel(userPrompt, systemPrompt, options):
     "Output: response, run_time, prompt_length, output_length"
     started_timestamp = time.time()
+    # One value per input, whatever the caller's convention: CAS/SCR pass
+    # one-element lists, the MAS REST API passes plain strings - and a str
+    # indexed with [0] silently becomes its first character.
+    userPrompt, systemPrompt = _scalar(userPrompt), _scalar(systemPrompt)
     optionsDefaults = {
 {{ options_defaults_block }}
         "aws_bedrock_region": os.environ.get("AWS_BEDROCK_REGION", "{{ region }}"),
@@ -36,8 +40,8 @@ def scoreModel(userPrompt, systemPrompt, options):
         f"{urllib.parse.quote(modelId, safe='')}/converse"
     )
     payload = {
-        "system": [{"text": systemPrompt[0]}],
-        "messages": [{"role": "user", "content": [{"text": userPrompt[0]}]}],
+        "system": [{"text": systemPrompt}],
+        "messages": [{"role": "user", "content": [{"text": userPrompt}]}],
         "inferenceConfig": {
 {{ body_options_block_nested }}
         },

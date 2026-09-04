@@ -14,7 +14,8 @@ mdb with the [viya] extra:
     python Model-Definition-Builder/.claude/skills/model-audit/audit-models.py
     python .../audit-models.py --json      # machine-readable
 
-Connection settings come from SAS_VIYA_URL / SAS_VIYA_USER / SAS_VIYA_PASSWORD
+Connection settings come from SAS_VIYA_URL and one of SAS_VIYA_TOKEN, SAS_VIYA_USER + SAS_VIYA_PASSWORD,
+or the sas-viya CLI login
 (env or .env), exactly like the mdb commands.
 """
 from __future__ import annotations

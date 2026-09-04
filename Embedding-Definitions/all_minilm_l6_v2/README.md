@@ -25,6 +25,12 @@ The following options can be supplied at scoring time through the `options` inpu
 | `Embedding_Length` | 384 | 384 | The length of the returned embedding vector. |
 | `Input_Token_Limit` | 256 | 256 | The limit of input tokens for the embedding model. |
 
+## Deployment
+
+What the SCR container needs from its environment (the caller-side options are in the table above):
+
+- The weights are baked into the image at build time; the container needs no provider connection and no key.
+
 ## Register and publish
 
 ```bash

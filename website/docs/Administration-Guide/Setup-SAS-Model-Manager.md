@@ -11,13 +11,13 @@ Install the CLI once, then run setup from within the locally cloned repository. 
 
 ```bash
 # Install the CLI with the Viya extra (one time)
-pip install -e Model-Definition-Builder/cli[viya]
+pip install -e "Model-Definition-Builder/cli[viya]"
 
 # Create the repository and both model projects, and write the seed files
 mdb setup
 ```
 
-`mdb setup` reads the SAS Viya connection from `SAS_VIYA_URL` / `SAS_VIYA_USER` / `SAS_VIYA_PASSWORD`, the point of contact from `SAS_RESPONSIBLE_PARTY`, the SCR base URL from `SAS_SCR_ENDPOINT`, and the deployment type from `SAS_DEPLOYMENT_TYPE` (`k8s` by default, or `aca` for Azure Container Apps/Instances). All of these live in your `.env`.
+`mdb setup` reads the SAS Viya server from `SAS_VIYA_URL` and signs in with whichever credential you provide (see [Signing in to SAS Viya](#viyaAuth) - a password is not required), the point of contact from `SAS_RESPONSIBLE_PARTY`, the SCR base URL from `SAS_SCR_ENDPOINT`, and the deployment type from `SAS_DEPLOYMENT_TYPE` (`k8s` by default, or `aca` for Azure Container Apps/Instances). All of these live in your `.env`.
 
 Running it produces two additional json files as outputs, that are required for the steps on the page [Deploying the Builder UIs](Setup-Additional-UIs.md):
 - *llm-prompt-builder.json*, this will enable your users to do No-Code Prompt Engineering.
@@ -42,16 +42,34 @@ The available variables (documented in `.env.example`) map to the arguments as f
 
 | Environment variable | Purpose |
 |---|---|
-| `SAS_VIYA_URL` | SAS Viya server URL |
-| `SAS_VIYA_USER` | Username to authenticate with |
-| `SAS_VIYA_PASSWORD` | Password (prompted for if omitted) |
+| `SAS_VIYA_URL` | SAS Viya server URL (falls back to the SAS Viya CLI profile's `sas-endpoint`) |
+| `SAS_VIYA_TOKEN` | An OAuth access token - the first credential tried |
+| `SAS_VIYA_USER` / `SAS_VIYA_PASSWORD` | Username and password for the password grant - tried second |
 | `SAS_VIYA_VERIFY_SSL` | Set to `false` only for an unrecognized self-signed certificate |
 | `SAS_SCR_ENDPOINT` | Base SCR endpoint URL |
 | `SAS_DEPLOYMENT_TYPE` | `k8s` (default) or `aca` |
 | `SAS_RESPONSIBLE_PARTY` | Point of contact recorded in Model Manager |
 | `SAS_PUBLISH_DESTINATION` | Default SCR publishing destination (`mdb publish`, overridable with `-d`) |
 
-The `.env` file is git-ignored, so your credentials are never committed. If the password is not supplied by any source, you are prompted for it securely instead of failing. With the connection details in `.env`, `mdb setup` needs no arguments at all.
+The `.env` file is git-ignored, so your credentials are never committed. With the connection details in `.env` (or a SAS Viya CLI login, below), `mdb setup` needs no arguments at all.
+
+### Signing in to SAS Viya {#viyaAuth}
+
+Every `mdb` command that talks to SAS Viya signs in the same way, trying three credentials in this order and using the first one that is set. Each command prints which one it used (`SAS Viya: <server> with ...`).
+
+1. **`SAS_VIYA_TOKEN`** - an OAuth access token from any source. `mdb` reads its expiry from the token and tells you when it has run out instead of failing on the first request.
+2. **`SAS_VIYA_USER` + `SAS_VIYA_PASSWORD`** - the password grant. This is the classic route and still the simplest for a service account, but it does not work when SAS Viya authenticates through an external identity provider (SSO / SCIM / OIDC), where the only account with a password is typically `sasboot`.
+3. **The SAS Viya CLI login.** If neither of the above is set, `mdb` uses the access token the [SAS Viya CLI](https://support.sas.com/downloads/package.htm?pid=2512) keeps in `~/.sas/credentials.json`:
+
+   ```bash
+   sas-viya profile init                      # once: the server URL
+   sas-viya auth loginCode                    # opens the browser and completes the SSO login
+   mdb setup                                  # -> SAS Viya: https://... with the SAS Viya CLI login (profile Default, expires ...)
+   ```
+
+   `sas-viya auth login` (username and password at the prompt) fills the same file. The profile is `Default` unless `SAS_CLI_PROFILE` - the CLI's own variable - names another, and a login for a different server than `SAS_VIYA_URL` is refused rather than silently used. When the login expires, `mdb` says so; run `sas-viya auth loginCode` again.
+
+On an SSO site, route 3 is all you need: leave `SAS_VIYA_USER` and `SAS_VIYA_PASSWORD` out of `.env`, log in with the CLI, and the repository, projects and registered models are created in your name rather than a service account's. Route 1 exists for the cases where the token comes from somewhere else - a CI secret, the [VS Code SAS extension](https://sassoftware.github.io/vscode-sas-extension/), or an authorization-code flow you completed yourself.
 
 ### Authorizing the Repository
 
