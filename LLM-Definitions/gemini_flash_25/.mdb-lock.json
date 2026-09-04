@@ -2,8 +2,8 @@
     "generator": "mdb 0.1.0",
     "manifest_sha256": "a941d647baf14210051fe1440e00c5cbc1229bee333a44a85593a56f89011a7c",
     "files": {
-        "Model-Card.md": "7398e711306aa389b73d7f01fe59aa38640c18afcc321e57576ae9c5b66b7fa0",
-        "README.md": "ed17bce9a64af60042ed428e4feef6576ee09ac35b0a45dffc3c0c904dfe7f0f",
+        "Model-Card.md": "82a7f702e295713557a4bcdf69e0fcda7ade30593eaa97f727c35be8d6d8fec6",
+        "README.md": "fae5baf0e0a6316c5e0bda12c3838c705c39e52e5914d0c2ceb54e86407c6035",
         "geminiflash25Score.py": "247be0913ec604693e001ad80b59a14291b5f6bdf6bbc1e2bb2256be454c7c9b",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
         "modelConfiguration.json": "1f38714fac8e35f7d93c2148e94bfee1f5b0a311fdc8de9a2dc01c312a06bb4a",

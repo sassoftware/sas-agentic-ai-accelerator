@@ -2,8 +2,8 @@
     "generator": "mdb 0.1.0",
     "manifest_sha256": "d4b2ec2f743d984cc3faab90458fbc95f9323972467839d4bb31c486d82ab860",
     "files": {
-        "Model-Card.md": "59c27090633ffc22aa73c9480ceffa45d9ce52453efa01b377f862f06b285c1d",
-        "README.md": "e0a0dd829880210443dc848784cd9affb1c18fccf9c44bcf61defee1eae1ed87",
+        "Model-Card.md": "74f9fd9c3933e90a1d22b96f6dea922222f4abbdd6a360352ceea0f8bcde8cee",
+        "README.md": "bb257afe712b5a6d09d4c9908b313bca65f1a97cd3cc30824e1c6d11838039c0",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
         "ling30FlashFreeScore.py": "f669dfb246947ebeb2a38e3b34ce7b06c4ad2d263950cdebfb10dcb2db9821f5",
         "modelConfiguration.json": "5a2dd3d7f0f25d96ff5d001745634f4177fa0f22b58ef7d3a20fc8d630bf1b4f",

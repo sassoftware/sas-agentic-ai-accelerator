@@ -25,6 +25,14 @@ The following options can be supplied at scoring time through the `options` inpu
 | `top_p` | 1 | 0 - 1 | An alternative to sampling with temperature, called nucleus sampling, where the model considers the results of the tokens with top_p probability mass. So 0.1 means only the tokens comprising the top 10% probability mass are considered. |
 | `API_KEY` | AzureOpenAI | sk-**** | This is the AzureOpenAI key that is used to make the actual request. |
 
+## Deployment
+
+What the SCR container needs from its environment (the caller-side options are in the table above):
+
+- `AZURE_OPENAI_RESOURCE` is **required**: the Azure resource the container calls (any host flavor - `<res>.openai.azure.com`, `<res>.cognitiveservices.azure.com`, `<res>.services.ai.azure.com` - or the bare resource name). This definition commits no resource, so one image serves any Azure resource.
+- `AZURE_OPENAI_API_VERSION` is optional: unset keeps what this definition bakes (nothing: the GA route), a version selects the legacy `/openai/deployments/<name>/...` route that some resources or org policies still require, and an explicitly *empty* value forces the GA `/openai/v1/...` route. A v1-only resource answers the legacy route with a bare 401 and no body - that is the symptom to look for. `AZURE_OPENAI_ENDPOINT` overrides the whole URL.
+- The key arrives per call in the `API_KEY` option.
+
 ## Register and publish
 
 ```bash

@@ -27,6 +27,12 @@ The following options can be supplied at scoring time through the `options` inpu
 | `thinking_budget` | 0 | 0 (off) or 1024 and above | Number of tokens an extended-thinking model may spend on internal reasoning before answering. 0 disables extended thinking. |
 | `API_KEY` | Anthropic | sk-**** | This is the Anthropic key that is used to make the actual request. |
 
+## Deployment
+
+What the SCR container needs from its environment (the caller-side options are in the table above):
+
+- The key arrives per call in the `API_KEY` option; the container needs no environment configuration beyond network access to the provider.
+
 ## Register and publish
 
 ```bash

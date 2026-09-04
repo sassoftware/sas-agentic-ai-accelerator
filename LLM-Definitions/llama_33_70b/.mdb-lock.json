@@ -2,8 +2,8 @@
     "generator": "mdb 0.1.0",
     "manifest_sha256": "748ba8c10d39944b0f133682f3af38bcf179a7c291fc577f7c524c7b08302bc9",
     "files": {
-        "Model-Card.md": "169de16275d102224e043843f2fb1ea2e9c0d9ba11c3974f77c2ae9a0acebe02",
-        "README.md": "238070dc0758a6d15011d6d633a7191518e5c57c5ae855e6434feaa019b8a93b",
+        "Model-Card.md": "88e51022d3a2e331ff34e81082ea6ee761567ae6d163de4012c0bfaa95c0677b",
+        "README.md": "fae0653dd3b3d71812414bcaba2044bd4eb09a5c1a43edcee7d79a955dd5c1aa",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
         "llama3370bScore.py": "4aa637e8f3e80be5d2f0d127d8e7ce212d993fb34f1e42c3557153aed132dfd2",
         "modelConfiguration.json": "3cbb7aa582b21a344c9931fcb228c608ce61b62fd16b06fd44a310bf41ceecc2",

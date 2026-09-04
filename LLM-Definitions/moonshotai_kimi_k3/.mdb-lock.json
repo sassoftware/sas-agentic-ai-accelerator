@@ -2,8 +2,8 @@
     "generator": "mdb 0.1.0",
     "manifest_sha256": "bdbd245c3445c7a44288f4464c2e70a8e9b913d43954c89efde9e5e17f4e16b1",
     "files": {
-        "Model-Card.md": "bf7946a57664dd01c07a40e82ff5cb27a9de3f8059808235b469bafeb7e2aaab",
-        "README.md": "8c5455361b2418af5dc38d4ca0b57ea2ba87ce75ddb228a1f5fff8907a492464",
+        "Model-Card.md": "04db3e3c5db85e38cee72012842811a050a9cae83d93091242e8db3eaf77f82f",
+        "README.md": "e55a122d6caa9bdb6838700b5bd67510b4197b81c302586cf0811f86f814c4aa",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
         "modelConfiguration.json": "99f4836fe66d9a7b73b671b56f4b5f28bec96dc02f87b781a7b26378f3708aea",
         "moonshotaiKimiK3Score.py": "e235d706b8aa3aeffb5dfd5103c0e58cccdf2742206f04e497ee3062adb7b27f",

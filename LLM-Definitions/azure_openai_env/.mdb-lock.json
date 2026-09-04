@@ -2,8 +2,8 @@
     "generator": "mdb 0.1.0",
     "manifest_sha256": "c637785bf2a5a6974189a1cfb078ad5ce9c4d55f3c5f651489509c63552081bc",
     "files": {
-        "Model-Card.md": "26af4ff7aee7144bad38decca6c39b4decb11d27c29f69bb922a5b972591a4c4",
-        "README.md": "c64b1a2798db0c43c93ce42a73fc6f8305c4f65aaf9f127b356db9a755c56593",
+        "Model-Card.md": "a5f3536a3725d942f77663cbe1fc7d957a9148abb64eeabd956181db35a46a1c",
+        "README.md": "f9ae81c0d53fa58dc792f1ace22dcb9b5fba0a2b8018df092af56d5e3e6ba4d4",
         "azureOpenaiEnvScore.py": "80ddbeac4366e95a727f7b0d641299e9928e1ba11c012ad0b3418a1cb71ebdf9",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
         "modelConfiguration.json": "94ed4b8bf68799b081b1aeca7e1fcc29eb5b4b47d8b2a4a34e21b2e2366321fd",
