@@ -357,8 +357,12 @@ class AzureFoundryAdapter(OpenAICompatAdapter):
                 or os.environ.get("AZURE_OPENAI_RESOURCE") or "").strip()
         if host and "." not in host:
             host = f"{host}.openai.azure.com"
-        api_version = (manifest.provider.params.get("api_version")
-                       or os.environ.get("AZURE_OPENAI_API_VERSION") or "").strip()
+        # Same rule as the score code: an unset variable keeps the baked version,
+        # a set one - even empty, meaning the GA route - overrides it.
+        api_version = os.environ.get("AZURE_OPENAI_API_VERSION")
+        if api_version is None:
+            api_version = manifest.provider.params.get("api_version") or ""
+        api_version = api_version.strip()
         if api_version:
             return (f"https://{host}/openai/deployments/{manifest.provider.model_version}"
                     f"/{route}?api-version={api_version}")
