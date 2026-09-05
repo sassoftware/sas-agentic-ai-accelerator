@@ -20,6 +20,10 @@ logger = logging.getLogger("scoreModel")
 def scoreModel(userPrompt, systemPrompt, options):
     "Output: response, run_time, prompt_length, output_length"
     started_timestamp = time.time()
+    # One value per input, whatever the caller's convention: CAS/SCR pass
+    # one-element lists, the MAS REST API passes plain strings - and a str
+    # indexed with [0] silently becomes its first character.
+    userPrompt, systemPrompt = _scalar(userPrompt), _scalar(systemPrompt)
     optionsDefaults = {
 {{ options_defaults_block }}
     }
@@ -27,8 +31,8 @@ def scoreModel(userPrompt, systemPrompt, options):
     options = {**optionsDefaults, **requested}
     payload = {
         "model": modelVersion,
-        "system": systemPrompt[0],
-        "messages": [{"role": "user", "content": userPrompt[0]}],
+        "system": systemPrompt,
+        "messages": [{"role": "user", "content": userPrompt}],
 {{ body_options_block }}
     }
 {{ exclusive_options_block }}{{ thinking_block }}    responseObject = requests.post(

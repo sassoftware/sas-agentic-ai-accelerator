@@ -71,9 +71,12 @@ spec:
         # deployment ignores it.
         - name: AZURE_OPENAI_DEPLOYMENT
           value: "{{ AZURE-DEPLOYMENT-NAME }}"
-        # Optional. Leave unset for the GA v1 endpoint; set an API version
-        # (e.g. 2024-10-21) if the resource or an org policy requires the
-        # legacy /openai/deployments/<name>/... route.
+        # Optional. Unset uses what the definition bakes (normally nothing, i.e.
+        # the GA v1 endpoint). Set an API version (e.g. 2024-10-21) if the
+        # resource or an org policy requires the legacy
+        # /openai/deployments/<name>/... route - or set it EMPTY (value: "")
+        # to force the GA route for a definition that bakes a version: a
+        # v1-only resource answers the legacy route with a bare 401.
         # - name: AZURE_OPENAI_API_VERSION
         #   value: "2024-10-21"
         # Optional. A full URL that replaces the one built from the values

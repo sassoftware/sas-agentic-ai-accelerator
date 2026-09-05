@@ -26,6 +26,12 @@ The following options can be supplied at scoring time through the `options` inpu
 | `Input_Token_Limit` | 32000 | 32000 | The limit of input tokens for the embedding model. |
 | `API_KEY` | VoyageAI | sk-**** | This is the VoyageAI key that is used to make the actual request. |
 
+## Deployment
+
+What the SCR container needs from its environment (the caller-side options are in the table above):
+
+- The key arrives per call in the `API_KEY` option; the container needs no environment configuration beyond network access to the provider.
+
 ## Register and publish
 
 ```bash

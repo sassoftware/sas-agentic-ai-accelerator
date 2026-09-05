@@ -21,12 +21,16 @@ logger = logging.getLogger("scoreModel")
 def scoreModel(document, project, options):
     "Output: embedding, run_time, tokens"
     started_timestamp = time.time()
+    # One value per input, whatever the caller's convention: CAS/SCR pass
+    # one-element lists, the MAS REST API passes plain strings - and a str
+    # indexed with [0] silently becomes its first character.
+    document, project = _scalar(document), _scalar(project)
     optionsDefaults = {
 {{ options_defaults_block }}
     }
     options = {**optionsDefaults, **_parse_options(options)}
     payload = {
-        "content": {"parts": [{"text": document[0]}]},
+        "content": {"parts": [{"text": document}]},
 {{ body_options_block }}
     }
     responseObject = requests.post(
@@ -54,13 +58,13 @@ def scoreModel(document, project, options):
             "Content-Type": "application/json",
             "x-goog-api-key": options["API_KEY"],
         },
-        json={"contents": [{"parts": [{"text": document[0]}]}]},
+        json={"contents": [{"parts": [{"text": document}]}]},
         timeout={{ timeout_s }},
     )
     tokens = countObject.json().get('totalTokens', 0)
     run_time = time.time() - started_timestamp
     # Logging the response
-    logger.info(f"project: {project[0]}")
+    logger.info(f"project: {project}")
     logger.info(f"tokens: {tokens}")
     logger.info(f"run_time: {run_time}")
     return embedding, run_time, tokens

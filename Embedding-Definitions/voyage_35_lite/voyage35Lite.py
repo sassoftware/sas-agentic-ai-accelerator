@@ -16,19 +16,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger("scoreModel")
 
+def _scalar(value):
+    """The one value behind an SCR input, whatever the caller's convention.
+
+    CAS / DATA step and the SCR container hand each input over as a
+    one-element list (or pandas Series); the MAS REST API hands over the plain
+    string. A str also answers len() and [0], so indexing it does not fail - it
+    silently keeps the first character, and "What is SAS Viya?" is scored as
+    "W". Normalise once, here, and never index an input again."""
+    if value is None:
+        return ''
+    if isinstance(value, (str, bytes, dict)):
+        return value
+    if hasattr(value, 'iloc'):  # pandas Series
+        return value.iloc[0] if len(value) > 0 else ''
+    if hasattr(value, '__len__') and hasattr(value, '__getitem__'):
+        # list, tuple, numpy array, ...: whatever answered [0] before still does
+        return value[0] if len(value) > 0 else ''
+    return value
+
 def _parse_options(opts):
     """Parse the SCR options argument: pandas Series, list, dict or the
     pseudo-JSON string format ({key:value,key2:value2}) used by the framework."""
-    if opts is None or (hasattr(opts, '__len__') and len(opts) == 0):
-        return {}
-    if hasattr(opts, 'iloc'):  # pandas Series
-        raw = opts.iloc[0] if len(opts) > 0 else None
-    else:  # list or tuple
-        raw = opts[0] if len(opts) > 0 else None
-    if not raw:
+    raw = _scalar(opts)
+    if raw is None or raw == '' or (hasattr(raw, '__len__') and len(raw) == 0):
         return {}
     if isinstance(raw, dict):
         return raw
+    if isinstance(raw, bytes):
+        raw = raw.decode('utf-8', 'replace')
     if isinstance(raw, str):
         # Try strict JSON first (must be an object - scalars fall through)
         try:
@@ -61,12 +77,16 @@ def _parse_options(opts):
 def scoreModel(document, project, options):
     "Output: embedding, run_time, tokens"
     started_timestamp = time.time()
+    # One value per input, whatever the caller's convention: CAS/SCR pass
+    # one-element lists, the MAS REST API passes plain strings - and a str
+    # indexed with [0] silently becomes its first character.
+    document, project = _scalar(document), _scalar(project)
     optionsDefaults = {
 
     }
     options = {**optionsDefaults, **_parse_options(options)}
     payload = {
-        "input": document[0],
+        "input": document,
         "model": modelVersion,
 
     }
@@ -91,7 +111,7 @@ def scoreModel(document, project, options):
     tokens = responseJson['usage']['total_tokens']
     run_time = time.time() - started_timestamp
     # Logging the response
-    logger.info(f"project: {project[0]}")
+    logger.info(f"project: {project}")
     logger.info(f"tokens: {tokens}")
     logger.info(f"run_time: {run_time}")
     return embedding, run_time, tokens

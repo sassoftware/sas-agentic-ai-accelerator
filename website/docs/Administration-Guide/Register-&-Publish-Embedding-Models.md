@@ -9,7 +9,7 @@ The folder *Embedding-Definitions* contains a definition per embedding model, ea
 Embedding models are registered and published with the same **`mdb`** command line as the LLMs — one tool covers both kinds — so this page is short by design. See [Register & Publish LLMs](./Register-&-Publish-LLMs.md) for the full description of `register`, `publish`, `--update`, `--wait` and `ship`. If you have not installed the CLI yet:
 
 ```bash
-pip install -e Model-Definition-Builder/cli[viya]
+pip install -e "Model-Definition-Builder/cli[viya]"
 ```
 
 Register and publish embedding models by their ids exactly as you would an LLM:

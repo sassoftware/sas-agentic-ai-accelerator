@@ -22,6 +22,14 @@ Input: $0.15 per 1M tokens - Output: $0.6 per 1M tokens
 
 This model is registered in SAS Model Manager as part of the SAS Agentic AI Accelerator and is intended to be used through the framework's scoring contract (`userPrompt`, `systemPrompt`, `options` → `response`, `run_time`, `prompt_length`, `output_length`), for example from the LLM Prompt Builder or SAS Intelligent Decisioning.
 
+## Deployment
+
+The model runs as a SAS Container Runtime (SCR) image published from SAS Model Manager and is called through its SCR endpoint. What the container needs from its environment:
+
+- `AZURE_OPENAI_RESOURCE` is **required**: the Azure resource the container calls (any host flavor - `<res>.openai.azure.com`, `<res>.cognitiveservices.azure.com`, `<res>.services.ai.azure.com` - or the bare resource name). This definition commits no resource, so one image serves any Azure resource.
+- `AZURE_OPENAI_API_VERSION` is optional: unset keeps what this definition bakes (nothing: the GA route), a version selects the legacy `/openai/deployments/<name>/...` route that some resources or org policies still require, and an explicitly *empty* value forces the GA `/openai/v1/...` route. A v1-only resource answers the legacy route with a bare 401 and no body - that is the symptom to look for. `AZURE_OPENAI_ENDPOINT` overrides the whole URL.
+- The key arrives per call in the `API_KEY` option.
+
 ## Limitations and Responsible Use
 
 Refer to the `modelConfiguration.json` of this definition for the framework's documented purpose, intended use, expected benefits, out-of-scope use cases and limitations, and consult the provider's own model documentation for model-specific evaluations and safety characteristics.

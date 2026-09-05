@@ -36,9 +36,12 @@ defaultDeploymentName = 'gpt-5.6-luna'
 #   AZURE_OPENAI_RESOURCE     the resource/project host serving the deployment:
 #                             <res>.openai.azure.com, <res>.cognitiveservices.azure.com,
 #                             <res>.services.ai.azure.com, or the bare <res>
-#   AZURE_OPENAI_API_VERSION  empty = the GA v1 endpoint (/openai/v1/...); a version
-#                             selects the legacy /openai/deployments/<name>/... route
-#                             that some resources or org policies still require
+#   AZURE_OPENAI_API_VERSION  a version selects the legacy /openai/deployments/<name>/...
+#                             route that some resources or org policies still require;
+#                             unset = the default baked below; set but EMPTY = the GA
+#                             v1 endpoint (/openai/v1/...) even when a version is baked.
+#                             A v1-only resource answers the legacy route with a bare
+#                             401 - give it the empty value.
 #   AZURE_OPENAI_ENDPOINT     optional full URL that replaces the built one, for a
 #                             gateway in front of Azure - it must include the route
 RESOURCE_ENV = 'AZURE_OPENAI_RESOURCE'
@@ -69,7 +72,10 @@ def _azure_endpoint(deploymentName, route):
     # A short resource name expands to the classic Azure OpenAI host
     if '.' not in host:
         host = f"{host}.openai.azure.com"
-    apiVersion = _from_env(API_VERSION_ENV, defaultApiVersion)
+    # Unlike the resource, an EMPTY version is a meaningful choice - the GA route -
+    # so only an unset variable falls back to the baked default.
+    apiVersion = os.environ.get(API_VERSION_ENV)
+    apiVersion = (defaultApiVersion if apiVersion is None else apiVersion).strip()
     if apiVersion:
         # Legacy deployment-scoped route (deployment in the path, api-version required)
         return f"https://{host}/openai/deployments/{deploymentName}/{route}?api-version={apiVersion}"
@@ -85,19 +91,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger("scoreModel")
 
+def _scalar(value):
+    """The one value behind an SCR input, whatever the caller's convention.
+
+    CAS / DATA step and the SCR container hand each input over as a
+    one-element list (or pandas Series); the MAS REST API hands over the plain
+    string. A str also answers len() and [0], so indexing it does not fail - it
+    silently keeps the first character, and "What is SAS Viya?" is scored as
+    "W". Normalise once, here, and never index an input again."""
+    if value is None:
+        return ''
+    if isinstance(value, (str, bytes, dict)):
+        return value
+    if hasattr(value, 'iloc'):  # pandas Series
+        return value.iloc[0] if len(value) > 0 else ''
+    if hasattr(value, '__len__') and hasattr(value, '__getitem__'):
+        # list, tuple, numpy array, ...: whatever answered [0] before still does
+        return value[0] if len(value) > 0 else ''
+    return value
+
 def _parse_options(opts):
     """Parse the SCR options argument: pandas Series, list, dict or the
     pseudo-JSON string format ({key:value,key2:value2}) used by the framework."""
-    if opts is None or (hasattr(opts, '__len__') and len(opts) == 0):
-        return {}
-    if hasattr(opts, 'iloc'):  # pandas Series
-        raw = opts.iloc[0] if len(opts) > 0 else None
-    else:  # list or tuple
-        raw = opts[0] if len(opts) > 0 else None
-    if not raw:
+    raw = _scalar(opts)
+    if raw is None or raw == '' or (hasattr(raw, '__len__') and len(raw) == 0):
         return {}
     if isinstance(raw, dict):
         return raw
+    if isinstance(raw, bytes):
+        raw = raw.decode('utf-8', 'replace')
     if isinstance(raw, str):
         # Try strict JSON first (must be an object - scalars fall through)
         try:
@@ -130,6 +152,10 @@ def _parse_options(opts):
 def scoreModel(userPrompt, systemPrompt, options):
     "Output: response, run_time, prompt_length, output_length"
     started_timestamp = time.time()
+    # One value per input, whatever the caller's convention: CAS/SCR pass
+    # one-element lists, the MAS REST API passes plain strings - and a str
+    # indexed with [0] silently becomes its first character.
+    userPrompt, systemPrompt = _scalar(userPrompt), _scalar(systemPrompt)
     optionsDefaults = {
         "reasoning_effort": "medium",
         "max_completion_tokens": 4000,
@@ -150,8 +176,8 @@ def scoreModel(userPrompt, systemPrompt, options):
     modelEndpoint = _azure_endpoint(deploymentName, 'chat/completions')
     payload = {
         "model": deploymentName,
-        "messages": [{"role": "system", "content": systemPrompt[0]},
-            {"role": "user", "content": userPrompt[0]}],
+        "messages": [{"role": "system", "content": systemPrompt},
+            {"role": "user", "content": userPrompt}],
         "reasoning_effort": {"minimal": "none", "low": "low", "medium": "medium", "high": "high", "maximum": "xhigh"}.get(str(options["reasoning_effort"]), "medium"),
         "max_completion_tokens": int(options["max_completion_tokens"]),
     }
