@@ -8,7 +8,8 @@
 #
 # By default the entries come from the accelerator's git-ignored .env file:
 # provider key variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, ...) map onto
-# their provider entry names (OpenAI, Anthropic, ...), and every
+# the entry names the definitions' API_KEY option references (OpenAI,
+# Anthropic, AzureOpenAI, ...), and every
 # <BACKEND>_RAG_USER / <BACKEND>_RAG_PW variable is carried over verbatim
 # (uppercased) so one domain serves several vector stores, as is every
 # <BACKEND>_HOST / _PORT / _DB / _SSLMODE connection setting (RAGSTORE_* is
@@ -63,16 +64,21 @@ python3 - "$KEYS_FILE" "$ENV_FILE" "$DOMAIN" "$IDENTITY_TYPE" "$IDENTITY_ID" > "
 import base64, json, os, re, sys
 keys_file, env_file, domain, identity_type, identity_id = sys.argv[1:6]
 
+# An entry name is the KeyName of the definitions' API_KEY option (key_name
+# in definition.yaml, API_KEY.default in options.json): the Prompt Builder
+# and the RAG Builder look a model's key up under exactly that name, so a
+# renamed entry is a disabled model. Keep in step with the PowerShell twin,
+# mdb's PROVIDER_ENTRIES and rag_core/providers.py.
 PROVIDER_MAP = {
     "OPENAI_API_KEY": "OpenAI",
     "ANTHROPIC_API_KEY": "Anthropic",
     "GEMINI_API_KEY": "Google",
     "OPENROUTER_API_KEY": "OpenRouter",
-    "AZURE_OPENAI_API_KEY": "Azure OpenAI",
+    "AZURE_OPENAI_API_KEY": "AzureOpenAI",
     "MISTRAL_API_KEY": "Mistral",
-    "VOYAGE_API_KEY": "Voyage.ai",
+    "VOYAGE_API_KEY": "VoyageAI",
     "HUGGINGFACE_API_KEY": "HuggingFace",
-    "AWS_BEDROCK_API_KEY": "AWS Bedrock",
+    "AWS_BEDROCK_API_KEY": "AWSBedrock",
 }
 RAG_ENTRY = re.compile(r"^[A-Za-z][A-Za-z0-9]*_RAG_(USER|PW)$")
 # connection settings: not secret, but the domain is the one place every

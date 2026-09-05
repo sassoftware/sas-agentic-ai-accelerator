@@ -4,16 +4,21 @@
 
 A model that runs as a local container needs no key. One that forwards to a
 hosted API reads its key from the SCR ``options`` argument, and that key lives
-in the credential domain under the PROVIDER's name — the same entry the Prompt
-Builder uses for that provider's LLMs (``OpenAI``, ``Google``, …). So the
-mapping this module owns is model → provider entry.
+in the credential domain under the KeyName the definition's ``API_KEY`` option
+references (``key_name`` in definition.yaml, ``API_KEY.default`` in
+options.json) — the same entry the Prompt Builder resolves for that model
+(``OpenAI``, ``Google``, ``AzureOpenAI``, …), and the name the
+create-credential-domain scripts and ``mdb credentials-apply`` write. So the
+mapping this module owns is model → key entry.
 
-Two maps, one rule. ``API_KEY_ENTRIES`` mirrors the provider column of
-Embedding-Definitions/embedding_fact_sheet.csv for the embedding models whose
-cost_type is Tokens; ``LLM_KEY_ENTRIES`` mirrors the same column of
-LLM-Definitions/llm_fact_sheet.csv for every LLM whose deployment_type is API
-— the models the Enrich stage can be pointed at. Everything else is served
-locally and maps to "".
+Two maps, one rule. ``API_KEY_ENTRIES`` covers the embedding models of
+Embedding-Definitions/embedding_fact_sheet.csv whose cost_type is Tokens;
+``LLM_KEY_ENTRIES`` covers every LLM of LLM-Definitions/llm_fact_sheet.csv
+whose deployment_type is API — the models the Enrich stage can be pointed at.
+The entry is each definition's ``API_KEY.default``; a hosted model whose
+options declare no ``API_KEY`` (the container holds the key, e.g. the
+environment-configured Azure definition) and everything served locally map
+to "".
 
 An unlisted model maps to "" too, which is the safe default in one direction
 and an honest failure in the other: a locally-served model works, and an
@@ -32,18 +37,18 @@ API_KEY_ENTRIES = {
     "gemini_embedding_001": "Google",
     "text_embedding_3_large": "OpenAI",
     "text_embedding_3_small": "OpenAI",
-    "titan_embed_text_v2": "AWS Bedrock",
-    "voyage_35": "Voyage.ai",
-    "voyage_35_lite": "Voyage.ai",
-    "voyage_code_3": "Voyage.ai",
-    "voyage_finance_2": "Voyage.ai",
-    "voyage_law_2": "Voyage.ai",
+    "titan_embed_text_v2": "AWSBedrock",
+    "voyage_35": "VoyageAI",
+    "voyage_35_lite": "VoyageAI",
+    "voyage_code_3": "VoyageAI",
+    "voyage_finance_2": "VoyageAI",
+    "voyage_law_2": "VoyageAI",
 }
 
 
 #: LLM model_id -> credential-domain entry name (deployment_type API only)
 LLM_KEY_ENTRIES = {
-    "claude_haiku_4_5_bedrock": "AWS Bedrock",
+    "claude_haiku_4_5_bedrock": "AWSBedrock",
     "claude_sonnet_4_5": "Anthropic",
     "free_models_router": "OpenRouter",
     "gemini_flash_25": "Google",
@@ -52,11 +57,10 @@ LLM_KEY_ENTRIES = {
     "gpt_4o_2024_05_13": "OpenAI",
     "gpt_4o_mini_2024_07_18": "OpenAI",
     "gpt_4o_mini_2025_01_01": "OpenAI",
-    "gpt_4o_mini_az_2024_07_18": "Azure OpenAI",
+    "gpt_4o_mini_az_2024_07_18": "AzureOpenAI",
     "gpt_56_sol": "OpenAI",
     "gpt_5_mini": "OpenAI",
     "ling_3_0_flash_free": "OpenRouter",
-    "llama_31_405b": "Meta",
     "llama_33_70b": "OpenRouter",
     "mistral_small_32": "Mistral",
     "moonshotai_kimi_k3": "OpenRouter",
@@ -121,25 +125,44 @@ def api_key_for(model: str, secrets: dict) -> str:
     return key
 
 
-def _regenerate(csv_path: str, variable: str, api_only: bool) -> str:
-    """Re-emit one of the maps from its fact sheet (developer utility).
+def key_entries(csv_path: str, api_only: bool) -> dict:
+    """model_id -> key entry for the hosted models of one fact sheet.
 
-    The two sheets say "this model calls a hosted API" differently - the
-    embedding sheet through cost_type, the LLM sheet through deployment_type -
-    so the caller passes which test applies rather than this guessing.
+    The sheet says which models call a hosted API - the embedding sheet
+    through cost_type, the LLM sheet through deployment_type, so the caller
+    passes which test applies rather than this guessing. The entry itself is
+    the `API_KEY` default of the model's options.json, which sits in the
+    definition folder next to the sheet; a hosted model without an `API_KEY`
+    option needs no entry and is left out.
     """
     import csv
+    import json
+    import os
 
-    lines = [variable + " = {"]
+    entries = {}
     with open(csv_path, newline="", encoding="utf-8-sig") as fh:
         for row in sorted(csv.DictReader(fh), key=lambda r: r.get("model_id") or ""):
             hosted = ((row.get("deployment_type") or "").strip() == "API"
                       if api_only else
                       (row.get("cost_type") or "").strip() == "Tokens")
-            provider = (row.get("provider") or "").strip()
-            if not hosted or not provider or provider == ".":
+            if not hosted:
                 continue
-            lines.append(f'    "{row["model_id"]}": "{provider}",')
+            options = os.path.join(os.path.dirname(csv_path), row["model_id"], "options.json")
+            try:
+                with open(options, encoding="utf-8") as ofh:
+                    entry = str(json.load(ofh).get("API_KEY", {}).get("default") or "").strip()
+            except (OSError, ValueError):
+                entry = ""
+            if entry:
+                entries[row["model_id"]] = entry
+    return entries
+
+
+def _regenerate(csv_path: str, variable: str, api_only: bool) -> str:
+    """Re-emit one of the maps as source (developer utility)."""
+    lines = [variable + " = {"]
+    for model_id, entry in key_entries(csv_path, api_only).items():
+        lines.append(f'    "{model_id}": "{entry}",')
     lines.append("}")
     return "\n".join(lines)
 
