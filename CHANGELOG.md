@@ -2,6 +2,14 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [2.0.4] - Unreleased
+
+The credential domain names a key the way the model asks for it.
+
+### Fixed
+
+- **Azure OpenAI, AWS Bedrock and Voyage keys are found in the credential domain.** The Prompt Builder and the RAG Builder resolve a model's key with an exact lookup of the `KeyName` its `API_KEY` option references (`AzureOpenAI`, `AWSBedrock`, `VoyageAI`), but `create-credential-domain.sh` / `.ps1` and `mdb credentials-apply` stored those three keys under the provider's display name (`Azure OpenAI`, `AWS Bedrock`, `Voyage.ai`), so the models stayed disabled with a *no credential* note although the key was in the domain. The scripts, `mdb`, the RAG Builder's model → entry maps and the *Managing Credentials* guide now all use the `KeyName`, and a test keeps every definition's `key_name` among the entries the tools write. **Migration:** a credential is replaced whole on every run, so rerun the script (or `mdb credentials-apply`) once per identity that holds one of the three keys. Thanks to @bteleuca for the Azure report and fix (#31).
+
 ## [2.0.3] - 2026-09-04
 
 A model answers the whole prompt whichever API calls it, and `mdb` signs in to SAS Viya without a password.

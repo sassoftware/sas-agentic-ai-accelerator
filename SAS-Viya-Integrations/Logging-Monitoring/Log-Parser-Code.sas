@@ -121,7 +121,7 @@ def parse_log_file(file_path):
             entry["timestamp"] = lines[i].split(' - ')[0].strip()
             match_endpoint = re.search(r'Request: POST\s+(.+)', lines[i])
             if match_endpoint:
-                entry["model"] = match_endpoint.group(1).strip().strip('/').lstrip('/')
+                entry["model"] = match_endpoint.group(1).strip().strip('/')
             i += 1
 
             response_lines = []

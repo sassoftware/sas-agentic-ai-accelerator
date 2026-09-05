@@ -7,8 +7,9 @@
 # ONE domain holds every key the accelerator needs. A credential belongs to a
 # user or a group and carries a map of named secrets:
 #
-#   OpenAI, Anthropic, Google, ...       LLM provider API keys (the provider
-#                                        names of the model fact sheets)
+#   OpenAI, Anthropic, Google, ...       LLM provider API keys (the KeyName
+#                                        each definition's API_KEY option
+#                                        references)
 #   PGVECTOR_RAG_USER, PGVECTOR_RAG_PW   RAG vector-store credentials - the
 #   SINGLESTORE_RAG_USER, ...            prefix names the vector DB backend,
 #                                        so one domain serves several stores
@@ -34,9 +35,9 @@
 #   OPENROUTER_API_KEY       OpenRouter
 #   AZURE_OPENAI_API_KEY     AzureOpenAI
 #   MISTRAL_API_KEY          Mistral
-#   VOYAGE_API_KEY           Voyage.ai
+#   VOYAGE_API_KEY           VoyageAI
 #   HUGGINGFACE_API_KEY      HuggingFace
-#   AWS_BEDROCK_API_KEY      AWS Bedrock
+#   AWS_BEDROCK_API_KEY      AWSBedrock
 #   <BACKEND>_RAG_USER/_PW   <BACKEND>_RAG_USER/_PW (uppercased)
 #   <BACKEND>_HOST/PORT/     <BACKEND>_HOST/PORT/DB/SSLMODE (uppercased)
 #   DB/SSLMODE               - RAGSTORE_* included, as the shared fallback
@@ -132,6 +133,11 @@ function Read-NameValueFile([string]$path) {
     return $entries
 }
 
+# An entry name is the KeyName of the definitions' API_KEY option (key_name
+# in definition.yaml, API_KEY.default in options.json): the Prompt Builder
+# and the RAG Builder look a model's key up under exactly that name, so a
+# renamed entry is a disabled model. Keep in step with the shell twin,
+# mdb's PROVIDER_ENTRIES and rag_core/providers.py.
 $providerMap = [ordered]@{
     'OPENAI_API_KEY'       = 'OpenAI'
     'ANTHROPIC_API_KEY'    = 'Anthropic'
@@ -139,9 +145,9 @@ $providerMap = [ordered]@{
     'OPENROUTER_API_KEY'   = 'OpenRouter'
     'AZURE_OPENAI_API_KEY' = 'AzureOpenAI'
     'MISTRAL_API_KEY'      = 'Mistral'
-    'VOYAGE_API_KEY'       = 'Voyage.ai'
+    'VOYAGE_API_KEY'       = 'VoyageAI'
     'HUGGINGFACE_API_KEY'  = 'HuggingFace'
-    'AWS_BEDROCK_API_KEY'  = 'AWS Bedrock'
+    'AWS_BEDROCK_API_KEY'  = 'AWSBedrock'
 }
 
 $secrets = @{}
