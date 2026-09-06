@@ -185,27 +185,43 @@ The active language is chosen from `navigator.language`, falling back to English
 
 ## Project structure
 
+Two apps are built from one source tree: `index.html` + `src/main.ts` is the
+Prompt Builder (`npm run build` → `dist/index.html`), `rag.html` +
+`src/main-rag.ts` is the RAG Builder (`npm run build:rag` → `dist-rag/rag.html`,
+not committed - it ships inside the RAG Builder transfer package).
+
 ```
 src/
-  main.ts                 App bootstrap (no-auth; mounts the Prompt Builder)
-  config.ts               Build-time config + URL-param overrides
-  styles.css              Prompt Builder specific styles (Bootstrap is bundled)
-  state/app-state.ts      Minimal global state (viyaHost, CSRF token, user)
+  main.ts / main-rag.ts     App bootstraps (no-auth; mount one Builder each)
+  config.ts / config-rag.ts Build-time config + URL-param overrides per app
+  styles.css                Shared styles (Bootstrap is bundled)
+  state/app-state.ts        Minimal global state (viyaHost, CSRF token, user)
   api/
-    http-client.ts        viyaFetch + CSRF retry (credentials: include)
-    models-api.ts         SAS Model Manager calls
-    files-api.ts          File content retrieval
-    identity-api.ts       Current-user lookup
-    scr-api.ts            SCR LLM invocation
-  ui/
-    accordion.ts          Bootstrap accordion helper
-    dom-helpers.ts        HTML escaping
-    markdown.ts           Markdown rendering (marked + DOMPurify)
-  util/validation.ts      DS2 / Python name validation
-  i18n/                   Bundled locale files + loader
-  va/ddc.ts               VA DDC integration: options-group Properties panel
-  objects/prompt-builder.ts  The Prompt Builder UI
-  types/                  Shared TypeScript types + vendor module decls
+    http-client.ts          viyaFetch + CSRF retry (credentials: include)
+    models-api.ts           SAS Model Manager calls
+    files-api.ts            File content retrieval
+    folders-api.ts          SAS Content folders
+    identity-api.ts         Current-user lookup
+    credentials-api.ts      Provider keys from the credential domain
+    scr-api.ts              SCR LLM invocation
+    judge-api.ts            LLM-as-a-Judge calls
+    jobdef-api.ts / jobexec-api.ts  SAS Job Execution (optimize, ingest, test retrieval)
+    dataflows-api.ts        SAS Studio flows and custom steps
+    relationships-api.ts    Decision usage of a prompt (delete guard)
+    cas-api.ts              CAS servers, caslibs and tables
+  ui/                       accordion, combobox, modals, doc sections, list
+                            filter, markdown (marked + DOMPurify), option
+                            controls, toasts, HTML escaping
+  util/validation.ts        DS2 / Python name validation
+  i18n/                     Bundled locale files + loader
+  va/ddc.ts / ddc-rag.ts    VA DDC integration: options-group Properties panel per app
+  objects/
+    prompt-builder.ts       The Prompt Builder UI
+    rag-builder.ts          The RAG Builder UI
+    rag-*.ts                RAG backends, options, enrichment, flow and job
+                            generation, manifest, retrieval log
+    embedding-models.ts     Embedding model listing
+  types/                    Shared TypeScript types + vendor module decls
 ```
 
 ## License

@@ -1,6 +1,4 @@
-# Interacting with the LLM Framework
-
-[TOC]
+# Interacting with the LLMs from SAS code
 
 This documentation provides an overview of how to use the different SAS files to be able to do both the prompt experimentation and also running the actual calls against the LLM.
 

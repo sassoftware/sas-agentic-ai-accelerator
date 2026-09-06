@@ -20,21 +20,33 @@ on:
       - "Embedding-Definitions/**"
       - "Model-Definition-Builder/**"
       - "SAS-Viya-Integrations/*.json"
+      - "SAS-Viya-Integrations/RAG/**"
+      - "SAS-Viya-Integrations/Other/**"
+      - ".github/workflows/verify-model-definitions.yml"
   pull_request:
     paths:
       - "LLM-Definitions/**"
       - "Embedding-Definitions/**"
       - "Model-Definition-Builder/**"
       - "SAS-Viya-Integrations/*.json"
+      - "SAS-Viya-Integrations/RAG/**"
+      - "SAS-Viya-Integrations/Other/**"
+      - ".github/workflows/verify-model-definitions.yml"
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is what SAS Viya's compute Python ships; 3.12 covers the
+        # setuptools/distutils shim sasctl needs on newer interpreters
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       - name: Install mdb
         run: pip install -e "./Model-Definition-Builder/cli[dev]"
       - name: Drift gate - committed assets match their manifests
@@ -43,5 +55,11 @@ jobs:
         run: mdb validate --all
       - name: Transfer packages name no environment
         run: mdb package-check
-      - name: Test suite
+      - name: mdb test suite
         run: python -m pytest Model-Definition-Builder/cli/tests -q
+      - name: RAG runtime test suite
+        # rag_core is pure Python plus pandas; the store adapters and the
+        # extractors skip their tests when the optional drivers are absent
+        run: |
+          pip install pandas requests pytest
+          python -m pytest SAS-Viya-Integrations/RAG/tests -q

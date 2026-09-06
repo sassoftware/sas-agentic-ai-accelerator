@@ -114,7 +114,11 @@ class Context:
 def _env_api_key(adapter: ProviderAdapter) -> Optional[str]:
     if not adapter.env_key_var:
         return None
-    return os.environ.get(adapter.env_key_var)
+    for name in (adapter.env_key_var, *getattr(adapter, "env_key_fallbacks", ())):
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
 
 
 def _print_issues(issues) -> bool:

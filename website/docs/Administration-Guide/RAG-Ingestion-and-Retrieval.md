@@ -48,8 +48,10 @@ step mints a new id, and every saved flow referencing the old id breaks.
 ## Serving the RAG Builder
 
 The Builder is a single-file app served through SAS Job Execution, the same
-way as the Prompt Builder. Build it with `npm run build:rag` (or take the
-prebuilt file) and create a job definition whose **form** is that HTML:
+way as the Prompt Builder. Build it with `npm run build:rag` in
+`LLM-Prompt-Builder/` (unlike the Prompt Builder no prebuilt file is
+committed; the transfer package above carries the built app) and create a
+job definition whose **form** is that HTML:
 
 | | |
 | --- | --- |

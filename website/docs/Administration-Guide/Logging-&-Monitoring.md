@@ -12,7 +12,11 @@ In order to make use of these logs, which are written to the standard out of eac
 If you do not have an established logging and monitoring process, you can use the simplified logging script provided below.
 Otherwise, if you do have an established way of collecting logs, ensure that you can export them to a folder that can be accessed from SAS Studio as a `.log` file (as that it is the input for the parsing utilities).
 
-For more information on how to parse the log and load it into to SAS please take a look at `SAS-Viya-Integrations/Logging-Monitoring`.
+For more information on how to parse the log and load it into SAS please take a look at `SAS-Viya-Integrations/Logging-Monitoring`.
+
+:::note What the containers log
+The shipped deployment templates set `SAS_SCR_LOG_LEVEL_SCR_IO=TRACE`, and the parser depends on it: the `Request: POST` / `Request Data:` lines carry the system prompt, the user prompt and the options of every call, and the `response:` lines the full answer. That is what makes the usage report possible, and it also means prompt text and responses land in your log pipeline. Decide who may read the collected log file and the `LLM_LOGS` table accordingly, or lower the level and forgo the report.
+:::
 
 ## Simplified Logging via a Script
 
@@ -26,13 +30,13 @@ The default here also replaces the log file as the assumption is that you pick u
 
 ```bash
 # Set the script variables for your environment
-llm_namspace="llm"
+llm_namespace="llm"
 llm_log_path="/viya-share/pvs/sasdata/data/llm/llms.log"
 llm_logging_interval="1h"
-# Remove the next line to append to the log file isntead
+# Remove the next line to append to the log file instead
 rm $llm_log_path
-for pod in $(kubectl get pods -n $llm_namspace -o name); do
-  kubectl logs -n $llm_namspace $pod --all-containers --since=$llm_logging_interval >> $llm_log_path
+for pod in $(kubectl get pods -n $llm_namespace -o name); do
+  kubectl logs -n $llm_namespace $pod --all-containers --since=$llm_logging_interval >> $llm_log_path
 done
 ```
 

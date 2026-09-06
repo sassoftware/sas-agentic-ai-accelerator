@@ -1,79 +1,78 @@
 # SAS Viya Integrations
 
-In this folder you find integrations that are purpose built for this framework that enable you to make use of the deployed LLMs in different SAS Viya applications often even in a Low Code/No Code fashion.
+This folder holds the integrations that put the deployed LLMs, embedding models and RAG pipelines to work inside SAS Viya - as SAS Studio custom steps, SAS code, SAS Job Execution jobs, SAS Intelligent Decisioning nodes and SAS Visual Analytics content. Most of them work in a low-code or no-code fashion.
 
-## Importing the Standard Assets [Under Heavy Constructions]
+The [Administration Guide](https://sassoftware.github.io/sas-agentic-ai-accelerator/docs/Administration-Guide/Introduction) explains how to deploy each piece; this page is the map of what is here.
 
-The [SAS Agentic AI Accelerator.json](./SAS%20Agentic%20AI%20Accelerator.json) is a transfer package that can be imported using the SAS Environment Manager and it contains the following - each indent represent a subfolder until the lowest level where it represents files, in square brackets is a note where to find more information on the different integrations:
+## Transfer packages (import with SAS Environment Manager or `sas-viya transfer`)
 
-```
-SAS Content
-  - SAS Agentic AI Accelerator
-    - Custom Steps [Custom Steps]
-      - LLM - Log Parser.step
-    - Logging and Monitoring [Logging and Monitoring]
-      - Log-Parser-Code.sas
-      - Monitoring Baseline
-```
+| Package | Contents | Guide |
+| --- | --- | --- |
+| `SAS-Agentic-AI-Accelerator-Prompt-Builder.json` | The **LLM Prompt Builder**: its SAS Content folder, the SAS Job Execution definition that serves the single-file app and the SAS Visual Analytics report that hosts it | [Deploying the Builder UIs](https://sassoftware.github.io/sas-agentic-ai-accelerator/docs/Administration-Guide/Setup-Additional-UIs) |
+| `SAS-Agentic-AI-Accelerator-RAG-Builder.json` | The **RAG Builder**, packaged the same way | [RAG Ingestion and Retrieval](https://sassoftware.github.io/sas-agentic-ai-accelerator/docs/Administration-Guide/RAG-Ingestion-and-Retrieval) |
+| `Logging-Monitoring/LLM Usage Report.json` | The **LLM Usage Report** - the recommended SAS Visual Analytics monitoring report | [Logging & Monitoring](https://sassoftware.github.io/sas-agentic-ai-accelerator/docs/Administration-Guide/Logging-&-Monitoring) |
+| `SAS Agentic AI Accelerator.json` | An older starter package (May 2025) with the *LLM - Log Parser* step, `Log-Parser-Code.sas` and a *Monitoring Baseline* report. Superseded by the packages above; kept for existing imports | - |
 
-## List of Available Integrations
+Importing a Builder report **replaces the options** an administrator set on the object. Save them first with `mdb options-save` and restore them afterwards with `mdb options-restore` - see [Preserving builder options across a report import](https://sassoftware.github.io/sas-agentic-ai-accelerator/docs/Administration-Guide/Setup-Additional-UIs#preserving-builder-options-across-a-report-import).
 
-As this list is ever growing the examples have been split into different subfolders to help with the organization. The individual files are still explained here.
+## Folders
 
-On the top level of this folder you will find the following:
+### Custom-Steps
 
--   *createLLMRepository.sas*, run this script from inside a SAS session on the SAS Viya server, this creates the LLM Repository in the SAS Model Manager - you will only need to run this script once per environment.
+SAS Studio custom steps (a SAS Studio Analyst license is required). Import them into SAS Content, or - for the RAG steps - register them with `Other/deploy-rag-content.ps1` / `.sh`, because a `.step` uploaded as a plain file renders as an empty editor. Steps starting with *MM* are general SAS Model Manager helpers built along the way.
 
-### Custom Steps
+| Step | Purpose |
+| --- | --- |
+| LLM - List Available LLMs | Table of every LLM registered in the LLM project |
+| LLM - Get Options | The options an LLM accepts, with their defaults |
+| LLM - Create LLM Call | Generates the SAS code that calls one LLM |
+| LLM - Get Prompt Experiments | The experiment runs of one prompt-test |
+| LLM - Get All Prompts | One table of all prompting projects, prompts and experiments, for reporting |
+| LLM - Log Parser | Parses the collected SCR container logs into the `LLM_LOGS` table |
+| RAG - List Documents, Extract Text, Chunk Documents, Enrich Chunks, Embed Chunks, Load Vector Store | The ingestion pipeline, in that order (Enrich is optional) |
+| RAG - Retrieve Context | Asks a collection a question - the same retrieval a deployed decision performs |
+| RAG - Register Setup | Manifests and registers the retrieval model and writes the governance artifacts |
+| RAG - Purge Documents | Erases named documents, including their retired generations |
+| MM - Get All Repositories / Get Projects in Repository / Get Models in Project / Get Model Information | SAS Model Manager lookups |
 
-Here you find a list of available SAS Studio Custom Steps, note that for using these steps you will have to import them to SAS Content and have a SAS Studio Analyst license. Note that the steps starting with *MM* are not specific to this project, but have been build a long the way and are provided here for completeness:
+The RAG steps are described in the [RAG user guide](https://sassoftware.github.io/sas-agentic-ai-accelerator/docs/User-Guide/RAG).
 
--   *LLM - Create LLM Call.step*, creates the call template for an LLM with SAS code.
--   *LLM - Get All Prompts.step*, creates a unified table of all the prompting projects, prompt templates and their experiments for reporting.
--   *LLM - Get Options.step*, can be run from SAS Studio and returns code to run a specific LLM.
--   *LLM - List Available LLMs.step*, can be run from SAS Studio and returns a table with all available LLMs.
--   *LLM - Log Parser.step*, can be used to parse the log file.
--   *MM - Get All Repositories.step*, can be run from SAS Studio and returns a list of all available SAS Model Manager repositories.
--   *MM - Get Projects in Repository.step*, can be run from SAS Studio and returns a list of all available projects in a SAS Model Manager repository.
--   *MM - Get Models in Project.step*, can be run from SAS Studio and returns a list of all models in a SAS Model Manager project.
--   *MM - Get Model Information.step*, can be run from SAS Studio and  returns a six tables with a lot of information on a model in a SAS Model Manager.
+### RAG and RAG-Ingestion
 
-### Logging - Monitoring
+`RAG/rag_core/` is the Python runtime the RAG steps, the ingestion job and the RAG Builder import at run time; `RAG/retrieve_context.py` is the retrieval model template that *RAG - Register Setup* manifests per setup; `RAG/tests/` is its test suite (`python -m pytest SAS-Viya-Integrations/RAG/tests`). `RAG-Ingestion/` holds the standalone schedulable `Ingest-Documents.sas` job and `Test-Retrieval.sas`. Everything under `RAG/` is deployed to SAS Content with `Other/deploy-rag-content.ps1` / `.sh` - SAS Content is the distribution channel, nothing is fetched from GitHub at run time.
 
-Here you can find everything to setup the logging and monitoring for this framework:
+### Other
 
-- *README.md*, explains how to set everything up and how to configure things
-- *Get-All-Prompts*, collects all prompting related assets and turns it into a table for reporting
-- *Load-Fact-Sheets*, loads the fact sheets into CAS for reporting (or use `mdb load-facts`).
-- *Log-Parser-Code.sas*, if you prefer to run the log parsing as a code file
-- *LLM Usage Report.json*, a transfer package with the recommended SAS Visual Analytics monitoring report - see below.
+| File | Purpose |
+| --- | --- |
+| `create-credential-domain.ps1` / `.sh` | Create the `agentic-ai-keys` credential domain and one identity's credential from your `.env` - provider API keys and vector-store credentials. See [Managing Credentials](https://sassoftware.github.io/sas-agentic-ai-accelerator/docs/Administration-Guide/Managing-Credentials) |
+| `credentials.example.yaml` | A manifest for `mdb credentials-apply`, which equips many identities at once |
+| `deploy-rag-content.ps1` / `.sh` | Upload `rag_core`, register the RAG steps and jobs in SAS Content |
 
-#### The LLM Usage Report
+### Logging-Monitoring
 
-*LLM Usage Report.json* is a transfer package with the recommended SAS Visual Analytics report for monitoring LLM usage and prompt experimentation. It builds on four CAS tables - *LLM_LOGS*, *LLM_FACT_SHEET*, *EMBEDDING_FACT_SHEET* and *PROMPT_EXPERIMENTS* - all in the *Public* caslib by default. See the [Logging & Monitoring administration guide](../website/docs/Administration-Guide/Logging-%26-Monitoring.md) for how to import it (SAS Environment Manager or the `sas-viya transfer` CLI) and how to change the CAS library if your tables are not in *Public*.
+Everything for monitoring: `README.md` (the `LLM_LOGS` table and where it is used), `Log-Parser-Code.sas` (the log parser as a code file - the *LLM - Log Parser* step carries the same code), `Get-All-Prompts.sas` (the `PROMPT_EXPERIMENTS` table), `Load-Fact-Sheets.sas` (or `mdb load-facts`), `Build-RAG-Cost-View.sas` and the *LLM Usage Report* package. `Token-Calculator.html` and `LLM-Details-Page.html` are two older in-report utilities (a token/price calculator and a light-weight model card) that predate the usage report.
 
-A note on prices, the report contains a calculated item called Average Price / Total Price, these two items contain big formulas that calculate the prices of the LLM usage. These formulas can be adjusted as you need it, note that most LLM providers denote their prices in millions of tokens and distinguish between input and output tokens - the data in this report is noted in individual tokens. Per default open-source models which are deployed in the SAS Open-Source Python container are priced as $0. Now you could of course add a price per second and then multiply with the runtime, but that isn't provided by default. The calculated item has a comment at the top that will help you to add additional pricing.
+A note on prices: the report's *Average Price* / *Total Price* calculated items multiply token counts with the per-token prices from the fact sheets. Providers quote prices per million tokens and distinguish input from output tokens; the report works in individual tokens. Locally served models are priced at $0 by default - the calculated item has a comment at the top that explains how to add a per-second price.
 
-### SAS Code LLM Calls
+### Prompt-Optimization
 
-Here you can find a list of different purpose build scripts to call the LLMs from SAS code:
+The server side of the Prompt Builder's **Optimize** feature: `Optimize-Prompt-DSPy.sas` (a SAS Job Execution job that improves a prompt with DSPy), `Create-Optimization-Dataset.sas` (a template for a governed CAS training table) and `requirements.txt` for the compute context. See [Enabling Prompt Optimization](https://sassoftware.github.io/sas-agentic-ai-accelerator/docs/Administration-Guide/Enabling-Prompt-Optimization).
 
--   *MM-Get-List-of-available-LLMs.sas* run this script from inside a SAS Session on the SAS Viya server, this a tables with all available LLMs.
+### SAS-Code-LLM-Calls
 
--   *Get-LLM-Options.sas* run this script from inside a SAS Session on the SAS Viya server, returns the necessary SAS code and with all configuration options to call the LLM.
--   *Test-DS2-Scoring-from-SAS-Studio.sas*: run this script from inside a SAS session on the SAS Viya server, this runs one query against a LLM from Proc DS2.
+Scripts to run the prompt workflow from SAS code - the `README.md` there walks through them in order:
 
-### SAS Code Model Manager Interaction
+- `Get-List-of-available-LLMs.sas` - the LLMs you have access to
+- `Create-LLM-Call.sas` - the SAS code that calls a specific LLM, with all of its options
+- `LLM-Call-Result-Table.sas` / `LLM-Call-Combined-Result-Table.sas` - the call output as a table, for one or several LLMs
+- `Track-Prompt-Experiments.sas` / `Manual-Prompt-Experiment-Tracker.sas` / `Get-Prompt-Experiments.sas` - record and read prompt experiments in SAS Model Manager
+- `Test-DS2-Scoring-from-SAS-Studio.sas` - one query against an LLM from PROC DS2
 
-Here you can find a list for general interaction with the SAS Model Manager, these scripts are not purpose build for this specific project, but where created a long the way and are provided here for completeness:
+### SAS-Code-Model-Manager-Interaction
 
-- *MM-Get-Repositories.sas* run this script from inside a SAS Session on the SAS Viya server, this returns a list of all available SAS Model Manager repositories.
-- *MM-Get-Projects-in-Repository.sas* run this script from inside a SAS Session on the SAS Viya server, this returns a list of all available projects in a SAS Model Manager repository.
-- *MM-Get-Models-in-Project.sas* run this script from inside a SAS Session on the SAS Viya server, this returns a list of all models in a SAS Model Manager project.
-- *MM-Get-Model-Information.sas* run this script from inside a SAS Session on the SAS Viya server, this returns a six tables with a lot of information on a model in a SAS Model Manager.
+General SAS Model Manager helpers, not specific to this project: `MM-Get-Repositories.sas`, `MM-Get-Projects-in-Repository.sas`, `MM-Get-Models-in-Project.sas`, `MM-Get-Models-Information.sas`, and `createLLMRepository.sas` - the SAS-code way to create the *LLM Repository*. Prefer `mdb setup`, which creates the repository, both model projects and the authorization commands.
 
-### SAS Intelligent Decisioning Integration
+### SAS-Intelligent-Decisioning-Integration
 
-Here you can find tools to integrate with SAS Intelligent Decisioning, note that you require a SAS Intelligent Decisioning license for the use of this tool:
-
--   *Create-Custom-SAS-Intelligent-Decisioning-Node.sas*: run this script from inside a SAS session on the SAS Viya server, this adds a node to the *Objects* pane inside of SAS Intelligent Decisioning.
+`Create-Custom-SAS-Intelligent-Decisioning-Node.sas` adds the *Call LLM* node to the *Objects* pane of SAS Intelligent Decisioning; `Update-Custom-SAS-Intelligent-Decisioning-Node.sas` updates it in place. A SAS Intelligent Decisioning license is required.

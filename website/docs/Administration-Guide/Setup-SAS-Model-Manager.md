@@ -29,12 +29,9 @@ Use `--out <dir>` to write those files somewhere other than the current director
 
 `mdb` reads any parameter from an **environment variable** or a **`.env` file** instead of the command line. This keeps your credentials out of your shell history and the process list. The order of precedence is: command-line argument, then environment variable, then `.env` file, then the built-in default.
 
-To use a `.env` file, install the optional dependency and copy the template:
+To use a `.env` file, copy the template and edit it (`mdb` reads it itself, nothing else to install):
 
 ```bash
-# Install the optional python-dotenv package
-pip install python-dotenv
-# Copy the template and edit it with your values
 cp .env.example .env
 ```
 

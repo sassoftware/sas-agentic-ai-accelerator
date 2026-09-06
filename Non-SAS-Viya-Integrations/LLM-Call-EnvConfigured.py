@@ -52,7 +52,7 @@ payload = json.dumps({
 headers = {'Content-Type': 'application/json'}
 
 response = requests.request('POST', f"{llm_endpoint}/{llm_name}/{llm_name}",
-                            headers=headers, data=payload, verify=verify_ssl)
+                            headers=headers, data=payload, verify=verify_ssl, timeout=600)
 
 # A model configured by its environment fails in one extra way the others cannot:
 # a variable that was never set on the container. The score code says which one,

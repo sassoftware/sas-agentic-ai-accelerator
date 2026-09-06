@@ -27,4 +27,4 @@ mdb ship titan_embed_text_v2
 
 `mdb register --all` / `mdb publish --all` cover every managed definition of *both* kinds in one go, so you rarely need to think about LLM versus Embedding when registering.
 
-If you want to add your own embedding model, use `mdb add` and remember to contribute back. If you are adding a new proprietary model provider, the `API_KEY` option's default should be set to the name of the provider.
+If you want to add your own embedding model, use `mdb add` and remember to contribute back. If you are adding a new proprietary model provider, the `API_KEY` option's default (the manifest's `key_name`) is the name under which the RAG Builder looks the key up in the credential domain - see [Managing Credentials](./Managing-Credentials.md).

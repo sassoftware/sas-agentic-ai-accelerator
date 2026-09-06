@@ -75,9 +75,9 @@ const DEFAULTS: RuntimeConfig = {
     // Viya credential domain under the identity of the signed-in user (the
     // credential's secrets map holds one entry per provider name), and models
     // without an entry are disabled with a note. The default matches the
-    // create-credential-domain.sas admin script; if the domain does not
-    // exist the lookup 404s harmlessly and assigned-data keys work as
-    // before. Set to 'none' to disable credential lookups entirely.
+    // create-credential-domain scripts and `mdb credentials-apply`; if the
+    // domain does not exist the lookup 404s harmlessly and resolves to no
+    // keys. Set to 'none' to disable credential lookups entirely.
     credentialDomain: 'agentic-ai-keys',
   },
 };

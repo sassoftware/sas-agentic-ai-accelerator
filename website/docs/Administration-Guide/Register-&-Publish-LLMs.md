@@ -23,7 +23,7 @@ mdb register gpt_41_mini claude_sonnet_4_5
 mdb register --all
 ```
 
-`mdb register` reads the SAS Viya connection from your `.env` (see [Providing credentials without the command line](./Setup-SAS-Model-Manager.md#envSetup)); if the password is not supplied you are prompted for it securely. It creates the `LLM Repository` and the model projects on first use if they do not exist yet, so a fresh environment needs no separate setup step.
+`mdb register` reads the SAS Viya connection from your `.env` (see [Providing credentials without the command line](./Setup-SAS-Model-Manager.md#envSetup)) and signs in with a token, a username and password, or the SAS Viya CLI login (see [Signing in to SAS Viya](./Setup-SAS-Model-Manager.md#viyaAuth)). It creates the `LLM Repository` and the model projects on first use if they do not exist yet, so a fresh environment needs no separate setup step.
 
 :::tip Updating an already-registered model
 Re-run with `--update` to refresh a model in place — a new minor version, the content replaced, and the attributes and tags refreshed, without deleting and recreating it:
@@ -33,7 +33,7 @@ mdb register gpt_41_mini --update
 ```
 :::
 
-If you want to add your own LLM, use `mdb add` (an interactive wizard, or non-interactive flags) rather than editing files by hand, and remember to contribute back. If you are adding a new proprietary model provider, the `API_KEY` option's default should be set to the name of the provider, which also needs to be added to the LLM Prompt Builder object definition.
+If you want to add your own LLM, use `mdb add` (an interactive wizard, or non-interactive flags) rather than editing files by hand, and remember to contribute back. If you are adding a new proprietary model provider, the `API_KEY` option's default (the manifest's `key_name`) is the name under which the Prompt Builder and the RAG Builder look the key up in the credential domain - add the matching entry to `create-credential-domain.ps1`/`.sh`, `mdb`'s `PROVIDER_ENTRIES` and the table in [Managing Credentials](./Managing-Credentials.md).
 
 ## Publishing the LLMs to the SCR Destination
 

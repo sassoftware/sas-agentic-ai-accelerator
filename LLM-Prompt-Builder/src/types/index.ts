@@ -68,10 +68,10 @@ export interface PromptBuilderConfig {
    * Credential domain provider API keys resolve from under the signed-in
    * user's identity (user credential overrides group credential; the
    * credential's secrets map holds one entry per provider name); models
-   * without an entry are disabled with a note. Defaults to the
-   * create-credential-domain.sas default (agentic-ai-keys) — a missing
-   * domain 404s harmlessly and assigned-data keys still apply. 'none'
-   * disables credential lookups entirely.
+   * without an entry are disabled with a note. Defaults to the default of
+   * the create-credential-domain scripts and `mdb credentials-apply`
+   * (agentic-ai-keys) — a missing domain 404s harmlessly and resolves to
+   * no keys. 'none' disables credential lookups entirely.
    */
   credentialDomain?: string;
   [key: string]: unknown;

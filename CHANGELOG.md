@@ -2,6 +2,22 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [2.0.4] - Unreleased
+
+The documentation says what the code does.
+
+### Fixed
+
+- **Documentation caught up with 2.0.x.** A repository-wide review found text that described earlier releases: the register/publish pages still promised a password prompt and a Prompt Builder change per provider; the Prompt Builder user guide and the Builder's own properties-panel help still explained API keys through report data and named a `create-credential-domain.sas` that never shipped; the prompt-optimization README, job header and admin page still spoke of a governed key table where the job reads the credential domain; the administration introduction installed the pre-`mdb` packages with an unquoted `pip install sasctl>=1.10.3` that the shell turns into a file redirect; two pages told you to install `python-dotenv`, which `mdb` already depends on; the *LLM Definitions* page listed API-served Llama models as gated Hugging Face downloads and a `Python` tag the generator never emits; the *SAS Viya Integrations* README listed 9 of 19 custom steps and none of the RAG, credential or optimization assets; the User Guide introduction was empty. All of it now matches the code, the `_Base_Definition` READMEs point at `mdb` instead of the removed scripts, the base scorers normalise their inputs like the generated ones, `Container Deployment` names `mdb deploy` and the three templates, and the Logging guide says that `TRACE` logging writes prompts and responses to the container log.
+- **`.env.example` lists every provider key the tools read.** `GEMINI_API_KEY`, `VOYAGE_API_KEY`, `HUGGINGFACE_API_KEY` and `AWS_BEDROCK_API_KEY` were accepted by the credential-domain scripts, `mdb credentials-apply` and the guide but missing from the template, so a Gemini, Voyage or Bedrock key could not be equipped by following it. `SAS_CLI_PROFILE` is documented there too.
+- **One name for the Bedrock key.** `mdb` read `AWS_BEARER_TOKEN_BEDROCK` for its live checks while the scripts and the guide used `AWS_BEDROCK_API_KEY`; `mdb` now reads the accelerator's name first and AWS's own as a fallback.
+- `claude_haiku_4_5_bedrock` carries its token prices ($1 / $5 per million tokens), so `mdb validate --all` is clean and the usage report no longer prices it at zero.
+- The Python samples outside SAS Viya set an HTTP timeout and lost their typos; the Prompt Builder README describes the whole source tree, RAG Builder included.
+
+### Changed
+
+- **CI runs the RAG runtime tests** and watches `SAS-Viya-Integrations/RAG/**` and `Other/**`, which no workflow covered; the `mdb` suite runs on Python 3.11 and 3.12; the docs deployment pins Node 20; Dependabot keeps the two npm trees, the `mdb` package and the workflow actions current with one grouped pull request per month.
+
 ## [2.0.3] - 2026-09-04
 
 A model answers the whole prompt whichever API calls it, and `mdb` signs in to SAS Viya without a password.
