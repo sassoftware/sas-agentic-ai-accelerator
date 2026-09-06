@@ -4,7 +4,7 @@ This folder contains information on how to add LLMs to the repository in the SAS
 
 More on the SCR in the [SAS Documentation](https://go.documentation.sas.com/doc/en/mascrtcdc/default/mascrtag/titlepage.htm).
 
-Each subfolder here contains the definition for one specific LLM - the name of the folder specifies the LLM.
+Each subfolder here contains the definition for one specific LLM - the name of the folder is the model id. A folder is generated from its `definition.yaml` by the [Model Definition Builder](../Model-Definition-Builder/README.md) (`mdb add`, `mdb generate`); the other files are derived from it and are not edited by hand. `_Base_Definition` is a reference copy of the file set.
 
 ## Tags
 
@@ -12,7 +12,6 @@ Tags are being used to provide additional information and filtering options arou
 
 | Tag         | Description                                                  | Impact                                                       |
 | ----------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| Python      | Indicates that the model is implemented in Python            | This is required as the whole building process is setup around Python. |
 | Open-Source | Indicates that the model has an open-source license          | -                                                            |
 | Proprietary | Indicates that the model is proprietary                      | -                                                            |
 | deprecated  | Indicates that the models is no longer supported             | The model will not show up in the Prompt Builder UI          |
@@ -71,13 +70,11 @@ rejects those parameters, and vice versa - keep one definition per option shape.
 
 ## Models that require the Hugging Face token
 
-Here is a list of models in this repository that are [gated](https://huggingface.co/docs/hub/en/models-gated) on Hugging Face and thus require you to first accept a license - this is sometimes also related to a waiting time until you are confirmed for access.
+Here is a list of models in this repository that are [gated](https://huggingface.co/docs/hub/en/models-gated) on Hugging Face and thus require you to first accept a license - this is sometimes also related to a waiting time until you are confirmed for access. These three still download their weights during the container build (their `requirements.json` is hand-maintained); the supported way to serve a gated model is to stage the weights on the shared volume - see the *Serving Open-Weight Models* administration guide. Llama 3.3 70B is served through OpenRouter and needs no Hugging Face access.
 
 | Model Name     | Model Provider | Hugging Face Link                                           | Note                                                         |
 | -------------- | -------------- | ----------------------------------------------------------- | ------------------------------------------------------------ |
-| Llama 3.1 405B | Meta           | https://huggingface.co/meta-llama/Llama-3.1-405B-Instruct   | It is recommended to use a hosting provider, instead of hosting it yourself. |
 | Llama 3.2 1B   | Meta           | https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct     |                                                              |
 | Llama 3.2 3B   | Meta           | https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct     |                                                              |
-| Llama 3.3 70B  | Meta           | https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct    | It is recommended to use a hosting provider, instead of hosting it yourself. |
 | Mistral Nemo   | Mistral        | https://huggingface.co/mistralai/Mistral-Nemo-Instruct-2407 | While it runs on just CPU a hosting provider is recommended. |
 

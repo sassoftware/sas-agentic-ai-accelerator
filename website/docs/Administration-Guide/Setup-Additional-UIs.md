@@ -119,7 +119,7 @@ You have two options:
 
 **Option A — use the prebuilt file (recommended).** Download the ready-to-use [`dist/index.html`](https://github.com/sassoftware/sas-agentic-ai-accelerator/blob/main/LLM-Prompt-Builder/dist/index.html) from the repository. No Node.js or build step is required — skip straight to step 2. Or copy the code from there to your clipboard and move to step 2.
 
-**Option B — build it yourself.** With Node.js (`^18 || ^20 || >=22`) installed:
+**Option B — build it yourself.** With Node.js (`^20.19 || >=22.12`) installed:
 
 ```bash
 git clone https://github.com/sassoftware/sas-agentic-ai-accelerator.git

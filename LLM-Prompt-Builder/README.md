@@ -34,7 +34,7 @@ SDK is not used.
 
 ## Requirements
 
-- Node.js `^18 || ^20 || >=22`
+- Node.js `^20.19 || >=22.12` (what Vite 8 requires)
 - A SAS Viya environment with SAS Model Manager and an SCR-deployed LLM endpoint
 
 ## Getting started

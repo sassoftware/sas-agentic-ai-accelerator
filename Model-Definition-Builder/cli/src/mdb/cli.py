@@ -46,6 +46,24 @@ app = typer.Typer(
 console = Console()
 
 
+def _print_version(value: bool) -> None:
+    if value:
+        # The accelerator release this mdb ships with (mdb/__init__.py); the
+        # same string is stamped into every generated scorer's header.
+        typer.echo(f"mdb {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: bool = typer.Option(
+        False, "--version", "-V", help="Print the mdb version and exit.",
+        callback=_print_version, is_eager=True,
+    ),
+) -> None:
+    """Model Definition Builder for the SAS Agentic AI Accelerator."""
+
+
 KINDS = ("llm", "embedding")
 
 

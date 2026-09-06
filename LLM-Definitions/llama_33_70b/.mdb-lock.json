@@ -1,12 +1,12 @@
 {
-    "generator": "mdb 0.1.0",
-    "manifest_sha256": "748ba8c10d39944b0f133682f3af38bcf179a7c291fc577f7c524c7b08302bc9",
+    "generator": "mdb 2.0.4",
+    "manifest_sha256": "8949caaccdc49720639c3bc4ee145262bfec63c040e63b35452e5d76918f96f5",
     "files": {
         "Model-Card.md": "88e51022d3a2e331ff34e81082ea6ee761567ae6d163de4012c0bfaa95c0677b",
         "README.md": "fae0653dd3b3d71812414bcaba2044bd4eb09a5c1a43edcee7d79a955dd5c1aa",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
-        "llama3370bScore.py": "4aa637e8f3e80be5d2f0d127d8e7ce212d993fb34f1e42c3557153aed132dfd2",
-        "modelConfiguration.json": "3cbb7aa582b21a344c9931fcb228c608ce61b62fd16b06fd44a310bf41ceecc2",
+        "llama3370bScore.py": "c7433e51dbe41dba8382aa845f7e59692065e0237bfb16a4206bdd7f69adaefa",
+        "modelConfiguration.json": "d168f160fd8074f5834e72d6f25639bcc422f0655e36de7c5b57c8aa324722c7",
         "options.json": "85242be158bdec676b56c6b25606d34487dd3e004adb9484595a82115675b0c4",
         "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
         "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"

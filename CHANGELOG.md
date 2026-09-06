@@ -14,8 +14,15 @@ The documentation says what the code does.
 - `claude_haiku_4_5_bedrock` carries its token prices ($1 / $5 per million tokens), so `mdb validate --all` is clean and the usage report no longer prices it at zero.
 - The Python samples outside SAS Viya set an HTTP timeout and lost their typos; the Prompt Builder README describes the whole source tree, RAG Builder included.
 
+### Removed
+
+- **`llama_31_405b`.** The definition had no working target: an OpenAI chat template with no key, no endpoint, and a hand-maintained scorer that loaded weights no build step downloaded. It is archived out of the active set (`mdb retire --archive`; `mdb pull llama_31_405b` or git history recover it). The Python samples default to `gpt_41_mini` instead.
+
 ### Changed
 
+- **Shipped metadata names no person.** Every definition's `modeler` - which lands in SAS Model Manager at the installing site - is `SAS Agentic AI Accelerator` instead of the author's user id; `mdb add` keeps taking the modeler from `SAS_RESPONSIBLE_PARTY` for definitions you create.
+- **Version strings follow the release.** `mdb --version` (new flag) reports the accelerator release (`2.0.4`; the one source is `mdb/__init__.py`, read by `pyproject.toml`), and the Prompt Builder's `package.json` carries the same number instead of `1.0.0` / `0.1.0`. The version is stamped into every generated scorer's header and lockfile, so a release bump is followed by `mdb generate --all` - this release regenerates the whole fleet for that reason.
+- **Dependency majors.** The docs site moves to Docusaurus 3.10 (Node 20 or newer), the Prompt Builder to Vite 8, marked 18 and TypeScript 7 (Node 20.19 / 22.12 or newer, stated in `engines`); the prebuilt `dist/index.html` is rebuilt from that toolchain. The docs site stays on TypeScript 5 because Docusaurus's shared `tsconfig` still uses the `baseUrl` option TypeScript 7 removed.
 - **CI runs the RAG runtime tests** and watches `SAS-Viya-Integrations/RAG/**` and `Other/**`, which no workflow covered; the `mdb` suite runs on Python 3.11 and 3.12; the docs deployment pins Node 20; Dependabot keeps the two npm trees, the `mdb` package and the workflow actions current with one grouped pull request per month.
 
 ## [2.0.3] - 2026-09-04

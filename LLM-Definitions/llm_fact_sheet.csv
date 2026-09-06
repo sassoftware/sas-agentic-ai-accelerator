@@ -13,7 +13,6 @@ model_id,model,provider,description,release_date,size,deployment_type,license,co
 "gpt_56_sol","GPT-5.6 Sol","OpenAI","GPT-5.6 Sol by OpenAI, served through the OpenAI API.",2026-07-09,.,"API","Proprietary","Tokens",0.000005,0.00003,.,1050000,.,.,.,.,2026-02-16
 "gpt_5_mini","GPT-5 Mini","OpenAI","GPT-5 Mini by OpenAI, served through the OpenAI API.",2025-08-07,.,"API","Proprietary","Tokens",0.00000025,0.000002,.,400000,.,.,.,.,2024-05-30
 "ling_3_0_flash_free","Ling-3.0-flash (free)","OpenRouter","Ling-3.0-flash (free) by OpenRouter, served through the OpenRouter API.",.,.,"API","Proprietary","Tokens",0,0,.,262144,0,0,.,5000,.
-"llama_31_405b","Llama 3.1 405B","Meta","Llama-3.1-405B-Instruct is a gigantic model that is hard to run.",2024-07-23,405000000000,"API","Open-Source","Tokens",0.000003,0.000003,.,128000,0.6,.,.,1024,2023-12-01
 "llama_32_1b","Llama 3.2 1B","Meta","Llama-3.2-1B-Instruct is a small language model.",2024-09-24,1230000000,"SCR","Open-Source","Seconds",.,.,0.000039178,128000,0.6,1,.,256,2023-12-01
 "llama_32_3b","Llama 3.2 3B","Meta","Llama-3.2-3B-Instruct is a small language model.",2024-09-24,3210000000,"SCR","Open-Source","Seconds",.,.,0.000069178,128000,0.6,1,.,256,2023-12-01
 "llama_33_70b","Meta: Llama 3.3 70B Instruct","OpenRouter","Meta: Llama 3.3 70B Instruct by OpenRouter, served through the OpenRouter API.",.,.,"API","Proprietary","Tokens",0.00000013,0.0000004,.,131072,1,1,.,1000,.

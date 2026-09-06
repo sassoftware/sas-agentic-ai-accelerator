@@ -5,7 +5,7 @@ import requests
 import pandas as pd
 
 llm_endpoint = 'server_url/llm'
-llm_name = 'llama_31_405b'
+llm_name = 'gpt_41_mini'
 
 system_prompt = 'You are a helpful assistant that provides a short summary of the users input'
 options = '{temperature:0.6,max_tokens:1024}'

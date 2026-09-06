@@ -36,7 +36,7 @@ metadata:
     cost_type: Tokens
     input_token_price: 0.0
     output_token_price: 0.0
-modeler: david.weik@sas.com
+modeler: SAS Agentic AI Accelerator
 generation:
   overrides: []
   catalog_provenance: openrouter (live)

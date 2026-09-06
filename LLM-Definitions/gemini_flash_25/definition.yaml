@@ -41,7 +41,7 @@ metadata:
     cost_type: Tokens
     input_token_price: 3.0e-07
     output_token_price: 2.5e-06
-modeler: gerdaw
+modeler: SAS Agentic AI Accelerator
 generation:
   overrides: []
   score_code_file: geminiflash25Score.py
