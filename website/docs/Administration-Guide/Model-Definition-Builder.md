@@ -172,6 +172,29 @@ same session the register/publish commands use — no separate CAS connection.
 The save step writes a `.sashdat`, so target a **path-based** caslib (like
 `Public`); a database-backed caslib would reject the save.
 
+### The release table
+
+`mdb load-releases` turns the repository's `CHANGELOG.md` into the CAS table
+`ACCELERATOR_RELEASES` (same caslib and server options as `load-facts`; the
+name comes from `--table` or `SAS_RELEASES_TABLE`) and `mdb setup` loads it by
+default (`--no-releases` skips it). It has one row per release - the release
+intro, `change_type` = `Release` - and one per changelog entry, with:
+
+| Column | Content |
+| --- | --- |
+| `version`, `release_date` | from the `## [x.y.z] - date` heading; an *Unreleased* section is listed but never current |
+| `is_current` | 1 for the newest dated release |
+| `release_rank`, `item_rank` | 1 = newest release; the entry's position within it, so a report can order without dates |
+| `section`, `change_type` | the heading as written and its normalised kind: Added, Changed, Fixed, Removed, Breaking, Release |
+| `component` | Prompt Builder, RAG Builder, RAG runtime, Model Definition Builder, Credentials, Definitions, Documentation or General - from the section heading when it names one, else from the entry's wording |
+| `summary`, `detail` | the entry's bold lead (or first sentence) and the rest, as plain text |
+
+It exists because a SAS Visual Analytics Data-Driven Content object needs a
+data assignment before it renders: the Prompt Builder and RAG Builder objects
+are assigned this table, and a report author can filter it by `component` to
+show what changed for the Builder next to it. `mdb load-releases --csv out.csv`
+writes the table without contacting SAS Viya, for a look at the rows.
+
 `mdb generate --all --check` verifies that every generated file matches its manifest and is intended as a CI gate. Files you edited by hand are never overwritten silently — the command tells you to either fold the change into the manifest, declare the file as hand-maintained under `generation.overrides`, or pass `--force`.
 
 ## Adopting existing definitions

@@ -19,6 +19,8 @@ mdb setup
 
 `mdb setup` reads the SAS Viya server from `SAS_VIYA_URL` and signs in with whichever credential you provide (see [Signing in to SAS Viya](#viyaAuth) - a password is not required), the point of contact from `SAS_RESPONSIBLE_PARTY`, the SCR base URL from `SAS_SCR_ENDPOINT`, and the deployment type from `SAS_DEPLOYMENT_TYPE` (`k8s` by default, or `aca` for Azure Container Apps/Instances). All of these live in your `.env`.
 
+It also loads the **release table** `Public.ACCELERATOR_RELEASES` into CAS (the caslib from `SAS_CAS_LIBRARY`, the name from `SAS_RELEASES_TABLE`) - the accelerator's changelog as one row per release and per change. That is the table you assign to the Prompt Builder and RAG Builder objects in SAS Visual Analytics, see [Deploying the Builder UIs](Setup-Additional-UIs.md#5-add-the-object-to-a-visual-analytics-report); reload it after an upgrade with `mdb load-releases`, or skip it here with `--no-releases`.
+
 Running it produces two additional json files as outputs, that are required for the steps on the page [Deploying the Builder UIs](Setup-Additional-UIs.md):
 - *llm-prompt-builder.json*, this will enable your users to do No-Code Prompt Engineering.
 - *rag-builder.json*, this will enable your users to do No-Code RAG pipeline setups.
@@ -47,6 +49,8 @@ The available variables (documented in `.env.example`) map to the arguments as f
 | `SAS_DEPLOYMENT_TYPE` | `k8s` (default) or `aca` |
 | `SAS_RESPONSIBLE_PARTY` | Point of contact recorded in Model Manager |
 | `SAS_PUBLISH_DESTINATION` | Default SCR publishing destination (`mdb publish`, overridable with `-d`) |
+| `SAS_CAS_LIBRARY` / `SAS_CAS_SERVER` | CAS library (default `Public`) and server for the tables `mdb setup`, `load-releases` and `load-facts` load |
+| `SAS_RELEASES_TABLE` | Name of the release table (default `ACCELERATOR_RELEASES`) |
 
 The `.env` file is git-ignored, so your credentials are never committed. With the connection details in `.env` (or a SAS Viya CLI login, below), `mdb setup` needs no arguments at all.
 

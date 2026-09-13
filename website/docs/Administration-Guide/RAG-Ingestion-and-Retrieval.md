@@ -81,7 +81,11 @@ The Content Security Policy directives in
 build base64-encodes its inline scripts so the Go template engine cannot
 corrupt them, and the CSP has to allow the decoded bundle to run.
 
-Configure the Builder from its **Options** pane in Visual Analytics: the
+Assign the release table `Public.ACCELERATOR_RELEASES` to the object first
+(`mdb setup` / `mdb load-releases` load it; see [Deploying the Builder
+UIs](./Setup-Additional-UIs.md#5-add-the-object-to-a-visual-analytics-report)) -
+a Data-Driven Content object renders only with a data assignment. Then
+configure the Builder from its **Options** pane in Visual Analytics: the
 Model Manager repository, the **embedding model project**, SCR endpoint,
 credential domain, content root, CAS server, the ingestion compute context, a
 checkbox per vector database the deployment offers, and the operational policy

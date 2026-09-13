@@ -191,7 +191,8 @@ kubectl get pods -n <your-namespace> -o name | grep -E 'pod/sas-job-execution|po
 If you imported the SAS-Agentic-AI-Accelerator-Prompt-Builder.json package then open up the SAS Visual Analytics report under SAS Content > SAS Agentic AI Accelerator > Prompt Builder > Prompt Builder and then continue.
 
 1. In a Visual Analytics report, add a **Data-Driven Content** object and in the **Options** pane under Web Content enter the URL from the previous step or if you imported it update the base URL to your SAS Viya server.
-2. Open the object's **Properties** panel and set the configuration values (see below). No data assignment is needed — provider keys come from the credential domain (step 3).
+2. Assign the **release table** to the object: in the **Data** pane pick `Public.ACCELERATOR_RELEASES` (loaded by `mdb setup` or `mdb load-releases`; the library and name follow `SAS_CAS_LIBRARY` / `SAS_RELEASES_TABLE`) and add any of its columns to the object's role. A Data-Driven Content object does not render until it has a data assignment; the Builders themselves read nothing from it, and provider keys still come from the credential domain (step 3). The table carries the accelerator's changelog - one row per release and per change, with a `component` column - so the same report can show what changed for the Prompt Builder or the RAG Builder next to the object.
+3. Open the object's **Properties** panel and set the configuration values (see below).
 
 ### Configuration (Properties panel)
 

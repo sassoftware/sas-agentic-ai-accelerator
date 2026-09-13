@@ -124,8 +124,10 @@ The single-file build is embedded in Visual Analytics through **SAS Job Executio
    that job's execution URL.
 4. Configure the object from its **Properties panel** (Viya host, Model Manager
    repository, LLM project, SCR endpoint, deployment type, credential domain) —
-   the panel is rendered from the options group the app publishes on load. No
-   data assignment is needed: provider keys come from the credential domain.
+   the panel is rendered from the options group the app publishes on load.
+   Assign the `ACCELERATOR_RELEASES` table (`mdb load-releases`) as the object's
+   data - a DDC object renders only with a data assignment; the app reads nothing
+   from it, and provider keys come from the credential domain.
 
 Because SAS Job Execution serves HTML through a **Go template engine** (which
 treats `{{ … }}` as directives), the build base64-encodes every inline `<script>`

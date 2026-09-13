@@ -785,6 +785,101 @@ def load_facts(
     console.print("[green]Done. The tables are promoted and persisted; the monitoring report can bind to them.[/green]")
 
 
+def _load_releases(session, ctx: "Context", caslib: str, server_name: str, table: str,
+                   changelog: Optional[Path] = None) -> dict:
+    """Parse CHANGELOG.md into the release table and load it (drop, upload,
+    promote, save). Shared by `mdb load-releases` and `mdb setup`."""
+    import tempfile
+    from .core.releases import build_release_table
+    from .viya.cas import load_csv_table
+    source = changelog or (ctx.repo / "CHANGELOG.md")
+    if not source.is_file():
+        raise RuntimeError(f"no changelog at {source} - pass --changelog or set MDB_REPO to the accelerator clone")
+    with tempfile.TemporaryDirectory() as tmp:
+        csv_path = Path(tmp) / f"{table}.csv"
+        rows, summary = build_release_table(source, csv_path)
+        result = load_csv_table(session, csv_path, table, caslib, server_name)
+    summary["dropped"] = result["dropped"]
+    return summary
+
+
+def _releases_table() -> str:
+    from .core.releases import DEFAULT_TABLE, TABLE_ENV
+    return os.environ.get(TABLE_ENV) or DEFAULT_TABLE
+
+
+def _print_component_counts(summary: dict) -> None:
+    counts = ", ".join(f"{name} {n}" for name, n in summary["by_component"].items())
+    console.print(f"  rows per component: {counts}")
+
+
+@app.command("load-releases")
+def load_releases(
+    caslib: Optional[str] = typer.Option(
+        None, "--caslib", "-l",
+        help="Target CAS library (env: SAS_CAS_LIBRARY; default: Public).",
+    ),
+    table: Optional[str] = typer.Option(
+        None, "--table", "-t",
+        help="Table name (env: SAS_RELEASES_TABLE; default: ACCELERATOR_RELEASES).",
+    ),
+    server: Optional[str] = typer.Option(
+        None, "--server",
+        help="CAS server name (env: SAS_CAS_SERVER; default: auto-detect cas-shared-default).",
+    ),
+    changelog: Optional[Path] = typer.Option(
+        None, "--changelog",
+        help="The CHANGELOG.md to read (default: the accelerator clone's).",
+    ),
+    csv_out: Optional[Path] = typer.Option(
+        None, "--csv",
+        help="Only write the table as CSV to this path; do not contact SAS Viya.",
+    ),
+):
+    """Load the accelerator's release history from CHANGELOG.md into CAS as the
+    ACCELERATOR_RELEASES table (drops any existing table first).
+
+    One row per release and one per change, with the release, the section
+    (Added / Changed / Fixed / Removed), the component it concerns (Prompt
+    Builder, RAG Builder, Model Definition Builder, ...) and the change as a
+    headline plus detail. It is the table a report author assigns to the
+    Prompt Builder and RAG Builder objects in SAS Visual Analytics - a
+    Data-Driven Content object needs a data assignment before it renders - and
+    it says which release an environment runs. `mdb setup` loads it too.
+    """
+    from .core.releases import build_release_table
+    from .viya.cas import resolve_server
+    ctx = Context()
+    table_name = table or _releases_table()
+    source = changelog or (ctx.repo / "CHANGELOG.md")
+    if csv_out is not None:
+        try:
+            _, summary = build_release_table(source, csv_out)
+        except (OSError, ValueError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
+        console.print(f"Wrote {summary['rows']} rows for {summary['releases']} releases to {csv_out} "
+                      f"(current release: {summary['current'] or 'none dated'}).")
+        _print_component_counts(summary)
+        return
+    caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
+    server_choice = server or os.environ.get("SAS_CAS_SERVER")
+    with _viya_session() as session:
+        server_name = resolve_server(session, server_choice)
+        console.print(f"Loading the release table into CAS library [bold]{caslib}[/bold] on [bold]{server_name}[/bold]:")
+        try:
+            summary = _load_releases(session, ctx, caslib, server_name, table_name, changelog)
+        except (RuntimeError, ValueError) as exc:
+            console.print(f"  [red]{exc}[/red]")
+            raise typer.Exit(1)
+    suffix = " (replaced a loaded copy)" if summary["dropped"] else ""
+    console.print(f"  {table_name}: {summary['rows']} rows for {summary['releases']} releases, uploaded, "
+                  f"promoted (global) and saved to disk{suffix}")
+    _print_component_counts(summary)
+    console.print(f"[green]Done. Current release: {summary['current'] or 'none dated'}. Assign "
+                  f"{caslib}.{table_name} to the Prompt Builder and RAG Builder objects in SAS Visual Analytics.[/green]")
+
+
 # ---------------------------------------------------------------------------
 # import / test / providers / schema
 # ---------------------------------------------------------------------------
@@ -922,9 +1017,13 @@ def _viya_session():
 def setup(
     out: str = typer.Option(".", "--out", help="Directory for the authorization-rules and builder seed files"),
     no_files: bool = typer.Option(False, "--no-files", help="Only create the repository/projects; skip the seed files"),
+    no_releases: bool = typer.Option(
+        False, "--no-releases",
+        help="Skip loading the ACCELERATOR_RELEASES table into CAS (see 'mdb load-releases')"),
 ):
     """Create the SAS Model Manager repository and the LLM/Embedding Model Projects if missing,
-    and write the authorization-group rules and Prompt/RAG Builder seed files.
+    load the release table into CAS, and write the authorization-group rules and
+    Prompt/RAG Builder seed files.
 
     Idempotent: existing objects are left untouched. `mdb register` runs the
     repository/project check automatically for the kind it registers, so calling
@@ -955,6 +1054,20 @@ def setup(
             repo_id = repo_id or ensured.repository_id
             repo_folder = repo_folder or ensured.repository_folder_id
             project_ids[kind] = ensured.project_id
+        if not no_releases:
+            # The table the Builder objects are assigned in SAS Visual Analytics;
+            # loading it here means a report import never lacks a data source.
+            from .viya.cas import resolve_server
+            caslib = os.environ.get("SAS_CAS_LIBRARY") or "Public"
+            table_name = _releases_table()
+            try:
+                server_name = resolve_server(session, os.environ.get("SAS_CAS_SERVER"))
+                summary = _load_releases(session, ctx, caslib, server_name, table_name)
+                console.print(f"[green]loaded {caslib}.{table_name} ({summary['rows']} rows, current release "
+                              f"{summary['current'] or 'none dated'}) - assign it to the Builder objects in "
+                              f"SAS Visual Analytics.[/green]")
+            except (RuntimeError, ValueError) as exc:
+                console.print(f"[yellow]release table not loaded: {exc} - run 'mdb load-releases' later.[/yellow]")
     if not created_any:
         console.print("[green]Repository and projects already exist.[/green]")
     if no_files:

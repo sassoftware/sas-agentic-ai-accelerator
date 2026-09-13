@@ -14,6 +14,10 @@ The documentation says what the code does.
 - `claude_haiku_4_5_bedrock` carries its token prices ($1 / $5 per million tokens), so `mdb validate --all` is clean and the usage report no longer prices it at zero.
 - The Python samples outside SAS Viya set an HTTP timeout and lost their typos; the Prompt Builder README describes the whole source tree, RAG Builder included.
 
+### Added
+
+- **A release table for the Builder objects: `mdb load-releases`.** A Data-Driven Content object in SAS Visual Analytics renders only with a data assignment, and the shipped Builder packages were bound to tables an importer rarely has (the retired key table, a demo table). `mdb load-releases` turns this changelog into the CAS table `ACCELERATOR_RELEASES` - one row per release and per change, with `version`, `release_date`, `is_current`, `change_type` and a `component` column (Prompt Builder, RAG Builder, Model Definition Builder, ...) - so every environment has a table to assign, and a report can show what changed for the Builder next to it. `mdb setup` loads it by default (`--no-releases` skips it); the caslib is `SAS_CAS_LIBRARY`, the name `SAS_RELEASES_TABLE`; `--csv` writes it locally.
+
 ### Removed
 
 - **`llama_31_405b`.** The definition had no working target: an OpenAI chat template with no key, no endpoint, and a hand-maintained scorer that loaded weights no build step downloaded. It is archived out of the active set (`mdb retire --archive`; `mdb pull llama_31_405b` or git history recover it). The Python samples default to `gpt_41_mini` instead.
