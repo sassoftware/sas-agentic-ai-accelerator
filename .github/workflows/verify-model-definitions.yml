@@ -58,8 +58,10 @@ jobs:
       - name: mdb test suite
         run: python -m pytest Model-Definition-Builder/cli/tests -q
       - name: RAG runtime test suite
-        # rag_core is pure Python plus pandas; the store adapters and the
-        # extractors skip their tests when the optional drivers are absent
+        # rag_core is pure Python plus pandas; the store adapters skip their
+        # tests when the database drivers are absent. pypdfium2 is installed
+        # because one test distinguishes a PDF that FAILS extraction from one
+        # that is SKIPPED for want of an extractor.
         run: |
-          pip install pandas requests pytest
+          pip install pandas requests pypdfium2 pytest
           python -m pytest SAS-Viya-Integrations/RAG/tests -q
