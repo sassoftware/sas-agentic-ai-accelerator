@@ -13,7 +13,7 @@ The [Administration Guide](https://sassoftware.github.io/sas-agentic-ai-accelera
 | `Logging-Monitoring/LLM Usage Report.json` | The **LLM Usage Report** - the recommended SAS Visual Analytics monitoring report | [Logging & Monitoring](https://sassoftware.github.io/sas-agentic-ai-accelerator/docs/Administration-Guide/Logging-&-Monitoring) |
 | `SAS Agentic AI Accelerator.json` | An older starter package (May 2025) with the *LLM - Log Parser* step, `Log-Parser-Code.sas` and a *Monitoring Baseline* report. Superseded by the packages above; kept for existing imports | - |
 
-Importing a Builder report **replaces the options** an administrator set on the object. Save them first with `mdb options-save` and restore them afterwards with `mdb options-restore` - see [Preserving builder options across a report import](https://sassoftware.github.io/sas-agentic-ai-accelerator/docs/Administration-Guide/Setup-Additional-UIs#preserving-builder-options-across-a-report-import).
+`mdb builders-import` imports the two Builder packages with the release table loaded, the report bound to it and the Data-Driven Content URL pointing at your server; maintainers re-export them with `mdb package-export --folder "/SAS Agentic AI Accelerator/Prompt Builder"` (and `.../RAG Builder`), which removes the exporting host before writing the file here. Importing a Builder report **replaces the options** an administrator set on the object. Save them first with `mdb options-save` and restore them afterwards with `mdb options-restore` - see [Preserving builder options across a report import](https://sassoftware.github.io/sas-agentic-ai-accelerator/docs/Administration-Guide/Setup-Additional-UIs#preserving-builder-options-across-a-report-import).
 
 ## Folders
 

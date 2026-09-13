@@ -113,11 +113,27 @@ mdb unregister <model_id>            # delete a registered model from Model Mana
 mdb endpoints --json                 # SCR endpoint manifest for CI and testing
 mdb options-save                     # save this deployment's builder options to a file
 mdb options-restore                  # write them back after importing a report package
+mdb builders-import [pkg...]         # import the Builder packages: release table, host,
+                                     # data-source binding and saved options in one run
+mdb package-export --folder <path>   # export a Builder folder into the repository, host removed
 ```
 
 On a fresh environment, `mdb setup` creates the `LLM Repository` and the LLM/Embedding Model Projects (idempotent — existing objects are left untouched), and `mdb register` performs the same check automatically for the kind it registers, so you do not have to run setup explicitly. `mdb setup` also writes the authorization-group rules (`sas-viya-cli-commands.txt`) and the `llm-prompt-builder.json` / `rag-builder.json` builder seed files — it is the single entry point for bootstrapping the environment. Once the builders are configured, `mdb options-save` supersedes those seed files: it starts from the same discovered values and overlays what the live reports actually hold, so what you keep is your deployment as configured rather than as bootstrapped — see [Preserving builder options across a report import](./Setup-Additional-UIs.md#preserving-builder-options-across-a-report-import).
 
 `--update` removes the old delete-and-re-register workaround: after `mdb generate`, one command refreshes the registered model while keeping its ID, history (a new model version is created) and project placement. Both kinds use one implementation — embedding models register into the Embedding Model Project with the same content roles and fact-sheet enrichment. Each registered model also stores its `definition.yaml` as model content, so the source of truth travels with the model.
+
+## Importing and exporting the Builder packages
+
+`mdb builders-import` imports the Prompt Builder and RAG Builder transfer packages (the two shipped under `SAS-Viya-Integrations/`, or the files you name) into the deployment in `.env`, doing in one run what an import otherwise leaves to hand work afterwards:
+
+1. loads the release table (`mdb load-releases`; `--no-releases` skips it),
+2. uploads each package and rewrites its **import mapping** before the job starts: the report's data-source connector is retargeted from the shipped `Public.ACCELERATOR_RELEASES` to `SAS_CAS_LIBRARY.SAS_RELEASES_TABLE` on your CAS server, and the placeholder host in the Data-Driven Content URL becomes `SAS_VIYA_URL` - nothing is edited after the fact,
+3. imports and waits for the job, naming the failing task if there is one,
+4. with `--options builder-options.json`, writes the site's saved option values back (see [Preserving builder options across a report import](./Setup-Additional-UIs.md#preserving-builder-options-across-a-report-import)).
+
+`--dry-run` lists the objects and the mapping changes and imports nothing. Other data sources a package binds are left as exported and reported: retargeting a report at a table with different columns breaks its data items.
+
+`mdb package-export --folder "/SAS Agentic AI Accelerator/Prompt Builder"` is the other direction, for maintainers: it exports the folder (dependencies and rules included, as the shipped packages are), downloads the package, rewrites the exporting environment's hostname to the placeholder inside the compressed report content, checks the result and writes `SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json`. `--name`, `--out` and `--keep` (leave the package on the server) adjust that. It replaces the three manual steps - export in SAS Environment Manager, copy the file, `mdb package-check --fix`. (In Git Bash on Windows prefix the command with `MSYS_NO_PATHCONV=1`, or run it from PowerShell: the shell otherwise rewrites the `/SAS Agentic AI Accelerator/...` argument into a Windows path before `mdb` sees it.)
 
 ## Deployment YAML and CI pipelines
 

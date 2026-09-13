@@ -21,11 +21,23 @@ Rather than building the app and wiring it up by hand (steps 1–2), you can imp
 
 The package ships the report's Prompt Builder object pointing at a **placeholder host, `https://your-sas-viya-host`** — point it at your own environment before or after import.
 
-### Option A — SAS Environment Manager
+### Option A — `mdb builders-import` (recommended)
+
+With `mdb` installed and your `.env` filled in ([Setup SAS Model Manager](./Setup-SAS-Model-Manager.md#envSetup)), one command imports both Builder packages, loads the release table they bind to, points their Data-Driven Content URLs at your server and, when you pass a file saved with `mdb options-save`, restores your object options in the same run:
+
+```bash
+mdb builders-import --dry-run                     # what would happen
+mdb builders-import                               # first install
+mdb builders-import --options builder-options.json   # upgrade: keep this site's options
+```
+
+Name package files to import only one (`mdb builders-import SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json`). Afterwards continue at [step 4](#4-sas-environment-manager-configuration) (the Content Security Policy) and, for a first install, set the object options in [step 5](#5-add-the-object-to-a-visual-analytics-report).
+
+### Option B — SAS Environment Manager
 
 Import the JSON from **SAS Environment Manager → Content → Import**. Then correct the host in [step 5](#5-add-the-object-to-a-visual-analytics-report): open the report and update the Data-Driven Content object's base URL to your SAS Viya server.
 
-### Option B — SAS Viya CLI
+### Option C — SAS Viya CLI
 
 Use the `sas-viya` command-line interface's `transfer` plugin. This assumes you have already installed the CLI, created a connection profile, logged in and installed the `transfer` plugin as described in [Introduction — SAS Viya CLI Setup](./Introduction.md#sas-viya-cli-setup). In the commands below substitute `https://viya.example.com` with your own SAS Viya URL.
 
