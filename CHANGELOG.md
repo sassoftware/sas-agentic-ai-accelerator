@@ -4,7 +4,7 @@ This changelog documents all the different updates that occur for this framework
 
 ## [2.0.4] - Unreleased
 
-The documentation says what the code does.
+The Builder reports get a table every environment can provide, importing them becomes one command, and the documentation says what the code does. To pick up the update: `pip install -e "Model-Definition-Builder/cli[viya]"` (new commands), `mdb load-releases` (the `ACCELERATOR_RELEASES` table the Prompt Builder and RAG Builder objects are now assigned), then `mdb options-save` followed by `mdb builders-import --options builder-options.json` to import the re-exported Builder packages bound to that table with your settings kept - or, on a fresh environment, `mdb setup` and `mdb builders-import`. Existing installations that keep their current reports only need to assign the table to the two objects in SAS Visual Analytics.
 
 ### Fixed
 
@@ -17,7 +17,6 @@ The documentation says what the code does.
 ### Added
 
 - **A release table for the Builder objects: `mdb load-releases`.** A Data-Driven Content object in SAS Visual Analytics renders only with a data assignment, and the shipped Builder packages were bound to tables an importer rarely has (the retired key table, a demo table). `mdb load-releases` turns this changelog into the CAS table `ACCELERATOR_RELEASES` - one row per release and per change, with `version`, `release_date`, `is_current`, `change_type` and a `component` column (Prompt Builder, RAG Builder, Model Definition Builder, ...) - so every environment has a table to assign, and a report can show what changed for the Builder next to it. `mdb setup` loads it by default (`--no-releases` skips it); the caslib is `SAS_CAS_LIBRARY`, the name `SAS_RELEASES_TABLE`; `--csv` writes it locally.
-
 - **`mdb builders-import` and `mdb package-export`.** Importing the Builder packages is one command: it loads the release table, uploads each package and rewrites the transfer service's import mapping so the report lands bound to `SAS_CAS_LIBRARY.SAS_RELEASES_TABLE` and its Data-Driven Content URL points at `SAS_VIYA_URL`, waits for the job, then configures the reports - from a file saved with `mdb options-save` when `--options` names one, else with the repository, project, SCR endpoint and deployment type it discovers - and points every placeholder host left in a report at this deployment (`--dry-run` shows the mapping). `mdb options-restore` does the same host substitution, so a report imported by hand needs no URL edit either. `mdb package-export --folder <SAS Content folder>` is the maintainers' side: export with dependencies and rules, download, rewrite the exporting host to the placeholder inside the compressed report content, check, write to `SAS-Viya-Integrations/` - the three manual steps in one; `--exclude <name>` leaves out an object that lives in the folder but must not ship (a demo report in a shared development environment).
 - **Both Builder packages bind the release table.** Re-exported with `mdb package-export`: each report's only data source is `Public.ACCELERATOR_RELEASES`, which `mdb builders-import` retargets at the site's table; the retired key table and the demo table they used to carry are gone.
 
