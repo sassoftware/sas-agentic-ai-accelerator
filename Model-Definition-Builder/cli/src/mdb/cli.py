@@ -1305,6 +1305,9 @@ def package_export(
         None, "--out", "-o",
         help="Where to write the package (default: SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-<Folder-Name>.json)."),
     keep: bool = typer.Option(False, "--keep", help="Leave the exported package on the server too."),
+    exclude: Optional[list[str]] = typer.Option(
+        None, "--exclude", "-x",
+        help="Object name to leave out of the package (repeatable) - a demo report or scratch job that lives in the folder but must not ship."),
     timeout: int = typer.Option(600, "--timeout", help="Seconds to wait for the export job."),
 ):
     """Export a SAS Content folder to a transfer package and write it into the
@@ -1323,6 +1326,7 @@ def package_export(
     from .viya.transfer import (delete_package, download_package, folder_by_path, job_messages,
                                 start_export, wait_for_job)
     ctx = Context()
+    exclude = [n for n in (exclude or []) if n and n.strip()]
     package_name = name or folder.rstrip("/").rsplit("/", 1)[-1]
     target = out or (ctx.repo / "SAS-Viya-Integrations" /
                      f"SAS-Agentic-AI-Accelerator-{_re.sub(r'[^A-Za-z0-9]+', '-', package_name).strip('-')}.json")
@@ -1344,6 +1348,17 @@ def package_export(
         text = download_package(session, package_uri)
         if not keep:
             delete_package(session, package_uri)
+    if exclude:
+        from .core.packages import drop_objects
+        parsed = json.loads(text)
+        dropped = drop_objects(parsed, exclude)
+        missing = sorted({n for n in exclude if n.strip().lower() not in {d.split(" ", 1)[1].lower() for d in dropped}})
+        for name in dropped:
+            console.print(f"  left out: {name}")
+        if missing:
+            console.print(f"[red]--exclude names nothing in the export: {', '.join(missing)}[/red]")
+            raise typer.Exit(1)
+        text = json.dumps(parsed, indent=2, ensure_ascii=False) + chr(10)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8", newline="\n")
     sanitised, fixed = sanitise_package(target, ALLOWED_HOSTS)
