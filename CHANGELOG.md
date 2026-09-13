@@ -2,7 +2,7 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [2.0.4] - Unreleased
+## [2.0.4] - 2026-09-13
 
 The Builder reports get a table every environment can provide, importing them becomes one command, and the documentation says what the code does. To pick up the update: `pip install -e "Model-Definition-Builder/cli[viya]"` (new commands), `mdb load-releases` (the `ACCELERATOR_RELEASES` table the Prompt Builder and RAG Builder objects are now assigned), then `mdb options-save` followed by `mdb builders-import --options builder-options.json` to import the re-exported Builder packages bound to that table with your settings kept - or, on a fresh environment, `mdb setup` and `mdb builders-import`. Existing installations that keep their current reports only need to assign the table to the two objects in SAS Visual Analytics.
 
