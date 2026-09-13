@@ -129,7 +129,7 @@ On a fresh environment, `mdb setup` creates the `LLM Repository` and the LLM/Emb
 1. loads the release table (`mdb load-releases`; `--no-releases` skips it),
 2. uploads each package and rewrites its **import mapping** before the job starts: the report's data-source connector is retargeted from the shipped `Public.ACCELERATOR_RELEASES` to `SAS_CAS_LIBRARY.SAS_RELEASES_TABLE` on your CAS server, and the placeholder host in the Data-Driven Content URL becomes `SAS_VIYA_URL` - nothing is edited after the fact,
 3. imports and waits for the job, naming the failing task if there is one,
-4. with `--options builder-options.json`, writes the site's saved option values back (see [Preserving builder options across a report import](./Setup-Additional-UIs.md#preserving-builder-options-across-a-report-import)).
+4. configures the imported reports: with `--options builder-options.json` the site's saved values are written back (see [Preserving builder options across a report import](./Setup-Additional-UIs.md#preserving-builder-options-across-a-report-import)); without it the values `mdb setup` discovers - repository and project ids, `SAS_SCR_ENDPOINT`, `SAS_DEPLOYMENT_TYPE` - are; and either way every placeholder host left in a report (the Data-Driven Content URL, the `viyaHost` and `SCREndpoint` defaults) becomes `SAS_VIYA_URL`. A first install needs no edits in Visual Analytics beyond the optional settings.
 
 `--dry-run` lists the objects and the mapping changes and imports nothing. Other data sources a package binds are left as exported and reported: retargeting a report at a table with different columns breaks its data items.
 

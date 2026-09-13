@@ -1200,16 +1200,28 @@ def options_restore(
         console.print(f"[yellow]Note: these options were saved from "
                       f"{document['deployment']}, not {here}.[/yellow]")
     with _viya_session() as session:
-        failures = _restore_options(session, saved, dry_run)
+        failures = _restore_options(session, saved, dry_run, _site_host())
     if failures:
         raise typer.Exit(1)
 
 
-def _restore_options(session, saved: dict, dry_run: bool) -> int:
-    """Write the saved option values back into the named reports; returns the
-    number of reports that could not be written. Shared by options-restore and
-    builders-import."""
-    from .core.options import write_options
+def _site_host() -> str:
+    """The host reports should point at: SAS_VIYA_URL, else the SAS Viya CLI profile's endpoint."""
+    from .viya.session import resolve_auth
+    url = os.environ.get("SAS_VIYA_URL", "")
+    if not url:
+        try:
+            url = resolve_auth().url
+        except Exception:
+            url = ""
+    return url.split("://", 1)[-1].strip().rstrip("/")
+
+
+def _restore_options(session, saved: dict, dry_run: bool, host: str = "") -> int:
+    """Write the saved option values back into the named reports and point
+    every remaining placeholder host at `host`; returns the number of reports
+    that could not be written. Shared by options-restore and builders-import."""
+    from .core.options import rehost_content, write_options
     from .viya.reports import find_report, get_content, put_content
     failures = 0
     for report_name, values in saved.items():
@@ -1218,18 +1230,22 @@ def _restore_options(session, saved: dict, dry_run: bool) -> int:
             console.print(f"[yellow]{report_name}: no such report here - skipped.[/yellow]")
             continue
         content, etag = get_content(session, report["id"])
-        updated, result = write_options(content, values)
+        updated, result = write_options(content, values or {})
+        updated, rehosted = rehost_content(updated, host) if host else (updated, 0)
         for label in result.missing:
             console.print(f"[yellow]  {report_name}: '{label}' is not an option of "
                           "this report version - not written.[/yellow]")
-        if not result.changed:
+        if not result.changed and not rehosted:
             console.print(f"[green]{report_name}: already matches "
-                          f"({len(result.unchanged)} options).[/green]")
+                          f"({len(result.unchanged)} options, no placeholder host).[/green]")
             continue
-        listing = ", ".join(sorted(result.applied))
+        what = []
+        if result.applied:
+            what.append(f"{len(result.applied)} option(s): {', '.join(sorted(result.applied))}")
+        if rehosted:
+            what.append(f"placeholder host -> {host} ({rehosted} occurrence(s): the DDC URL and option defaults)")
         if dry_run:
-            console.print(f"[cyan]{report_name}: would restore "
-                          f"{len(result.applied)} option(s): {listing}[/cyan]")
+            console.print(f"[cyan]{report_name}: would restore " + "; ".join(what) + "[/cyan]")
             continue
         try:
             put_content(session, report["id"], updated, etag)
@@ -1237,9 +1253,29 @@ def _restore_options(session, saved: dict, dry_run: bool) -> int:
             console.print(f"[red]{report_name}: writing the report failed ({exc}).[/red]")
             failures += 1
             continue
-        console.print(f"[green]{report_name}: restored {len(result.applied)} "
-                      f"option(s): {listing}[/green]")
+        console.print(f"[green]{report_name}: restored " + "; ".join(what) + "[/green]")
     return failures
+
+
+def _discovered_options(session, ctx: "Context") -> dict:
+    """What `mdb options-save` would record on an environment with no tuned
+    report: repository and project ids, the SCR endpoint and deployment type,
+    per Builder report. The first-install values."""
+    from .core.options import BUILDER_REPORTS, merge_seed
+    from .viya.registry import builder_seed, ensure_repository_and_project
+    responsible_party = os.environ.get("SAS_RESPONSIBLE_PARTY", "")
+    deployment_type = os.environ.get("SAS_DEPLOYMENT_TYPE", "k8s")
+    scr_endpoint = _scr_endpoint()
+    seeds: dict = {}
+    for report_name, kind in BUILDER_REPORTS.items():
+        try:
+            ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
+        except Exception as exc:
+            console.print(f"[yellow]{report_name}: could not discover repository/project ({exc}).[/yellow]")
+            continue
+        seeds[report_name] = merge_seed(
+            builder_seed(kind, ensured.repository_id, ensured.project_id, scr_endpoint, deployment_type), None)
+    return seeds
 
 
 def _shipped_builder_packages(ctx: "Context") -> list[Path]:
@@ -1349,9 +1385,12 @@ def builders_import(
     retargeted at SAS_CAS_LIBRARY.SAS_RELEASES_TABLE (the shipped packages
     bind Public.ACCELERATOR_RELEASES) and the placeholder host in the DDC URL
     becomes SAS_VIYA_URL - both through the transfer service's import mapping,
-    so nothing is edited after the fact. With --options the site's
-    configuration is restored in the same run; without it, an import replaces
-    the report's options with the package's, as it always did.
+    so nothing is edited after the fact. Afterwards the reports are
+    configured: with --options the site's saved values are written back;
+    without it the values `mdb setup` discovers (repository, projects, SCR
+    endpoint, deployment type) are, and either way every remaining
+    placeholder host in a report - the DDC URL and the option defaults -
+    becomes this deployment's host. A first install needs no hand edits.
     """
     from .core.releases import DEFAULT_TABLE
     from .viya.cas import resolve_server
@@ -1427,19 +1466,28 @@ def builders_import(
                 failures += 1
                 continue
             console.print(f"  [green]imported {len(objects)} object(s).[/green]")
-        if saved is not None and not failures:
-            console.print("\nRestoring builder options:")
-            failures += _restore_options(session, saved, dry_run)
+        if not failures:
+            if saved is None:
+                console.print("\nConfiguring the imported reports from this deployment (repository, projects, "
+                              "SCR endpoint, deployment type) and the site host:")
+                values = _discovered_options(session, ctx)
+            else:
+                console.print(f"\nRestoring builder options from {options}:")
+                values = saved
+            if dry_run:
+                console.print("  [cyan](dry run: the reports are not imported, so this shows the live "
+                              "reports' state)[/cyan]")
+            failures += _restore_options(session, values, dry_run, host)
     if failures:
         raise typer.Exit(1)
     if dry_run:
         return
-    console.print("\n[green]Done.[/green] Next: the Content Security Policy settings and the object options are "
-                  "described in the administration guide, 'Deploying the Builder UIs'."
+    console.print("\n[green]Done.[/green] Next: the Content Security Policy settings are described in the "
+                  "administration guide, 'Deploying the Builder UIs', step 4."
                   + ("" if saved is not None else
-                     " Without --options the reports carry the package's option values - set the repository, "
-                     "project, SCR endpoint and credential domain in the Properties panel, or run "
-                     "`mdb options-restore` with a file saved before the import."))
+                     " Optional settings (credential domain, judge model, content root, vector stores) keep "
+                     "the package's defaults - set them in the Properties panel, or run `mdb options-restore` "
+                     "with a file saved from a tuned deployment."))
 
 
 @app.command("package-check")

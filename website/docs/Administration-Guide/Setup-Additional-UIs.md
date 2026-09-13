@@ -23,7 +23,7 @@ The package ships the report's Prompt Builder object pointing at a **placeholder
 
 ### Option A — `mdb builders-import` (recommended)
 
-With `mdb` installed and your `.env` filled in ([Setup SAS Model Manager](./Setup-SAS-Model-Manager.md#envSetup)), one command imports both Builder packages, loads the release table they bind to, points their Data-Driven Content URLs at your server and, when you pass a file saved with `mdb options-save`, restores your object options in the same run:
+With `mdb` installed and your `.env` filled in ([Setup SAS Model Manager](./Setup-SAS-Model-Manager.md#envSetup)), one command imports both Builder packages, loads the release table they bind to, points their Data-Driven Content URLs and host defaults at your server, and configures the objects - from a file saved with `mdb options-save` when you pass one, else with the repository, projects and SCR endpoint it discovers:
 
 ```bash
 mdb builders-import --dry-run                     # what would happen
@@ -113,7 +113,7 @@ mdb options-restore --file builder-options.json             # write it back
 
 `options-save` discovers the Model Manager repository and the LLM/Embedding projects exactly as `mdb setup` does, then overlays whatever your live **Prompt Builder** and **RAG Builder** reports already hold — so a deployment that has been tuned is captured as tuned, not as freshly bootstrapped. Keep the resulting file with your deployment records; it supersedes the older `llm-prompt-builder.json` / `rag-builder.json` seeds as the record of how this environment is configured.
 
-`options-restore` writes back **only the options named in the file**. The newly imported report keeps its new layout, data items and objects, and regains your configuration.
+`options-restore` writes back **only the options named in the file**. The newly imported report keeps its new layout, data items and objects, and regains your configuration. It also replaces the shipped placeholder host `your-sas-viya-host` - in the object's Data-Driven Content URL and in the `viyaHost` / `SCREndpoint` defaults - with `SAS_VIYA_URL`, so a report imported by hand needs no URL edit afterwards (`mdb builders-import` does both in one run).
 
 Points worth knowing:
 
