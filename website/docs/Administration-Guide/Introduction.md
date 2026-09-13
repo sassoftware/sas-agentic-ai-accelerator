@@ -1,5 +1,6 @@
 ---
 sidebar_position: 1
+title: Introduction
 ---
 
 The Administration Guide of the SAS Agentic AI Accelerator will walk you through the setup of this project.
@@ -13,7 +14,7 @@ Setting everything up will require you to have the following permissions or some
 
 Please follow these steps, step by step - in order to complete this setup you need both the ability to create a new Repository in the SAS Model Manager (this requires SAS Administrators rights by default), be able to modify the SAS Viya deployment, be able to access a Container Registry and be able to deploy containers in Kubernetes - usually this setup requires both a SAS administrator and a Kubernetes administrator.
 In order to be able to run this you will need access to a machine with the following tools available:
-- Python with the sasctl>=1.10.3, pandas>=2.1.3 & hugging-face packages installed
+- Python 3.10 or newer, for the `mdb` command line (the [Model Definition Builder](./Model-Definition-Builder.md)) that registers and publishes the models
 - kubectl
 - SAS Viya CLI with the authorization, identities, models and transfer plugins installed
 
@@ -29,11 +30,13 @@ cd sas-agentic-ai-accelerator
 ```bash
 # [Optional] Create a new Python environment
 python -m venv .venv
-# [Optional] Showcasing the activation on Windows, change accordingly
+# [Optional] Showcasing the activation on Windows; on Linux/macOS: source .venv/bin/activate
 .venv/Scripts/activate
-# Installing the required packages
-pip install sasctl>=1.10.3 pandas>=2.1.3 huggingface-hub[cli]
+# Install the mdb command line with the Viya extra (sasctl) - keep the quotes
+pip install -e "Model-Definition-Builder/cli[viya]"
+mdb --help
 ```
+Then copy `.env.example` to `.env` and fill in the SAS Viya connection - see [Setup SAS Model Manager](./Setup-SAS-Model-Manager.md#envSetup).
 
 ### SAS Viya CLI Setup:
 
@@ -41,11 +44,11 @@ pip install sasctl>=1.10.3 pandas>=2.1.3 huggingface-hub[cli]
 2. Next we need to setup up a connection profile in order to be able to connect with your SAS Viya environment:
 ```bash
 sas-viya profile init
-# Enter your SAS Viya host (service endpoint), select the output type (I recommend fulljson) and anble ANSI colored output (I recommend yes)
-# If successfull you should see a line like: Saved 'Default' profile to /path/.sas/config.json
+# Enter your SAS Viya host (service endpoint), select the output type (I recommend fulljson) and enable ANSI colored output (I recommend yes)
+# If successful you should see a line like: Saved 'Default' profile to /path/.sas/config.json
 # Next we need to login just to confirm the connection
 sas-viya auth loginCode
-# If successfull you shoud see a line like: Login succeeded. Token saved.
+# If successful you should see a line like: Login succeeded. Token saved.
 ```
 3. Next we need to install a couple of plugins (authorization, identities, models & transfer) in order to set everything up correctly - if you want to learn more about the different plugins see the [SAS Documentation](https://go.documentation.sas.com/doc/en/sasadmincdc/default/calcli/n1vth8mtb8ipprn1prz5j26p3nvc.htm):
 ```bash

@@ -99,11 +99,15 @@ def _save_table(session, server: str, caslib: str, table: str) -> None:
         )
 
 
-def load_fact_sheet(session, csv_path: Path, kind: str, caslib: str, server: str) -> dict:
+def load_csv_table(session, csv_path: Path, table: str, caslib: str, server: str) -> dict:
     """Drop any existing table, upload+promote the CSV, and save it to disk.
     Returns {'table': name, 'dropped': bool}."""
-    table = TABLE_BY_KIND[kind]
     dropped = _drop_table(session, server, caslib, table)
     _upload_table(session, server, caslib, table, csv_path)
     _save_table(session, server, caslib, table)
     return {"table": table, "dropped": dropped}
+
+
+def load_fact_sheet(session, csv_path: Path, kind: str, caslib: str, server: str) -> dict:
+    """The fact sheet of one kind, under the name the monitoring report binds to."""
+    return load_csv_table(session, csv_path, TABLE_BY_KIND[kind], caslib, server)

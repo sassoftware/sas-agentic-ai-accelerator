@@ -10,8 +10,9 @@
  * entries are prefixed with the backend name, e.g. `PGVECTOR_RAG_PW`). A
  * user credential overrides a group credential (`lookupInGroup=true`
  * searches groups only when the signed-in user has none). The multi-key map
- * is authored with the create-credential-domain.sas admin script — see the
- * Managing Credentials administration guide.
+ * is authored with the create-credential-domain.ps1/.sh admin scripts or
+ * `mdb credentials-apply` — see the Managing Credentials administration
+ * guide.
  */
 
 import { viyaFetch } from './http-client';

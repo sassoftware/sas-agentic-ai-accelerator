@@ -138,6 +138,24 @@ def write_options(content: str, values: dict) -> tuple:
     return _PROMPT.sub(replace, content), result
 
 
+def rehost_content(content: str, host: str, placeholder: str = "your-sas-viya-host") -> tuple:
+    """Point a report at this deployment: every occurrence of the shipped
+    placeholder host - the Data-Driven Content URL, the `viyaHost` and
+    `SCREndpoint` defaults - becomes `host`. Returns (content, occurrences).
+
+    A shipped package names the placeholder on purpose (core/packages.py
+    keeps it that way), so a restore or an import that leaves it in place
+    leaves a report loading its app from a host that does not exist. Nothing
+    else is touched: a host an admin has set is not the placeholder.
+    """
+    host = host.strip().rstrip("/")
+    if host.startswith("https://") or host.startswith("http://"):
+        host = host.split("://", 1)[1]
+    if not host or placeholder not in content:
+        return content, 0
+    return content.replace(placeholder, host), content.count(placeholder)
+
+
 def options_file(deployment: str, reports: dict) -> dict:
     """The saved-options document.
 

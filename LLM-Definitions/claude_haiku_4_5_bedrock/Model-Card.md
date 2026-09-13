@@ -16,7 +16,7 @@ us.anthropic.claude-haiku-4-5-20251001-v1:0 by AWS Bedrock, served through the A
 
 ## Pricing
 
-Input: unknown - Output: unknown
+Input: $1 per 1M tokens - Output: $5 per 1M tokens
 
 ## Intended Use
 

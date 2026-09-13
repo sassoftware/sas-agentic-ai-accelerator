@@ -10,7 +10,7 @@ The feature is off by default and gated behind the `enableOptimization` Option o
 
 1. [Prepare a compute context whose Python has `dspy`](#1-prepare-the-compute-context) — the key prerequisite.
 2. [Import the optimize job definition](#2-import-the-optimize-job).
-3. [Create the governed API-key table](#3-create-the-governed-api-key-table) (only needed for hosted models that require keys).
+3. [Provide the provider keys via the credential domain](#3-provide-the-provider-keys-via-the-credential-domain) (only needed for hosted models that require keys).
 4. [Set the Prompt Builder Options](#4-configure-the-prompt-builder).
 
 ## 1. Prepare the compute context

@@ -34,7 +34,7 @@ metadata:
   pricing:
     cost_type: Tokens
     input_token_price: 1.3e-07
-modeler: gerdaw
+modeler: SAS Agentic AI Accelerator
 generation:
   overrides: []
   score_code_file: textEmbedding3Large.py

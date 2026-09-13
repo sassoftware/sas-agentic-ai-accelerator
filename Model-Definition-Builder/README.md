@@ -18,7 +18,7 @@ Registering and publishing is done with the `mdb` CLI itself — `mdb register`,
 cd Model-Definition-Builder/cli
 python -m venv .venv
 .venv/Scripts/activate        # Windows; on Linux/macOS: source .venv/bin/activate
-pip install -e .
+pip install -e ".[viya]"     # keep the quotes; [viya] adds sasctl for the Viya commands
 mdb --help
 ```
 
@@ -41,7 +41,7 @@ mdb sync --all                   # fact-sheet upsert (legacy rows preserved verb
 mdb import <model_id>            # adopt an existing hand-written folder
 ```
 
-Provider API keys are read from the environment or a `.env` at the repo root (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `AZURE_OPENAI_API_KEY`, `MISTRAL_API_KEY`, `GEMINI_API_KEY`, `VOYAGE_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`). Keys never enter manifests or generated files — `mdb validate` scans for secret-shaped strings. Environment-specific hosts stay out of definitions by default: an Azure resource is read from the `AZURE_OPENAI_RESOURCE` container environment variable and is never a scoring option (where a container sends its requests is a property of the deployment, not of the caller); Bedrock regions and self-hosted Ollama/vLLM base URLs resolve per call via options or the `AWS_BEDROCK_REGION` / `OLLAMA_BASE_URL` / `VLLM_BASE_URL` container environment variables. The `azure-foundry-env` adapter takes that one step further: the key and the deployment resolve the same way (`AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`), so the definition declares no `API_KEY` input at all and one published image serves any Azure deployment.
+Provider API keys are read from the environment or a `.env` at the repo root (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `AZURE_OPENAI_API_KEY`, `MISTRAL_API_KEY`, `GEMINI_API_KEY`, `VOYAGE_API_KEY`, `AWS_BEDROCK_API_KEY` - AWS's own `AWS_BEARER_TOKEN_BEDROCK` is read as a fallback). Keys never enter manifests or generated files — `mdb validate` scans for secret-shaped strings. Environment-specific hosts stay out of definitions by default: an Azure resource is read from the `AZURE_OPENAI_RESOURCE` container environment variable and is never a scoring option (where a container sends its requests is a property of the deployment, not of the caller); Bedrock regions and self-hosted Ollama/vLLM base URLs resolve per call via options or the `AWS_BEDROCK_REGION` / `OLLAMA_BASE_URL` / `VLLM_BASE_URL` container environment variables. The `azure-foundry-env` adapter takes that one step further: the key and the deployment resolve the same way (`AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`), so the definition declares no `API_KEY` input at all and one published image serves any Azure deployment.
 
 The Viya commands (`setup`, `register`, `publish`, ...) need `SAS_VIYA_URL` and one credential, tried in this order: `SAS_VIYA_TOKEN` (an OAuth access token), `SAS_VIYA_USER` + `SAS_VIYA_PASSWORD` (the password grant), or - with neither set - the SAS Viya CLI's own login (`sas-viya auth loginCode`, read from `~/.sas/credentials.json`). On an SSO / SCIM / OIDC site the CLI login is the route: no password is needed and everything is created in your name. Each command prints which one it used.
 

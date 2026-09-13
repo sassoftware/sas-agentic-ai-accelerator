@@ -6,7 +6,7 @@
     "targetVariable": "embedding",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",
-    "modeler": "gerdaw",
+    "modeler": "SAS Agentic AI Accelerator",
     "function": "embedding",
     "algorithm": "Embedding",
     "tool": "Python 3",

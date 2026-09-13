@@ -2,4 +2,5 @@
 # SPDX-License-Identifier: Apache-2.0
 """Model Definition Builder (mdb) for the SAS Agentic AI Accelerator."""
 
-__version__ = "0.1.0"
+# The accelerator release this mdb ships with; bumped with CHANGELOG.md at release time.
+__version__ = "2.0.4"

@@ -21,11 +21,23 @@ Rather than building the app and wiring it up by hand (steps 1–2), you can imp
 
 The package ships the report's Prompt Builder object pointing at a **placeholder host, `https://your-sas-viya-host`** — point it at your own environment before or after import.
 
-### Option A — SAS Environment Manager
+### Option A — `mdb builders-import` (recommended)
+
+With `mdb` installed and your `.env` filled in ([Setup SAS Model Manager](./Setup-SAS-Model-Manager.md#envSetup)), one command imports both Builder packages, loads the release table they bind to, points their Data-Driven Content URLs and host defaults at your server, and configures the objects - from a file saved with `mdb options-save` when you pass one, else with the repository, projects and SCR endpoint it discovers:
+
+```bash
+mdb builders-import --dry-run                     # what would happen
+mdb builders-import                               # first install
+mdb builders-import --options builder-options.json   # upgrade: keep this site's options
+```
+
+Name package files to import only one (`mdb builders-import SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json`). Afterwards continue at [step 4](#4-sas-environment-manager-configuration) (the Content Security Policy) and, for a first install, set the object options in [step 5](#5-add-the-object-to-a-visual-analytics-report).
+
+### Option B — SAS Environment Manager
 
 Import the JSON from **SAS Environment Manager → Content → Import**. Then correct the host in [step 5](#5-add-the-object-to-a-visual-analytics-report): open the report and update the Data-Driven Content object's base URL to your SAS Viya server.
 
-### Option B — SAS Viya CLI
+### Option C — SAS Viya CLI
 
 Use the `sas-viya` command-line interface's `transfer` plugin. This assumes you have already installed the CLI, created a connection profile, logged in and installed the `transfer` plugin as described in [Introduction — SAS Viya CLI Setup](./Introduction.md#sas-viya-cli-setup). In the commands below substitute `https://viya.example.com` with your own SAS Viya URL.
 
@@ -101,7 +113,7 @@ mdb options-restore --file builder-options.json             # write it back
 
 `options-save` discovers the Model Manager repository and the LLM/Embedding projects exactly as `mdb setup` does, then overlays whatever your live **Prompt Builder** and **RAG Builder** reports already hold — so a deployment that has been tuned is captured as tuned, not as freshly bootstrapped. Keep the resulting file with your deployment records; it supersedes the older `llm-prompt-builder.json` / `rag-builder.json` seeds as the record of how this environment is configured.
 
-`options-restore` writes back **only the options named in the file**. The newly imported report keeps its new layout, data items and objects, and regains your configuration.
+`options-restore` writes back **only the options named in the file**. The newly imported report keeps its new layout, data items and objects, and regains your configuration. It also replaces the shipped placeholder host `your-sas-viya-host` - in the object's Data-Driven Content URL and in the `viyaHost` / `SCREndpoint` defaults - with `SAS_VIYA_URL`, so a report imported by hand needs no URL edit afterwards (`mdb builders-import` does both in one run).
 
 Points worth knowing:
 
@@ -119,7 +131,7 @@ You have two options:
 
 **Option A — use the prebuilt file (recommended).** Download the ready-to-use [`dist/index.html`](https://github.com/sassoftware/sas-agentic-ai-accelerator/blob/main/LLM-Prompt-Builder/dist/index.html) from the repository. No Node.js or build step is required — skip straight to step 2. Or copy the code from there to your clipboard and move to step 2.
 
-**Option B — build it yourself.** With Node.js (`^18 || ^20 || >=22`) installed:
+**Option B — build it yourself.** With Node.js (`^20.19 || >=22.12`) installed:
 
 ```bash
 git clone https://github.com/sassoftware/sas-agentic-ai-accelerator.git
@@ -191,7 +203,8 @@ kubectl get pods -n <your-namespace> -o name | grep -E 'pod/sas-job-execution|po
 If you imported the SAS-Agentic-AI-Accelerator-Prompt-Builder.json package then open up the SAS Visual Analytics report under SAS Content > SAS Agentic AI Accelerator > Prompt Builder > Prompt Builder and then continue.
 
 1. In a Visual Analytics report, add a **Data-Driven Content** object and in the **Options** pane under Web Content enter the URL from the previous step or if you imported it update the base URL to your SAS Viya server.
-2. Open the object's **Properties** panel and set the configuration values (see below). No data assignment is needed — provider keys come from the credential domain (step 3).
+2. Assign the **release table** to the object: in the **Data** pane pick `Public.ACCELERATOR_RELEASES` (loaded by `mdb setup` or `mdb load-releases`; the library and name follow `SAS_CAS_LIBRARY` / `SAS_RELEASES_TABLE`) and add any of its columns to the object's role. A Data-Driven Content object does not render until it has a data assignment; the Builders themselves read nothing from it, and provider keys still come from the credential domain (step 3). The table carries the accelerator's changelog - one row per release and per change, with a `component` column - so the same report can show what changed for the Prompt Builder or the RAG Builder next to the object.
+3. Open the object's **Properties** panel and set the configuration values (see below).
 
 ### Configuration (Properties panel)
 

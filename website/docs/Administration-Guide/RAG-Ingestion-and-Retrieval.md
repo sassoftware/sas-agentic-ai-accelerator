@@ -48,8 +48,10 @@ step mints a new id, and every saved flow referencing the old id breaks.
 ## Serving the RAG Builder
 
 The Builder is a single-file app served through SAS Job Execution, the same
-way as the Prompt Builder. Build it with `npm run build:rag` (or take the
-prebuilt file) and create a job definition whose **form** is that HTML:
+way as the Prompt Builder. Build it with `npm run build:rag` in
+`LLM-Prompt-Builder/` (unlike the Prompt Builder no prebuilt file is
+committed; the transfer package above carries the built app) and create a
+job definition whose **form** is that HTML:
 
 | | |
 | --- | --- |
@@ -79,7 +81,11 @@ The Content Security Policy directives in
 build base64-encodes its inline scripts so the Go template engine cannot
 corrupt them, and the CSP has to allow the decoded bundle to run.
 
-Configure the Builder from its **Options** pane in Visual Analytics: the
+Assign the release table `Public.ACCELERATOR_RELEASES` to the object first
+(`mdb setup` / `mdb load-releases` load it; see [Deploying the Builder
+UIs](./Setup-Additional-UIs.md#5-add-the-object-to-a-visual-analytics-report)) -
+a Data-Driven Content object renders only with a data assignment. Then
+configure the Builder from its **Options** pane in Visual Analytics: the
 Model Manager repository, the **embedding model project**, SCR endpoint,
 credential domain, content root, CAS server, the ingestion compute context, a
 checkbox per vector database the deployment offers, and the operational policy

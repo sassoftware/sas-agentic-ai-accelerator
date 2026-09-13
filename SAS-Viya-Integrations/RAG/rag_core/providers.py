@@ -56,7 +56,6 @@ LLM_KEY_ENTRIES = {
     "gpt_56_sol": "OpenAI",
     "gpt_5_mini": "OpenAI",
     "ling_3_0_flash_free": "OpenRouter",
-    "llama_31_405b": "Meta",
     "llama_33_70b": "OpenRouter",
     "mistral_small_32": "Mistral",
     "moonshotai_kimi_k3": "OpenRouter",

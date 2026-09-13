@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sas-mdb"
-version = "0.1.0"
+# The version is the accelerator release; the single source is mdb/__init__.py
+dynamic = ["version"]
 description = "Model Definition Builder CLI for the SAS Agentic AI Accelerator - generates LLM and Embedding model definitions from a single manifest per model"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -32,6 +33,9 @@ mdb = "mdb.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "mdb.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

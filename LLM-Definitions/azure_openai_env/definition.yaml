@@ -41,7 +41,7 @@ metadata:
     cost_type: Tokens
     input_token_price: 2.0e-07
     output_token_price: 1.2e-06
-modeler: david.weik@sas.com
+modeler: SAS Agentic AI Accelerator
 generation:
   overrides: []
   catalog_provenance: manual entry; gpt-5.6-luna facts from the OpenRouter listing, request parameters

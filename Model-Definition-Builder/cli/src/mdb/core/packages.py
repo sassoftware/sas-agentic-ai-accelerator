@@ -217,6 +217,32 @@ def sanitise_package(path, allowed=ALLOWED_HOSTS) -> tuple:
     return text, fixed
 
 
+def drop_objects(package: dict, names) -> list:
+    """Remove the objects called `names` from a parsed package; returns what
+    was dropped as 'type name'. A folder exported from a shared development
+    environment picks up whatever else lives in it - a demo report, a scratch
+    job - and that must not ship. Only leaf objects are meant to go this way:
+    the package's requested items and the remaining objects' connectors are
+    left alone, which is right for a report or a job definition and wrong for
+    a folder with children.
+    """
+    wanted = {n.strip().lower() for n in names if n and n.strip()}
+    if not wanted:
+        return []
+    kept, dropped = [], []
+    for detail in package.get("transferDetails") or []:
+        summary = (detail.get("transferObject") or {}).get("summary") or {}
+        if (summary.get("name") or "").strip().lower() in wanted:
+            dropped.append(f"{summary.get('type')} {summary.get('name')}")
+        else:
+            kept.append(detail)
+    if dropped:
+        package["transferDetails"] = kept
+        if isinstance(package.get("transferObjectCount"), int):
+            package["transferObjectCount"] = len(kept)
+    return dropped
+
+
 def default_packages(repo_root) -> list:
     """The transfer packages this repository ships."""
     folder = Path(repo_root) / "SAS-Viya-Integrations"

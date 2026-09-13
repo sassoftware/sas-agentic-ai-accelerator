@@ -1,12 +1,12 @@
 {
-    "generator": "mdb 0.1.0",
-    "manifest_sha256": "5ff7920b2666f383b4d022ce442ef4023aad4ba8a94abe0dd7a2266403146a7f",
+    "generator": "mdb 2.0.4",
+    "manifest_sha256": "03f4a6b7684f31799b685c9dfb5bf42d5784515521dd8ce03bdb99608e8d783f",
     "files": {
         "Model-Card.md": "7188dcb5c6c68459bbf434c7a46d3128991a05b2cb17d16b3c919f34f1263c84",
         "README.md": "49b7690dcf28affc6ad842168f28259d271f22877b6d6a72ba62e720f1cc04a0",
-        "gpt4oMiniScore.py": "0df9819169e09d831b3a07769f578971899ca306d8f8e4830325304b35647ee3",
+        "gpt4oMiniScore.py": "99416f03729dbf1df63118801c5498ed3765d73ad8c1a8a5fe3d4d8c91208ab7",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
-        "modelConfiguration.json": "86511e29fed99b4a3ecf7f9477919e2d7b5904eb04a1b6b082aa33fa10217145",
+        "modelConfiguration.json": "4820334c60b7d60af9bab9508fa5c76a1121cea138096d7fefa4f69699179323",
         "options.json": "20448ab7610b02ae42a8e55f46f3d79eb687f93220540c58053c0ad23cd6635e",
         "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
         "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"

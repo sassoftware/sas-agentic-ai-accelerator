@@ -42,7 +42,7 @@ metadata:
     cost_type: Tokens
     input_token_price: 3.0e-06
     output_token_price: 1.5e-05
-modeler: gerdaw
+modeler: SAS Agentic AI Accelerator
 generation:
   overrides: []
   catalog_provenance: anthropic (static snapshot 2026-01-15)

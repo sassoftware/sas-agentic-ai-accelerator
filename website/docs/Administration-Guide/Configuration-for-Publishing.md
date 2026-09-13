@@ -23,7 +23,7 @@ In order to be able to deploy these models you will have to provide a *Hugging F
 
 ![Hugging Face Token](../../static/Hugging-Face-Token.png)
 
-6.   You are taken back to the *Access Tokens* overview page where you can also delete tokens, invalid & refresh them or add additional once as needed.
+6.   You are taken back to the *Access Tokens* overview page where you can also delete tokens, invalidate and refresh them, or add more as needed.
 
 Now that we have our token, we can get back to the SCR deployment.
 

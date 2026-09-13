@@ -34,7 +34,7 @@ metadata:
   pricing:
     cost_type: Tokens
     input_token_price: 2.0e-08
-modeler: david.weik@sas.com
+modeler: SAS Agentic AI Accelerator
 generation:
   overrides: []
   catalog_provenance: bedrock (static snapshot 2026-01-15)

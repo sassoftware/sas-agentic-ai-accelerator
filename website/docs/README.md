@@ -11,8 +11,8 @@ It includes:
 
 - The full code + documentation to deploy this in your SAS Viya Environment
 - All the integrations that are built (SAS Studio Custom Steps, a no code prompt engineering UI, SAS Intelligent Decisioning Node, SAS Macros, Postman Collection and so much more)
-- Pre-build deployment recipes for LLMs
-- Pre-build deployment recipes for embedding models
+- Pre-built deployment recipes for LLMs
+- Pre-built deployment recipes for embedding models
 
 The accelerator builds only on SAS Viya standard components and does not use any unsupported APIs or otherwise undocumented features.
 

@@ -46,6 +46,24 @@ app = typer.Typer(
 console = Console()
 
 
+def _print_version(value: bool) -> None:
+    if value:
+        # The accelerator release this mdb ships with (mdb/__init__.py); the
+        # same string is stamped into every generated scorer's header.
+        typer.echo(f"mdb {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: bool = typer.Option(
+        False, "--version", "-V", help="Print the mdb version and exit.",
+        callback=_print_version, is_eager=True,
+    ),
+) -> None:
+    """Model Definition Builder for the SAS Agentic AI Accelerator."""
+
+
 KINDS = ("llm", "embedding")
 
 
@@ -114,7 +132,11 @@ class Context:
 def _env_api_key(adapter: ProviderAdapter) -> Optional[str]:
     if not adapter.env_key_var:
         return None
-    return os.environ.get(adapter.env_key_var)
+    for name in (adapter.env_key_var, *getattr(adapter, "env_key_fallbacks", ())):
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
 
 
 def _print_issues(issues) -> bool:
@@ -763,6 +785,101 @@ def load_facts(
     console.print("[green]Done. The tables are promoted and persisted; the monitoring report can bind to them.[/green]")
 
 
+def _load_releases(session, ctx: "Context", caslib: str, server_name: str, table: str,
+                   changelog: Optional[Path] = None) -> dict:
+    """Parse CHANGELOG.md into the release table and load it (drop, upload,
+    promote, save). Shared by `mdb load-releases` and `mdb setup`."""
+    import tempfile
+    from .core.releases import build_release_table
+    from .viya.cas import load_csv_table
+    source = changelog or (ctx.repo / "CHANGELOG.md")
+    if not source.is_file():
+        raise RuntimeError(f"no changelog at {source} - pass --changelog or set MDB_REPO to the accelerator clone")
+    with tempfile.TemporaryDirectory() as tmp:
+        csv_path = Path(tmp) / f"{table}.csv"
+        rows, summary = build_release_table(source, csv_path)
+        result = load_csv_table(session, csv_path, table, caslib, server_name)
+    summary["dropped"] = result["dropped"]
+    return summary
+
+
+def _releases_table() -> str:
+    from .core.releases import DEFAULT_TABLE, TABLE_ENV
+    return os.environ.get(TABLE_ENV) or DEFAULT_TABLE
+
+
+def _print_component_counts(summary: dict) -> None:
+    counts = ", ".join(f"{name} {n}" for name, n in summary["by_component"].items())
+    console.print(f"  rows per component: {counts}")
+
+
+@app.command("load-releases")
+def load_releases(
+    caslib: Optional[str] = typer.Option(
+        None, "--caslib", "-l",
+        help="Target CAS library (env: SAS_CAS_LIBRARY; default: Public).",
+    ),
+    table: Optional[str] = typer.Option(
+        None, "--table", "-t",
+        help="Table name (env: SAS_RELEASES_TABLE; default: ACCELERATOR_RELEASES).",
+    ),
+    server: Optional[str] = typer.Option(
+        None, "--server",
+        help="CAS server name (env: SAS_CAS_SERVER; default: auto-detect cas-shared-default).",
+    ),
+    changelog: Optional[Path] = typer.Option(
+        None, "--changelog",
+        help="The CHANGELOG.md to read (default: the accelerator clone's).",
+    ),
+    csv_out: Optional[Path] = typer.Option(
+        None, "--csv",
+        help="Only write the table as CSV to this path; do not contact SAS Viya.",
+    ),
+):
+    """Load the accelerator's release history from CHANGELOG.md into CAS as the
+    ACCELERATOR_RELEASES table (drops any existing table first).
+
+    One row per release and one per change, with the release, the section
+    (Added / Changed / Fixed / Removed), the component it concerns (Prompt
+    Builder, RAG Builder, Model Definition Builder, ...) and the change as a
+    headline plus detail. It is the table a report author assigns to the
+    Prompt Builder and RAG Builder objects in SAS Visual Analytics - a
+    Data-Driven Content object needs a data assignment before it renders - and
+    it says which release an environment runs. `mdb setup` loads it too.
+    """
+    from .core.releases import build_release_table
+    from .viya.cas import resolve_server
+    ctx = Context()
+    table_name = table or _releases_table()
+    source = changelog or (ctx.repo / "CHANGELOG.md")
+    if csv_out is not None:
+        try:
+            _, summary = build_release_table(source, csv_out)
+        except (OSError, ValueError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
+        console.print(f"Wrote {summary['rows']} rows for {summary['releases']} releases to {csv_out} "
+                      f"(current release: {summary['current'] or 'none dated'}).")
+        _print_component_counts(summary)
+        return
+    caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
+    server_choice = server or os.environ.get("SAS_CAS_SERVER")
+    with _viya_session() as session:
+        server_name = resolve_server(session, server_choice)
+        console.print(f"Loading the release table into CAS library [bold]{caslib}[/bold] on [bold]{server_name}[/bold]:")
+        try:
+            summary = _load_releases(session, ctx, caslib, server_name, table_name, changelog)
+        except (RuntimeError, ValueError) as exc:
+            console.print(f"  [red]{exc}[/red]")
+            raise typer.Exit(1)
+    suffix = " (replaced a loaded copy)" if summary["dropped"] else ""
+    console.print(f"  {table_name}: {summary['rows']} rows for {summary['releases']} releases, uploaded, "
+                  f"promoted (global) and saved to disk{suffix}")
+    _print_component_counts(summary)
+    console.print(f"[green]Done. Current release: {summary['current'] or 'none dated'}. Assign "
+                  f"{caslib}.{table_name} to the Prompt Builder and RAG Builder objects in SAS Visual Analytics.[/green]")
+
+
 # ---------------------------------------------------------------------------
 # import / test / providers / schema
 # ---------------------------------------------------------------------------
@@ -900,9 +1017,13 @@ def _viya_session():
 def setup(
     out: str = typer.Option(".", "--out", help="Directory for the authorization-rules and builder seed files"),
     no_files: bool = typer.Option(False, "--no-files", help="Only create the repository/projects; skip the seed files"),
+    no_releases: bool = typer.Option(
+        False, "--no-releases",
+        help="Skip loading the ACCELERATOR_RELEASES table into CAS (see 'mdb load-releases')"),
 ):
     """Create the SAS Model Manager repository and the LLM/Embedding Model Projects if missing,
-    and write the authorization-group rules and Prompt/RAG Builder seed files.
+    load the release table into CAS, and write the authorization-group rules and
+    Prompt/RAG Builder seed files.
 
     Idempotent: existing objects are left untouched. `mdb register` runs the
     repository/project check automatically for the kind it registers, so calling
@@ -933,6 +1054,20 @@ def setup(
             repo_id = repo_id or ensured.repository_id
             repo_folder = repo_folder or ensured.repository_folder_id
             project_ids[kind] = ensured.project_id
+        if not no_releases:
+            # The table the Builder objects are assigned in SAS Visual Analytics;
+            # loading it here means a report import never lacks a data source.
+            from .viya.cas import resolve_server
+            caslib = os.environ.get("SAS_CAS_LIBRARY") or "Public"
+            table_name = _releases_table()
+            try:
+                server_name = resolve_server(session, os.environ.get("SAS_CAS_SERVER"))
+                summary = _load_releases(session, ctx, caslib, server_name, table_name)
+                console.print(f"[green]loaded {caslib}.{table_name} ({summary['rows']} rows, current release "
+                              f"{summary['current'] or 'none dated'}) - assign it to the Builder objects in "
+                              f"SAS Visual Analytics.[/green]")
+            except (RuntimeError, ValueError) as exc:
+                console.print(f"[yellow]release table not loaded: {exc} - run 'mdb load-releases' later.[/yellow]")
     if not created_any:
         console.print("[green]Repository and projects already exist.[/green]")
     if no_files:
@@ -1047,8 +1182,6 @@ def options_restore(
     versions, which is worth knowing.
     """
     import json as _json
-    from .core.options import write_options
-    from .viya.reports import find_report, get_content, put_content
 
     path = Path(file)
     if not path.exists():
@@ -1066,37 +1199,310 @@ def options_restore(
         # ACCIDENT is the failure this command exists to prevent.
         console.print(f"[yellow]Note: these options were saved from "
                       f"{document['deployment']}, not {here}.[/yellow]")
-    failures = 0
     with _viya_session() as session:
-        for report_name, values in saved.items():
-            report = find_report(session, report_name)
-            if not report:
-                console.print(f"[yellow]{report_name}: no such report here - skipped.[/yellow]")
-                continue
-            content, etag = get_content(session, report["id"])
-            updated, result = write_options(content, values)
-            for label in result.missing:
-                console.print(f"[yellow]  {report_name}: '{label}' is not an option of "
-                              "this report version - not written.[/yellow]")
-            if not result.changed:
-                console.print(f"[green]{report_name}: already matches "
-                              f"({len(result.unchanged)} options).[/green]")
-                continue
-            listing = ", ".join(sorted(result.applied))
-            if dry_run:
-                console.print(f"[cyan]{report_name}: would restore "
-                              f"{len(result.applied)} option(s): {listing}[/cyan]")
-                continue
-            try:
-                put_content(session, report["id"], updated, etag)
-            except Exception as exc:
-                console.print(f"[red]{report_name}: writing the report failed ({exc}).[/red]")
-                failures += 1
-                continue
-            console.print(f"[green]{report_name}: restored {len(result.applied)} "
-                          f"option(s): {listing}[/green]")
+        failures = _restore_options(session, saved, dry_run, _site_host())
     if failures:
         raise typer.Exit(1)
+
+
+def _site_host() -> str:
+    """The host reports should point at: SAS_VIYA_URL, else the SAS Viya CLI profile's endpoint."""
+    from .viya.session import resolve_auth
+    url = os.environ.get("SAS_VIYA_URL", "")
+    if not url:
+        try:
+            url = resolve_auth().url
+        except Exception:
+            url = ""
+    return url.split("://", 1)[-1].strip().rstrip("/")
+
+
+def _restore_options(session, saved: dict, dry_run: bool, host: str = "") -> int:
+    """Write the saved option values back into the named reports and point
+    every remaining placeholder host at `host`; returns the number of reports
+    that could not be written. Shared by options-restore and builders-import."""
+    from .core.options import rehost_content, write_options
+    from .viya.reports import find_report, get_content, put_content
+    failures = 0
+    for report_name, values in saved.items():
+        report = find_report(session, report_name)
+        if not report:
+            console.print(f"[yellow]{report_name}: no such report here - skipped.[/yellow]")
+            continue
+        content, etag = get_content(session, report["id"])
+        updated, result = write_options(content, values or {})
+        updated, rehosted = rehost_content(updated, host) if host else (updated, 0)
+        for label in result.missing:
+            console.print(f"[yellow]  {report_name}: '{label}' is not an option of "
+                          "this report version - not written.[/yellow]")
+        if not result.changed and not rehosted:
+            console.print(f"[green]{report_name}: already matches "
+                          f"({len(result.unchanged)} options, no placeholder host).[/green]")
+            continue
+        what = []
+        if result.applied:
+            what.append(f"{len(result.applied)} option(s): {', '.join(sorted(result.applied))}")
+        if rehosted:
+            what.append(f"placeholder host -> {host} ({rehosted} occurrence(s): the DDC URL and option defaults)")
+        if dry_run:
+            console.print(f"[cyan]{report_name}: would restore " + "; ".join(what) + "[/cyan]")
+            continue
+        try:
+            put_content(session, report["id"], updated, etag)
+        except Exception as exc:
+            console.print(f"[red]{report_name}: writing the report failed ({exc}).[/red]")
+            failures += 1
+            continue
+        console.print(f"[green]{report_name}: restored " + "; ".join(what) + "[/green]")
+    return failures
+
+
+def _discovered_options(session, ctx: "Context") -> dict:
+    """What `mdb options-save` would record on an environment with no tuned
+    report: repository and project ids, the SCR endpoint and deployment type,
+    per Builder report. The first-install values."""
+    from .core.options import BUILDER_REPORTS, merge_seed
+    from .viya.registry import builder_seed, ensure_repository_and_project
+    responsible_party = os.environ.get("SAS_RESPONSIBLE_PARTY", "")
+    deployment_type = os.environ.get("SAS_DEPLOYMENT_TYPE", "k8s")
+    scr_endpoint = _scr_endpoint()
+    seeds: dict = {}
+    for report_name, kind in BUILDER_REPORTS.items():
+        try:
+            ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
+        except Exception as exc:
+            console.print(f"[yellow]{report_name}: could not discover repository/project ({exc}).[/yellow]")
+            continue
+        seeds[report_name] = merge_seed(
+            builder_seed(kind, ensured.repository_id, ensured.project_id, scr_endpoint, deployment_type), None)
+    return seeds
+
+
+def _shipped_builder_packages(ctx: "Context") -> list[Path]:
+    folder = ctx.repo / "SAS-Viya-Integrations"
+    return sorted(folder.glob("SAS-Agentic-AI-Accelerator-*Builder.json"))
+
+
+def _package_objects(package: dict) -> list[tuple[str, str]]:
+    """(type, name) of every object a package carries."""
+    objects = []
+    for detail in package.get("transferDetails") or []:
+        summary = (detail.get("transferObject") or {}).get("summary") or {}
+        kind = summary.get("type") or "?"
+        if "/" in kind:  # content files carry their media type, e.g. application/vnd.sas.file+json
+            kind = kind.rsplit(".", 1)[-1].replace("+json", "")
+        objects.append((kind, summary.get("name") or "?"))
+    return objects
+
+
+@app.command("package-export")
+def package_export(
+    folder: str = typer.Option(
+        "/SAS Agentic AI Accelerator/Prompt Builder", "--folder",
+        help="SAS Content folder to export (the Prompt Builder or RAG Builder folder)."),
+    name: Optional[str] = typer.Option(None, "--name", help="Package name (default: the folder's name)."),
+    out: Optional[Path] = typer.Option(
+        None, "--out", "-o",
+        help="Where to write the package (default: SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-<Folder-Name>.json)."),
+    keep: bool = typer.Option(False, "--keep", help="Leave the exported package on the server too."),
+    exclude: Optional[list[str]] = typer.Option(
+        None, "--exclude", "-x",
+        help="Object name to leave out of the package (repeatable) - a demo report or scratch job that lives in the folder but must not ship."),
+    timeout: int = typer.Option(600, "--timeout", help="Seconds to wait for the export job."),
+):
+    """Export a SAS Content folder to a transfer package and write it into the
+    repository with the exporting environment's hostname removed.
+
+    Replaces the three manual steps - export in SAS Environment Manager or
+    with `sas-viya transfer export`, copy the file over the shipped one, run
+    `mdb package-check --fix`. The export includes dependencies and
+    authorization rules, as the shipped packages do; the hostname rewrite
+    reaches into the compressed report content, and the result is checked
+    before it is written. Re-export after every change to a Builder's report,
+    job definition or options.
+    """
+    import re as _re
+    from .core.packages import ALLOWED_HOSTS, check_package, sanitise_package
+    from .viya.transfer import (delete_package, download_package, folder_by_path, job_messages,
+                                start_export, wait_for_job)
+    ctx = Context()
+    exclude = [n for n in (exclude or []) if n and n.strip()]
+    package_name = name or folder.rstrip("/").rsplit("/", 1)[-1]
+    target = out or (ctx.repo / "SAS-Viya-Integrations" /
+                     f"SAS-Agentic-AI-Accelerator-{_re.sub(r'[^A-Za-z0-9]+', '-', package_name).strip('-')}.json")
+    with _viya_session() as session:
+        try:
+            folder_obj = folder_by_path(session, folder)
+            console.print(f"Exporting [bold]{folder}[/bold] as package [bold]{package_name}[/bold] ...")
+            job = start_export(session, package_name, [f"/folders/folders/{folder_obj['id']}"])
+            job = wait_for_job(session, next(l["href"] for l in job["links"] if l["rel"] == "self"), timeout=timeout)
+        except RuntimeError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
+        if str(job.get("state", "")).lower() != "completed":
+            console.print(f"[red]The export job ended {job.get('state')} ({job.get('errorCount', 0)} error(s)).[/red]")
+            for line in job_messages(session, job):
+                console.print(f"  {line}")
+            raise typer.Exit(1)
+        package_uri = job["packageUri"]
+        text = download_package(session, package_uri)
+        if not keep:
+            delete_package(session, package_uri)
+    if exclude:
+        from .core.packages import drop_objects
+        parsed = json.loads(text)
+        dropped = drop_objects(parsed, exclude)
+        missing = sorted({n for n in exclude if n.strip().lower() not in {d.split(" ", 1)[1].lower() for d in dropped}})
+        for name in dropped:
+            console.print(f"  left out: {name}")
+        if missing:
+            console.print(f"[red]--exclude names nothing in the export: {', '.join(missing)}[/red]")
+            raise typer.Exit(1)
+        text = json.dumps(parsed, indent=2, ensure_ascii=False) + chr(10)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8", newline="\n")
+    sanitised, fixed = sanitise_package(target, ALLOWED_HOSTS)
+    if fixed:
+        target.write_text(sanitised, encoding="utf-8", newline="\n")
+        for host, n in fixed.items():
+            console.print(f"  replaced {host} with the placeholder ({n} occurrence(s))")
+    result = check_package(target, ALLOWED_HOSTS)
+    if not result.ok:
+        console.print(f"[red]{target.name} still names a host: {result.where()}[/red]")
+        raise typer.Exit(1)
+    package = json.loads(target.read_text(encoding="utf-8"))
+    kinds = ", ".join(f"{kind} {name}" for kind, name in _package_objects(package))
+    console.print(f"[green]Wrote {target} ({package.get('transferObjectCount', '?')} objects: {kinds}).[/green]")
+    console.print("Review the diff, then commit it with the CHANGELOG entry that explains the change.")
+
+
+@app.command("builders-import")
+def builders_import(
+    packages: Optional[list[Path]] = typer.Argument(
+        None, help="Transfer package files (default: the two Builder packages this repository ships)."),
+    options: Optional[Path] = typer.Option(
+        None, "--options",
+        help="A builder-options.json from `mdb options-save` to write back after the import."),
+    caslib: Optional[str] = typer.Option(None, "--caslib", "-l", help="CAS library of the release table (env: SAS_CAS_LIBRARY)."),
+    table: Optional[str] = typer.Option(None, "--table", "-t", help="Release table name (env: SAS_RELEASES_TABLE)."),
+    server: Optional[str] = typer.Option(None, "--server", help="CAS server (env: SAS_CAS_SERVER)."),
+    no_releases: bool = typer.Option(False, "--no-releases", help="Do not (re)load the release table first."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show the objects and the import mapping; import nothing."),
+    timeout: int = typer.Option(600, "--timeout", help="Seconds to wait for each import job."),
+):
+    """Import the Prompt Builder / RAG Builder transfer packages into this
+    deployment: load the release table, import each package with its report
+    bound to that table and its Data-Driven Content URL pointing at this
+    server, then write back saved builder options.
+
+    What `sas-viya transfer upload` + `import` do, plus the two things an
+    import otherwise needs by hand afterwards: the report's data source is
+    retargeted at SAS_CAS_LIBRARY.SAS_RELEASES_TABLE (the shipped packages
+    bind Public.ACCELERATOR_RELEASES) and the placeholder host in the DDC URL
+    becomes SAS_VIYA_URL - both through the transfer service's import mapping,
+    so nothing is edited after the fact. Afterwards the reports are
+    configured: with --options the site's saved values are written back;
+    without it the values `mdb setup` discovers (repository, projects, SCR
+    endpoint, deployment type) are, and either way every remaining
+    placeholder host in a report - the DDC URL and the option defaults -
+    becomes this deployment's host. A first install needs no hand edits.
+    """
+    from .core.releases import DEFAULT_TABLE
+    from .viya.cas import resolve_server
+    from .viya.transfer import (delete_package, get_mapping, host_of, job_messages, job_uri,
+                                rehost_mapping, start_import, table_spec, upload_package,
+                                wait_for_job)
+    ctx = Context()
+    files = [Path(p) for p in packages] if packages else _shipped_builder_packages(ctx)
+    if not files:
+        console.print("[red]No package given and none shipped under SAS-Viya-Integrations/.[/red]")
+        raise typer.Exit(2)
+    for path in files:
+        if not path.is_file():
+            console.print(f"[red]{path} not found.[/red]")
+            raise typer.Exit(2)
+    saved = None
+    if options is not None:
+        if not options.is_file():
+            console.print(f"[red]{options} not found - run `mdb options-save` first.[/red]")
+            raise typer.Exit(2)
+        saved = json.loads(options.read_text(encoding="utf-8")).get("reports") or {}
+    caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
+    table_name = table or _releases_table()
+    failures = 0
+    with _viya_session() as session:
+        host = host_of(os.environ.get("SAS_VIYA_URL") or getattr(session, "hostname", "") or "")
+        server_name = resolve_server(session, server or os.environ.get("SAS_CAS_SERVER"))
+        releases_to = table_spec(server_name, caslib, table_name)
+        if no_releases:
+            console.print(f"Release table: not reloaded (--no-releases); reports bind to {releases_to}.")
+        elif dry_run:
+            console.print(f"Release table: would load {caslib}.{table_name} on {server_name}.")
+        else:
+            try:
+                summary = _load_releases(session, ctx, caslib, server_name, table_name)
+                console.print(f"Release table: {caslib}.{table_name} loaded ({summary['rows']} rows, "
+                              f"current release {summary['current'] or 'none dated'}).")
+            except (RuntimeError, ValueError) as exc:
+                console.print(f"[red]Release table not loaded: {exc}[/red]")
+                raise typer.Exit(1)
+        for path in files:
+            package = json.loads(path.read_text(encoding="utf-8"))
+            objects = _package_objects(package)
+            console.print(f"\n[bold]{path.name}[/bold] - {package.get('name')}: "
+                          + ", ".join(f"{kind} '{name}'" for kind, name in objects))
+            try:
+                uploaded = upload_package(session, path)
+                mapping = get_mapping(session, uploaded["id"])
+            except RuntimeError as exc:
+                console.print(f"  [red]{exc}[/red]")
+                failures += 1
+                continue
+            mapping, changes = rehost_mapping(mapping, host, DEFAULT_TABLE, releases_to)
+            for change in changes:
+                console.print(f"  mapping: {change}")
+            package_uri = f"/transfer/packages/{uploaded['id']}"
+            if dry_run:
+                delete_package(session, package_uri)
+                console.print("  [cyan]dry run - nothing imported.[/cyan]")
+                continue
+            try:
+                job = start_import(session, package.get("name") or path.stem, package_uri, mapping)
+                job = wait_for_job(session, job_uri(job), timeout=timeout)
+            except RuntimeError as exc:
+                console.print(f"  [red]{exc}[/red]")
+                failures += 1
+                continue
+            state = str(job.get("state", "")).lower()
+            if state != "completed" or job.get("errorCount"):
+                console.print(f"  [red]import ended {job.get('state')} with {job.get('errorCount', 0)} error(s):[/red]")
+                for line in job_messages(session, job):
+                    console.print(f"    {line}")
+                failures += 1
+                continue
+            console.print(f"  [green]imported {len(objects)} object(s).[/green]")
+        if not failures:
+            if saved is None:
+                console.print("\nConfiguring the imported reports from this deployment (repository, projects, "
+                              "SCR endpoint, deployment type) and the site host:")
+                values = _discovered_options(session, ctx)
+            else:
+                console.print(f"\nRestoring builder options from {options}:")
+                values = saved
+            if dry_run:
+                console.print("  [cyan](dry run: the reports are not imported, so this shows the live "
+                              "reports' state)[/cyan]")
+            failures += _restore_options(session, values, dry_run, host)
+    if failures:
+        raise typer.Exit(1)
+    if dry_run:
+        return
+    console.print("\n[green]Done.[/green] Next: the Content Security Policy settings are described in the "
+                  "administration guide, 'Deploying the Builder UIs', step 4."
+                  + ("" if saved is not None else
+                     " Optional settings (credential domain, judge model, content root, vector stores) keep "
+                     "the package's defaults - set them in the Properties panel, or run `mdb options-restore` "
+                     "with a file saved from a tuned deployment."))
 
 
 @app.command("package-check")

@@ -6,7 +6,7 @@
     "targetVariable": "response",
     "targetLevel": "NOMINAL",
     "trainCodeType": "Python",
-    "modeler": "david.weik@sas.com",
+    "modeler": "SAS Agentic AI Accelerator",
     "function": "text generation",
     "algorithm": "Transformer",
     "tool": "Python 3",
