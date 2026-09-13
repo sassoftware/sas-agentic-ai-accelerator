@@ -51,7 +51,7 @@ The RAG steps are described in the [RAG user guide](https://sassoftware.github.i
 
 ### Logging-Monitoring
 
-Everything for monitoring: `README.md` (the `LLM_LOGS` table and where it is used), `Log-Parser-Code.sas` (the log parser as a code file - the *LLM - Log Parser* step carries the same code), `Get-All-Prompts.sas` (the `PROMPT_EXPERIMENTS` table), `Load-Fact-Sheets.sas` (or `mdb load-facts`), `Build-RAG-Cost-View.sas` and the *LLM Usage Report* package. `Token-Calculator.html` and `LLM-Details-Page.html` are two older in-report utilities (a token/price calculator and a light-weight model card) that predate the usage report.
+Everything for monitoring: `README.md` (the `LLM_LOGS` table and where it is used), `Log-Parser-Code.sas` (the log parser as a code file - the *LLM - Log Parser* step carries the same code), `Get-All-Prompts.sas` (the `PROMPT_EXPERIMENTS` table), `Load-Fact-Sheets.sas` (or `mdb load-facts`), `Build-RAG-Cost-View.sas` and the *LLM Usage Report* package.
 
 A note on prices: the report's *Average Price* / *Total Price* calculated items multiply token counts with the per-token prices from the fact sheets. Providers quote prices per million tokens and distinguish input from output tokens; the report works in individual tokens. Locally served models are priced at $0 by default - the calculated item has a comment at the top that explains how to add a per-second price.
 

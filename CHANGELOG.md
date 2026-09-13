@@ -17,6 +17,7 @@ The documentation says what the code does.
 ### Removed
 
 - **`llama_31_405b`.** The definition had no working target: an OpenAI chat template with no key, no endpoint, and a hand-maintained scorer that loaded weights no build step downloaded. It is archived out of the active set (`mdb retire --archive`; `mdb pull llama_31_405b` or git history recover it). The Python samples default to `gpt_41_mini` instead.
+- **Orphaned files.** `Logging-Monitoring/Token-Calculator.html` and `LLM-Details-Page.html` (in-report utilities from before the LLM Usage Report), the root `img/` screenshots and the `SAS-Code-LLM-Calls/README.pdf` copy of the README were referenced by nothing but old changelog entries; they are gone from the tree and remain in git history.
 
 ### Changed
 
