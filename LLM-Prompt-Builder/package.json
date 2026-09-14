@@ -18,12 +18,12 @@
   },
   "dependencies": {
     "bootstrap": "^5.3.8",
-    "dompurify": "^3.4.14",
-    "marked": "^18.0.11"
+    "dompurify": "^3.4.15",
+    "marked": "^18.0.12"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
-    "vite": "^8.2.2",
+    "vite": "^8.3.0",
     "vite-plugin-singlefile": "^2.3.3"
   }
 }
