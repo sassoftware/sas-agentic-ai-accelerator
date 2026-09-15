@@ -7,7 +7,7 @@ Contributions to this project must be accompanied by a signed [Contributor Agree
 You (or your employer) retain the copyright to your contribution.
 This simply permits the project maintainers to use and redistribute your contributions as part of the project.
 
-## Update Documentationw
+## Update Documentation
 Project documentation is stored in the `website` directory.
 This project welcomes pull requests suggesting updates to this documentation.
 See the documentation [README](./website/README.md) for details.

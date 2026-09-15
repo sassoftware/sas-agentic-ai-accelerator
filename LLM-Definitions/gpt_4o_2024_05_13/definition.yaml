@@ -36,7 +36,7 @@ metadata:
     cost_type: Tokens
     input_token_price: 1.25e-06
     output_token_price: 1.0e-05
-modeler: gerdaw
+modeler: SAS Agentic AI Accelerator
 generation:
   overrides: []
   score_code_file: gpt4oScore.py

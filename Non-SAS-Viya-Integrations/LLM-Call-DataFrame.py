@@ -5,9 +5,9 @@ import requests
 import pandas as pd
 
 llm_endpoint = 'server_url/llm'
-llm_name = 'llama_31_405b'
+llm_name = 'gpt_41_mini'
 
-system_prompt = 'You are a heplful assitant that provides a short summary of the users input'
+system_prompt = 'You are a helpful assistant that provides a short summary of the users input'
 options = '{temperature:0.6,max_tokens:1024}'
 
 def call_LLM_per_Row(userPromptVar=''):
@@ -45,9 +45,9 @@ def call_LLM_per_Row(userPromptVar=''):
         ]
     })
     headers = {'Content-Type': 'application/json'}
-    response = requests.request('POST', f"{llm_endpoint}/{llm_name}/{llm_name}", headers=headers, data=payload)
-    respons_dict = json.loads(response.text)
-    return respons_dict['data']['prompt_length'], respons_dict['data']['output_length'], respons_dict['data']['response']
+    response = requests.request('POST', f"{llm_endpoint}/{llm_name}/{llm_name}", headers=headers, data=payload, timeout=600)
+    response_dict = json.loads(response.text)
+    return response_dict['data']['prompt_length'], response_dict['data']['output_length'], response_dict['data']['response']
 
 # Create the example data set
 df = pd.DataFrame({

@@ -11,7 +11,7 @@ This container registry will be configured as a publishing destination for SAS V
 
 For more information about the publishing destination please refer to the [SAS Documentation](https://go.documentation.sas.com/doc/en/sasadmincdc/default/calpubdest/p02scrqf37kexwn1gi60khpshifz.htm#p1f2d2x0t2a3vvn1j88t6ix1f6gm).
 
-For the creation of the SAS Container Runtime publishing destination it is recommended to use the [SAS Viya CLI](https://go.documentation.sas.com/doc/en/sasadmincdc/default/calcli/titlepage.htm). The command detailed below is used to create a publishing destination that is using a Azure Container Registry - this is also availble for AWS, GCP and Private Docker:
+For the creation of the SAS Container Runtime publishing destination it is recommended to use the [SAS Viya CLI](https://go.documentation.sas.com/doc/en/sasadmincdc/default/calcli/titlepage.htm). The command detailed below is used to create a publishing destination that is using a Azure Container Registry - this is also available for AWS, GCP and Private Docker:
 ```bash
 sas-viya models destination createAzure \
     --name llmACR \
@@ -38,6 +38,6 @@ If you prefer to use SAS Environment Manager to create the publishing destinatio
 
 In Azure you need to create an app registration beside the registry. This app registration will then get the permissions to push SCR containers to the registy.
 
-Within the app registration, a client ID and a secret needs to be defined. These information's will be used later to create the publishing destination in SAS Viya.
+Within the app registration, a client ID and a secret needs to be defined. This information will be used later to create the publishing destination in SAS Viya.
 
-Please see this SAS Communities article for further information's: https://communities.sas.com/t5/SAS-Communities-Library/How-to-Publish-a-SAS-Model-to-Azure-with-SCR-A-Start-to-Finish/ta-p/768714
+Please see this SAS Communities article for further information: https://communities.sas.com/t5/SAS-Communities-Library/How-to-Publish-a-SAS-Model-to-Azure-with-SCR-A-Start-to-Finish/ta-p/768714

@@ -33,7 +33,7 @@ metadata:
   pricing:
     cost_type: Tokens
     input_token_price: 6.0e-08
-modeler: gerdaw
+modeler: SAS Agentic AI Accelerator
 generation:
   overrides: []
   score_code_file: voyage35.py

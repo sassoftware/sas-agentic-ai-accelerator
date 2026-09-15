@@ -7,7 +7,8 @@ Execution job that improves a Prompt Builder prompt with
 | File | Purpose |
 | --- | --- |
 | `Optimize-Prompt-DSPy.sas` | The job program (`proc python` + DSPy). Import it as a **Job Execution job definition**; its SAS Content path is what the Builder's `optimizeJobProgram` Option points at. |
-| `requirements.txt` | Python packages the job's compute context must have installed (`dspy`, `requests`). |
+| `requirements.txt` | Python packages the job's compute context must have installed (`dspy`, `requests`, `optuna` for MIPROv2). |
+| `Create-Optimization-Dataset.sas` | A template (not a job) that builds a governed CAS training table a prompt engineer can pick as the dataset source. |
 
 ## How it fits together
 
@@ -19,8 +20,10 @@ Execution job that improves a Prompt Builder prompt with
    response the user vouched for is the reference answer.
 3. Models are called through the **SCR endpoints** (the same governed
    containers the Builder uses) via a small `SCRLM` DSPy adapter speaking the
-   SAS 3-input contract. Provider API keys come from a governed SAS
-   library.table — only its *name* travels in the job request.
+   SAS 3-input contract. Provider API keys are resolved from the SAS Viya
+   credential domain (`keyDomain`, default `agentic-ai-keys`) under the
+   identity the compute session runs as — only the domain *name* travels
+   in the job request.
 4. A DSPy optimizer (bootstrap few-shot, MIPROv2, or GEPA — which evolves the
    instruction from natural-language feedback, the judge's own reasoning when
    the metric is the judge) maximises the chosen metric (exact match, token

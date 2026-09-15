@@ -173,7 +173,7 @@ Everything you save lands in Model Manager as a `Prompt-Experiment-Tracker.json`
 
 ## A note on API keys
 
-Hosted models (OpenAI, Anthropic, Google, …) need an API key. Keys are **not** typed into the tool or the URL — they are supplied to the object through governed data by whoever sets up the report, so they never end up in a shareable link and access to running paid model calls can be restricted. If a model call fails with an authorization error, that key is missing or not readable for you; ask your administrator. See [Deploying the Builder UIs](../Administration-Guide/Setup-Additional-UIs.md) for the details.
+Hosted models (OpenAI, Anthropic, Google, …) need an API key. Keys are **not** typed into the tool or the URL — they are resolved from a SAS Viya **credential domain** under your own identity (a personal credential, or one your group holds), so they never end up in a shareable link and who may run paid model calls is an identity decision. A model you hold no key for is shown disabled with a note naming the missing entry; ask your administrator to add it. See [Managing Credentials](../Administration-Guide/Managing-Credentials.md) for the details.
 
 ## Where to go next
 

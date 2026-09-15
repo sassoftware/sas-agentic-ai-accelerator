@@ -91,7 +91,7 @@ def test_no_template_indexes_an_input_any_more():
 def test_hand_maintained_scorers_are_fixed_too():
     """The six legacy scorers kept via generation.overrides carry the same fix."""
     root = TEMPLATES.parents[2]
-    for rel in ("llama_31_405b/llama31405bScore.py", "llama_32_1b/llama321bScore.py",
+    for rel in ("llama_32_1b/llama321bScore.py",
                 "llama_32_3b/llama323bScore.py", "mistral_nemo/mistralNemoScore.py",
                 "phi_35_mini/phi35miniScore.py", "phi_3_mini_4k/phi3Score.py"):
         text = (root / "LLM-Definitions" / rel).read_text(encoding="utf-8")

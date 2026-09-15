@@ -1,11 +1,11 @@
 {
-    "generator": "mdb 0.1.0",
-    "manifest_sha256": "080a4ee2d0ff6099eb105c04328318ea87579add150db4efe313bcf30af7351b",
+    "generator": "mdb 2.0.4",
+    "manifest_sha256": "6ffbf1c75bc338043045a41451812d43ee300730d0f7b37c27b84e1f35c3c81d",
     "files": {
         "Model-Card.md": "e24e192515423564aaf88a77e78606de0fdf6135fade215b8c775769d26e9a47",
         "README.md": "035a16d0d5032f052b1fdf0ebf79653fbbcadee5aec5a4dc9b2143e80b027dae",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
-        "modelConfiguration.json": "1b4882eea1e672e9b5b6a87c3053fa12fa0fe8eeb82080961c4bd6e9c765e113",
+        "modelConfiguration.json": "106d7e361892fb7cd43d56ba2d8c709f77d7e8f7b203e8310360f2760bebe0bf",
         "options.json": "d7eb0b5485a179d06eb45035a350773e539f4a9594a014499d6186c64ff8a49d",
         "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2"
     }

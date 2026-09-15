@@ -32,9 +32,10 @@
         installed. This is the most common failure mode - the job checks both
         the presence AND the version of dspy at startup and fails fast with a
         clear message (surfaced in the Prompt Builder's Optimize panel).
-      - Provider API keys (for hosted models) must be in a governed SAS
-        library.table with columns name + value; only the LIBRARY and TABLE
-        names are passed to this job, never the keys.
+      - Provider API keys (for hosted models) are resolved from the SAS Viya
+        credential domain named by keyDomain (default agentic-ai-keys) under
+        the identity this compute session runs as; only the domain NAME is
+        passed to this job, never a key.
 
     Parameters (passed by the Prompt Builder as Job Execution arguments; each
     arrives as a macro variable of the same name):

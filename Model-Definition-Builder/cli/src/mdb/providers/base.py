@@ -97,6 +97,8 @@ class ProviderAdapter(ABC):
     provider_tag: str
     key_name: Optional[str]  # options.json API_KEY default == LLM_API_KEYS KeyName; None = self-hosted
     env_key_var: Optional[str]
+    #: further variables accepted for the same key (e.g. a vendor's own name)
+    env_key_fallbacks: tuple = ()
     docs_url: str = ""
     template: str = "openai_chat"
     embedding_template: Optional[str] = None  # set when the adapter supports kind=embedding

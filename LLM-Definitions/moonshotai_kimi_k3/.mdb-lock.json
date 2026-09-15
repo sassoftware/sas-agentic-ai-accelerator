@@ -1,12 +1,12 @@
 {
-    "generator": "mdb 0.1.0",
-    "manifest_sha256": "bdbd245c3445c7a44288f4464c2e70a8e9b913d43954c89efde9e5e17f4e16b1",
+    "generator": "mdb 2.0.4",
+    "manifest_sha256": "8ade3f185b388966d925632f273044b492356bedc6cf136f8a7196fd8b91d224",
     "files": {
         "Model-Card.md": "04db3e3c5db85e38cee72012842811a050a9cae83d93091242e8db3eaf77f82f",
         "README.md": "e55a122d6caa9bdb6838700b5bd67510b4197b81c302586cf0811f86f814c4aa",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
-        "modelConfiguration.json": "99f4836fe66d9a7b73b671b56f4b5f28bec96dc02f87b781a7b26378f3708aea",
-        "moonshotaiKimiK3Score.py": "e235d706b8aa3aeffb5dfd5103c0e58cccdf2742206f04e497ee3062adb7b27f",
+        "modelConfiguration.json": "2a0a9c9c30b4de6a26a0d950c2aa7b11605bdcb26a68f67e4c94bd6b30bfc83b",
+        "moonshotaiKimiK3Score.py": "290325ea7b93aa98c35728e302b30d10ccd3821e6198f3f9307b7be321918f25",
         "options.json": "023979ec73b7500a48f80a29b9399de281d88adc0f8c167d98ce50e8b5575d59",
         "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
         "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"

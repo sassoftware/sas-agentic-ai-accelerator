@@ -26,7 +26,10 @@ class BedrockAdapter(ProviderAdapter):
     display_name = "AWS Bedrock"
     provider_tag = "AWS Bedrock"
     key_name = "AWSBedrock"
-    env_key_var = "AWS_BEARER_TOKEN_BEDROCK"
+    # The name the .env, the credential-domain scripts and mdb credentials-apply
+    # use; AWS's own variable name is accepted as a fallback.
+    env_key_var = "AWS_BEDROCK_API_KEY"
+    env_key_fallbacks = ("AWS_BEARER_TOKEN_BEDROCK",)
     docs_url = "https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html"
     template = "bedrock_converse"
     embedding_template = "emb_bedrock_titan"

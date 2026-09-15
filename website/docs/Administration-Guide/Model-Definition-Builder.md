@@ -13,10 +13,10 @@ Generated definitions work with the established registration flow — continue w
 cd Model-Definition-Builder/cli
 python -m venv .venv
 .venv/Scripts/activate        # Windows; on Linux/macOS: source .venv/bin/activate
-pip install -e .
+pip install -e ".[viya]"     # keep the quotes; the [viya] extra adds sasctl for the Viya commands
 ```
 
-Requires Python 3.10 or newer. For air-gapped environments, download the dependency wheels on a connected machine and install with `pip install --no-index --find-links <wheel-dir> sas-mdb`.
+Requires Python 3.10 or newer. Without the `[viya]` extra `mdb` still adds, generates, validates and tests definitions; `setup`, `register`, `publish`, `ship`, `load-facts`, `options-*` and `credentials-*` need it. For air-gapped environments, download the dependency wheels on a connected machine and install with `pip install --no-index --find-links <wheel-dir> sas-mdb`.
 
 ## Adding a model
 
@@ -113,11 +113,27 @@ mdb unregister <model_id>            # delete a registered model from Model Mana
 mdb endpoints --json                 # SCR endpoint manifest for CI and testing
 mdb options-save                     # save this deployment's builder options to a file
 mdb options-restore                  # write them back after importing a report package
+mdb builders-import [pkg...]         # import the Builder packages: release table, host,
+                                     # data-source binding and saved options in one run
+mdb package-export --folder <path>   # export a Builder folder into the repository, host removed
 ```
 
 On a fresh environment, `mdb setup` creates the `LLM Repository` and the LLM/Embedding Model Projects (idempotent — existing objects are left untouched), and `mdb register` performs the same check automatically for the kind it registers, so you do not have to run setup explicitly. `mdb setup` also writes the authorization-group rules (`sas-viya-cli-commands.txt`) and the `llm-prompt-builder.json` / `rag-builder.json` builder seed files — it is the single entry point for bootstrapping the environment. Once the builders are configured, `mdb options-save` supersedes those seed files: it starts from the same discovered values and overlays what the live reports actually hold, so what you keep is your deployment as configured rather than as bootstrapped — see [Preserving builder options across a report import](./Setup-Additional-UIs.md#preserving-builder-options-across-a-report-import).
 
 `--update` removes the old delete-and-re-register workaround: after `mdb generate`, one command refreshes the registered model while keeping its ID, history (a new model version is created) and project placement. Both kinds use one implementation — embedding models register into the Embedding Model Project with the same content roles and fact-sheet enrichment. Each registered model also stores its `definition.yaml` as model content, so the source of truth travels with the model.
+
+## Importing and exporting the Builder packages
+
+`mdb builders-import` imports the Prompt Builder and RAG Builder transfer packages (the two shipped under `SAS-Viya-Integrations/`, or the files you name) into the deployment in `.env`, doing in one run what an import otherwise leaves to hand work afterwards:
+
+1. loads the release table (`mdb load-releases`; `--no-releases` skips it),
+2. uploads each package and rewrites its **import mapping** before the job starts: the report's data-source connector is retargeted from the shipped `Public.ACCELERATOR_RELEASES` to `SAS_CAS_LIBRARY.SAS_RELEASES_TABLE` on your CAS server, and the placeholder host in the Data-Driven Content URL becomes `SAS_VIYA_URL` - nothing is edited after the fact,
+3. imports and waits for the job, naming the failing task if there is one,
+4. configures the imported reports: with `--options builder-options.json` the site's saved values are written back (see [Preserving builder options across a report import](./Setup-Additional-UIs.md#preserving-builder-options-across-a-report-import)); without it the values `mdb setup` discovers - repository and project ids, `SAS_SCR_ENDPOINT`, `SAS_DEPLOYMENT_TYPE` - are; and either way every placeholder host left in a report (the Data-Driven Content URL, the `viyaHost` and `SCREndpoint` defaults) becomes `SAS_VIYA_URL`. A first install needs no edits in Visual Analytics beyond the optional settings.
+
+`--dry-run` lists the objects and the mapping changes and imports nothing. Other data sources a package binds are left as exported and reported: retargeting a report at a table with different columns breaks its data items.
+
+`mdb package-export --folder "/SAS Agentic AI Accelerator/Prompt Builder"` is the other direction, for maintainers: it exports the folder (dependencies and rules included, as the shipped packages are), downloads the package, rewrites the exporting environment's hostname to the placeholder inside the compressed report content, checks the result and writes `SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json`. `--name`, `--out`, `--keep` (leave the package on the server) and `--exclude <object name>` (leave out something that lives in the folder but must not ship, such as a demo report) adjust that. It replaces the three manual steps - export in SAS Environment Manager, copy the file, `mdb package-check --fix`. (In Git Bash on Windows prefix the command with `MSYS_NO_PATHCONV=1`, or run it from PowerShell: the shell otherwise rewrites the `/SAS Agentic AI Accelerator/...` argument into a Windows path before `mdb` sees it.)
 
 ## Deployment YAML and CI pipelines
 
@@ -171,6 +187,29 @@ The CAS server defaults to `cas-shared-default` (auto-detected; override with
 same session the register/publish commands use — no separate CAS connection.
 The save step writes a `.sashdat`, so target a **path-based** caslib (like
 `Public`); a database-backed caslib would reject the save.
+
+### The release table
+
+`mdb load-releases` turns the repository's `CHANGELOG.md` into the CAS table
+`ACCELERATOR_RELEASES` (same caslib and server options as `load-facts`; the
+name comes from `--table` or `SAS_RELEASES_TABLE`) and `mdb setup` loads it by
+default (`--no-releases` skips it). It has one row per release - the release
+intro, `change_type` = `Release` - and one per changelog entry, with:
+
+| Column | Content |
+| --- | --- |
+| `version`, `release_date` | from the `## [x.y.z] - date` heading; an *Unreleased* section is listed but never current |
+| `is_current` | 1 for the newest dated release |
+| `release_rank`, `item_rank` | 1 = newest release; the entry's position within it, so a report can order without dates |
+| `section`, `change_type` | the heading as written and its normalised kind: Added, Changed, Fixed, Removed, Breaking, Release |
+| `component` | Prompt Builder, RAG Builder, RAG runtime, Model Definition Builder, Credentials, Definitions, Documentation or General - from the section heading when it names one, else from the entry's wording |
+| `summary`, `detail` | the entry's bold lead (or first sentence) and the rest, as plain text |
+
+It exists because a SAS Visual Analytics Data-Driven Content object needs a
+data assignment before it renders: the Prompt Builder and RAG Builder objects
+are assigned this table, and a report author can filter it by `component` to
+show what changed for the Builder next to it. `mdb load-releases --csv out.csv`
+writes the table without contacting SAS Viya, for a look at the rows.
 
 `mdb generate --all --check` verifies that every generated file matches its manifest and is intended as a CI gate. Files you edited by hand are never overwritten silently — the command tells you to either fold the change into the manifest, declare the file as hand-maintained under `generation.overrides`, or pass `--force`.
 

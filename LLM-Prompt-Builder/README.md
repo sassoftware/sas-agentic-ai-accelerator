@@ -34,7 +34,7 @@ SDK is not used.
 
 ## Requirements
 
-- Node.js `^18 || ^20 || >=22`
+- Node.js `^20.19 || >=22.12` (what Vite 8 requires)
 - A SAS Viya environment with SAS Model Manager and an SCR-deployed LLM endpoint
 
 ## Getting started
@@ -124,8 +124,10 @@ The single-file build is embedded in Visual Analytics through **SAS Job Executio
    that job's execution URL.
 4. Configure the object from its **Properties panel** (Viya host, Model Manager
    repository, LLM project, SCR endpoint, deployment type, credential domain) —
-   the panel is rendered from the options group the app publishes on load. No
-   data assignment is needed: provider keys come from the credential domain.
+   the panel is rendered from the options group the app publishes on load.
+   Assign the `ACCELERATOR_RELEASES` table (`mdb load-releases`) as the object's
+   data - a DDC object renders only with a data assignment; the app reads nothing
+   from it, and provider keys come from the credential domain.
 
 Because SAS Job Execution serves HTML through a **Go template engine** (which
 treats `{{ … }}` as directives), the build base64-encodes every inline `<script>`
@@ -185,27 +187,43 @@ The active language is chosen from `navigator.language`, falling back to English
 
 ## Project structure
 
+Two apps are built from one source tree: `index.html` + `src/main.ts` is the
+Prompt Builder (`npm run build` → `dist/index.html`), `rag.html` +
+`src/main-rag.ts` is the RAG Builder (`npm run build:rag` → `dist-rag/rag.html`,
+not committed - it ships inside the RAG Builder transfer package).
+
 ```
 src/
-  main.ts                 App bootstrap (no-auth; mounts the Prompt Builder)
-  config.ts               Build-time config + URL-param overrides
-  styles.css              Prompt Builder specific styles (Bootstrap is bundled)
-  state/app-state.ts      Minimal global state (viyaHost, CSRF token, user)
+  main.ts / main-rag.ts     App bootstraps (no-auth; mount one Builder each)
+  config.ts / config-rag.ts Build-time config + URL-param overrides per app
+  styles.css                Shared styles (Bootstrap is bundled)
+  state/app-state.ts        Minimal global state (viyaHost, CSRF token, user)
   api/
-    http-client.ts        viyaFetch + CSRF retry (credentials: include)
-    models-api.ts         SAS Model Manager calls
-    files-api.ts          File content retrieval
-    identity-api.ts       Current-user lookup
-    scr-api.ts            SCR LLM invocation
-  ui/
-    accordion.ts          Bootstrap accordion helper
-    dom-helpers.ts        HTML escaping
-    markdown.ts           Markdown rendering (marked + DOMPurify)
-  util/validation.ts      DS2 / Python name validation
-  i18n/                   Bundled locale files + loader
-  va/ddc.ts               VA DDC integration: options-group Properties panel
-  objects/prompt-builder.ts  The Prompt Builder UI
-  types/                  Shared TypeScript types + vendor module decls
+    http-client.ts          viyaFetch + CSRF retry (credentials: include)
+    models-api.ts           SAS Model Manager calls
+    files-api.ts            File content retrieval
+    folders-api.ts          SAS Content folders
+    identity-api.ts         Current-user lookup
+    credentials-api.ts      Provider keys from the credential domain
+    scr-api.ts              SCR LLM invocation
+    judge-api.ts            LLM-as-a-Judge calls
+    jobdef-api.ts / jobexec-api.ts  SAS Job Execution (optimize, ingest, test retrieval)
+    dataflows-api.ts        SAS Studio flows and custom steps
+    relationships-api.ts    Decision usage of a prompt (delete guard)
+    cas-api.ts              CAS servers, caslibs and tables
+  ui/                       accordion, combobox, modals, doc sections, list
+                            filter, markdown (marked + DOMPurify), option
+                            controls, toasts, HTML escaping
+  util/validation.ts        DS2 / Python name validation
+  i18n/                     Bundled locale files + loader
+  va/ddc.ts / ddc-rag.ts    VA DDC integration: options-group Properties panel per app
+  objects/
+    prompt-builder.ts       The Prompt Builder UI
+    rag-builder.ts          The RAG Builder UI
+    rag-*.ts                RAG backends, options, enrichment, flow and job
+                            generation, manifest, retrieval log
+    embedding-models.ts     Embedding model listing
+  types/                    Shared TypeScript types + vendor module decls
 ```
 
 ## License

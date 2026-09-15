@@ -15,11 +15,11 @@ Every model is described by a single `definition.yaml` in its folder — the **o
 cd Model-Definition-Builder/cli
 python -m venv .venv
 .venv/Scripts/activate        # Windows; on Linux/macOS: source .venv/bin/activate
-pip install -e .
+pip install -e ".[viya]"
 mdb --help
 ```
 
-Python 3.10 or newer. To register and publish to SAS Viya from the CLI, install the extra: `pip install -e .[viya]`. Provider API keys and your Viya connection are read from a `.env` file at the repository root (copy `.env.example` and fill it in) — keys are never written into any generated file.
+Python 3.10 or newer. The `[viya]` extra (keep the quotes - some shells expand the brackets) adds `sasctl`, which every command that registers, publishes or configures SAS Viya needs; plain `pip install -e .` is enough to add, generate, validate and test definitions locally. Provider API keys and your Viya connection are read from a `.env` file at the repository root (copy `.env.example` and fill it in) — keys are never written into any generated file.
 
 ## Add your first model
 

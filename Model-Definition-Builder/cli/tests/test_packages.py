@@ -179,3 +179,19 @@ def test_shipped_packages_name_no_environment(package):
     assert result.ok, "\n".join(
         f"{f.package}: {f.report} names {f.host} x{f.occurrences} in {f.where}"
         for f in result.findings)
+
+
+def test_objects_that_do_not_belong_in_a_package_can_be_left_out():
+    from mdb.core.packages import drop_objects
+    package = {
+        "transferObjectCount": 3,
+        "transferDetails": [
+            {"transferObject": {"summary": {"type": "folder", "name": "RAG"}}},
+            {"transferObject": {"summary": {"type": "report", "name": "RAG Builder"}}},
+            {"transferObject": {"summary": {"type": "report", "name": "LIVE_DEMO"}}},
+        ],
+    }
+    assert drop_objects(package, ["live_demo"]) == ["report LIVE_DEMO"]
+    assert [d["transferObject"]["summary"]["name"] for d in package["transferDetails"]] == ["RAG", "RAG Builder"]
+    assert package["transferObjectCount"] == 2
+    assert drop_objects(package, ["nothing here", ""]) == [] and package["transferObjectCount"] == 2

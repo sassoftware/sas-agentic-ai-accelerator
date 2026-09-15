@@ -67,7 +67,6 @@ LLM_PRICES = {
     "gpt_56_sol": ("Tokens", 5e-06, 3e-05),
     "gpt_5_mini": ("Tokens", 2.5e-07, 2e-06),
     "ling_3_0_flash_free": ("Tokens", 0.0, 0.0),
-    "llama_31_405b": ("Tokens", 3e-06, 3e-06),
     "llama_32_1b": ("Seconds", 3.9178e-05, 0.0),
     "llama_32_3b": ("Seconds", 6.9178e-05, 0.0),
     "llama_33_70b": ("Tokens", 1.3e-07, 4e-07),
