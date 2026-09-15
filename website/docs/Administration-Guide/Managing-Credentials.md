@@ -20,7 +20,7 @@ of named secrets:
 
 | Entry name | Holds |
 | --- | --- |
-| `OpenAI`, `Anthropic`, `Google`, … | LLM provider API keys — the provider names the model fact sheets already use |
+| `OpenAI`, `Anthropic`, `Google`, `AzureOpenAI`, … | LLM provider API keys — named after the `KeyName` each model definition's `API_KEY` option references (`key_name` in `definition.yaml`), because the Prompt Builder and the RAG Builder look a model's key up under exactly that name |
 | `PGVECTOR_RAG_USER`, `PGVECTOR_RAG_PW` | RAG vector-store credentials — the prefix names the vector DB backend |
 | `SINGLESTORE_RAG_USER`, `SINGLESTORE_RAG_PW`, … | further vector-store backends; one domain serves several stores side by side |
 
@@ -59,11 +59,11 @@ Multi-entry credentials are authored with the shipped scripts
    | `ANTHROPIC_API_KEY` | `Anthropic` |
    | `GEMINI_API_KEY` | `Google` |
    | `OPENROUTER_API_KEY` | `OpenRouter` |
-   | `AZURE_OPENAI_API_KEY` | `Azure OpenAI` |
+   | `AZURE_OPENAI_API_KEY` | `AzureOpenAI` |
    | `MISTRAL_API_KEY` | `Mistral` |
-   | `VOYAGE_API_KEY` | `Voyage.ai` |
+   | `VOYAGE_API_KEY` | `VoyageAI` |
    | `HUGGINGFACE_API_KEY` | `HuggingFace` |
-   | `AWS_BEDROCK_API_KEY` | `AWS Bedrock` |
+   | `AWS_BEDROCK_API_KEY` | `AWSBedrock` |
    | `PGVECTOR_RAG_USER`, `PGVECTOR_RAG_PW`, `SINGLESTORE_RAG_USER`, … | same names |
 
 3. Run the script per identity you want to equip:

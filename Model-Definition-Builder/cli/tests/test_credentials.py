@@ -11,13 +11,34 @@ The strongest test here is the last one: no secret value may appear anywhere
 in a plan, because a plan is what gets printed.
 """
 import base64
+import re
+from pathlib import Path
 
 import pytest
 
 from mdb.viya.credentials import (
-    CredentialError, Identity, Manifest, build_steps, credential_path, encode,
-    entries_for, map_entries, read_name_value_file, relative_source, scaffold,
+    PROVIDER_ENTRIES, CredentialError, Identity, Manifest, build_steps,
+    credential_path, encode, entries_for, map_entries, read_name_value_file,
+    relative_source, scaffold,
 )
+
+REPO = Path(__file__).resolve().parents[3]
+
+
+def test_every_definition_key_name_is_an_entry_the_scripts_write():
+    """The Prompt Builder resolves a model's key with an exact lookup of its
+    `API_KEY` default (the manifest's key_name) in the domain's secrets map.
+    An entry the provisioning tools spell differently - `Azure OpenAI` for a
+    definition that says `AzureOpenAI` (PR #31) - is a model disabled with a
+    'no credential' note although the key is in the domain."""
+    key_names = set()
+    for folder in ("LLM-Definitions", "Embedding-Definitions"):
+        for manifest in (REPO / folder).glob("*/definition.yaml"):
+            found = re.search(r"^\s+key_name:\s*(\S+)", manifest.read_text(encoding="utf-8"), re.M)
+            if found:
+                key_names.add(found.group(1))
+    assert key_names, "no definitions found - is the test running inside the repository?"
+    assert key_names <= set(PROVIDER_ENTRIES.values())
 
 ENV_BODY = """
 # the accelerator's .env, as an admin really keeps it

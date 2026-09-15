@@ -78,19 +78,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-#: `.env` variable -> domain entry name, for the LLM providers. Mirrors the
-#: shell scripts exactly: the two must agree or an identity equipped by one
-#: tool would be missing keys under the other's names.
+#: `.env` variable -> domain entry name, for the LLM providers. An entry name
+#: is the KeyName a definition's `API_KEY` option references (`key_name` in
+#: definition.yaml, `API_KEY.default` in options.json): the Prompt Builder
+#: and the RAG Builder look a model's key up under exactly that name, so a
+#: renamed entry is a disabled model. Mirrors the shell scripts exactly: the
+#: tools must agree or an identity equipped by one would be missing keys
+#: under the other's names.
 PROVIDER_ENTRIES = {
     "OPENAI_API_KEY": "OpenAI",
     "ANTHROPIC_API_KEY": "Anthropic",
     "GEMINI_API_KEY": "Google",
     "OPENROUTER_API_KEY": "OpenRouter",
-    "AZURE_OPENAI_API_KEY": "Azure OpenAI",
+    "AZURE_OPENAI_API_KEY": "AzureOpenAI",
     "MISTRAL_API_KEY": "Mistral",
-    "VOYAGE_API_KEY": "Voyage.ai",
+    "VOYAGE_API_KEY": "VoyageAI",
     "HUGGINGFACE_API_KEY": "HuggingFace",
-    "AWS_BEDROCK_API_KEY": "AWS Bedrock",
+    "AWS_BEDROCK_API_KEY": "AWSBedrock",
 }
 
 #: `<BACKEND>_RAG_USER` / `<BACKEND>_RAG_PW` — carried over verbatim, uppercased.
