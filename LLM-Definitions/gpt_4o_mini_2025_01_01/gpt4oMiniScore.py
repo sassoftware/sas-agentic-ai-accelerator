@@ -2,11 +2,72 @@
 import time
 import json
 import logging
+import os
 import sys
 import requests
 
-modelVersion = 'gpt-4o-mini'
-modelEndpoint = 'https://<foundry-project>.cognitiveservices.azure.com/openai/deployments/gpt-4o-mini/chat/completions?api-version=2025-01-01-preview'
+# Requires an Azure OpenAI / Azure AI Foundry chat deployment. The model is
+# addressed by its DEPLOYMENT NAME, which you choose in Azure; the API key is the
+# API_KEY scoring option (a SAS Viya credential-domain entry). Where the request
+# goes is decided by the container's environment - see below.
+deploymentName = 'gpt-4o-mini'
+
+# -- Azure connection: resolved from this container's ENVIRONMENT ---------------
+# Where the request goes is a property of the deployment, not of the caller, so
+# none of it is a scoring option. Each value resolves
+#     container environment variable > the default baked into this file
+# and one published image serves any subscription or project by changing its
+# environment - no regeneration, rebuild or re-publish.
+#
+#   AZURE_OPENAI_RESOURCE     the resource/project host serving the deployment:
+#                             <res>.openai.azure.com, <res>.cognitiveservices.azure.com,
+#                             <res>.services.ai.azure.com, or the bare <res>
+#   AZURE_OPENAI_API_VERSION  a version selects the legacy /openai/deployments/<name>/...
+#                             route that some resources or org policies still require;
+#                             unset = the default baked below; set but EMPTY = the GA
+#                             v1 endpoint (/openai/v1/...) even when a version is baked.
+#                             A v1-only resource answers the legacy route with a bare
+#                             401 - give it the empty value.
+#   AZURE_OPENAI_ENDPOINT     optional full URL that replaces the built one, for a
+#                             gateway in front of Azure - it must include the route
+RESOURCE_ENV = 'AZURE_OPENAI_RESOURCE'
+API_VERSION_ENV = 'AZURE_OPENAI_API_VERSION'
+ENDPOINT_ENV = 'AZURE_OPENAI_ENDPOINT'
+defaultResource = ''
+defaultApiVersion = ''
+
+def _from_env(envName, bakedDefault=''):
+    "Container environment variable > baked default, trimmed; '' when neither is set."
+    value = (os.environ.get(envName) or '').strip()
+    return value if value else (bakedDefault or '').strip()
+
+def _azure_endpoint(deploymentName, route):
+    """The data-plane URL for one deployment; route is 'chat/completions' or 'embeddings'.
+
+    A missing resource fails naming the variable that would have supplied it,
+    rather than as a connection error against an empty host."""
+    endpoint = _from_env(ENDPOINT_ENV)
+    if endpoint:
+        return endpoint
+    host = _from_env(RESOURCE_ENV, defaultResource)
+    if not host:
+        raise RuntimeError(
+            f"No Azure resource: set the {RESOURCE_ENV} environment variable on this "
+            "container (any Azure host flavor, or the bare resource name)."
+        )
+    # A short resource name expands to the classic Azure OpenAI host
+    if '.' not in host:
+        host = f"{host}.openai.azure.com"
+    # Unlike the resource, an EMPTY version is a meaningful choice - the GA route -
+    # so only an unset variable falls back to the baked default.
+    apiVersion = os.environ.get(API_VERSION_ENV)
+    apiVersion = (defaultApiVersion if apiVersion is None else apiVersion).strip()
+    if apiVersion:
+        # Legacy deployment-scoped route (deployment in the path, api-version required)
+        return f"https://{host}/openai/deployments/{deploymentName}/{route}?api-version={apiVersion}"
+    # GA v1 endpoint (deployment addressed via the model field in the body)
+    return f"https://{host}/openai/v1/{route}"
+
 
 # Initiate the logger to write output information to the log
 logging.basicConfig(
@@ -86,18 +147,22 @@ def scoreModel(userPrompt, systemPrompt, options):
         "top_p": 1,
     }
     options = {**optionsDefaults, **_parse_options(options)}
+    modelEndpoint = _azure_endpoint(deploymentName, 'chat/completions')
     payload = {
-        "model": modelVersion,
+        "model": deploymentName,
         "messages": [{"role": "system", "content": systemPrompt},
             {"role": "user", "content": userPrompt}],
         "temperature": float(options["temperature"]),
         "top_p": float(options["top_p"]),
     }
+    # Which resource this container resolved to - the one thing a shared image
+    # cannot be read off the definition, and the first question when it misbehaves.
+    logger.info(f"endpoint: {modelEndpoint}")
     responseObject = requests.post(
         modelEndpoint,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {options['API_KEY']}",
+            "api-key": options["API_KEY"],
         },
         json=payload,
         timeout=60,

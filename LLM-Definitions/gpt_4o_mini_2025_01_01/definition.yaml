@@ -3,15 +3,15 @@ kind: llm
 model_id: gpt_4o_mini_2025_01_01
 display_name: GPT 4o mini 2025-01-01
 provider:
-  adapter: openai
+  adapter: azure-foundry
   model_version: gpt-4o-mini
-  endpoint: https://<foundry-project>.cognitiveservices.azure.com/openai/deployments/gpt-4o-mini/chat/completions?api-version=2025-01-01-preview
-  params: {}
+  params:
+    resource: ''
   auth:
     mode: api_key
-    key_name: OpenAI
+    key_name: AzureOpenAI
 runtime:
-  template: openai_chat
+  template: azure_openai_v1
   requirements_profile: api-wrapper
   timeout_s: 60
 options:
@@ -22,11 +22,11 @@ options:
 tags:
   size_class: LLM
   license_class: Proprietary
-  provider_tag: OpenAI
+  provider_tag: Azure OpenAI
   scr_sizing: small
   extra: []
 metadata:
-  description: GPT-4o (omni) mini is the most advanced small category by OpenAI.
+  description: GPT-4o (omni) mini is the most advanced small category LLM. Provided by Azure OpenAI (Azure AI Foundry deployment, 2025-01-01 model version).
   release_date: '2025-01-01'
   knowledge_cutoff: '2023-10-01'
   context_length: 128000
@@ -40,4 +40,4 @@ modeler: SAS Agentic AI Accelerator
 generation:
   overrides: []
   score_code_file: gpt4oMiniScore.py
-  catalog_provenance: mdb import of hand-written folder
+  catalog_provenance: mdb import of hand-written folder; rebuilt on the azure-foundry adapter in 2.0.6

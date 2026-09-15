@@ -2,6 +2,14 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [2.0.6] - unreleased
+
+`gpt_4o_mini_2025_01_01` is an Azure OpenAI definition. To pick up the update, `mdb register gpt_4o_mini_2025_01_01 --update` and republish it if you had registered the previous version; nothing else changes.
+
+### Fixed
+
+- **`gpt_4o_mini_2025_01_01` calls Azure the way an Azure definition does.** The definition carried an Azure AI Foundry URL with a `<foundry-project>` placeholder on the *OpenAI* adapter: it asked for the `OpenAI` credential entry, sent the key as a Bearer token that Azure's legacy `/openai/deployments` route rejects with a bare 401, and `mdb test` looked for `OPENAI_API_KEY` while the key lives in `AZURE_OPENAI_API_KEY` - the only way to make it work was to edit the yaml by hand, and that still left the credential entry wrong. It is rebuilt on the `azure-foundry` adapter like `gpt_4o_mini_az_2024_07_18`: the key entry is `AzureOpenAI`, the resource comes from `AZURE_OPENAI_RESOURCE` (`.env` for `mdb`, the container environment once published) and the GA v1 route is used unless `AZURE_OPENAI_API_VERSION` selects the legacy one. The fact sheet and the RAG Builder's model -> entry map name it as Azure OpenAI. Reported from a first-time setup that started with this definition.
+
 ## [2.0.5] - 2026-09-15
 
 Provider keys are found under the names the models ask for, and the RAG Builder object renders after an import. To pick up the update, rerun `create-credential-domain.ps1`/`.sh` (or `mdb credentials-apply`) for each identity that holds an Azure OpenAI, Bedrock or Voyage key, and re-import the RAG Builder package with `mdb builders-import SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-RAG-Builder.json --options builder-options.json`, or assign a column of `ACCELERATOR_RELEASES` to the RAG Builder object in SAS Visual Analytics.
