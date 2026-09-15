@@ -2,7 +2,7 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [2.0.5] - Unreleased
+## [2.0.5] - 2026-09-15
 
 Provider keys are found under the names the models ask for, and the RAG Builder object renders after an import. To pick up the update, rerun `create-credential-domain.ps1`/`.sh` (or `mdb credentials-apply`) for each identity that holds an Azure OpenAI, Bedrock or Voyage key, and re-import the RAG Builder package with `mdb builders-import SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-RAG-Builder.json --options builder-options.json`, or assign a column of `ACCELERATOR_RELEASES` to the RAG Builder object in SAS Visual Analytics.
 

@@ -1,10 +1,10 @@
 {
-    "generator": "mdb 2.0.4",
+    "generator": "mdb 2.0.5",
     "manifest_sha256": "b696565a04e680a320b5e03ddeefa85e57aac4c3dbe55c5732f4199ef109d1fb",
     "files": {
         "Model-Card.md": "f539c5827356dd16bae8af533d525f9c2396f194926bd2601dff14c8a6e78008",
         "README.md": "adb6e9f017f18b3d9ea4376afb45b625f0814b0b2ae999c809e37d1ec8cd7473",
-        "geminiEmbedding.py": "a9912776a48bc801cde7b8a1321c6ec84ad10cec9e0d0b1789245937960fdaeb",
+        "geminiEmbedding.py": "285446bbfdfe71ef7966a5480b03df2fd47d33a0bf36094c66a9424a1a81072e",
         "inputVar.json": "82e63e7108e6dae23feda5fb3e4bcb2242eeec59182a36b6c787339725e0095b",
         "modelConfiguration.json": "1a48d1bee3531a807448f57bc4130df7e7de987a2c085743ccf66d89f2e01403",
         "options.json": "55d216663741502f8bd426a4930a64761e9dca2cdbba29590ab4336e87b6ca3b",

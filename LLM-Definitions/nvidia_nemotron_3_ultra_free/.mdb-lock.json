@@ -1,12 +1,12 @@
 {
-    "generator": "mdb 2.0.4",
+    "generator": "mdb 2.0.5",
     "manifest_sha256": "196d541d3e453ee74e81d5921e6907f9b6816bea1f0b158804627f4c612b9d20",
     "files": {
         "Model-Card.md": "8012d8d03e05d0fca6fbea1709228ab6caf00e10e31b23dd50c226ee22a76f1b",
         "README.md": "00fdb3cf9ba522862bee6710431f2f17d7e60fe96ceb7034746a529eccffc53e",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
         "modelConfiguration.json": "354ba56f17cd9f38961e63c98f785650360dbad408443821f5972f324faddd84",
-        "nvidiaNemotron3UltraFreeScore.py": "8dea586f273dc630d6884ebd71929d4a871b5c1a0389943bc59ed8307de516a5",
+        "nvidiaNemotron3UltraFreeScore.py": "044dd32899efd4ffc0ffea117e447f348df61909d873cfb14d4a78f5e51fef29",
         "options.json": "fb16f08e48661a664635b3f445338c59e61bc65e1b9d206551b57dfa722bc2d8",
         "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
         "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"

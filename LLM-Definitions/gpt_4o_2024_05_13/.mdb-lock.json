@@ -1,10 +1,10 @@
 {
-    "generator": "mdb 2.0.4",
+    "generator": "mdb 2.0.5",
     "manifest_sha256": "66ecd9ce9a2dd51e917952f9fc3a401a1c683238388bd66b899b6ace21b52d8a",
     "files": {
         "Model-Card.md": "34ccaebeb802e91226a705561b1f1909af80c831a525b54736c6dfb729199a4f",
         "README.md": "4399c32787f1243224534ba9aa0947be8f0022fe0ff21c462d9026800406909a",
-        "gpt4oScore.py": "bbb87fc09f99e00324c8725eca19b5c5a86df29ded8641f050bb1d92008e9de2",
+        "gpt4oScore.py": "34c928de71ca95e84321cd173af0fdb932202647d6a5d52411c9e6b537a06d0d",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
         "modelConfiguration.json": "717baa9af33b984a5f580efe6f27508e69e4d06d869e31056234bf3ca9f1dedd",
         "options.json": "20448ab7610b02ae42a8e55f46f3d79eb687f93220540c58053c0ad23cd6635e",

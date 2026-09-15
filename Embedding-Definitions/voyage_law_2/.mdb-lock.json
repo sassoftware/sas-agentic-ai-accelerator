@@ -1,5 +1,5 @@
 {
-    "generator": "mdb 2.0.4",
+    "generator": "mdb 2.0.5",
     "manifest_sha256": "cfe38f0e163de7e913805ea343e49ba3b4b88a2a7f8645217a7eb156ea7dce61",
     "files": {
         "Model-Card.md": "2f46e7bcc715dd526d6ba54fecc82ff86e423d8242a9d8632b82672b26a89b4b",
@@ -9,6 +9,6 @@
         "options.json": "b69f3506b60ff6325a98573c070309eeb93fa172f489652afe9e2ac5148029f7",
         "outputVar.json": "07ac2337d2f5b87016aeb70f3d82b4a40ced010062456edb36eb1725f343babe",
         "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483",
-        "voyageLaw2.py": "a310c21e40b17f73a1acd0943cce81f6a0efa1863cb792a42584262442a501a2"
+        "voyageLaw2.py": "61a6e99abea20efcb64da2467c051465cc35f1e60b3859b773846f4a3dc498d2"
     }
 }
