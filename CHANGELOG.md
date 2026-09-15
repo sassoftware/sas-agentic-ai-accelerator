@@ -4,10 +4,11 @@ This changelog documents all the different updates that occur for this framework
 
 ## [2.0.5] - Unreleased
 
-The RAG Builder object renders after an import. To pick up the update, re-import the RAG Builder package with `mdb builders-import SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-RAG-Builder.json --options builder-options.json`, or assign a column of `ACCELERATOR_RELEASES` to the RAG Builder object in SAS Visual Analytics.
+Provider keys are found under the names the models ask for, and the RAG Builder object renders after an import. To pick up the update, rerun `create-credential-domain.ps1`/`.sh` (or `mdb credentials-apply`) for each identity that holds an Azure OpenAI, Bedrock or Voyage key, and re-import the RAG Builder package with `mdb builders-import SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-RAG-Builder.json --options builder-options.json`, or assign a column of `ACCELERATOR_RELEASES` to the RAG Builder object in SAS Visual Analytics.
 
 ### Fixed
 
+- **Azure OpenAI, AWS Bedrock and Voyage keys are found in the credential domain.** The Prompt Builder and the RAG Builder resolve a model's key with an exact lookup of the `KeyName` its `API_KEY` option references (`AzureOpenAI`, `AWSBedrock`, `VoyageAI`), but `create-credential-domain.sh` / `.ps1` and `mdb credentials-apply` stored those three keys under the provider's display name (`Azure OpenAI`, `AWS Bedrock`, `Voyage.ai`), so the models stayed disabled with a *no credential* note although the key was in the domain. The scripts, `mdb`, the RAG Builder's model → entry maps and the *Managing Credentials* guide now all use the `KeyName`, and tests keep every definition's `key_name` among the entries the tools write. **Migration:** a credential is replaced whole on every run, so rerun the script (or `mdb credentials-apply`) once per identity that holds one of the three keys. Thanks to @bteleuca for the Azure report and fix (#31).
 - **The RAG Builder object in the shipped package has a data assignment.** 2.0.4 bound the report to `ACCELERATOR_RELEASES` but left the object's own data role empty, so a freshly imported RAG Builder object stayed blank; the package is re-exported with the table's `Change Type` column on the object, as the Prompt Builder package already had.
 
 ## [2.0.4] - 2026-09-13
