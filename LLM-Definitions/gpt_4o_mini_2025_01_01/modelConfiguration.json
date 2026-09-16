@@ -1,7 +1,7 @@
 {
     "name": "gpt_4o_mini_2025_01_01",
     "scoreCodeFile": "gpt4oMiniScore.py",
-    "description": "GPT-4o (omni) mini is the most advanced small category by OpenAI.",
+    "description": "GPT-4o (omni) mini is the most advanced small category LLM. Provided by Azure OpenAI (Azure AI Foundry deployment, 2025-01-01 model version).",
     "toolVersion": "3.11",
     "targetVariable": "response",
     "targetLevel": "NOMINAL",
@@ -15,7 +15,7 @@
     "tags": [
         "LLM",
         "Proprietary",
-        "OpenAI",
+        "Azure OpenAI",
         "small"
     ],
     "modelPurpose": "To serve as a bridge of understanding, enabling seamless interaction between humans and machines by harnessing the power of natural language. LLMs decode the complexities of human thought, transforming them into actionable insights, creative solutions, and tailored knowledge while fostering accessibility, inclusivity, and empowerment in communication and decision-making.",

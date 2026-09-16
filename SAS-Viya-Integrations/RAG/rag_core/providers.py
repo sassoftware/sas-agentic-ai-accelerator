@@ -56,7 +56,7 @@ LLM_KEY_ENTRIES = {
     "gpt_41_mini": "OpenAI",
     "gpt_4o_2024_05_13": "OpenAI",
     "gpt_4o_mini_2024_07_18": "OpenAI",
-    "gpt_4o_mini_2025_01_01": "OpenAI",
+    "gpt_4o_mini_2025_01_01": "AzureOpenAI",
     "gpt_4o_mini_az_2024_07_18": "AzureOpenAI",
     "gpt_56_sol": "OpenAI",
     "gpt_5_mini": "OpenAI",
