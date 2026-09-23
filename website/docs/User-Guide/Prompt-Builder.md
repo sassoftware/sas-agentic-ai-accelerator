@@ -38,7 +38,7 @@ Selecting a prompt-test loads its saved experiment runs into the **Prompt Experi
 
 The LLM list shows every model available in your environment's LLM project. Tick each model you want to include in the comparison. When you tick one, its **options** appear — temperature, top-p, top-k, maximum length/tokens and any model-specific settings. Each option has an **ℹ️ info icon**; hover or focus it for an explanation of what the setting does and a sensible range.
 
-![Selected LLMs with their options expanded and an option info tooltip showing](../../static/Prompt-Builder-Model-Options.png)
+![Selected LLMs on the Build & Test step with their options expanded, including a segmented Reasoning Effort control](../../static/Prompt-Builder-Model-Options.png)
 
 You can select as many models as you like; they all run against the same prompt so you get a true side-by-side comparison. Models an administrator has marked as deprecated are hidden from the list.
 
@@ -53,7 +53,7 @@ The workbench has two boxes:
 
 Real prompts rarely use fixed text. Define **variables** above the prompt boxes — each has a name, an optional description, a type (string or decimal) and a value — then reference them anywhere in either prompt with the `{{variableName}}` syntax. Right-click inside a prompt box to insert a defined variable at the cursor.
 
-![The prompt workbench with variables defined and referenced with the double-brace syntax](../../static/Prompt-Builder-Variables.png)
+![The prompt workbench with variables defined, referenced with the double-brace syntax, and the right-click Insert variable menu open](../../static/Prompt-Builder-Variables.png)
 
 When you run an experiment, the current values are filled in before the prompts are sent. Variables are more than a convenience: when you later manifest the best prompt, they become the documented **inputs** of the resulting model, so the model's callers know exactly what to supply.
 
@@ -61,7 +61,7 @@ When you run an experiment, the current values are filled in before the prompts 
 
 Press **Run Experiments**. The tool sends the resolved prompts to every selected model in parallel and, when they return, shows each model's result in the tracker: the response (rendered as Markdown), the time to respond, and the input/output token counts. Two mechanical flags are added automatically for the run — a ⚡ icon on the **fastest** response and a ⌄ icon on the one with the **fewest output tokens**. Each response is a starting point; speed and length are not quality, which is where judging comes in.
 
-![An experiment run with two models compared side by side and the fastest / fewest-tokens icons](../../static/Prompt-Builder-Experiment-Results.png)
+![The experiment tracker with its run summary and icon legend, and a run showing its prompts, variables and verdict](../../static/Prompt-Builder-Experiment-Results.png)
 
 ## Judge the responses
 
@@ -73,7 +73,7 @@ Speed and token count do not tell you which answer is actually best. The **Judge
 
 The judge sees all of the run's responses at once, in a shuffled order and under anonymous labels (so position and brand cannot sway it), reasons about them step by step, and returns a ranking. The result appears as a banner on the run: the **winner**, the full **ranking**, a **confidence** level, and the judge's **reasoning** behind a "Show reasoning" toggle. The best-ranked response also gets a 🏆 icon next to the ⚡ and ⌄ icons, and each response shows its **judge rank**.
 
-![The judge controls and a verdict banner showing the winner, ranking, confidence and reasoning](../../static/Prompt-Builder-Judge-Verdict.png)
+![A verdict banner from a council of judges: the tie, the ranking, each judge's ballot with its reasoning, and the model results below](../../static/Prompt-Builder-Judge-Verdict.png)
 
 :::note The judge is advisory
 Judging never changes your **Best Response** selection — that stays a decision you make. The judge rank is a signal to help you decide, alongside the responses themselves and the run metrics.
