@@ -2,12 +2,30 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [2.0.6] - unreleased
+## [2.1.0] - unreleased
 
-`gpt_4o_mini_2025_01_01` is an Azure OpenAI definition. To pick up the update, `mdb register gpt_4o_mini_2025_01_01 --update` and republish it if you had registered the previous version; nothing else changes.
+The Prompt Builder and the RAG Builder become guided step flows, and `gpt_4o_mini_2025_01_01` is an Azure OpenAI definition.
+
+### Upgrading from 2.0.x
+
+The two Builder packages carry the new UIs, and importing a package replaces the reports - including every option an administrator has set on them. Save those first, then import, then let the import write them back:
+
+1. Update the checkout to 2.1.0 and reinstall the CLI: `pip install -e "Model-Definition-Builder/cli[viya]"`.
+2. `mdb options-save` - records this deployment's Builder options (repository and project ids, SCR endpoint, credential domain, the optimization and vector-store settings) in `builder-options.json`.
+3. `mdb builders-import --options builder-options.json` - imports both packages (the reports and the job definitions with the new UIs) and writes the saved options back. Without `--options` the import falls back to what `mdb setup` discovers, which is right for a first install and loses a tuned configuration on an upgrade.
+4. Reload the Prompt Builder and RAG Builder reports. The Prompt Builder shows its *Optimize* step only where `enableOptimization` is set on the object, as before.
+5. Only if you had registered the previous `gpt_4o_mini_2025_01_01`: `mdb register gpt_4o_mini_2025_01_01 --update` and republish it.
+
+A first install is unchanged: `mdb setup`, then `mdb builders-import`.
+
+### Changed
+
+- **The Prompt Builder and the RAG Builder are step flows.** Both were one long page worked top to bottom; they now share a step shell - one slim row of numbered steps with **Back** and **Continue** that stays in view, one pane per step. The Prompt Builder runs *Setup* (project and prompt-test, chosen once), *Build & Test* (the whole edit-run-read loop on one page: LLMs and their options, judge and council settings, variables, the two prompts, Run Experiments, and the experiment tracker with Best Response and Save Experiments right below) and *Finalize* (manifest), always the last step. Prompt optimization is a step of its own, *Optimize*, that exists only where the deployment enables it and then sits before *Finalize* - so the flow has three steps, or four. The RAG Builder runs *Setup* (project, setup, documentation), *Documents & chunks* (documents, embedding, chunking, enrichment), *Store & output* (vector store, pipeline tables, generated artifacts, Save and Manifest) and *Run & test* (launch ingestion with its run panel, the ledger, the retrieval test). Steps are never locked: any step opens at any time, and only the current one is highlighted - a step is a place to work in, not a task that gets ticked off. A finished experiment scrolls to its run in the tracker and loading a run scrolls back to the prompts; loading an optimized prompt opens *Build & Test*. Every option of the previous pages is still there, under the same element ids.
+- **Every card explains itself beside its controls.** The explanatory text of a card moved into an *Instructions* box on its left, with the controls to its right and wide blocks (the tracker, result tables, the optimize options) across the full width below; on a narrow report object the columns stack. Beside the tracker's instructions a summary counts the runs and those with a Best Response, and a legend explains the eight icons a run shows, which were tooltip-only before. The optimize card shows its metric and optimizer explanations as open *Metric Guide* / *Optimizer Guide* boxes instead of tooltips, lays target and dataset, metric, and optimizer out in three columns, and states why **Run optimization** is blocked in a visible notice rather than only on hover. Secondary actions are outlined buttons, so each step has one filled primary action.
 
 ### Fixed
 
+- **The Builder packages no longer carry the exporting environment's configuration.** The shipped reports held the repository, project and model-card report ids, the judge model and the optimization switch of the environment they were exported from, and `mdb package-check` only looks for hostnames, so an import without saved options quietly pointed a new site at somebody else's ids. The packages now ship with those defaults empty (optimization off, thirty minimum samples, TLS `prefer` for the vector store); `mdb builders-import` fills in the discovered or saved values as it always did.
 - **`gpt_4o_mini_2025_01_01` calls Azure the way an Azure definition does.** The definition carried an Azure AI Foundry URL with a `<foundry-project>` placeholder on the *OpenAI* adapter: it asked for the `OpenAI` credential entry, sent the key as a Bearer token that Azure's legacy `/openai/deployments` route rejects with a bare 401, and `mdb test` looked for `OPENAI_API_KEY` while the key lives in `AZURE_OPENAI_API_KEY` - the only way to make it work was to edit the yaml by hand, and that still left the credential entry wrong. It is rebuilt on the `azure-foundry` adapter like `gpt_4o_mini_az_2024_07_18`: the key entry is `AzureOpenAI`, the resource comes from `AZURE_OPENAI_RESOURCE` (`.env` for `mdb`, the container environment once published) and the GA v1 route is used unless `AZURE_OPENAI_API_VERSION` selects the legacy one. The fact sheet and the RAG Builder's model -> entry map name it as Azure OpenAI. Reported from a first-time setup that started with this definition.
 
 ## [2.0.5] - 2026-09-15

@@ -40,4 +40,4 @@ modeler: SAS Agentic AI Accelerator
 generation:
   overrides: []
   score_code_file: gpt4oMiniScore.py
-  catalog_provenance: mdb import of hand-written folder; rebuilt on the azure-foundry adapter in 2.0.6
+  catalog_provenance: mdb import of hand-written folder; rebuilt on the azure-foundry adapter in 2.1.0

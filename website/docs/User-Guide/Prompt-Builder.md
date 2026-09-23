@@ -11,15 +11,16 @@ This guide walks through using the tool. For installing and embedding it in a SA
 
 ## The workflow in one minute
 
-You work top to bottom through the page:
+The page is a flow of steps, shown as a slim stepper across the top with **Back** and **Continue** beside it:
 
-1. **Pick a project and a prompt-test** — where this experiment history is stored in Model Manager.
-2. **Choose the LLMs** you want to compare and tune their options.
-3. **Write your prompt** — a system prompt and a user prompt, with optional variables.
-4. **Run the experiment** — every selected model answers in parallel and the responses appear side by side.
-5. **Judge the responses** — optionally have a judge model rank them and highlight the strongest.
-6. **Mark the best response** and **save** — the run is versioned into Model Manager.
-7. **Manifest the best prompt** — turn it into a scoreable model for the rest of the platform.
+| Step | What you do there |
+| --- | --- |
+| **1 Setup** | **Pick a project and a prompt-test** — where this experiment history is stored in Model Manager. You do this once per session. |
+| **2 Build & Test** | The workbench, where the whole loop happens on one page: **choose the LLMs** and tune their options, set how responses are **judged**, **write your prompt** — a system prompt and a user prompt, with optional variables — **run the experiment**, then compare the responses in the tracker right below, **mark the best response** and **save**. |
+| **3 Optimize** | Only when your administrator has enabled prompt optimization: let DSPy rewrite the prompt from your Best Response runs. Without it the flow has three steps and **Finalize** is step 3. |
+| **4 Finalize** | **Manifest the best prompt** — turn it into a scoreable model for the rest of the platform. Always the last step. |
+
+You can open any step at any time by clicking it; nothing is locked, and only the step you are on is highlighted — steps are places to work in, not tasks that get ticked off, so revisit or skip them as you need. Editing, running and reading all stay on **Build & Test**: a finished run appears at the top of the tracker below the prompts, and loading an earlier run brings you back up to them; loading an optimized prompt from the **Optimize** step opens **Build & Test** for you. Every card explains itself in an **Instructions** box on its left; beside the tracker's instructions a summary counts your runs and those with a Best Response, and a legend explains the icons a run shows.
 
 Nothing is sent to SAS Viya until you have the configuration in place, and no paid model call happens until you press **Run Experiments**.
 
@@ -31,7 +32,7 @@ At the top, choose an existing **project** or create one. A project is a Model M
 
 Use **Create a new Project** / **Create a new Prompt** to add them without leaving the tool. **Delete Prompt** and **Delete Project** remove them again; before deleting, the tool checks whether any SAS Intelligent Decisioning decisions still use the prompt and warns you, so you do not break a running decision by accident.
 
-Selecting a prompt-test loads its saved experiment runs into the **Prompt Experiment Tracker** further down the page, and brings the most recent run you marked as best straight into the workbench so you can carry on where you left off.
+Selecting a prompt-test loads its saved experiment runs into the **Prompt Experiment Tracker** on the **Build & Test** step, and brings the most recent run you marked as best straight into the workbench so you can carry on where you left off.
 
 ## Choose the LLMs and tune their options
 
@@ -110,7 +111,7 @@ From here the manifested model behaves like any other model on the platform — 
 
 ## Optimize the prompt (optional)
 
-When your administrator has [enabled prompt optimization](../Administration-Guide/Enabling-Prompt-Optimization.md), an **Optimize the prompt** section appears after the manifest. It closes the loop *judge → optimise → judge again*: instead of you rewriting the prompt by hand, [DSPy](https://dspy.ai) searches for a better version automatically — using the runs you marked as **Best Response** as the examples of what a correct answer looks like.
+When your administrator has [enabled prompt optimization](../Administration-Guide/Enabling-Prompt-Optimization.md), the flow gains an **Optimize** step between **Build & Test** and **Finalize**. Its **Metric Guide** and **Optimizer Guide** boxes summarise the choices next to the pickers, and a notice above **Run optimization** says what is still missing while the run is blocked. It closes the loop *judge → optimise → judge again*: instead of you rewriting the prompt by hand, [DSPy](https://dspy.ai) searches for a better version automatically — using the runs you marked as **Best Response** as the examples of what a correct answer looks like.
 
 1. Pick the **target LLM** the prompt should be optimised for — or, if you are not sure which model to invest in, use **Compare targets…** next to the dropdown first (see [Comparing target models](#comparing-target-models)).
 2. Choose the **dataset**. By default it is this prompt's experiments: every saved run with a Best Response becomes one training example — the panel shows how many usable runs you have and requires a minimum (30 by default); the responses you vouched for are treated as *correct*, so make sure they are. Alternatively pick **a governed CAS table** from the cascading **server → caslib → table dropdowns** — the lists come straight from CAS, so only tables that are actually loaded appear. The caslib and table pickers are **type-to-filter comboboxes**: click one and start typing, and the open list narrows live as you type; picking an entry (or pressing Enter on the only remaining match) selects it, and leaving the field without picking keeps your previous selection. The table needs one column per prompt variable plus a `response` column with the reference answer (your administrator can build one with the shipped `Create-Optimization-Dataset.sas` template); the panel additionally checks the table's columns and row count before launching.

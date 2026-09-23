@@ -211,9 +211,10 @@ src/
     dataflows-api.ts        SAS Studio flows and custom steps
     relationships-api.ts    Decision usage of a prompt (delete guard)
     cas-api.ts              CAS servers, caslibs and tables
-  ui/                       accordion, combobox, modals, doc sections, list
-                            filter, markdown (marked + DOMPurify), option
-                            controls, toasts, HTML escaping
+  ui/                       stepper (the step shell of both builders),
+                            instruction card, accordion, combobox, modals, doc
+                            sections, list filter, markdown (marked +
+                            DOMPurify), option controls, toasts, HTML escaping
   util/validation.ts        DS2 / Python name validation
   i18n/                     Bundled locale files + loader
   va/ddc.ts / ddc-rag.ts    VA DDC integration: options-group Properties panel per app

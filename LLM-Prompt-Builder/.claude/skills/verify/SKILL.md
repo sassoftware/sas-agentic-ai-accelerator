@@ -59,6 +59,19 @@ server that also implements the handful of Viya endpoints the app calls.
   `app`: dropdowns are `#LPB-project-dropdown` / `#LPB-prompt-dropdown`, the
   tracker container is `#app-obj-LPB-pet`, run accordions `#app-obj-LPB-pet-{i}`
   (newest run first in the DOM).
+- The page is a flow of steps and only the current step's pane is visible, so
+  Playwright cannot act on a control of another step: open its step first with
+  `#app-obj-LPB-step-{setup|build|optimize|finalize}` (pane:
+  `#app-obj-LPB-pane-{key}`, Back/Continue: `#app-obj-LPB-stepper-back` /
+  `-continue`). Project and prompt live on `setup`; LLMs, judge controls,
+  variables, prompts, Run Experiments, the tracker and Save Experiments on
+  `build`; manifest on `finalize`. The `optimize` step and its pane exist only
+  with `enableOptimization=true`, between `build` and `finalize` - three steps
+  otherwise. Only the current step is highlighted (`.pb-step.is-current`);
+  there is no done state. Running and loading a
+  run stay on `build`; loading an optimized prompt moves from `optimize` to
+  `build`. The RAG Builder uses the same shell with the `RGB` id and the keys
+  `setup`, `documents`, `store`, `run`.
 - Bootstrap modals: the `.show` class disappears at the START of the hide
   transition, but promise resolution / button re-enabling happens on
   `hidden.bs.modal` (~300ms later) — poll instead of asserting immediately.

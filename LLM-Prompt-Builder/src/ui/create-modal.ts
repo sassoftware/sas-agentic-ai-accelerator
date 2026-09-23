@@ -44,7 +44,7 @@ export function createCreateModal(
 ): void {
   const toggle = document.createElement('button');
   toggle.type = 'button';
-  toggle.classList.add('btn', 'btn-primary');
+  toggle.classList.add('btn', 'btn-outline-secondary');
   toggle.setAttribute('data-bs-toggle', 'modal');
   toggle.setAttribute('data-bs-target', `#${prefix}Modal`);
   toggle.innerHTML = text.modalTitle ?? '';
