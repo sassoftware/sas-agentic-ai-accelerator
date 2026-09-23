@@ -17,6 +17,7 @@ Parsing follows the changelog's own conventions (keep-a-changelog style):
     ### Added|Changed|Fixed|Removed
     ### <anything else>          a themed section (2.0.0 has several); stored
                                  verbatim in `section`, normalised in `change_type`
+                                 ("Breaking" / "Upgrade" for sections named so)
     - **Lead.** detail           one row; the bold lead is the summary
       - nested / 1. numbered     folded into the parent's detail
     paragraph under a heading    one row as well (the 2.0.0 breaking-change note)
@@ -128,6 +129,9 @@ def _change_type(title: str) -> str:
         return STANDARD_SECTIONS[key]
     if "breaking" in key:
         return "Breaking"
+    # "Upgrading from 2.0.x": the steps a site follows, not a change it gets
+    if "upgrad" in key:
+        return "Upgrade"
     return "Changed"
 
 

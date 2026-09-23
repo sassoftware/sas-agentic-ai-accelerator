@@ -50,6 +50,8 @@ import { showConfirmModal } from '../ui/confirm-modal';
 import { showToast } from '../ui/toast';
 import { escapeHtml } from '../ui/dom-helpers';
 import { renderMarkdown } from '../ui/markdown';
+import { createStepper } from '../ui/stepper';
+import { createInstructionCard } from '../ui/instruction-card';
 import { isValidDS2VariableName, validateAndCorrectPackageName } from '../util/validation';
 import { createTypedOptionControl, optionDisplayLabel, syncSegmentedControl } from '../ui/option-controls';
 import Modal from 'bootstrap/js/dist/modal';
@@ -184,6 +186,28 @@ interface ExperimentTrackerEntry {
 
 /** Entry keys that are metadata rather than per-model experiment results. */
 const TRACKER_META_KEYS = ['systemPrompt', 'userPrompt', 'author', 'variables', 'manifest', 'judge'];
+
+// Path data of the experiment tracker's icons (Material Symbols, 0 -960 960 960
+// view box): the three per-run actions and the five per-response markers. Kept
+// in one place because the tracker draws them and its legend explains them.
+const TRACKER_ICON_PATHS = {
+  load:
+    'M440-320v-326L336-542l-56-58 200-200 200 200-56 58-104-104v326h-80ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T680-160H240Z',
+  remove:
+    'M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z',
+  judge:
+    'M480-80v-520q-18-7-31.5-19T427-640H320l120 280q0 50-41 85t-99 35q-58 0-99-35t-41-85l120-280h-40v-80h227q11-19 29-31.5t42-14.5v-38h80v38q24 2 42 14.5t29 31.5h227v80h-40l120 280q0 50-41 85t-99 35q-58 0-99-35t-41-85l120-280H533q-8 9-21.5 21T480-600v520h160v80H320v-80h160ZM212-440h176l-88-205-88 205Zm360 0h176l-88-205-88 205ZM480-680q17 0 28.5-11.5T520-720q0-17-11.5-28.5T480-760q-17 0-28.5 11.5T440-720q0 17 11.5 28.5T480-680Z',
+  best:
+    'M200-160v-80h560v80H200Zm0-140-51-321q-2 0-4.5.5t-4.5.5q-25 0-42.5-17.5T80-680q0-25 17.5-42.5T140-740q25 0 42.5 17.5T200-680q0 7-1.5 13t-3.5 11l125 56 125-171q-11-8-18-21t-7-28q0-25 17.5-42.5T480-880q25 0 42.5 17.5T540-820q0 15-7 28t-18 21l125 171 125-56q-2-5-3.5-11t-1.5-13q0-25 17.5-42.5T820-740q25 0 42.5 17.5T880-680q0 25-17.5 42.5T820-620q-2 0-4.5-.5t-4.5-.5l-51 321H200Zm68-80h424l26-167-105 46-133-183-133 183-105-46 26 167Zm212 0Z',
+  fastest:
+    'm422-232 207-248H469l29-227-185 267h139l-30 208ZM320-80l40-280H160l360-520h80l-40 320h240L400-80h-80Zm151-390Z',
+  fewestTokens:
+    'M480-83 240-323l56-56 184 183 184-183 56 56L480-83Zm0-238L240-561l56-56 184 183 184-183 56 56-240 240Zm0-238L240-799l56-56 184 183 184-183 56 56-240 240Z',
+  cheapest:
+    'M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm-38-152h68v-42q42-7 72-30t30-66q0-42-24-66t-84-45q-51-18-70.5-32T404-506q0-20 17-33t45-13q26 0 42 12.5t22 32.5l62-25q-9-28-32.5-49T508-611v-41h-68v41q-40 8-63.5 33T353-518q0 39 22.5 61.5T450-416q49 18 68.5 33.5T538-343q0 26-21 40t-49 14q-32 0-56-17.5T379-354l-64 26q13 44 40 69.5t87 33.5v41Z',
+  judgeBest:
+    'M280-120v-80h160v-124q-49-11-87.5-41.5T296-442q-75-9-125.5-65.5T120-640v-40q0-33 23.5-56.5T200-760h80v-80h400v80h80q33 0 56.5 23.5T840-680v40q0 76-50.5 132.5T664-442q-18 56-56.5 86.5T520-324v124h160v80H280Zm0-408v-152h-80v40q0 38 22 68.5t58 43.5Zm200 128q50 0 85-35t35-85v-240H360v240q0 50 35 85t85 35Zm200-128q36-13 58-43.5t22-68.5v-40h-80v152Zm-200-52Z',
+};
 
 /** A user-defined output variable parsed from the LLM's JSON response. */
 interface PromptOutputVariable {
@@ -552,8 +576,42 @@ export async function buildPromptBuilder(
     const promptBuilderContainer = document.createElement('div');
     promptBuilderContainer.setAttribute('id', `${paneID}-obj-${promptBuilderObject?.id}`);
 
-    // Add the intro piece to the Prompt Builder
+    // The page is a flow of steps; every section below lands in one of these
+    // panes (see the assembly at the end). Created first so the functions that
+    // move the user between steps can reach it. Setup is visited once, Build &
+    // Test is the workbench the whole edit-run-read loop happens in, Finalize
+    // manifests and always comes last. Optimize is a step of its own between
+    // the two, and only exists when the deployment enables it - so the flow
+    // has three steps or four, and Finalize is number three or four.
+    const STEP_BUILD = 1;
+    const promptBuilderSteps = [
+      { key: 'setup', label: `${promptBuilderInterfaceText?.promptBuilderStepSetup}` },
+      { key: 'build', label: `${promptBuilderInterfaceText?.promptBuilderStepBuild}` },
+    ];
+    if (String(promptBuilderObject?.enableOptimization ?? '') === 'true') {
+      promptBuilderSteps.push({
+        key: 'optimize',
+        label: `${promptBuilderInterfaceText?.promptBuilderStepOptimize}`,
+      });
+    }
+    promptBuilderSteps.push({
+      key: 'finalize',
+      label: `${promptBuilderInterfaceText?.promptBuilderStepFinalize}`,
+    });
+    const promptBuilderStepper = createStepper(
+      `${paneID}-obj-${promptBuilderObject?.id}`,
+      promptBuilderSteps,
+      {
+        back: `${promptBuilderInterfaceText?.promptBuilderStepBack}`,
+        continue: `${promptBuilderInterfaceText?.promptBuilderStepContinue}`,
+        navigation: `${promptBuilderInterfaceText?.promptBuilderStepNavigation}`,
+      }
+    );
+
+    // Add the intro piece to the Prompt Builder. The heading stays for the
+    // document outline only - the embedding report already titles the page.
     const promptBuilderHeader = document.createElement('h1');
+    promptBuilderHeader.classList.add('visually-hidden');
     promptBuilderHeader.innerText = promptBuilderInterfaceText?.promptBuilderHeading as string;
     const promptBuilderDescription = document.createElement('p');
     promptBuilderDescription.innerText = promptBuilderInterfaceText?.promptBuilderDescription as string;
@@ -1177,7 +1235,7 @@ export async function buildPromptBuilder(
     openInMMButton.setAttribute('role', 'button');
     openInMMButton.setAttribute('target', '_blank');
     openInMMButton.setAttribute('rel', 'noopener noreferrer');
-    openInMMButton.classList.add('btn', 'btn-primary', 'disabled');
+    openInMMButton.classList.add('btn', 'btn-outline-secondary', 'disabled');
     openInMMButton.setAttribute('aria-disabled', 'true');
     openInMMButton.innerHTML = promptBuilderInterfaceText?.promptBuilderOpenInMMButton as string;
     promptBuilderModalButtonContainer.appendChild(openInMMButton);
@@ -1466,13 +1524,11 @@ export async function buildPromptBuilder(
     // are substituted into the prompts via the {{variableName}} syntax.
     const promptBuilderVariablesHeader = document.createElement('h3');
     promptBuilderVariablesHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesHeading}`;
-    const promptBuilderVariablesDescription = document.createElement('p');
-    promptBuilderVariablesDescription.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesDescription}`;
     const promptBuilderVariablesContainer = document.createElement('div');
     promptBuilderVariablesContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-variables`;
     const promptBuilderVariablesAddButton = document.createElement('button');
     promptBuilderVariablesAddButton.type = 'button';
-    promptBuilderVariablesAddButton.classList.add('btn', 'btn-secondary');
+    promptBuilderVariablesAddButton.classList.add('btn', 'btn-outline-secondary');
     promptBuilderVariablesAddButton.innerText = `${promptBuilderInterfaceText?.promptBuilderVariablesAddButton}`;
     promptBuilderVariablesAddButton.onclick = () => createPromptVariableRow();
 
@@ -2197,6 +2253,9 @@ export async function buildPromptBuilder(
       promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
       experimentRunning = false;
 
+      // The new run sits at the top of the tracker, right below the prompts.
+      promptExperimentTrackerHeader.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
       // Auto-judge the run just rendered, when the user opted in and a judge
       // model is selected. Silent: preconditions that don't hold (no judge
       // model, < 2 judgeable responses) simply skip without a toast.
@@ -2217,6 +2276,58 @@ export async function buildPromptBuilder(
     }
     const promptExperimentContainer = document.createElement('div');
     promptExperimentContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet`;
+
+    // Beside the instructions: how many runs there are and how many carry a
+    // Best Response (what Finalize and Optimize build on), then a legend of
+    // the icons a run shows - they are otherwise explained by tooltip only.
+    const promptExperimentSummary = document.createElement('p');
+    promptExperimentSummary.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-summary`;
+    promptExperimentSummary.classList.add('mb-0', 'fw-semibold');
+    function updateTrackerSummary(): void {
+      const runCount = promptExperimentTracker.length;
+      const bestCount = promptExperimentTracker.filter((trackerEntry) =>
+        Object.keys(trackerEntry).some(
+          (key) => !TRACKER_META_KEYS.includes(key) && (trackerEntry[key] as ModelExperimentData)?.best_prompt
+        )
+      ).length;
+      promptExperimentSummary.style.display = runCount === 0 ? 'none' : '';
+      promptExperimentSummary.innerText = `${promptBuilderInterfaceText?.promptExperimentSummary}`
+        .replace('{runs}', String(runCount))
+        .replace('{best}', String(bestCount));
+    }
+    const promptExperimentLegend = document.createElement('div');
+    promptExperimentLegend.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-legend`;
+    promptExperimentLegend.classList.add('pb-legend');
+    const addLegendGroup = (headingText: unknown, entries: Array<[string, unknown]>): void => {
+      const group = document.createElement('div');
+      const groupHeading = document.createElement('p');
+      groupHeading.classList.add('pb-legend-heading');
+      groupHeading.innerText = `${headingText}`;
+      group.appendChild(groupHeading);
+      const list = document.createElement('ul');
+      entries.forEach(([iconPath, labelText]) => {
+        const item = document.createElement('li');
+        item.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="18px" viewBox="0 -960 960 960" width="18px" fill="currentColor" aria-hidden="true"><path d="${iconPath}"/></svg>`;
+        const label = document.createElement('span');
+        label.innerText = `${labelText}`;
+        item.appendChild(label);
+        list.appendChild(item);
+      });
+      group.appendChild(list);
+      promptExperimentLegend.appendChild(group);
+    };
+    addLegendGroup(promptBuilderInterfaceText?.promptExperimentLegendResponses, [
+      [TRACKER_ICON_PATHS.best, promptBuilderInterfaceText?.promptExperimentLegendBest],
+      [TRACKER_ICON_PATHS.judgeBest, promptBuilderInterfaceText?.promptExperimentLegendJudgeBest],
+      [TRACKER_ICON_PATHS.fastest, promptBuilderInterfaceText?.promptExperimentLegendFastest],
+      [TRACKER_ICON_PATHS.fewestTokens, promptBuilderInterfaceText?.promptExperimentLegendFewestTokens],
+      [TRACKER_ICON_PATHS.cheapest, promptBuilderInterfaceText?.promptExperimentLegendCheapest],
+    ]);
+    addLegendGroup(promptBuilderInterfaceText?.promptExperimentLegendActions, [
+      [TRACKER_ICON_PATHS.load, promptBuilderInterfaceText?.promptExperimentLegendLoad],
+      [TRACKER_ICON_PATHS.remove, promptBuilderInterfaceText?.promptExperimentLegendDelete],
+      [TRACKER_ICON_PATHS.judge, promptBuilderInterfaceText?.promptExperimentLegendJudge],
+    ]);
 
     // A disabled <button> does not fire hover events, so its own `title` never
     // shows as a tooltip. Wrap it in a span that carries the hint and let the
@@ -2483,8 +2594,11 @@ export async function buildPromptBuilder(
               'aria-label',
               `${promptBuilderInterfaceText.promptExperimentLoadRunButton} ${index + 1}`
             );
-            loadRunButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText.promptExperimentLoadRunButton}</title><path d="M440-320v-326L336-542l-56-58 200-200 200 200-56 58-104-104v326h-80ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T680-160H240Z"/></svg>`;
-            loadRunButton.onclick = () => loadExperimentRun(index);
+            loadRunButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText.promptExperimentLoadRunButton}</title><path d="${TRACKER_ICON_PATHS.load}"/></svg>`;
+            loadRunButton.onclick = () => {
+              loadExperimentRun(index);
+              promptBuilderPromptingHeader.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            };
             promptExperimentRunHeader.appendChild(loadRunButton);
             const deleteRunButton = document.createElement('button');
             deleteRunButton.type = 'button';
@@ -2494,7 +2608,7 @@ export async function buildPromptBuilder(
               'aria-label',
               `${promptBuilderInterfaceText.promptExperimentDeleteRunButton} ${index + 1}`
             );
-            deleteRunButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText.promptExperimentDeleteRunButton}</title><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>`;
+            deleteRunButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText.promptExperimentDeleteRunButton}</title><path d="${TRACKER_ICON_PATHS.remove}"/></svg>`;
             deleteRunButton.onclick = () => deleteExperimentRun(index);
             promptExperimentRunHeader.appendChild(deleteRunButton);
             // Judge this run — LLM-as-a-Judge ranks the run's responses
@@ -2507,7 +2621,7 @@ export async function buildPromptBuilder(
               'aria-label',
               `${promptBuilderInterfaceText.promptBuilderJudgeRunButton} ${index + 1}`
             );
-            judgeRunButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText.promptBuilderJudgeRunButton}</title><path d="M480-80v-520q-18-7-31.5-19T427-640H320l120 280q0 50-41 85t-99 35q-58 0-99-35t-41-85l120-280h-40v-80h227q11-19 29-31.5t42-14.5v-38h80v38q24 2 42 14.5t29 31.5h227v80h-40l120 280q0 50-41 85t-99 35q-58 0-99-35t-41-85l120-280H533q-8 9-21.5 21T480-600v520h160v80H320v-80h160ZM212-440h176l-88-205-88 205Zm360 0h176l-88-205-88 205ZM480-680q17 0 28.5-11.5T520-720q0-17-11.5-28.5T480-760q-17 0-28.5 11.5T440-720q0 17 11.5 28.5T480-680Z"/></svg>`;
+            judgeRunButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText.promptBuilderJudgeRunButton}</title><path d="${TRACKER_ICON_PATHS.judge}"/></svg>`;
             judgeRunButton.onclick = () => promptBuilderJudgeRun(index);
             // Judging compares responses, so it needs at least two successful
             // ones in the run. When it can't (e.g. only one model was included),
@@ -2601,21 +2715,21 @@ export async function buildPromptBuilder(
               );
               // Add fastest and fewest token prompt icons if applicable
               if (modelData?.best_prompt) {
-                promptExperimentContainerModelContainerAccordionItemButton.innerHTML = `<svg class="bestPrompt" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderBestPrompt}</title><path d="M200-160v-80h560v80H200Zm0-140-51-321q-2 0-4.5.5t-4.5.5q-25 0-42.5-17.5T80-680q0-25 17.5-42.5T140-740q25 0 42.5 17.5T200-680q0 7-1.5 13t-3.5 11l125 56 125-171q-11-8-18-21t-7-28q0-25 17.5-42.5T480-880q25 0 42.5 17.5T540-820q0 15-7 28t-18 21l125 171 125-56q-2-5-3.5-11t-1.5-13q0-25 17.5-42.5T820-740q25 0 42.5 17.5T880-680q0 25-17.5 42.5T820-620q-2 0-4.5-.5t-4.5-.5l-51 321H200Zm68-80h424l26-167-105 46-133-183-133 183-105-46 26 167Zm212 0Z"/></svg> `;
+                promptExperimentContainerModelContainerAccordionItemButton.innerHTML = `<svg class="bestPrompt" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderBestPrompt}</title><path d="${TRACKER_ICON_PATHS.best}"/></svg> `;
               }
               if (modelData?.fastest_prompt) {
-                promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderFastestPrompt}</title><path d="m422-232 207-248H469l29-227-185 267h139l-30 208ZM320-80l40-280H160l360-520h80l-40 320h240L400-80h-80Zm151-390Z"/></svg> `;
+                promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderFastestPrompt}</title><path d="${TRACKER_ICON_PATHS.fastest}"/></svg> `;
               }
               if (modelData?.fewest_tokens_prompt) {
-                promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderFewestTokensPrompt}</title><path d="M480-83 240-323l56-56 184 183 184-183 56 56L480-83Zm0-238L240-561l56-56 184 183 184-183 56 56-240 240Zm0-238L240-799l56-56 184 183 184-183 56 56-240 240Z"/></svg> `;
+                promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderFewestTokensPrompt}</title><path d="${TRACKER_ICON_PATHS.fewestTokens}"/></svg> `;
               }
               // Cheapest response — a coin icon, peer to fastest/fewest-tokens
               if (modelData?.cheapest_prompt) {
-                promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg class="cheapestPrompt" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderCheapestPrompt}</title><path d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm-38-152h68v-42q42-7 72-30t30-66q0-42-24-66t-84-45q-51-18-70.5-32T404-506q0-20 17-33t45-13q26 0 42 12.5t22 32.5l62-25q-9-28-32.5-49T508-611v-41h-68v41q-40 8-63.5 33T353-518q0 39 22.5 61.5T450-416q49 18 68.5 33.5T538-343q0 26-21 40t-49 14q-32 0-56-17.5T379-354l-64 26q13 44 40 69.5t87 33.5v41Z"/></svg> `;
+                promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg class="cheapestPrompt" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderCheapestPrompt}</title><path d="${TRACKER_ICON_PATHS.cheapest}"/></svg> `;
               }
               // Judge's best response — a fifth icon, peer to the four above
               if (modelData?.judge_best) {
-                promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg class="judgeBest" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderJudgeBestPrompt}</title><path d="M280-120v-80h160v-124q-49-11-87.5-41.5T296-442q-75-9-125.5-65.5T120-640v-40q0-33 23.5-56.5T200-760h80v-80h400v80h80q33 0 56.5 23.5T840-680v40q0 76-50.5 132.5T664-442q-18 56-56.5 86.5T520-324v124h160v80H280Zm0-408v-152h-80v40q0 38 22 68.5t58 43.5Zm200 128q50 0 85-35t35-85v-240H360v240q0 50 35 85t85 35Zm200-128q36-13 58-43.5t22-68.5v-40h-80v152Zm-200-52Z"/></svg> `;
+                promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg class="judgeBest" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderJudgeBestPrompt}</title><path d="${TRACKER_ICON_PATHS.judgeBest}"/></svg> `;
               }
               promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `${promptBuilderInterfaceText.promptExperimentModel} ${promptExperimentRunModelKey}`;
               // Create the accordion body container
@@ -2652,7 +2766,7 @@ export async function buildPromptBuilder(
                       if (bestPromptCheckbox.checked && !hasBestPrompt) {
                         currentHeader.insertAdjacentHTML(
                           'afterbegin',
-                          `<svg class="bestPrompt" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderBestPrompt}</title><path d="M200-160v-80h560v80H200Zm0-140-51-321q-2 0-4.5.5t-4.5.5q-25 0-42.5-17.5T80-680q0-25 17.5-42.5T140-740q25 0 42.5 17.5T200-680q0 7-1.5 13t-3.5 11l125 56 125-171q-11-8-18-21t-7-28q0-25 17.5-42.5T480-880q25 0 42.5 17.5T540-820q0 15-7 28t-18 21l125 171 125-56q-2-5-3.5-11t-1.5-13q0-25 17.5-42.5T820-740q25 0 42.5 17.5T880-680q0 25-17.5 42.5T820-620q-2 0-4.5-.5t-4.5-.5l-51 321H200Zm68-80h424l26-167-105 46-133-183-133 183-105-46 26 167Zm212 0Z"/></svg> `
+                          `<svg class="bestPrompt" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderBestPrompt}</title><path d="${TRACKER_ICON_PATHS.best}"/></svg> `
                         );
                       } else if (!bestPromptCheckbox.checked && hasBestPrompt) {
                         hasBestPrompt.remove();
@@ -3283,7 +3397,7 @@ export async function buildPromptBuilder(
     promptExperimentSaveButton.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-save-button`;
     promptExperimentSaveButton.innerText = `${promptBuilderInterfaceText?.promptBuilderSaveExperimentsButton}`;
     promptExperimentSaveButton.setAttribute('type', 'button');
-    promptExperimentSaveButton.setAttribute('class', 'btn btn-primary');
+    promptExperimentSaveButton.setAttribute('class', 'btn btn-outline-secondary');
     promptExperimentSaveButton.onclick = async function () {
       promptBuilderSaveExperiments();
     };
@@ -3321,6 +3435,7 @@ export async function buildPromptBuilder(
       // runs with a Best Response), so refresh it wherever the manifest button
       // refreshes. No-op until the optimize section exists / when disabled.
       updateOptimizeState();
+      updateTrackerSummary();
     }
     updateManifestButtonState();
     // Manifest section: configure how the best prompt becomes a model, with
@@ -3388,7 +3503,7 @@ export async function buildPromptBuilder(
     promptBuilderOutputVariablesContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-outvars`;
     const outputVariablesAddButton = document.createElement('button');
     outputVariablesAddButton.type = 'button';
-    outputVariablesAddButton.classList.add('btn', 'btn-secondary');
+    outputVariablesAddButton.classList.add('btn', 'btn-outline-secondary');
     outputVariablesAddButton.innerText = `${promptBuilderInterfaceText?.promptBuilderOutputVariablesAddButton}`;
     outputVariablesAddButton.onclick = () => createOutputVariableRow();
     promptExperimentManifestOptions.appendChild(outputVariablesLabel);
@@ -4166,6 +4281,7 @@ ${scoreCodeReturn}`;
           compareButton: HTMLButtonElement;
           runButton: HTMLButtonElement;
           runWrapper: HTMLSpanElement;
+          banner: HTMLDivElement;
           statusLine: HTMLElement;
           resultBox: HTMLElement;
           historyContainer: HTMLElement;
@@ -4431,6 +4547,10 @@ ${scoreCodeReturn}`;
       else if (selectedOptimizer === 'gepa' && optimizeUI.judgeSelect.value === '')
         disabledHint = `${promptBuilderInterfaceText?.promptBuilderOptimizeGepaNeedsJudge}`;
       setDisabledHint(optimizeUI.runButton, optimizeUI.runWrapper, disabledHint !== '', disabledHint);
+      // Say why the run is blocked in the open, not only on hover.
+      const showBanner = disabledHint !== '' && !optimizeJobActive;
+      optimizeUI.banner.classList.toggle('d-none', !showBanner);
+      optimizeUI.banner.innerText = showBanner ? disabledHint : '';
       // The compare entry point only needs a prompt and a quiet job slot —
       // its own modal handles candidate/sample validation.
       optimizeUI.compareButton.disabled = optimizeJobActive || !configReady || !promptSelected;
@@ -4699,7 +4819,7 @@ ${scoreCodeReturn}`;
         loadButton.classList.add('btn', 'btn-outline-primary', 'btn-sm', 'pb-optimize-history-load');
         loadButton.title = `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryLoadButton}`;
         loadButton.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryLoadButton} #${entry.optimizationId ?? ''}`);
-        loadButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryLoadButton}</title><path d="M440-320v-326L336-542l-56-58 200-200 200 200-56 58-104-104v326h-80ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T680-160H240Z"/></svg>`;
+        loadButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryLoadButton}</title><path d="${TRACKER_ICON_PATHS.load}"/></svg>`;
         loadButton.onclick = (event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -4712,7 +4832,7 @@ ${scoreCodeReturn}`;
       deleteButton.classList.add('btn', 'btn-outline-danger', 'btn-sm', 'pb-optimize-history-delete');
       deleteButton.title = `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteButton}`;
       deleteButton.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteButton} #${entry.optimizationId ?? ''}`);
-      deleteButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteButton}</title><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>`;
+      deleteButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><title>${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteButton}</title><path d="${TRACKER_ICON_PATHS.remove}"/></svg>`;
       deleteButton.onclick = (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -5060,6 +5180,7 @@ ${scoreCodeReturn}`;
         }
       }
       updateRunExperimentsButtonState();
+      promptBuilderStepper.goTo(STEP_BUILD);
       systemPromptArea?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryLoadedToast}`);
     }
@@ -5536,7 +5657,7 @@ ${scoreCodeReturn}`;
       const optimizeHeader = document.createElement('h2');
       optimizeHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeSectionHeading}`;
       const optimizeDescription = document.createElement('p');
-      optimizeDescription.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeSectionDescription} `;
+      optimizeDescription.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeSectionDescription}`;
       // A deep link into the user guide: when optimization helps, which
       // metric/optimizer to pick, and the CAS dataset schema.
       const optimizeLearnMore = document.createElement('a');
@@ -5545,7 +5666,8 @@ ${scoreCodeReturn}`;
       optimizeLearnMore.target = '_blank';
       optimizeLearnMore.rel = 'noopener';
       optimizeLearnMore.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeLearnMore}`;
-      optimizeDescription.appendChild(optimizeLearnMore);
+      const optimizeLearnMoreLine = document.createElement('p');
+      optimizeLearnMoreLine.appendChild(optimizeLearnMore);
 
       // â„¹ï¸ tooltip helper for the optimize controls (the app's judge toggles
       // use the same pattern: keyboard-focusable Bootstrap tooltip).
@@ -5566,7 +5688,7 @@ ${scoreCodeReturn}`;
 
       // Target LLM.
       const targetRow = document.createElement('div');
-      targetRow.classList.add('d-flex', 'align-items-center', 'gap-2', 'flex-wrap');
+      targetRow.classList.add('d-flex', 'flex-column', 'align-items-start', 'gap-2');
       const targetLabel = document.createElement('label');
       targetLabel.classList.add('form-label', 'mb-0');
       targetLabel.htmlFor = `${paneID}-obj-${promptBuilderObject?.id}-optimize-target`;
@@ -5574,7 +5696,6 @@ ${scoreCodeReturn}`;
       const optimizeTargetSelect = document.createElement('select');
       optimizeTargetSelect.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-target`;
       optimizeTargetSelect.classList.add('form-select', 'form-select-sm');
-      optimizeTargetSelect.style.width = 'auto';
       const targetPlaceholder = document.createElement('option');
       targetPlaceholder.value = '';
       targetPlaceholder.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeTargetPlaceholder}`;
@@ -5729,21 +5850,14 @@ ${scoreCodeReturn}`;
 
       // Metric (+ judge model when the metric is the judge).
       const metricRow = document.createElement('div');
-      metricRow.classList.add('d-flex', 'align-items-center', 'gap-2', 'flex-wrap');
+      metricRow.classList.add('d-flex', 'flex-column', 'gap-1');
       const metricLabel = document.createElement('label');
       metricLabel.classList.add('form-label', 'mb-0');
       metricLabel.htmlFor = `${paneID}-obj-${promptBuilderObject?.id}-optimize-metric`;
       metricLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeMetricLabel}`;
-      metricLabel.appendChild(
-        makeOptimizeInfoIcon(
-          promptBuilderInterfaceText?.promptBuilderOptimizeMetricLabel,
-          promptBuilderInterfaceText?.promptBuilderOptimizeMetricInfo
-        )
-      );
       const optimizeMetricSelect = document.createElement('select');
       optimizeMetricSelect.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-metric`;
       optimizeMetricSelect.classList.add('form-select', 'form-select-sm');
-      optimizeMetricSelect.style.width = 'auto';
       const exactOption = document.createElement('option');
       exactOption.value = 'exact';
       exactOption.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeMetricExact}`;
@@ -5761,7 +5875,7 @@ ${scoreCodeReturn}`;
 
       const optimizeJudgeRow = document.createElement('div');
       optimizeJudgeRow.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-judge-row`;
-      optimizeJudgeRow.classList.add('d-flex', 'align-items-center', 'gap-2', 'ms-4', 'd-none');
+      optimizeJudgeRow.classList.add('d-flex', 'flex-column', 'gap-1', 'mt-2', 'd-none');
       const optimizeJudgeLabel = document.createElement('label');
       optimizeJudgeLabel.classList.add('form-label', 'mb-0');
       optimizeJudgeLabel.htmlFor = `${paneID}-obj-${promptBuilderObject?.id}-optimize-judge-model`;
@@ -5769,7 +5883,6 @@ ${scoreCodeReturn}`;
       const optimizeJudgeSelect = document.createElement('select');
       optimizeJudgeSelect.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-judge-model`;
       optimizeJudgeSelect.classList.add('form-select', 'form-select-sm');
-      optimizeJudgeSelect.style.width = 'auto';
       const optimizeJudgePlaceholder = document.createElement('option');
       optimizeJudgePlaceholder.value = '';
       optimizeJudgePlaceholder.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSelectPlaceholder}`;
@@ -5794,21 +5907,14 @@ ${scoreCodeReturn}`;
       // Optimizer (bootstrap selects demos; MIPROv2 also rewrites the
       // instruction text at the cost of more model calls) + max few-shot demos.
       const optimizerRow = document.createElement('div');
-      optimizerRow.classList.add('d-flex', 'align-items-center', 'gap-2', 'flex-wrap');
+      optimizerRow.classList.add('d-flex', 'flex-column', 'align-items-start', 'gap-1');
       const optimizerLabel = document.createElement('label');
       optimizerLabel.classList.add('form-label', 'mb-0');
       optimizerLabel.htmlFor = `${paneID}-obj-${promptBuilderObject?.id}-optimize-optimizer`;
       optimizerLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeOptimizerLabel}`;
-      optimizerLabel.appendChild(
-        makeOptimizeInfoIcon(
-          promptBuilderInterfaceText?.promptBuilderOptimizeOptimizerLabel,
-          promptBuilderInterfaceText?.promptBuilderOptimizeOptimizerInfo
-        )
-      );
       const optimizeOptimizerSelect = document.createElement('select');
       optimizeOptimizerSelect.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-optimizer`;
       optimizeOptimizerSelect.classList.add('form-select', 'form-select-sm');
-      optimizeOptimizerSelect.style.width = 'auto';
       const bootstrapOption = document.createElement('option');
       bootstrapOption.value = 'bootstrap';
       bootstrapOption.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeOptimizerBootstrap}`;
@@ -5822,7 +5928,7 @@ ${scoreCodeReturn}`;
       gepaOption.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeOptimizerGepa}`;
       optimizeOptimizerSelect.appendChild(gepaOption);
       const maxDemosLabel = document.createElement('label');
-      maxDemosLabel.classList.add('form-label', 'mb-0', 'ms-3');
+      maxDemosLabel.classList.add('form-label', 'mb-0', 'mt-2');
       maxDemosLabel.htmlFor = `${paneID}-obj-${promptBuilderObject?.id}-optimize-max-demos`;
       maxDemosLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeMaxDemosLabel}`;
       const optimizeMaxDemosInput = document.createElement('input');
@@ -5876,17 +5982,76 @@ ${scoreCodeReturn}`;
       const optimizeHistoryContainer = document.createElement('div');
       optimizeHistoryContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-history`;
 
-      optimizeControls.appendChild(targetRow);
-      optimizeControls.appendChild(datasetBlock);
-      optimizeControls.appendChild(metricRow);
-      optimizeControls.appendChild(optimizeJudgeRow);
-      optimizeControls.appendChild(optimizerRow);
-      optimizeControls.appendChild(optimizeEstimateLine);
-      optimizeControls.appendChild(optimizeRunWrapper);
-      optimizeControls.appendChild(optimizeStatusLine);
-      optimizeControls.appendChild(optimizeLogDetails);
-      optimizeControls.appendChild(optimizeResultBox);
+      // Why the run is blocked (too few Best Response runs, no prompt, ...).
+      const optimizeBanner = document.createElement('div');
+      optimizeBanner.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-banner`;
+      optimizeBanner.classList.add('alert', 'alert-warning', 'py-2', 'px-3', 'mb-0', 'd-none');
+      optimizeBanner.setAttribute('role', 'status');
+
+      // The metric and optimizer explanations stay readable beside their
+      // pickers instead of hiding in a tooltip.
+      const makeOptimizeGuide = (titleText: unknown, guideHtml: unknown): HTMLDetailsElement => {
+        const guide = document.createElement('details');
+        guide.classList.add('pb-guide');
+        guide.open = true;
+        const guideSummary = document.createElement('summary');
+        guideSummary.innerText = `${titleText}`;
+        const guideBody = document.createElement('div');
+        guideBody.innerHTML = String(guideHtml);
+        guide.appendChild(guideSummary);
+        guide.appendChild(guideBody);
+        return guide;
+      };
+      const makeOptimizeFieldBox = (...rows: HTMLElement[]): HTMLDivElement => {
+        const fieldBox = document.createElement('div');
+        fieldBox.classList.add('pb-field-box');
+        rows.forEach((row) => fieldBox.appendChild(row));
+        return fieldBox;
+      };
+      // Three columns: what to optimise for and on which data, how answers
+      // are scored, and how the prompt is rewritten.
+      const optimizeGrid = document.createElement('div');
+      optimizeGrid.classList.add('pb-optimize-grid');
+      const optimizeTargetColumn = document.createElement('div');
+      optimizeTargetColumn.classList.add('d-flex', 'flex-column', 'gap-3');
+      optimizeTargetColumn.appendChild(targetRow);
+      optimizeTargetColumn.appendChild(datasetBlock);
+      const optimizeMetricColumn = document.createElement('div');
+      optimizeMetricColumn.classList.add('d-flex', 'flex-column', 'gap-2');
+      optimizeMetricColumn.appendChild(
+        makeOptimizeGuide(
+          promptBuilderInterfaceText?.promptBuilderOptimizeMetricGuide,
+          promptBuilderInterfaceText?.promptBuilderOptimizeMetricInfo
+        )
+      );
+      optimizeMetricColumn.appendChild(makeOptimizeFieldBox(metricRow, optimizeJudgeRow));
+      const optimizeOptimizerColumn = document.createElement('div');
+      optimizeOptimizerColumn.classList.add('d-flex', 'flex-column', 'gap-2');
+      optimizeOptimizerColumn.appendChild(
+        makeOptimizeGuide(
+          promptBuilderInterfaceText?.promptBuilderOptimizeOptimizerGuide,
+          promptBuilderInterfaceText?.promptBuilderOptimizeOptimizerInfo
+        )
+      );
+      optimizeOptimizerColumn.appendChild(makeOptimizeFieldBox(optimizerRow));
+      optimizeGrid.appendChild(optimizeTargetColumn);
+      optimizeGrid.appendChild(optimizeMetricColumn);
+      optimizeGrid.appendChild(optimizeOptimizerColumn);
+
+      optimizeControls.appendChild(optimizeGrid);
       optimizeControls.appendChild(optimizeHistoryContainer);
+      // The run itself sits beside the instructions, under the notice.
+      const optimizeRunBlock = document.createElement('div');
+      optimizeRunBlock.classList.add('d-flex', 'flex-column', 'align-items-start', 'gap-2');
+      optimizeBanner.classList.add('align-self-stretch');
+      optimizeRunBlock.appendChild(optimizeBanner);
+      optimizeRunBlock.appendChild(optimizeRunWrapper);
+      optimizeRunBlock.appendChild(optimizeEstimateLine);
+      optimizeRunBlock.appendChild(optimizeStatusLine);
+      optimizeLogDetails.classList.add('align-self-stretch');
+      optimizeRunBlock.appendChild(optimizeLogDetails);
+      optimizeResultBox.classList.add('align-self-stretch');
+      optimizeRunBlock.appendChild(optimizeResultBox);
 
       optimizeUI = {
         targetSelect: optimizeTargetSelect,
@@ -5907,6 +6072,7 @@ ${scoreCodeReturn}`;
         estimateLine: optimizeEstimateLine,
         runButton: optimizeRunButton,
         runWrapper: optimizeRunWrapper,
+        banner: optimizeBanner,
         statusLine: optimizeStatusLine,
         resultBox: optimizeResultBox,
         historyContainer: optimizeHistoryContainer,
@@ -5921,104 +6087,128 @@ ${scoreCodeReturn}`;
       datasetTrackerRadio.addEventListener('change', updateOptimizeState);
       datasetCasRadio.addEventListener('change', updateOptimizeState);
 
-      optimizeSection = document.createElement('div');
-      optimizeSection.classList.add('pb-section');
-      optimizeSection.appendChild(optimizeHeader);
-      optimizeSection.appendChild(optimizeDescription);
-      optimizeSection.appendChild(optimizeControls);
+      // Instructions on the left, the run (with its blocked-run notice) beside
+      // them, and the three option columns and the history across the full width.
+      const optimizeCard = createInstructionCard(
+        optimizeHeader,
+        `${promptBuilderInterfaceText?.promptBuilderInstructionsTitle}`,
+        [optimizeDescription, optimizeLearnMoreLine]
+      );
+      optimizeCard.controls.appendChild(optimizeRunBlock);
+      optimizeCard.wide.appendChild(optimizeControls);
+      optimizeSection = optimizeCard.element;
       updateOptimizeState();
     }
 
-    // Assemble the page into four visual sections: project & prompt selection,
-    // LLM selection, the prompt workbench, and the experiment tracker/manifest.
-    const createPageSection = (): HTMLDivElement => {
-      const pageSection = document.createElement('div');
-      pageSection.classList.add('pb-section');
-      return pageSection;
+    // Assemble the page: four steps, each a pane of cards. A card carries its
+    // explanatory text in an Instructions box on the left and its controls on
+    // the right; blocks that need the room span the full width below.
+    const instructionsTitle = `${promptBuilderInterfaceText?.promptBuilderInstructionsTitle}`;
+    const instructionText = (text: unknown): HTMLParagraphElement => {
+      const paragraph = document.createElement('p');
+      paragraph.innerText = `${text}`;
+      return paragraph;
     };
+    const paneOf = (key: string): HTMLDivElement | undefined =>
+      promptBuilderStepper.panes[promptBuilderSteps.findIndex((step) => step.key === key)];
+    const setupPane = paneOf('setup') as HTMLDivElement;
+    const buildPane = paneOf('build') as HTMLDivElement;
+    const finalizePane = paneOf('finalize') as HTMLDivElement;
+    const optimizePane = paneOf('optimize');
 
     promptBuilderContainer.appendChild(promptBuilderHeader);
-    promptBuilderContainer.appendChild(promptBuilderDescription);
+    promptBuilderContainer.appendChild(promptBuilderStepper.element);
 
-    const projectSection = createPageSection();
-    projectSection.appendChild(promptBuilderProjectHeader);
-    projectSection.appendChild(promptBuilderProjectSelectorHeader);
-    projectSection.appendChild(projectFilter.filterRow);
-    projectSection.appendChild(promptBuilderProjectSelectorDropdown);
-    projectSection.appendChild(document.createElement('br'));
-    projectSection.appendChild(promptBuilderPromptHeader);
-    projectSection.appendChild(promptFilter.filterRow);
-    projectSection.appendChild(promptBuilderPromptSelectorDropdown);
-    projectSection.appendChild(promptDocSection);
-    projectSection.appendChild(document.createElement('br'));
-    projectSection.appendChild(promptBuilderModalButtonContainer);
-    promptBuilderContainer.appendChild(projectSection);
+    // --- Step 1, Setup: the project and the prompt-test - chosen once.
+    const projectCard = createInstructionCard(promptBuilderProjectHeader, instructionsTitle, [
+      promptBuilderDescription,
+      instructionText(promptBuilderInterfaceText?.promptBuilderProjectInstructions),
+    ]);
+    projectCard.controls.appendChild(promptBuilderProjectSelectorHeader);
+    projectCard.controls.appendChild(projectFilter.filterRow);
+    projectCard.controls.appendChild(promptBuilderProjectSelectorDropdown);
+    promptBuilderPromptHeader.classList.add('mt-3');
+    projectCard.controls.appendChild(promptBuilderPromptHeader);
+    projectCard.controls.appendChild(promptFilter.filterRow);
+    projectCard.controls.appendChild(promptBuilderPromptSelectorDropdown);
+    projectCard.controls.appendChild(promptDocSection);
+    promptBuilderModalButtonContainer.classList.add('mt-3');
+    projectCard.controls.appendChild(promptBuilderModalButtonContainer);
+    setupPane.appendChild(projectCard.element);
     // Merge searching into the dropdowns themselves: typing in the picker
     // filters the open list live (the separate name/user filter row above
     // still narrows by creator). The underlying selects stay scriptable.
     attachCombobox(promptBuilderProjectSelectorDropdown);
     attachCombobox(promptBuilderPromptSelectorDropdown);
 
-    const llmSection = createPageSection();
-    llmSection.appendChild(promptBuilderModelSelectorHeader);
-    llmSection.appendChild(promptBuilderModelSelectorContainer);
-    promptBuilderContainer.appendChild(llmSection);
+    // --- Step 2, Build & Test: the whole edit-run-read loop on one page, in
+    // the order a run uses it - who answers, who judges, what is asked, what
+    // came back. The two set-once cards come first, so the prompts sit right
+    // above the tracker their runs land in.
+    const llmCard = createInstructionCard(promptBuilderModelSelectorHeader, instructionsTitle, [
+      instructionText(promptBuilderInterfaceText?.promptBuilderModelSelectorInstructions),
+    ]);
+    llmCard.controls.appendChild(promptBuilderModelSelectorContainer);
+    buildPane.appendChild(llmCard.element);
 
-    const workbenchSection = createPageSection();
-    workbenchSection.appendChild(promptBuilderPromptingHeader);
-    workbenchSection.appendChild(promptBulderPromptingExplainer);
-    workbenchSection.appendChild(promptBuilderVariablesHeader);
-    workbenchSection.appendChild(promptBuilderVariablesDescription);
-    workbenchSection.appendChild(promptBuilderVariablesContainer);
-    workbenchSection.appendChild(promptBuilderVariablesAddButton);
-    workbenchSection.appendChild(document.createElement('br'));
-    workbenchSection.appendChild(document.createElement('br'));
-    workbenchSection.appendChild(promptBuilderPromptingContainer);
-    workbenchSection.appendChild(document.createElement('br'));
-    workbenchSection.appendChild(promptBuilderRunExperimentsButton);
-    workbenchSection.appendChild(promptBuilderRunExperimentError);
-    promptBuilderContainer.appendChild(workbenchSection);
-
-    // Judging: its own section between running and the tracker. Configuration
-    // for how responses are judged lives here (future council/jury options fold
-    // in here too); the per-run verdicts and Judge buttons live in the tracker.
-    const judgeSection = createPageSection();
+    // Configuration for how responses are judged lives here (future council or
+    // jury options fold in here too); the per-run verdicts and Judge buttons
+    // live in the tracker.
     const promptBuilderJudgeHeader = document.createElement('h2');
     promptBuilderJudgeHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSectionHeading}`;
-    const promptBuilderJudgeDescription = document.createElement('p');
-    promptBuilderJudgeDescription.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSectionDescription}`;
-    judgeSection.appendChild(promptBuilderJudgeHeader);
-    judgeSection.appendChild(promptBuilderJudgeDescription);
-    judgeSection.appendChild(promptBuilderJudgeControls);
-    promptBuilderContainer.appendChild(judgeSection);
+    const judgeCard = createInstructionCard(promptBuilderJudgeHeader, instructionsTitle, [
+      instructionText(promptBuilderInterfaceText?.promptBuilderJudgeSectionDescription),
+    ]);
+    judgeCard.controls.appendChild(promptBuilderJudgeControls);
+    buildPane.appendChild(judgeCard.element);
 
-    const trackerSection = createPageSection();
-    trackerSection.appendChild(promptExperimentTrackerHeader);
-    trackerSection.appendChild(promptExperimentEmptyHint);
-    trackerSection.appendChild(promptExperimentContainer);
-    trackerSection.appendChild(document.createElement('br'));
-    trackerSection.appendChild(promptExperimentSaveButton);
-    trackerSection.appendChild(promptExperimentSaveResultContainer);
-    promptBuilderContainer.appendChild(trackerSection);
+    const workbenchCard = createInstructionCard(promptBuilderPromptingHeader, instructionsTitle, [
+      promptBulderPromptingExplainer,
+    ]);
+    const workbenchToolbar = document.createElement('div');
+    workbenchToolbar.classList.add('pb-card-toolbar');
+    workbenchToolbar.appendChild(promptBuilderVariablesHeader);
+    workbenchToolbar.appendChild(promptBuilderVariablesAddButton);
+    workbenchToolbar.appendChild(promptBuilderRunExperimentsButton);
+    workbenchCard.controls.appendChild(workbenchToolbar);
+    workbenchCard.controls.appendChild(promptBuilderVariablesContainer);
+    promptBuilderPromptingContainer.classList.add('mt-2');
+    workbenchCard.controls.appendChild(promptBuilderPromptingContainer);
+    workbenchCard.controls.appendChild(promptBuilderRunExperimentError);
+    buildPane.appendChild(workbenchCard.element);
 
-    // Manifest: configuration first, the action button below it
-    const manifestSection = createPageSection();
-    manifestSection.appendChild(promptExperimentManifestHeader);
-    manifestSection.appendChild(promptExperimentManifestDescription);
-    manifestSection.appendChild(promptExperimentIntegratedCallDiv);
-    manifestSection.appendChild(promptExperimentManifestOptions);
-    manifestSection.appendChild(document.createElement('br'));
-    manifestSection.appendChild(promptExperimentCreateModelButtonWrapper);
-    manifestSection.appendChild(document.createElement('br'));
-    manifestSection.appendChild(document.createElement('br'));
-    manifestSection.appendChild(promptExperimentResultContainer);
-    promptBuilderContainer.appendChild(manifestSection);
+    const trackerCard = createInstructionCard(promptExperimentTrackerHeader, instructionsTitle, [
+      instructionText(promptBuilderInterfaceText?.promptExperimentTrackerInstructions),
+    ]);
+    const trackerToolbar = document.createElement('div');
+    trackerToolbar.classList.add('d-flex', 'flex-wrap', 'align-items-center', 'gap-3');
+    trackerToolbar.appendChild(promptExperimentSaveButton);
+    trackerToolbar.appendChild(promptExperimentSummary);
+    trackerCard.controls.appendChild(promptExperimentEmptyHint);
+    trackerCard.controls.appendChild(trackerToolbar);
+    trackerCard.controls.appendChild(promptExperimentSaveResultContainer);
+    trackerCard.controls.appendChild(promptExperimentLegend);
+    trackerCard.wide.appendChild(promptExperimentContainer);
+    buildPane.appendChild(trackerCard.element);
 
-    // Optimize (only when the deployment enables it): after the manifest, as
-    // the closing step of the judge → optimise → judge-again loop.
-    if (optimizeSection) {
-      promptBuilderContainer.appendChild(optimizeSection);
+    // --- Step 3, Optimize - only when the deployment enables it, so the step
+    // and its pane exist together or not at all.
+    if (optimizeSection && optimizePane) {
+      optimizePane.appendChild(optimizeSection);
     }
+
+    // --- Last step, Finalize: manifest the best prompt - configuration first,
+    // the action button below it.
+    const manifestCard = createInstructionCard(promptExperimentManifestHeader, instructionsTitle, [
+      promptExperimentManifestDescription,
+    ]);
+    manifestCard.controls.appendChild(promptExperimentIntegratedCallDiv);
+    manifestCard.controls.appendChild(promptExperimentManifestOptions);
+    promptExperimentCreateModelButtonWrapper.classList.add('mt-3');
+    manifestCard.controls.appendChild(promptExperimentCreateModelButtonWrapper);
+    promptExperimentResultContainer.classList.add('mt-2');
+    manifestCard.controls.appendChild(promptExperimentResultContainer);
+    finalizePane.appendChild(manifestCard.element);
 
     return promptBuilderContainer;
 }

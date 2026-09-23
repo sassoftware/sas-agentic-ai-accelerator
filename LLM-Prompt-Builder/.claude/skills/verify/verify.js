@@ -57,6 +57,16 @@ function multipartJson(body) {
       els.map((e) => e.textContent.trim())
     );
 
+  // The page is a flow of steps (setup, build, finalize - plus optimize when
+  // the deployment enables it); only the current step's pane is visible, so a
+  // flow opens the step it acts on.
+  const goStep = async (key) => {
+    await page.click(`#app-obj-LPB-step-${key}`);
+    await page.waitForSelector(`#app-obj-LPB-pane-${key}:not([hidden])`);
+  };
+  const currentStep = () =>
+    page.$eval('.pb-step.is-current .pb-step-button', (el) => el.id.replace('app-obj-LPB-step-', ''));
+
   const APP_URL = `${BASE}/?modelRepositoryID=repo-1&llmProjectID=llm-proj&SCREndpoint=${BASE}/scr`;
   await page.goto(APP_URL);
   await page.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
@@ -66,7 +76,35 @@ function multipartJson(body) {
   assert((await page.$$('h1')).length === 1, 'exactly one h1 on the page');
   assert((await page.$$('.pb-section')).length === 6, 'page grouped into six visual sections (incl. Judging)');
   assert(await page.isDisabled('#app-obj-LPB-run-experiment'), 'Run Experiments disabled until an LLM is selected');
+  assert((await currentStep()) === 'setup', 'the flow opens on the Setup step');
+  const stepKeys = (target) =>
+    target.$$eval('.pb-step-button', (els) => els.map((e) => e.id.replace('app-obj-LPB-step-', '')).join(','));
+  assert(
+    (await stepKeys(page)) === 'setup,build,finalize',
+    `three steps while optimization is disabled (got: ${await stepKeys(page)})`
+  );
+  assert(await page.isHidden('#app-obj-LPB-stepper-back'), 'no Back on the first step');
+  assert((await page.$$('.pb-instructions')).length === 6, 'every card carries an Instructions box');
+  await goStep('build');
   assert(await page.isVisible('#app-obj-LPB-pet-empty'), 'tracker shows an empty-state hint');
+  assert(await page.isVisible('#model0'), 'the LLM selection is part of Build & Test');
+  assert(await page.isVisible('#app-obj-LPB-judge-model'), 'the judge settings are part of Build & Test');
+  assert(!(await page.isVisible('#LPB-project-dropdown')), 'the Setup pane is hidden while building');
+  await goStep('setup');
+  // Optimize is a step of its own, and only exists when the deployment enables it.
+  const optimizePage = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
+  await optimizePage.goto(
+    `${APP_URL}&enableOptimization=true&computeContext=ctx&optimizeJobProgram=/Public/Jobs/Optimize-Prompt-DSPy`
+  );
+  await optimizePage.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+  assert(
+    (await stepKeys(optimizePage)) === 'setup,build,optimize,finalize',
+    `Optimize becomes step three when enabled, Finalize stays last (got: ${await stepKeys(optimizePage)})`
+  );
+  await optimizePage.click('#app-obj-LPB-step-optimize');
+  assert(await optimizePage.isVisible('#app-obj-LPB-optimize-run'), 'the optimize card sits on its own step');
+  assert(!(await optimizePage.isVisible('#app-obj-LPB-pet-create-model-button')), 'Manifest stays on Finalize');
+  await optimizePage.close();
   assert(
     await page.isDisabled('#app-obj-LPB-pet-create-model-button'),
     'Manifest disabled until a best response exists'
@@ -160,10 +198,16 @@ function multipartJson(body) {
     `3 runs numbered 1..3 newest-first (got: ${headers.join('|')})`
   );
   assert(!(await page.isDisabled('#LPB-delete-prompt-button')), 'Delete Prompt enabled after prompt selection');
-  const mmGap = await page.evaluate(
-    () => getComputedStyle(document.getElementById('LPB-openInMMButton')).marginRight
+  // The link is styled as a button, so it keeps the spacing real buttons get
+  // (1em of the step shell's font size).
+  const [mmGap, buttonGap] = await page.evaluate(() => [
+    getComputedStyle(document.getElementById('LPB-openInMMButton')).marginRight,
+    getComputedStyle(document.querySelector('#LPB-modal-button-container button')).marginRight,
+  ]);
+  assert(
+    parseFloat(mmGap) > 0 && mmGap === buttonGap,
+    `gap between Open-in-MM link and Delete Prompt button (margin-right: ${mmGap}, buttons: ${buttonGap})`
   );
-  assert(mmGap === '16px', `gap between Open-in-MM link and Delete Prompt button (margin-right: ${mmGap})`);
   await page.screenshot({ path: 'shot-01-three-runs.png', fullPage: true });
 
   // ============ PHASE A: variables manager + load-run features ============
@@ -179,6 +223,21 @@ function multipartJson(body) {
     !(await page.isDisabled('#app-obj-LPB-run-experiment')),
     'Run Experiments enabled once an LLM is selected'
   );
+  assert(
+    await page.$eval('#app-obj-LPB-step-setup', (el) => el.parentElement.classList.contains('is-current')),
+    'selecting a prompt stays on Setup'
+  );
+  await page.click('#app-obj-LPB-stepper-continue');
+  assert((await currentStep()) === 'build', 'Continue opens Build & Test');
+  assert(
+    (await page.$$('.pb-step.is-current')).length === 1 && (await page.$$('.pb-step-marker svg')).length === 0,
+    'only the current step is highlighted - no step is ever marked as done'
+  );
+  assert(
+    (await page.textContent('#app-obj-LPB-pet-summary')).includes('3'),
+    `tracker summary counts the loaded runs (got: ${await page.textContent('#app-obj-LPB-pet-summary')})`
+  );
+  assert((await page.$$('#app-obj-LPB-pet-legend li')).length === 8, 'tracker legend explains all eight icons');
   assert(!(await page.isVisible('#app-obj-LPB-pet-empty')), 'empty-state hint hidden once runs exist');
   assert(
     !(await page.isDisabled('#app-obj-LPB-pet-create-model-button')),
@@ -198,6 +257,7 @@ function multipartJson(body) {
     'system prompt loaded from run'
   );
   step(true, 'per-run Load restored the system prompt');
+  assert((await currentStep()) === 'build', 'loading a run stays on Build & Test');
   assert((await page.inputValue('#app-obj-LPB-user-prompt')) === 'User 3', 'user prompt loaded from run');
   assert(await page.isChecked('#model0'), 'demo_llm reselected by loading the run');
   assert((await page.inputValue('#temperature0')) === '0.9', `run's non-default temperature restored (got: ${await page.inputValue('#temperature0')})`);
@@ -247,6 +307,7 @@ function multipartJson(body) {
   await resetLog();
   await page.click('#app-obj-LPB-run-experiment');
   await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 4, 'new experiment run rendered');
+  assert((await currentStep()) === 'build', 'a finished run stays on Build & Test, above its tracker');
   let aLog = await getLog();
   const scrCall = aLog.find((e) => e.method === 'POST' && e.url === '/scr/demo_llm/demo_llm');
   assert(scrCall, 'SCR LLM endpoint was called');
@@ -265,6 +326,8 @@ function multipartJson(body) {
   await page.click('#app-obj-LPB-pet-3 > .accordion-item > h2 > .accordion-button');
   await page.click('#app-obj-LPB-pet-3-run-nested-demo_llm .accordion-button');
   await page.check('#best-prompt-3-demo_llm');
+  await goStep('finalize');
+  assert(await page.isHidden('#app-obj-LPB-stepper-continue'), 'no Continue on the last step');
   await resetLog();
   await page.click('#app-obj-LPB-pet-create-model-button');
   await waitUntil(
@@ -503,11 +566,13 @@ function multipartJson(body) {
   );
   // scramble the panel, then load run #4 to restore the whole configuration
   await page.uncheck('#app-obj-LPB-pet-manifest-integrated');
+  await goStep('build');
   await page.click('#app-obj-LPB-pet-3 .pet-run-load');
   await waitUntil(
     async () => page.isChecked('#app-obj-LPB-pet-manifest-integrated'),
     'integrated flag restored by loading the run'
   );
+  await goStep('finalize');
   step(true, 'loading the run restored the integrated-call setting');
   assert(await page.isVisible('#app-obj-LPB-pet-manifest-options'), 'options panel visible again after load');
   assert(!(await page.isChecked('#app-obj-LPB-pet-out-run_time')), 'deselected default output restored by load');
@@ -520,6 +585,7 @@ function multipartJson(body) {
 
   // ---- switching to a prompt WITHOUT a tracker also resets the panel --------
   assert(await page.isChecked('#app-obj-LPB-pet-manifest-integrated'), 'panel configured before the switch');
+  await goStep('setup');
   await page.selectOption('#LPB-prompt-dropdown', 'model-free');
   await waitUntil(
     async () => !(await page.isChecked('#app-obj-LPB-pet-manifest-integrated')),
@@ -528,12 +594,16 @@ function multipartJson(body) {
   step(true, 'output/manifest panel reset when switching to a prompt without runs');
   assert((await page.locator('.pb-outvar-row').count()) === 0, 'output variable rows cleared by the switch');
   assert(await page.isChecked('#app-obj-LPB-pet-out-run_time'), 'default outputs reselected by the switch');
+  await goStep('finalize');
   assert(!(await page.isVisible('#app-obj-LPB-pet-manifest-options')), 'options panel hidden again after the switch');
+  await goStep('setup');
   await page.selectOption('#LPB-prompt-dropdown', 'model-used');
   await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 3, 'switched back to the tracked prompt');
 
   // ---- auto-load re-applies the best prompt on re-selection -----------------
+  await goStep('build');
   await page.fill('#app-obj-LPB-system-prompt', 'scratch');
+  await goStep('setup');
   await page.selectOption('#LPB-prompt-dropdown', 'Select an existing Prompt-Test');
   await page.selectOption('#LPB-prompt-dropdown', 'model-used');
   await waitUntil(
@@ -567,6 +637,7 @@ function multipartJson(body) {
   await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 3, '3 runs re-rendered after reload');
 
   // Tick "Best Response" in run #1 (expand run accordion, then the model accordion)
+  await goStep('build');
   await page.click('#app-obj-LPB-pet-0 > .accordion-item > h2 > .accordion-button');
   await page.click('#app-obj-LPB-pet-0-run-nested-demo_llm .accordion-button');
   await page.check('#best-prompt-0-demo_llm');
@@ -642,6 +713,7 @@ function multipartJson(body) {
   assert(dialogs.length === dialogsBefore, 'no "run at least one experiment" alert blocked the empty save');
 
   // ---- prompt deletion: usage found, cancel then confirm ---------------------
+  await goStep('setup');
   await resetLog();
   await page.click('#LPB-delete-prompt-button');
   await page.waitForSelector('.modal.show .modal-body');

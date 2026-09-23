@@ -94,6 +94,8 @@ import {
 } from './rag-enrich';
 import { readStepSpec, registerFlow, resolveStepIds } from '../api/dataflows-api';
 import { createCreateModal } from '../ui/create-modal';
+import { createStepper } from '../ui/stepper';
+import { createInstructionCard } from '../ui/instruction-card';
 import { showConfirmModal } from '../ui/confirm-modal';
 import type { InterfaceText } from '../types';
 import type { DropdownOption } from '../types/models';
@@ -364,24 +366,47 @@ export async function buildRagBuilder(
   let runActive = false;
 
   const container = document.createElement('div');
-  container.className = 'container-fluid py-3';
+
+  // ---- steps ----------------------------------------------------------------
+  // The page is a four-step flow, the same shell the Prompt Builder uses. The
+  // first step picks the setup; the other three edit and run it, so they show
+  // a pointer back to Setup until one is selected.
+  const stepper = createStepper(
+    `${paneID}-obj-${config.id}`,
+    [
+      { key: 'setup', label: str('ragBuilderStepSetup', 'Setup') },
+      { key: 'documents', label: str('ragBuilderStepDocuments', 'Documents & chunks') },
+      { key: 'store', label: str('ragBuilderStepStore', 'Store & output') },
+      { key: 'run', label: str('ragBuilderStepRun', 'Run & test') },
+    ],
+    {
+      back: str('ragBuilderStepBack', 'Back'),
+      continue: str('ragBuilderStepContinue', 'Continue'),
+      navigation: str('ragBuilderStepNavigation', 'RAG Builder steps'),
+    }
+  );
+  const [setupPane, documentsPane, storePane, runPane] = stepper.panes;
+  const instructionsTitle = str('ragBuilderInstructionsTitle', 'Instructions');
 
   // ---- header ---------------------------------------------------------------
-  const heading = document.createElement('h2');
+  // The heading stays for the document outline only - the embedding report
+  // already titles the page; the description opens the first card.
+  const heading = document.createElement('h1');
+  heading.className = 'visually-hidden';
   heading.textContent = str('ragBuilderHeading', 'RAG Builder');
   const subtitle = document.createElement('p');
-  subtitle.className = 'text-muted';
   subtitle.textContent = str(
     'ragBuilderDescription',
     'Author a governed RAG setup: documents in, an incremental ingestion pipeline, and a retrieval model out. Everything is saved to SAS Model Manager; vector-store credentials stay in the SAS Viya credential domain and never enter this browser.'
   );
   container.appendChild(heading);
-  container.appendChild(subtitle);
 
   // ---- status area ----------------------------------------------------------
   const status = document.createElement('div');
   status.id = idOf('status');
+  status.className = 'pb-status';
   container.appendChild(status);
+  container.appendChild(stepper.element);
   // Success is transient, failure is not. A confirmation the user has already
   // seen should not sit on the page competing with the next one, so it goes
   // through the same toast the Prompt Builder uses; anything the user still
@@ -393,7 +418,7 @@ export async function buildRagBuilder(
       return;
     }
     const alert = document.createElement('div');
-    alert.className = `alert alert-${variant} py-2`;
+    alert.className = `alert alert-${variant} py-2 mb-0`;
     alert.setAttribute('role', 'alert');
     alert.textContent = message;
     status.replaceChildren(alert);
@@ -401,23 +426,24 @@ export async function buildRagBuilder(
   const clearStatus = (): void => status.replaceChildren();
 
   // ---- small form helpers ---------------------------------------------------
-  const card = (titleText: string, hint?: string): [HTMLElement, HTMLElement] => {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'card mb-3';
-    const body = document.createElement('div');
-    body.className = 'card-body';
-    const title = document.createElement('h5');
-    title.className = 'card-title';
+  // A card's hint goes into its Instructions box, the controls beside it; the
+  // third element is the full-width area below both, for result tables. A
+  // card without a hint (the run and ledger panels) is all content.
+  const card = (titleText: string, hint?: string): [HTMLElement, HTMLElement, HTMLElement] => {
+    const title = document.createElement('h2');
     title.textContent = titleText;
-    body.appendChild(title);
     if (hint) {
       const hintEl = document.createElement('p');
-      hintEl.className = 'text-muted small';
       hintEl.textContent = hint;
-      body.appendChild(hintEl);
+      const instructionCard = createInstructionCard(title, instructionsTitle, [hintEl]);
+      return [instructionCard.element, instructionCard.controls, instructionCard.wide];
     }
+    const wrapper = document.createElement('div');
+    wrapper.className = 'pb-section';
+    wrapper.appendChild(title);
+    const body = document.createElement('div');
     wrapper.appendChild(body);
-    return [wrapper, body];
+    return [wrapper, body, body];
   };
 
   /**
@@ -514,8 +540,6 @@ export async function buildRagBuilder(
   // typing. Model Manager projects accumulate — a deployment with two hundred
   // of them turns a bare dropdown into a scroll hunt, and it is the same list
   // in both builders, so it should not be two different controls.
-  const selectionSection = document.createElement('div');
-  selectionSection.className = 'pb-section';
   const selectionHeading = document.createElement('h2');
   selectionHeading.textContent = str('ragBuilderSelectionHeading', 'Project and setup');
   const selectionHint = document.createElement('p');
@@ -523,8 +547,8 @@ export async function buildRagBuilder(
     'ragBuilderSelectionHint',
     'A RAG project groups related setups in SAS Model Manager; a setup is one document corpus wired to one vector-store collection.'
   );
-  selectionSection.appendChild(selectionHeading);
-  selectionSection.appendChild(selectionHint);
+  const selectionCard = createInstructionCard(selectionHeading, instructionsTitle, [subtitle, selectionHint]);
+  const selectionSection = selectionCard.controls;
 
   const filterLabels = {
     namePlaceholder: str('ragBuilderFilterNamePlaceholder', 'Filter by name…'),
@@ -542,9 +566,9 @@ export async function buildRagBuilder(
   selectionSection.appendChild(projectHeading);
   selectionSection.appendChild(projectFilter.filterRow);
   selectionSection.appendChild(projectSelect);
-  selectionSection.appendChild(document.createElement('br'));
 
   const setupHeading = document.createElement('h3');
+  setupHeading.className = 'mt-3';
   setupHeading.textContent = str('ragBuilderSetupLabel', 'RAG setup:');
   const setupSelect = selectInput([], '');
   setupSelect.id = idOf('setup');
@@ -554,13 +578,12 @@ export async function buildRagBuilder(
   selectionSection.appendChild(setupHeading);
   selectionSection.appendChild(setupFilter.filterRow);
   selectionSection.appendChild(setupSelect);
-  selectionSection.appendChild(document.createElement('br'));
 
   // Creating sits below the pickers in one button row, as it does in the
   // Prompt Builder — an input box wedged beside a dropdown reads as part of
   // the selection rather than as a separate act.
   const selectionButtons = document.createElement('div');
-  selectionButtons.className = 'd-flex flex-wrap align-items-center gap-2';
+  selectionButtons.className = 'd-flex flex-wrap align-items-center gap-2 mt-3';
   createCreateModal(
     selectionButtons,
     `${idOf('create-project')}`,
@@ -621,16 +644,37 @@ export async function buildRagBuilder(
   destructive.appendChild(deleteProjectButton);
   selectionButtons.appendChild(destructive);
   selectionSection.appendChild(selectionButtons);
-  container.appendChild(selectionSection);
+  setupPane.appendChild(selectionCard.element);
   // Typing in either picker narrows the open list live; the underlying
   // selects stay scriptable, so the load/refresh paths are unchanged.
   attachCombobox(projectSelect);
   attachCombobox(setupSelect);
 
   // ---- the setup editor (hidden until a setup is selected) ------------------
-  const editor = document.createElement('div');
-  editor.style.display = 'none';
-  container.appendChild(editor);
+  // One part per step. Steps two to four are nothing but the editor, so they
+  // say where to go while there is no setup to edit.
+  const setupNotices: HTMLElement[] = [];
+  const editorPart = (pane: HTMLElement, withNotice: boolean): HTMLDivElement => {
+    const part = document.createElement('div');
+    part.style.display = 'none';
+    if (withNotice) {
+      const notice = document.createElement('div');
+      notice.className = 'pb-section text-body-secondary';
+      notice.textContent = str(
+        'ragBuilderStepNeedsSetup',
+        'Select or create a RAG setup in the Setup step first - its settings appear here.'
+      );
+      pane.appendChild(notice);
+      setupNotices.push(notice);
+    }
+    pane.appendChild(part);
+    return part;
+  };
+  const setupEditor = editorPart(setupPane, false);
+  const documentsEditor = editorPart(documentsPane, true);
+  const storeEditor = editorPart(storePane, true);
+  const runEditor = editorPart(runPane, true);
+  const editorParts = [setupEditor, documentsEditor, storeEditor, runEditor];
 
   // Documentation — owner requirement: the author documents description,
   // intended use and LIMITATIONS up front, like the Prompt Builder's top
@@ -701,7 +745,7 @@ export async function buildRagBuilder(
   docSaveButton.disabled = true;
   ragDoc.section.appendChild(docSaveButton);
   documentationBody.appendChild(ragDoc.section);
-  editor.appendChild(documentationCard);
+  setupEditor.appendChild(documentationCard);
 
   // Pipeline
   // The ingestion is four stages, and they are grouped as four, in the order
@@ -770,7 +814,7 @@ export async function buildRagBuilder(
   );
   documentsRow.appendChild(includeCodeWrap);
   documentsBody.appendChild(documentsRow);
-  editor.appendChild(documentsCard);
+  documentsEditor.appendChild(documentsCard);
 
   const [embeddingCard, embeddingBody] = card(
     str('ragBuilderEmbeddingHeading', '2. Embedding'),
@@ -838,7 +882,7 @@ export async function buildRagBuilder(
     embeddingRow.appendChild(note);
   }
   embeddingBody.appendChild(embeddingRow);
-  editor.appendChild(embeddingCard);
+  documentsEditor.appendChild(embeddingCard);
 
   const [chunkingCard, chunkingBody] = card(
     str('ragBuilderChunkingHeading', '3. Chunking'),
@@ -975,7 +1019,7 @@ export async function buildRagBuilder(
   capTokenWindow();
 
   chunkingBody.appendChild(chunkingRow);
-  editor.appendChild(chunkingCard);
+  documentsEditor.appendChild(chunkingCard);
 
   // ---- 4. Enrichment --------------------------------------------------------
   // The slot between chunking and embedding. A chunk that reads perfectly in
@@ -1511,7 +1555,7 @@ export async function buildRagBuilder(
   );
   enrichFooter.append(addPromptButton, enrichChainNote);
   enrichBody.appendChild(enrichFooter);
-  editor.appendChild(enrichCard);
+  documentsEditor.appendChild(enrichCard);
   addEnrichBlock();
 
   /** Put a saved setup's enrichment back on the form. */
@@ -1702,10 +1746,10 @@ export async function buildRagBuilder(
   domainNote.textContent = `${str('ragBuilderDomainNote', 'Credential domain:')} ${config.credentialDomain}`;
   storeBody.appendChild(storeRow);
   storeBody.appendChild(domainNote);
-  editor.appendChild(storeCard);
+  storeEditor.appendChild(storeCard);
 
   tablesBody.appendChild(tablesRow);
-  editor.appendChild(tablesCard);
+  storeEditor.appendChild(tablesCard);
 
   // ---- where the generated artifacts go -------------------------------------
   const [artifactsCard, artifactsBody] = card(
@@ -1725,48 +1769,80 @@ export async function buildRagBuilder(
   artifactsNote.className = 'small text-body-secondary mb-0 mt-2';
   artifactsBody.appendChild(artifactsRow);
   artifactsBody.appendChild(artifactsNote);
-  editor.appendChild(artifactsCard);
+  storeEditor.appendChild(artifactsCard);
 
   /** The destination the user asked for, or the deployment default. */
   const artifactsFolder = (): string =>
     artifactsFolderField.value.trim().replace(/\/+$/, '') || `${config.contentRoot}/generated`;
 
   // ---- actions --------------------------------------------------------------
-  const actions = document.createElement('div');
-  actions.className = 'd-flex gap-2 flex-wrap mb-3';
-  const actionButton = (label: string, style = 'btn-outline-secondary'): HTMLButtonElement => {
+  // Saving and manifesting close the Store & output step; launching, the
+  // ledger and the retrieval test open Run & test.
+  const [saveCard, saveBody] = card(
+    str('ragBuilderSaveHeading', 'Save and manifest'),
+    str(
+      'ragBuilderSaveHint',
+      'Save setup stores the settings of every step in SAS Model Manager. Manifest setup saves too, then generates the ingestion job, the SAS Studio flow and the retrieval model - it is required before an ingestion can be launched or retrieval can be tested.'
+    )
+  );
+  const [operateCard, operateBody] = card(
+    str('ragBuilderOperateHeading', 'Ingest, inspect and test'),
+    str(
+      'ragBuilderOperateHint',
+      'Launch ingestion runs the manifested job against the document folder and reports its milestones here. Browse ledger lists every document the pipeline has seen, with its status and chunk count. Test retrieval asks the live collection a question and shows the chunks it returns. Launching and testing need a manifested setup.'
+    )
+  );
+  const buttonRow = (): HTMLDivElement => {
+    const row = document.createElement('div');
+    row.className = 'd-flex gap-2 flex-wrap';
+    return row;
+  };
+  const saveActions = buttonRow();
+  const operateActions = buttonRow();
+  const actionButton = (
+    row: HTMLElement,
+    label: string,
+    style = 'btn-outline-secondary'
+  ): HTMLButtonElement => {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `btn ${style}`;
     button.textContent = label;
-    actions.appendChild(button);
+    row.appendChild(button);
     return button;
   };
-  const saveButton = actionButton(str('ragBuilderSaveButton', 'Save setup'));
+  const saveButton = actionButton(saveActions, str('ragBuilderSaveButton', 'Save setup'));
   // ONE button for "make this setup real", because the four it replaces had
   // to be pressed in an order the UI never stated: a flow generated against a
   // setup whose score code was never registered is a half-built thing, and
   // nothing said so. Save stays separate for the still-editing case.
-  const manifestButton = actionButton(str('ragBuilderManifestButton', 'Manifest setup'), 'btn-primary');
+  const manifestButton = actionButton(
+    saveActions,
+    str('ragBuilderManifestButton', 'Manifest setup'),
+    'btn-primary'
+  );
   manifestButton.title = str(
     'ragBuilderManifestTitle',
     'Save the setup, generate the ingestion job and the Studio flow, register the retrieval model, and record a new model version.'
   );
-  const launchButton = actionButton(str('ragBuilderLaunchButton', 'Launch ingestion'));
+  const launchButton = actionButton(operateActions, str('ragBuilderLaunchButton', 'Launch ingestion'));
   launchButton.disabled = true;
   launchButton.title = str('ragBuilderLaunchNeedsJob', 'Manifest the setup first.');
-  const ledgerButton = actionButton(str('ragBuilderLedgerButton', 'Browse ledger'));
-  const testButton = actionButton(str('ragBuilderTestButton', 'Test retrieval'));
+  const ledgerButton = actionButton(operateActions, str('ragBuilderLedgerButton', 'Browse ledger'));
+  const testButton = actionButton(operateActions, str('ragBuilderTestButton', 'Test retrieval'));
   testButton.disabled = true;
   testButton.title = str('ragBuilderTestNeedsManifest', 'Manifest the setup first.');
-  editor.appendChild(actions);
+  saveBody.appendChild(saveActions);
+  operateBody.appendChild(operateActions);
+  storeEditor.appendChild(saveCard);
+  runEditor.appendChild(operateCard);
 
   // Save feedback belongs beside the button that caused it. An alert at the
   // top of a long editor is off-screen by the time anyone reaches Save, so
   // the message arrives where the user is not looking.
   const saveResult = document.createElement('div');
-  saveResult.className = 'mb-3';
-  editor.appendChild(saveResult);
+  saveResult.className = 'mt-3';
+  saveBody.appendChild(saveResult);
   const clearSaveResult = (): void => saveResult.replaceChildren();
   const showSaveErrors = (problems: string[]): void => {
     const alert = document.createElement('div');
@@ -1831,7 +1907,7 @@ export async function buildRagBuilder(
   runBody.appendChild(runState);
   runBody.appendChild(runNote);
   runBody.appendChild(runMilestones);
-  editor.appendChild(runCard);
+  runEditor.appendChild(runCard);
 
   // ---- ledger panel ---------------------------------------------------------
   const [ledgerCard, ledgerBody] = card(str('ragBuilderLedgerHeading', 'Ingestion ledger'));
@@ -1839,13 +1915,13 @@ export async function buildRagBuilder(
   const ledgerContent = document.createElement('div');
   ledgerContent.className = 'table-responsive';
   ledgerBody.appendChild(ledgerContent);
-  editor.appendChild(ledgerCard);
+  runEditor.appendChild(ledgerCard);
 
   // ---- retrieval test panel -------------------------------------------------
   // Hidden until asked for: it is a question box, and a question box sitting
   // permanently under a long editor invites answering it before there is a
   // corpus to answer from.
-  const [testCard, testBody] = card(
+  const [testCard, testBody, testWide] = card(
     str('ragBuilderTestHeading', 'Test retrieval'),
     str(
       'ragBuilderTestHint',
@@ -1881,8 +1957,8 @@ export async function buildRagBuilder(
   testResults.className = 'table-responsive';
   testBody.appendChild(testRow);
   testBody.appendChild(testStatus);
-  testBody.appendChild(testResults);
-  editor.appendChild(testCard);
+  testWide.appendChild(testResults);
+  runEditor.appendChild(testCard);
 
   // ---- data plumbing --------------------------------------------------------
 
@@ -2424,7 +2500,12 @@ export async function buildRagBuilder(
     stopPolling();
     runCard.style.display = 'none';
     ledgerCard.style.display = 'none';
-    editor.style.display = selectedSetupID ? '' : 'none';
+    editorParts.forEach((part) => {
+      part.style.display = selectedSetupID ? '' : 'none';
+    });
+    setupNotices.forEach((notice) => {
+      notice.style.display = selectedSetupID ? 'none' : '';
+    });
     // set before the early return: deselecting must disable the button too
     docSaveButton.disabled = !selectedSetupID;
     if (!selectedSetupID) return;

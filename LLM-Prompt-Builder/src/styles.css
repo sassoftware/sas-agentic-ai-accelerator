@@ -13,16 +13,284 @@
   --pb-primary-dark: #0554ab;
   --pb-primary-darker: #04437f;
   --pb-heading: #0f2c53;
+  --pb-step: #2f5fd8;
+  --pb-step-idle: #c4c9d2;
+  --pb-surface-muted: #f1f2f4;
 }
 
+/* The step shell runs edge to edge; anything mounted outside it (the
+   configuration and load alerts) keeps its own margin. */
 body {
-  padding: 1rem;
-  background-color: #f6f8fb;
+  padding: 0;
+  background-color: #eef0f3;
+}
+#app > .alert {
+  margin: 1rem;
 }
 
 h1,
 .pb-section > h2 {
   color: var(--pb-heading);
+}
+/* Headings scrolled into view must clear the sticky step header */
+.pb-section > h2 {
+  scroll-margin-top: 3.5rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+.pb-section h3 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+/* --- Step shell: one slim row of numbered steps, Back/Continue, one pane per
+   step. Only the current step is highlighted - the others are places to go,
+   not tasks that are done or pending. ------------------------------------ */
+.pb-stepper-header {
+  position: sticky;
+  top: 0;
+  z-index: 1020;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.375rem 1rem;
+  background-color: #fff;
+  border-bottom: 1px solid #dee2e6;
+}
+.pb-stepper-header nav {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.pb-stepper-steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.pb-step {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+/* Connector between two steps */
+.pb-step + .pb-step::before {
+  content: '';
+  flex: 0 1 2.5rem;
+  width: 2.5rem;
+  min-width: 0.5rem;
+  height: 1px;
+  margin: 0 0.5rem;
+  background-color: var(--pb-step-idle);
+}
+.pb-step-button {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0.125rem 0.25rem;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: #5f6672;
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+.pb-step-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--pb-step-idle);
+  border-radius: 50%;
+  background-color: #fff;
+  font-size: 0.6875rem;
+  line-height: 1;
+}
+.pb-step-button:hover {
+  color: #2b2f36;
+}
+.pb-step-button:hover .pb-step-marker {
+  border-color: var(--pb-step);
+}
+.pb-step-button:focus-visible {
+  outline: 2px solid var(--pb-step);
+  outline-offset: 1px;
+}
+.pb-step.is-current .pb-step-button {
+  color: var(--pb-step);
+  font-weight: 600;
+}
+.pb-step.is-current .pb-step-marker {
+  border-color: var(--pb-step);
+  background-color: var(--pb-step);
+  color: #fff;
+}
+.pb-stepper-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+.pb-stepper-actions button {
+  margin-right: 0;
+  min-width: 4.5rem;
+  --bs-btn-padding-y: 0.15rem;
+}
+.pb-step-pane {
+  padding: 0 0 1rem;
+}
+.pb-step-pane[hidden] {
+  display: none;
+}
+
+/* Page-level notices above the step shell (RAG Builder) */
+.pb-status:not(:empty) {
+  padding: 0.75rem 1rem;
+  background-color: #fff;
+}
+
+/* The builders sit inside a report object, so the controls run one size
+   smaller than stock Bootstrap. */
+.pb-stepper {
+  font-size: 0.875rem;
+}
+.pb-stepper .btn:not(.btn-sm) {
+  --bs-btn-padding-x: 0.75rem;
+  --bs-btn-padding-y: 0.3rem;
+  --bs-btn-font-size: 0.875rem;
+}
+.pb-stepper .form-control:not(.form-control-sm),
+.pb-stepper .form-select:not(.form-select-sm) {
+  padding-top: 0.3rem;
+  padding-bottom: 0.3rem;
+  font-size: 0.875rem;
+}
+.pb-stepper .accordion-button {
+  padding: 0.75rem 1rem;
+  font-size: 0.9375rem;
+}
+
+/* --- Cards: Instructions box on the left, controls on the right ---------- */
+.pb-card-columns {
+  display: grid;
+  grid-template-columns: minmax(14rem, 30%) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+.pb-instructions {
+  padding: 0.75rem;
+  border-radius: 4px;
+  background-color: var(--pb-surface-muted);
+  font-size: 0.875rem;
+}
+.pb-instructions-title {
+  margin-bottom: 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.pb-instructions > :last-child {
+  margin-bottom: 0;
+}
+.pb-card-controls > :first-child {
+  margin-top: 0 !important;
+}
+.pb-card-wide {
+  margin-top: 1rem;
+}
+.pb-card-wide:empty {
+  display: none;
+}
+/* A labelled field inside a card: the label sits right above its control */
+.pb-card-controls [class*='col-'] > .info-container {
+  margin-bottom: 0.25rem;
+}
+/* Icon legend beside the tracker's instructions */
+.pb-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 2.5rem;
+  margin-top: 0.75rem;
+  color: #4a505a;
+  font-size: 0.8125rem;
+}
+.pb-legend-heading {
+  margin-bottom: 0.25rem;
+  font-weight: 600;
+}
+.pb-legend ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.pb-legend li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.1rem 0;
+}
+.pb-legend svg {
+  flex-shrink: 0;
+}
+
+/* A heading with its actions on the same line (e.g. Define variables) */
+.pb-card-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+.pb-card-toolbar > h3 {
+  margin: 0 auto 0 0;
+}
+.pb-card-toolbar button {
+  margin-right: 0;
+}
+/* Optimize card: target and data, metric, optimizer - side by side */
+.pb-optimize-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+.pb-guide,
+.pb-field-box {
+  padding: 0.75rem;
+  border-radius: 4px;
+  background-color: var(--pb-surface-muted);
+}
+.pb-guide {
+  font-size: 0.8125rem;
+}
+.pb-guide > summary {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pb-guide > div {
+  margin-top: 0.5rem;
+}
+@media (max-width: 991.98px) {
+  .pb-optimize-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 767.98px) {
+  .pb-card-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* A narrow report object keeps the row: only the current step is named,
+     the others show their number (their name is the button's tooltip). */
+  .pb-step:not(.is-current) .pb-step-label {
+    display: none;
+  }
+  .pb-stepper-steps {
+    justify-content: flex-start;
+  }
 }
 
 .btn-primary {
@@ -92,11 +360,10 @@ a[role='button'] {
   border-radius: 6px;
 }
 
-/* Visual sections grouping the page (project/prompt, LLMs, workbench, tracker) */
+/* Visual sections grouping a step's controls */
 .pb-section {
-  margin-top: 1rem;
+  margin-top: 0.75rem;
   padding: 1rem;
-  border: 1px solid #dee2e6;
   border-radius: 6px;
   background-color: #fff;
 }

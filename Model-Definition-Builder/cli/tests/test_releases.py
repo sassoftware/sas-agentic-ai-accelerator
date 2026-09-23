@@ -28,6 +28,13 @@ Intro line that is not a release.
 
 Work in progress.
 
+### Upgrading from 2.0.x
+
+Save the options, then import:
+
+1. `mdb options-save`
+2. `mdb builders-import --options builder-options.json`
+
 ### Added
 
 - **A new thing for the Prompt Builder.** Judges rank runs.
@@ -73,6 +80,10 @@ First release.
 def test_releases_sections_and_items_are_read():
     releases = parse_changelog(SAMPLE)
     assert [r.version for r in releases] == ["2.1.0", "2.0.0", "1.0.0"]
+    one = releases[0]
+    assert [i["change_type"] for i in one.items] == ["Upgrade", "Added"]
+    assert one.items[0]["section"] == "Upgrading from 2.0.x"
+    assert "options-save" in one.items[0]["text"] and "builders-import" in one.items[0]["text"]
     two = releases[1]
     assert two.date == "2026-09-03"
     assert two.intro == ["Provider secrets move to **credential domains** - see [the guide](x.md)."]
