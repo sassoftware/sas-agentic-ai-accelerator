@@ -1,5 +1,5 @@
 {
-    "generator": "mdb 2.0.5",
+    "generator": "mdb 2.1.0",
     "manifest_sha256": "28b75a8b5afb025dd14fca3ffde9a5fcfa3e8b65b0237a582c0737b292ea80cc",
     "files": {
         "Model-Card.md": "6435b9d78d2b2d55ac0cfe2f916b727c03e985a37a42b2ad77ac5b58ed7cc209",

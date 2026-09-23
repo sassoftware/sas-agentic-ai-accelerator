@@ -2,7 +2,7 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [2.1.0] - unreleased
+## [2.1.0] - 2026-09-23
 
 The Prompt Builder and the RAG Builder become guided step flows, and `gpt_4o_mini_2025_01_01` is an Azure OpenAI definition.
 

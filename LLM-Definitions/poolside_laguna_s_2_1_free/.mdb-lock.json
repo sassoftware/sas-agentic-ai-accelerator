@@ -1,5 +1,5 @@
 {
-    "generator": "mdb 2.0.5",
+    "generator": "mdb 2.1.0",
     "manifest_sha256": "eb2d2b169877152b2a777bfd0e59f209c72c285d0458068f53bba157138d6107",
     "files": {
         "Model-Card.md": "e9d2e530faf93885842b71db9afb53626c83df4ea804acba30aceef7a494ba51",
@@ -8,7 +8,7 @@
         "modelConfiguration.json": "665d765e04a059b3e1f57ceafcf54e4aceddedeb4335862e522097cebd712df2",
         "options.json": "5aa5966378ed916966b955930e654bd2655ab03d8a688dd21bffbe34b2491ab6",
         "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
-        "poolsideLagunaS21FreeScore.py": "d3c1c3f0725e5e945d817a220f447ddadd6b5cd35d9832fbd4dde890b7002898",
+        "poolsideLagunaS21FreeScore.py": "ac3bc1ea18d820c2b1108e75f0802db05a65d82d54d28263adbb2876e9ae9b99",
         "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"
     }
 }

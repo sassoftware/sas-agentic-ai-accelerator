@@ -1,5 +1,5 @@
 {
-    "generator": "mdb 2.0.5",
+    "generator": "mdb 2.1.0",
     "manifest_sha256": "fc3f40091c9bbc214a095f7d1eb2fcaca86c26e145f92e4d97c7f9b498264567",
     "files": {
         "Model-Card.md": "492f2dccde7f4cc5717b600d5170da11d00ccbce1b122b88aba26efc77ee33c7",
@@ -9,6 +9,6 @@
         "options.json": "b42fd1640daf97f1a330c36619ee81c552a98af0b4d61a4088e97b1c8a3b3809",
         "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
         "requirements.json": "45a4301ba316003b2aac5838df5611710a7e2ec5a529a6a9f96a7f9751b23ab3",
-        "smollm360mScore.py": "158d1e91ae5161e7147f22af84cf54752e5d69ea5c9e98a214fff55f87ba4ded"
+        "smollm360mScore.py": "4ac141c9e2b9cb455b6e4a885b5b869fce4086f0839bad4794323f74c4312fb7"
     }
 }

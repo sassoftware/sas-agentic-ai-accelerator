@@ -1,10 +1,10 @@
 {
-    "generator": "mdb 2.0.5",
+    "generator": "mdb 2.1.0",
     "manifest_sha256": "9fe69ccb3e51b923f55a6393a55a35f96c4e1d544907204bb8f22532788ef099",
     "files": {
         "Model-Card.md": "c2125c9cefbee1778c7600d8c21cb10a693550ec313ae782d5dc7997a5914333",
         "README.md": "5ef464afb98f2682c60146e851eb28562dd3b754471ca9a28e7c8f65277d56e3",
-        "claudeHaiku45BedrockScore.py": "214349d14a19940d21663a40035214438b8f51f73d07ebe8760b6dbbd8ec7a2e",
+        "claudeHaiku45BedrockScore.py": "ffaf2c1bd8c849a5caf03d71fd52dd00882197d692af5c69ebe37fb8ac1398e7",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
         "modelConfiguration.json": "b037d402c4e1c139c512a57358932ce84d7579c2b586bf2cd483f0c3c6fe1db8",
         "options.json": "df87a92a9b537b28bf0e5912f177c874bb26a040b15eec383c8cfd3d069669da",

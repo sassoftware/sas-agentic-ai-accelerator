@@ -1,6 +1,6 @@
 {
   "name": "llm-prompt-builder",
-  "version": "2.0.5",
+  "version": "2.1.0",
   "description": "Standalone LLM Prompt Builder — a no-code prompt engineering UI for SAS Viya, deployable as a single-file embed in SAS Visual Analytics.",
   "private": true,
   "type": "module",
