@@ -2,7 +2,7 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [2.2.0] - unreleased
+## [2.2.0] - 2026-10-07
 
 Decision models join the framework: a third definition kind beside LLMs and embeddings, with Jev through OpenRouter and Von self-hosted in the container, and a decision mode of the Prompt Builder that designs, checks, evaluates and manifests the questions a decision model answers.
 
