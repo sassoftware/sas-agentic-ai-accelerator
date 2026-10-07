@@ -31,6 +31,7 @@ from .core.manifest import MANIFEST_FILENAME, ModelManifest, export_json_schema,
 from .core.netutil import env_flag, make_session
 from .core.paths import (
     RepoNotFoundError, archive_dir, core_dir, definitions_dir, fact_sheet_path, find_repo_root,
+    kind_folder_name, kind_of_folder,
 )
 from .core.validator import validate_all, validate_folder
 from .providers import load_adapters
@@ -64,7 +65,31 @@ def _root(
     """Model Definition Builder for the SAS Agentic AI Accelerator."""
 
 
-KINDS = ("llm", "embedding")
+KINDS = ("llm", "embedding", "decision")
+
+# What `mdb test` sends a decision model: one support ticket and the three
+# question primitives, so the answer map shows every shape at once.
+DECISION_TEST_STATE = (
+    "Hi, I was charged twice for my March invoice and nobody has answered my two "
+    "previous mails. Please refund one of the payments this week."
+)
+DECISION_TEST_QUESTIONS = {
+    "team": {
+        "type": "choice",
+        "instructions": "Which team should handle this ticket?",
+        "criteria": {
+            "billing": "Payments, invoices, refunds and subscription changes",
+            "technical": "Bugs, errors, outages and login problems",
+            "sales": "Pricing, plans, quotes and upgrades",
+        },
+    },
+    "escalate": {"type": "noul", "instructions": "The customer is angry or threatens to leave"},
+    "tone": {
+        "type": "score",
+        "instructions": "How frustrated does the customer sound?",
+        "criteria": ["Calm, just stating facts", "Frustrated but civil", "Very angry, strong language"],
+    },
+}
 
 
 class Context:
@@ -83,7 +108,7 @@ class Context:
         return fact_sheet_path(self.repo, kind)
 
     def kind_of(self, folder: Path) -> str:
-        return "embedding" if folder.parent.name == "Embedding-Definitions" else "llm"
+        return kind_of_folder(folder)
 
     def managed_folders(self) -> list[Path]:
         folders = []
@@ -123,7 +148,8 @@ class Context:
         for model_id in ids:
             folder = self.find_folder(model_id)
             if folder is None:
-                console.print(f"[red]{model_id}: no such folder in LLM-Definitions or Embedding-Definitions[/red]")
+                console.print(f"[red]{model_id}: no such folder in LLM-Definitions, Embedding-Definitions "
+                              "or Decision-Definitions[/red]")
                 raise typer.Exit(2)
             folders.append(folder)
         return folders
@@ -186,7 +212,7 @@ def _enrich_from_static(live: list[CatalogModel], static: list[CatalogModel]) ->
         # kind never comes from live listings (e.g. OpenAI's /v1/models returns
         # ids only) - without this, a live add of a known embedding model
         # silently built an LLM definition while the offline add got it right.
-        if model.kind == "llm" and known.kind == "embedding":
+        if model.kind == "llm" and known.kind in ("embedding", "decision"):
             model.kind = known.kind
         model.reasoning = model.reasoning or known.reasoning
         model.extended_thinking = model.extended_thinking or known.extended_thinking
@@ -203,7 +229,13 @@ def _catalog_for(adapter: ProviderAdapter, ctx: Context, offline: bool, verify_s
             models = adapter.live_catalog(session, _env_api_key(adapter))
             if models:
                 console.print(f"[dim]Live catalog: {len(models)} models from {adapter.display_name}.[/dim]")
-                return _enrich_from_static(models, static)
+                enriched = _enrich_from_static(models, static)
+                # A live listing does not carry everything a provider serves
+                # (OpenRouter's /models omits its decision models); the
+                # snapshot's extra entries stay selectable, marked as such.
+                live_refs = {m.ref for m in enriched}
+                enriched.extend(m for m in static if m.ref not in live_refs)
+                return enriched
         except NotImplementedError as exc:
             console.print(f"[dim]{exc}[/dim]")
         except Exception as exc:
@@ -237,8 +269,8 @@ def _select_model(adapter: ProviderAdapter, catalog: list[CatalogModel], ref: Op
                  if m.input_price_per_m is not None else "price unknown")
         ctx_len = f"{m.context_length:,} ctx" if m.context_length else "ctx unknown"
         flags = " [reasoning]" if m.reasoning else ""
-        if m.kind == "embedding":
-            flags += " [embedding]"
+        if m.kind in ("embedding", "decision"):
+            flags += f" [{m.kind}]"
         labels.append(f"{m.display_name}  ({m.ref}, {ctx_len}, {price}){flags}")
     return filtered[_pick_from_list(f"Models available from {adapter.display_name}", labels)]
 
@@ -263,7 +295,7 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
     token pricing is still asked about (or, when skipped, warned about)."""
     metadata = manifest.metadata
     pricing = metadata.pricing
-    pricing_unknown = (manifest.kind == "llm" and pricing.cost_type == "Tokens"
+    pricing_unknown = (manifest.kind in ("llm", "decision") and pricing.cost_type == "Tokens"
                        and pricing.input_token_price is None and pricing.output_token_price is None)
     if skip_review:
         if pricing_unknown:
@@ -286,7 +318,7 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
     table.add_row("metadata", "context_length", str(metadata.context_length) if metadata.context_length else unknown)
     table.add_row("metadata", "release_date", metadata.release_date or unknown)
     table.add_row("metadata", "knowledge_cutoff", metadata.knowledge_cutoff or unknown)
-    if manifest.kind == "llm" and pricing.cost_type == "Tokens":
+    if manifest.kind in ("llm", "decision") and pricing.cost_type == "Tokens":
         table.add_row("pricing", "input_token_price",
                       unknown if pricing.input_token_price is None else f"{pricing.input_token_price:g}")
         table.add_row("pricing", "output_token_price",
@@ -351,7 +383,7 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
             metadata.context_length = int(float(raw)) if raw else None
         except ValueError:
             console.print(f"[yellow]'{raw}' is not a number - keeping {metadata.context_length}.[/yellow]")
-    if manifest.kind == "llm" and pricing.cost_type == "Tokens" and (adjust or pricing_unknown):
+    if manifest.kind in ("llm", "decision") and pricing.cost_type == "Tokens" and (adjust or pricing_unknown):
         if pricing_unknown:
             console.print(
                 "No token pricing is available for this model. Enter the per-token prices "
@@ -399,7 +431,7 @@ def add(
     runtime: Optional[str] = typer.Option(None, help="Runtime family: transformers | onnx | sentence-transformers (hf-selfhosted)"),
     params_billions: Optional[float] = typer.Option(None, help="Parameter count in billions (hf-selfhosted)"),
     base_url: Optional[str] = typer.Option(None, help="Server base URL (ollama/vllm self-hosted)"),
-    kind: Optional[str] = typer.Option(None, help="Model kind: llm or embedding (any provider whose adapter supports embedding definitions)"),
+    kind: Optional[str] = typer.Option(None, help="Model kind: llm, embedding or decision (any provider whose adapter has a template for that kind)"),
     license_: Optional[str] = typer.Option(None, "--license", help="License class for self-hosted models (Open-Source/Proprietary)"),
     description: Optional[str] = typer.Option(None, help="Model description for Model Manager and the fact sheet"),
 ):
@@ -451,9 +483,13 @@ def add(
     # Model Manager project - so --kind is honored for EVERY adapter that can
     # build embedding definitions, not only the ones that ask a kind question.
     supports_embedding = getattr(adapter, "embedding_template", None) is not None
-    kind_is_flaggable = supports_embedding and "kind" not in question_params
-    if kind is not None and kind not in ("llm", "embedding"):
-        console.print("[red]--kind must be 'llm' or 'embedding'.[/red]")
+    supports_decision = getattr(adapter, "decision_template", None) is not None
+    kind_is_flaggable = (supports_embedding or supports_decision) and "kind" not in question_params
+    if kind is not None and kind not in KINDS:
+        console.print(f"[red]--kind must be one of {', '.join(KINDS)}.[/red]")
+        raise typer.Exit(2)
+    if (kind == "embedding" and not supports_embedding) or (kind == "decision" and not supports_decision):
+        console.print(f"[red]Provider '{provider}' has no {kind} template - see mdb providers.[/red]")
         raise typer.Exit(2)
     # Surface flags that this provider does not consume, so a misdirected flag
     # (e.g. --kind on an LLM-only provider) is not silently ignored.
@@ -496,13 +532,17 @@ def add(
     # manual entry on a both-kinds adapter is asked interactively - the paths
     # that used to misfile embedding models into LLM-Definitions.
     embedding_only = supports_embedding and adapter.template == adapter.embedding_template
+    decision_only = supports_decision and adapter.template == adapter.decision_template
     if embedding_only:
         cm.kind = "embedding"
+    elif decision_only:
+        cm.kind = "decision"
     elif kind_is_flaggable:
         if kind is not None:
             cm.kind = kind
         elif manual_entry and not yes:
-            cm.kind = Prompt.ask("Model kind", choices=["llm", "embedding"], default=cm.kind)
+            offered = ["llm"] + (["embedding"] if supports_embedding else []) + (["decision"] if supports_decision else [])
+            cm.kind = Prompt.ask("Model kind", choices=offered, default=cm.kind)
 
     proposed = model_id or slugify(cm.display_name)
     final_id = proposed if yes else Prompt.ask("Definition folder / model_id", default=proposed)
@@ -513,8 +553,8 @@ def add(
         # State the kind up front - it decides the score template, the folder
         # and the Model Manager project, and used to be visible only as an
         # easily-missed folder name near the end.
-        kind_folder = "LLM-Definitions" if manifest.kind == "llm" else "Embedding-Definitions"
-        console.print(f"\n[bold cyan]Adding an {manifest.kind.upper()} model definition -> "
+        kind_folder = kind_folder_name(manifest.kind)
+        console.print(f"\n[bold cyan]Adding a {manifest.kind.upper()} model definition -> "
                       f"{kind_folder}/{final_id}/[/bold cyan]")
         # The catalog-derived values steer scoring behavior and cost monitoring
         # - confirm them consciously by default; --accept-defaults / --yes skip
@@ -525,7 +565,7 @@ def add(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
 
-    defs_name = "LLM-Definitions" if manifest.kind == "llm" else "Embedding-Definitions"
+    defs_name = kind_folder_name(manifest.kind)
     folder = ctx.defs_dir(manifest.kind) / final_id
     if folder.exists() and any(folder.iterdir()):
         console.print(f"[red]{folder} already exists and is not empty - pick another id or use mdb import.[/red]")
@@ -970,7 +1010,18 @@ def test(
     convention = "MAS REST (plain strings)" if mas else "SCR (one-element lists)"
     console.print(f"[dim]Calling scoreModel() from {score_path.name} - {convention}...[/dim]")
     table = Table(show_header=False)
-    if manifest.kind == "embedding":
+    if manifest.kind == "decision":
+        state = DECISION_TEST_STATE if prompt == "Reply with the single word OK." else prompt
+        answers, answer, confidence, run_time, prompt_length, output_length = module.scoreModel(
+            wrap(state), wrap(json.dumps(DECISION_TEST_QUESTIONS)), wrap(json.dumps(options))
+        )
+        table.add_row("state", state)
+        table.add_row("answers", json.dumps(json.loads(answers), indent=1))
+        table.add_row("answer", f"{answer} (confidence {float(confidence):.3f})")
+        table.add_row("run_time", f"{run_time:.2f}s")
+        table.add_row("prompt_length", str(prompt_length))
+        table.add_row("output_length", str(output_length))
+    elif manifest.kind == "embedding":
         embedding, run_time, tokens = module.scoreModel(
             wrap(prompt), wrap("mdb-test"), wrap(json.dumps(options))
         )
@@ -1719,7 +1770,7 @@ def pull(
 
 @app.command("list")
 def list_(
-    kind: Optional[str] = typer.Option(None, "--kind", help="Only 'llm' or 'embedding' (default: both)"),
+    kind: Optional[str] = typer.Option(None, "--kind", help="Only 'llm', 'embedding' or 'decision' (default: all)"),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
 ):
     """List the models registered in SAS Model Manager with their lifecycle
@@ -1737,7 +1788,7 @@ def list_(
         console.print_json(json.dumps(rows))
         return
     if not rows:
-        console.print("[yellow]No registered models found in the LLM/Embedding model projects.[/yellow]")
+        console.print("[yellow]No registered models found in the LLM/Embedding/Decision model projects.[/yellow]")
         console.print("Register one with [bold]mdb register <model_id>[/bold].")
         return
     table = Table()
@@ -1893,7 +1944,10 @@ def deploy(
         if not (folder / MANIFEST_FILENAME).is_file():
             continue
         manifest = load_manifest(folder)
-        use_pv = pv or manifest.runtime.requirements_profile.startswith("hf-")
+        # Mounted weights need the volume whatever the template; the hf- profiles
+        # always get it, since their baked variant is the historical default.
+        use_pv = (pv or manifest.runtime.weights_source == "mounted"
+                  or manifest.runtime.requirements_profile.startswith("hf-"))
         # Every Azure definition reads its connection from the container -
         # AZURE_OPENAI_RESOURCE (unless committed), AZURE_OPENAI_API_VERSION -
         # and an environment-configured one also its key and deployment, so
@@ -2081,12 +2135,15 @@ def providers():
     table.add_column("score template")
     for adapter in load_adapters().values():
         embedding_template = getattr(adapter, "embedding_template", None)
-        if embedding_template is None:
-            kinds = "llm"
-        elif adapter.template == embedding_template:
-            kinds = "embedding"
-        else:
-            kinds = "llm + embedding"
+        decision_template = getattr(adapter, "decision_template", None)
+        served = []
+        if adapter.template not in (embedding_template, decision_template):
+            served.append("llm")
+        if embedding_template is not None:
+            served.append("embedding")
+        if decision_template is not None:
+            served.append("decision")
+        kinds = " + ".join(served)
         table.add_row(adapter.id, adapter.display_name, kinds, adapter.env_key_var or "-", adapter.template)
     console.print(table)
     console.print("Third-party adapters: pip packages exposing the 'mdb.providers' entry-point group.")

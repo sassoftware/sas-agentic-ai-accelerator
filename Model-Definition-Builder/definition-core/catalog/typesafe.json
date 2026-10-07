@@ -1,0 +1,15 @@
+{
+    "_comment": "TypeSafe's own API. Jev is the only model; jev-latest follows the current release.",
+    "snapshot_date": "2026-09-24",
+    "models": [
+        {
+            "ref": "jev-latest",
+            "display_name": "Jev (latest)",
+            "kind": "decision",
+            "context_length": 32000,
+            "input_price_per_m": 0.042,
+            "output_price_per_m": 0.0,
+            "release_date": "2026-09-15"
+        }
+    ]
+}

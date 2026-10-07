@@ -21,7 +21,11 @@ from typing import Optional
 from ..core.generator import effective_score_file
 from ..core.manifest import MANIFEST_FILENAME, ModelManifest
 
-KIND_PROJECT = {"llm": "LLM Model Project", "embedding": "Embedding Model Project"}
+KIND_PROJECT = {
+    "llm": "LLM Model Project",
+    "embedding": "Embedding Model Project",
+    "decision": "Decision Model Project",
+}
 REPOSITORY = "LLM Repository"
 REPOSITORY_DESCRIPTION = (
     "This repository is used to register LLM deployment instructions to, build, "
@@ -57,6 +61,23 @@ PROJECT_META = {
             "the models."
         ),
         "tags": ["Embedding-Models", "SCR-Definitions", "Python"],
+    },
+    "decision": {
+        "project": "Decision Model Project",
+        "function": "classification",
+        # A decision model answers typed questions; its headline output is the
+        # first question's answer, with the whole answer map beside it.
+        "target_variable": "answer",
+        "description": (
+            "This project stores all decision models (System One models such as Jev "
+            "and its open reimplementations) that are available to be used in use cases. "
+            "A decision model takes a state and typed questions and returns calibrated "
+            "answers instead of text - the shape a SAS Intelligent Decisioning branch "
+            "node wants. It is possible to grant access to these models on a per model "
+            "basis. Along side the availability this also documents on how to deploy/call "
+            "the models."
+        ),
+        "tags": ["Decision-Models", "SCR-Definitions", "Python"],
     },
 }
 TOKENIZER_FILES = ("tokenizer_config.json", "special_tokens_map.json", "tokenizer.json")
@@ -259,7 +280,7 @@ _FAMILY_TOKENS: list[tuple[str, str]] = [
     ("mistral", "Mistral"), ("nemo", "Mistral"), ("smollm", "SmolLM"),
     ("granite", "Granite"), ("bge", "BGE"), ("minilm", "MiniLM"), ("voyage", "Voyage"),
     ("titan", "Titan"), ("nova", "Nova"), ("text-embedding", "OpenAI"),
-    ("text_embedding", "OpenAI"),
+    ("text_embedding", "OpenAI"), ("jev", "Jev"), ("von", "Von"),
 ]
 
 
@@ -288,6 +309,7 @@ def _model_card_chart(kind: str) -> Optional[str]:
     kind_var = {
         "llm": "SAS_LLM_MODEL_CARD_REPORT_URI",
         "embedding": "SAS_EMBEDDING_MODEL_CARD_REPORT_URI",
+        "decision": "SAS_DECISION_MODEL_CARD_REPORT_URI",
     }.get(kind)
     uri = (os.environ.get(kind_var) if kind_var else None) or os.environ.get("SAS_MODEL_CARD_REPORT_URI")
     if not uri:
@@ -340,6 +362,20 @@ def build_model_attributes(manifest: ModelManifest, folder: Path,
         ) / 2
     # The event/probability output variable mirrors the model's target variable.
     attributes["eventProbVar"] = attributes.get("targetVariable", "response")
+    if manifest.kind == "decision":
+        # What the model accepts, as custom properties: the Prompt Builder reads
+        # them to draw a model card and to grey out a model that cannot take the
+        # current template (Tev1: choice questions with at most 24 options).
+        from ..core.facts import DECISION_MAX_OPTIONS, DECISION_QUESTION_TYPES
+        md = manifest.metadata
+        attributes["properties"] = [
+            {"name": "contextLength", "type": "string",
+             "value": "" if md.context_length is None else str(md.context_length)},
+            {"name": "maxOptions", "type": "string",
+             "value": str(md.max_options if md.max_options is not None else DECISION_MAX_OPTIONS)},
+            {"name": "questionTypes", "type": "string",
+             "value": ",".join(md.question_types or DECISION_QUESTION_TYPES)},
+        ]
     chart = _model_card_chart(manifest.kind)
     if chart:
         attributes["modelCardCustomChartReport"] = chart
@@ -518,7 +554,8 @@ def pull_model(session, model_id: str, defs_dir_for, force: bool = False) -> Pul
         raise RuntimeError(f"'{model_id}' is not registered in SAS Model Manager.")
     model_ref = _attr(existing, "id")
     body = dict(mr.get_model_details(model_ref).items())
-    kind = "embedding" if body.get("function") == "embedding" else "llm"
+    function = body.get("function")
+    kind = "embedding" if function == "embedding" else ("decision" if function == "classification" else "llm")
     folder = defs_dir_for(kind) / model_id
 
     listing = session.get(f"/modelRepository/models/{model_ref}/contents")

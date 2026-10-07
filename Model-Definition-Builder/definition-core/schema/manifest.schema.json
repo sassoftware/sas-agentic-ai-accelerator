@@ -125,6 +125,50 @@
                 },
                 "pricing": {
                     "$ref": "#/$defs/PricingBlock"
+                },
+                "max_options": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Max Options"
+                },
+                "question_types": {
+                    "anyOf": [
+                        {
+                            "items": {
+                                "enum": [
+                                    "choice",
+                                    "noul",
+                                    "score"
+                                ],
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Question Types"
+                },
+                "evaluation": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Evaluation"
                 }
             },
             "required": [
@@ -373,6 +417,15 @@
                     "default": 60,
                     "title": "Timeout S",
                     "type": "integer"
+                },
+                "weights_source": {
+                    "default": "baked",
+                    "enum": [
+                        "baked",
+                        "mounted"
+                    ],
+                    "title": "Weights Source",
+                    "type": "string"
                 }
             },
             "required": [
@@ -389,7 +442,8 @@
                     "enum": [
                         "LLM",
                         "SLM",
-                        "Embedding"
+                        "Embedding",
+                        "Decision"
                     ],
                     "title": "Size Class",
                     "type": "string"
@@ -444,7 +498,8 @@
             "default": "llm",
             "enum": [
                 "llm",
-                "embedding"
+                "embedding",
+                "decision"
             ],
             "title": "Kind",
             "type": "string"

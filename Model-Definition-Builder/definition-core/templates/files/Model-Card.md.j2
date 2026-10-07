@@ -17,7 +17,11 @@
 ## Pricing
 
 {{ pricing_line }}
+{% if evaluation %}
+## Evaluation
 
+{{ evaluation }}
+{% endif %}
 ## Intended Use
 
 This model is registered in SAS Model Manager as part of the SAS Agentic AI Accelerator and is intended to be used through the framework's scoring contract ({{ scoring_contract }}), for example from {{ called_from }}.

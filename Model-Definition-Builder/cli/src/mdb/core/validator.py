@@ -173,13 +173,15 @@ def validate_folder(folder: Path, core: CoreAssets, fact_sheet: Path) -> list[Is
     # emb_*; a chat template on kind=embedding (or vice versa) means the
     # definition was misclassified at add time - it would score through the
     # wrong contract and sit in the wrong folder and Model Manager project.
-    template_is_embedding = manifest.runtime.template.startswith("emb_")
-    if template_is_embedding != (manifest.kind == "embedding"):
+    # Decision templates are named dec_* for the same reason.
+    template = manifest.runtime.template
+    template_kind = "embedding" if template.startswith("emb_") else ("decision" if template.startswith("dec_") else "llm")
+    if template_kind != manifest.kind:
+        family = {"embedding": "an embedding", "decision": "a decision", "llm": "a chat"}[template_kind]
         issues.append(Issue(
             "V012", "error", model_id,
-            f"kind '{manifest.kind}' does not match score template '{manifest.runtime.template}' "
-            f"({'an embedding' if template_is_embedding else 'a chat'} template).",
-            "Re-add the model with the correct kind (mdb add ... --kind llm|embedding), or fix "
+            f"kind '{manifest.kind}' does not match score template '{template}' ({family} template).",
+            "Re-add the model with the correct kind (mdb add ... --kind llm|embedding|decision), or fix "
             "kind/runtime.template together in definition.yaml and regenerate.",
         ))
 

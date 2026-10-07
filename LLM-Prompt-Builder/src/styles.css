@@ -445,3 +445,293 @@ a[role='button'] {
 .bestPrompt {
   vertical-align: middle;
 }
+
+/* Decision templates: the question designer, the answers a run shows and
+   the evaluation view. */
+.pb-question-row .form-label {
+  margin-top: 0.25rem;
+}
+.pb-answers {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+.pb-answer {
+  border-left: 3px solid var(--bs-primary, #0766d1);
+  padding-left: 0.6rem;
+}
+.pb-answer-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+.pb-answer-name {
+  font-weight: 600;
+}
+.pb-answer-value {
+  font-weight: 600;
+  color: var(--bs-primary, #0766d1);
+}
+.pb-answer-expected.is-match {
+  color: #1a7f37;
+}
+.pb-answer-expected.is-miss {
+  color: #b42318;
+}
+.pb-prob-bars {
+  margin-top: 0.2rem;
+}
+.pb-prob-line {
+  display: grid;
+  grid-template-columns: minmax(6rem, 14rem) minmax(6rem, 18rem) 3rem;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+.pb-prob-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pb-prob-track {
+  display: block;
+  height: 0.5rem;
+  background: #e6e9ee;
+  border-radius: 0.25rem;
+  overflow: hidden;
+}
+.pb-prob-fill {
+  display: block;
+  height: 100%;
+  background: #9db9dc;
+}
+.pb-prob-fill.is-top {
+  background: var(--bs-primary, #0766d1);
+}
+.pb-prob-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.pb-question-list {
+  margin: 0.25rem 0 0 1rem;
+  padding: 0;
+}
+.pb-confusion th,
+.pb-confusion td {
+  text-align: center;
+  padding: 0.15rem 0.5rem;
+  font-variant-numeric: tabular-nums;
+}
+.pb-confusion caption {
+  caption-side: top;
+  font-size: 0.85rem;
+  padding: 0 0 0.2rem;
+}
+.pb-confusion-diagonal {
+  background: #e8f1fb;
+  font-weight: 600;
+}
+.pb-threshold-table td,
+.pb-threshold-table th {
+  padding: 0.1rem 0.5rem;
+  font-variant-numeric: tabular-nums;
+}
+.pb-threshold-readout {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The kind of template, chosen first on the Setup card: two options with a
+   sentence each, side by side where there is room. */
+.pb-kind-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.pb-kind-option {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #d6dbe3;
+  border-radius: 0.5rem;
+  background: #fff;
+  cursor: pointer;
+  margin: 0;
+}
+.pb-kind-option:has(input:checked) {
+  border-color: var(--bs-primary, #0766d1);
+  box-shadow: inset 0 0 0 1px var(--bs-primary, #0766d1);
+}
+.pb-kind-option .form-check-input {
+  margin-top: 0.25rem;
+  flex: 0 0 auto;
+}
+.pb-kind-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.pb-kind-title {
+  font-weight: 600;
+}
+.pb-kind-description {
+  font-size: 0.875rem;
+  color: #5b6472;
+}
+
+/* Decision templates, guidance: the lint under a question or the state, the
+   checklist, inline help, the model cards with their fit check, the gate
+   badge and reading of an answer, the comparison of models in one run, and
+   the calibration view of the evaluation. */
+.pb-lint:not(:empty) {
+  margin-top: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.pb-lint-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+  background: #f3f5f8;
+}
+.pb-lint-item.is-fix {
+  background: #fde8e6;
+}
+.pb-lint-item.is-warn {
+  background: #fff4d6;
+}
+.pb-lint-severity {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #5b6472;
+}
+.pb-lint-item.is-fix .pb-lint-severity {
+  color: #b42318;
+}
+.pb-lint-item.is-warn .pb-lint-severity {
+  color: #9a6700;
+}
+.pb-lint-item .pb-question-add-escape {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+.pb-decision-checklist:not(:empty) {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #d6dbe3;
+  border-radius: 0.5rem;
+  font-size: 0.85rem;
+}
+.pb-checklist-item.is-ok {
+  color: #1a7f37;
+}
+.pb-checklist-item.is-open {
+  color: #5b6472;
+}
+.pb-help-toggle {
+  font-weight: 700;
+  line-height: 1;
+  text-decoration: none;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  width: 1.1rem;
+  height: 1.1rem;
+  font-size: 0.7rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.pb-help {
+  display: block;
+  margin: 0.2rem 0 0.4rem;
+  padding: 0.4rem 0.6rem;
+  border-left: 3px solid #9db9dc;
+  background: #f3f7fc;
+}
+.pb-model-card {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #d6dbe3;
+  border-radius: 0.5rem;
+  margin-bottom: 0.5rem;
+  background: #fff;
+}
+.pb-model-card:has(input:checked) {
+  border-color: var(--bs-primary, #0766d1);
+}
+.pb-model-card-name {
+  font-weight: 600;
+}
+.pb-model-fit.is-ok {
+  color: #1a7f37;
+}
+.pb-model-fit.is-no {
+  color: #b42318;
+}
+.pb-gate {
+  font-size: 0.75rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 0.75rem;
+  border: 1px solid currentColor;
+}
+.pb-gate.is-auto {
+  color: var(--bs-primary, #0766d1);
+}
+.pb-gate.is-escalate {
+  color: #9a6700;
+}
+.pb-gate.is-abstain {
+  color: #1a7f37;
+}
+.pb-answer-reading {
+  font-size: 0.9rem;
+}
+.pb-answer-invented {
+  color: #9a6700;
+}
+.pb-prob-fill.is-escape {
+  background: #4caf72;
+}
+.pb-compare-table th span {
+  display: block;
+}
+.pb-compare-verdict {
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.pb-compare-verdict.is-agree {
+  color: #1a7f37;
+}
+.pb-compare-verdict.is-disagree {
+  color: #9a6700;
+}
+.pb-calibration-numbers {
+  font-variant-numeric: tabular-nums;
+}
+.pb-reliability-plot {
+  fill: #fff;
+  stroke: #d6dbe3;
+}
+.pb-reliability-bar {
+  fill: #9db9dc;
+}
+.pb-reliability-diagonal {
+  stroke: #b42318;
+  stroke-dasharray: 4 3;
+}
+.pb-reliability-tick,
+.pb-reliability-axis {
+  font-size: 10px;
+  fill: #5b6472;
+}
+.pb-calibration > div {
+  max-width: 36rem;
+}

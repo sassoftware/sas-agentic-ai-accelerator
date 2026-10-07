@@ -58,6 +58,53 @@ export async function scoreSCR(
 /**
  * Call an LLM deployed via SCR.
  */
+/**
+ * Call a DECISION model container (kind: decision) through its SCR endpoint:
+ * the state and the typed questions go in, the answer map comes back. The
+ * inputs differ from the LLM contract, the envelope and the options string
+ * are the same.
+ */
+export async function callSCRDecision(
+  scrEndpoint: string,
+  model: string,
+  state: string,
+  questionsJson: string,
+  options: Record<string, unknown> = {},
+  deploymentType: string = 'k8s'
+): Promise<unknown> {
+  const url =
+    deploymentType === 'aca'
+      ? `https://${model.replaceAll('_', '-')}.${scrEndpoint}/${model}`
+      : `${scrEndpoint}/${model}/${model}`;
+  const optionsString =
+    '{' +
+    Object.entries(options)
+      .map(([key, value]) => `${key}:${value}`)
+      .join(',') +
+    '}';
+  const body = JSON.stringify({
+    inputs: [
+      { name: 'state', value: state },
+      { name: 'questions', value: questionsJson },
+      { name: 'options', value: optionsString },
+    ],
+  });
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body,
+    });
+    if (response.status !== 200) {
+      return { error: `Decision model call failed with status ${response.status}` };
+    }
+    const json = (await response.json()) as Record<string, unknown>;
+    return json && typeof json.data === 'object' && json.data !== null ? json.data : json;
+  } catch (e) {
+    return { error: String(e) };
+  }
+}
+
 export async function callSCRLLM(
   scrEndpoint: string,
   model: string,

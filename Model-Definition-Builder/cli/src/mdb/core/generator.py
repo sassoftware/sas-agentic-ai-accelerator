@@ -63,6 +63,10 @@ class CoreAssets:
                     (static / "inputVar-emb.json").read_text(encoding="utf-8"),
                     (static / "outputVar-emb.json").read_text(encoding="utf-8"),
                 ),
+                "decision": (
+                    (static / "inputVar-dec.json").read_text(encoding="utf-8"),
+                    (static / "outputVar-dec.json").read_text(encoding="utf-8"),
+                ),
             },
         )
 
@@ -480,6 +484,33 @@ def _render_requirements(manifest: ModelManifest) -> str:
             },
         ]
         steps.extend(_hf_weight_steps(manifest, hf, repo))
+    elif profile == "von":
+        # Von (wfzyx/von): an open System One decision model on a ModernBERT
+        # encoder. The von-sdk package declares Python 3.12 while the SCR image
+        # ships 3.11; its code compiles and runs there (verified with the
+        # accelerator's test set). Its dependencies are resolved normally, for
+        # the image's Python, and only the package itself is installed with the
+        # floor lifted - lifting it for everything lets pip pick a numpy that
+        # needs 3.12 and build it from source. The checkpoint (encoder,
+        # option-marker head, calibration) is downloaded into the image; the
+        # scorer loads it from disk and never contacts the Hub at run time.
+        hf = manifest.provider.params.get("hf", {})
+        repo = hf.get("repo") or manifest.provider.model_version
+        steps = [
+            upgrade_step,
+            torch_cpu_step,
+            {
+                "step": "install the Von runtime's dependencies, resolved for the image's Python",
+                "command": "pip3 -q install 'transformers>=5.0.0' 'accelerate>=0.26.0' 'pydantic>=2.0.0' "
+                           "'click>=8.1.0' 'httpx>=0.27.0' 'fastapi>=0.110.0' 'uvicorn>=0.28.0' "
+                           "'huggingface-hub>=0.18.0'",
+            },
+            {
+                "step": "install the Von runtime itself (declares Python 3.12; its code runs on the image's 3.11)",
+                "command": "pip3 -q install --no-deps --ignore-requires-python 'von-sdk>=1.2.2'",
+            },
+        ]
+        steps.extend(_hf_weight_steps(manifest, hf, repo))
     elif profile == "hf-sentence-transformers":
         hf = manifest.provider.params.get("hf", {})
         repo = hf.get("repo") or manifest.provider.model_version
@@ -510,10 +541,14 @@ def _fmt_price_per_m(per_token: float | None) -> str:
 SCORING_CONTRACT = {
     "llm": "`userPrompt`, `systemPrompt`, `options` → `response`, `run_time`, `prompt_length`, `output_length`",
     "embedding": "`document`, `project`, `options` → `embedding`, `run_time`, `tokens`",
+    "decision": "`state`, `questions`, `options` → `answers`, `answer`, `confidence`, `run_time`, "
+                "`prompt_length`, `output_length`",
 }
 CALLED_FROM = {
     "llm": "the LLM Prompt Builder or SAS Intelligent Decisioning",
     "embedding": "the RAG Builder or SAS Intelligent Decisioning",
+    "decision": "SAS Intelligent Decisioning (a branch node reads `answer` and `confidence`) or any "
+                "program that posts a state and typed questions to the SCR endpoint",
 }
 
 AZURE_ROUTE_NOTE = (
@@ -582,6 +617,21 @@ def deployment_notes(manifest: ModelManifest) -> str:
         if template == "hf_transformers":
             lines.append("- `CUDA_VISIBLE_DEVICES` (set by a GPU node) switches inference to the GPU; "
                          "otherwise it runs on the CPU.")
+    elif template == "dec_von":
+        if manifest.runtime.weights_source == "mounted":
+            lines.append(f"- The Von checkpoint is read from the shared `llm-weights` volume at "
+                         f"`/pybox/model/mount/{manifest.model_id}` - stage it there once (the checkpoint is "
+                         "3 GB, too large for the image build); the image carries only the runtime. Use the "
+                         "persistent-volume deployment YAML. The container needs no provider connection and no key.")
+        else:
+            lines.append("- The Von checkpoint is baked into the image at build time; the container needs no "
+                         "provider connection and no key, and never contacts the Hugging Face Hub at run time.")
+        lines.append("- Inference runs on the CPU; `VON_DEVICE` selects another device (`cuda`, `openvino`) "
+                     "where the node offers one.")
+    elif template == "dec_systemone_api":
+        lines.append("- The key arrives per call in the `API_KEY` option; the container posts the state and "
+                     "the questions to the provider's System One endpoint and needs no environment "
+                     "configuration beyond network access to it.")
     else:
         lines.append("- The key arrives per call in the `API_KEY` option; the container needs no environment "
                      "configuration beyond network access to the provider.")
@@ -623,6 +673,9 @@ def _render_docs(manifest: ModelManifest, core: CoreAssets, options_json: str) -
         "scoring_contract": SCORING_CONTRACT[manifest.kind],
         "called_from": CALLED_FROM[manifest.kind],
         "deployment_notes": deployment_notes(manifest),
+        # Measured results, when the manifest carries them (decision models shipped
+        # with benchmark figures); absent, the card has no Evaluation section.
+        "evaluation": (manifest.metadata.evaluation or "").strip(),
     }
     return {
         "README.md": env.get_template("files/README.md.j2").render(**context),

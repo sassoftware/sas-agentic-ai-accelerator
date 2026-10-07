@@ -11,6 +11,7 @@ const DIST_HTML = process.argv[2];
 const PORT = 4173;
 
 const log = [];
+let decisionProject = false;
 
 function headerRow(runId, sys, user) {
   return {
@@ -54,6 +55,32 @@ trackerRows[6].judge_best = 0;
 // model-used: two distinct dependent decision flows, one of them reported
 // twice (flow + revision) to exercise the dedupe. model-free: no dependents.
 // model-err: the relationships query itself fails (fail-open path).
+// A decision template's saved run: the question map is the header's system
+// prompt, the state template its user prompt; the answers are the response.
+const DECISION_QUESTIONS = JSON.stringify({
+  team: { type: 'choice', instructions: 'Which team handles this?', criteria: { billing: 'payments', technical: 'bugs', sales: 'pricing' } },
+  escalate: { type: 'noul', instructions: 'The customer threatens to leave' },
+});
+const decisionTrackerRows = [
+  {
+    ...headerRow(1, DECISION_QUESTIONS, 'Subject: {{subject}}\nMessage: {{body}}'),
+    mode: 'decision',
+    expected: { team: 'billing', escalate: 'no' },
+    variables: [
+      { name: 'subject', description: '', type: 'string', value: 'Charged twice' },
+      { name: 'body', description: '', type: 'string', value: 'Please refund one payment.' },
+    ],
+  },
+  {
+    ...modelRow(1, JSON.stringify({
+      team: { type: 'choice', choice: 'billing', probabilities: { billing: 0.9, technical: 0.05, sales: 0.05 }, confidence: 0.85 },
+      escalate: { type: 'noul', noul: 0.1 },
+    }), 'jev_mock', '{API_KEY:OpenAI}'),
+    best_prompt: 1,
+    output_length: 0,
+  },
+];
+
 const relationshipsFor = {
   'model-used': {
     items: [
@@ -187,6 +214,9 @@ http
       if (p === '/__log') return json(res, 200, log);
       if (p === '/__reset') { log.length = 0; return json(res, 200, {}); }
       if (p === '/__failjob') { failNextJob = true; return json(res, 200, {}); }
+      // The decision fixtures live in a second project that only exists once a
+      // suite asks for it, so the regression suite's project counts stay put.
+      if (p === '/__decision') { decisionProject = true; return json(res, 200, {}); }
 
       if (p === '/' || p === '/index.html') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -195,11 +225,49 @@ http
       if (p === '/identities/users/@currentUser') {
         return json(res, 200, { id: 'tester', name: 'Tester' });
       }
-      if (p === '/modelRepository/projects') {
+      if (p === '/modelRepository/projects' && req.method === 'GET') {
+        const filter = u.searchParams.get('filter') || '';
+        if (filter.includes('Decision Model Project')) {
+          return json(res, 200, { items: [{ id: 'dec-proj', name: 'Decision Model Project' }] });
+        }
+        // proj-2 is a decision project: it carries the Decision-Engineering tag
+        // (and Prompt-Engineering, like every project of the Builder).
+        if (filter.includes('Decision-Engineering')) {
+          return json(res, 200, { items: decisionProject ? [{ id: 'proj-2', name: 'Decision Prompts', createdBy: 'anna', modifiedBy: 'anna' }] : [] });
+        }
         return json(res, 200, {
-          items: [{ id: 'proj-1', name: 'Demo Project', createdBy: 'anna', modifiedBy: 'anna' }],
+          items: [
+            { id: 'proj-1', name: 'Demo Project', createdBy: 'anna', modifiedBy: 'anna' },
+            ...(decisionProject ? [{ id: 'proj-2', name: 'Decision Prompts', createdBy: 'anna', modifiedBy: 'anna' }] : []),
+          ],
         });
       }
+      // Creating a project reads the repository first (its folder id).
+      if (p === '/modelRepository/repositories/repo-1') {
+        return json(res, 200, { id: 'repo-1', name: 'LLM Repository', folderId: 'folder-repo-1' });
+      }
+      if (p === '/modelRepository/projects' && req.method === 'POST') {
+        let body = {};
+        try { body = JSON.parse(raw); } catch {}
+        return json(res, 201, { id: 'proj-new', name: body.name || 'New Project', tags: body.tags || [] });
+      }
+      if (p === '/modelRepository/projects/proj-new/models') return json(res, 200, { items: [] });
+      if (p === '/modelRepository/projects/proj-2/models') {
+        return json(res, 200, { items: [{ id: 'model-dec', name: 'Ticket Routing', createdBy: 'anna', modifiedBy: 'anna' }] });
+      }
+      if (p === '/modelRepository/projects/dec-proj/models') {
+        const filter = u.searchParams.get('filter') || '';
+        if (filter.includes('deprecated')) return json(res, 200, { items: [] });
+        return json(res, 200, { items: [{ id: 'dec-1', name: 'jev_mock' }, { id: 'dec-2', name: 'von_mock' }] });
+      }
+      if (p === '/modelRepository/models/dec-1/contents') {
+        return json(res, 200, { items: [{ id: 'c-dopt1', name: 'options.json', fileUri: '/files/files/dopt-1' }] });
+      }
+      if (p === '/modelRepository/models/dec-2/contents') {
+        return json(res, 200, { items: [{ id: 'c-dopt2', name: 'options.json', fileUri: '/files/files/dopt-2' }] });
+      }
+      if (p === '/files/files/dopt-1/content') return json(res, 200, { API_KEY: { default: 'OpenAI' } });
+      if (p === '/files/files/dopt-2/content') return json(res, 200, {});
       if (p === '/modelRepository/projects/llm-proj/models') {
         const filter = u.searchParams.get('filter') || '';
         if (filter.includes('deprecated')) return json(res, 200, { items: [] });
@@ -212,6 +280,8 @@ http
         });
       }
       if (p === '/modelRepository/projects/proj-1/models') {
+        // No decision templates here: the tag filter answers empty.
+        if ((u.searchParams.get('filter') || '').includes('Decision-Template')) return json(res, 200, { items: [] });
         return json(res, 200, {
           items: [
             { id: 'model-used', name: 'Used Prompt', createdBy: 'anna', modifiedBy: 'ben' },
@@ -220,6 +290,10 @@ http
           ],
         });
       }
+      if (p === '/modelRepository/models/model-dec/contents' && req.method === 'GET') {
+        return json(res, 200, { items: [{ id: 'c-dtrk', name: 'Prompt-Experiment-Tracker.json', fileUri: '/files/files/dtrk-1' }] });
+      }
+      if (p === '/files/files/dtrk-1/content') return json(res, 200, decisionTrackerRows);
       if (p === '/modelRepository/models/llm-1/contents') {
         return json(res, 200, {
           items: [{ id: 'c-opt', name: 'options.json', fileUri: '/files/files/opt-1' }],
@@ -306,7 +380,7 @@ http
         return json(res, 200, { items: [{ name: 'Public' }, { name: 'casuser' }] });
       }
       if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables') {
-        return json(res, 200, { items: [{ name: 'OPT_DATA' }, { name: 'BIG_DATA' }, { name: 'BAD_COLS' }, { name: 'GHOST' }] });
+        return json(res, 200, { items: [{ name: 'OPT_DATA' }, { name: 'BIG_DATA' }, { name: 'BAD_COLS' }, { name: 'GHOST' }, { name: 'DEC_CASES' }] });
       }
       // BIG_DATA clears the compare-mode floor of 10 rows (OPT_DATA's 5 rows
       // exercise the too-small path).
@@ -330,6 +404,20 @@ http
       }
       if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/BAD_COLS/columns') {
         return json(res, 200, { items: [{ name: 'question' }, { name: 'answer' }] });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/DEC_CASES') {
+        return json(res, 200, { name: 'DEC_CASES', rowCount: 4 });
+      }
+      if (p === '/casManagement/servers/cas-shared-default/caslibs/Public/tables/DEC_CASES/columns') {
+        return json(res, 200, { items: [{ name: 'subject' }, { name: 'body' }, { name: 'expected_team' }, { name: 'expected_escalate' }] });
+      }
+      if (p === '/casRowSets/servers/cas-shared-default/caslibs/Public/tables/DEC_CASES/rows') {
+        return json(res, 200, { items: [
+          { cells: ['Charged twice', 'Please refund one payment.', 'billing', 'no'] },
+          { cells: ['Error 502', 'Nothing loads, fix it NOW or we cancel.', 'technical', 'yes'] },
+          { cells: ['Quote', 'Price for 50 more seats?', 'sales', 'no'] },
+          { cells: ['Hello', 'Just saying hi, no request.', 'unknown', 'no'] },
+        ] });
       }
       if (p.startsWith('/casManagement/')) {
         return json(res, 404, { message: 'table not found' });
@@ -546,6 +634,47 @@ http
         // Detect the LLM-as-a-Judge call by its distinctive system prompt.
         let inputs = [];
         try { inputs = JSON.parse(raw).inputs || []; } catch {}
+        const stateInput = inputs.find((i) => i.name === 'state');
+        if (stateInput) {
+          // A decision call: route by the state's words so the expected
+          // answers of the fixtures come out right (and one case wrong).
+          const state = String(stateInput.value).toLowerCase();
+          let questions = {};
+          try { questions = JSON.parse((inputs.find((i) => i.name === 'questions') || {}).value || '{}'); } catch {}
+          const answers = {};
+          Object.entries(questions).forEach(([id, q]) => {
+            if (q.type === 'choice') {
+              const keys = Object.keys(q.criteria || {});
+              const escape = keys.find((k) => ['unknown', 'none', 'other'].includes(k.toLowerCase()));
+              const pick = state.includes('refund') || state.includes('charged') ? 'billing'
+                : state.includes('error') || state.includes('crash') ? 'technical'
+                : state.includes('price') || state.includes('quote') || state.includes('seats') ? 'sales'
+                : escape || keys[keys.length - 1];
+              const choice = keys.includes(pick) ? pick : keys[0];
+              const probabilities = {};
+              keys.forEach((k) => { probabilities[k] = k === choice ? 0.9 : 0.1 / Math.max(1, keys.length - 1); });
+              answers[id] = { type: 'choice', choice, probabilities, confidence: 0.88 };
+            } else if (q.type === 'noul') {
+              answers[id] = { type: 'noul', noul: state.includes('cancel') || state.includes('now') ? 0.95 : 0.08 };
+            } else {
+              const levels = q.criteria || [];
+              const probabilities = {};
+              levels.forEach((_, i) => { probabilities[String(i)] = i === 1 ? 0.7 : 0.3 / Math.max(1, levels.length - 1); });
+              const legend = {};
+              levels.forEach((l, i) => { legend[String(i)] = l; });
+              answers[id] = { type: 'score', score: 1.1, confidence: 0.6, legend, probabilities };
+            }
+          });
+          const first = Object.values(answers)[0] || {};
+          return json(res, 200, {
+            data: {
+              answers: JSON.stringify(answers),
+              answer: first.choice || (first.noul !== undefined ? (first.noul >= 0.5 ? 'yes' : 'no') : String(first.score || '')),
+              confidence: first.confidence || (first.noul !== undefined ? Math.max(first.noul, 1 - first.noul) : 0),
+              run_time: 0.4, prompt_length: 60, output_length: 0,
+            },
+          });
+        }
         const sys = inputs.find((i) => i.name === 'systemPrompt');
         const sysText = sys ? String(sys.value) : '';
         const isChairman = sysText.includes('chairman of a panel');
@@ -603,10 +732,33 @@ http
       }
       if (/^\/modelRepository\/models\/[^/]+$/.test(p) && req.method === 'GET') {
         // Tags include leftovers from an "earlier manifest" to prove cleanup
+        const modelId = p.split('/').pop();
         res.writeHead(200, { 'Content-Type': 'application/json', ETag: '"abc123"' });
+        if (modelId === 'model-dec') {
+          return res.end(JSON.stringify({ id: modelId, name: 'Ticket Routing', algorithm: 'Decision-Template',
+            tags: ['Decision', 'Prompt-Template', 'Decision-Template'] }));
+        }
+        if (modelId === 'dec-1') {
+          return res.end(JSON.stringify({ id: modelId, name: 'jev_mock', provider: 'OpenRouter', inputTokenCount: 0.000000042,
+            tags: ['Decision', 'Proprietary', 'OpenRouter', 'small'],
+            properties: [
+              { name: 'contextLength', value: '32000', type: 'string' },
+              { name: 'maxOptions', value: '255', type: 'string' },
+              { name: 'questionTypes', value: 'choice,noul,score', type: 'string' },
+            ] }));
+        }
+        if (modelId === 'dec-2') {
+          return res.end(JSON.stringify({ id: modelId, name: 'von_mock', provider: 'Von', hostingCosts: 0.0001,
+            tags: ['Decision', 'Open-Source', 'Apache-2', 'Von', 'medium'],
+            properties: [
+              { name: 'contextLength', value: '8192', type: 'string' },
+              { name: 'maxOptions', value: '6', type: 'string' },
+              { name: 'questionTypes', value: 'choice,noul', type: 'string' },
+            ] }));
+        }
         return res.end(
           JSON.stringify({
-            id: p.split('/').pop(),
+            id: modelId,
             name: 'Used Prompt',
             tags: ['LLM', 'Prompt-Template', 'Custom-Tag', 'other_llm', 'LLM-Call-Included'],
           })
@@ -636,6 +788,7 @@ http
         }
         return json(res, 201, { id: 'c-new' });
       }
+      console.log('not mocked: ' + req.method + ' ' + req.url);
       json(res, 404, { message: 'not mocked: ' + req.method + ' ' + p });
     });
   })

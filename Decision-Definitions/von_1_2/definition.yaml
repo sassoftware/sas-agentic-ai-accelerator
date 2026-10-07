@@ -1,0 +1,45 @@
+schema: 1
+kind: decision
+model_id: von_1_2
+display_name: Von 1.2
+provider:
+  adapter: von
+  model_version: von-1.2.0
+  params:
+    hf:
+      repo: wfzyx/von
+      gated: false
+  auth:
+    mode: none
+runtime:
+  template: dec_von
+  requirements_profile: von
+  timeout_s: 60
+  weights_source: mounted
+options: {}
+tags:
+  size_class: Decision
+  license_class: Open-Source
+  provider_tag: Von
+  scr_sizing: medium
+  extra:
+  - Apache-2
+metadata:
+  description: 'Von 1.2 - an open System One decision model (ModernBERT-large, 395M parameters) that answers
+    typed questions about a state with calibrated probabilities: a choice among options, a yes/no noul,
+    a score on described levels. Self-hosted in the container from the Hugging Face checkpoint.'
+  release_date: 2026-09
+  context_length: 8192
+  size: 395000000
+  deployment_type: SCR
+  pricing:
+    cost_type: Seconds
+  evaluation: 'Not part of the published benchmark. On our own 14-ticket support test (team routing, an
+    escalation yes/no, a three-level tone score) it answered team 13/14, escalate 13/14 and tone 10/14
+    at about 0.4 s per call on one CPU core inside the container. Caution: a single small sample; measure
+    on your own labelled cases before setting a confidence threshold. Measured 2026-10-05/06 on about
+    50 examples per dataset, three runs each: a shortlist, not a ranking.'
+modeler: gerdaw
+generation:
+  overrides: []
+  catalog_provenance: manual entry (self-hosted Von)

@@ -38,6 +38,9 @@ class CatalogModel:
     supported_parameters: Optional[list[str]] = None
     reasoning: bool = False
     extended_thinking: bool = False
+    # Decision models only: what the model accepts (None = 255 options, all three question types)
+    max_options: Optional[int] = None
+    question_types: Optional[list[str]] = None
     source: str = "static"  # static | live
 
     @property
@@ -102,6 +105,7 @@ class ProviderAdapter(ABC):
     docs_url: str = ""
     template: str = "openai_chat"
     embedding_template: Optional[str] = None  # set when the adapter supports kind=embedding
+    decision_template: Optional[str] = None  # set when the adapter supports kind=decision
     requirements_profile: str = "api-wrapper"
     static_catalog_file: Optional[str] = None
 
@@ -130,6 +134,8 @@ class ProviderAdapter(ABC):
                 release_date=entry.get("release_date"),
                 reasoning=entry.get("reasoning", False),
                 extended_thinking=entry.get("extended_thinking", False),
+                max_options=entry.get("max_options"),
+                question_types=entry.get("question_types"),
                 source=f"static snapshot {snapshot}",
             ))
         return models
@@ -148,6 +154,8 @@ class ProviderAdapter(ABC):
     def default_options(self, cm: CatalogModel) -> dict[str, OptionSpec]:
         if cm.kind == "embedding":
             return self.embedding_options(cm)
+        if cm.kind == "decision":
+            return {}  # typed questions carry their own settings; there is nothing to sample
         if cm.reasoning:
             return {
                 "reasoning_effort": OptionSpec(default="medium"),
@@ -175,6 +183,16 @@ class ProviderAdapter(ABC):
     def embedding_endpoint(self, answers: dict) -> Optional[str]:
         return None
 
+    def decision_endpoint(self, answers: dict) -> Optional[str]:
+        return None
+
+    def endpoint_for(self, cm: CatalogModel, answers: dict) -> Optional[str]:
+        if cm.kind == "embedding":
+            return self.embedding_endpoint(answers)
+        if cm.kind == "decision":
+            return self.decision_endpoint(answers)
+        return self.endpoint(answers)
+
     def provider_params(self, cm: CatalogModel, answers: dict) -> dict:
         return {}
 
@@ -183,6 +201,10 @@ class ProviderAdapter(ABC):
             if not self.embedding_template:
                 raise ValueError(f"{self.display_name} does not support embedding definitions.")
             return self.embedding_template
+        if cm.kind == "decision":
+            if not self.decision_template:
+                raise ValueError(f"{self.display_name} does not support decision definitions.")
+            return self.decision_template
         return self.template
 
     def build_manifest(self, cm: CatalogModel, model_id: str, answers: dict, modeler: str) -> ModelManifest:
@@ -193,7 +215,7 @@ class ProviderAdapter(ABC):
             provider=ProviderBlock(
                 adapter=self.id,
                 model_version=cm.ref,
-                endpoint=self.endpoint(answers) if cm.kind == "llm" else self.embedding_endpoint(answers),
+                endpoint=self.endpoint_for(cm, answers),
                 params=self.provider_params(cm, answers),
                 auth=AuthBlock(mode="api_key", key_name=self.key_name) if self.key_name
                 else AuthBlock(mode="none"),
@@ -202,7 +224,7 @@ class ProviderAdapter(ABC):
                                  requirements_profile=self.requirements_profile),
             options=self.default_options(cm),
             tags=TagsBlock(
-                size_class="Embedding" if cm.kind == "embedding" else "LLM",
+                size_class={"embedding": "Embedding", "decision": "Decision"}.get(cm.kind, "LLM"),
                 license_class="Proprietary",
                 provider_tag=self.provider_tag,
                 scr_sizing="small",
@@ -219,6 +241,8 @@ class ProviderAdapter(ABC):
                     input_token_price=cm.per_token_input,
                     output_token_price=cm.per_token_output,
                 ),
+                max_options=cm.max_options if cm.kind == "decision" else None,
+                question_types=cm.question_types if cm.kind == "decision" else None,
             ),
             modeler=modeler,
             generation=GenerationBlock(catalog_provenance=f"{self.id} ({cm.source})"),

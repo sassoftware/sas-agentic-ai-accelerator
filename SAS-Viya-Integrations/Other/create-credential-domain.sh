@@ -79,6 +79,7 @@ PROVIDER_MAP = {
     "VOYAGE_API_KEY": "VoyageAI",
     "HUGGINGFACE_API_KEY": "HuggingFace",
     "AWS_BEDROCK_API_KEY": "AWSBedrock",
+    "TYPESAFE_API_KEY": "TypeSafe",
 }
 RAG_ENTRY = re.compile(r"^[A-Za-z][A-Za-z0-9]*_RAG_(USER|PW)$")
 # connection settings: not secret, but the domain is the one place every

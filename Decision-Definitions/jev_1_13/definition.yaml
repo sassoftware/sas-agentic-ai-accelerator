@@ -1,0 +1,45 @@
+schema: 1
+kind: decision
+model_id: jev_1_13
+display_name: Jev 1.13
+provider:
+  adapter: openrouter
+  model_version: typesafe/jev-1.13
+  endpoint: https://openrouter.ai/api/v1/systemone
+  params: {}
+  auth:
+    mode: api_key
+    key_name: OpenRouter
+runtime:
+  template: dec_systemone_api
+  requirements_profile: api-wrapper
+  timeout_s: 60
+  weights_source: baked
+options: {}
+tags:
+  size_class: Decision
+  license_class: Proprietary
+  provider_tag: OpenRouter
+  scr_sizing: small
+  extra: []
+metadata:
+  description: Jev 1.13 by TypeSafe - a decision (System One) model that answers typed questions about
+    a state with calibrated probabilities instead of text, served through the OpenRouter API.
+  release_date: '2026-09-15'
+  context_length: 32000
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 4.2000000000000006e-08
+    output_token_price: 0.0
+  evaluation: 'Accuracy 0.95 on 41 hand-written cases (routing, guardrails, judging, ops), 0.82 on public
+    datasets (BANKING77 0.79, CLINC150 0.86, AG News 0.81, WNUT-17 entity typing 0.80) and 0.87 on the
+    231 public JevBench tasks. Calibration error 0.03-0.09, median latency about 0.3 s, $0.015-0.054 per
+    1,000 calls. Caution: 0.22 on JevBench''s temporal/numeric family (compute dates and numbers in code),
+    and without an explicit `unknown` option it put 0.88 on an invented answer - give every choice question
+    an escape option. Measured 2026-10-05/06 on about 50 examples per dataset, three runs each: a shortlist,
+    not a ranking.'
+modeler: gerdaw
+generation:
+  overrides: []
+  catalog_provenance: openrouter (static snapshot 2026-09-24)

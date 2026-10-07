@@ -1,0 +1,14 @@
+{
+    "generator": "mdb 2.2.0",
+    "manifest_sha256": "b5957808cce5721f2f707680b218e6b5394ceb50c25537b1fbc4d114fe4b2a86",
+    "files": {
+        "Model-Card.md": "da6280c86f0c53f9c8ecb1ef286e8b5560defb71052aede1b066352833e1680a",
+        "README.md": "f7b45b0845876dfb97e4efb5a9ca4b2c12feb793a0f4602187baf4b7f2229151",
+        "clefFlashScore.py": "d22748159b026bd4470232b25969525ce600ea4d17580d90f60b5734a4025be1",
+        "inputVar.json": "de2cdec7ea81011e78fd0f553b1e2d060a135b1d3911a8b3f83909a9db4f96f3",
+        "modelConfiguration.json": "7135adf6ff162689c3e471b85586f88b61457eb65d29fbb3eb6e31d4b792b0c3",
+        "options.json": "a96a32ee784e40271b6561fecd5076064dfc155550872ebd4f1d6f92b8e21303",
+        "outputVar.json": "44d1ba094471b76a2af5ad0b5106e11cc97111005d4f27211a772217222a3412",
+        "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"
+    }
+}

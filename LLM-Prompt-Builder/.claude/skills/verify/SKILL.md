@@ -79,6 +79,36 @@ server that also implements the handful of Viya endpoints the app calls.
   `document.activeElement` to be the modal before pressing it.
 - The run-header system prompt element id contains a pre-existing typo:
   `...-run-systenPrompt`.
+- `verify-decision.js` next to this file drives the decision mode: after
+  `POST /__decision` the mock lists a second project `proj-2` whose
+  `Ticket Routing` prompt (`model-dec`, tagged `Decision-Template`) opens with a
+  saved run, the decision models come from `dec-proj` (`jev_mock` needs the
+  OpenAI entry, `von_mock` no key), a POST to `/scr/<model>/<model>` whose inputs
+  carry `state` answers in the System One shape, and `Public.DEC_CASES` is a
+  labelled table (`expected_team`, `expected_escalate`). The kind is chosen on
+  the Setup card (`#LPB-kind-llm` / `#LPB-kind-decision`); each view lists its
+  own projects (`proj-2` answers the `Decision-Engineering` tag filter, a POST
+  to `/modelRepository/projects` creates `proj-new`) and its own prompt-tests
+  (the mock answers the `Decision-Template` tag filter per project). The Evaluate step
+  (`#app-obj-LPB-step-evaluate`, pane `-pane-evaluate`) exists on every page
+  but is hidden (`li[hidden]`) for an LLM prompt; the page therefore has seven
+  `.pb-section` cards. Designer ids: `#app-obj-LPB-decision-state`,
+  `#app-obj-LPB-decision-add-question`, rows `.pb-question-row` with
+  `.pb-question-id/-type/-instructions/-criteria/-expected`, each with a
+  `.pb-question-lint` (items `.pb-lint-item.is-fix/-warn/-tip`, the escape
+  fix `.pb-question-add-escape`); the checklist is
+  `#app-obj-LPB-decision-checklist`, the template picker
+  `#app-obj-LPB-decision-template` + `-apply`, help toggles `.pb-help-toggle`
+  reveal `.pb-help`. Decision models are cards (`.pb-model-card` with
+  `-meta`, `-price`, `.pb-model-fit.is-ok/.is-no`) whose checkboxes stay
+  `#decision-model{i}`; the mock's `dec-1`/`dec-2` details carry the
+  `properties` (contextLength, maxOptions, questionTypes) and tags the cards
+  read - `von_mock` takes choice and noul only, so a score question makes it
+  unfit and skipped. A run's answers carry `.pb-answer-reading` and a
+  `.pb-gate.is-auto/-escalate/-abstain`; a run with two models gets
+  `#app-obj-LPB-pet-{i}-run-compare`. The mock answers a choice with its
+  escape option when no keyword matches (the fourth `DEC_CASES` row), and
+  the evaluation shows `.pb-reliability` with ECE and Brier.
 - Run each verify script against a FRESHLY started mock instance: the optimize
   flow mutates mock state (job polls, the optimization tracker appearing in
   the model contents) that can break other suites run against the same

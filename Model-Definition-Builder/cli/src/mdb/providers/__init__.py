@@ -14,6 +14,7 @@ from .openai_compat import (
     AzureFoundryAdapter, AzureFoundryEnvAdapter, OpenAICompatAdapter,
     SelfHostedOpenAICompatAdapter,
 )
+from .systemone import TypeSafeAdapter, VonAdapter
 from .voyage import VoyageAdapter
 
 
@@ -28,6 +29,10 @@ def _builtin_adapters() -> list[ProviderAdapter]:
             base_url="https://openrouter.ai/api/v1",
             docs_url="https://openrouter.ai/keys",
             listing_needs_key=False,  # the /models catalog is public
+            # The decision models OpenRouter serves (Jev) are missing from its
+            # /models listing, so they come from the bundled snapshot.
+            static_catalog_file="openrouter.json",
+            decision_template="dec_systemone_api",
         ),
         OpenAICompatAdapter(
             id="openai",
@@ -56,6 +61,8 @@ def _builtin_adapters() -> list[ProviderAdapter]:
         GoogleAdapter(),
         VoyageAdapter(),
         HuggingFaceAdapter(),
+        TypeSafeAdapter(),
+        VonAdapter(),
         SelfHostedOpenAICompatAdapter(
             id="ollama",
             display_name="Ollama",

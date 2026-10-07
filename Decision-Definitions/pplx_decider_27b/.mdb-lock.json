@@ -1,0 +1,14 @@
+{
+    "generator": "mdb 2.2.0",
+    "manifest_sha256": "44e4d4af3b7da1526e40feac0f872d4a00a783b323af2d6dd2cbd805c51d2806",
+    "files": {
+        "Model-Card.md": "fb1c9b1bfe0b09e8ca0cdd97959623e44e9e8b1a307ebdb6dba7727babcc5801",
+        "README.md": "d33369e4e3af2eb05af2a374275e58073bd5807795c7c73eb2fa394f95a0bd6b",
+        "inputVar.json": "de2cdec7ea81011e78fd0f553b1e2d060a135b1d3911a8b3f83909a9db4f96f3",
+        "modelConfiguration.json": "90c7498a0c09ca1001ed77f4db71596a6063a83c040fd9fbdecdb36aa1143e8d",
+        "options.json": "a96a32ee784e40271b6561fecd5076064dfc155550872ebd4f1d6f92b8e21303",
+        "outputVar.json": "44d1ba094471b76a2af5ad0b5106e11cc97111005d4f27211a772217222a3412",
+        "pplxDecider27bScore.py": "275799a1d4e2a01e281fbc21515b33d822a8418cdcd843f7141bd4e05ff965ee",
+        "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"
+    }
+}
