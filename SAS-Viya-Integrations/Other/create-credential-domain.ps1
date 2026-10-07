@@ -38,6 +38,7 @@
 #   VOYAGE_API_KEY           VoyageAI
 #   HUGGINGFACE_API_KEY      HuggingFace
 #   AWS_BEDROCK_API_KEY      AWSBedrock
+#   TYPESAFE_API_KEY         TypeSafe
 #   <BACKEND>_RAG_USER/_PW   <BACKEND>_RAG_USER/_PW (uppercased)
 #   <BACKEND>_HOST/PORT/     <BACKEND>_HOST/PORT/DB/SSLMODE (uppercased)
 #   DB/SSLMODE               - RAGSTORE_* included, as the shared fallback
@@ -148,6 +149,7 @@ $providerMap = [ordered]@{
     'VOYAGE_API_KEY'       = 'VoyageAI'
     'HUGGINGFACE_API_KEY'  = 'HuggingFace'
     'AWS_BEDROCK_API_KEY'  = 'AWSBedrock'
+    'TYPESAFE_API_KEY'     = 'TypeSafe'
 }
 
 $secrets = @{}

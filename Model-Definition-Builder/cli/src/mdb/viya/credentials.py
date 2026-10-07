@@ -95,6 +95,7 @@ PROVIDER_ENTRIES = {
     "VOYAGE_API_KEY": "VoyageAI",
     "HUGGINGFACE_API_KEY": "HuggingFace",
     "AWS_BEDROCK_API_KEY": "AWSBedrock",
+    "TYPESAFE_API_KEY": "TypeSafe",
 }
 
 #: `<BACKEND>_RAG_USER` / `<BACKEND>_RAG_PW` — carried over verbatim, uppercased.

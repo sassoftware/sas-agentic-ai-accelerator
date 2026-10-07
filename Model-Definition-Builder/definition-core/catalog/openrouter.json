@@ -1,0 +1,76 @@
+{
+    "_comment": "OpenRouter models that its public /models listing omits: the decision models it hosts (GET /models?output_modalities=decisions lists them). Chat models come from the live listing; only the entries here are added to it. Output tokens are free for every decision model.",
+    "snapshot_date": "2026-10-07",
+    "models": [
+        {
+            "ref": "typesafe/jev-1.13",
+            "display_name": "Jev 1.13",
+            "kind": "decision",
+            "context_length": 32000,
+            "input_price_per_m": 0.042,
+            "output_price_per_m": 0.0,
+            "release_date": "2026-09-15"
+        },
+        {
+            "ref": "cloudflare/clef-flash",
+            "display_name": "Clef-flash",
+            "kind": "decision",
+            "context_length": 65536,
+            "input_price_per_m": 0.09,
+            "output_price_per_m": 0.0,
+            "release_date": "2026-10-01"
+        },
+        {
+            "ref": "cloudflare/clef",
+            "display_name": "Clef",
+            "kind": "decision",
+            "context_length": 65536,
+            "input_price_per_m": 0.24,
+            "output_price_per_m": 0.0,
+            "release_date": "2026-10-01"
+        },
+        {
+            "ref": "liquid/d1",
+            "display_name": "Liquid D1",
+            "kind": "decision",
+            "context_length": 65536,
+            "input_price_per_m": 0.04,
+            "output_price_per_m": 0.0
+        },
+        {
+            "ref": "perplexity/pplx-decider-v1-27b",
+            "display_name": "Perplexity Decider 27B",
+            "kind": "decision",
+            "context_length": 262144,
+            "input_price_per_m": 0.04,
+            "output_price_per_m": 0.0
+        },
+        {
+            "ref": "jaredpalmer/kev-4b",
+            "display_name": "Kev 4B",
+            "kind": "decision",
+            "context_length": 8192,
+            "input_price_per_m": 0.042,
+            "output_price_per_m": 0.0
+        },
+        {
+            "ref": "togethercomputer/tev1-4b-experimental",
+            "display_name": "Tev1 4B",
+            "kind": "decision",
+            "context_length": 32768,
+            "input_price_per_m": 0.042,
+            "output_price_per_m": 0.0,
+            "max_options": 24,
+            "question_types": ["choice"]
+        },
+        {
+            "ref": "upstage/solar-decide",
+            "display_name": "Solar Decide",
+            "kind": "decision",
+            "context_length": 524288,
+            "input_price_per_m": 0.05,
+            "output_price_per_m": 0.0,
+            "max_options": 26
+        }
+    ]
+}

@@ -18,6 +18,7 @@ on:
     paths:
       - "LLM-Definitions/**"
       - "Embedding-Definitions/**"
+      - "Decision-Definitions/**"
       - "Model-Definition-Builder/**"
       - "SAS-Viya-Integrations/*.json"
       - "SAS-Viya-Integrations/RAG/**"
@@ -27,6 +28,7 @@ on:
     paths:
       - "LLM-Definitions/**"
       - "Embedding-Definitions/**"
+      - "Decision-Definitions/**"
       - "Model-Definition-Builder/**"
       - "SAS-Viya-Integrations/*.json"
       - "SAS-Viya-Integrations/RAG/**"

@@ -74,17 +74,21 @@ function multipartJson(body) {
 
   // ---- UX: heading hierarchy, sections, gated run button, modal copy --------
   assert((await page.$$('h1')).length === 1, 'exactly one h1 on the page');
-  assert((await page.$$('.pb-section')).length === 6, 'page grouped into six visual sections (incl. Judging)');
+  assert((await page.$$('.pb-section')).length === 7, 'page grouped into seven visual sections (incl. Judging and Evaluate)');
   assert(await page.isDisabled('#app-obj-LPB-run-experiment'), 'Run Experiments disabled until an LLM is selected');
   assert((await currentStep()) === 'setup', 'the flow opens on the Setup step');
   const stepKeys = (target) =>
-    target.$$eval('.pb-step-button', (els) => els.map((e) => e.id.replace('app-obj-LPB-step-', '')).join(','));
+    // Only the visible steps: the Evaluate step is in the row for every page
+    // and hidden unless a decision template is open.
+    target.$$eval('.pb-step-button', (els) =>
+      els.filter((e) => !e.closest('.pb-step').hidden).map((e) => e.id.replace('app-obj-LPB-step-', '')).join(',')
+    );
   assert(
     (await stepKeys(page)) === 'setup,build,finalize',
     `three steps while optimization is disabled (got: ${await stepKeys(page)})`
   );
   assert(await page.isHidden('#app-obj-LPB-stepper-back'), 'no Back on the first step');
-  assert((await page.$$('.pb-instructions')).length === 6, 'every card carries an Instructions box');
+  assert((await page.$$('.pb-instructions')).length === 7, 'every card carries an Instructions box');
   await goStep('build');
   assert(await page.isVisible('#app-obj-LPB-pet-empty'), 'tracker shows an empty-state hint');
   assert(await page.isVisible('#model0'), 'the LLM selection is part of Build & Test');

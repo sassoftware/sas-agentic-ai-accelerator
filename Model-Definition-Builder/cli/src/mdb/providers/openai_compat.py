@@ -28,7 +28,8 @@ class OpenAICompatAdapter(ProviderAdapter):
 
     def __init__(self, id: str, display_name: str, provider_tag: str, key_name: str,
                  env_key_var: str, base_url: str, docs_url: str = "",
-                 static_catalog_file: Optional[str] = None, listing_needs_key: bool = True):
+                 static_catalog_file: Optional[str] = None, listing_needs_key: bool = True,
+                 decision_template: Optional[str] = None):
         self.id = id
         self.display_name = display_name
         self.provider_tag = provider_tag
@@ -38,12 +39,18 @@ class OpenAICompatAdapter(ProviderAdapter):
         self.docs_url = docs_url
         self.static_catalog_file = static_catalog_file
         self.listing_needs_key = listing_needs_key
+        # A provider that also serves System One decision models (OpenRouter
+        # hosts Jev) speaks the same wire format at /systemone.
+        self.decision_template = decision_template
 
     def endpoint(self, answers: dict) -> Optional[str]:
         return f"{self.base_url}/chat/completions"
 
     def embedding_endpoint(self, answers: dict) -> Optional[str]:
         return f"{self.base_url}/embeddings"
+
+    def decision_endpoint(self, answers: dict) -> Optional[str]:
+        return f"{self.base_url}/systemone" if self.decision_template else None
 
     def live_catalog(self, session: requests.Session, api_key: Optional[str]) -> list[CatalogModel]:
         headers = {}
@@ -86,6 +93,9 @@ class OpenAICompatAdapter(ProviderAdapter):
                    session: requests.Session) -> SmokeResult:
         if not api_key:
             return SmokeResult(ok=False, detail=f"No API key - set {self.env_key_var} in the environment or .env.")
+        if manifest.kind == "decision":
+            from .systemone import systemone_smoke_test
+            return systemone_smoke_test(manifest, api_key, session)
         try:
             response = session.post(
                 self.endpoint({}) or "",

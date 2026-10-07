@@ -1,0 +1,93 @@
+{{ generated_header }}import time
+import json
+import logging
+import sys
+import requests
+
+modelVersion = '{{ model_version }}'
+modelEndpoint = '{{ endpoint }}'
+
+# Initiate the logger to write output information to the log
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+    format='%(levelname)s - %(message)s'
+)
+logger = logging.getLogger("scoreModel")
+
+{% include "partials/_options_parser.py.j2" %}
+
+def _state_value(state):
+    # A state that parses as a JSON object or array is sent as structured
+    # data (the model reads field names); anything else is sent as text.
+    try:
+        parsed = json.loads(state)
+        return parsed if isinstance(parsed, (dict, list)) else state
+    except Exception:
+        return state
+
+
+def _headline(answer):
+    # The first question's answer as a branch node reads it: the chosen
+    # option, the score, or yes/no for a noul - with the confidence beside it.
+    kind = answer.get("type")
+    if kind == "noul":
+        probability = float(answer.get("noul", 0.0))
+        return ("yes" if probability >= 0.5 else "no"), (probability if probability >= 0.5 else 1.0 - probability)
+    if kind == "score":
+        return str(answer.get("score", "")), float(answer.get("confidence", 0.0))
+    return str(answer.get("choice", "")), float(answer.get("confidence", 0.0))
+
+
+def scoreModel(state, questions, options):
+    "Output: answers, answer, confidence, run_time, prompt_length, output_length"
+    started_timestamp = time.time()
+    # One value per input, whatever the caller's convention: CAS/SCR pass
+    # one-element lists, the MAS REST API passes plain strings - and a str
+    # indexed with [0] silently becomes its first character.
+    state, questions = _scalar(state), _scalar(questions)
+    optionsDefaults = {
+{{ options_defaults_block }}
+    }
+    options = {**optionsDefaults, **_parse_options(options)}
+    # The System One request: the state once, every question beside it. The
+    # questions arrive verbatim in the provider's own shape, so a new question
+    # type needs no change here.
+    payload = {
+        "model": modelVersion,
+        "state": _state_value(state),
+        "questions": json.loads(questions),
+    }
+    responseObject = requests.post(
+        modelEndpoint,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {options['API_KEY']}",
+        },
+        json=payload,
+        timeout={{ timeout_s }},
+    )
+    try:
+        responseJson = responseObject.json()
+    except Exception:
+        logger.error(f"Non-JSON response: {responseObject.status_code} - {responseObject.text}")
+        raise
+    if responseObject.status_code < 200 or responseObject.status_code >= 300:
+        logger.error(f"HTTP {responseObject.status_code}: {json.dumps(responseJson)}")
+        raise RuntimeError(f"Request failed: {responseObject.status_code}")
+    answersObject = responseJson.get('answers') or {}
+    firstAnswer = next(iter(answersObject.values()), {}) if isinstance(answersObject, dict) else {}
+    answer, confidence = _headline(firstAnswer)
+    answers = json.dumps(answersObject)
+    usage = responseJson.get('usage') or {}
+    prompt_length = usage.get('input_tokens', 0)
+    # A decision model generates no text; the field stays for the shared usage report.
+    output_length = usage.get('output_tokens', 0)
+    run_time = time.time() - started_timestamp
+    # Logging the response
+    logger.info(f"prompt_length: {prompt_length}")
+    logger.info(f"output_length: {output_length}")
+    logger.info(f"run_time: {run_time}")
+    logger.info(f"answer: {answer} ({confidence:.3f})")
+    logger.info(f"answers: {answers}")
+    return answers, answer, confidence, run_time, prompt_length, output_length

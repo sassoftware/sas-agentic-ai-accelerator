@@ -10,7 +10,7 @@ always be overridden explicitly with ``--repo`` / ``MDB_REPO``.
 The definition folders themselves can live OUTSIDE the accelerator clone:
 ``MDB_DEFINITIONS`` (an absolute path, typically set in the ``.env`` of your
 own repository) names a root under which mdb keeps the familiar layout —
-``LLM-Definitions/``, ``Embedding-Definitions/`` and the retire ``_archive/``
+``LLM-Definitions/``, ``Embedding-Definitions/``, ``Decision-Definitions/`` and the retire ``_archive/``
 — creating the folders as needed. Your definitions can then be committed to
 your own git repo while the accelerator clone only supplies the templates
 (definition-core).
@@ -63,9 +63,35 @@ def _definitions_root(repo_root: Path) -> tuple[Path, bool]:
     return repo_root, False
 
 
+# The folder each kind lives in, and its fact sheet. A kind is a scoring
+# contract: what the container takes in and hands back.
+DEFINITION_DIRS = {
+    "llm": "LLM-Definitions",
+    "embedding": "Embedding-Definitions",
+    "decision": "Decision-Definitions",
+}
+FACT_SHEETS = {
+    "llm": "llm_fact_sheet.csv",
+    "embedding": "embedding_fact_sheet.csv",
+    "decision": "decision_fact_sheet.csv",
+}
+
+
+def kind_folder_name(kind: str) -> str:
+    return DEFINITION_DIRS[kind]
+
+
+def kind_of_folder(folder: Path) -> str:
+    """The kind a definition folder belongs to, from its parent's name (llm when unknown)."""
+    for kind, name in DEFINITION_DIRS.items():
+        if folder.parent.name == name:
+            return kind
+    return "llm"
+
+
 def definitions_dir(repo_root: Path, kind: str) -> Path:
     root, relocated = _definitions_root(repo_root)
-    path = root / ("LLM-Definitions" if kind == "llm" else "Embedding-Definitions")
+    path = root / DEFINITION_DIRS[kind]
     if relocated:
         # Created on demand so pointing MDB_DEFINITIONS at a fresh directory
         # in your own repository just works on the first mdb run.
@@ -83,5 +109,4 @@ def archive_dir(repo_root: Path) -> Path:
 
 
 def fact_sheet_path(repo_root: Path, kind: str) -> Path:
-    name = "llm_fact_sheet.csv" if kind == "llm" else "embedding_fact_sheet.csv"
-    return definitions_dir(repo_root, kind) / name
+    return definitions_dir(repo_root, kind) / FACT_SHEETS[kind]

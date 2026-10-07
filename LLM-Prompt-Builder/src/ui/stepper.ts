@@ -38,6 +38,13 @@ export interface Stepper {
   goTo(index: number, options?: { scroll?: boolean }): void;
   /** Called after the current step changed. */
   onChange(listener: (index: number) => void): void;
+  /**
+   * Show or hide a step. A hidden step keeps its pane (and every control in
+   * it) but leaves the row, the numbering and the Back/Continue order - the
+   * builders use it for the steps only one prompt kind has. Hiding the
+   * current step moves to the nearest visible one.
+   */
+  setVisible(index: number, visible: boolean): void;
 }
 
 export function createStepper(baseID: string, steps: StepDefinition[], labels: StepperLabels): Stepper {
@@ -78,6 +85,8 @@ export function createStepper(baseID: string, steps: StepDefinition[], labels: S
   const panes: HTMLDivElement[] = [];
   const listeners: Array<(index: number) => void> = [];
   let currentIndex = 0;
+  const hidden = new Set<number>();
+  const visibleIndices = (): number[] => steps.map((_, index) => index).filter((index) => !hidden.has(index));
 
   steps.forEach((step, index) => {
     const item = document.createElement('li');
@@ -114,19 +123,33 @@ export function createStepper(baseID: string, steps: StepDefinition[], labels: S
   });
 
   function render(): void {
+    const visible = visibleIndices();
     steps.forEach((_, index) => {
       const isCurrent = index === currentIndex;
+      stepItems[index].hidden = hidden.has(index);
+      // Numbered by position among the visible steps, so hiding one leaves no gap.
+      const number = visible.indexOf(index) + 1;
+      (stepButtons[index].firstElementChild as HTMLElement).innerText = String(number || '');
+      stepButtons[index].setAttribute('aria-label', `${number || ''}. ${steps[index].label}`);
       stepItems[index].classList.toggle('is-current', isCurrent);
       if (isCurrent) stepButtons[index].setAttribute('aria-current', 'step');
       else stepButtons[index].removeAttribute('aria-current');
       panes[index].hidden = !isCurrent;
     });
-    backButton.classList.toggle('invisible', currentIndex === 0);
-    continueButton.classList.toggle('invisible', currentIndex === steps.length - 1);
+    backButton.classList.toggle('invisible', currentIndex === visible[0]);
+    continueButton.classList.toggle('invisible', currentIndex === visible[visible.length - 1]);
   }
 
   function goTo(index: number, options?: { scroll?: boolean }): void {
-    const target = Math.min(Math.max(index, 0), steps.length - 1);
+    let target = Math.min(Math.max(index, 0), steps.length - 1);
+    if (hidden.has(target)) {
+      // Aim past a hidden step in the direction of travel.
+      const visible = visibleIndices();
+      const forward = target >= currentIndex;
+      target = forward
+        ? (visible.find((candidate) => candidate > target) ?? visible[visible.length - 1])
+        : ([...visible].reverse().find((candidate) => candidate < target) ?? visible[0]);
+    }
     const changed = target !== currentIndex;
     currentIndex = target;
     render();
@@ -136,6 +159,13 @@ export function createStepper(baseID: string, steps: StepDefinition[], labels: S
 
   backButton.onclick = () => goTo(currentIndex - 1);
   continueButton.onclick = () => goTo(currentIndex + 1);
+
+  function setVisible(index: number, visible: boolean): void {
+    if (visible) hidden.delete(index);
+    else hidden.add(index);
+    if (hidden.has(currentIndex)) goTo(currentIndex, { scroll: false });
+    else render();
+  }
   render();
 
   return {
@@ -146,5 +176,6 @@ export function createStepper(baseID: string, steps: StepDefinition[], labels: S
     onChange(listener: (index: number) => void): void {
       listeners.push(listener);
     },
+    setVisible,
   };
 }

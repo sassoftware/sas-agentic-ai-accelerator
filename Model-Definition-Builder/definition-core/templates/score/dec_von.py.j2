@@ -1,0 +1,95 @@
+{{ generated_header }}import time
+import json
+import logging
+import sys
+import os
+
+# The checkpoint is baked into the image; the scorer never contacts the Hub.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+# Set the transformer cache directory to a writable directory
+os.environ['TRANSFORMERS_CACHE'] = '/pybox/model'
+os.environ['HF_HOME'] = '/pybox/model/hf-home'
+
+from von.backends.option_marker_backend import OptionMarkerBackend
+
+# The Von checkpoint directory: the ModernBERT encoder, the option-marker head
+# (option_marker.pt) and its calibration (marker_calibration.json).
+checkpoint = '{{ model_path }}'
+# VON_DEVICE selects the device (cpu by default; cuda / openvino where offered).
+backend = OptionMarkerBackend(checkpoint_dir=checkpoint, device=os.environ.get("VON_DEVICE", "cpu"))
+
+# Initiate the logger to write output information to the log
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+    format='%(levelname)s - %(message)s'
+)
+logger = logging.getLogger("scoreModel")
+
+# Load the weights at start-up rather than on the first call.
+backend.evaluate(
+    state="warm-up",
+    questions={"ready": {"type": "noul", "instructions": "The model is loaded"}},
+    model=modelVersion if (modelVersion := '{{ model_version }}') else "von-1.2.0",
+)
+
+{% include "partials/_options_parser.py.j2" %}
+
+def _state_value(state):
+    # A state that parses as a JSON object or array is sent as structured
+    # data (the model reads field names); anything else is sent as text.
+    try:
+        parsed = json.loads(state)
+        return parsed if isinstance(parsed, (dict, list)) else state
+    except Exception:
+        return state
+
+
+def _headline(answer):
+    # The first question's answer as a branch node reads it: the chosen
+    # option, the score, or yes/no for a noul - with the confidence beside it.
+    kind = answer.get("type")
+    if kind == "noul":
+        probability = float(answer.get("noul", 0.0))
+        return ("yes" if probability >= 0.5 else "no"), (probability if probability >= 0.5 else 1.0 - probability)
+    if kind == "score":
+        return str(answer.get("score", "")), float(answer.get("confidence", 0.0))
+    return str(answer.get("choice", "")), float(answer.get("confidence", 0.0))
+
+
+def scoreModel(state, questions, options):
+    "Output: answers, answer, confidence, run_time, prompt_length, output_length"
+    started_timestamp = time.time()
+    # One value per input, whatever the caller's convention: CAS/SCR pass
+    # one-element lists, the MAS REST API passes plain strings - and a str
+    # indexed with [0] silently becomes its first character.
+    state, questions = _scalar(state), _scalar(questions)
+    optionsDefaults = {
+{{ options_defaults_block }}
+    }
+    options = {**optionsDefaults, **_parse_options(options)}
+    # The questions arrive verbatim in the System One shape, so a new question
+    # type needs no change here.
+    responseObject = backend.evaluate(
+        state=_state_value(state),
+        questions=json.loads(questions),
+        model=modelVersion,
+    )
+    responseJson = responseObject.model_dump() if hasattr(responseObject, "model_dump") else dict(responseObject)
+    answersObject = responseJson.get('answers') or {}
+    firstAnswer = next(iter(answersObject.values()), {}) if isinstance(answersObject, dict) else {}
+    answer, confidence = _headline(firstAnswer)
+    answers = json.dumps(answersObject)
+    usage = responseJson.get('usage') or {}
+    prompt_length = usage.get('input_tokens', 0)
+    # A decision model generates no text; the field stays for the shared usage report.
+    output_length = usage.get('output_tokens', 0)
+    run_time = time.time() - started_timestamp
+    # Logging the response
+    logger.info(f"prompt_length: {prompt_length}")
+    logger.info(f"output_length: {output_length}")
+    logger.info(f"run_time: {run_time}")
+    logger.info(f"answer: {answer} ({confidence:.3f})")
+    logger.info(f"answers: {answers}")
+    return answers, answer, confidence, run_time, prompt_length, output_length

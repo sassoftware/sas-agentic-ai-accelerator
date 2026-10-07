@@ -20,7 +20,7 @@ from .manifest import (
     PricingBlock, ProviderBlock, RuntimeBlock, TagsBlock,
 )
 
-KNOWN_SIZE_CLASSES = {"LLM", "SLM", "Embedding"}
+KNOWN_SIZE_CLASSES = {"LLM", "SLM", "Embedding", "Decision"}
 KNOWN_LICENSE_CLASSES = {"Proprietary", "Open-Source"}
 KNOWN_SIZINGS = {"small", "medium", "large"}
 CORE_OPTIONS = {"temperature", "top_p", "top_k", "max_tokens",
@@ -43,6 +43,12 @@ def _looks_like_azure(score_text: str) -> bool:
 
 def _detect_family(score_text: str) -> tuple[str, str, str]:
     """Returns (kind, template, adapter_id) guessed from score-script markers."""
+    if "def scoreModel(state" in score_text:
+        if "import von" in score_text or "from von" in score_text:
+            return "decision", "dec_von", "von"
+        if "openrouter.ai" in score_text:
+            return "decision", "dec_systemone_api", "openrouter"
+        return "decision", "dec_systemone_api", "typesafe"
     if "def scoreModel(document" in score_text:
         if "SentenceTransformer" in score_text:
             return "embedding", "emb_sentence_transformers", "hf-selfhosted"

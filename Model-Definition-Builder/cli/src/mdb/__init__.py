@@ -3,4 +3,4 @@
 """Model Definition Builder (mdb) for the SAS Agentic AI Accelerator."""
 
 # The accelerator release this mdb ships with; bumped with CHANGELOG.md at release time.
-__version__ = "2.1.0"
+__version__ = "2.2.0"

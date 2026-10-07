@@ -82,7 +82,7 @@ class RuntimeBlock(BaseModel):
 class TagsBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    size_class: Literal["LLM", "SLM", "Embedding"]
+    size_class: Literal["LLM", "SLM", "Embedding", "Decision"]
     license_class: Literal["Proprietary", "Open-Source"] = "Proprietary"
     provider_tag: str
     scr_sizing: Literal["small", "medium", "large"]
@@ -121,6 +121,16 @@ class MetadataBlock(BaseModel):
     size: Optional[int] = None  # parameter count; None renders as '.' in the fact sheet
     deployment_type: Literal["API", "SCR"] = "API"
     pricing: PricingBlock = Field(default_factory=PricingBlock)
+    # Decision kind: what the model accepts. None means the usual 255 options
+    # and all three question types; a model that takes less (Tev1: 24 choice
+    # options, Solar Decide: 26) says so here, and the Prompt Builder greys it
+    # out for a template it cannot answer.
+    max_options: Optional[int] = None
+    question_types: Optional[list[Literal["choice", "noul", "score"]]] = None
+    # A short markdown paragraph of measured results (accuracy, calibration,
+    # latency, cost, one caution), rendered as the model card's Evaluation
+    # section when set.
+    evaluation: Optional[str] = None
 
 
 class HuggingFaceBlock(BaseModel):
@@ -144,7 +154,7 @@ class ModelManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     schema_version: int = Field(1, alias="schema")
-    kind: Literal["llm", "embedding"] = "llm"
+    kind: Literal["llm", "embedding", "decision"] = "llm"
     model_id: str
     display_name: str
     provider: ProviderBlock

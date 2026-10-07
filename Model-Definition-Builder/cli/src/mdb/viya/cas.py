@@ -20,7 +20,7 @@ from urllib.parse import quote
 DEFAULT_SERVER = "cas-shared-default"
 DEFAULT_CASLIB = "Public"
 # Table names the monitoring report already binds to (uppercase, per the SAS script).
-TABLE_BY_KIND = {"llm": "LLM_FACT_SHEET", "embedding": "EMBEDDING_FACT_SHEET"}
+TABLE_BY_KIND = {"llm": "LLM_FACT_SHEET", "embedding": "EMBEDDING_FACT_SHEET", "decision": "DECISION_FACT_SHEET"}
 
 
 def resolve_server(session, server: str | None) -> str:

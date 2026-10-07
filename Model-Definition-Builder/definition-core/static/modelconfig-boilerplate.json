@@ -17,6 +17,11 @@
             "targetVariable": "embedding",
             "function": "embedding",
             "algorithm": "Embedding"
+        },
+        "decision": {
+            "targetVariable": "answer",
+            "function": "classification",
+            "algorithm": "Decision model"
         }
     },
     "prose": {

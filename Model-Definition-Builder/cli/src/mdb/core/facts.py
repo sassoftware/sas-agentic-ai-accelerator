@@ -31,8 +31,20 @@ COLUMNS_BY_KIND = {
         "deployment_type", "license", "cost_type", "input_token_price",
         "second_cost", "max_tokens", "embedding_length",
     ],
+    # A decision model answers typed questions; it has no output tokens and no
+    # sampling options, so the sheet carries what a caller budgets with: the
+    # input price, the hosting cost and the context it accepts.
+    "decision": [
+        "model_id", "model", "provider", "description", "release_date", "size",
+        "deployment_type", "license", "cost_type", "input_token_price",
+        "second_cost", "context_length", "max_options", "question_types",
+    ],
 }
-QUOTED_COLUMNS = {"model_id", "model", "provider", "description", "deployment_type", "license", "cost_type"}
+QUOTED_COLUMNS = {"model_id", "model", "provider", "description", "deployment_type", "license", "cost_type",
+                  "question_types"}
+# What a decision model accepts unless its manifest says less.
+DECISION_MAX_OPTIONS = 255
+DECISION_QUESTION_TYPES = ("choice", "noul", "score")
 NULL = "."
 
 
@@ -71,6 +83,14 @@ def row_values(manifest: ModelManifest) -> dict[str, str]:
             **common,
             "max_tokens": _option_default(manifest, "Input_Token_Limit"),
             "embedding_length": _option_default(manifest, "Embedding_Length"),
+        }
+    if manifest.kind == "decision":
+        return {
+            **common,
+            "release_date": md.release_date or NULL,
+            "context_length": _fmt_number(md.context_length),
+            "max_options": _fmt_number(md.max_options if md.max_options is not None else DECISION_MAX_OPTIONS),
+            "question_types": "|".join(md.question_types or DECISION_QUESTION_TYPES),
         }
     return {
         **common,
@@ -135,8 +155,12 @@ def _format_row(values: dict[str, str], kind: str) -> str:
 
 def upsert_row(fact_sheet: Path, manifest: ModelManifest) -> str:
     """Insert or replace the manifest's row. Returns 'added', 'updated' or 'unchanged'."""
-    # read_bytes avoids universal-newline translation, so CRLF sheets stay CRLF
-    raw = fact_sheet.read_bytes().decode("utf-8")
+    # read_bytes avoids universal-newline translation, so CRLF sheets stay CRLF.
+    # A kind's first definition creates its sheet.
+    if fact_sheet.exists():
+        raw = fact_sheet.read_bytes().decode("utf-8")
+    else:
+        raw = ",".join(COLUMNS_BY_KIND[manifest.kind]) + "\n"
     newline = "\r\n" if "\r\n" in raw else "\n"
     lines = raw.split(newline)
     trailing_empty = lines and lines[-1] == ""
