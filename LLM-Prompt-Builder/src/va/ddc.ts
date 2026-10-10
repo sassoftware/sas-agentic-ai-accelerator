@@ -38,6 +38,10 @@ import { optionFlag } from '../objects/rag-options';
  *
  * `type` is written capitalised ('String', 'Boolean'): VA does not reject a
  * lower-case name, it silently renders a plain text input instead.
+ *
+ * A `dataProvider` makes a 'String' option a dropdown. Its keys must not be
+ * the words 'true' and 'false': VA shows the first entry of such a dropdown
+ * after every reload, whatever is stored (see `switchField`).
  */
 interface OptionField {
   name: string;
@@ -192,20 +196,20 @@ function buildOptionsConfig(config: RuntimeConfig): Record<string, unknown> {
       ),
 
       // --- the switches, each followed by what it brings ---------------------
-      // Progressive disclosure: a switch is always shown; its settings only
-      // join the pane once it is on (VA mirrors the changed value into the
-      // URL and reloads the iframe, which rebuilds this group).
+      // Progressive disclosure: a switch is always shown, as a checkbox; its
+      // settings only join the pane once it is ticked (VA mirrors the changed
+      // value into the URL and reloads the iframe, which rebuilds this group).
       switchField(
         'enableDecision',
         'Enable decision templates',
         features.decision,
-        'Offers decision templates for decision models (Jev, Von) beside prompt templates for LLMs, with the question designer, the Evaluate step and the typed manifest. Disabled: the kind is not offered, no decision model is requested and existing decision projects and templates are not listed; they stay untouched in SAS Model Manager.'
+        'Offers decision templates for decision models (Jev, Von) beside prompt templates for LLMs, with the question designer, the Evaluate step and the typed manifest. Unticked: the kind is not offered, no decision model is requested and existing decision projects and templates are not listed; they stay untouched in SAS Model Manager.'
       ),
       switchField(
         'enableOptimization',
         'Enable prompt optimization (DSPy)',
         features.optimization,
-        'Adds an Optimize step that improves the selected prompt with DSPy in a SAS Job Execution job. Requires the settings that appear when this is enabled — see the "Enabling Prompt Optimization" administration guide.'
+        'Adds an Optimize step that improves the selected prompt with DSPy in a SAS Job Execution job. Requires the settings that appear when this is ticked — see the "Enabling Prompt Optimization" administration guide.'
       ),
       ...(features.optimization
         ? [
@@ -233,7 +237,7 @@ function buildOptionsConfig(config: RuntimeConfig): Record<string, unknown> {
         'enableRag',
         'Enable RAG setups',
         features.rag,
-        'Offers RAG setups as a third kind: the RAG Builder with its own steps (documents and chunks, vector store, ingestion, test retrieval). Requires the deployed RAG runtime and the settings that appear when this is enabled — see the RAG administration guide. Needs a credential domain other than none.'
+        'Offers RAG setups as a third kind: the RAG Builder with its own steps (documents and chunks, vector store, ingestion, test retrieval). Requires the deployed RAG runtime and the settings that appear when this is ticked — see the RAG administration guide. Needs a credential domain other than none.'
       ),
       ...(features.rag
         ? [
@@ -372,26 +376,18 @@ function textField(
 }
 
 /**
- * One of the three feature switches: a dropdown with the keys 'true' and
- * 'false'.
+ * One of the three feature switches: a checkbox.
  *
- * A dropdown of two words rather than a checkbox, because the value has to
- * survive a round trip through the report, and this is the form in which a
- * stored value is known to come back as the word 'true' or 'false'. How VA
- * writes an unticked checkbox into the URL has not been observed; if it came
- * back blank or missing, a switch that defaults to on could not tell "off"
- * from "never set".
+ * Not a dropdown with the keys 'true' and 'false', which is what these were:
+ * VA does not restore such a dropdown. After every reload of the object the
+ * Options pane showed its first entry whatever the report stored, although
+ * the iframe URL carried the right value (keys like '1'/'0' or 'on'/'off'
+ * are restored - only the two words are not). A 'Boolean' option shows the
+ * right state after every reload and VA mirrors it into the URL as the word
+ * 'true' or 'false', also when unticked, so "off" stays distinct from "never
+ * set". A value an older 'true'/'false' dropdown stored is shown ticked or
+ * unticked accordingly, so a report keeps its setting.
  */
 function switchField(name: string, label: string, enabled: boolean, tooltip: string): OptionField {
-  return {
-    name,
-    label,
-    type: 'String',
-    value: enabled ? 'true' : 'false',
-    tooltip,
-    dataProvider: [
-      { key: 'false', text: 'Disabled' },
-      { key: 'true', text: 'Enabled' },
-    ],
-  };
+  return { name, label, type: 'Boolean', value: enabled, tooltip };
 }

@@ -17,8 +17,11 @@ const OFF_WORDS = ['false', '0', 'no', 'off'];
  * taken as a yes, and a report saved before a switch existed (which carries
  * no value for it) must get that switch's default.
  *
- * The words are matched without regard to case or surrounding blanks, because
- * the value arrives as URL text that a person may have typed.
+ * In SAS Visual Analytics a switch is a checkbox, which arrives in the URL as
+ * the word `true` or `false`; a report saved while the optimization switch
+ * was a dropdown stores those same two words. The other spellings are for a
+ * URL written by hand. All are matched without regard to case or surrounding
+ * blanks, because the value arrives as URL text that a person may have typed.
  */
 export function featureFlag(value: unknown, fallback: boolean): boolean {
   if (typeof value === 'boolean') return value;

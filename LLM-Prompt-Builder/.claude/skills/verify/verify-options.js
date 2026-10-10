@@ -10,12 +10,27 @@
  *   collects the `{ resultName, optionsConfig }` envelopes that come back and
  *   reloads the iframe with the stored option values mirrored into its URL,
  *   as `urlOption: true` asks for. That proves the APP's side of the
- *   contract only. How Visual Analytics renders the group, how it writes a
- *   value into the URL and what a saved report stores were written down here
- *   from the code and the documentation, not observed. A check in a real
- *   Visual Analytics report (Options pane, each switch set both ways, the
- *   report saved and reopened) therefore remains necessary after every change
- *   to the group; a green run of this file does not replace it.
+ *   contract only. The stand-in behaves the way Visual Analytics was measured
+ *   to behave on 2026-10-10, with a probe page as the data-driven content
+ *   object of a real report:
+ *     - A 'Boolean' option is a checkbox. It is mirrored into the iframe URL
+ *       as the word true or false, also when it is unticked, and it shows
+ *       the right state after every reload of the object.
+ *     - A report that stored the word "true" for an option while that option
+ *       was a dropdown shows it ticked once the option is a checkbox.
+ *     - A 'String' dropdown whose dataProvider keys are the words 'true' and
+ *       'false' is NOT restored: after every reload the Options pane shows
+ *       its first entry, whatever is stored, while the URL still carries the
+ *       stored value. Keys like on/off, 0/1 or yes/no are restored. The page
+ *       cannot notice this (its URL is right), so the suite refuses such a
+ *       dropdown wherever it reads an options group.
+ *     - The message carrying the `resultName` is posted on Visual Analytics'
+ *       own load of the object only, which is why the stand-in posts it at
+ *       the load event and the app must answer that one.
+ *   What no stand-in shows is the Options pane itself. After a change to the
+ *   group a look at a real Visual Analytics report (each switch set both
+ *   ways, the report saved and reopened) is still the only check of what the
+ *   pane displays; a green run of this file does not replace it.
  *
  * HOW TO RUN
  *   1. Build the app and start a mock of its own for this suite (the request
@@ -42,7 +57,8 @@
  *   - A URL is always built from a set of STORED values, the way a report
  *     holds them: every option the report knows is mirrored, also the ones
  *     whose switch is off, labels the app no longer posts, and the Job
- *     Execution parameters _program and _action.
+ *     Execution parameters _program and _action. A checkbox is mirrored as
+ *     the word true or false (see `mirrored`).
  *   - "No request" is read from the mock's GET /__log after the page went
  *     quiet. The suite sets no mock fixture and writes nothing, so the mock
  *     needs no RAG routes for it: a request the mock does not know is logged
@@ -223,17 +239,27 @@ function storedReport(switches, overrides = {}) {
     ...overrides,
   };
 }
+/** The three checkboxes as the Options pane holds them: ticked or not. */
 const switchValues = (flags) => ({
-  enableDecision: String(flags.decision),
-  enableOptimization: String(flags.optimization),
-  enableRag: String(flags.rag),
+  enableDecision: flags.decision,
+  enableOptimization: flags.optimization,
+  enableRag: flags.rag,
 });
+/** What the Options pane holds after a group was posted: every field by its name, a checkbox as a boolean. */
+const paneValues = (fields) => Object.fromEntries(fields.map((field) => [field.name, field.value]));
+
+/**
+ * One option value as Visual Analytics writes it into the iframe URL. A
+ * checkbox ('Boolean' option) becomes the word true or false - an unticked
+ * one is not left out and not blank. Everything else is the stored text.
+ */
+const mirrored = (value) => (typeof value === 'boolean' ? (value ? 'true' : 'false') : String(value));
 
 /** The iframe URL for a set of stored values; an undefined value is a label the report does not have. */
 function appUrl(stored) {
   const query = new URLSearchParams();
   Object.entries({ ...JOB_EXECUTION_PARAMETERS, ...stored }).forEach(([name, value]) => {
-    if (value !== undefined && value !== null) query.append(name, String(value));
+    if (value !== undefined && value !== null) query.append(name, mirrored(value));
   });
   return `${BASE}/?${query.toString()}`;
 }
@@ -496,14 +522,33 @@ function fieldProblems(fields) {
   });
   return problems;
 }
+/**
+ * Dropdowns Visual Analytics does not restore: a 'String' option whose
+ * dataProvider has the word 'true' or 'false' as a key. After a reload the
+ * Options pane shows the first entry of such a dropdown whatever the report
+ * stores (measured, see the header), so an on/off option has to be a
+ * 'Boolean' option, or a dropdown with other keys such as '1' / '0'.
+ */
+const wordKeyDropdowns = (fields) =>
+  fields
+    .filter(
+      (field) =>
+        field &&
+        field.type === 'String' &&
+        Array.isArray(field.dataProvider) &&
+        field.dataProvider.some((entry) => entry && ['true', 'false'].includes(String(entry.key).trim().toLowerCase()))
+    )
+    .map((field) => field.name);
 const groupProblems = (optionsConfig) => {
   const fields = fieldsOf(optionsConfig) || [];
   const duplicates = duplicateNames(fields);
   const types = wrongTypes(fields);
+  const wordKeys = wordKeyDropdowns(fields);
   return [
     ...flatGroupProblems(optionsConfig),
     ...(duplicates.length ? [`names used twice: ${duplicates.join(', ')}`] : []),
     ...(types.length ? [`types other than String and Boolean: ${types.join(', ')}`] : []),
+    ...(wordKeys.length ? [`dropdowns with the key 'true' or 'false', which Visual Analytics does not restore: ${wordKeys.join(', ')}`] : []),
     ...fieldProblems(fields),
   ];
 };
@@ -530,17 +575,18 @@ function sharedProblems(fields) {
     ...(foreign.length ? [`ahead of the switches but not a shared option: ${foreign.join(', ')}`] : []),
   ];
 }
-/** A switch is a dropdown of the two words, showing what the URL says. */
+/** A switch is a checkbox showing what the URL says: a 'Boolean' option with a boolean value and no dataProvider. */
 function switchProblems(fields, switchName, expectedOn) {
   const field = fieldNamed(fields, switchName);
   if (!field) return [`${switchName} is not in the group`];
   const problems = [];
-  if (field.type !== 'String') problems.push(`its type is ${JSON.stringify(field.type)}, not 'String'`);
-  const keys = Array.isArray(field.dataProvider) ? field.dataProvider.map((entry) => entry && entry.key).sort() : [];
-  if (!sameList(keys, ['false', 'true'])) problems.push(`its keys are ${JSON.stringify(keys)}, not 'true' and 'false'`);
-  if (field.value !== String(expectedOn)) problems.push(`its value is ${JSON.stringify(field.value)}, not '${expectedOn}'`);
+  if (field.type !== 'Boolean') problems.push(`its type is ${JSON.stringify(field.type)}, not 'Boolean'`);
+  if ('dataProvider' in field) problems.push(`it has a dataProvider (${JSON.stringify(field.dataProvider).slice(0, 80)}), which a checkbox does not`);
+  if (typeof field.value !== 'boolean') problems.push(`its value is ${JSON.stringify(field.value)}, not a boolean`);
+  else if (field.value !== expectedOn) problems.push(`its value is ${field.value}, not ${expectedOn}`);
   return problems;
 }
+const tickedOrNot = (on) => (on ? 'ticked' : 'unticked');
 /** The settings of a switch: all of them directly after it while it is on, none of them anywhere while it is off. */
 function dependentProblems(fields, switchName, on) {
   const { blocks } = optionLayout(fields);
@@ -574,8 +620,9 @@ function mirrorProblems(fields, stored) {
   fields.forEach((field) => {
     const raw = stored[field.name];
     if (raw === undefined || raw === null || String(raw) === '') return;
-    let expected = String(raw);
-    if (SWITCH_NAMES.includes(field.name)) expected = String(expectedFlag(raw, SWITCHES[field.name].fallback));
+    let expected = mirrored(raw);
+    // A checkbox reads the word; a switch that cannot read it shows its default.
+    if (SWITCH_NAMES.includes(field.name)) expected = expectedFlag(raw, SWITCHES[field.name].fallback);
     else if (field.type === 'Boolean') expected = expectedFlag(raw, null);
     if (expected !== null && field.value !== expected) {
       problems.push(`${field.name}: the URL says ${JSON.stringify(String(raw))}, the group says ${JSON.stringify(field.value)}`);
@@ -830,7 +877,7 @@ function checkGroup(check, view, flags) {
     ['enableRag', flags.rag],
   ].forEach(([switchName, on]) => {
     const switchIssues = switchProblems(view.fields, switchName, on);
-    check(switchIssues.length === 0, `${switchName} is a 'true'/'false' dropdown showing '${on}'${switchIssues.length ? ` (${switchIssues.join('; ')})` : ''}`);
+    check(switchIssues.length === 0, `${switchName} is a checkbox, ${tickedOrNot(on)}${switchIssues.length ? ` (${switchIssues.join('; ')})` : ''}`);
     const dependentIssues = dependentProblems(view.fields, switchName, on);
     const expectation = on
       ? SWITCHES[switchName].dependents.length
@@ -1116,6 +1163,20 @@ async function checkRagRoundTrip({ check, need }, app, stored, flags) {
     check(notOffered.length === 0, `with every switch on, every option of the URL is in the group${notOffered.length ? ` (missing: ${notOffered.join(', ')})` : ''}`);
     const mirror = mirrorProblems(fields, stored);
     check(mirror.length === 0, `every posted value says what the URL says${mirror.length ? ` (${mirror.join('; ')})` : ''}`);
+    // The regression guard for the dropdown Visual Analytics does not restore,
+    // read where every option of the page is in the group.
+    const wordKeys = wordKeyDropdowns(fields);
+    const dropdowns = fields.filter((field) => field.type === 'String' && Array.isArray(field.dataProvider)).map((field) => field.name);
+    check(
+      wordKeys.length === 0 && dropdowns.length > 0,
+      `no dropdown has the word 'true' or 'false' as a key (${dropdowns.length} dropdowns: ${dropdowns.join(', ') || 'none'}${wordKeys.length ? `; with such a key: ${wordKeys.join(', ')}` : ''})`
+    );
+    const checkboxes = fields.filter((field) => field.type === 'Boolean');
+    const notPlain = checkboxes.filter((field) => typeof field.value !== 'boolean' || 'dataProvider' in field).map((field) => field.name);
+    check(
+      SWITCH_NAMES.every((name) => checkboxes.some((field) => field.name === name)) && notPlain.length === 0,
+      `the three switches are among the ${checkboxes.length} checkboxes, and every checkbox has a boolean value and no dataProvider${notPlain.length ? ` (not so: ${notPlain.join(', ')})` : ''}`
+    );
     const expectedCount = SHARED_OPTIONS.length + SWITCH_NAMES.length + OPTIMIZATION_OPTIONS.length + RAG_OPTIONS.length;
     const backendSwitches = names.filter((name) => BACKEND_SWITCH_PATTERN.test(name));
     check(
@@ -1248,10 +1309,49 @@ async function checkRagRoundTrip({ check, need }, app, stored, flags) {
         const posted = (fieldNamed(view.fields, switchName) || {}).value;
         const reading = raw === undefined || expectedFlag(raw, null) === null ? `the default, ${onOff(on)}` : onOff(on);
         check(
-          shown[switchName] === on && posted === String(on),
-          `${switchName} ${spelling} reads as ${reading}: ${part} ${on ? 'exists' : 'does not exist'} and the option shows '${on}' (page: ${shown[switchName] ? 'exists' : 'missing'}, option: ${JSON.stringify(posted)})`
+          shown[switchName] === on && posted === on,
+          `${switchName} ${spelling} reads as ${reading}: ${part} ${on ? 'exists' : 'does not exist'} and the checkbox is ${tickedOrNot(on)} (page: ${shown[switchName] ? 'exists' : 'missing'}, option: ${JSON.stringify(posted)})`
         );
       });
+    }
+  });
+
+  // ---- the checkboxes, ticked and unticked the way Visual Analytics does it --------
+  // The pane holds what the app posted; a click on a checkbox changes that one
+  // value, the report keeps every value it ever stored, all of it is mirrored
+  // into the URL and the object is reloaded.
+  await run('checkbox round trip', async ({ session, check, need }) => {
+    let view = await session.load(promptSide(), { settle: false });
+    need(view.fields, 'the options group of an unchanged page is posted');
+    let stored = paneValues(view.fields);
+    const clicks = [
+      ['enableOptimization', true, { decision: true, optimization: true, rag: false }],
+      ['enableRag', true, { decision: true, optimization: true, rag: true }],
+      // The switch that is on by default: unticked must not read as "never set".
+      ['enableDecision', false, { decision: false, optimization: true, rag: true }],
+      ['enableOptimization', false, { decision: false, optimization: false, rag: true }],
+      ['enableRag', false, { decision: false, optimization: false, rag: false }],
+      ['enableDecision', true, { decision: true, optimization: false, rag: false }],
+    ];
+    for (const [switchName, ticked, flags] of clicks) {
+      const action = `${switchName} ${tickedOrNot(ticked)}`;
+      stored = { ...stored, [switchName]: ticked };
+      view = await session.load(stored, { settle: false });
+      const word = new URL(view.url).searchParams.get(switchName);
+      check(word === String(ticked), `${action}: the URL carries ${switchName}=${ticked} (got ${JSON.stringify(word)})`);
+      need(view.fields, `${action}: the reloaded page posts its options group`);
+      const issues = Object.entries(switchValues(flags)).flatMap(([name, on]) =>
+        [...switchProblems(view.fields, name, on), ...dependentProblems(view.fields, name, on)].map((issue) => `${name}: ${issue}`)
+      );
+      check(issues.length === 0, `${action}: the three checkboxes show ${describeFlags(flags)}, each with its settings or without${issues.length ? ` (${issues.join('; ')})` : ''}`);
+      const snap = await snapshot(view.app);
+      const shown = { decision: Boolean(snap.kinds.LPB.cards.decision), optimization: snap.built.optimizeStep, rag: Boolean(snap.kinds.LPB.cards.rag) };
+      check(
+        shown.decision === flags.decision && shown.optimization === flags.optimization && shown.rag === flags.rag,
+        `${action}: the page follows (${describeFlags(shown)})`
+      );
+      // Settings a switch brought stay in the report after it is unticked.
+      stored = { ...stored, ...paneValues(view.fields) };
     }
   });
 
