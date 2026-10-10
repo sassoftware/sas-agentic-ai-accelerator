@@ -940,6 +940,43 @@ function assertCompiles(code, label) {
   assert(await page.isDisabled('#LPB-delete-prompt-button'), 'Delete Prompt disabled after deletion');
   await page.screenshot({ path: 'shot-06-after-project-delete.png', fullPage: true });
 
+  // ============ PHASE C: creating a prompt-test (fresh page) ============
+  // The mock keeps its fixtures whatever the page deleted, so the project is back.
+  await page.goto(APP_URL);
+  await page.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+  await page.selectOption('#LPB-project-dropdown', 'proj-1');
+  await waitUntil(async () => (await page.$$('#LPB-prompt-dropdown option')).length === 4, 'prompts listed before the create');
+  await resetLog();
+  await page.click('#LPB-modal-button-container button[data-bs-target="#promptBuilderCreatePromptModal"]');
+  await page.waitForSelector('#promptBuilderCreatePromptModal.show');
+  await page.fill('#promptBuilderCreatePromptName', 'Created Prompt');
+  await page.fill('#promptBuilderCreatePromptDescription', 'made by the verify suite');
+  await page.click('#promptBuilderCreatePromptModal .btn-primary');
+  await waitUntil(
+    async () => (await getLog()).some((e) => e.method === 'POST' && e.url === '/modelRepository/models'),
+    'prompt-test created'
+  );
+  const createBody = JSON.parse((await getLog()).find((e) => e.method === 'POST' && e.url === '/modelRepository/models').body);
+  assert(createBody.modeler === 'tester', `a new prompt-test records the signed-in user as its modeler (got: ${createBody.modeler})`);
+  assert(!('modelere' in createBody), 'the create request carries no misspelt modeler key');
+  assert(
+    createBody.name === 'Created Prompt' && createBody.projectId === 'proj-1' && createBody.algorithm === 'Prompt-Template',
+    `the create request names the prompt, its project and its kind (got: ${createBody.name}, ${createBody.projectId}, ${createBody.algorithm})`
+  );
+  await page.waitForSelector('.modal.show', { state: 'detached' });
+  await waitUntil(
+    async () => (await page.inputValue('#LPB-prompt-dropdown')) === 'model-new-1',
+    'the new prompt-test is selected'
+  );
+  step(true, 'the created prompt-test is listed and selected');
+  // After a reload the listing of the project is what brings it back.
+  await page.goto(APP_URL);
+  await page.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+  await page.selectOption('#LPB-project-dropdown', 'proj-1');
+  await waitUntil(async () => (await page.$$('#LPB-prompt-dropdown option')).length === 5, 'created prompt listed after a reload');
+  const promptsAfterReload = await page.$$eval('#LPB-prompt-dropdown option', (els) => els.map((e) => e.textContent));
+  assert(promptsAfterReload.includes('Created Prompt'), `the created prompt-test is listed after a reload (got: ${promptsAfterReload})`);
+
   assert(pageErrors.length === 0, `no uncaught page errors during the whole session (got: ${pageErrors.join(' | ')})`);
 
   await browser.close();

@@ -16,6 +16,22 @@ const PORT = Number(process.env.MOCK_PORT) || 4173;
 
 const log = [];
 let decisionProject = false;
+// Models created through POST /modelRepository/models, kept so the listing of
+// their project, their own GET and their contents answer for them afterwards.
+const createdModels = [];
+// The created models of a project a listing filter lets through. Only the two
+// filters the real service was seen to honour on these fields are applied:
+// contains(tags,'X') and eq(algorithm,'X').
+function createdModelsFor(projectId, filter) {
+  const tag = (/contains\(tags,'([^']+)'\)/.exec(filter) || [])[1];
+  const algorithm = (/eq\(algorithm,'([^']+)'\)/.exec(filter) || [])[1];
+  return createdModels.filter(
+    (model) =>
+      model.projectId === projectId &&
+      (!tag || (model.tags || []).includes(tag)) &&
+      (!algorithm || model.algorithm === algorithm)
+  );
+}
 
 function headerRow(runId, sys, user) {
   return {
@@ -255,9 +271,48 @@ http
         try { body = JSON.parse(raw); } catch {}
         return json(res, 201, { id: 'proj-new', name: body.name || 'New Project', tags: body.tags || [] });
       }
-      if (p === '/modelRepository/projects/proj-new/models') return json(res, 200, { items: [] });
+      // Creating a model (a prompt-test). Like the real service the mock keeps
+      // the fields it knows and DROPS the tags sent at creation: the answer and
+      // every later listing carry tags: null until a PUT writes some.
+      if (p === '/modelRepository/models' && req.method === 'POST') {
+        let body = {};
+        try { body = JSON.parse(raw); } catch {}
+        const model = { id: `model-new-${createdModels.length + 1}`, tags: null, createdBy: 'tester', modifiedBy: 'tester' };
+        ['name', 'description', 'function', 'tool', 'modeler', 'projectId', 'algorithm', 'scoreCodeType'].forEach((field) => {
+          if (body[field] !== undefined) model[field] = body[field];
+        });
+        createdModels.push(model);
+        return json(res, 201, { items: [model] });
+      }
+      const createdRoute = /^\/modelRepository\/models\/([^/]+)(\/contents)?$/.exec(p);
+      const createdModel = createdRoute && createdModels.find((model) => model.id === createdRoute[1]);
+      if (createdModel && createdRoute[2] && req.method === 'GET') return json(res, 200, { items: [] });
+      if (createdModel && !createdRoute[2]) {
+        if (req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'application/json', ETag: '"created1"' });
+          return res.end(JSON.stringify(createdModel));
+        }
+        if (req.method === 'PUT') {
+          // An update is where tags do stick.
+          try { Object.assign(createdModel, JSON.parse(raw), { id: createdModel.id }); } catch {}
+          return json(res, 200, createdModel);
+        }
+        if (req.method === 'DELETE') {
+          createdModels.splice(createdModels.indexOf(createdModel), 1);
+          res.writeHead(204);
+          return res.end();
+        }
+      }
+      if (p === '/modelRepository/projects/proj-new/models') {
+        return json(res, 200, { items: createdModelsFor('proj-new', u.searchParams.get('filter') || '') });
+      }
       if (p === '/modelRepository/projects/proj-2/models') {
-        return json(res, 200, { items: [{ id: 'model-dec', name: 'Ticket Routing', createdBy: 'anna', modifiedBy: 'anna' }] });
+        return json(res, 200, {
+          items: [
+            { id: 'model-dec', name: 'Ticket Routing', createdBy: 'anna', modifiedBy: 'anna' },
+            ...createdModelsFor('proj-2', u.searchParams.get('filter') || ''),
+          ],
+        });
       }
       if (p === '/modelRepository/projects/dec-proj/models') {
         const filter = u.searchParams.get('filter') || '';
@@ -284,13 +339,16 @@ http
         });
       }
       if (p === '/modelRepository/projects/proj-1/models') {
-        // No decision templates here: the tag filter answers empty.
-        if ((u.searchParams.get('filter') || '').includes('Decision-Template')) return json(res, 200, { items: [] });
+        // No decision templates among the fixtures: the tag filter answers
+        // with created models only, and only once a PUT gave them the tag.
+        const filter = u.searchParams.get('filter') || '';
+        if (filter.includes('Decision-Template')) return json(res, 200, { items: createdModelsFor('proj-1', filter) });
         return json(res, 200, {
           items: [
             { id: 'model-used', name: 'Used Prompt', createdBy: 'anna', modifiedBy: 'ben' },
             { id: 'model-free', name: 'score_metric_answer_relevancy', createdBy: 'ben', modifiedBy: 'ben' },
             { id: 'model-err', name: 'Error Prompt', createdBy: 'carla', modifiedBy: 'anna' },
+            ...createdModelsFor('proj-1', filter),
           ],
         });
       }

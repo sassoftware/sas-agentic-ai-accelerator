@@ -1193,7 +1193,7 @@ export async function buildPromptBuilder(
         description: (document.getElementById('promptBuilderCreatePromptDescription') as HTMLInputElement).value,
         function: PROMPT_FUNCTION,
         tool: 'Prompt-Builder',
-        modelere: getAppState().userName,
+        modeler: getAppState().userName,
         projectId: promptBuilderProjectSelectorDropdown.options[promptBuilderProjectSelectorDropdown.selectedIndex].value,
         // The kind chosen in the dialog is carried by the registration: a
         // decision template is tagged so any Prompt Builder recognises it.

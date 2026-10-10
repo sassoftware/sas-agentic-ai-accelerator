@@ -69,6 +69,13 @@ the last character.
 - `GET /modelRepository/projects/{id}/models` for the selected project
 - `GET /modelRepository/models/{id}/contents` → `Prompt-Experiment-Tracker.json`
   entry; its `{fileUri}/content` returns the PETRow[] fixture
+- `POST /modelRepository/models` (creating a prompt-test): the mock records the
+  body, keeps the model (`model-new-1`, `model-new-2`, ...) so the listing of its
+  project, its own `GET`/`PUT`/`DELETE` and its contents answer for it, and
+  answers 201 `{ items: [model] }` with `tags: null` - the real service drops
+  the tags sent at creation, they only stick through a later `PUT`. Created
+  models pass the listing filters `contains(tags,'X')` and `eq(algorithm,'X')`
+  only when they match
 - `POST /relationships/relationships`, `GET /decisions/flows/{id}`
 - Save flow: `POST .../modelVersions` (200 JSON), `DELETE .../contents/{id}`
   (204), `POST .../contents?...` (201 JSON, multipart body)
