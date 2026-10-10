@@ -28,7 +28,7 @@ were duplicated by repeated updates).
 |---|---|
 | `Model-Manager-Setup.py` — create the LLM Repository + LLM/Embedding projects and the authorization commands | `mdb setup` |
 | `createLLMRepository.sas` (SAS Studio) — create the repository | `mdb setup` |
-| `utility/prompt-builder-json.py` — build the Prompt Builder seed JSON | `mdb setup` (writes `llm-prompt-builder.json` + `rag-builder.json`) |
+| `utility/prompt-builder-json.py` — build the Prompt Builder seed JSON | `mdb setup` (writes `llm-prompt-builder.json`, which also names the embedding project for the Prompt Builder's RAG part) |
 | `register-LLMs.py -l …` / `register-Embedding.py -m …` | `mdb register <id…>` or `mdb register --all` (both kinds; `--update` for in place) |
 | `publish-LLMs.py -d …` / `publish-Embedding.py -d …` | `mdb publish <id…> [--wait]` (`-d` or `SAS_PUBLISH_DESTINATION`) |
 | _(register + publish in one step — no old equivalent)_ | `mdb ship <id>` |
@@ -58,7 +58,7 @@ operation settings (CLI arguments override these; precedence is
 | `SAS_RESPONSIBLE_PARTY` | `setup`, `register` | project-level responsible party |
 | `SAS_PUBLISH_DESTINATION` | `publish`, `ship` | SCR destination (e.g. `llmACR`) |
 | `SAS_CAS_LIBRARY` / `SAS_CAS_SERVER` | `load-facts`, `load-releases`, `setup` | CAS library (default `Public`) / server (default `cas-shared-default`) for the fact-sheet and release tables |
-| `SAS_RELEASES_TABLE` | `load-releases`, `setup` | name of the release table the Builder objects are assigned (default `ACCELERATOR_RELEASES`) |
+| `SAS_RELEASES_TABLE` | `load-releases`, `setup` | name of the release table the Prompt Builder object is assigned (default `ACCELERATOR_RELEASES`) |
 | `SAS_LLM_MODEL_CARD_REPORT_URI` / `SAS_EMBEDDING_MODEL_CARD_REPORT_URI` | `register` | optional per-kind model-card custom chart (host = `SAS_VIYA_URL`); the example is the [LLM Usage Report](../website/docs/Administration-Guide/Logging-&-Monitoring.md) |
 
 ## 2. Bootstrap the environment (replaces `Model-Manager-Setup.py`)
@@ -69,13 +69,17 @@ mdb setup
 
 Idempotent — existing objects are left untouched. It creates the **LLM
 Repository** and the **LLM Model Project** / **Embedding Model Project**, and
-writes three files to the current directory:
+writes two files to the current directory:
 
 - `sas-viya-cli-commands.txt` — the SAS Viya CLI commands that create the
   **LLM Consumers** and **Prompt Engineers** groups and the repository/folder
   authorization rules. Review it, then run it (it grants access).
-- `llm-prompt-builder.json` / `rag-builder.json` — the Prompt Builder / RAG
-  Builder quick-start seeds (repository + project IDs, SCR endpoint).
+- `llm-prompt-builder.json` — the Prompt Builder quick-start seed: the
+  repository ID, the LLM project ID, the embedding project ID (for its RAG
+  part), the SCR endpoint and the deployment type, each under the name of the
+  option it is the value for. `mdb builders-import` writes the same values into
+  the report by itself, so the file is only needed to fill the options in by
+  hand.
 
 `mdb register` runs the repository/project check automatically, so `mdb setup`
 is optional if you only need registration — use it to bootstrap a fresh
