@@ -225,6 +225,27 @@ const lastLine = (message) => String(message || '').trim().split('\n').pop();
   assert(thirdRunText.includes('tone') && thirdRunText.includes('annoyed'), 'the score question shows its level text');
   assert((await page.$$('#app-obj-LPB-pet-3 .pb-answer-expected.is-match')).length === 3, 'all three expected answers matched');
 
+  // ---- a decision model without a container: named beside the skipped one, no empty run ----
+  const failModel = (name, status) => fetch(BASE + '/__failmodel', { method: 'POST', body: JSON.stringify({ name, status }) });
+  const runErrorLines = async () =>
+    (await page.innerText('#app-obj-LPB-run-error')).split('\n').map((line) => line.trim()).filter(Boolean);
+  await failModel('jev_mock', 503);
+  await page.click('#app-obj-LPB-run-experiment');
+  await waitUntil(async () => (await runErrorLines()).some((line) => line.startsWith('jev_mock:')), 'the failed decision model is reported');
+  await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-run-experiment')), 'Run Experiments enabled after the failed run');
+  const failedRunLines = await runErrorLines();
+  assert(
+    failedRunLines.length === 2 && failedRunLines[0].includes('Skipped') && failedRunLines[0].includes('von_mock'),
+    `the line naming the skipped model stays (got ${failedRunLines.join(' | ')})`
+  );
+  assert(
+    failedRunLines[1] ===
+      'jev_mock: Decision model call failed with status 503 - the model is registered, but no container answers at this endpoint (it has to be published and running)',
+    `the failed model is named with the not-deployed hint (got ${failedRunLines[1]})`
+  );
+  assert(!(await page.$('#app-obj-LPB-pet-4')), 'a run in which no decision model answered adds no run');
+  await failModel();
+
   // ---- save: the rows carry the kind and the expected answers --------------------
   await resetLog();
   await page.click('#app-obj-LPB-pet-save-button');

@@ -16,6 +16,12 @@ const PORT = Number(process.env.MOCK_PORT) || 4173;
 
 const log = [];
 let decisionProject = false;
+// POST /__failmodel { name, status } makes every later SCR call of that model
+// fail: a number is answered as that HTTP status (503 or 404 is what the
+// ingress answers for a registered model without a container), "drop" closes
+// the connection without an answer (the browser sees a network failure).
+// Without a status the model answers again; without a name all of them do.
+const failingModels = {};
 // Models created through POST /modelRepository/models, kept so the listing of
 // their project, their own GET and their contents answer for them afterwards.
 const createdModels = [];
@@ -234,6 +240,14 @@ http
       if (p === '/__log') return json(res, 200, log);
       if (p === '/__reset') { log.length = 0; return json(res, 200, {}); }
       if (p === '/__failjob') { failNextJob = true; return json(res, 200, {}); }
+      if (p === '/__failmodel') {
+        let body = {};
+        try { body = JSON.parse(raw); } catch {}
+        if (!body.name) Object.keys(failingModels).forEach((name) => delete failingModels[name]);
+        else if (body.status) failingModels[body.name] = body.status;
+        else delete failingModels[body.name];
+        return json(res, 200, failingModels);
+      }
       // The decision fixtures live in a second project that only exists once a
       // suite asks for it, so the regression suite's project counts stay put.
       if (p === '/__decision') { decisionProject = true; return json(res, 200, {}); }
@@ -393,6 +407,18 @@ http
             OpenAI: Buffer.from('sk-mock-openai-key').toString('base64'),
             PGVECTOR_RAG_USER: Buffer.from('rag_ingest').toString('base64'),
             PGVECTOR_RAG_PW: Buffer.from('mock-db-pw').toString('base64'),
+          },
+        });
+      }
+      // A second domain with a key for every provider of the fixtures, so a
+      // suite that needs all three LLMs selectable opens the app with
+      // credentialDomain=all-keys.
+      if (p === '/credentials/domains/all-keys/secrets') {
+        return json(res, 200, {
+          domainId: 'all-keys',
+          secrets: {
+            OpenAI: Buffer.from('sk-mock-openai-key').toString('base64'),
+            Anthropic: Buffer.from('sk-mock-anthropic-key').toString('base64'),
           },
         });
       }
@@ -693,6 +719,10 @@ http
       if (p === '/decisions/flows/flow-A') return json(res, 200, { id: 'flow-A', name: 'Loan Approval Decision' });
       if (p === '/decisions/flows/flow-B') return json(res, 200, { id: 'flow-B', name: 'Fraud Check Decision' });
       if (/^\/scr\//.test(p) && req.method === 'POST') {
+        // A model a suite switched off through /__failmodel does not answer.
+        const failure = failingModels[p.split('/')[2]];
+        if (failure === 'drop') return req.socket.destroy();
+        if (failure) return json(res, Number(failure), { message: 'no container answers for ' + p.split('/')[2] });
         // Detect the LLM-as-a-Judge call by its distinctive system prompt.
         let inputs = [];
         try { inputs = JSON.parse(raw).inputs || []; } catch {}

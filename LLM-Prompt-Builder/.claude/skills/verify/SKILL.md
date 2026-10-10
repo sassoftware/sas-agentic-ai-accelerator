@@ -76,6 +76,15 @@ the last character.
   the tags sent at creation, they only stick through a later `PUT`. Created
   models pass the listing filters `contains(tags,'X')` and `eq(algorithm,'X')`
   only when they match
+- `POST /scr/<model>/<model>` (the LLM and decision model containers). The
+  control route `POST /__failmodel` with `{ "name": "<model>", "status": 503 }`
+  makes every later call of that model answer that status (404 and 503 are what
+  an ingress answers for a registered model without a container); the status
+  `"drop"` closes the connection without an answer (a network failure in the
+  browser); without `status` the model answers again, an empty body clears all
+- `GET /credentials/domains/{domain}/secrets`: `agentic-ai-keys` (the default)
+  holds an OpenAI key only, so `contrarian_judge` renders disabled; open the app
+  with `&credentialDomain=all-keys` to have all three LLMs selectable
 - `POST /relationships/relationships`, `GET /decisions/flows/{id}`
 - Save flow: `POST .../modelVersions` (200 JSON), `DELETE .../contents/{id}`
   (204), `POST .../contents?...` (201 JSON, multipart body)

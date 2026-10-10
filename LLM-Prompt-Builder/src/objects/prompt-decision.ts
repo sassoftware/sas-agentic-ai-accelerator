@@ -258,14 +258,32 @@ export function fitCheck(
   return { status: 'ok', reason: text(bundle, 'promptBuilderDecisionFitOk') };
 }
 
-/** A hint for a failed call, from the HTTP status in its error text. */
-export function decisionErrorHint(error: string, bundle: PromptBuilderText): string {
-  const status = /\b(400|402|403|422|429)\b/.exec(error)?.[1];
+/**
+ * A hint for a failed model call - an LLM's or a decision model's - from its
+ * error text. A response other than 200 is reported as "... failed with
+ * status N", a request that got no response at all as the browser's fetch
+ * error, which carries no status.
+ */
+export function modelCallErrorHint(error: string, bundle: PromptBuilderText): string {
+  const status = /status (\d{3})\b/.exec(error)?.[1];
+  // The ingress answers for a route nothing serves: the model is registered,
+  // but it was never published or its container is not running.
+  if (status === '404' || status === '503') return text(bundle, 'promptBuilderDecisionErrorNotDeployed');
   if (status === '402') return text(bundle, 'promptBuilderDecisionErrorCredits');
   if (status === '429') return text(bundle, 'promptBuilderDecisionErrorRateLimit');
   if (status === '403') return text(bundle, 'promptBuilderDecisionErrorAccess');
   if (status === '400' || status === '422') return text(bundle, 'promptBuilderDecisionErrorShape');
+  // "Failed to fetch" (Chromium), "NetworkError when attempting to fetch
+  // resource" (Firefox), "Load failed" (Safari).
+  if (!status && /failed to fetch|networkerror|load failed/i.test(error)) return text(bundle, 'promptBuilderDecisionErrorUnreachable');
   return '';
+}
+
+/** One line for a model whose call failed: the model, the error, and a hint when there is one. */
+export function describeFailedCall(modelName: string, error: unknown, bundle: PromptBuilderText): string {
+  const message = String(error);
+  const hint = modelCallErrorHint(message, bundle);
+  return `${modelName}: ${message}${hint ? ` - ${hint}` : ''}`;
 }
 
 /** A ready-made decision template: a pattern that worked, to start from. */

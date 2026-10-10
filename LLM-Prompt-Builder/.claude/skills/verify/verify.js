@@ -940,8 +940,125 @@ function assertCompiles(code, label) {
   assert(await page.isDisabled('#LPB-delete-prompt-button'), 'Delete Prompt disabled after deletion');
   await page.screenshot({ path: 'shot-06-after-project-delete.png', fullPage: true });
 
-  // ============ PHASE C: creating a prompt-test (fresh page) ============
-  // The mock keeps its fixtures whatever the page deleted, so the project is back.
+  // ============ PHASE C: an LLM run in which models fail (fresh page) ============
+  // The mock keeps its fixtures whatever the page deleted, so the project is
+  // back. The all-keys domain makes all three LLMs selectable.
+  const failModel = (name, status) =>
+    fetch(BASE + '/__failmodel', { method: 'POST', body: JSON.stringify({ name, status }) });
+  const runErrorLines = async () =>
+    (await page.innerText('#app-obj-LPB-run-error')).split('\n').map((line) => line.trim()).filter(Boolean);
+  const runModels = (runIndex) =>
+    page.$$eval(`[id^="app-obj-LPB-pet-${runIndex}-run-nested-"][id$="-header"]`, (els) =>
+      els.map((el) => ({
+        model: el.id.replace(/^app-obj-LPB-pet-\d+-run-nested-/, '').replace(/-header$/, ''),
+        flags: Array.from(el.querySelectorAll('svg title')).map((title) => title.textContent),
+      }))
+    );
+  const FASTEST = 'fastest response time';
+  const FEWEST = 'fewest output tokens';
+  const NO_CONTAINER = 'the model is registered, but no container answers at this endpoint';
+  await page.goto(`${APP_URL}&credentialDomain=all-keys`);
+  await page.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+  await page.selectOption('#LPB-project-dropdown', 'proj-1');
+  await waitUntil(async () => (await page.$$('#LPB-prompt-dropdown option')).length === 4, 'prompts listed for the failing-model runs');
+  await page.selectOption('#LPB-prompt-dropdown', 'model-free');
+  await goStep('build');
+  for (const index of [0, 1, 2]) await page.check(`#model${index}`);
+  await page.fill('#app-obj-LPB-system-prompt', 'Answer briefly.');
+  await page.fill('#app-obj-LPB-user-prompt', 'Is this a test?');
+
+  // -- the model in the middle of three fails: the other two keep their results
+  await failModel('second_llm', 503);
+  await resetLog();
+  await page.click('#app-obj-LPB-run-experiment');
+  await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 1, 'run with a failing model rendered');
+  log = await getLog();
+  assert(
+    ['demo_llm', 'second_llm', 'contrarian_judge'].every((name) => log.some((e) => e.method === 'POST' && e.url === `/scr/${name}/${name}`)),
+    'all three selected LLMs were called'
+  );
+  let runResults = await runModels(0);
+  assert(
+    runResults.map((r) => r.model).join(',') === 'demo_llm,contrarian_judge',
+    `the run keeps the two models that answered, the one after the failure included (got: ${runResults.map((r) => r.model).join(',')})`
+  );
+  let errorLines = await runErrorLines();
+  assert(
+    errorLines.length === 1 && errorLines[0] === `second_llm: LLM call failed with status 503 - ${NO_CONTAINER} (it has to be published and running)`,
+    `the error line names the failed model with a hint (got: ${errorLines.join(' | ')})`
+  );
+  assert(
+    runResults.filter((r) => r.flags.some((f) => f.includes(FASTEST))).length === 1 &&
+      runResults.filter((r) => r.flags.some((f) => f.includes(FEWEST))).length === 1,
+    `fastest and fewest-tokens sit on a model that answered (got: ${JSON.stringify(runResults)})`
+  );
+  await waitUntil(
+    async () => (await page.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).some((t) => t.includes('1 of 3 models did not answer')),
+    'toast for the partial failure'
+  );
+  step(true, 'a toast reports that one of three models did not answer');
+  assert(!(await page.isDisabled('#app-obj-LPB-run-experiment')), 'Run Experiments is enabled again after a partial failure');
+
+  // -- the FIRST model fails: the flags must still land on models that answered
+  await failModel('second_llm', null);
+  await failModel('demo_llm', 404);
+  await page.click('#app-obj-LPB-run-experiment');
+  await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 2, 'run with the first model failing rendered');
+  runResults = await runModels(1);
+  assert(
+    runResults.map((r) => r.model).join(',') === 'second_llm,contrarian_judge',
+    `the run keeps the models after the failed first one (got: ${runResults.map((r) => r.model).join(',')})`
+  );
+  assert(
+    runResults.filter((r) => r.flags.some((f) => f.includes(FASTEST))).length === 1 &&
+      runResults.filter((r) => r.flags.some((f) => f.includes(FEWEST))).length === 1,
+    `with the first model failing the flags still sit on a model that answered (got: ${JSON.stringify(runResults)})`
+  );
+  errorLines = await runErrorLines();
+  assert(
+    errorLines.length === 1 && errorLines[0].startsWith('demo_llm: LLM call failed with status 404') && errorLines[0].includes(NO_CONTAINER),
+    `a 404 gets the same hint, and the earlier error is gone (got: ${errorLines.join(' | ')})`
+  );
+
+  // -- every model fails: no run is added, every failure is listed
+  await failModel('second_llm', 429);
+  await failModel('contrarian_judge', 'drop');
+  await page.click('#app-obj-LPB-run-experiment');
+  await waitUntil(async () => (await runErrorLines()).length === 3, 'three error lines');
+  await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-run-experiment')), 'Run Experiments enabled after the failed run');
+  errorLines = await runErrorLines();
+  assert(
+    errorLines[0].startsWith('demo_llm:') && errorLines[1].startsWith('second_llm:') && errorLines[2].startsWith('contrarian_judge:'),
+    `one error line per failed model, in the order of the selection (got: ${errorLines.join(' | ')})`
+  );
+  assert(errorLines[1].includes('rate-limited'), `the provider hints are kept (got: ${errorLines[1]})`);
+  assert(
+    errorLines[2].includes('the endpoint is unreachable'),
+    `a call without any response is reported as an unreachable endpoint (got: ${errorLines[2]})`
+  );
+  assert((await page.$$('.pet-run-delete')).length === 2, 'a run in which no model answered adds no run to the tracker');
+  await failModel();
+  // Saving shows what the tracker holds: two runs with two results each, no empty third.
+  await resetLog();
+  await page.click('#app-obj-LPB-pet-save-button');
+  await waitUntil(
+    async () => (await getLog()).some((e) => e.method === 'POST' && /\/models\/model-free\/contents\?/.test(e.url)),
+    'tracker with the partial runs saved'
+  );
+  const partialRows = multipartJson(
+    (await getLog()).find((e) => e.method === 'POST' && /\/models\/model-free\/contents\?/.test(e.url)).body
+  );
+  assert(
+    JSON.stringify(partialRows.map((r) => `${r.runId}:${r.model}`)) ===
+      JSON.stringify(['1:', '1:demo_llm', '1:contrarian_judge', '2:', '2:second_llm', '2:contrarian_judge']),
+    `the saved tracker holds two results per run and no empty run (got: ${partialRows.map((r) => `${r.runId}:${r.model}`).join(', ')})`
+  );
+  assert(
+    partialRows.filter((r) => r.runId === 2 && r.fastest_prompt).length === 1 && partialRows.filter((r) => r.runId === 2 && r.fewest_tokens_prompt).length === 1,
+    'the saved flags of the run with the failing first model sit on a model that answered'
+  );
+
+  // ============ PHASE D: creating a prompt-test (fresh page) ============
   await page.goto(APP_URL);
   await page.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
   await page.selectOption('#LPB-project-dropdown', 'proj-1');

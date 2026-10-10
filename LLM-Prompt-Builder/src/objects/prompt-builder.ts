@@ -38,7 +38,7 @@ import {
   allExpectedMatch,
   buildDecisionManifest,
   createQuestionDesigner,
-  decisionErrorHint,
+  describeFailedCall,
   estimateTokens,
   fitCheck,
   parseAnswers,
@@ -2490,6 +2490,14 @@ export async function buildPromptBuilder(
       }
     }
 
+    // What the toast says after a run in which some of the selected models,
+    // but not all, did not answer.
+    function partialFailureText(failedCount: number, selectedCount: number): string {
+      return `${promptBuilderInterfaceText?.promptBuilderRunPartialFailure}`
+        .replace('{failed}', String(failedCount))
+        .replace('{total}', String(selectedCount));
+    }
+
     async function promptBuilderRunExperiment(): Promise<void> {
       // Add a spinner to the button
       const promptBuilderRunExperimentTargetButton = document.getElementById(
@@ -2587,64 +2595,60 @@ export async function buildPromptBuilder(
       }
 
       const results = await Promise.all(allPromises);
-      // Load the (cached) cost attributes of just the models that ran, so cost +
-      // cheapest can be computed. Guarded internally — never blocks a run.
-      await Promise.all(results.map((result) => ensureLLMCostAttributes(result.modelName)));
-      // Identify fastest prompt and fewest tokens used prompt
-      annotatePrompts(results);
-      for (const { modelName, data, options } of results) {
-        if (data?.error) {
-          if (promptBuilderRunExperimentErrorText) {
-            promptBuilderRunExperimentErrorText.innerText = data.error;
-          }
-          promptBuilderRunExperimentTargetButton.disabled = false;
-          promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
-          break;
-        } else {
-          try {
-            const trackerEntry = promptExperimentTracker[promptExperimentTrackerRunID] as Record<string, unknown>;
-            trackerEntry[`${modelName}`] = {
-              best_prompt: null,
-              fastest_prompt: data?.fastest_prompt,
-              fewest_tokens_prompt: data?.fewest_tokens_prompt,
-              cheapest_prompt: data?.cheapest_prompt ?? null,
-              judge_rank: null,
-              judge_best: null,
-              output_length: data?.output_length,
-              prompt_length: data?.prompt_length,
-              run_time: data?.run_time,
-              cost: data?.cost ?? null,
-              options: options,
-              response: data?.response,
-            } as ModelExperimentData;
-          } catch {
-            const trackerEntry = promptExperimentTracker[promptExperimentTrackerRunID] as Record<string, unknown>;
-            trackerEntry[`${modelName}`] = {
-              best_prompt: null,
-              fastest_prompt: null,
-              fewest_tokens_prompt: null,
-              cheapest_prompt: null,
-              judge_rank: null,
-              judge_best: null,
-              output_length: null,
-              prompt_length: null,
-              run_time: null,
-              cost: null,
-              options: null,
-              response: promptBuilderInterfaceText?.promptBuilderModelInferenceFailed as string,
-            } as ModelExperimentData;
-          }
-        }
+      // A model whose call failed is named with its error and leaves no entry
+      // in the run; the models that answered keep their results, so one
+      // container that is down does not cost the whole run.
+      const answered = results.filter((result) => !result.data?.error);
+      const failed = results.filter((result) => result.data?.error);
+      if (promptBuilderRunExperimentErrorText) {
+        promptBuilderRunExperimentErrorText.innerText = failed
+          .map((result) => describeFailedCall(result.modelName, result.data?.error, promptBuilderInterfaceText))
+          .join('\n');
+      }
+      const restoreRunButton = (): void => {
+        promptBuilderRunExperimentTargetButton.disabled = false;
+        promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
+        experimentRunning = false;
+      };
+      if (answered.length === 0) {
+        // No model answered: the run pushed above would render empty and be
+        // saved empty, so it is taken back and nothing is rendered or judged.
+        promptExperimentTracker.pop();
+        restoreRunButton();
+        return;
+      }
+      // Load the (cached) cost attributes of just the models that answered, so
+      // cost + cheapest can be computed. Guarded internally — never blocks a run.
+      await Promise.all(answered.map((result) => ensureLLMCostAttributes(result.modelName)));
+      // Identify fastest prompt and fewest tokens used prompt among the answers
+      annotatePrompts(answered);
+      const trackerEntry = promptExperimentTracker[promptExperimentTrackerRunID] as Record<string, unknown>;
+      for (const { modelName, data, options } of answered) {
+        trackerEntry[`${modelName}`] = {
+          best_prompt: null,
+          fastest_prompt: data?.fastest_prompt,
+          fewest_tokens_prompt: data?.fewest_tokens_prompt,
+          cheapest_prompt: data?.cheapest_prompt ?? null,
+          judge_rank: null,
+          judge_best: null,
+          output_length: data?.output_length,
+          prompt_length: data?.prompt_length,
+          run_time: data?.run_time,
+          cost: data?.cost ?? null,
+          options: options,
+          response: data?.response,
+        } as ModelExperimentData;
       }
 
       createPromptExperimentTracker(promptExperimentTracker, systemPrompt, userPrompt);
 
-      promptBuilderRunExperimentTargetButton.disabled = false;
-      promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
-      experimentRunning = false;
+      restoreRunButton();
 
       // The new run sits at the top of the tracker, right below the prompts.
       promptExperimentTrackerHeader.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // The page has just moved away from the error text, so a run that lost
+      // models says so where it is seen.
+      if (failed.length > 0) showToast(partialFailureText(failed.length, results.length));
 
       // Auto-judge the run just rendered, when the user opted in and a judge
       // model is selected. Silent: preconditions that don't hold (no judge
@@ -2684,12 +2688,11 @@ export async function buildPromptBuilder(
         return;
       }
       const { fit: models, unfit } = fitDecisionModels();
-      if (unfit.length > 0) {
-        promptBuilderRunExperimentError.innerText = `${promptBuilderInterfaceText.promptBuilderDecisionSkippedUnfit}`.replace(
-          '{models}',
-          unfit.map((model) => model.name).join(', ')
-        );
-      }
+      const skippedLine =
+        unfit.length > 0
+          ? `${promptBuilderInterfaceText.promptBuilderDecisionSkippedUnfit}`.replace('{models}', unfit.map((model) => model.name).join(', '))
+          : '';
+      promptBuilderRunExperimentError.innerText = skippedLine;
       if (models.length === 0) {
         restore();
         return;
@@ -2724,15 +2727,32 @@ export async function buildPromptBuilder(
           ).then((data) => ({ modelName: model.name, data: data as Record<string, unknown>, options }));
         })
       );
-      await Promise.all(results.map((result) => ensureLLMCostAttributes(result.modelName)));
+      // As in an LLM run, a model whose call failed is named with its error
+      // and leaves no entry; its line joins the one naming the skipped models.
+      const answered = results.filter((result) => !result.data?.error);
+      const failed = results.filter((result) => result.data?.error);
+      promptBuilderRunExperimentError.innerText = [
+        skippedLine,
+        ...failed.map((result) => describeFailedCall(result.modelName, result.data?.error, promptBuilderInterfaceText)),
+      ]
+        .filter(Boolean)
+        .join('\n');
+      if (answered.length === 0) {
+        // No model answered: the run pushed above is taken back instead of
+        // being rendered, and saved, empty.
+        promptExperimentTracker.pop();
+        restore();
+        return;
+      }
+      await Promise.all(answered.map((result) => ensureLLMCostAttributes(result.modelName)));
       const trackerEntry = promptExperimentTracker[promptExperimentTrackerRunID] as Record<string, unknown>;
       // Fastest and cheapest among the answers; there are no output tokens to count.
-      const runTimes = results.map((result) => Number(result.data?.run_time));
+      const runTimes = answered.map((result) => Number(result.data?.run_time));
       const fastestIndex = runTimes.reduce<number>(
         (best, value, index) => (Number.isFinite(value) && (best < 0 || value < runTimes[best]) ? index : best),
         -1
       );
-      const costs = results.map((result) => computeCallCost(
+      const costs = answered.map((result) => computeCallCost(
         { prompt_length: Number(result.data?.prompt_length), output_length: 0, run_time: Number(result.data?.run_time) },
         llmAttributesByName.get(result.modelName)
       ));
@@ -2740,12 +2760,7 @@ export async function buildPromptBuilder(
         (best, value, index) => (value !== null && (best < 0 || (costs[best] ?? Infinity) > value) ? index : best),
         -1
       );
-      results.forEach(({ modelName, data, options }, index) => {
-        if (data?.error) {
-          const hint = decisionErrorHint(String(data.error), promptBuilderInterfaceText);
-          promptBuilderRunExperimentError.innerText = `${modelName}: ${String(data.error)}${hint ? ` - ${hint}` : ''}`;
-          return;
-        }
+      answered.forEach(({ modelName, data, options }, index) => {
         const answers = parseAnswers(data?.answers);
         trackerEntry[modelName] = {
           best_prompt: allExpectedMatch(questions, answers, expected),
@@ -2765,6 +2780,7 @@ export async function buildPromptBuilder(
       createPromptExperimentTracker(promptExperimentTracker, questionsJson, stateTemplate);
       restore();
       promptExperimentTrackerHeader.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (failed.length > 0) showToast(partialFailureText(failed.length, results.length));
     }
 
     const promptExperimentTrackerHeader = document.createElement('h2');
