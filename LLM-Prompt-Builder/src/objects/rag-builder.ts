@@ -689,6 +689,7 @@ export async function buildRagBuilder(
   openInMMButton.rel = 'noopener noreferrer';
   openInMMButton.setAttribute('aria-disabled', 'true');
   openInMMButton.textContent = str('ragBuilderOpenInMM', 'Open in SAS Model Manager');
+  openInMMButton.id = idOf('open-in-mm');
   selectionButtons.appendChild(openInMMButton);
 
   // Destructive actions sit apart from the rest, right-aligned.
@@ -696,11 +697,13 @@ export async function buildRagBuilder(
   destructive.className = 'd-flex flex-wrap align-items-center gap-2 ms-auto';
   const deleteSetupButton = document.createElement('button');
   deleteSetupButton.type = 'button';
+  deleteSetupButton.id = idOf('delete-setup');
   deleteSetupButton.className = 'btn btn-danger';
   deleteSetupButton.disabled = true;
   deleteSetupButton.textContent = str('ragBuilderDeleteSetupButton', 'Delete setup');
   const deleteProjectButton = document.createElement('button');
   deleteProjectButton.type = 'button';
+  deleteProjectButton.id = idOf('delete-project');
   deleteProjectButton.className = 'btn btn-danger';
   deleteProjectButton.disabled = true;
   deleteProjectButton.textContent = str('ragBuilderDeleteProjectButton', 'Delete project');
@@ -804,6 +807,7 @@ export async function buildRagBuilder(
   // governance fields end up empty.
   const docSaveButton = document.createElement('button');
   docSaveButton.type = 'button';
+  docSaveButton.id = idOf('save-documentation');
   docSaveButton.classList.add('btn', 'btn-outline-primary', 'btn-sm');
   docSaveButton.textContent = str('ragBuilderSaveDocumentationButton', 'Save documentation');
   docSaveButton.disabled = true;
@@ -1863,25 +1867,30 @@ export async function buildRagBuilder(
   };
   const saveActions = buttonRow();
   const operateActions = buttonRow();
+  // Each action carries an id: the labels are translated, so a script that
+  // has to press one cannot find it by its text.
   const actionButton = (
     row: HTMLElement,
+    id: string,
     label: string,
     style = 'btn-outline-secondary'
   ): HTMLButtonElement => {
     const button = document.createElement('button');
     button.type = 'button';
+    button.id = idOf(id);
     button.className = `btn ${style}`;
     button.textContent = label;
     row.appendChild(button);
     return button;
   };
-  const saveButton = actionButton(saveActions, str('ragBuilderSaveButton', 'Save setup'));
+  const saveButton = actionButton(saveActions, 'save', str('ragBuilderSaveButton', 'Save setup'));
   // ONE button for "make this setup real", because the four it replaces had
   // to be pressed in an order the UI never stated: a flow generated against a
   // setup whose score code was never registered is a half-built thing, and
   // nothing said so. Save stays separate for the still-editing case.
   const manifestButton = actionButton(
     saveActions,
+    'manifest',
     str('ragBuilderManifestButton', 'Manifest setup'),
     'btn-primary'
   );
@@ -1889,11 +1898,11 @@ export async function buildRagBuilder(
     'ragBuilderManifestTitle',
     'Save the setup, generate the ingestion job and the Studio flow, register the retrieval model, and record a new model version.'
   );
-  const launchButton = actionButton(operateActions, str('ragBuilderLaunchButton', 'Launch ingestion'));
+  const launchButton = actionButton(operateActions, 'launch', str('ragBuilderLaunchButton', 'Launch ingestion'));
   launchButton.disabled = true;
   launchButton.title = str('ragBuilderLaunchNeedsJob', 'Manifest the setup first.');
-  const ledgerButton = actionButton(operateActions, str('ragBuilderLedgerButton', 'Browse ledger'));
-  const testButton = actionButton(operateActions, str('ragBuilderTestButton', 'Test retrieval'));
+  const ledgerButton = actionButton(operateActions, 'ledger', str('ragBuilderLedgerButton', 'Browse ledger'));
+  const testButton = actionButton(operateActions, 'test', str('ragBuilderTestButton', 'Test retrieval'));
   testButton.disabled = true;
   testButton.title = str('ragBuilderTestNeedsManifest', 'Manifest the setup first.');
   saveBody.appendChild(saveActions);
@@ -1905,6 +1914,7 @@ export async function buildRagBuilder(
   // top of a long editor is off-screen by the time anyone reaches Save, so
   // the message arrives where the user is not looking.
   const saveResult = document.createElement('div');
+  saveResult.id = idOf('save-result');
   saveResult.className = 'mt-3';
   saveBody.appendChild(saveResult);
   const clearSaveResult = (): void => saveResult.replaceChildren();
@@ -1952,10 +1962,12 @@ export async function buildRagBuilder(
 
   // ---- ingestion run panel --------------------------------------------------
   const [runCard, runBody] = card(str('ragBuilderRunHeading', 'Ingestion run'));
+  runCard.id = idOf('ingestion-run');
   runCard.style.display = 'none';
   const runState = document.createElement('p');
   runState.className = 'fw-bold mb-1 d-flex align-items-center gap-2';
   const runBadge = document.createElement('span');
+  runBadge.id = idOf('run-state');
   runBadge.className = 'badge text-bg-secondary';
   const runStateText = document.createElement('span');
   const runClock = document.createElement('span');
@@ -1967,6 +1979,7 @@ export async function buildRagBuilder(
   const runNote = document.createElement('p');
   runNote.className = 'small text-body-secondary mb-2';
   const runMilestones = document.createElement('ul');
+  runMilestones.id = idOf('run-milestones');
   runMilestones.className = 'small mb-0';
   runBody.appendChild(runState);
   runBody.appendChild(runNote);
@@ -1975,6 +1988,7 @@ export async function buildRagBuilder(
 
   // ---- ledger panel ---------------------------------------------------------
   const [ledgerCard, ledgerBody] = card(str('ragBuilderLedgerHeading', 'Ingestion ledger'));
+  ledgerCard.id = idOf('ledger-panel');
   ledgerCard.style.display = 'none';
   const ledgerContent = document.createElement('div');
   ledgerContent.className = 'table-responsive';
@@ -1992,6 +2006,7 @@ export async function buildRagBuilder(
       'Ask the live collection a question and see the chunks it returns. This is how you tell whether the chunk size and embedding model suit the corpus - the chunks below are exactly what a retrieval would hand an LLM.'
     )
   );
+  testCard.id = idOf('test-panel');
   testCard.style.display = 'none';
   const testRow = document.createElement('div');
   testRow.className = 'row g-3 align-items-end';
@@ -2011,13 +2026,16 @@ export async function buildRagBuilder(
   testRunColumn.className = 'col-md-2 d-grid';
   const testRunButton = document.createElement('button');
   testRunButton.type = 'button';
+  testRunButton.id = idOf('test-run');
   testRunButton.className = 'btn btn-primary';
   testRunButton.textContent = str('ragBuilderTestRunButton', 'Run test');
   testRunColumn.appendChild(testRunButton);
   testRow.appendChild(testRunColumn);
   const testStatus = document.createElement('p');
+  testStatus.id = idOf('test-status');
   testStatus.className = 'small text-body-secondary mb-2 mt-3';
   const testResults = document.createElement('div');
+  testResults.id = idOf('test-results');
   testResults.className = 'table-responsive';
   testBody.appendChild(testRow);
   testBody.appendChild(testStatus);
@@ -3600,6 +3618,10 @@ export async function buildRagBuilder(
       clearStatus();
     } catch (error) {
       console.error('Listing the RAG projects failed.', error);
+      // The pickers still say what they are for: without their placeholders
+      // they would be two blank boxes under the alert.
+      renderProjectOptions();
+      renderSetupOptions();
       showStatus(
         'danger',
         str(
