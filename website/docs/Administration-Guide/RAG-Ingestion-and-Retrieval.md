@@ -203,6 +203,52 @@ through `rag_core` exactly as the ingestion does, so a broken
 `retrieve_context.py` would still pass. Verifying that needs the published
 model.
 
+### Where a setup embeds {#where-a-setup-embeds}
+
+The documents of a collection and the question asked of it have to be
+embedded by the same container: a question embedded somewhere else searches
+the collection with the wrong vectors, and nothing reports it. The Builder
+therefore resolves the embedding endpoint of a setup once — the **SCR
+endpoint** option of the Prompt Builder object, and `<SAS Viya host>/llm`
+where that option is blank, the host being the **SAS Viya host** option or
+the address the page is opened at — and gives the same value to everything
+it generates and starts. (A stored setup that names an endpoint of its own,
+`embedding.scrEndpoint`, keeps it ahead of the option; the Builder itself
+never writes one.)
+
+| | Receives it as |
+| --- | --- |
+| The ingestion job, at **Manifest setup** and at **Launch ingestion** | the parameter `scrEndpoint` |
+| The Embed step of the generated SAS Studio flow | the step option `_rgem_scrEndpoint` |
+| **Test retrieval** | the parameter `scrEndpoint` |
+| The retrieval model | the constant `EMBED_ENDPOINT` in its MANIFEST block |
+
+With a blank option, that address has to be reachable from the compute
+session of the ingestion and from the destination the retrieval model is
+published to. Where the page is opened under a name that is not — a
+port-forward, an alias of a reverse proxy — set the **SCR endpoint** option.
+
+The value is written at **Manifest setup**. A job definition, a flow and a
+retrieval model generated earlier keep what they were generated with until
+the setup is manifested again; a launch from the page always passes the
+current value, a scheduled run of the job and a run of the flow in SAS
+Studio do not.
+
+The retrieval model looks for the endpoint in this order and takes the first
+that is not blank:
+
+1. `scr_endpoint` in the `options` input of the call,
+2. the environment variable `RAGEMBED_ENDPOINT` on the destination,
+3. the manifested `EMBED_ENDPOINT`,
+4. `SAS_SERVICES_URL` + `/llm`, where the variable is set — a compute
+   session sets it.
+
+Up to release 2.2 the fourth came before the third, so in a compute session
+the question was embedded at `<SAS Viya host>/llm` whatever the setup had
+been manifested for. The order is part of `retrieve_context.py`: a model
+has it once `deploy-rag-content` has published the current template and the
+setup has been manifested again.
+
 ### TLS verification in the retrieval model
 
 The retrieval model that **Manifest setup** registers makes two HTTPS calls
@@ -237,7 +283,12 @@ While the option is not ticked, the step shows a warning at **Manifest
 setup** before the click, and the model it registers carries the tag
 `TLS-Verification-Off` in SAS Model Manager —
 [Deployment of Decisions](./Deployment-of-Decisions.md#finding-the-models-that-do-not-verify)
-shows how to list such models.
+shows how to list such models. Manifesting the setup again with the option
+ticked writes `SSL_VERIFY = True` and removes the tag. The tag follows the
+score code the model holds: when SAS Model Manager does not store
+`retrieve_context.py`, the manifest stops at that stage with the HTTP status
+and leaves the score code and the tags as they were, and a tag that could
+not be written or removed is named in the outcome beside the button.
 
 What the option does not touch:
 
@@ -248,10 +299,14 @@ What the option does not touch:
 - **A model registered with the custom step *RAG - Register Setup*.** The
   step does not read the options of the Prompt Builder object; a model it
   registers verifies, unless the environment variables say otherwise.
-- **A template deployed before release 2.3.0.** It has no `SSL_VERIFY`
-  constant. **Manifest setup** works with it as before, and the model
-  verifies whatever the option says — run `deploy-rag-content` to publish the
-  current `retrieve_context.py`, then manifest again.
+- **A template deployed before release 2.3.0.** The `retrieve_context.py`
+  under `<content root>/models` then has no `SSL_VERIFY` constant. **Manifest
+  setup** succeeds with it, and the model verifies whatever the option says.
+  With the option not ticked, the outcome beside the button says that
+  verification is still ON and that the template has to be deployed again,
+  and the model is not tagged. Run `deploy-rag-content` to publish the
+  current `retrieve_context.py`: the next **Manifest setup** writes
+  `SSL_VERIFY = False` and tags the model.
 
 Switching verification off is for a destination that runs Python where the
 bundle is not mounted — the case found with SAS Micro Analytic Service, which

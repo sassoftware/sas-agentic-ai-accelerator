@@ -82,11 +82,11 @@ Decision model call failed: HTTPSConnectionPool(host=..., port=443): Max retries
 
 The same decision returns answers in the in-app test of SAS Intelligent Decisioning, and a decision that uses the *Call LLM node* works on the same destination. The cause is that MAS runs the Python code of the model in a separate runner container that does not have the CA bundle (*/security/trustedcerts.pem*) the main container has. This fix has to be done by an administrator with the ability to patch the SAS Viya deployment:
 
-1.   Confirm the cause and mount the bundle into the Python runner container as described in [Publishing to SAS Micro Analytic Service: the certificate bundle](./Deployment-of-Decisions.md#mas-certificate-bundle). That keeps TLS verification on and is the fix for production.
-2.   Check that */security/trustedcerts.pem* is listed inside the runner container, with the command given there.
+1.   Confirm the cause and mount the bundle file into the Python runner container as described in [Publishing to SAS Micro Analytic Service: the certificate bundle](./Deployment-of-Decisions.md#mas-certificate-bundle) — the one file with a *subPath* mount, not the whole *security* volume, which also holds the private key directory of the pod. That keeps TLS verification on and is the fix for production.
+2.   Check that */security/trustedcerts.pem* is listed inside the runner container, and that nothing else is under */security* there, with the commands given there.
 3.   Run the publishing validation again and check that the rows carry answers.
 
-On a test system with a closed cluster network, verification can be switched off instead — with the option **Verify TLS certificates in manifested models** of the Prompt Builder, followed by manifesting the model again, or with the environment variable *LLMCONTAINERSSLVERIFY=false* on the destination (*RAGEMBED_SSLVERIFY=false* for a retrieval model). The model then no longer checks which container answers; the same section says when that is acceptable.
+On a test system with a closed cluster network, verification can be switched off instead — with the option **Verify TLS certificates in manifested models** of the Prompt Builder, followed by manifesting the model again, or with the environment variable *LLMCONTAINERSSLVERIFY=false* on the destination (*RAGEMBED_SSLVERIFY=false* for a retrieval model). The model then no longer checks which container answers; the same section says when that is acceptable. Where MAS runs Python in the runner container, set the variable on the runner as well — see [the variable and the Python runner](./Deployment-of-Decisions.md#the-variable-and-the-python-runner).
 
 ## SAS Container Runtime
 

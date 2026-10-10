@@ -38,7 +38,7 @@ The option reaches the models that make an HTTPS call themselves: a prompt templ
 
 ### Finding the models that do not verify {#finding-the-models-that-do-not-verify}
 
-A model manifested while the option was not ticked carries the tag **TLS-Verification-Off** in SAS Model Manager, and the step that manifests it — *Finalize* for a prompt or a decision template, *Manifest setup* for a RAG setup — shows a warning before the button is clicked. The tag stands with the model's other tags, such as *LLM-Call-Included*. To list every such model, filter the models on that tag in SAS Model Manager, or ask the model repository:
+A model manifested while the option was not ticked carries the tag **TLS-Verification-Off** in SAS Model Manager: a decision template, the retrieval model of a RAG setup, and a prompt template manifested with the included LLM call. The step that manifests it shows a warning before the button is clicked — *Finalize* for a decision template, *Finalize* for a prompt only while **Include the LLM call in the manifested model** is ticked, and *Manifest setup* for a RAG setup. A prompt manifested for the *Call LLM* node makes no call itself, so it gets neither the warning nor the tag. The tag stands with the model's other tags, such as *LLM-Call-Included*. To list every such model, filter the models on that tag in SAS Model Manager, or ask the model repository:
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" \
@@ -46,7 +46,11 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   | jq -r '.items[] | [.name, .projectName, .modifiedBy] | @tsv'
 ```
 
-The tag says what the model was manifested with, not what a destination does: *LLMCONTAINERSSLVERIFY=true* on a destination makes a tagged model verify there, and *LLMCONTAINERSSLVERIFY=false* stops an untagged one from verifying. Manifesting the model again with the option ticked removes the tag.
+The tag says what the model was manifested with, not what a destination does: *LLMCONTAINERSSLVERIFY=true* on a destination makes a tagged model verify there, and *LLMCONTAINERSSLVERIFY=false* stops an untagged one from verifying. Manifesting the model again with the option ticked removes the tag, on all three kinds.
+
+The tag follows the score code the model holds. A manifest whose score code SAS Model Manager did not store is reported as failed and leaves the tags as they were. When the tags could not be updated, the manifest says so beside its button in both directions — the tag could not be written to a model that does not verify, or could not be taken away from one that does — so that it can be put right in SAS Model Manager.
+
+To read the setting in the score code itself, open the model in SAS Model Manager and look for one line. The score code of a prompt template with the included LLM call and of a decision template holds `sslVerifyDefault = True` or `sslVerifyDefault = False`. The `retrieve_context.py` of a retrieval model holds `SSL_VERIFY = True` or `SSL_VERIFY = False` in its MANIFEST block. A prompt manifested for the *Call LLM* node holds neither line.
 
 ## Kubernetes vs Azure Container Apps/Instances
 
@@ -84,7 +88,7 @@ target:
   version: v1
 ```
 
-This transformer adds the variable to the first container of the pod. For a model that makes the call itself, read [the variable and the Python runner](#the-variable-and-the-python-runner) below.
+This transformer adds the variable to the first container of the pod, the main container *sas-microanalytic-score*. Every prompt template reads *LLMCONTAINERPATH* in its Python score code, with or without the included LLM call: a prompt manifested for the *Call LLM* node builds the URL it hands to the node in that code too. Where MAS runs Python in a separate runner container, the score code does not run in the first container — set the variable on the runner as well, as [the variable and the Python runner](#the-variable-and-the-python-runner) below shows.
 
 ## Publishing to SAS Micro Analytic Service: the certificate bundle {#mas-certificate-bundle}
 
@@ -95,9 +99,9 @@ What follows was measured on one deployment (SAS Viya on Kubernetes, namespace `
 ### What the deployment looked like
 
 - The deployment `sas-microanalytic-score` has two containers: `sas-microanalytic-score` and a Python runner, there named `viya4-mas-python-runner` — the name carries the deployment's name prefix.
-- The pod has a volume named `security`, an `emptyDir` that the init container `sas-certframe` fills with the trust bundle.
-- The main container mounts that volume at `/security` and has `SSLCALISTLOC=/security/trustedcerts.pem`.
-- The Python runner mounts only `/tmp`, `/pylog`, `/opt/sas/viya/home/sas-pyconfig` and `/models/resources/viya`, and has no certificate environment variable. Inside it `/security/trustedcerts.pem` does not exist.
+- The pod has a volume named `security`, an `emptyDir` that the init container `sas-certframe` fills. It holds the trust bundle `trustedcerts.pem`, and more than that: the private key directory of the pod, `private`, is in the same volume.
+- The main container mounts the whole volume at `/security`, and parts of it a second time elsewhere by `subPath` (`cacerts`, `private`). It has `SSLCALISTLOC=/security/trustedcerts.pem`.
+- The Python runner mounts four volumes, and `security` is not one of them: `pytmp` at `/tmp`, `pylog` at `/pylog`, `python-volume` at `/opt/sas/viya/home/sas-pyconfig` and `astores-volume` at `/models/resources/viya`. It has no certificate environment variable, and inside it `/security/trustedcerts.pem` does not exist.
 
 A manifested model that calls the model container itself runs in the Python runner. It looks for the bundle, does not find the file, falls back to the public certificate authorities, and refuses the certificate of an ingress that is signed by the deployment's own CA.
 
@@ -118,31 +122,51 @@ For a prompt template the line starts with `LLM call failed:`. The URL names the
 - The Python runner has no bundle. Find the container names, then look for the file:
 
   ```bash
-  kubectl -n <namespace> get deployment sas-microanalytic-score \
-    -o jsonpath='{.spec.template.spec.containers[*].name}'
-  kubectl -n <namespace> exec deploy/sas-microanalytic-score \
-    -c <prefix>-mas-python-runner -- ls -l /security/trustedcerts.pem
+  kubectl -n <namespace> get deployment sas-microanalytic-score -o jsonpath='{.spec.template.spec.containers[*].name}'
+  kubectl -n <namespace> exec deploy/sas-microanalytic-score -c <prefix>-mas-python-runner -- ls -l /security/trustedcerts.pem
   ```
 
   `No such file or directory` is this case. If the file is listed, the cause is another one: the certificate of the endpoint is not signed by a CA in that bundle — point *LLMCONTAINERCABUNDLE* at a bundle that covers it.
 
 ### Two ways out
 
-1. **Mount the bundle into the Python runner.** Verification stays on, and no model has to be manifested again. This is the fix for production; the steps are in the next section.
+1. **Mount the bundle file into the Python runner.** Verification stays on, and no model has to be manifested again. This is the fix for production; the steps are in the next section.
 2. **Switch verification off** for the models concerned: clear **Verify TLS certificates in manifested models** in the Options pane of the Prompt Builder and manifest the model again, or set *LLMCONTAINERSSLVERIFY=false* on the destination (see [the variable and the Python runner](#the-variable-and-the-python-runner)). Either way the model no longer checks that the answer comes from the real model container: whatever answers on that address inside the network is believed, and the prompt or the state is sent to it. That is acceptable on a test system whose cluster network is closed to others. It is not a setting for production — there, mount the bundle.
+
+   On the deployment described here the option made exactly that difference: a decision whose decision template was manifested with verification off returned answers in the publishing validation on the MAS destination, and the same decision with the template manifested with verification on failed there with the error above.
 
 ### Mounting the bundle into the Python runner
 
-The volume already exists in the pod; the runner only lacks the mount. Replace `<prefix>-mas-python-runner` with the container name that the first command above printed.
+The volume already exists in the pod; the runner only lacks the mount. Mount the bundle **file**, not the volume. The `security` volume also holds the private key directory of the pod — `/security/private` in the main container — and the runner is the container that executes the code of the models. A mount with `subPath` gives the runner the one file it needs and nothing else of the volume.
 
-**For a test.** One command. It starts a rollout of MAS, so scoring is interrupted while the pods are replaced, and it is lost at the next update of the deployment:
+In both forms, replace `<prefix>-mas-python-runner` with the container name that the first command above printed.
 
-```bash
-kubectl -n <namespace> patch deployment sas-microanalytic-score --type=strategic \
-  -p '{"spec":{"template":{"spec":{"containers":[{"name":"<prefix>-mas-python-runner","volumeMounts":[{"name":"security","mountPath":"/security","readOnly":true}]}]}}}}'
+**For a test.** Save the patch as `mas-python-runner-trust.patch.yaml`:
+
+```yaml
+spec:
+  template:
+    spec:
+      containers:
+        - name: <prefix>-mas-python-runner
+          volumeMounts:
+            - name: security
+              mountPath: /security/trustedcerts.pem
+              subPath: trustedcerts.pem
+              readOnly: true
 ```
 
-**To keep it.** Add a patch file to the kustomize site configuration of the deployment, for example `site-config/sas-microanalytic-score/mas-python-runner-trust.yaml`:
+Then apply it. The patch is a file because a patch written on the command line is quoted differently in PowerShell and in bash:
+
+```bash
+kubectl -n <namespace> patch deployment sas-microanalytic-score --type=strategic --patch-file mas-python-runner-trust.patch.yaml
+```
+
+The patch changes the pod template, so it restarts the MAS pods — plan it like any other restart of MAS. A one-off patch is also overwritten by the next update of the deployment, which is why the second form exists.
+
+To see what the patch does before anything changes, add `--dry-run=client -o yaml` to the command. On the deployment this was written against, that dry run added the mount to the runner and left the main container as it was.
+
+**To keep it.** Add the same patch, with the header kustomize needs, to the site configuration of the deployment, for example as `site-config/sas-microanalytic-score/mas-python-runner-trust.yaml`:
 
 ```yaml
 apiVersion: apps/v1
@@ -156,7 +180,8 @@ spec:
         - name: <prefix>-mas-python-runner
           volumeMounts:
             - name: security
-              mountPath: /security
+              mountPath: /security/trustedcerts.pem
+              subPath: trustedcerts.pem
               readOnly: true
 ```
 
@@ -172,19 +197,21 @@ patches:
 
 Then build and apply the deployment as your site normally does.
 
-**Check the result** after either form, once the rollout has ended:
+**Check the result** after either form, once the rollout has ended. The patch has not been applied to a cluster by us: the dry run shows that the mount lands on the right container, not that the runner then reads the file. The check is therefore part of the procedure.
 
 ```bash
 kubectl -n <namespace> rollout status deployment sas-microanalytic-score
-kubectl -n <namespace> exec deploy/sas-microanalytic-score \
-  -c <prefix>-mas-python-runner -- ls -l /security/trustedcerts.pem
+kubectl -n <namespace> exec deploy/sas-microanalytic-score -c <prefix>-mas-python-runner -- ls -l /security/trustedcerts.pem
+kubectl -n <namespace> exec deploy/sas-microanalytic-score -c <prefix>-mas-python-runner -- ls /security
 ```
 
-The file has to be listed. Then run the publishing validation of the decision again: the rows have to carry answers instead of the error. If the file is listed and an error stays, read its text again — a different text is a different cause.
+The first `ls` has to list the file. The second should show that file and nothing else — no `private` directory. Then run the publishing validation of the decision again: the rows have to carry answers instead of the error. If the file is listed and an error stays, read its text again — a different text is a different cause.
 
 ### The variable and the Python runner {#the-variable-and-the-python-runner}
 
-A Python model reads the environment of the container its code runs in. The PatchTransformer in [MAS vs SCR](#mas-vs-scr) adds a variable to the first container of the pod, which on the deployment described here is the main one. Where MAS runs Python in a separate runner, add *LLMCONTAINERSSLVERIFY* — and every other *LLMCONTAINER...* variable the Python code of a model is to read — to the runner as well, by its name:
+A Python model reads the environment of the container its code runs in. That holds for every *LLMCONTAINER...* variable: *LLMCONTAINERPATH*, which every prompt template and every decision template reads, and *LLMCONTAINERCABUNDLE*, *LLMCONTAINERSSLVERIFY* and *LLMCONTAINERTIMEOUT*, which the models that make the call themselves read.
+
+The PatchTransformer in [MAS vs SCR](#mas-vs-scr) adds a variable to the first container of the pod, which on the deployment described here is the main one and not the runner. The containers of a pod do not share their environment, and whether MAS hands the environment of its main container on to the Python it starts in the runner has not been measured. So where MAS runs Python in a separate runner, add the variable to the runner as well, by its name, and look at what the runner really has with the command below:
 
 ```yaml
 apiVersion: apps/v1
@@ -197,15 +224,14 @@ spec:
       containers:
         - name: <prefix>-mas-python-runner
           env:
-            - name: LLMCONTAINERSSLVERIFY
-              value: "false"
+            - name: LLMCONTAINERPATH
+              value: <YOURVALUE>
 ```
 
-It is listed under `patches:` like the mount above. Check it the same way, with `env` in place of `ls`:
+It is listed under `patches:` like the mount above. Another variable is another entry of the same `env` list — *LLMCONTAINERSSLVERIFY* with the value `"false"`, in quotes, for the second of the two ways out; the *RAGEMBED_...* and *RAGSTORE_...* variables of a retrieval model go there in the same way. Check it like the mount, with `env` in place of `ls`:
 
 ```bash
-kubectl -n <namespace> exec deploy/sas-microanalytic-score \
-  -c <prefix>-mas-python-runner -- env | grep LLMCONTAINER
+kubectl -n <namespace> exec deploy/sas-microanalytic-score -c <prefix>-mas-python-runner -- env
 ```
 
-A variable set this way holds for every model published to that MAS, the ones manifested with verification on included.
+The output has to hold the variable with your value (pipe it through `grep LLMCONTAINER`, or `Select-String LLMCONTAINER` in PowerShell, to shorten it). A variable set this way holds for every model published to that MAS — *LLMCONTAINERSSLVERIFY=false*, for one, also for the models manifested with verification on.
