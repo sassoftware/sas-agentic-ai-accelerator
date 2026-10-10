@@ -111,29 +111,38 @@ mdb publish <model_id> --wait        # publish to SCR and poll until the image b
 mdb ship <model_id>                  # validate --live -> register --update -> publish --wait
 mdb unregister <model_id>            # delete a registered model from Model Manager
 mdb endpoints --json                 # SCR endpoint manifest for CI and testing
-mdb options-save                     # save this deployment's builder options to a file
+mdb options-save                     # save this deployment's Prompt Builder options to a file
 mdb options-restore                  # write them back after importing a report package
-mdb builders-import [pkg...]         # import the Builder packages: release table, host,
-                                     # data-source binding and saved options in one run
-mdb package-export --folder <path>   # export a Builder folder into the repository, host removed
+mdb builders-import [pkg...]         # import the Prompt Builder and RAG runtime packages:
+                                     # release table, host, data-source binding and saved
+                                     # options in one run
+mdb package-export --folder <path>   # export a SAS Content folder into the repository, host removed
 ```
 
-On a fresh environment, `mdb setup` creates the `LLM Repository` and the LLM/Embedding Model Projects (idempotent — existing objects are left untouched), and `mdb register` performs the same check automatically for the kind it registers, so you do not have to run setup explicitly. `mdb setup` also writes the authorization-group rules (`sas-viya-cli-commands.txt`) and the `llm-prompt-builder.json` / `rag-builder.json` builder seed files — it is the single entry point for bootstrapping the environment. Once the builders are configured, `mdb options-save` supersedes those seed files: it starts from the same discovered values and overlays what the live reports actually hold, so what you keep is your deployment as configured rather than as bootstrapped — see [Preserving builder options across a report import](./Setup-Additional-UIs.md#preserving-builder-options-across-a-report-import).
+On a fresh environment, `mdb setup` creates the `LLM Repository` and the LLM/Embedding Model Projects (idempotent — existing objects are left untouched), and `mdb register` performs the same check automatically for the kind it registers, so you do not have to run setup explicitly. `mdb setup` also writes the authorization-group rules (`sas-viya-cli-commands.txt`) and one seed file, `llm-prompt-builder.json` — the repository ID, the LLM project ID, the embedding project ID, the SCR endpoint and the deployment type, each under the name of the Prompt Builder option it is the value for. It is the single entry point for bootstrapping the environment. Once the Prompt Builder is configured, `mdb options-save` supersedes the seed file: it starts from the same discovered values and overlays what the live report actually holds, so what you keep is your deployment as configured rather than as bootstrapped — see [Preserving builder options across a report import](./Setup-Additional-UIs.md#preserving-builder-options-across-a-report-import).
 
 `--update` removes the old delete-and-re-register workaround: after `mdb generate`, one command refreshes the registered model while keeping its ID, history (a new model version is created) and project placement. Both kinds use one implementation — embedding models register into the Embedding Model Project with the same content roles and fact-sheet enrichment. Each registered model also stores its `definition.yaml` as model content, so the source of truth travels with the model.
 
 ## Importing and exporting the Builder packages
 
-`mdb builders-import` imports the Prompt Builder and RAG Builder transfer packages (the two shipped under `SAS-Viya-Integrations/`, or the files you name) into the deployment in `.env`, doing in one run what an import otherwise leaves to hand work afterwards:
+`mdb builders-import` imports the two transfer packages shipped under `SAS-Viya-Integrations/` (or the files you name) into the deployment in `.env`: first the **Prompt Builder** package - the UI for all three kinds, the optimization job and the report - then the **RAG runtime** package - the RAG custom steps, `rag_core`, the jobs and the retrieval model, and no UI. It does in one run what an import otherwise leaves to hand work afterwards:
 
 1. loads the release table (`mdb load-releases`; `--no-releases` skips it),
 2. uploads each package and rewrites its **import mapping** before the job starts: the report's data-source connector is retargeted from the shipped `Public.ACCELERATOR_RELEASES` to `SAS_CAS_LIBRARY.SAS_RELEASES_TABLE` on your CAS server, and the placeholder host in the Data-Driven Content URL becomes `SAS_VIYA_URL` - nothing is edited after the fact,
 3. imports and waits for the job, naming the failing task if there is one,
-4. configures the imported reports: with `--options builder-options.json` the site's saved values are written back (see [Preserving builder options across a report import](./Setup-Additional-UIs.md#preserving-builder-options-across-a-report-import)); without it the values `mdb setup` discovers - repository and project ids, `SAS_SCR_ENDPOINT`, `SAS_DEPLOYMENT_TYPE` - are; and either way every placeholder host left in a report (the Data-Driven Content URL, the `viyaHost` and `SCREndpoint` defaults) becomes `SAS_VIYA_URL`. A first install needs no edits in Visual Analytics beyond the optional settings.
+4. configures the imported report: with `--options builder-options.json` the site's saved values are written back (see [Preserving builder options across a report import](./Setup-Additional-UIs.md#preserving-builder-options-across-a-report-import)); without it the values `mdb setup` discovers - the repository, the LLM and the embedding project ids, `SAS_SCR_ENDPOINT`, `SAS_DEPLOYMENT_TYPE` - are; and either way every placeholder host left in the report (the Data-Driven Content URL, the `viyaHost` and `SCREndpoint` defaults) becomes `SAS_VIYA_URL`. A first install needs no edits in Visual Analytics beyond the optional settings - the credential domain, the judge model, and the switches for decision templates, prompt optimization and RAG, which keep the package's defaults, so RAG is off until it is enabled.
 
-`--dry-run` lists the objects and the mapping changes and imports nothing. Other data sources a package binds are left as exported and reported: retargeting a report at a table with different columns breaks its data items.
+`--dry-run` lists the objects and the mapping changes and imports nothing; because nothing is imported it compares the saved options with the report as it is on the site now, and sums up in one line the options that only arrive with the new report. Other data sources a package binds are left as exported and reported: retargeting a report at a table with different columns breaks its data items.
 
-`mdb package-export --folder "/SAS Agentic AI Accelerator/Prompt Builder"` is the other direction, for maintainers: it exports the folder (dependencies and rules included, as the shipped packages are), downloads the package, rewrites the exporting environment's hostname to the placeholder inside the compressed report content, checks the result and writes `SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json`. `--name`, `--out`, `--keep` (leave the package on the server) and `--exclude <object name>` (leave out something that lives in the folder but must not ship, such as a demo report) adjust that. It replaces the three manual steps - export in SAS Environment Manager, copy the file, `mdb package-check --fix`. (In Git Bash on Windows prefix the command with `MSYS_NO_PATHCONV=1`, or run it from PowerShell: the shell otherwise rewrites the `/SAS Agentic AI Accelerator/...` argument into a Windows path before `mdb` sees it.)
+Three things the command says rather than does:
+
+- **A package from before 2.3.0.** Such a file still holds the report `RAG Builder` and the job definition `RAG-Builder-UI`, the standalone RAG UI that is now part of the Prompt Builder. The command names it as predating 2.3.0, because importing it brings that UI back and `mdb` does not configure its report.
+- **A report named `RAG Builder` that is still on the site.** It is retired, keeps serving the old UI with its own options, and is neither written to nor deleted; the message says how to remove it. See [the retired RAG Builder report](./Setup-Additional-UIs.md#the-retired-rag-builder-report).
+- **A package that failed to import.** The options are still written back when the package that carries the report imported, and the run ends with the exact `mdb options-restore --file ...` command to repeat once the cause is fixed. The exit code stays 1.
+
+`mdb package-export --folder "/SAS Agentic AI Accelerator/Prompt Builder"` is the other direction, for maintainers: it exports the folder (dependencies and rules included, as the shipped packages are), downloads the package, rewrites the exporting environment's hostname to the placeholder inside the compressed report content, removes the report's per-user states (each is a full copy of the report with a user id), checks the result and writes `SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json`. The runtime package is exported from the content root under its own name: `mdb package-export --folder "/SAS Agentic AI Accelerator/RAG" --name "RAG Runtime"` writes `SAS-Agentic-AI-Accelerator-RAG-Runtime.json`. `--name`, `--out`, `--keep` (leave the package on the server) and `--exclude <object name>` (leave out something that lives in the folder but must not ship, such as a demo report) adjust that. It replaces the three manual steps - export in SAS Environment Manager, copy the file, `mdb package-check --fix`. (In Git Bash on Windows prefix the command with `MSYS_NO_PATHCONV=1`, or run it from PowerShell: the shell otherwise rewrites the `/SAS Agentic AI Accelerator/...` argument into a Windows path before `mdb` sees it.)
+
+The two packages are re-exported after every change to what they hold - the Prompt Builder package after a change to the UI bundle, the report or its options, the runtime package after a change to a RAG step, a job or `rag_core` - and the `mdb` test suite compares them with the repository: the report must hold every option the UI reads, the option defaults must be neutral (no project ids, RAG and optimization off), the job definition must hold the committed `dist/index.html`, and the runtime package must equal the repository files and carry no UI object. `mdb package-check` looks for leftover hostnames and warns about per-user report states; `--fix` removes both.
 
 ## Deployment YAML and CI pipelines
 
@@ -202,13 +211,13 @@ intro, `change_type` = `Release` - and one per changelog entry, with:
 | `is_current` | 1 for the newest dated release |
 | `release_rank`, `item_rank` | 1 = newest release; the entry's position within it, so a report can order without dates |
 | `section`, `change_type` | the heading as written and its normalised kind: Added, Changed, Fixed, Removed, Breaking, Release |
-| `component` | Prompt Builder, RAG Builder, RAG runtime, Model Definition Builder, Credentials, Definitions, Documentation or General - from the section heading when it names one, else from the entry's wording |
+| `component` | Prompt Builder, RAG runtime, Credentials, Model Definition Builder, Definitions, Documentation or General - from the section heading when it names one, else from the entry's wording. Entries about the RAG Builder are filed under Prompt Builder, which it is part of |
 | `summary`, `detail` | the entry's bold lead (or first sentence) and the rest, as plain text |
 
 It exists because a SAS Visual Analytics Data-Driven Content object needs a
-data assignment before it renders: the Prompt Builder and RAG Builder objects
-are assigned this table, and a report author can filter it by `component` to
-show what changed for the Builder next to it. `mdb load-releases --csv out.csv`
+data assignment before it renders: the Prompt Builder object is assigned this
+table, and a report author can filter it by `component` to show what changed
+for the Builder next to it. `mdb load-releases --csv out.csv`
 writes the table without contacting SAS Viya, for a look at the rows.
 
 `mdb generate --all --check` verifies that every generated file matches its manifest and is intended as a CI gate. Files you edited by hand are never overwritten silently — the command tells you to either fold the change into the manifest, declare the file as hand-maintained under `generation.overrides`, or pass `--force`.

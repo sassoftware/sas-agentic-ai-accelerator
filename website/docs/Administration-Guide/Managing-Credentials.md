@@ -20,7 +20,7 @@ of named secrets:
 
 | Entry name | Holds |
 | --- | --- |
-| `OpenAI`, `Anthropic`, `Google`, `AzureOpenAI`, … | LLM provider API keys — named after the `KeyName` each model definition's `API_KEY` option references (`key_name` in `definition.yaml`), because the Prompt Builder and the RAG Builder look a model's key up under exactly that name |
+| `OpenAI`, `Anthropic`, `Google`, `AzureOpenAI`, … | LLM provider API keys — named after the `KeyName` each model definition's `API_KEY` option references (`key_name` in `definition.yaml`), because the Prompt Builder, its RAG Builder part included, looks a model's key up under exactly that name |
 | `PGVECTOR_RAG_USER`, `PGVECTOR_RAG_PW` | RAG vector-store credentials — the prefix names the vector DB backend |
 | `SINGLESTORE_RAG_USER`, `SINGLESTORE_RAG_PW`, … | further vector-store backends; one domain serves several stores side by side |
 
@@ -183,6 +183,12 @@ them.
   disables models whose provider entry is missing (a note names the entry
   and domain). The domain is the only key source; enter `none` to skip the
   lookup in deployments that use exclusively key-less self-hosted models.
+  The setting is **one option for every kind** the Prompt Builder offers:
+  prompt templates, decision templates and RAG setups read the same domain.
+  `none` works for the two template kinds only. A RAG setup has no key-less
+  mode — the vector store's user, password and location come from the
+  domain — so with `none` the RAG setup card is shown disabled with that
+  reason, and nothing RAG is requested.
 - The **prompt-optimization job** accepts the same domain name (`keyDomain`,
   same default) and resolves keys server-side under the identity its compute
   session runs as. **That is only the launching user when the compute context
@@ -225,4 +231,7 @@ error names the identity it actually resolved as. Two remedies:
   that account can then use those keys.
 - Or prepare a **dedicated compute context that runs as the requesting
   user** and point the app's compute-context Option at it — keys then follow
-  the per-user/group rules above.
+  the per-user/group rules above. The Prompt Builder has two such options,
+  one per job: **Optimization: compute context** (`computeContext`) for the
+  prompt-optimization job and **RAG: ingestion compute context**
+  (`ragComputeContext`) for the RAG ingestion and the retrieval test.

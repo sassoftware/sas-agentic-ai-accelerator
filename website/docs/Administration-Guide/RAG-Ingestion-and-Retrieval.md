@@ -19,12 +19,29 @@ Everything lives in one governed SAS Content folder, by default
 | --- | --- |
 | `rag_core/` | The Python runtime every step and job imports at run time |
 | `steps/` | The nine custom steps, registered as dataFlows resources |
-| `jobs/` | `Ingest-Documents.sas`, the standalone schedulable job |
+| `jobs/` | `Ingest-Documents.sas`, the standalone schedulable job, and `Test-Retrieval.sas`, the probe behind the Builder's *Test retrieval* |
 | `models/` | The retrieval model template, manifested per setup |
 | `generated/` | Default destination for per-setup artifacts — the ingestion job and the Studio flow the Builder generates, and what **RAG - Register Setup** writes. The Builder lets an author choose a different folder per setup |
 
-Deploy with the shipped script, which reads your local checkout and
-authenticates through the `sas-viya` CLI session:
+This is the **RAG runtime**. It holds no user interface: the RAG Builder that
+writes setups against it is part of the Prompt Builder — see
+[Serving the RAG Builder](#serving-the-rag-builder) below.
+
+Two things put the runtime there, and their order matters:
+
+1. `mdb builders-import` imports the **RAG runtime package** beside the Prompt
+   Builder package (see
+   [Deploying the Builder UIs](./Setup-Additional-UIs.md)). The package holds
+   the runtime as it was on the day it was exported.
+2. The shipped script publishes the runtime **of your checkout**, which is the
+   one the documentation and the changelog of that checkout describe.
+
+Import first, then run the script — never the other way round: an import that
+follows the script can put the package's copy over what the script published.
+A site that does not use the package at all needs only the script.
+
+The script reads your local checkout and authenticates through the `sas-viya`
+CLI session:
 
 ```powershell
 ./SAS-Viya-Integrations/Other/deploy-rag-content.ps1
@@ -47,66 +64,98 @@ step mints a new id, and every saved flow referencing the old id breaks.
 
 ## Serving the RAG Builder
 
-The Builder is a single-file app served through SAS Job Execution, the same
-way as the Prompt Builder. Build it with `npm run build:rag` in
-`LLM-Prompt-Builder/` (unlike the Prompt Builder no prebuilt file is
-committed; the transfer package above carries the built app) and create a
-job definition whose **form** is that HTML:
+The RAG Builder is not an application of its own. It is the **RAG setup** kind
+of the Prompt Builder: the same single-file app, the same job definition
+(`/SAS Agentic AI Accelerator/Prompt Builder/SAS-LLM-Prompt-Builder-UI`) and
+the same Data-Driven Content object in the **Prompt Builder** report. There is
+nothing to build and no job definition to create for it — deploy the Prompt
+Builder as described in
+[Deploying the Builder UIs](./Setup-Additional-UIs.md), then switch RAG on:
 
-| | |
-| --- | --- |
-| Job definition | `<content root>/RAG-Builder-UI` |
-| `code` | empty — this job never runs SAS |
-| `properties` entry named `form` | the contents of `dist-rag/rag.html` |
-| URL | `https://<host>/SASJobExecution/?_program=<path>&_action=form` |
+1. Deploy the runtime (above), so the content root holds `rag_core`, the
+   steps, the jobs and the model template.
+2. Open the Prompt Builder report, select the object and open its **Options**
+   pane. The release table `Public.ACCELERATOR_RELEASES` has to be assigned to
+   the object, as for every use of it — see
+   [step 5](./Setup-Additional-UIs.md#5-add-the-object-to-a-visual-analytics-report).
+3. Set **Enable RAG setups** to *Enabled*. The options that start with `RAG:`
+   appear below the switch.
+4. Fill them in: the **embedding model project**, the content root, the CAS
+   server, the **ingestion compute context**, a checkbox per vector database
+   the deployment offers, and the operational policy (TLS, deleted-document
+   handling, history retention, run-history recording, embedding replicas,
+   table persistence). The Model Manager repository, the SCR endpoint, the
+   deployment type and the credential domain are the ones the Prompt Builder
+   already has; they are set once and used by every kind. The whole list, with
+   defaults, is in
+   [Configuration](./Setup-Additional-UIs.md#configuration-properties-panel).
 
-:::note The HTML is the FORM, not the code — and the form is a *property*
-`&_action=form` serves the job's **form**. Two ways to get this wrong, both
-of which look like something else:
+The Setup card of the Prompt Builder then offers *RAG setup for a document
+collection* beside the template kinds, and choosing it shows the Builder's own
+four steps. While the switch is *Disabled* — the default — the kind is not
+offered, nothing of the Builder is loaded and nothing RAG is requested from
+SAS Viya. With it enabled, the first request for RAG is made when a user
+chooses the kind.
 
-- HTML in `code` produces *"Parameter Error — HTML form file was not found"*,
-  which reads like a missing file rather than the wrong field.
+The policy values are recorded onto each setup as it is created, so a setup
+keeps what it was built with.
+
+:::note Three settings worth checking when RAG does not behave as expected
+- **The credential domain must not be `none`.** Prompt and decision templates
+  read `none` as "look no key up". RAG has no such mode — the ingestion and the
+  retrieval take the store's user, password, host and database from the
+  domain — so the RAG card is shown disabled and says why.
+- **The Model Manager repository ID must be set.** Every kind needs it; without
+  it the kind is not offered.
+- **The ingestion compute context is not the optimization compute context.**
+  The option is `ragComputeContext` (**RAG: ingestion compute context**); the
+  option `computeContext` belongs to the prompt optimization job and is never
+  read for an ingestion. A blank `ragComputeContext` does not hide the kind:
+  it blocks *Launch ingestion* and *Test retrieval* with a message that names
+  the setting.
+:::
+
+:::warning These options live inside the report
+Importing a newer Prompt Builder report from a transfer package replaces every
+value above with whatever the package was built against — silently, since the
+report still opens and the app still runs, with RAG switched off. Save them
+with `mdb options-save` before importing and restore them after: see
+[Preserving builder options across a report import](./Setup-Additional-UIs.md#preserving-builder-options-across-a-report-import).
+That section also covers a site that still has the retired report named
+**RAG Builder** from release 2.2 or earlier.
+:::
+
+Served standalone rather than embedded, the same settings are query
+parameters of the Prompt Builder job — the switch included, because it is off
+by default:
+
+```
+.../SASJobExecution/?_program=/SAS Agentic AI Accelerator/Prompt Builder/SAS-LLM-Prompt-Builder-UI&_action=form&enableRag=true&modelRepositoryID=<uuid>&embeddingProjectID=<uuid>&ragComputeContext=<context name>
+```
+
+(The browser encodes the blanks.) Without an LLM project in the URL the page
+shows the RAG Builder alone; add `llmProjectID` and `SCREndpoint` to get the
+template kinds beside it. A URL written for the job definition
+`RAG-Builder-UI` of release 2.2 or earlier has to be rewritten this way: that
+definition is retired, its context parameter was called `computeContext`, and
+it needed no `enableRag`.
+
+:::note If you replace the app by hand: the HTML is the FORM, and the form is a *property*
+`mdb builders-import` and the manual steps in
+[Deploying the Builder UIs](./Setup-Additional-UIs.md#2-create-a-sas-job-execution-definition)
+put the built `dist/index.html` into the job definition for you. Updating the
+definition through the REST API instead has two ways to go wrong, both of
+which look like something else:
+
+- `&_action=form` serves the job's **form**. HTML in `code` produces
+  *"Parameter Error — HTML form file was not found"*, which reads like a
+  missing file rather than the wrong field.
 - The form is an entry **inside the definition's `properties` list**, named
   `form` — not a top-level `form` key. A PUT carrying a top-level key returns
   **200 and silently drops it**, so the deploy looks successful while the old
   app keeps serving. Verify by reading the property back, not by trusting the
   status code.
-
-The Prompt Builder is served the same way, from
-`/SAS Agentic AI Accelerator/Prompt Builder/SAS-LLM-Prompt-Builder-UI`.
 :::
-
-The Content Security Policy directives in
-[Deploying the Builder UIs](./Setup-Additional-UIs.md) apply here too — the
-build base64-encodes its inline scripts so the Go template engine cannot
-corrupt them, and the CSP has to allow the decoded bundle to run.
-
-Assign the release table `Public.ACCELERATOR_RELEASES` to the object first
-(`mdb setup` / `mdb load-releases` load it; see [Deploying the Builder
-UIs](./Setup-Additional-UIs.md#5-add-the-object-to-a-visual-analytics-report)) -
-a Data-Driven Content object renders only with a data assignment. Then
-configure the Builder from its **Options** pane in Visual Analytics: the
-Model Manager repository, the **embedding model project**, SCR endpoint,
-credential domain, content root, CAS server, the ingestion compute context, a
-checkbox per vector database the deployment offers, and the operational policy
-(TLS, deleted-document handling, history retention, run-history recording,
-embedding replicas, table persistence). Those policy values are recorded onto
-each setup as it is created, so a setup keeps what it was built with.
-
-:::warning These options live inside the report
-Importing a newer Builder report from a transfer package replaces every value
-above with whatever the package was built against — silently, since the report
-still opens and the app still runs. Save them with `mdb options-save` before
-importing and restore them after: see
-[Preserving builder options across a report import](./Setup-Additional-UIs.md#preserving-builder-options-across-a-report-import).
-:::
-
-Served standalone rather than embedded, the same settings are query
-parameters:
-
-```
-.../SASJobExecution/?_program=<path>&_action=form&embeddingProjectID=<uuid>&modelRepositoryID=<uuid>
-```
 
 :::note What the Builder never asks a user
 Three things a person building a corpus should not have to know are resolved
@@ -155,9 +204,11 @@ through `rag_core` exactly as the ingestion does, so a broken
 model.
 
 Both *Launch ingestion* and *Test retrieval* need the **ingestion compute
-context** option to be set — SAS Job Execution rejects a job that does not name
-one, and the rejection carries no log. The Builder checks first and names the
-missing setting.
+context** option (`ragComputeContext`) to be set — SAS Job Execution rejects a
+job that does not name one, and the rejection carries no log. The Builder
+checks first and names the missing setting. The optimization compute context
+of the same Options pane does not count: it is a different option, for a
+different job.
 
 ## Enrichment: an LLM call per chunk
 
@@ -354,6 +405,12 @@ Submit with that context explicitly:
 ```json
 { "arguments": { "_contextName": "SAS Studio compute context" } }
 ```
+
+For jobs launched from the Builder, that context is the option
+**RAG: ingestion compute context** (`ragComputeContext`) of the Prompt Builder
+object. It is deliberately not the option **Optimization: compute context**
+(`computeContext`): the prompt optimization job is commonly run in the stock
+context, which is exactly the one that does not work here.
 
 The same service-account mismatch also prevents credential-domain lookups, so
 one context change fixes both.
@@ -555,7 +612,12 @@ PostgreSQL, on/off for SingleStore) and defaults to enabled.
 | Retrieval returns fewer chunks than exist | A SingleStore ANN index is enabled — see the warning above |
 | The run refuses to start | Another run holds the ledger lock; it expires after 30 minutes |
 | The Builder says the store is unresolved | The domain has no `<BACKEND>_HOST` / `_DB` — rerun `create-credential-domain` after adding them to your `.env` |
-| The embedding model has to be typed | No **embedding model project** is configured, or the user cannot read it |
+| No embedding model can be chosen, and no setup can be saved | No **embedding model project** is configured (`embeddingProjectID`), it holds no registered embedding model, or the user cannot read it |
 | Documents are missing from the collection | Read the run log's `rag skipped:` lines — they name every document and why. Code files are skipped unless the setup opts in |
-| The Builder points at the wrong environment after an upgrade | A report import replaced its Options — restore them with `mdb options-restore` |
+| The Setup card does not offer the RAG setup | **Enable RAG setups** is *Disabled* in the Options pane of the Prompt Builder object (the default, and what a report import without saved options leaves), or the repository ID is blank |
+| The RAG setup card is shown but cannot be chosen | The credential domain option is `none` — RAG needs a domain |
+| *Launch ingestion* or *Test retrieval* names a missing compute context | `ragComputeContext` is blank. The optimization `computeContext` is a different option |
+| A setup shows its vector database as *not offered for new setups* | The deployment withholds that database in the Options pane. The setup keeps it and can still be saved, launched and tested |
+| The Builder is switched off, or points at the wrong environment, after an upgrade | A report import replaced its Options — restore them with `mdb options-restore` |
+| A report named **RAG Builder** still exists and shows an older page | It is the retired standalone UI of release 2.2 or earlier — see [the retired RAG Builder report](./Setup-Additional-UIs.md#the-retired-rag-builder-report) |
 | Browsing the ledger shows nothing after a run | The ledger is written by the run's final step; a large corpus takes minutes. The run panel's clock shows whether it is still going |

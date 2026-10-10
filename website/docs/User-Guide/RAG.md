@@ -5,7 +5,9 @@ title: RAG
 
 Retrieval-augmented generation turns a folder of documents into something a
 decision can quote. This guide builds a working pipeline with the shipped
-custom steps, then asks it questions. For deployment and the environment
+custom steps, then asks it questions; the no-code route to the same pipeline
+is the [RAG setup](./Prompt-Builder.md#rag-setups) kind of the Prompt
+Builder. For deployment and the environment
 prerequisites, see the
 [RAG administration guide](../Administration-Guide/RAG-Ingestion-and-Retrieval.md).
 
@@ -22,6 +24,24 @@ between is bookkeeping — but the bookkeeping is what makes it operable:
   and a bad run rolled back;
 - every chunk knows **where it came from**, so an answer can be traced to a
   passage in a file.
+
+## Two ways to build it
+
+The pipeline is the same either way; what differs is where you configure it.
+
+- **In the Prompt Builder, without wiring anything.** Where your administrator
+  has enabled it, the Prompt Builder's first card offers a *RAG setup for a
+  document collection* beside the prompt and decision templates. Choosing it
+  opens the RAG Builder: four steps in which you name the documents, the
+  embedding model, the chunking and the vector store, save that as a governed
+  setup, and let it generate the ingestion job and the SAS Studio flow for
+  you. It also launches the ingestion, browses the ledger and tests the
+  retrieval. See [RAG setups](./Prompt-Builder.md#rag-setups) in the Prompt
+  Builder guide.
+- **In SAS Studio, step by step.** Chain the custom steps yourself, as the
+  rest of this page describes. This is also the page to read for what each
+  stage does — a setup made in the RAG Builder runs the same stages, and the
+  flow it generates is made of these steps.
 
 ## Build the pipeline
 
