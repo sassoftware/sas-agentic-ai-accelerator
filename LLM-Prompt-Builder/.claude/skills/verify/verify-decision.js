@@ -289,7 +289,7 @@ const lastLine = (message) => String(message || '').trim().split('\n').pop();
   const slowDecisionCalls = '**/scr/**';
   await page.route(slowDecisionCalls, async (route) => {
     await sleep(2500);
-    await route.continue();
+    await route.continue().catch(() => {});
   });
   await resetLog();
   await page.click('#app-obj-LPB-evaluate-run');

@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Verify LLM Prompt Builder changes end-to-end by serving the built dist/index.html from a mock SAS Viya server and driving it with Playwright against the system Edge browser. Covers the whole page - prompt templates, decision templates, the RAG Builder, the Options pane switches and the locale files. Use after changing LLM-Prompt-Builder source to observe the real UI instead of only building.
+description: Verify LLM Prompt Builder changes end-to-end by serving the built dist/index.html from a mock SAS Viya server and driving it with Playwright against the system Edge browser. Covers the whole page - prompt templates, decision templates, the RAG Builder, the Options pane switches, the locale files and the built page's text. Use after changing LLM-Prompt-Builder source to observe the real UI instead of only building.
 ---
 
 # Verify the LLM Prompt Builder without a live SAS Viya
@@ -34,30 +34,38 @@ The committed `dist/index.html` must equal a fresh build, or the
 
 | Suite | What it drives | Needs |
 |---|---|---|
-| `verify.js` | The Prompt Builder with LLM prompts: steps, variables, runs, failing models, judging, optimization, manifest, the deletion flows, a prompt-test created and found again; the page with decision templates off and with RAG on | mock, Python |
-| `verify-decision.js` | Decision templates: designer, lint, model cards, runs, evaluation, manifest, the kinds' own project lists; the page with decision templates off | mock, Python |
-| `verify-rag.js` | The RAG kind: offered only when switched on, the two flows side by side, a setup created, saved, manifested, ingested, asked a question and deleted; a withheld vector database; failures; the gates; a RAG-only page | mock, Python |
+| `verify.js` | The Prompt Builder with LLM prompts: steps, variables and the names they cannot have, runs, failing models, a run in flight while another prompt-test is opened, judging, optimization, manifest (both variants run in Python; saved runs the manifest refuses), the deletion flows with the decision usage note, a first request answered with 449, a prompt-test created, refused and found again; the page with decision templates off and with RAG on | mock, Python |
+| `verify-decision.js` | Decision templates: designer, lint, model cards, runs, evaluation (and the kind change it blocks), manifest (saved runs it refuses), the kinds' own project lists, both delete dialogs; the page with decision templates off | mock, Python |
+| `verify-rag.js` | The RAG kind: offered only when switched on, the two flows side by side (keyboard included), a setup created, saved, manifested, ingested, asked a question and deleted; what the delete dialogs say about decisions; what a delete acts on; a withheld vector database; failures; the gates; a RAG-only page | mock, Python |
 | `verify-options.js` | The Options contract: a stand-in for Visual Analytics embeds the app in an iframe, checks the one options group and loads every combination of the three switches, asserting what is built and what is requested | mock |
 | `verify-locales.js` | `en.json` against `de.json` and both against the sources (keys, placeholders, unused keys, formal address in German) | nothing |
+| `verify-tokens.js` | The built `dist/index.html` (or `VERIFY_DIST`): every inline script is stored base64-encoded, and no text outside a comment has the shape `$name$`, which SAS Job Execution substitutes as a token before it serves the page | nothing |
 
 The browser suites stop at their first failed check, so a run without the
 `===== SUMMARY =====` block did not run the checks after it. They repeat every
 line in that summary: count `OK` lines above it, or read the last line
 (`N checks passed, M failed`). `verify-options.js` goes on after a failure and
-writes a `NOTE` line when it skips the rest of a scenario.
+writes a `NOTE` line when it skips the rest of a scenario. `verify-tokens.js`
+writes a `NOTE` line for a `$name$` inside a comment: today that is the marker
+`/*$vite$:1*/` the bundler leaves at the end of the stylesheet.
 
-`verify-options.js` proves the app's side of the Options contract only. How
-Visual Analytics renders the group, how it writes a dropdown value into the
-iframe URL and what a saved report stores are assumptions of the stand-in: a
-change to the options group still needs a look in a real report.
+`verify-options.js` proves the app's side of the Options contract only. Its
+stand-in behaves the way Visual Analytics was measured to behave on 2026-10-10
+(a `Boolean` option is a checkbox mirrored into the iframe URL as `true` /
+`false`; a `String` dropdown with the keys `true` / `false` is not restored in
+the pane; the message carrying the `resultName` comes once, on Visual
+Analytics' own load of the object) - the header of the file has the details.
+What no stand-in shows is the Options pane itself: a change to the options
+group still needs a look in a real report.
 
 ## By hand
 
 1. Copy `mock-server.js`, the suites and `python-check.cjs` into a scratch
    folder, the `.js` files renamed to `.cjs`: the harness is CommonJS, and
    `LLM-Prompt-Builder/package.json` declares `"type": "module"`, so running it
-   in place fails. (`verify-locales.js` is the exception - it runs where it
-   lies: `node .claude/skills/verify/verify-locales.js`.)
+   in place fails. (`verify-locales.js` and `verify-tokens.js` are the
+   exception - they run where they lie:
+   `node .claude/skills/verify/verify-locales.js`.)
 2. Start the mock: `node mock-server.cjs <abs-path-to>/dist/index.html`. It
    serves http://localhost:4173, records every request (`GET /__log`) and
    forgets them on `POST /__reset`.
@@ -74,9 +82,9 @@ Environment variables:
 | `MOCK_REPO_ROOT` | mock | Repository root. The mock serves the RAG runtime (`Ingest-Documents.sas`, `Test-Retrieval.sas`, `retrieve_context.py`, the `RAG - *.step` files) from the repository and finds it from its own folder, the served bundle or the working directory; set this when the mock is a copy elsewhere serving a bundle elsewhere, or those routes answer 404 |
 | `VERIFY_BASE` | suites | Where the mock is (default `http://localhost:4173`); the app URL and its `SCREndpoint` are built from it |
 | `VERIFY_PYTHON` | `python-check.cjs` | The interpreter, optionally with arguments (`py -3.12`); then the only candidate |
-| `VERIFY_RAG_SECTIONS` | `verify-rag.js` | Comma list of `offered, shell, flow, withheld, failure, gates, ragonly`; the summary names the sections that ran |
+| `VERIFY_RAG_SECTIONS` | `verify-rag.js` | Comma list of `offered, shell, flow, usage, selection, withheld, failure, gates, ragonly`; the summary names the sections that ran |
 | `VERIFY_VERBOSE` | `verify-options.js` | `1` also prints the browser console errors |
-| `VERIFY_DIST` | `run-all.cjs` | The bundle to serve instead of this project's `dist/index.html` |
+| `VERIFY_DIST` | `run-all.cjs`, `verify-tokens.js` | The bundle to serve and to scan instead of this project's `dist/index.html` |
 
 Example for a second instance: `MOCK_PORT=4174 node mock-server.cjs <dist>` and
 `VERIFY_BASE=http://localhost:4174 node verify.cjs`.
@@ -105,12 +113,14 @@ Example for a second instance: `MOCK_PORT=4174 node mock-server.cjs <dist>` and
 
 | Route | Effect |
 |---|---|
-| `GET /__log`, `POST /__reset` | The recorded requests (`method`, `url`, `body`, `ifMatch`); clear them |
+| `GET /__log`, `POST /__reset` | The recorded requests (`method`, `url`, `body`, `ifMatch`, `xhr` - whether it carried `X-Requested-With: XMLHttpRequest` -, `csrf` - the token it carried -, and the `status` it was answered with); clear them |
 | `POST /__decision` | Adds the decision fixtures: project `proj-2` with the template `Ticket Routing` (`model-dec`) |
+| `POST /__nosession` `{ service, stuck, csrf }` | Takes the browser's session with one service (the first path segment, `relationships` for example) away: its XHR-style requests answer 449 until a plain `GET /<service>/` was seen. `stuck: true` never recovers; `csrf: true` makes the first write afterwards answer the CSRF 403 with the token to repeat it with; an empty body gives every session back |
+| `POST /__usage` `{ model, flows, status }` | What the relationships query answers for one model: `flows` (ids of decision flows; `flow-A` "Loan Approval Decision" and `flow-B` "Fraud Check Decision" have a name) makes these decisions use it, an empty list is a model nothing uses, `status` makes the query fail with that status; without both the model answers as its fixture does, without a model all of them do |
 | `POST /__failjob` | The next optimization job fails |
 | `POST /__failmodel` `{ name, status }` | Every later `POST /scr/<name>/<name>` answers that status (404 and 503 are what an ingress answers for a registered model without a container); `"drop"` closes the connection (a network failure in the browser); no `status` clears that model, an empty body clears all |
 | `POST /__norag`, `POST /__rag` | Hide the fixture project `rag-proj`; restore it and clear the RAG failures |
-| `POST /__ragfail` `{ projects, run, retrieval }` | `projects: <status>` makes the RAG project listing answer that status; `run: '<reason>'` makes the next ingestion log `Ingestion failed: <reason>`; `retrieval: '<reason>'` makes the next probe log `FAILED <reason>`; an empty body clears all |
+| `POST /__ragfail` `{ projects, run, documents, retrieval }` | `projects: <status>` makes the RAG project listing answer that status; `run: '<reason>'` makes the next ingestion log `Ingestion failed: <reason>`; `documents: <n>` makes the next ingestion do its work and count that many failed documents in its summary and its ledger; `retrieval: '<reason>'` makes the next probe log `FAILED <reason>`; an empty body clears all |
 | `GET /__ragstate` | What the RAG side created: `projects, models, contents, folders, jobDefinitions, flows, jobs, ledgers` |
 
 The mock must not define `/__vahost` or `/__vatop`: `verify-options.js` serves
@@ -134,9 +144,17 @@ also run, by `python-check.cjs`:
   returns one value per output variable.
 
 A new manifest check needs a hostile fixture, not only a friendly one: text
-with a backslash, braces, three double quotes in a row and a double quote as
-the last character. `verify-rag.js` compiles the manifested
+with a backslash, a tab, braces, three double quotes in a row and a double
+quote as the last character. `verify-rag.js` compiles the manifested
 `retrieve_context.py` the same way.
+
+A manifest is generated from the SAVED run, so what an earlier release stored
+is an input of its own: `verify.js` and `verify-decision.js` serve a tracker
+of their own for that (a Playwright route on `/files/files/trk-1/content` or
+`/files/files/dtrk-1/content`, then the prompt-test is selected again) - a
+variable or a question named like a Python keyword, an option value with a
+backslash, a model name with a double quote. Use that instead of a new
+fixture in the mock: the fixtures of a project are counted by other checks.
 
 ## What the mock answers
 
@@ -161,7 +179,8 @@ Prompt side:
   project, its own `GET`/`PUT`/`DELETE` and its contents answer for it, and
   answers 201 `{ items: [model] }` with `tags: null` - the real service drops
   the tags sent at creation, they only stick through a later `PUT`, which the
-  app sends right after
+  app sends right after. A name a created model or a fixture RAG setup of the
+  same project already has is refused with 409 and an error body without an id
 - `POST /scr/<model>/<model>` (the LLM and decision model containers); see
   `/__failmodel`
 - `GET /credentials/domains/{domain}/secrets`: `agentic-ai-keys` (the default)
@@ -201,8 +220,12 @@ RAG side (stateful; the block sits before the generic routes):
   `POST/GET/PUT/DELETE /jobDefinitions/definitions` (PUT needs `If-Match`)
 - Jobs: a launch of one of those definitions is `ragrun-N` (ingestion) or
   `ragtest-N` (the definition has a `question` parameter); `running` on the
-  first poll, `completed` with a log from the second. A retrieval log carries
-  `RAGRETRIEVE ROW {json}` lines
+  first poll, `completed` with a log from the second. An ingestion log is
+  written as it arrives in a SAS log: one line per step, each with its own
+  count (`0 failed` on a clean run), and the summary last, without the
+  semicolon the job's code puts before `documents` (the job blanks `; % &` and
+  quotes in every message). A retrieval log carries `RAGRETRIEVE ROW {json}`
+  lines
 - CAS: the ledger `<PREFIX>_LEDGER` answers for `RAGDEMO` and for every setup
   whose ingestion completed
 
@@ -226,7 +249,17 @@ RAG side (stateful; the block sits before the generic routes):
   has no radio; with one kind left the group is hidden. A disabled RAG card
   carries `#LPB-kind-rag-reason`; a failed RAG load shows `#LPB-kind-notice`.
   After a change of flow the target shows its Setup step and the checked radio
-  has the focus.
+  has the focus. On a card an arrow key moves the focus to the neighbouring
+  card and chooses nothing; Space chooses the focused card. While the RAG
+  Builder is built for the first time `#app-area-prompt` is `inert` (and
+  `aria-busy`), so a click there does nothing until the flow has changed or
+  the build has failed.
+- A delete dialog is about what was selected at the click. The RAG Builder
+  lists the setups of a project again for Delete project, and opens no dialog
+  when another setup or project was chosen while the usage was asked - a
+  check that changes the selection right after the click has to expect that.
+- A run in flight keeps Run Experiments disabled until its calls have ended,
+  also after another prompt-test was opened; the answers are then dropped.
 - Each flow is a row of steps and only the current step's pane is visible, so
   Playwright cannot act on a control of another step: open its step first with
   `#app-obj-<P>-step-{key}` (pane `#app-obj-<P>-pane-{key}`, Back/Continue

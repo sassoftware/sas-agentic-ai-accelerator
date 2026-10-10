@@ -1348,16 +1348,25 @@ function assertCompiles(code, label) {
   const slowCalls = '**/scr/**';
   await page.route(slowCalls, async (route) => {
     await sleep(4000);
-    await route.continue();
+    await route.continue().catch(() => {});
   });
+  // The calls of the run the mock has answered so far (a held call is not in its log yet).
+  const answeredCalls = async () => (await getLog()).filter((e) => e.method === 'POST' && e.url.startsWith('/scr/') && e.status !== null).length;
   const openPromptDuringRun = async (promptId, runs) => {
+    // Opening a run selects its models, so the number of calls is read here.
+    const calls = await page.$$eval('input[type=checkbox]', (boxes) => boxes.filter((box) => /^model\d+$/.test(box.id) && box.checked).length);
+    await resetLog();
     await page.click('#app-obj-LPB-run-experiment');
     await goStep('setup');
     await page.selectOption('#LPB-prompt-dropdown', promptId);
     await waitUntil(async () => (await page.$$('.pet-run-delete')).length === runs, `the ${runs} saved runs of the other prompt-test are loaded while the calls are out`);
     await goStep('build');
-    assert(await page.isDisabled('#app-obj-LPB-run-experiment'), 'the run is still in flight when the other prompt-test is open');
-    await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-run-experiment')), 'the Run button is released when the calls have ended', 15000);
+    assert((await answeredCalls()) === 0, 'the calls of the run are still out when the other prompt-test is open');
+    assert(await page.isDisabled('#app-obj-LPB-run-experiment'), 'Run Experiments stays disabled on the other prompt-test while they are');
+    // What follows is about the page AFTER the answers have come in.
+    await waitUntil(async () => calls > 0 && (await answeredCalls()) === calls, `the ${calls} call(s) of the run have been answered`, 20000);
+    await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-run-experiment')), 'the Run button is released when the calls have ended');
+    await sleep(300);
   };
   // Every model fails, on a prompt-test that is no longer the open one.
   for (const name of ['demo_llm', 'second_llm', 'contrarian_judge']) await failModel(name, 503);
@@ -1365,12 +1374,16 @@ function assertCompiles(code, label) {
   assert((await runErrorLines()).length === 0, `the failures of the run are not reported on the page of another prompt-test (got: ${(await runErrorLines()).join(' | ')})`);
   assert((await page.textContent('#app-obj-LPB-run-experiment')).trim() === 'Run Experiments', 'the Run button reads Run Experiments again');
   await failModel();
+  // The manifest writes the tracker from the runs the page holds now (a plain
+  // Save would write the rows it made when the prompt-test was opened).
+  await goStep('finalize');
   await resetLog();
-  await page.click('#app-obj-LPB-pet-save-button');
+  await page.click('#app-obj-LPB-pet-create-model-button');
   await waitUntil(
     async () => (await getLog()).some((e) => e.method === 'POST' && /\/models\/model-used\/contents\?/.test(e.url) && e.body.includes('Prompt-Experiment-Tracker.json')),
     'the tracker of the open prompt-test is saved'
   );
+  await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-pet-create-model-button')), 'the manifest of the open prompt-test has ended', 20000);
   const keptRows = multipartJson(
     (await getLog()).find((e) => e.method === 'POST' && /\/models\/model-used\/contents\?/.test(e.url) && e.body.includes('Prompt-Experiment-Tracker.json')).body
   ).map((r) => `${r.runId}:${r.model}`);

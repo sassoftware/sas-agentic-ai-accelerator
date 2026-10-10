@@ -32,9 +32,9 @@ const WORK = process.cwd();
 const DIST = path.resolve(process.env.VERIFY_DIST || path.join(PROJECT, 'dist', 'index.html'));
 const PORT = Number(process.env.MOCK_PORT) || 4173;
 const BASE = `http://localhost:${PORT}`;
-const SUITES = ['verify', 'verify-decision', 'verify-rag', 'verify-options', 'verify-locales'];
-// The locale check reads files only: no mock, no browser.
-const NEEDS_MOCK = (suite) => suite !== 'verify-locales';
+const SUITES = ['verify', 'verify-decision', 'verify-rag', 'verify-options', 'verify-locales', 'verify-tokens'];
+// The locale check and the token scan read files only: no mock, no browser.
+const NEEDS_MOCK = (suite) => suite !== 'verify-locales' && suite !== 'verify-tokens';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const mockAnswers = () =>
@@ -94,7 +94,8 @@ const waitFor = async (wanted) => {
     const started = Date.now();
     const run = spawnSync(process.execPath, [path.join(WORK, `${suite}.cjs`), ...(NEEDS_MOCK(suite) ? [] : [PROJECT])], {
       cwd: WORK,
-      env: { ...process.env, VERIFY_BASE: BASE },
+      // VERIFY_DIST: the token scan reads the bundle the mocks serve.
+      env: { ...process.env, VERIFY_BASE: BASE, VERIFY_DIST: DIST },
       encoding: 'utf8',
       maxBuffer: 1 << 28,
     });

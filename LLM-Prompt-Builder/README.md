@@ -98,7 +98,7 @@ in the URL or report definition**:
 | `viyaHost` | SAS Viya host | SAS Viya base URL. Defaults to the embedding origin. |
 | `modelRepositoryID` | Model Manager repository ID | Repository new prompt, decision and RAG projects are created in. Required by every kind. |
 | `llmProjectID` | LLM project ID | Model Manager project holding the available LLM definitions (each with an `options.json`). Required for prompt and decision templates. |
-| `SCREndpoint` | SCR endpoint | Base URL of the SCR endpoint hosting the model containers. Required for prompt and decision templates; RAG reads a blank value as `<SAS Viya host>/llm`. |
+| `SCREndpoint` | SCR endpoint | Base URL of the SCR endpoint hosting the model containers. Required for prompt and decision templates; RAG reads a blank value as `<SAS Viya host>/llm`. The ingestion job gets it as `scrEndpoint`, the manifested retrieval model as `EMBED_ENDPOINT`. |
 | `deploymentType` | Deployment type | `k8s` (default) or `aca` (Azure Container Apps). |
 | `judgeModel` | Default judge model | Optional default LLM (by name, from `llmProjectID`) used by the LLM-as-a-Judge. Not a secret; the in-app judge selector always overrides it. |
 | `modelCardReportURI` | Model card report URI | Optional report (`/reports/reports/<uuid>`) embedded on the model card of a manifested prompt. |
@@ -292,7 +292,8 @@ src/
   styles.css                Shared styles (Bootstrap is bundled)
   state/app-state.ts        Minimal global state (viyaHost, CSRF token, user)
   api/
-    http-client.ts          viyaFetch + CSRF retry (credentials: include)
+    http-client.ts          viyaFetch: CSRF retry, and the session of a service
+                            the browser has not met yet (HTTP 449)
     models-api.ts           SAS Model Manager calls
     files-api.ts            File content retrieval
     folders-api.ts          SAS Content folders
@@ -302,13 +303,15 @@ src/
     judge-api.ts            LLM-as-a-Judge calls
     jobdef-api.ts / jobexec-api.ts  SAS Job Execution (optimize, ingest, test retrieval)
     dataflows-api.ts        SAS Studio flows and custom steps
-    relationships-api.ts    Decision usage of a prompt (delete guard)
+    relationships-api.ts    The decisions that use a prompt-test or a RAG setup
+                            (the note in every delete dialog)
     cas-api.ts              CAS servers, caslibs and tables
   ui/                       stepper (the step row of both builders), kind
                             selector (the "What are you building?" cards),
                             instruction card, accordion, combobox, modals, doc
                             sections, list filter, markdown (marked +
-                            DOMPurify), option controls, toasts, HTML escaping
+                            DOMPurify), option controls, toasts, HTML escaping,
+                            links to other SAS Viya applications
   util/
     flags.ts                The strict reader of the three switches
     validation.ts           DS2 / Python name validation
@@ -333,8 +336,10 @@ src/
 and Playwright suites that drive the built bundle in the system Edge browser:
 the Prompt Builder (`verify.js`), decision templates (`verify-decision.js`), the
 RAG kind (`verify-rag.js`), the options group and the three switches
-(`verify-options.js`) and the locale files (`verify-locales.js`). After
-`npm run build`, from a scratch folder in which `playwright` is installed:
+(`verify-options.js`), the locale files (`verify-locales.js`) and the built
+page itself (`verify-tokens.js`: no text SAS Job Execution would substitute as
+a `$token$`). After `npm run build`, from a scratch folder in which
+`playwright` is installed:
 
 ```bash
 node <path-to>/LLM-Prompt-Builder/.claude/skills/verify/run-all.cjs
