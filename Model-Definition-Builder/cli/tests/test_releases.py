@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """CHANGELOG.md -> the ACCELERATOR_RELEASES table.
 
-The table is what a report author assigns to the Prompt Builder and RAG
-Builder objects, and its `component` column is what they filter on - so the
+The table is what a report author assigns to the Prompt Builder object, and
+its `component` column is what the report's Changelog page filters on - so the
 parser must survive the changelog's real shapes (themed sections, nested and
 numbered lists, paragraphs under a heading, "None" placeholders) and the
-component tagging must put Builder changes where a filter finds them.
+component tagging must put Builder changes where that filter finds them. The
+filter is `component = 'Prompt Builder'`, and the RAG Builder is a part of the
+Prompt Builder: a change to it must land under that value too.
 """
 import csv
 from pathlib import Path
@@ -14,8 +16,8 @@ from pathlib import Path
 import pytest
 
 from mdb.core.releases import (
-    COLUMNS, GENERAL, build_release_table, component_for, components_of, parse_changelog,
-    rows_from,
+    COLUMNS, COMPONENT_KEYWORDS, GENERAL, build_release_table, component_for, components_of,
+    parse_changelog, rows_from,
 )
 
 REPO = Path(__file__).resolve().parents[3]
@@ -125,22 +127,90 @@ def test_components_put_builder_changes_where_a_filter_finds_them():
     assert by_summary["A new thing for the Prompt Builder"] == "Prompt Builder"
     assert by_summary["mdb generates definitions"] == "Model Definition Builder"
     # a section that names a component files everything under it there, even
-    # an entry that says "registers" - which alone would read as mdb
-    assert by_summary["One button makes a setup real"] == "RAG Builder"
-    assert by_summary["Three ways for content to leave a collection"] == "RAG Builder"
+    # an entry that says "registers" - which alone would read as mdb, and one
+    # that names only steps - which alone would read as the RAG runtime. The
+    # RAG Builder is a part of the Prompt Builder, so that is the component.
+    assert by_summary["One button makes a setup real"] == "Prompt Builder"
+    assert by_summary["Three ways for content to leave a collection"] == "Prompt Builder"
+    assert components_of("RAG - Purge Documents for erasure")[0] == "RAG runtime"
     # priority: a Prompt Builder entry that also mentions keys stays Prompt Builder
     assert by_summary["The key-table pattern is removed"] == "Prompt Builder"
     assert components_of("Nothing recognisable here.") == [GENERAL]
     assert component_for("Fixed", "Nothing recognisable here.") == GENERAL
+    # "RAG Builder" is not a component: no text can be filed under it
+    assert "RAG Builder" not in [name for name, _ in COMPONENT_KEYWORDS]
+    assert components_of("The RAG Builder loads a setup.")[0] == "Prompt Builder"
+    assert components_of("rag_core retries a failed embedding call.")[0] == "RAG runtime"
     # short tokens match whole words only: "scr" is not in "scripts"
     assert "Model Definition Builder" not in components_of("The shell scripts were quoted.")
+
+
+# The shape the 2.3.0 entry has: the headline of the release, the upgrade steps
+# and the removals all talk about the RAG Builder moving into the Prompt
+# Builder. Every one of them is what a site looks for on the report's
+# Changelog page.
+MERGE_RELEASE = """# Changelog
+
+## [2.3.0] - unreleased
+
+The **RAG Builder is part of the Prompt Builder**: one report, one object, three kinds.
+
+### Upgrading from 2.2.x
+
+Save the options while the RAG Builder report still exists:
+
+1. `mdb options-save`
+2. `mdb builders-import --options builder-options.json`
+3. Delete the report `RAG Builder` and the job definition `RAG-Builder-UI`.
+
+### Changed
+
+- **The RAG Builder is part of the Prompt Builder.** One report, one object, one set of options.
+
+### Added
+
+- **A RAG setup is the third kind on the Setup card.** Choosing it swaps the step flow.
+- **Switches for decisions, optimization and RAG.** Each one hides what it does not offer in the options pane.
+
+### Fixed
+
+- **A manifested decision template is valid Python.** The Prompt Builder indents the per-question lines.
+- **rag_core records the run history again.** The column was missing from the DDL.
+
+### Removed
+
+- **The standalone RAG build.** `npm run build:rag`, `rag.html` and the RAG Builder report are gone.
+- **The `rag-builder.json` seed.** `mdb setup` writes one seed file.
+"""
+
+
+def test_the_merge_release_lands_where_the_report_filters():
+    rows = rows_from(parse_changelog(MERGE_RELEASE))
+    by_summary = {r["summary"]: r for r in rows}
+    upgrade = next(r for r in rows if r["change_type"] == "Upgrade")
+    assert upgrade["component"] == "Prompt Builder"
+    assert "options-save" in upgrade["detail"] and "RAG-Builder-UI" in upgrade["detail"]
+    for headline in ("The RAG Builder is part of the Prompt Builder",
+                     "A RAG setup is the third kind on the Setup card",
+                     "Switches for decisions, optimization and RAG",
+                     "A manifested decision template is valid Python",
+                     "The standalone RAG build",
+                     "The rag-builder.json seed"):
+        assert by_summary[headline]["component"] == "Prompt Builder", headline
+    assert by_summary["The standalone RAG build"]["change_type"] == "Removed"
+    # the runtime keeps its own component: this row is not a UI change
+    assert by_summary["rag_core records the run history again"]["component"] == "RAG runtime"
+    assert "RAG Builder" not in {r["component"] for r in rows}
+    # an entry dated "unreleased" is listed but is not the current release
+    assert not any(r["is_current"] for r in rows)
 
 
 def test_the_real_changelog_parses(tmp_path):
     rows, summary = build_release_table(REPO / "CHANGELOG.md", tmp_path / "releases.csv")
     assert summary["releases"] >= 12 and summary["rows"] > 400
     assert summary["current"]  # a dated release exists
-    assert {"Prompt Builder", "RAG Builder", "Model Definition Builder"} <= set(summary["by_component"])
+    assert {"Prompt Builder", "RAG runtime", "Model Definition Builder"} <= set(summary["by_component"])
+    assert "RAG Builder" not in summary["by_component"]
     # every entry is exactly one row (the key includes the date: the changelog
     # once reused a version number for two releases)
     assert len({(r["version"], r["release_date"], r["item_rank"]) for r in rows}) == len(rows)

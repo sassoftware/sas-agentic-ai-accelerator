@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """The accelerator's release history as a table: CHANGELOG.md -> rows.
 
-The Prompt Builder and RAG Builder objects in SAS Visual Analytics need a data
-assignment before the report renders, and the tables the shipped packages used
-to bind to (the retired key table, a demo table) meant every importer first had
-to have one lying around. This module turns the changelog into a small table an
+The Prompt Builder object in SAS Visual Analytics needs a data assignment
+before the report renders, and the tables the shipped packages used to bind to
+(the retired key table, a demo table) meant every importer first had to have
+one lying around. This module turns the changelog into a small table an
 environment can always provide - ``ACCELERATOR_RELEASES`` - with one row per
 release and one per change, so the assignment also tells a report author which
 release is deployed and what changed for the Builder they are looking at.
@@ -25,8 +25,13 @@ Parsing follows the changelog's own conventions (keep-a-changelog style):
 Each change gets ONE component. When the section heading names a component
 ("RAG Builder: generating what a setup implies") every entry under it belongs
 there; otherwise the entry's own wording decides, in a fixed priority so that a
-RAG Builder entry that also says "registers" is not filed under the Model
+Builder entry that also says "registers" is not filed under the Model
 Definition Builder. Nothing here needs SAS Viya; viya/cas.py uploads the CSV.
+
+The RAG Builder is a part of the Prompt Builder, so what names it is filed
+under "Prompt Builder": that is the value the report's Changelog page filters
+on, in reports already imported as much as in new ones. "RAG runtime" - the
+steps, rag_core, the stores - stays a component of its own.
 """
 from __future__ import annotations
 
@@ -46,16 +51,18 @@ COLUMNS = (
 STANDARD_SECTIONS = {"added": "Added", "changed": "Changed", "fixed": "Fixed", "removed": "Removed"}
 
 #: Which part of the accelerator a change talks about, in PRIORITY order: the
-#: first component whose keywords match wins. The two Builders come first
-#: because their entries routinely mention what they generate, register or
-#: publish; a change matching nothing is "General". Short alphabetic tokens
-#: are matched on word boundaries so "scr" does not match "scripts".
+#: first component whose keywords match wins. The Prompt Builder comes first
+#: because its entries routinely mention what it generates, registers or
+#: publishes - and its RAG part what it ingests and retrieves, which would
+#: otherwise read as the RAG runtime; a change matching nothing is "General".
+#: Short alphabetic tokens are matched on word boundaries so "scr" does not
+#: match "scripts".
 COMPONENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("RAG Builder", (
+    ("Prompt Builder", (
+        # its RAG part
         "rag builder", "rag-builder", "rag setup", "test retrieval", "manifest setup",
         "browse ledger", "launch ingestion", "setup editor",
-    )),
-    ("Prompt Builder", (
+        # prompts, judging, optimization, and the embedding in Visual Analytics
         "prompt builder", "prompt-builder", "judge model", "judging", "judge button", "as-a-judge",
         "the judge", "judge this", "judge rank", "prompt experiment", "experiment tracker",
         "prompt-test", "prompt test", "optimiz", "dspy", "manifested prompt", "manifest the best",
