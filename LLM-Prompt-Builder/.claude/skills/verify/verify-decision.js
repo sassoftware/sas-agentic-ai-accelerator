@@ -71,11 +71,11 @@ const lastLine = (message) => String(message || '').trim().split('\n').pop();
     await page.waitForSelector(`#app-obj-LPB-pane-${key}:not([hidden])`);
   };
   const visibleSteps = () =>
-    page.$$eval('.pb-step', (els) =>
+    page.$$eval('#app-obj-LPB-stepper .pb-step', (els) =>
       els.filter((e) => !e.hidden).map((e) => e.querySelector('.pb-step-button').id.replace('app-obj-LPB-step-', '')).join(',')
     );
   const stepNumbers = () =>
-    page.$$eval('.pb-step', (els) => els.filter((e) => !e.hidden).map((e) => e.querySelector('.pb-step-marker').textContent).join(','));
+    page.$$eval('#app-obj-LPB-stepper .pb-step', (els) => els.filter((e) => !e.hidden).map((e) => e.querySelector('.pb-step-marker').textContent).join(','));
 
   // Ask the mock for its decision fixtures (a second project holding the decision template).
   await fetch(BASE + '/__decision', { method: 'POST' });
@@ -87,7 +87,7 @@ const lastLine = (message) => String(message || '').trim().split('\n').pop();
   // ---- an LLM page: the Evaluate step is there but hidden ---------------------
   assert((await visibleSteps()) === 'setup,build,finalize', `LLM mode shows three steps (got ${await visibleSteps()})`);
   assert(await page.$('#app-obj-LPB-step-evaluate'), 'the Evaluate step exists in the row');
-  assert((await page.$$('.pb-kind-option')).length === 2, 'the Setup card offers the two kinds of template');
+  assert((await page.$$('#LPB-kind-options .pb-kind-option')).length === 2, 'the Setup card offers the two kinds of template');
   assert(await page.isChecked('#LPB-kind-llm'), 'the LLM kind is the default');
   assert(!(await page.$('#promptBuilderCreatePromptKind')), 'the new-prompt dialog carries no kind field');
 
@@ -142,6 +142,14 @@ const lastLine = (message) => String(message || '').trim().split('\n').pop();
   assert(!(await page.isVisible('#app-obj-LPB-decision-help-state')), 'help is folded away');
   await page.click('.pb-help-toggle');
   assert(await page.isVisible('#app-obj-LPB-decision-help-state'), 'the help toggle reveals the help text');
+  // A toggle beside a text field shares a flex row with it and must not be squeezed.
+  const toggleShapes = await page.$$eval('.pb-help-toggle', (els) =>
+    els.map((e) => e.getBoundingClientRect()).filter((r) => r.width > 0).map((r) => `${Math.round(r.width)}x${Math.round(r.height)}`)
+  );
+  assert(
+    toggleShapes.length >= 3 && toggleShapes.every((shape) => shape.split('x')[0] === shape.split('x')[1]),
+    `every help toggle is a circle, also the ones in a question row (got ${[...new Set(toggleShapes)].join(' ')})`
+  );
   // The saved run in the tracker
   assert(await page.isVisible('#app-obj-LPB-pet-0'), 'the saved run is rendered');
   const runBodyText = await page.textContent('#app-obj-LPB-pet-0');
@@ -472,6 +480,73 @@ const lastLine = (message) => String(message || '').trim().split('\n').pop();
   assert(!(await page.isVisible('#app-obj-LPB-decision-state')), 'the designer is hidden again');
   assert(await page.isVisible('#app-obj-LPB-judge-model'), 'the judge card is back');
   step(true, 'switching between kinds leaves the page consistent');
+
+  // ---- the switches of the object ------------------------------------------------
+  // The mock keeps its decision projects, the template and the decision models
+  // for these pages: the switch alone has to keep all of it off the page.
+  const openPage = async (query) => {
+    const other = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
+    other.on('pageerror', (e) => {
+      pageErrors.push(e.message);
+      console.log('[pageerror]', e.message);
+    });
+    await other.goto(`${APP_URL}&${query}`);
+    await other.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+    return other;
+  };
+  const projectsOf = (target) =>
+    target.$$eval('#LPB-project-dropdown option', (els) => els.map((e) => e.value).filter((v) => v.startsWith('proj')).join(','));
+  const stepsOf = (target) =>
+    target.$$eval('#app-obj-LPB-stepper .pb-step', (els) =>
+      els.filter((e) => !e.hidden).map((e) => e.querySelector('.pb-step-button').id.replace('app-obj-LPB-step-', '')).join(',')
+    );
+  await resetLog();
+  const offPage = await openPage('enableDecision=false');
+  await waitUntil(async () => (await projectsOf(offPage)) === 'proj-1', 'the LLM project is listed with decision templates switched off');
+  step(true, 'switched off, the decision projects still stay out of the project list');
+  assert(
+    !(await offPage.$('#LPB-kind-decision')) && !(await offPage.isVisible('#LPB-kind-options')),
+    'the decision kind is not offered, and with one kind left there is no choice to make'
+  );
+  assert(
+    !(await offPage.$('#app-obj-LPB-step-evaluate')) && !(await offPage.$('#app-obj-LPB-pane-evaluate')),
+    'the Evaluate step and its pane are not built'
+  );
+  assert(
+    !(await offPage.$('#decision-model0')) && !(await offPage.$('#app-obj-LPB-decision-state')) && !(await offPage.$('#app-obj-LPB-pet-manifest-decision')),
+    'neither are the decision models, the designer and the decision manifest options'
+  );
+  assert((await stepsOf(offPage)) === 'setup,build,finalize', `the page has the three LLM steps (got ${await stepsOf(offPage)})`);
+  const readable = (url) => {
+    try {
+      return decodeURIComponent(url.replace(/\+/g, ' '));
+    } catch {
+      return url;
+    }
+  };
+  const askedAboutDecisionModels = (await getLog())
+    .map((e) => `${e.method} ${readable(e.url)}`)
+    .filter((line) => /Decision Model Project|\/projects\/dec-proj\/|\/models\/dec-\d|\/files\/files\/dopt-/.test(line));
+  assert(
+    askedAboutDecisionModels.length === 0,
+    `and nothing is asked about the decision models (got: ${askedAboutDecisionModels.join(' | ') || 'no such request'})`
+  );
+  await offPage.close();
+
+  // With RAG switched on the decision kind is the second of three cards, and
+  // choosing it is a matter of the Prompt Builder alone.
+  const threeKindsPage = await openPage('enableRag=true&embeddingProjectID=emb-proj');
+  const kindIds = await threeKindsPage.$$eval('#LPB-kind-options .pb-kind-option input', (els) => els.map((e) => e.id).join(','));
+  assert(kindIds === 'LPB-kind-llm,LPB-kind-decision,LPB-kind-rag', `with RAG switched on the Setup card offers three kinds (got ${kindIds})`);
+  await threeKindsPage.click('#LPB-kind-decision');
+  await waitUntil(async () => (await stepsOf(threeKindsPage)) === 'setup,build,evaluate,finalize', 'the decision steps on the page with three kinds');
+  await waitUntil(async () => {
+    const listed = (await projectsOf(threeKindsPage)).split(',');
+    return listed.includes('proj-2') && !listed.includes('proj-1');
+  }, 'the decision projects, and only those, on the page with three kinds');
+  step(true, 'on the page with three kinds the decision kind shows its steps and its projects');
+  assert(!(await threeKindsPage.$('#app-obj-RGB')), 'choosing the decision kind there builds nothing of the RAG Builder');
+  await threeKindsPage.close();
 
   assert(pageErrors.length === 0, `no uncaught page errors (got: ${pageErrors.join(' | ')})`);
   await browser.close();

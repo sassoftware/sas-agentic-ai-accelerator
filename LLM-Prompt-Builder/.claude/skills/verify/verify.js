@@ -83,7 +83,7 @@ function assertCompiles(code, label) {
     await page.waitForSelector(`#app-obj-LPB-pane-${key}:not([hidden])`);
   };
   const currentStep = () =>
-    page.$eval('.pb-step.is-current .pb-step-button', (el) => el.id.replace('app-obj-LPB-step-', ''));
+    page.$eval('#app-obj-LPB-stepper .pb-step.is-current .pb-step-button', (el) => el.id.replace('app-obj-LPB-step-', ''));
 
   const APP_URL = `${BASE}/?modelRepositoryID=repo-1&llmProjectID=llm-proj&SCREndpoint=${BASE}/scr`;
   await page.goto(APP_URL);
@@ -92,13 +92,19 @@ function assertCompiles(code, label) {
 
   // ---- UX: heading hierarchy, sections, gated run button, modal copy --------
   assert((await page.$$('h1')).length === 1, 'exactly one h1 on the page');
-  assert((await page.$$('.pb-section')).length === 7, 'page grouped into seven visual sections (incl. Judging and Evaluate)');
+  assert((await page.$$('#app-obj-LPB .pb-section')).length === 7, 'the Prompt Builder is grouped into seven visual sections (incl. Judging and Evaluate)');
+  assert(
+    !(await page.$('#app-obj-RGB')) && (await page.$$('.pb-section')).length === 7,
+    'nothing of the RAG Builder is on a page that has not switched RAG on'
+  );
   assert(await page.isDisabled('#app-obj-LPB-run-experiment'), 'Run Experiments disabled until an LLM is selected');
   assert((await currentStep()) === 'setup', 'the flow opens on the Setup step');
   const stepKeys = (target) =>
-    // Only the visible steps: the Evaluate step is in the row for every page
-    // and hidden unless a decision template is open.
-    target.$$eval('.pb-step-button', (els) =>
+    // Only the visible steps of the Prompt Builder's own row: the Evaluate
+    // step is in it whenever decision templates are switched on and hidden
+    // unless one is open, and a page that has opened the RAG flow holds a
+    // second row.
+    target.$$eval('#app-obj-LPB-stepper .pb-step-button', (els) =>
       els.filter((e) => !e.closest('.pb-step').hidden).map((e) => e.id.replace('app-obj-LPB-step-', '')).join(',')
     );
   assert(
@@ -106,7 +112,7 @@ function assertCompiles(code, label) {
     `three steps while optimization is disabled (got: ${await stepKeys(page)})`
   );
   assert(await page.isHidden('#app-obj-LPB-stepper-back'), 'no Back on the first step');
-  assert((await page.$$('.pb-instructions')).length === 7, 'every card carries an Instructions box');
+  assert((await page.$$('#app-obj-LPB .pb-instructions')).length === 7, 'every card carries an Instructions box');
   await goStep('build');
   assert(await page.isVisible('#app-obj-LPB-pet-empty'), 'tracker shows an empty-state hint');
   assert(await page.isVisible('#model0'), 'the LLM selection is part of Build & Test');
@@ -127,6 +133,56 @@ function assertCompiles(code, label) {
   assert(await optimizePage.isVisible('#app-obj-LPB-optimize-run'), 'the optimize card sits on its own step');
   assert(!(await optimizePage.isVisible('#app-obj-LPB-pet-create-model-button')), 'Manifest stays on Finalize');
   await optimizePage.close();
+  // Decision templates are a switch of the object. Off, nothing of them is
+  // built, and with one kind left there is no kind to choose.
+  const plainPage = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
+  await plainPage.goto(`${APP_URL}&enableDecision=false`);
+  await plainPage.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+  assert(
+    (await stepKeys(plainPage)) === 'setup,build,finalize',
+    `the same three steps with decision templates switched off (got: ${await stepKeys(plainPage)})`
+  );
+  assert(
+    !(await plainPage.$('#app-obj-LPB-step-evaluate')) && !(await plainPage.$('#app-obj-LPB-pane-evaluate')),
+    'switched off, the Evaluate step and its pane are not built at all'
+  );
+  assert(
+    (await plainPage.$$('#app-obj-LPB .pb-section')).length === 6 &&
+      (await plainPage.$$('#app-obj-LPB .pb-instructions')).length === 6,
+    'which leaves six cards, each with its Instructions box'
+  );
+  assert(
+    (await plainPage.$$('#LPB-kind-options .pb-kind-option')).length === 1 &&
+      !(await plainPage.$('#LPB-kind-decision')) &&
+      !(await plainPage.isVisible('#LPB-kind-options')),
+    'the one kind that is left is not offered as a choice'
+  );
+  await plainPage.close();
+  // With RAG switched on the page can hold two builders at once. Everything
+  // above counts inside the Prompt Builder, and still holds beside the other.
+  const mergedPage = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
+  await mergedPage.goto(`${APP_URL}&enableRag=true&embeddingProjectID=emb-proj`);
+  await mergedPage.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+  const kindIds = await mergedPage.$$eval('#LPB-kind-options .pb-kind-option input', (els) => els.map((e) => e.id).join(','));
+  assert(
+    kindIds === 'LPB-kind-llm,LPB-kind-decision,LPB-kind-rag',
+    `with RAG switched on the Setup card offers three kinds (got: ${kindIds})`
+  );
+  assert(!(await mergedPage.$('#app-obj-RGB')), 'the RAG Builder is not built before it is chosen');
+  await mergedPage.click('#LPB-kind-rag');
+  await mergedPage.waitForSelector('#app-obj-RGB-stepper', { state: 'visible', timeout: 15000 });
+  assert(
+    (await mergedPage.$$('#app-obj-LPB .pb-section')).length === 7 && (await mergedPage.$$('.pb-section')).length > 7,
+    'beside the RAG Builder the Prompt Builder still has its seven cards'
+  );
+  assert(
+    (await stepKeys(mergedPage)) === 'setup,build,finalize' &&
+      (await mergedPage.$$('#app-obj-LPB-stepper .pb-step.is-current')).length === 1 &&
+      (await mergedPage.$$('#app-obj-RGB-stepper .pb-step.is-current')).length === 1,
+    `each flow keeps a step row of its own with one current step (prompt steps: ${await stepKeys(mergedPage)})`
+  );
+  assert((await mergedPage.$$('h1')).length === 1, 'two builders on the page, still exactly one h1');
+  await mergedPage.close();
   assert(
     await page.isDisabled('#app-obj-LPB-pet-create-model-button'),
     'Manifest disabled until a best response exists'
@@ -252,7 +308,8 @@ function assertCompiles(code, label) {
   await page.click('#app-obj-LPB-stepper-continue');
   assert((await currentStep()) === 'build', 'Continue opens Build & Test');
   assert(
-    (await page.$$('.pb-step.is-current')).length === 1 && (await page.$$('.pb-step-marker svg')).length === 0,
+    (await page.$$('#app-obj-LPB-stepper .pb-step.is-current')).length === 1 &&
+      (await page.$$('#app-obj-LPB-stepper .pb-step-marker svg')).length === 0,
     'only the current step is highlighted - no step is ever marked as done'
   );
   assert(

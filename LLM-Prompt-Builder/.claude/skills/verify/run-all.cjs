@@ -1,0 +1,127 @@
+/**
+ * Runs the verify suites one after the other, each against a mock of its own.
+ *
+ * Start it from a scratch folder in which `playwright` is installed - the
+ * suites are copied there as .cjs files (the package around this folder is an
+ * ES module, the suites are CommonJS), and their screenshots and logs land
+ * there too:
+ *
+ *   cd <scratch>            (once: npm i playwright)
+ *   node <path-to>/LLM-Prompt-Builder/.claude/skills/verify/run-all.cjs
+ *   node <path-to>/.../run-all.cjs verify-rag verify-options     (a subset)
+ *
+ * Every suite gets a FRESH mock: the suites create models, projects and jobs
+ * in it, and the options suite reads its request log, so a mock that already
+ * served another suite gives wrong results. The complete output of a suite is
+ * written to out-<suite>.log; the console shows its FAIL and NOTE lines and
+ * the count. The exit code is 1 when any suite failed or stopped early.
+ *
+ * Environment: VERIFY_DIST (the bundle to serve; default dist/index.html of
+ * this project), MOCK_PORT (default 4173), and whatever the suites read
+ * themselves (VERIFY_PYTHON, VERIFY_RAG_SECTIONS, VERIFY_VERBOSE).
+ */
+const fs = require('fs');
+const path = require('path');
+const http = require('http');
+const { spawn, spawnSync } = require('child_process');
+
+const SKILL = __dirname;
+const PROJECT = path.resolve(SKILL, '..', '..', '..');
+const REPOSITORY = path.resolve(PROJECT, '..');
+const WORK = process.cwd();
+const DIST = path.resolve(process.env.VERIFY_DIST || path.join(PROJECT, 'dist', 'index.html'));
+const PORT = Number(process.env.MOCK_PORT) || 4173;
+const BASE = `http://localhost:${PORT}`;
+const SUITES = ['verify', 'verify-decision', 'verify-rag', 'verify-options', 'verify-locales'];
+// The locale check reads files only: no mock, no browser.
+const NEEDS_MOCK = (suite) => suite !== 'verify-locales';
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const mockAnswers = () =>
+  new Promise((resolve) => {
+    const request = http.get(`${BASE}/__log`, (response) => {
+      response.resume();
+      resolve(response.statusCode === 200);
+    });
+    request.on('error', () => resolve(false));
+    request.setTimeout(1000, () => {
+      request.destroy();
+      resolve(false);
+    });
+  });
+const waitFor = async (wanted) => {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await mockAnswers()) === wanted) return true;
+    await sleep(200);
+  }
+  return false;
+};
+
+(async () => {
+  const wanted = process.argv.slice(2).map((name) => name.replace(/\.(c?js)$/, ''));
+  const unknown = wanted.filter((name) => !SUITES.includes(name));
+  if (unknown.length) throw new Error(`unknown suite: ${unknown.join(', ')} (there are: ${SUITES.join(', ')})`);
+  const suites = wanted.length ? wanted : SUITES;
+  if (suites.some(NEEDS_MOCK)) {
+    try {
+      require.resolve('playwright', { paths: [WORK] });
+    } catch {
+      throw new Error(`playwright is not installed in ${WORK} - run "npm i playwright" in a scratch folder and start this script from there`);
+    }
+    if (!fs.existsSync(DIST)) throw new Error(`${DIST} does not exist - run "npm run build" first`);
+  }
+  // The harness as CommonJS, next to the node_modules that holds playwright.
+  for (const file of fs.readdirSync(SKILL)) {
+    if (/\.c?js$/.test(file) && file !== path.basename(__filename)) {
+      fs.copyFileSync(path.join(SKILL, file), path.join(WORK, file.replace(/\.js$/, '.cjs')));
+    }
+  }
+
+  const lines = [];
+  let failed = false;
+  for (const suite of suites) {
+    let mock = null;
+    if (NEEDS_MOCK(suite)) {
+      if (await mockAnswers()) throw new Error(`something already answers on ${BASE} - stop it, or set MOCK_PORT`);
+      const mockLog = fs.openSync(path.join(WORK, `mock-${suite}.log`), 'w');
+      mock = spawn(process.execPath, [path.join(WORK, 'mock-server.cjs'), DIST], {
+        cwd: WORK,
+        env: { ...process.env, MOCK_PORT: String(PORT), MOCK_REPO_ROOT: REPOSITORY },
+        stdio: ['ignore', mockLog, mockLog],
+      });
+      if (!(await waitFor(true))) throw new Error(`the mock did not start on ${BASE} (see mock-${suite}.log)`);
+    }
+    const started = Date.now();
+    const run = spawnSync(process.execPath, [path.join(WORK, `${suite}.cjs`), ...(NEEDS_MOCK(suite) ? [] : [PROJECT])], {
+      cwd: WORK,
+      env: { ...process.env, VERIFY_BASE: BASE },
+      encoding: 'utf8',
+      maxBuffer: 1 << 28,
+    });
+    if (mock) {
+      mock.kill();
+      await waitFor(false);
+    }
+    const output = `${run.stdout || ''}${run.stderr || ''}`;
+    fs.writeFileSync(path.join(WORK, `out-${suite}.log`), output);
+    // The browser suites repeat every line in their summary: count above it.
+    const summaryAt = output.indexOf('===== SUMMARY =====');
+    const body = summaryAt >= 0 ? output.slice(0, summaryAt) : output;
+    const ok = (body.match(/^OK /gm) || []).length;
+    const fail = (body.match(/^FAIL/gm) || []).length;
+    // A browser suite stops at its first failed check; without its summary the
+    // checks after that one did not run.
+    const stoppedEarly = NEEDS_MOCK(suite) && summaryAt < 0;
+    if (run.status !== 0 || fail > 0 || stoppedEarly) failed = true;
+    const line = `${suite}: ${ok} OK, ${fail} FAIL${stoppedEarly ? ', STOPPED EARLY' : ''} (${Math.round((Date.now() - started) / 1000)} s)`;
+    lines.push(line);
+    console.log(line);
+    body.split('\n').filter((text) => /^(FAIL|NOTE|VERIFY FAILED|\[pageerror\])/.test(text)).forEach((text) => console.log(`   ${text}`));
+    if (stoppedEarly) console.log(`   ${output.trim().split('\n').slice(-3).join('\n   ')}`);
+  }
+  console.log(`\n${lines.join('\n')}`);
+  process.exit(failed ? 1 : 0);
+})().catch((error) => {
+  console.error(`run-all: ${error.message}`);
+  process.exit(2);
+});

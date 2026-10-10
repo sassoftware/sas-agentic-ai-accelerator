@@ -655,6 +655,18 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     await goRagStep(page, 'run');
     assert(!(await page.isDisabled(rgb('launch'))), 'the setup can still be launched');
     await goRagStep(page, 'store');
+    // The note is only worth something if the closed dropdown shows it: the
+    // chosen text has to fit between the paddings of the control.
+    const [textWidth, room] = await page.$eval(rgb('backend'), (select) => {
+      const style = getComputedStyle(select);
+      const pen = document.createElement('canvas').getContext('2d');
+      pen.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      return [
+        Math.ceil(pen.measureText(select.selectedOptions[0].textContent).width),
+        Math.floor(select.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)),
+      ];
+    });
+    assert(textWidth <= room, `the closed dropdown shows the name and the note uncut (${textWidth}px of text in ${room}px)`);
     await resetLog();
     await page.click(rgb('save'));
     await page.waitForSelector(`${rgb('save-result')} .alert-success`);
