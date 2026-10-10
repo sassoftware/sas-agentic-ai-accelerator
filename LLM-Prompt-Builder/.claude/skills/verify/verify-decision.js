@@ -5,10 +5,15 @@
  * saved, the evaluation run over the saved runs and over a CAS table, the
  * template manifested with typed outputs, and the page switched back to an
  * LLM prompt. Run against a FRESH mock instance.
+ *
+ * The mock is found at VERIFY_BASE (default http://localhost:4173). Every
+ * score code a manifest uploads is compiled and run with a real Python
+ * interpreter (see python-check.cjs, which has to sit next to this file).
  */
 const { chromium } = require('playwright');
+const { resolvePython, compilePython, callScoreModel } = require('./python-check.cjs');
 
-const BASE = 'http://localhost:4173';
+const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const results = [];
 
 function step(ok, label) {
@@ -41,8 +46,14 @@ function multipartText(body) {
   const m = body.match(/\r\n\r\n([\s\S]*?)\r\n--/);
   return m ? m[1] : '';
 }
+// The last line of an interpreter message is the one that names the error.
+const lastLine = (message) => String(message || '').trim().split('\n').pop();
 
 (async () => {
+  // Without an interpreter the generated score code would go unchecked: a failure, not a skip.
+  const python = resolvePython();
+  assert(python, `a Python interpreter is available for the score code checks (${python ? `${python.command} ${python.args.join(' ')} = ${python.version}` : 'none found - set VERIFY_PYTHON'})`);
+
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
   const pageErrors = [];
@@ -284,6 +295,32 @@ function multipartText(body) {
   assert(scoreCode.includes('"name": "state"') && scoreCode.includes('questions = "{'), 'the score code posts state and baked questions');
   assert(scoreCode.includes('tone, tone_confidence = _headline('), 'every question is read out as an output pair');
   assert(!scoreCode.includes('parse_status'), 'no JSON parsing block');
+  // The score code is Python a real interpreter accepts, and it runs: called
+  // with the inputs, it posts the state and returns one value per output.
+  const compiledNormal = compilePython(scoreCode, 'decision_normal.py');
+  assert(compiledNormal.ok, `the manifested score code compiles (${compiledNormal.python}${compiledNormal.ok ? '' : ': ' + lastLine(compiledNormal.error)})`);
+  const answersOf = (map) => ({ data: { answers: JSON.stringify(map), answer: 'billing', confidence: 0.9, run_time: 0.4, prompt_length: 60 } });
+  const calledNormal = callScoreModel(
+    scoreCode,
+    ['Charged twice', 'Please refund one payment.', 'sk-test'],
+    answersOf({
+      team: { type: 'choice', choice: 'billing', confidence: 0.9, probabilities: { billing: 0.9, technical: 0.1 } },
+      escalate: { type: 'noul', noul: 0.1 },
+      tone: { type: 'score', score: 1.1, confidence: 0.6, probabilities: { 0: 0.2, 1: 0.7, 2: 0.1 } },
+    })
+  );
+  assert(calledNormal.ok, `the manifested score code runs (${calledNormal.ok ? 'scoreModel returned' : lastLine(calledNormal.error)})`);
+  assert(calledNormal.returned.length === outputVars.length, `scoreModel returns one value per output (${calledNormal.returned.length} of ${outputVars.length})`);
+  const normalOutputs = Object.fromEntries(outputNames.map((name, index) => [name, calledNormal.returned[index]]));
+  assert(
+    normalOutputs.team === 'billing' && normalOutputs.team_confidence === 0.9 && normalOutputs.escalate === 'no' && normalOutputs.tone === '1',
+    `every question comes back as its headline answer (got ${JSON.stringify(normalOutputs)})`
+  );
+  assert(
+    calledNormal.request.body.inputs.find((i) => i.name === 'state').value.startsWith('Subject: Charged twice'),
+    'the score code builds the state from its inputs'
+  );
+  assert(calledNormal.request.body.inputs.find((i) => i.name === 'options').value === '{API_KEY:sk-test}', 'the key input travels in the options');
   const requirementsEntry = findPart(log, 'requirements.json');
   assert(requirementsEntry, 'requirements.json ships with the manifested model');
   const tagPut = log.find((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-dec');
@@ -297,6 +334,98 @@ function multipartText(body) {
   assert((await page.$$('.pb-question-row')).length === 2, 'the template replaces the questions');
   assert((await page.$$eval('.pb-question-id', (els) => els.map((e) => e.value))).join(',') === 'risk,needs_human', 'the template questions are named');
   assert((await page.$$('.pb-lint-item.is-warn')).length === 0, 'a template passes the lint without warnings');
+
+  // ---- question names the score code cannot carry ---------------------------------------
+  // A hostile state: backslashes that read as escape sequences, three quotes in
+  // a row, JSON and stray braces, two variables and a quote as the last character.
+  const HOSTILE_STATE =
+    'Log C:\\Users\\new\\table \\d+ said """stop""" with {"k": [1, {"n": 2}]} for {{subject}} / {{ body }} and a brace } { end "';
+  await page.fill('#app-obj-LPB-decision-state', HOSTILE_STATE);
+  await page.click('#app-obj-LPB-decision-add-question');
+  const nameRow = page.locator('.pb-question-row').last();
+  const nameInput = nameRow.locator('.pb-question-id');
+  await nameRow.locator('.pb-question-type').selectOption('noul');
+  await nameRow.locator('.pb-question-instructions').fill('Does the text mention a file path?');
+  const nameFeedback = async (name) => {
+    await nameInput.fill(name);
+    const invalid = await nameInput.evaluate((el) => el.classList.contains('is-invalid'));
+    return invalid ? await nameRow.locator('.invalid-feedback').textContent() : '';
+  };
+  for (const [name, why] of [
+    ['class', 'a Python keyword'],
+    ['lambda', 'a Python keyword'],
+    ['json', 'a module of the score code'],
+    ['answers', 'a local of the score code'],
+    ['Str', 'a builtin the score code calls, in another case'],
+    ['subject', 'a variable of the state'],
+    ['risk_confidence', "another question's confidence output"],
+  ]) {
+    const feedback = await nameFeedback(name);
+    assert(feedback.includes('Python keyword') && feedback.includes('different name'), `the name ${name} is refused: ${why} (got ${feedback.slice(0, 40)})`);
+  }
+  const longFeedback = await nameFeedback('a_question_name_too_long');
+  assert(longFeedback.includes('at most 21 characters'), `a name longer than 21 characters is refused (got ${longFeedback.slice(0, 60)})`);
+  assert((await page.textContent('#app-obj-LPB-decision-checklist')).includes('1 to fix'), 'a refused name counts as something to fix');
+  assert(await page.isDisabled('#app-obj-LPB-run-experiment'), 'Run Experiments waits until the name is fixed');
+  assert((await nameFeedback('a_name_of_21_chars_xx')) === '', 'a name of 21 characters is accepted');
+  assert((await nameFeedback('mentions_path')) === '', 'an ordinary name is accepted');
+  await nameRow.locator('.pb-question-remove').click();
+  assert((await page.$$('.pb-question-row')).length === 2, 'the two template questions remain');
+
+  // ---- a hostile state manifests into Python that says the same thing -------------------
+  // The run and the manifested model must send the same state: what was
+  // tested is what is deployed. One model, so the manifest's inputs are known.
+  await page.uncheck('#decision-model1');
+  const manifestAndCheck = async (label, runIndex, answers) => {
+    await page.locator('.pb-question-expected').nth(0).fill('read_only');
+    await page.locator('.pb-question-expected').nth(1).fill('no');
+    await resetLog();
+    await page.click('#app-obj-LPB-run-experiment');
+    await waitUntil(async () => page.isVisible(`#app-obj-LPB-pet-${runIndex}`), `${label}: run rendered`);
+    const runCall = (await getLog()).find((e) => e.url === '/scr/jev_mock/jev_mock' && e.method === 'POST');
+    const stateRun = JSON.parse(runCall.body).inputs.find((i) => i.name === 'state').value;
+    assert(stateRun.includes('"""stop"""') && stateRun.includes('C:\\Users\\new\\table \\d+') && stateRun.endsWith('end "'), `${label}: the run sent the state as typed`);
+    assert(await page.$(`#app-obj-LPB-pet-${runIndex} .bestPrompt`), `${label}: the run is marked correct`);
+    await goStep('finalize');
+    await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-pet-create-model-button')), `${label}: Manifest enabled`);
+    await resetLog();
+    await page.click('#app-obj-LPB-pet-create-model-button');
+    await waitUntil(async () => Boolean(findPart(await getLog(), 'requirements.json')), `${label}: manifest written`, 20000);
+    await sleep(500);
+    const manifestLog = await getLog();
+    const code = multipartText(findPartMatching(manifestLog, /filename="[a-z_]+\.py"/).body);
+    const outputs = multipartJson(findPart(manifestLog, 'outputVar.json').body).map((v) => v.name);
+    const compiled = compilePython(code, 'decision_hostile.py');
+    assert(compiled.ok, `${label}: the score code compiles without a warning${compiled.ok ? '' : ' (' + lastLine(compiled.error) + ')'}`);
+    const called = callScoreModel(code, ['Charged twice', 'Please refund one payment.', 'sk-test'], answersOf(answers));
+    assert(called.ok, `${label}: the score code runs${called.ok ? '' : ' (' + lastLine(called.error) + ')'}`);
+    assert(called.returned.length === outputs.length, `${label}: one value per output (${called.returned.length} of ${outputs.length})`);
+    const stateManifested = called.request.body.inputs.find((i) => i.name === 'state').value;
+    assert(stateManifested === stateRun, `${label}: the manifested model sends the state the run sent (got ${stateManifested})`);
+    const values = Object.fromEntries(outputs.map((name, index) => [name, called.returned[index]]));
+    await goStep('build');
+    return values;
+  };
+  const hostileAnswers = {
+    risk: { type: 'choice', choice: 'read_only', confidence: 0.8, probabilities: { read_only: 0.8, destructive: 0.2 } },
+    needs_human: { type: 'noul', noul: 0.9 },
+    mentions_path: { type: 'noul', noul: 0.2 },
+  };
+  const twoQuestions = await manifestAndCheck('two questions', 4, hostileAnswers);
+  assert(
+    twoQuestions.risk === 'read_only' && twoQuestions.needs_human === 'yes' && twoQuestions.needs_human_confidence === 0.9 && !('mentions_path' in twoQuestions),
+    `two questions come back as two output pairs (got ${JSON.stringify(twoQuestions)})`
+  );
+  await page.click('#app-obj-LPB-decision-add-question');
+  const thirdRow = page.locator('.pb-question-row').last();
+  await thirdRow.locator('.pb-question-id').fill('mentions_path');
+  await thirdRow.locator('.pb-question-type').selectOption('noul');
+  await thirdRow.locator('.pb-question-instructions').fill('Does the text mention a file path?');
+  const threeQuestions = await manifestAndCheck('three questions', 5, hostileAnswers);
+  assert(
+    threeQuestions.risk === 'read_only' && threeQuestions.mentions_path === 'no' && threeQuestions.mentions_path_confidence === 0.8,
+    `three questions come back as three output pairs (got ${JSON.stringify(threeQuestions)})`
+  );
 
   // ---- back to an LLM prompt: everything switches back --------------------------------
   await goStep('setup');

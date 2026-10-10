@@ -2,10 +2,16 @@
  * Drives the built Prompt Builder (served by mock-server.js) through the new
  * deletion flows with Playwright + system Edge and asserts both the UI state
  * and the HTTP requests the app issued against the mock.
+ *
+ * The mock is found at VERIFY_BASE (default http://localhost:4173). Every
+ * score code a manifest uploads is compiled, and a hostile one is run, with a
+ * real Python interpreter (see python-check.cjs, which has to sit next to
+ * this file).
  */
 const { chromium } = require('playwright');
+const { resolvePython, compilePython, callScoreModel } = require('./python-check.cjs');
 
-const BASE = 'http://localhost:4173';
+const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const results = [];
 const dialogs = [];
 
@@ -35,8 +41,20 @@ function multipartJson(body) {
   const m = body.match(/\r\n\r\n([\s\S]*?)\r\n--/);
   return m ? JSON.parse(m[1]) : null;
 }
+// The score code of a manifest upload, without its multipart wrapping.
+const scoreCodeOf = (body) => body.match(/import os[\s\S]*?(?=\r\n--)/)[0];
+// The last line of an interpreter message is the one that names the error.
+const lastLine = (message) => String(message || '').trim().split('\n').pop();
+function assertCompiles(code, label) {
+  const compiled = compilePython(code, 'llm_manifest.py');
+  assert(compiled.ok, `${label} compiles without a warning (${compiled.python}${compiled.ok ? '' : ': ' + lastLine(compiled.error)})`);
+}
 
 (async () => {
+  // Without an interpreter the generated score code would go unchecked: a failure, not a skip.
+  const python = resolvePython();
+  assert(python, `a Python interpreter is available for the score code checks (${python ? `${python.command} ${python.args.join(' ')} = ${python.version}` : 'none found - set VERIFY_PYTHON'})`);
+
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
   const pageErrors = [];
@@ -372,6 +390,7 @@ function multipartJson(body) {
     'user prompt manifested as f-string; unknown tokens stay literal'
   );
   assert(pyBody.includes('return llmBody, llmURL'), 'default manifest returns llmBody/llmURL for the Call LLM node');
+  assertCompiles(scoreCodeOf(pyBody), 'the Call-LLM-node score code');
   const tagPut = aLog.find((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-used');
   assert(tagPut, 'manifest PUTs the model to update its tags');
   assert(tagPut.ifMatch === '"abc123"', `tag update sends the model ETag as If-Match (got: ${tagPut.ifMatch})`);
@@ -469,8 +488,7 @@ function multipartJson(body) {
     !pyIntegrated.includes(`.replace("'", '"')`),
     'integrated prompts are not run through the legacy escape chain'
   );
-  // probe: syntax-check the generated python
-  require('fs').writeFileSync('manifested-integrated.py', pyIntegrated.match(/import os[\s\S]*?(?=\r\n--)/)[0]);
+  assertCompiles(scoreCodeOf(pyIntegrated), 'the integrated score code');
 
   // ---- parse the LLM response into output variables --------------------------
   await page.uncheck('#app-obj-LPB-pet-out-run_time');
@@ -542,7 +560,20 @@ function multipartJson(body) {
     pyParsing.includes('return response, output_length, sentiment, score, parse_status'),
     'parsing score code returns the chosen output tuple'
   );
-  require('fs').writeFileSync('manifested-parsing.py', pyParsing.match(/import os[\s\S]*?(?=\r\n--)/)[0]);
+  assertCompiles(scoreCodeOf(pyParsing), 'the parsing score code');
+  // Run it: the fenced JSON an LLM answers with comes back as the output variables.
+  const parsingCall = callScoreModel(scoreCodeOf(pyParsing), ['ACME Corp', 42], {
+    data: { response: '```json\n{"sentiment": "positive", "score": 0.9}\n```', run_time: 1.5, prompt_length: 42, output_length: 7 },
+  });
+  assert(parsingCall.ok, `the parsing score code runs (${parsingCall.ok ? 'scoreModel returned' : lastLine(parsingCall.error)})`);
+  assert(
+    JSON.stringify(parsingCall.returned.slice(1)) === JSON.stringify([7, 'positive', 0.9, 1]),
+    `scoreModel returns the parsed outputs in the declared order (got: ${JSON.stringify(parsingCall.returned)})`
+  );
+  assert(
+    parsingCall.request.body.inputs.find((i) => i.name === 'systemPrompt').value === 'Hello ACME Corp with {json} braces',
+    'the manifested model sends the system prompt the experiment sent'
+  );
   const tagPutParsing = aLog.find((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-used');
   const parsingTags = JSON.parse(tagPutParsing.body).tags;
   assert(
@@ -628,6 +659,72 @@ function multipartJson(body) {
     'output variables cleared and default outputs reselected on reset'
   );
   await page.screenshot({ path: 'shot-08-variables-workbench.png', fullPage: true });
+
+  // ---- prompts that are hostile to a Python literal ---------------------------
+  // Backslashes that read as escape sequences, JSON braces, three quotes in a
+  // row and a quote as the last character: the manifested model has to send
+  // exactly what the experiment sent.
+  const HOSTILE_SYSTEM = 'Reply as JSON {"ok": true} for {{customer}}; never write """ or C:\\Users\\new\\d+ and end with "';
+  const HOSTILE_USER = 'It\'s {{ customer }} asking: "why is \\n no line break?" {{unknown}} }{ \'\'\'"""';
+  await goStep('build');
+  await page.click('text="Add Variable"');
+  await page.locator('.pb-variable-row').nth(0).locator('.pb-var-name').fill('customer');
+  await page.locator('.pb-variable-row').nth(0).locator('.pb-var-value').fill('ACME Corp');
+  await page.fill('#app-obj-LPB-system-prompt', HOSTILE_SYSTEM);
+  await page.fill('#app-obj-LPB-user-prompt', HOSTILE_USER);
+  await resetLog();
+  await page.click('#app-obj-LPB-run-experiment');
+  await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 4, 'hostile run rendered');
+  const hostileSent = JSON.parse((await getLog()).find((e) => e.method === 'POST' && e.url === '/scr/demo_llm/demo_llm').body).inputs;
+  const hostileSystemSent = hostileSent.find((i) => i.name === 'systemPrompt').value;
+  const hostileUserSent = hostileSent.find((i) => i.name === 'userPrompt').value;
+  assert(
+    hostileSystemSent === HOSTILE_SYSTEM.replace('{{customer}}', 'ACME Corp') && hostileUserSent.endsWith('\'\'\'"""'),
+    `the experiment sent the hostile prompts as typed (got: ${hostileSystemSent})`
+  );
+  await page.click('#app-obj-LPB-pet-3 > .accordion-item > h2 > .accordion-button');
+  await page.click('#app-obj-LPB-pet-3-run-nested-demo_llm .accordion-button');
+  await page.check('#best-prompt-3-demo_llm');
+  await goStep('finalize');
+  const manifestHostile = async (label) => {
+    await resetLog();
+    await page.click('#app-obj-LPB-pet-create-model-button');
+    await waitUntil(async () => {
+      const l = await getLog();
+      // The tag PUT lands after the content uploads.
+      return (
+        l.some((e) => e.method === 'POST' && e.body.includes('def scoreModel(')) &&
+        l.some((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-used')
+      );
+    }, `${label} uploaded`);
+    const code = scoreCodeOf((await getLog()).find((e) => e.method === 'POST' && e.body.includes('def scoreModel(')).body);
+    assertCompiles(code, label);
+    return code;
+  };
+  await page.check('#app-obj-LPB-pet-manifest-integrated');
+  const hostileIntegrated = callScoreModel(await manifestHostile('the integrated score code of the hostile prompts'), ['ACME Corp'], {
+    data: { response: 'fine', run_time: 1.5, prompt_length: 42, output_length: 7 },
+  });
+  assert(hostileIntegrated.ok, `the hostile integrated score code runs (${hostileIntegrated.ok ? 'scoreModel returned' : lastLine(hostileIntegrated.error)})`);
+  assert(
+    JSON.stringify(hostileIntegrated.returned) === JSON.stringify(['fine', 1.5, 42, 7]),
+    `the hostile integrated score code returns the LLM results (got: ${JSON.stringify(hostileIntegrated.returned)})`
+  );
+  const hostileManifested = hostileIntegrated.request.body.inputs;
+  assert(
+    hostileManifested.find((i) => i.name === 'systemPrompt').value === hostileSystemSent,
+    `the manifested system prompt is the one the experiment sent (got: ${hostileManifested.find((i) => i.name === 'systemPrompt').value})`
+  );
+  assert(
+    hostileManifested.find((i) => i.name === 'userPrompt').value === hostileUserSent,
+    `the manifested user prompt is the one the experiment sent (got: ${hostileManifested.find((i) => i.name === 'userPrompt').value})`
+  );
+  await page.uncheck('#app-obj-LPB-pet-manifest-integrated');
+  const hostileNode = callScoreModel(await manifestHostile('the Call-LLM-node score code of the hostile prompts'), ['ACME Corp']);
+  assert(
+    hostileNode.ok && hostileNode.returned.length === 2,
+    `the hostile Call-LLM-node score code runs and returns llmBody and llmURL (${hostileNode.ok ? hostileNode.returned.length + ' values' : lastLine(hostileNode.error)})`
+  );
 
   // ============ PHASE B: deletion features (fresh page) ============
   await page.goto(APP_URL);

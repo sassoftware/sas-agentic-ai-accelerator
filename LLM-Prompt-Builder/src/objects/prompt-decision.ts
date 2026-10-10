@@ -97,6 +97,8 @@ export interface LintItem {
   questionId?: string;
   /** A one-click fix the designer offers. */
   fix?: 'escape';
+  /** Set on an item about the question's name: the designer shows it under the name field. */
+  field?: 'name';
 }
 
 /** What a decision model accepts, read from its registration; every field may be absent. */
@@ -116,16 +118,84 @@ const COMPUTE_PATTERN =
 const REASON_PATTERN = /\b(why|explain|reason|justify|justification|describe|warum|erkl[aä]re?n?|begr[uü]nde?n?)\b/i;
 const EXTRACT_PATTERN = /\b(extract|what is the name|which name|list all|find all|what (?:amount|number|value)|extrahiere)\b/i;
 
+/**
+ * The longest name a question can have: the manifested model returns
+ * <name>_confidence beside <name>, and a SAS name ends at 32 characters.
+ */
+export const MAX_QUESTION_ID_LENGTH = 32 - '_confidence'.length;
+
+/**
+ * Names a question cannot take because the manifested score code uses them
+ * itself, compared in lower case (SAS names do not distinguish case). A Python
+ * keyword does not compile as a variable; one of the score function's own
+ * names - a local, a module, a builtin it calls - compiles, but the question's
+ * output then replaces what the code relies on. The keywords that are DS2
+ * reserved words as well are already refused as names.
+ */
+const SCORE_CODE_NAMES = new Set(
+  [
+    // Python keywords
+    'False', 'None', 'True', 'and', 'as', 'assert', 'async', 'await', 'break', 'class', 'continue', 'def', 'del',
+    'elif', 'else', 'except', 'finally', 'for', 'from', 'global', 'if', 'import', 'in', 'is', 'lambda', 'nonlocal',
+    'not', 'or', 'pass', 'raise', 'return', 'try', 'while', 'with', 'yield',
+    // The modules, functions and locals of the generated score code
+    'os', 'requests', 'json', '_headline', 'scoreModel', 'llm', 'endpoint', 'llmURL', 'options', 'state', 'questions',
+    'llmBody', 'answers', 'answer', 'confidence', 'run_time', 'prompt_length', 'sslVerify', 'llmCall', 'llmJson',
+    'llmData', 'parsedAnswers', 'error', 'API_KEY',
+    // The builtins the score function calls
+    'str', 'float', 'isinstance', 'dict', 'Exception',
+  ].map((name) => name.toLowerCase())
+);
+
+/**
+ * Why a question cannot be called what it is called, as the key of the text
+ * that says so, or null when the name is fine. `stateVariables` are the
+ * variables the state template references: each is an input of the manifested
+ * model, so a question of the same name would be an output of the same name.
+ */
+export function questionIdProblem(question: DecisionQuestion, all: DecisionQuestion[], stateVariables: string[] = []): string | null {
+  const id = question.id;
+  if (id === '') return 'promptBuilderDecisionLintNoName';
+  if (!isValidDS2VariableName(id)) return 'promptBuilderDecisionQuestionIdInvalid';
+  if (id.length > MAX_QUESTION_ID_LENGTH) return 'promptBuilderDecisionQuestionIdTooLong';
+  const name = id.toLowerCase();
+  const confidenceName = `${name}_confidence`;
+  const inputs = stateVariables.map((variable) => variable.toLowerCase());
+  const others = all.filter((other) => other !== question).map((other) => other.id.toLowerCase());
+  if (
+    SCORE_CODE_NAMES.has(name) ||
+    inputs.includes(name) ||
+    inputs.includes(confidenceName) ||
+    // The pair of one question must not be the name of another.
+    others.includes(confidenceName) ||
+    others.some((other) => `${other}_confidence` === name)
+  ) {
+    return 'promptBuilderDecisionQuestionIdReserved';
+  }
+  if (others.includes(name)) return 'promptBuilderDecisionQuestionIdDuplicate';
+  return null;
+}
+
 /** The things to fix, the warnings and the tips for one question. */
-export function lintQuestion(question: DecisionQuestion, all: DecisionQuestion[], bundle: PromptBuilderText): LintItem[] {
+export function lintQuestion(
+  question: DecisionQuestion,
+  all: DecisionQuestion[],
+  bundle: PromptBuilderText,
+  stateVariables: string[] = []
+): LintItem[] {
   const items: LintItem[] = [];
   const add = (severity: LintSeverity, key: string, values: Record<string, string | number> = {}, fix?: 'escape'): void => {
     items.push({ severity, message: fill(text(bundle, key), values), questionId: question.id, fix });
   };
-  if (question.id === '') add('fix', 'promptBuilderDecisionLintNoName');
-  else if (!isValidDS2VariableName(question.id)) add('fix', 'promptBuilderDecisionQuestionIdInvalid');
-  else if (all.filter((other) => other.id.toLowerCase() === question.id.toLowerCase()).length > 1) {
-    add('fix', 'promptBuilderDecisionQuestionIdDuplicate');
+  const nameProblem = questionIdProblem(question, all, stateVariables);
+  if (nameProblem === 'promptBuilderDecisionLintNoName') add('fix', nameProblem);
+  else if (nameProblem) {
+    items.push({
+      severity: 'fix',
+      message: fill(text(bundle, nameProblem), { max: MAX_QUESTION_ID_LENGTH }),
+      questionId: question.id,
+      field: 'name',
+    });
   }
   const words = question.instructions.trim().split(/\s+/).filter(Boolean).length;
   if (words === 0) add('fix', 'promptBuilderDecisionLintNoInstructions');
@@ -710,7 +780,9 @@ export function createQuestionDesigner(
   prefix: string,
   bundle: PromptBuilderText,
   attachInsertMenu: (textarea: HTMLTextAreaElement) => void,
-  contextLimit: () => number | null = () => null
+  contextLimit: () => number | null = () => null,
+  /** The names of the variables that can be inserted into the state. */
+  variableNames: () => string[] = () => []
 ): QuestionDesigner {
   const element = document.createElement('div');
   element.id = `${prefix}-decision-designer`;
@@ -997,24 +1069,24 @@ export function createQuestionDesigner(
 
   const rows = (): Element[] => Array.from(list.querySelectorAll('.pb-question-row'));
   const allQuestions = (): DecisionQuestion[] => rows().map(rowQuestion);
+  /** The variables the state references as {{name}}: the inputs of the manifested model. */
+  const stateVariables = (): string[] =>
+    variableNames().filter((name) => new RegExp(`\\{\\{\\s*${name}\\s*\\}\\}`).test(stateInput.value));
   let currentLint: LintItem[] = [];
 
   /** Lint every row and the state, show what was found; returns whether nothing is left to fix. */
   function validate(): boolean {
     const questions = allQuestions();
+    const inputs = stateVariables();
     const items: LintItem[] = lintState(stateInput.value, questions, contextLimit(), bundle);
     renderLintItems(stateLint, items, bundle);
     stateInfo.innerText = fill(text(bundle, 'promptBuilderDecisionStateTokens'), { n: estimateTokens(stateInput.value, questions) });
     rows().forEach((row, index) => {
       const question = questions[index];
-      const rowItems = lintQuestion(question, questions, bundle);
+      const rowItems = lintQuestion(question, questions, bundle, inputs);
       items.push(...rowItems);
       const idInput = row.querySelector('.pb-question-id') as HTMLInputElement;
-      const nameProblem = rowItems.find(
-        (item) =>
-          item.severity === 'fix' &&
-          (item.message === text(bundle, 'promptBuilderDecisionQuestionIdInvalid') || item.message === text(bundle, 'promptBuilderDecisionQuestionIdDuplicate'))
-      );
+      const nameProblem = rowItems.find((item) => item.field === 'name');
       (idInput.nextElementSibling as HTMLElement).innerText = nameProblem?.message ?? '';
       idInput.classList.toggle('is-invalid', Boolean(nameProblem));
       const criteriaInput = row.querySelector('.pb-question-criteria') as HTMLTextAreaElement;
@@ -1095,9 +1167,14 @@ export function createQuestionDesigner(
       validate();
       const seen = new Set<string>();
       const questions: DecisionQuestion[] = [];
-      rows().forEach((row) => {
-        const question = rowQuestion(row);
-        if (question.id === '' || !isValidDS2VariableName(question.id) || seen.has(question.id.toLowerCase())) return;
+      const candidates = allQuestions();
+      const inputs = stateVariables();
+      candidates.forEach((question) => {
+        // Of two questions with one name the first is kept; any other problem
+        // with a name leaves the question out.
+        const nameProblem = questionIdProblem(question, candidates, inputs);
+        if (nameProblem && nameProblem !== 'promptBuilderDecisionQuestionIdDuplicate') return;
+        if (seen.has(question.id.toLowerCase())) return;
         if (question.instructions === '') return;
         if (question.type === 'choice' && question.options.length < 2) return;
         if (question.type === 'score' && question.levels.length < 2) return;
@@ -1632,6 +1709,32 @@ export interface DecisionManifestParams {
 const pythonString = (value: string): string => JSON.stringify(value);
 
 /**
+ * A text as the body of a Python """...""" literal that evaluates to exactly
+ * that text. The backslash is escaped first, so a path or a regular
+ * expression stays what was typed instead of becoming an escape sequence, and
+ * every double quote is escaped, so neither three quotes in a row nor one at
+ * the very end closes the literal.
+ */
+export function pythonTripleQuotedBody(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
+ * A template with {{variable}} placeholders as the body of a Python
+ * f"""...""" literal: the text is escaped for the literal, its braces are
+ * doubled so they stay literal braces, and each placeholder of a known
+ * variable becomes the stripped value of the score function's input of that
+ * name. A placeholder of an unknown variable stays as it was typed.
+ */
+export function pythonFStringBody(template: string, variableNames: string[]): string {
+  let body = pythonTripleQuotedBody(template).replace(/\{/g, '{{').replace(/\}/g, '}}');
+  variableNames.forEach((name) => {
+    body = body.replace(new RegExp(`\\{\\{\\{\\{\\s*${name}\\s*\\}\\}\\}\\}`, 'g'), `{str(${name}).strip()}`);
+  });
+  return body;
+}
+
+/**
  * The score code, inputs and outputs of a manifested decision template: the
  * state is built from the inputs, the questions are baked in, the container
  * is called like the LLM manifest calls its container, and every question
@@ -1684,15 +1787,12 @@ export function buildDecisionManifest(params: DecisionManifestParams): {
       length: 8,
     });
   });
-  // The state template as an f-string: literal braces escaped, each referenced
-  // {{variable}} an input inserted at its position.
-  let stateFString = params.stateTemplate.replace(/\{/g, '{{').replace(/\}/g, '}}');
-  params.variables.forEach((variable) => {
-    stateFString = stateFString.replace(
-      new RegExp(`\\{\\{\\{\\{\\s*${variable.name}\\s*\\}\\}\\}\\}`, 'g'),
-      `{str(${variable.name}).strip()}`
-    );
-  });
+  // The state template as an f-string: each referenced {{variable}} an input
+  // inserted at its position, everything else the text as it was typed.
+  const stateFString = pythonFStringBody(
+    params.stateTemplate,
+    params.variables.map((variable) => variable.name)
+  );
   const scoreInputs = inputs.map((input) => input.name).join(', ');
   const outputNames = outputs.map((output) => output.name);
   const optionsLiteral = params.requiresAPIKey
@@ -1700,10 +1800,12 @@ export function buildDecisionManifest(params: DecisionManifestParams): {
       ? `${params.options},API_KEY:{API_KEY}`
       : 'API_KEY:{API_KEY}'
     : params.options;
+  // These lines sit inside the score code's `if llmCall.status_code == 200:`
+  // block, three levels deep; the defaults below sit at the function's level.
   const questionLines = params.questions
     .map(
       (question) =>
-        `    ${question.id}, ${question.id}_confidence = _headline(parsedAnswers.get(${pythonString(question.id)}), ${pythonString(question.type)})`
+        `            ${question.id}, ${question.id}_confidence = _headline(parsedAnswers.get(${pythonString(question.id)}), ${pythonString(question.type)})`
     )
     .join('\n');
   const questionDefaults = params.questions

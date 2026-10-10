@@ -42,6 +42,8 @@ import {
   estimateTokens,
   fitCheck,
   parseAnswers,
+  pythonFStringBody,
+  pythonTripleQuotedBody,
   questionsFromJson,
   questionsToJson,
   renderAnswers,
@@ -2108,7 +2110,8 @@ export async function buildPromptBuilder(
       `${paneID}-obj-${promptBuilderObject?.id}`,
       promptBuilderInterfaceText,
       attachPromptVariableInsertMenu,
-      decisionContextLimit
+      decisionContextLimit,
+      () => collectPromptVariables().map((variable) => variable.name)
     );
     decisionDesigner.element.style.display = 'none';
     decisionDesigner.onChange(() => {
@@ -4500,24 +4503,18 @@ export async function buildPromptBuilder(
           }
         }
         // For variable-based runs both prompts become Python f-strings built
-        // from the stored templates: literal braces are escaped for the
-        // f-string and each referenced {{variable}} becomes a score-function
-        // input that is inserted at its position in the template.
-        const promptTemplateToPythonFString = (template: string): string => {
-          let fString = template.replace(/\{/g, '{{').replace(/\}/g, '}}');
-          referencedVariables.forEach((variable) => {
-            fString = fString.replace(
-              new RegExp(`\\{\\{\\{\\{\\s*${variable.name}\\s*\\}\\}\\}\\}`, 'g'),
-              `{str(${variable.name}).strip()}`
-            );
-          });
-          return fString;
-        };
+        // from the stored templates: the text is escaped for the literal, its
+        // braces stay literal braces, and each referenced {{variable}} becomes
+        // a score-function input that is inserted at its position in the
+        // template. The system prompt of a run stored without variables is a
+        // plain literal, escaped the same way. Either way quotes and
+        // backslashes in a prompt reach the LLM as they were typed.
+        const referencedVariableNames = referencedVariables.map((variable) => variable.name);
         const scoreCodeSystemPromptLiteral = runVariables
-          ? `f"""${promptTemplateToPythonFString(basePrompt!.systemPrompt)}"""`
-          : `"""${basePrompt!.systemPrompt}"""`;
+          ? `f"""${pythonFStringBody(basePrompt!.systemPrompt, referencedVariableNames)}"""`
+          : `"""${pythonTripleQuotedBody(basePrompt!.systemPrompt)}"""`;
         const scoreCodeUserPromptLiteral = runVariables
-          ? `f"""${promptTemplateToPythonFString(basePrompt!.userPrompt)}"""`
+          ? `f"""${pythonFStringBody(basePrompt!.userPrompt, referencedVariableNames)}"""`
           : `f"${scoreCodeUserPrompt}"`;
         // Create the options string for the score code
         let scoreCodeOptions = '';

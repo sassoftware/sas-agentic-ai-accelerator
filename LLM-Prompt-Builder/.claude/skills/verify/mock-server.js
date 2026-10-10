@@ -3,12 +3,16 @@
  * static route serving the built dist/index.html same-origin (the app defaults
  * viyaHost to window.location.origin). Every request is recorded and exposed
  * at GET /__log for assertions; POST /__reset clears the log.
+ *
+ * The port is MOCK_PORT (default 4173), so several instances can serve
+ * several suites at the same time; a suite finds its instance through
+ * VERIFY_BASE.
  */
 const http = require('http');
 const fs = require('fs');
 
 const DIST_HTML = process.argv[2];
-const PORT = 4173;
+const PORT = Number(process.env.MOCK_PORT) || 4173;
 
 const log = [];
 let decisionProject = false;

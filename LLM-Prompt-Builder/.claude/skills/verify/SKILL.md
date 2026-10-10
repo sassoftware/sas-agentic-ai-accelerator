@@ -21,14 +21,41 @@ server that also implements the handful of Viya endpoints the app calls.
    (serves on http://localhost:4173 — see `mock-server.js` next to this file).
    The mock is CommonJS but `LLM-Prompt-Builder/package.json` declares
    `"type": "module"`, so running it in place fails — copy it to a scratch
-   directory as `mock-server.cjs` first.
+   directory as `mock-server.cjs` first. `MOCK_PORT` moves it to another port,
+   so several instances can serve several suites at the same time.
 3. Drive with Playwright using the system Edge (no browser download needed):
    `npm i playwright` in a scratch dir, then
    `chromium.launch({ channel: 'msedge', headless: true })`.
    `verify.js` next to this file covers the deletion flows end-to-end and is a
-   good template for new flows.
+   good template for new flows. Copy the suites as `.cjs` too, and
+   `python-check.cjs` (already CommonJS by name) next to them. A suite talks to
+   the mock at `VERIFY_BASE` (default `http://localhost:4173`); the app URL and
+   its `SCREndpoint` are built from it. Example for a second instance:
+   `MOCK_PORT=4174 node mock-server.cjs <dist>` and
+   `VERIFY_BASE=http://localhost:4174 node verify.cjs`.
 4. Open the app with config in the URL (no VA embed needed):
    `http://localhost:4173/?modelRepositoryID=repo-1&llmProjectID=llm-proj&SCREndpoint=http://localhost:9/scr`
+
+## Generated Python is checked with a real interpreter
+
+Every score code a manifest uploads is compiled, and the hostile fixtures are
+also run, by `python-check.cjs`:
+
+- `resolvePython()` picks the interpreter: `VERIFY_PYTHON` when set (a command,
+  optionally with arguments, e.g. `py -3.12`), else the first of `py -3.11`,
+  `python3.11`, `python3`, `python` that answers a version probe - which is
+  what rejects the Windows Store stub. No interpreter is a FAIL, never a skip.
+- `compilePython(code, name)` compiles from a temporary file with
+  `-I -W error`, so an invalid escape sequence fails like a syntax error.
+- `callScoreModel(code, args, response)` runs `scoreModel(*args)` with
+  `requests` replaced by a stand-in that records the request and answers 200
+  with `response`; it returns `{ ok, error, returned, request }`. Use it to
+  assert that a manifested model sends the text the experiment sent and
+  returns one value per output variable.
+
+A new manifest check needs a hostile fixture, not only a friendly one: text
+with a backslash, braces, three double quotes in a row and a double quote as
+the last character.
 
 ## Endpoints the app needs mocked at minimum
 
