@@ -11,6 +11,7 @@ This has been done in order to be able to parse all of the relevant information 
 In order to make use of these logs, which are written to the standard out of each container, you must collect the logs.
 If you do not have an established logging and monitoring process, you can use the simplified logging script provided below.
 Otherwise, if you do have an established way of collecting logs, ensure that you can export them to a folder that can be accessed from SAS Studio as a `.log` file (as that it is the input for the parsing utilities).
+The file has to hold the lines as the containers wrote them: the parser only reads a line that starts with `<timestamp> - <logger> - <level> - `, so a timestamp, a pod name or a JSON wrapper that your process adds to each line has to be removed again. If it is not, the parser reads no request and says so with a warning in the SAS log.
 
 For more information on how to parse the log and load it into SAS please take a look at `SAS-Viya-Integrations/Logging-Monitoring`.
 
@@ -19,7 +20,7 @@ The shipped deployment templates set `SAS_SCR_LOG_LEVEL_SCR_IO=TRACE`, and the p
 :::
 
 :::danger The containers also log secrets
-At this level a container writes more than prompts. The options of a request are logged as they arrive, and for every model that is called with a provider key they hold it as `API_KEY:<the key>`. The request headers are logged too, and a call from the browser (the Prompt Builder) carries the user's `Cookie` header. Both must not reach a file that SAS Studio users can open: the collection script below replaces them with `REDACTED` before a line is written, and an established logging process needs the same step (the `redact_llm_log` function works on any stream of container log lines).
+At this level a container writes more than prompts. The options of a request are logged as they arrive, and for every model that is called with a provider key they hold it as `API_KEY:<the key>`. The request headers are logged too, and a call from the browser (the Prompt Builder) carries the user's `Cookie` header. Both must not reach a file that SAS Studio users can open: the collection script below replaces them with `REDACTED` before a line is written, and an established logging process needs the same step. The `redact_llm_log` function of the script expects the lines as the container wrote them, which is how `kubectl logs` prints them without `--timestamps` or `--prefix`: its three header expressions match a header at the start of a line, and only the `API_KEY` expression finds its text anywhere in a line. A process that puts a timestamp or a pod name in front of every line, or wraps the line (the log files of the container runtime, JSON), has to redact before that happens or adapt the three header expressions.
 
 A log file collected **without** this redaction - with the script of release 2.2.0 or earlier, for example - may contain provider keys and session cookies. Delete those files, including copies and backups, and rotate every provider key that was in use while they were collected. The `LLM_LOGS` table does not need to be rebuilt for this: the parser never copied the key or a header into it.
 :::

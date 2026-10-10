@@ -156,6 +156,35 @@ def test_the_redaction_changes_nothing_else(tmp_path):
     assert redact("\n".join(redacted), tmp_path) == "\n".join(redacted)
 
 
+def test_the_guide_says_which_lines_the_redaction_expects():
+    """The guide is read by sites that collect the logs with a process of their own."""
+    guide = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    assert "works on any stream" not in guide
+    warning = guide[guide.index(":::danger"):guide.index("## Simplified Logging via a Script")]
+    assert "without `--timestamps` or `--prefix`" in warning
+    assert "at the start of a line" in warning
+
+
+@needs_gnu_sed
+def test_a_header_behind_a_line_prefix_is_not_redacted(tmp_path):
+    """The three header expressions match a header where the containers write it, at the
+    start of a line. A log pipeline that puts something in front of every line gets its
+    headers through unredacted - the guide says so, and this test holds the two together:
+    whoever widens the expressions changes the guide with them."""
+    as_written = f"Cookie: {COOKIE}\nAuthorization: {BEARER}\nX-Csrf-Token: {CSRF}\n"
+    assert redact(as_written, tmp_path) == "Cookie: REDACTED\nAuthorization: REDACTED\nX-Csrf-Token: REDACTED\n"
+
+    for prefix in ("2026-01-05T09:15:00.123456789Z ",                    # kubectl logs --timestamps
+                   "[pod/demo-llm-5d8f7c9b6-abcde/demo-llm] ",            # kubectl logs --prefix
+                   "2026-01-05T09:15:00.123456789+00:00 stdout F "):      # the log file of the container runtime
+        prefixed = "".join(prefix + line + "\n" for line in as_written.splitlines())
+        assert redact(prefixed, tmp_path) == prefixed, prefix
+
+        # The provider key is found wherever it stands
+        with_key = prefix + log_line("2026-01-05 09:15:00", "api", f"Request Data: {{'value': '{{API_KEY:{PROVIDER_KEY}}}'}}") + "\n"
+        assert PROVIDER_KEY not in redact(with_key, tmp_path), prefix
+
+
 @needs_gnu_sed
 def test_the_parser_reads_a_redacted_log_like_the_unredacted_one(monkeypatch, tmp_path):
     (tmp_path / "plain").mkdir()
