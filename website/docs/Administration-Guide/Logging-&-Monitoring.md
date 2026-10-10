@@ -15,7 +15,13 @@ Otherwise, if you do have an established way of collecting logs, ensure that you
 For more information on how to parse the log and load it into SAS please take a look at `SAS-Viya-Integrations/Logging-Monitoring`.
 
 :::note What the containers log
-The shipped deployment templates set `SAS_SCR_LOG_LEVEL_SCR_IO=TRACE`, and the parser depends on it: the `Request: POST` / `Request Data:` lines carry the system prompt, the user prompt and the options of every call, and the `response:` lines the full answer. That is what makes the usage report possible, and it also means prompt text and responses land in your log pipeline. Decide who may read the collected log file and the `LLM_LOGS` table accordingly, or lower the level and forgo the report.
+The shipped deployment templates set `SAS_SCR_LOG_LEVEL_SCR_IO=TRACE`, and the parser depends on it: the `Request: POST` / `Request Data:` lines carry the inputs and the options of every call, and the lines of the score code the token counts, the run time and the answer. For an LLM that is the system prompt, the user prompt and the full response; for a decision model the state, the questions and every answer with its confidence; for an embedding model the embedded text. That is what makes the usage report possible, and it also means prompt text and responses land in your log pipeline. Decide who may read the collected log file and the `LLM_LOGS` table accordingly, or lower the level and forgo the report.
+:::
+
+:::danger The containers also log secrets
+At this level a container writes more than prompts. The options of a request are logged as they arrive, and for every model that is called with a provider key they hold it as `API_KEY:<the key>`. The request headers are logged too, and a call from the browser (the Prompt Builder) carries the user's `Cookie` header. Both must not reach a file that SAS Studio users can open: the collection script below replaces them with `REDACTED` before a line is written, and an established logging process needs the same step (the `redact_llm_log` function works on any stream of container log lines).
+
+A log file collected **without** this redaction - with the script of release 2.2.0 or earlier, for example - may contain provider keys and session cookies. Delete those files, including copies and backups, and rotate every provider key that was in use while they were collected. The `LLM_LOGS` table does not need to be rebuilt for this: the parser never copied the key or a header into it.
 :::
 
 ## Simplified Logging via a Script
@@ -33,12 +39,32 @@ The default here also replaces the log file as the assumption is that you pick u
 llm_namespace="llm"
 llm_log_path="/viya-share/pvs/sasdata/data/llm/llms.log"
 llm_logging_interval="1h"
+# Selects the model pods: the deployment templates label each of them app=<model name>
+llm_pod_selector="app"
+
+# Replaces the secrets in the container log with REDACTED: the provider key in the
+# options of a request and the values of the Cookie, Authorization and X-CSRF-TOKEN
+# request headers (in any spelling of upper and lower case, which needs GNU sed)
+redact_llm_log() {
+  sed -E \
+    -e "s/(API_KEY:)[^,}'\"]*/\1REDACTED/g" \
+    -e 's/^((.* Request Headers: )?Cookie:).*/\1 REDACTED/I' \
+    -e 's/^((.* Request Headers: )?Authorization:).*/\1 REDACTED/I' \
+    -e 's/^((.* Request Headers: )?X-CSRF-TOKEN:).*/\1 REDACTED/I'
+}
+
 # Remove the next line to append to the log file instead
-rm $llm_log_path
-for pod in $(kubectl get pods -n $llm_namespace -o name); do
-  kubectl logs -n $llm_namespace $pod --all-containers --since=$llm_logging_interval >> $llm_log_path
+rm -f "$llm_log_path"
+for pod in $(kubectl get pods -n "$llm_namespace" -l "$llm_pod_selector" -o name); do
+  kubectl logs -n "$llm_namespace" "$pod" --all-containers --since="$llm_logging_interval" | redact_llm_log >> "$llm_log_path"
 done
 ```
+
+The script reads the model pods only. `-l app` selects every pod that carries a label named `app`, which the shipped deployment templates set to the name of the model. The pod of a `stage-weights` job does not carry it and stays out of the file, and so does every other workload that is labelled differently. If something else in your namespace is labelled `app` as well, give the model deployments a label of their own and set `llm_pod_selector` to it (for example `llm_pod_selector="accelerator=model"`).
+
+The redaction happens in the pipe, so an unredacted line is never written to disk, and the parser reads a redacted log exactly like an unredacted one. The four `sed` expressions cover what the containers are known to log; if your requests carry a secret in another header, add a line for it.
+
+An hour without a single request leaves a file without requests. The parser reports that with a note and leaves the `LLM_LOGS` table as it is.
 
 Next add the following entry to your crontab (`crontab -e`), adjusting your path to the script:
 

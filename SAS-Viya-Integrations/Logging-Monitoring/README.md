@@ -8,22 +8,70 @@ For this two options are available:
 
 By default the parser writes the CAS table **`LLM_LOGS`** to the **`Public`** caslib and both promotes it (global scope) and saves it to disk. Change the `_log_target_table_lib` / `_log_target_table_name` macro variables at the top of *Log-Parser-Code.sas* (or the custom step's options) to target a different library or table name.
 
-The resulting table has the following columns:
+The resulting table has the following columns, in this order:
 
 | Column Name   | Column Label                                                 |
 | ------------- | ------------------------------------------------------------ |
 | timestamp     | The datetime of the request                                  |
 | model         | The name of the model used                                   |
-| systemPrompt  | The system prompt used by the request                        |
-| userPrompt    | The user prompt used by the request                          |
+| system_prompt | The system prompt used by the request. For a decision model the questions |
+| user_prompt   | The user prompt used by the request. For a decision model the state |
 | temperature   | The setting of temperature. Missing means it was not present in the request |
-| max_tokens    | The setting of max new tokens. Missing means it was not present in the request |
 | top_p         | The setting of top p. Missing means it was not present in the request |
 | top_k         | The setting of top k. Missing means it was not present in the request |
+| max_tokens    | The setting of max new tokens. Missing means it was not present in the request |
 | prompt_length | The amount of input tokens in the request                    |
 | output_length | The amount of output tokens in the request                   |
-| run_time      | The time for the model to generate the response in seconds   |
-| response      | The response of the model to the users request               |
+| runtime       | The time for the model to generate the response in seconds   |
+| response      | The response of the model to the users request. For a decision model the answers |
+
+`timestamp` is a SAS datetime, the three prompt and response columns and `model` are text, everything else is numeric.
+
+## What a row holds for each kind of model
+
+Every scoring request becomes one row, whatever kind of model served it. The twelve columns are the same for all three kinds:
+
+| Column | LLM | Decision model | Embedding model |
+| --- | --- | --- | --- |
+| system_prompt | the system prompt | the questions, as the JSON that was sent | missing |
+| user_prompt | the user prompt | the state | missing |
+| response | the response, its lines joined with a blank | the answers as JSON - every answer with its confidence and probabilities | missing |
+| prompt_length | input tokens | input tokens | the tokens of the embedded text |
+| output_length | output tokens | output tokens | missing |
+| runtime | seconds | seconds | seconds |
+| temperature, top_p, top_k, max_tokens | from the options of the request | from the options of the request | from the options of the request |
+
+The text an embedding model receives is **not** copied into the table: an ingestion run embeds every chunk of every document, and the table would end up holding the whole corpus.
+
+The table has no column that names the kind of model or the RAG project of an embedding call. The parser adds no columns on purpose: in append mode it writes into a table that already exists with these twelve columns, and widening such a table is not handled. Until then, join the model name to the fact sheets (`LLM_FACT_SHEET`, `EMBEDDING_FACT_SHEET`, `DECISION_FACT_SHEET`) to tell the kinds apart.
+
+## What happens to the existing table
+
+- **A log without requests** (an hour without traffic, or a file that only holds the start-up lines of the containers) changes nothing: the parser writes a note to the SAS log and leaves the output table as it is.
+- **A log that can not be parsed** (the file is missing, Python or one of its packages is not available) leaves the output table as it is as well and ends with an error.
+- **Replacing** (the default) builds the new table under the name `<table>_NEW` beside the existing one. Only when that table exists is the old one dropped and the new one renamed, promoted and saved. If the new table can not be built the old one stays loaded.
+- **Appending** adds the parsed rows to the existing table, or creates the table if it does not exist yet. Rows are appended as they are parsed, so a log that is parsed twice is in the table twice.
+
+## What the parser expects from the log
+
+The parser reads the lines the containers write with `SAS_SCR_LOG_LEVEL_SCR_IO=TRACE`. A request starts at its `Request: POST` line and ends at its `Response: Status Code` line; the inputs come from the `Request Data:` line and the numbers and the answer from the lines of the score code (`prompt_length:`, `tokens:`, `output_length:`, `run_time:`, `response:`, `answers:`). A line only counts when it starts as a log line (`<timestamp> - <logger> - <level> - `), so a prompt that quotes such a line is kept as text.
+
+Two limits follow from what the containers log:
+
+- The lines of the score code carry no request id. If a container logs a second request before it has answered the first, the numbers and the answer of the two can not be told apart. Each request still gets its row with its own inputs.
+- Only the options `temperature`, `top_p`, `top_k` and `max_tokens` have a column. Other options a model takes (`reasoning_effort`, `max_completion_tokens`, ...) are not kept.
+
+The collection script in the [Logging & Monitoring administration guide](../../website/docs/Administration-Guide/Logging-&-Monitoring.md) replaces provider keys and cookies in the log with `REDACTED` before the file is written. The parser reads a redacted log like an unredacted one, and it never copies a key or a request header into the table.
+
+## Tests
+
+`tests/` runs the parser's Python outside of SAS on made-up logs and checks that *Log-Parser-Code.sas* and the custom step still hold the same program:
+
+```bash
+python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests
+```
+
+The program lives in both files. Change *Log-Parser-Code.sas*, then carry the same code into the `templates.SAS` entry of *LLM - Log Parser.step* (the step is one line of JSON - load it, replace the entry and write it back compactly rather than editing it by hand); the tests fail while the two differ.
 
 ## Where this table is used
 

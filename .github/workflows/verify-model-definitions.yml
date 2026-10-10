@@ -11,6 +11,12 @@ name: Verify generated model definitions
 # exporting deployment's hostname, and all but one occurrence is hidden inside
 # zlib-compressed report content where no diff review will show it.
 #
+# The log parser is tested here as well. Its program lives twice, in
+# Logging-Monitoring/Log-Parser-Code.sas and inside the LLM - Log Parser custom
+# step, and its tests also run the redaction of the collection script printed in
+# the Logging & Monitoring guide against the pod label of the deployment
+# templates - hence those paths.
+#
 # The two Builder packages are second copies of files the repository holds as
 # source, and the mdb test suite compares them: the Prompt Builder package
 # with LLM-Prompt-Builder/dist/index.html and with the option names
@@ -39,6 +45,9 @@ on:
       - "LLM-Prompt-Builder/src/va/ddc.ts"
       - "LLM-Prompt-Builder/src/objects/rag-backends.ts"
       - "CHANGELOG.md"
+      - "SAS-Viya-Integrations/Logging-Monitoring/**"
+      - "SCR-LLM-Deployment-YAML/**"
+      - "website/docs/Administration-Guide/Logging-&-Monitoring.md"
       - ".github/workflows/verify-model-definitions.yml"
   pull_request:
     paths:
@@ -55,6 +64,9 @@ on:
       - "LLM-Prompt-Builder/src/va/ddc.ts"
       - "LLM-Prompt-Builder/src/objects/rag-backends.ts"
       - "CHANGELOG.md"
+      - "SAS-Viya-Integrations/Logging-Monitoring/**"
+      - "SCR-LLM-Deployment-YAML/**"
+      - "website/docs/Administration-Guide/Logging-&-Monitoring.md"
       - ".github/workflows/verify-model-definitions.yml"
 
 jobs:
@@ -89,3 +101,8 @@ jobs:
         run: |
           pip install pandas requests pypdfium2 pytest
           python -m pytest SAS-Viya-Integrations/RAG/tests -q
+      - name: Log parser test suite
+        # The parser's Python runs outside of SAS on made-up logs (pandas is
+        # installed by the step above); the same suite fails when the code file
+        # and the custom step no longer hold the same program.
+        run: python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests -q
