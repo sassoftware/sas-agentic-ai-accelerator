@@ -2,7 +2,8 @@
  * Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
- * Vite build for the standalone LLM Prompt Builder.
+ * Vite build for the Prompt Builder page (prompt templates, decision
+ * templates and RAG setups in one bundle).
  *
  * `npm run build` produces a single self-contained `dist/index.html`:
  *   - vite-plugin-singlefile inlines all JS and CSS into the one HTML file.
@@ -74,16 +75,24 @@ function goTemplateSafeScripts(): Plugin {
   };
 }
 
-// Point this at your SAS Viya host so `npm run dev` can proxy Model Manager /
-// identities API calls (the SCR endpoint is an absolute URL and is not proxied).
+// Point this at your SAS Viya host so `npm run dev` can proxy the SAS Viya
+// services the page calls (the SCR endpoint is an absolute URL and is not
+// proxied). The list covers the prompt side and the RAG side.
 const DEV_VIYA_HOST = 'https://your-viya-host.com';
 const proxyPaths = [
   '/modelRepository',
   '/modelManagement',
   '/identities',
   '/files',
+  '/folders',
+  '/credentials',
   '/relationships',
   '/decisions',
+  '/jobExecution',
+  '/jobDefinitions',
+  '/dataFlows',
+  '/compute',
+  '/casManagement',
 ];
 
 export default defineConfig({

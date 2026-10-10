@@ -12,9 +12,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "dev:rag": "vite --config vite.rag.config.ts",
-    "build:rag": "tsc --noEmit && vite build --config vite.rag.config.ts"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "bootstrap": "^5.3.8",

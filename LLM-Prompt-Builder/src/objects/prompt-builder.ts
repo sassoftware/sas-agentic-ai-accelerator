@@ -33,6 +33,7 @@ import { callSCRLLM, callSCRDecision } from '../api/scr-api';
 import {
   DECISION_PROJECT_NAME,
   DECISION_PROJECT_TAG,
+  DECISION_TEMPLATE_ALGORITHM,
   DECISION_TEMPLATE_TAG,
   DEFAULT_DECISION_OUTPUTS,
   allExpectedMatch,
@@ -78,6 +79,7 @@ import { escapeHtml } from '../ui/dom-helpers';
 import { renderMarkdown } from '../ui/markdown';
 import { createStepper } from '../ui/stepper';
 import { createInstructionCard } from '../ui/instruction-card';
+import { createKindSelector, type KindSelector, type PromptKind } from '../ui/kind-selector';
 import { isValidDS2VariableName, validateAndCorrectPackageName } from '../util/validation';
 import { createTypedOptionControl, optionDisplayLabel, syncSegmentedControl } from '../ui/option-controls';
 import Modal from 'bootstrap/js/dist/modal';
@@ -623,14 +625,56 @@ function parseScrOptionsString(optionsStr: string | null | undefined): Record<st
   return result;
 }
 
+/**
+ * What the page around the Prompt Builder can ask of it once it is built.
+ */
+export interface PromptBuilderController {
+  /**
+   * Show the projects, prompt-tests and steps of a kind. Returns false when
+   * the change is refused: while a run or an optimization is in flight (a
+   * toast says so), or for a kind that is switched off. Asking for the kind
+   * that is already shown changes nothing and keeps every selection.
+   */
+  setKind(kind: PromptKind): boolean;
+  currentKind(): PromptKind;
+  /** Open the Setup step and bring it into view. */
+  showSetup(): void;
+}
+
+/**
+ * How the page around the Prompt Builder takes part in it.
+ */
+export interface PromptBuilderHooks {
+  /** Which optional parts exist (see `features` in `src/config.ts`). */
+  features: { decision: boolean; optimization: boolean };
+  /**
+   * The "What are you building?" block, placed at the top of the Setup card
+   * as it is. Whoever hands it in owns the choice: it calls `setKind` when a
+   * kind of template is chosen and is told through `onKindChanged` when the
+   * builder changed kind by itself. Left out, the builder makes its own
+   * selector for its own kinds.
+   */
+  kindSelector?: HTMLElement;
+  /** The kind on show changed, or was confirmed (e.g. by opening a prompt-test of that kind). */
+  onKindChanged?(kind: PromptKind): void;
+  /** Called once, when the builder is complete and the controller can be used. */
+  onReady?(controller: PromptBuilderController): void;
+}
+
 export async function buildPromptBuilder(
   definition: PromptBuilderConfig,
   paneID: string,
-  interfaceText?: InterfaceText
+  interfaceText?: InterfaceText,
+  hooks?: PromptBuilderHooks
 ): Promise<HTMLElement> {
     const promptBuilderObject = definition;
     const promptBuilderInterfaceText = (interfaceText?.promptBuilder ?? {}) as PromptBuilderText;
     const VIYA = getAppState().config.viyaHost;
+    // The two optional parts. Without hooks the switches' own defaults apply.
+    // With decision templates off, nothing of that kind is built, requested or
+    // listed; with optimization off, the Optimize step does not exist.
+    const decisionEnabled = hooks?.features.decision ?? true;
+    const optimizationEnabled = hooks?.features.optimization ?? false;
 
     // Experiment-tracker rows for THIS object instance. Kept in the closure
     // (not on window) so two prompt-builder panes don't clobber each other.
@@ -646,12 +690,13 @@ export async function buildPromptBuilder(
     // manifests and always comes last. Optimize is a step of its own between
     // the two, and only exists when the deployment enables it - so the flow
     // has three steps or four, and Finalize is number three or four.
+    const STEP_SETUP = 0;
     const STEP_BUILD = 1;
     const promptBuilderSteps = [
       { key: 'setup', label: `${promptBuilderInterfaceText?.promptBuilderStepSetup}` },
       { key: 'build', label: `${promptBuilderInterfaceText?.promptBuilderStepBuild}` },
     ];
-    if (String(promptBuilderObject?.enableOptimization ?? '') === 'true') {
+    if (optimizationEnabled) {
       promptBuilderSteps.push({
         key: 'optimize',
         label: `${promptBuilderInterfaceText?.promptBuilderStepOptimize}`,
@@ -659,11 +704,14 @@ export async function buildPromptBuilder(
     }
     // Evaluate replaces Optimize for a decision template: an evaluation over
     // labelled cases instead of DSPy. Both exist in the row; the prompt's kind
-    // decides which one is shown (see applyPromptMode).
-    promptBuilderSteps.push({
-      key: 'evaluate',
-      label: `${promptBuilderInterfaceText?.promptBuilderStepEvaluate}`,
-    });
+    // decides which one is shown (see applyPromptMode). Like Optimize, the
+    // step and its pane exist only when their feature is switched on.
+    if (decisionEnabled) {
+      promptBuilderSteps.push({
+        key: 'evaluate',
+        label: `${promptBuilderInterfaceText?.promptBuilderStepEvaluate}`,
+      });
+    }
     promptBuilderSteps.push({
       key: 'finalize',
       label: `${promptBuilderInterfaceText?.promptBuilderStepFinalize}`,
@@ -677,14 +725,17 @@ export async function buildPromptBuilder(
         navigation: `${promptBuilderInterfaceText?.promptBuilderStepNavigation}`,
       }
     );
+    // -1 for a step that does not exist; every use checks for that.
     const STEP_EVALUATE = promptBuilderSteps.findIndex((step) => step.key === 'evaluate');
     const STEP_OPTIMIZE = promptBuilderSteps.findIndex((step) => step.key === 'optimize');
-    promptBuilderStepper.setVisible(STEP_EVALUATE, false);
+    if (STEP_EVALUATE >= 0) promptBuilderStepper.setVisible(STEP_EVALUATE, false);
     // The selected prompt-test's kind. An LLM prompt template is the default;
-    // a decision template (tagged in SAS Model Manager) swaps the editors for
-    // the question designer, the LLMs for the decision models, the tracker
-    // body for answers, Optimize for Evaluate and the manifest for typed outputs.
-    let promptMode: 'llm' | 'decision' = 'llm';
+    // a decision template (marked as one in SAS Model Manager) swaps the
+    // editors for the question designer, the LLMs for the decision models, the
+    // tracker body for answers, Optimize for Evaluate and the manifest for
+    // typed outputs. These are the two kinds this builder knows; a third kind
+    // of the page (a RAG setup) is another builder and never a value here.
+    let promptMode: PromptKind = 'llm';
 
     // Add the intro piece to the Prompt Builder. The heading stays for the
     // document outline only - the embedding report already titles the page.
@@ -695,62 +746,69 @@ export async function buildPromptBuilder(
     promptBuilderDescription.innerText = promptBuilderInterfaceText?.promptBuilderDescription as string;
 
     // --- The kind of template: the first choice on the Setup card ------------
-    // Two approaches with one explanation each. The choice filters the prompt
-    // list to prompt-tests of that kind and decides what a new one becomes;
-    // the rest of the page follows through applyPromptMode.
-    const promptKindHeader = document.createElement('h2');
-    promptKindHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderKindHeading}`;
-    const promptKindOptions = document.createElement('div');
-    promptKindOptions.id = `${promptBuilderObject?.id}-kind-options`;
-    promptKindOptions.classList.add('pb-kind-options');
-    promptKindOptions.setAttribute('role', 'radiogroup');
-    promptKindOptions.setAttribute('aria-label', `${promptBuilderInterfaceText?.promptBuilderKindHeading}`);
-    const promptKindRadios: Record<'llm' | 'decision', HTMLInputElement> = {} as Record<'llm' | 'decision', HTMLInputElement>;
-    (['llm', 'decision'] as const).forEach((kind) => {
-      const option = document.createElement('label');
-      option.classList.add('pb-kind-option');
-      option.htmlFor = `${promptBuilderObject?.id}-kind-${kind}`;
-      const radio = document.createElement('input');
-      radio.type = 'radio';
-      radio.name = `${promptBuilderObject?.id}-kind`;
-      radio.id = option.htmlFor;
-      radio.value = kind;
-      radio.classList.add('form-check-input');
-      radio.checked = kind === 'llm';
-      const body = document.createElement('span');
-      body.classList.add('pb-kind-body');
-      const title = document.createElement('span');
-      title.classList.add('pb-kind-title');
-      title.innerText = `${kind === 'llm' ? promptBuilderInterfaceText?.promptBuilderPromptKindLLM : promptBuilderInterfaceText?.promptBuilderPromptKindDecision}`;
-      const description = document.createElement('span');
-      description.classList.add('pb-kind-description');
-      description.innerText = `${kind === 'llm' ? promptBuilderInterfaceText?.promptBuilderPromptKindLLMDescription : promptBuilderInterfaceText?.promptBuilderPromptKindDecisionDescription}`;
-      body.appendChild(title);
-      body.appendChild(description);
-      option.appendChild(radio);
-      option.appendChild(body);
-      promptKindOptions.appendChild(option);
-      promptKindRadios[kind] = radio;
-      radio.addEventListener('change', () => {
-        if (!radio.checked) return;
-        // A new kind means other projects and other prompt-tests: drop both
-        // selections and show the lists of that kind.
-        resetExperimentTrackerState();
-        promptBuilderProjectPrompts = [];
-        promptBuilderDecisionPromptIds = new Set();
-        promptBuilderProjectSelectorDropdown.value = `${promptBuilderInterfaceText?.projectSelect}`;
-        deleteProjectButton.disabled = true;
-        projectFilter.nameInput.value = '';
-        promptFilter.nameInput.value = '';
-        promptFilter.setUsers([]);
-        applyPromptMode(kind);
-        renderProjectOptions();
-        renderPromptOptions();
-      });
-    });
-    const promptKindNote = document.createElement('small');
-    promptKindNote.classList.add('text-muted', 'd-block', 'mb-3');
-    promptKindNote.innerText = `${promptBuilderInterfaceText?.promptBuilderKindNote}`;
+    // One explanation per kind. The choice filters the project and prompt
+    // lists to that kind and decides what a new one becomes; the rest of the
+    // page follows through applyPromptMode.
+    //
+    // The block itself comes from the page around this builder, which also
+    // offers kinds this builder does not build and therefore owns the choice:
+    // it calls setPromptKind (through the controller) and hears about a kind
+    // this builder changed by itself through hooks.onKindChanged. Used on its
+    // own, the builder makes a selector for its own kinds.
+    const ownKindSelector: KindSelector | null = hooks?.kindSelector
+      ? null
+      : createKindSelector({
+          idPrefix: `${promptBuilderObject?.id}`,
+          kinds: decisionEnabled ? [{ kind: 'llm' }, { kind: 'decision' }] : [{ kind: 'llm' }],
+          checked: promptMode,
+          text: promptBuilderInterfaceText,
+          onSelect: (kind) => {
+            // Its cards are this builder's two kinds; a refused change puts
+            // the mark back on the kind that is still shown.
+            if (kind !== 'rag' && !setPromptKind(kind)) ownKindSelector?.setChecked(promptMode);
+          },
+        });
+    const promptKindSelectorElement: HTMLElement = hooks?.kindSelector ?? ownKindSelector!.element;
+
+    /**
+     * Change to the other kind of template: other projects and other
+     * prompt-tests, so both selections are dropped and the lists of the new
+     * kind are shown.
+     */
+    function switchPromptKind(kind: PromptKind): void {
+      resetExperimentTrackerState();
+      promptBuilderProjectPrompts = [];
+      promptBuilderDecisionPromptIds = new Set();
+      promptBuilderProjectSelectorDropdown.value = `${promptBuilderInterfaceText?.projectSelect}`;
+      deleteProjectButton.disabled = true;
+      projectFilter.nameInput.value = '';
+      promptFilter.nameInput.value = '';
+      promptFilter.setUsers([]);
+      applyPromptMode(kind);
+      renderProjectOptions();
+      renderPromptOptions();
+    }
+
+    /**
+     * The one way a person's choice of kind reaches this builder. Returns
+     * whether the kind is shown afterwards.
+     *
+     * The kind already shown is left exactly as it is - project, prompt-test
+     * and tracker included - so coming back to this builder from another part
+     * of the page costs nothing. A change is refused while a run or an
+     * optimization is in flight: it empties the tracker, and the answer that
+     * is still on its way would be written into a run that is no longer there.
+     */
+    function setPromptKind(kind: PromptKind): boolean {
+      if (kind === promptMode) return true;
+      if (kind === 'decision' && !decisionEnabled) return false;
+      if (experimentRunning || optimizeJobActive) {
+        showToast(`${promptBuilderInterfaceText?.promptBuilderKindChangeRefused}`);
+        return false;
+      }
+      switchPromptKind(kind);
+      return true;
+    }
 
     // Add the project selection/creation
     const promptBuilderProjectHeader = document.createElement('h2');
@@ -786,12 +844,14 @@ export async function buildPromptBuilder(
       // Enable project deletion only for a real project selection
       deleteProjectButton.disabled = currentProject === `${promptBuilderInterfaceText?.projectSelect}`;
       try {
-        const [allPrompts, decisionPrompts] = await Promise.all([
-          getModelProjectModels(currentProject, PROMPT_FUNCTION_FILTER),
-          getModelProjectModels(currentProject, `contains(tags,'${DECISION_TEMPLATE_TAG}')`),
-        ]);
+        // One listing answers both questions - which prompt-tests there are
+        // and which of them are decision templates - because every item
+        // carries its algorithm and its tags.
+        const allPrompts = await getModelProjectModels(currentProject, PROMPT_FUNCTION_FILTER);
         promptBuilderProjectPrompts = allPrompts;
-        promptBuilderDecisionPromptIds = new Set(decisionPrompts.map((prompt) => prompt.value));
+        promptBuilderDecisionPromptIds = new Set(
+          allPrompts.filter((prompt) => isDecisionTemplate(prompt)).map((prompt) => prompt.value)
+        );
       } catch (error) {
         console.error('Failed to load prompts for the selected project.', error);
         promptBuilderProjectPrompts = [];
@@ -898,11 +958,18 @@ export async function buildPromptBuilder(
       }
       return details;
     }
-    /** A prompt-test is a decision template when its registration says so. */
-    function isDecisionTemplate(details: Record<string, unknown> | null): boolean {
-      if (!details) return false;
-      const tags = Array.isArray(details.tags) ? (details.tags as unknown[]).map(String) : [];
-      return tags.includes(DECISION_TEMPLATE_TAG) || details.algorithm === 'Decision-Template';
+    /**
+     * A prompt-test is a decision template when its registration says so -
+     * read from the model itself or from its entry in a project listing.
+     *
+     * The algorithm is the mark that counts: SAS Model Manager keeps it from
+     * the creation request, while it drops the tags sent with that request.
+     * The tag is still honoured for a registration that carries it.
+     */
+    function isDecisionTemplate(registration: Record<string, unknown> | null): boolean {
+      if (!registration) return false;
+      const tags = Array.isArray(registration.tags) ? (registration.tags as unknown[]).map(String) : [];
+      return registration.algorithm === DECISION_TEMPLATE_ALGORITHM || tags.includes(DECISION_TEMPLATE_TAG);
     }
 
     promptBuilderPromptSelectorDropdown.onchange = async function () {
@@ -913,6 +980,17 @@ export async function buildPromptBuilder(
       // Load the prompt's documentation (and migrate a legacy function value);
       // the same registration says which kind of template this is.
       const promptDetails = await loadPromptDocumentation(promptBuilderPromptSelectedModelID);
+      // With decision templates switched off the list does not offer one, so
+      // this is a template selected some other way. It is not opened: say why,
+      // go back to the placeholder and leave nothing of it on the page.
+      if (promptDetails && !decisionEnabled && isDecisionTemplate(promptDetails)) {
+        showToast(`${promptBuilderInterfaceText?.promptBuilderDecisionSwitchedOff}`);
+        self.value = `${promptBuilderInterfaceText?.promptSelect}`;
+        renderPromptOptions();
+        await loadPromptDocumentation(self.value);
+        resetExperimentTrackerState();
+        return;
+      }
       // The list shows one kind, so this only differs when a prompt was opened
       // some other way; the registration decides, and the selector follows.
       if (promptDetails) applyPromptMode(isDecisionTemplate(promptDetails) ? 'decision' : 'llm');
@@ -1112,7 +1190,10 @@ export async function buildPromptBuilder(
       );
     }
 
-    // Get all projects in the specified repository and render the filterable list
+    // Get all projects in the specified repository and render the filterable
+    // list. The second listing is asked for even with decision templates
+    // switched off: a decision project carries Prompt-Engineering too, and
+    // knowing which ones they are is what keeps them out of the LLM list.
     {
       const [allProjects, decisionProjects] = await Promise.all([
         getModelProjects(`contains(tags,'Prompt-Engineering')`),
@@ -1126,10 +1207,12 @@ export async function buildPromptBuilder(
     renderPromptOptions();
 
     // Add the creation prompt buttons and modals. The row is a flex container
-    // so the destructive actions can sit right-aligned, away from the rest.
+    // so the destructive actions can sit right-aligned, away from the rest;
+    // where it wraps (a narrow report object), the row gap keeps the second
+    // line of buttons off the first.
     const promptBuilderModalButtonContainer = document.createElement('div');
     promptBuilderModalButtonContainer.setAttribute('id', `${promptBuilderObject?.id}-modal-button-container`);
-    promptBuilderModalButtonContainer.classList.add('d-flex', 'flex-wrap', 'align-items-center');
+    promptBuilderModalButtonContainer.classList.add('d-flex', 'flex-wrap', 'align-items-center', 'row-gap-2');
 
     // Function to call when creating a new project
     async function promptBuilderCreateProject(): Promise<void> {
@@ -1188,6 +1271,7 @@ export async function buildPromptBuilder(
         if (btn) btn.disabled = true;
       }
       const newPromptIsDecision = promptMode === 'decision';
+      const newPromptTags = newPromptIsDecision ? ['Decision', 'Prompt-Template', DECISION_TEMPLATE_TAG] : ['LLM', 'Prompt-Template'];
       const promptBuilderNewPromptDefinition = {
         name: (document.getElementById('promptBuilderCreatePromptName') as HTMLInputElement).value,
         description: (document.getElementById('promptBuilderCreatePromptDescription') as HTMLInputElement).value,
@@ -1195,19 +1279,38 @@ export async function buildPromptBuilder(
         tool: 'Prompt-Builder',
         modeler: getAppState().userName,
         projectId: promptBuilderProjectSelectorDropdown.options[promptBuilderProjectSelectorDropdown.selectedIndex].value,
-        // The kind chosen in the dialog is carried by the registration: a
-        // decision template is tagged so any Prompt Builder recognises it.
-        algorithm: newPromptIsDecision ? 'Decision-Template' : 'Prompt-Template',
-        tags: newPromptIsDecision ? ['Decision', 'Prompt-Template', DECISION_TEMPLATE_TAG] : ['LLM', 'Prompt-Template'],
+        // The kind chosen on the Setup card is carried by the registration.
+        // The algorithm is what any Prompt Builder recognises it by: it is
+        // kept from this request and listed with the project's models.
+        algorithm: newPromptIsDecision ? DECISION_TEMPLATE_ALGORITHM : 'Prompt-Template',
+        tags: newPromptTags,
         scoreCodeType: 'python',
       };
       const promptBuilderNewPromptObject = await createModel(promptBuilderNewPromptDefinition);
-      if (newPromptIsDecision) promptBuilderDecisionPromptIds.add(`${promptBuilderNewPromptObject?.items?.[0]?.id}`);
+      // The service answers with a collection holding the one new model.
+      const newPrompt: Record<string, unknown> = promptBuilderNewPromptObject?.items?.[0] ?? promptBuilderNewPromptObject;
+      const newPromptID = `${newPrompt?.id}`;
+      // SAS Model Manager drops the tags of a creation request, so they are
+      // written again when the answer does not carry them. Best-effort: the
+      // tags serve reporting and searching in Model Manager, the kind does
+      // not depend on them, so a failure here must not fail the creation.
+      const keptTags = Array.isArray(newPrompt?.tags) ? (newPrompt.tags as unknown[]).map(String) : [];
+      if (newPromptTags.some((tag) => !keptTags.includes(tag))) {
+        try {
+          const tagStatus = await updateModelTags(newPromptID, [], newPromptTags);
+          if (tagStatus >= 300) console.warn(`The tags of the new prompt-test could not be written (status ${tagStatus}).`);
+        } catch (error) {
+          console.warn('The tags of the new prompt-test could not be written.', error);
+        }
+      }
+      if (newPromptIsDecision) promptBuilderDecisionPromptIds.add(newPromptID);
       promptBuilderProjectPrompts.push({
-        value: `${promptBuilderNewPromptObject?.items?.[0]?.id}`,
-        innerHTML: `${promptBuilderNewPromptObject?.items?.[0]?.name}`,
-        createdBy: (promptBuilderNewPromptObject?.items?.[0]?.createdBy as string | undefined) ?? getAppState().userName ?? undefined,
-        modifiedBy: (promptBuilderNewPromptObject?.items?.[0]?.modifiedBy as string | undefined) ?? getAppState().userName ?? undefined,
+        value: newPromptID,
+        innerHTML: `${newPrompt?.name}`,
+        createdBy: (newPrompt?.createdBy as string | undefined) ?? getAppState().userName ?? undefined,
+        modifiedBy: (newPrompt?.modifiedBy as string | undefined) ?? getAppState().userName ?? undefined,
+        algorithm: promptBuilderNewPromptDefinition.algorithm,
+        tags: newPromptTags,
       });
       // Clear the filters so the new prompt is visible, then select it
       promptFilter.nameInput.value = '';
@@ -1215,7 +1318,7 @@ export async function buildPromptBuilder(
       promptFilter.setUsers(promptBuilderProjectPrompts);
       renderPromptOptions();
       // Set the newly created project as the currently selected project
-      promptBuilderPromptSelectorDropdown.value = `${promptBuilderNewPromptObject?.items?.[0]?.id}`;
+      promptBuilderPromptSelectorDropdown.value = newPromptID;
       promptBuilderPromptSelectorDropdown.dispatchEvent(new Event('change'));
       if (modal) {
         const btn = (modal.lastChild as HTMLElement)?.lastChild?.lastChild?.lastChild as HTMLButtonElement | null;
@@ -1705,49 +1808,59 @@ export async function buildPromptBuilder(
     // mdb registers them in the Decision Model Project of the same repository,
     // resolved here by its name so no further report option is needed. They
     // carry no sampling options - only, for a hosted model, the key entry.
+    //
+    // With decision templates switched off, the parts of that kind (this
+    // container, the question designer, the decision manifest options) are
+    // still created, because the functions below hold on to them, but they
+    // are never put on the page (see the assembly at the end) and nothing is
+    // requested for them.
     const promptBuilderDecisionModelsContainer = document.createElement('div');
     promptBuilderDecisionModelsContainer.id = `${promptBuilderObject?.id}-decision-model-selector-container`;
     promptBuilderDecisionModelsContainer.style.display = 'none';
     let promptBuilderAvailableDecisionModels: AvailableLLM[] = [];
-    try {
-      const decisionProjects = await getModelProjects(
-        `and(eq(repositoryId,'${promptBuilderObject?.modelRepositoryID}'),eq(name,'${DECISION_PROJECT_NAME}'))`
-      );
-      if (decisionProjects.length > 0) {
-        const decisionProjectID = decisionProjects[0].value;
-        const [decisionModelOptions, deprecatedDecisionModels] = await Promise.all([
-          getModelProjectModels(decisionProjectID),
-          getModelProjectModels(decisionProjectID, "eq(tags,'deprecated')"),
-        ]);
-        promptBuilderAvailableDecisionModels = decisionModelOptions
-          .map((option) => ({ ...option, id: option.value, name: option.innerHTML }))
-          .filter((model) => !deprecatedDecisionModels.some((deprecated) => deprecated.value === model.id));
-        await Promise.all(
-          promptBuilderAvailableDecisionModels.map(async (model) => {
-            try {
-              const contents = await getModelContents(model.id);
-              const optionsContent = contents.find((content) => content?.name === 'options.json');
-              if (optionsContent?.fileUri) {
-                model.fileURI = optionsContent.fileUri;
-                model.options = await (await getFileContent(optionsContent.fileUri)).json();
-              }
-            } catch (error) {
-              console.error(`Failed to load options for decision model ${model.name}.`, error);
-            }
-            // The card shows what the registration says the model is and
-            // accepts, so the attributes are read up front rather than at
-            // the first run.
-            try {
-              Object.assign(model, extractCostAttributes(await getModelDetails(model.id)));
-              llmAttributesFetched.add(model.name);
-            } catch (error) {
-              console.error(`Failed to load the attributes of decision model ${model.name}.`, error);
-            }
-          })
+    // Asked for only while decision templates are switched on - switched off,
+    // the page sends no request about decision models at all.
+    if (decisionEnabled) {
+      try {
+        const decisionProjects = await getModelProjects(
+          `and(eq(repositoryId,'${promptBuilderObject?.modelRepositoryID}'),eq(name,'${DECISION_PROJECT_NAME}'))`
         );
+        if (decisionProjects.length > 0) {
+          const decisionProjectID = decisionProjects[0].value;
+          const [decisionModelOptions, deprecatedDecisionModels] = await Promise.all([
+            getModelProjectModels(decisionProjectID),
+            getModelProjectModels(decisionProjectID, "eq(tags,'deprecated')"),
+          ]);
+          promptBuilderAvailableDecisionModels = decisionModelOptions
+            .map((option) => ({ ...option, id: option.value, name: option.innerHTML }))
+            .filter((model) => !deprecatedDecisionModels.some((deprecated) => deprecated.value === model.id));
+          await Promise.all(
+            promptBuilderAvailableDecisionModels.map(async (model) => {
+              try {
+                const contents = await getModelContents(model.id);
+                const optionsContent = contents.find((content) => content?.name === 'options.json');
+                if (optionsContent?.fileUri) {
+                  model.fileURI = optionsContent.fileUri;
+                  model.options = await (await getFileContent(optionsContent.fileUri)).json();
+                }
+              } catch (error) {
+                console.error(`Failed to load options for decision model ${model.name}.`, error);
+              }
+              // The card shows what the registration says the model is and
+              // accepts, so the attributes are read up front rather than at
+              // the first run.
+              try {
+                Object.assign(model, extractCostAttributes(await getModelDetails(model.id)));
+                llmAttributesFetched.add(model.name);
+              } catch (error) {
+                console.error(`Failed to load the attributes of decision model ${model.name}.`, error);
+              }
+            })
+          );
+        }
+      } catch (error) {
+        console.error('Failed to load the decision models.', error);
       }
-    } catch (error) {
-      console.error('Failed to load the decision models.', error);
     }
     for (const model of promptBuilderAvailableDecisionModels) {
       llmAttributesByName.set(model.name, model);
@@ -1756,7 +1869,7 @@ export async function buildPromptBuilder(
         providersWithoutCredential.add(keyName);
       }
     }
-    if (promptBuilderAvailableDecisionModels.length === 0) {
+    if (decisionEnabled && promptBuilderAvailableDecisionModels.length === 0) {
       const noModels = document.createElement('p');
       noModels.classList.add('text-muted');
       noModels.innerText = `${promptBuilderInterfaceText?.promptBuilderDecisionNoModels}`;
@@ -3773,6 +3886,9 @@ export async function buildPromptBuilder(
         `${paneID}-obj-${promptBuilderObject?.id}-user-prompt`
       ) as HTMLTextAreaElement | null;
       const runMode = trackerEntry.mode === 'decision' ? 'decision' : 'llm';
+      // A decision run cannot be shown with decision templates switched off:
+      // the page stays what it is rather than filling LLM editors with it.
+      if (runMode === 'decision' && !decisionEnabled) return;
       if (runMode !== promptMode) applyPromptMode(runMode);
       if (runMode === 'decision') {
         decisionDesigner.stateInput.value = trackerEntry.userPrompt ?? '';
@@ -4990,10 +5106,10 @@ ${scoreCodeReturn}`;
     // The Optimize section saves the prompt, launches the shipped Job
     // Execution job (proc python + DSPy, see SAS-Viya-Integrations/
     // Prompt-Optimization/), polls it with live log milestones, and offers the
-    // optimised prompt back. Gated by the enableOptimization Option; the job
-    // is the sole writer of Prompt-Optimization-Tracker.json — the browser
-    // only launches, polls and reads.
-    const optimizationEnabled = String(promptBuilderObject?.enableOptimization ?? '') === 'true';
+    // optimised prompt back. Gated by the enableOptimization Option (see
+    // optimizationEnabled at the top); the job is the sole writer of
+    // Prompt-Optimization-Tracker.json — the browser only launches, polls and
+    // reads.
     // Hoisting-safe handle for updateOptimizeState(), which manifest/tracker
     // refreshes call before this section is built (`var` so early calls see
     // `undefined` instead of a TDZ error and no-op).
@@ -6861,10 +6977,7 @@ ${scoreCodeReturn}`;
       promptBuilderDescription,
       instructionText(promptBuilderInterfaceText?.promptBuilderProjectInstructions),
     ]);
-    promptKindHeader.classList.add('h3');
-    projectCard.controls.appendChild(promptKindHeader);
-    projectCard.controls.appendChild(promptKindOptions);
-    projectCard.controls.appendChild(promptKindNote);
+    projectCard.controls.appendChild(promptKindSelectorElement);
     projectCard.controls.appendChild(promptBuilderProjectSelectorHeader);
     projectCard.controls.appendChild(projectFilter.filterRow);
     projectCard.controls.appendChild(promptBuilderProjectSelectorDropdown);
@@ -6889,7 +7002,7 @@ ${scoreCodeReturn}`;
     const llmCardInstructions = instructionText(promptBuilderInterfaceText?.promptBuilderModelSelectorInstructions);
     const llmCard = createInstructionCard(promptBuilderModelSelectorHeader, instructionsTitle, [llmCardInstructions]);
     llmCard.controls.appendChild(promptBuilderModelSelectorContainer);
-    llmCard.controls.appendChild(promptBuilderDecisionModelsContainer);
+    if (decisionEnabled) llmCard.controls.appendChild(promptBuilderDecisionModelsContainer);
     buildPane.appendChild(llmCard.element);
 
     // Configuration for how responses are judged lives here (future council or
@@ -6915,8 +7028,10 @@ ${scoreCodeReturn}`;
     workbenchCard.controls.appendChild(promptBuilderVariablesContainer);
     promptBuilderPromptingContainer.classList.add('mt-2');
     workbenchCard.controls.appendChild(promptBuilderPromptingContainer);
-    decisionDesigner.element.classList.add('mt-2');
-    workbenchCard.controls.appendChild(decisionDesigner.element);
+    if (decisionEnabled) {
+      decisionDesigner.element.classList.add('mt-2');
+      workbenchCard.controls.appendChild(decisionDesigner.element);
+    }
     workbenchCard.controls.appendChild(promptBuilderRunExperimentError);
     buildPane.appendChild(workbenchCard.element);
 
@@ -6947,7 +7062,7 @@ ${scoreCodeReturn}`;
     ]);
     manifestCard.controls.appendChild(promptExperimentIntegratedCallDiv);
     manifestCard.controls.appendChild(promptExperimentManifestOptions);
-    manifestCard.controls.appendChild(promptExperimentDecisionManifestOptions);
+    if (decisionEnabled) manifestCard.controls.appendChild(promptExperimentDecisionManifestOptions);
     promptExperimentCreateModelButtonWrapper.classList.add('mt-3');
     manifestCard.controls.appendChild(promptExperimentCreateModelButtonWrapper);
     promptExperimentResultContainer.classList.add('mt-2');
@@ -6957,284 +7072,294 @@ ${scoreCodeReturn}`;
     // --- Evaluate (decision templates): accuracy, confusion and the confidence
     // threshold over labelled cases - the saved runs with expected answers, or
     // a CAS table with one column per variable and expected_<question> per
-    // question. Every case is one call per selected decision model.
-    const evaluatePane = paneOf('evaluate') as HTMLDivElement;
-    const evaluationHeader = document.createElement('h2');
-    evaluationHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateHeading}`;
-    const evaluationCard = createInstructionCard(evaluationHeader, instructionsTitle, [
-      instructionText(promptBuilderInterfaceText?.promptBuilderEvaluateInstructions),
-      instructionText(promptBuilderInterfaceText?.promptBuilderEvaluateThresholdHint),
-    ]);
-    const evaluationPrefix = `${paneID}-obj-${promptBuilderObject?.id}-evaluate`;
-    const evaluationSourceName = `${evaluationPrefix}-source`;
-    const makeEvaluationRadio = (value: string, labelText: unknown, checked: boolean): HTMLInputElement => {
-      const wrapper = document.createElement('div');
-      wrapper.classList.add('form-check');
-      const radio = document.createElement('input');
-      radio.classList.add('form-check-input');
-      radio.type = 'radio';
-      radio.name = evaluationSourceName;
-      radio.id = `${evaluationSourceName}-${value}`;
-      radio.value = value;
-      radio.checked = checked;
-      const radioLabel = document.createElement('label');
-      radioLabel.classList.add('form-check-label');
-      radioLabel.htmlFor = radio.id;
-      radioLabel.innerText = `${labelText}`;
-      wrapper.appendChild(radio);
-      wrapper.appendChild(radioLabel);
-      evaluationCard.controls.appendChild(wrapper);
-      return radio;
-    };
-    const evaluationSourceLabel = document.createElement('p');
-    evaluationSourceLabel.classList.add('fw-bold', 'mb-1');
-    evaluationSourceLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateSourceLabel}`;
-    evaluationCard.controls.appendChild(evaluationSourceLabel);
-    const evaluationTrackerRadio = makeEvaluationRadio('tracker', promptBuilderInterfaceText?.promptBuilderEvaluateSourceTracker, true);
-    const evaluationCasRadio = makeEvaluationRadio('cas', promptBuilderInterfaceText?.promptBuilderEvaluateSourceCas, false);
-    const evaluationCasRow = document.createElement('div');
-    evaluationCasRow.classList.add('d-none', 'ms-4', 'mb-2', 'd-flex', 'align-items-center', 'gap-2', 'flex-wrap');
-    const makeEvaluationPicker = (kind: string, placeholderText: unknown, width: string): HTMLSelectElement => {
-      const select = document.createElement('select');
-      select.id = `${evaluationPrefix}-cas-${kind}`;
-      select.classList.add('form-select', 'form-select-sm');
-      select.style.width = width;
-      const placeholder = document.createElement('option');
-      placeholder.value = '';
-      placeholder.innerText = `${placeholderText}`;
-      placeholder.disabled = true;
-      placeholder.selected = true;
-      select.appendChild(placeholder);
-      evaluationCasRow.appendChild(select);
-      return select;
-    };
-    const evaluationServerSelect = makeEvaluationPicker('server', promptBuilderInterfaceText?.promptBuilderOptimizeCasServerPlaceholder, '12rem');
-    const evaluationLibSelect = makeEvaluationPicker('lib', promptBuilderInterfaceText?.promptBuilderOptimizeCasLibPlaceholder, '12rem');
-    const evaluationTableSelect = makeEvaluationPicker('table', promptBuilderInterfaceText?.promptBuilderOptimizeCasTablePlaceholder, '16rem');
-    const fillEvaluationSelect = (select: HTMLSelectElement, names: string[]): void => {
-      const placeholder = select.options[0];
-      select.innerHTML = '';
-      select.appendChild(placeholder);
-      placeholder.selected = true;
-      names.forEach((name) => {
-        const option = document.createElement('option');
-        option.value = name;
-        option.innerText = name;
-        select.appendChild(option);
+    // question. Every case is one call per selected decision model. The step
+    // belongs to decision templates, so with them switched off neither the
+    // pane nor anything in it exists.
+    if (decisionEnabled) {
+      const evaluatePane = paneOf('evaluate') as HTMLDivElement;
+      const evaluationHeader = document.createElement('h2');
+      evaluationHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateHeading}`;
+      const evaluationCard = createInstructionCard(evaluationHeader, instructionsTitle, [
+        instructionText(promptBuilderInterfaceText?.promptBuilderEvaluateInstructions),
+        instructionText(promptBuilderInterfaceText?.promptBuilderEvaluateThresholdHint),
+      ]);
+      const evaluationPrefix = `${paneID}-obj-${promptBuilderObject?.id}-evaluate`;
+      const evaluationSourceName = `${evaluationPrefix}-source`;
+      const makeEvaluationRadio = (value: string, labelText: unknown, checked: boolean): HTMLInputElement => {
+        const wrapper = document.createElement('div');
+        wrapper.classList.add('form-check');
+        const radio = document.createElement('input');
+        radio.classList.add('form-check-input');
+        radio.type = 'radio';
+        radio.name = evaluationSourceName;
+        radio.id = `${evaluationSourceName}-${value}`;
+        radio.value = value;
+        radio.checked = checked;
+        const radioLabel = document.createElement('label');
+        radioLabel.classList.add('form-check-label');
+        radioLabel.htmlFor = radio.id;
+        radioLabel.innerText = `${labelText}`;
+        wrapper.appendChild(radio);
+        wrapper.appendChild(radioLabel);
+        evaluationCard.controls.appendChild(wrapper);
+        return radio;
+      };
+      const evaluationSourceLabel = document.createElement('p');
+      evaluationSourceLabel.classList.add('fw-bold', 'mb-1');
+      evaluationSourceLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateSourceLabel}`;
+      evaluationCard.controls.appendChild(evaluationSourceLabel);
+      const evaluationTrackerRadio = makeEvaluationRadio('tracker', promptBuilderInterfaceText?.promptBuilderEvaluateSourceTracker, true);
+      const evaluationCasRadio = makeEvaluationRadio('cas', promptBuilderInterfaceText?.promptBuilderEvaluateSourceCas, false);
+      const evaluationCasRow = document.createElement('div');
+      evaluationCasRow.classList.add('d-none', 'ms-4', 'mb-2', 'd-flex', 'align-items-center', 'gap-2', 'flex-wrap');
+      const makeEvaluationPicker = (kind: string, placeholderText: unknown, width: string): HTMLSelectElement => {
+        const select = document.createElement('select');
+        select.id = `${evaluationPrefix}-cas-${kind}`;
+        select.classList.add('form-select', 'form-select-sm');
+        select.style.width = width;
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.innerText = `${placeholderText}`;
+        placeholder.disabled = true;
+        placeholder.selected = true;
+        select.appendChild(placeholder);
+        evaluationCasRow.appendChild(select);
+        return select;
+      };
+      const evaluationServerSelect = makeEvaluationPicker('server', promptBuilderInterfaceText?.promptBuilderOptimizeCasServerPlaceholder, '12rem');
+      const evaluationLibSelect = makeEvaluationPicker('lib', promptBuilderInterfaceText?.promptBuilderOptimizeCasLibPlaceholder, '12rem');
+      const evaluationTableSelect = makeEvaluationPicker('table', promptBuilderInterfaceText?.promptBuilderOptimizeCasTablePlaceholder, '16rem');
+      const fillEvaluationSelect = (select: HTMLSelectElement, names: string[]): void => {
+        const placeholder = select.options[0];
+        select.innerHTML = '';
+        select.appendChild(placeholder);
+        placeholder.selected = true;
+        names.forEach((name) => {
+          const option = document.createElement('option');
+          option.value = name;
+          option.innerText = name;
+          select.appendChild(option);
+        });
+      };
+      let evaluationServersLoaded = false;
+      const loadEvaluationServers = async (): Promise<void> => {
+        if (evaluationServersLoaded) return;
+        evaluationServersLoaded = true;
+        try {
+          fillEvaluationSelect(evaluationServerSelect, await getCasServers());
+        } catch (error) {
+          console.error('Failed to list the CAS servers.', error);
+        }
+      };
+      evaluationServerSelect.addEventListener('change', async () => {
+        fillEvaluationSelect(evaluationLibSelect, []);
+        fillEvaluationSelect(evaluationTableSelect, []);
+        try {
+          fillEvaluationSelect(evaluationLibSelect, await getCaslibs(evaluationServerSelect.value));
+        } catch (error) {
+          console.error('Failed to list the caslibs.', error);
+        }
       });
-    };
-    let evaluationServersLoaded = false;
-    const loadEvaluationServers = async (): Promise<void> => {
-      if (evaluationServersLoaded) return;
-      evaluationServersLoaded = true;
-      try {
-        fillEvaluationSelect(evaluationServerSelect, await getCasServers());
-      } catch (error) {
-        console.error('Failed to list the CAS servers.', error);
-      }
-    };
-    evaluationServerSelect.addEventListener('change', async () => {
-      fillEvaluationSelect(evaluationLibSelect, []);
-      fillEvaluationSelect(evaluationTableSelect, []);
-      try {
-        fillEvaluationSelect(evaluationLibSelect, await getCaslibs(evaluationServerSelect.value));
-      } catch (error) {
-        console.error('Failed to list the caslibs.', error);
-      }
-    });
-    evaluationLibSelect.addEventListener('change', async () => {
-      fillEvaluationSelect(evaluationTableSelect, []);
-      try {
-        fillEvaluationSelect(evaluationTableSelect, await getCasTables(evaluationServerSelect.value, evaluationLibSelect.value));
-      } catch (error) {
-        console.error('Failed to list the CAS tables.', error);
-      }
-    });
-    const evaluationMaxRowsLabel = document.createElement('label');
-    evaluationMaxRowsLabel.classList.add('form-label', 'mb-0');
-    evaluationMaxRowsLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateMaxRowsLabel}`;
-    const evaluationMaxRows = document.createElement('input');
-    evaluationMaxRows.type = 'number';
-    evaluationMaxRows.id = `${evaluationPrefix}-max-rows`;
-    evaluationMaxRows.classList.add('form-control', 'form-control-sm');
-    evaluationMaxRows.style.width = '6rem';
-    evaluationMaxRows.min = '1';
-    evaluationMaxRows.max = '1000';
-    evaluationMaxRows.value = '100';
-    evaluationMaxRowsLabel.htmlFor = evaluationMaxRows.id;
-    evaluationCasRow.appendChild(evaluationMaxRowsLabel);
-    evaluationCasRow.appendChild(evaluationMaxRows);
-    evaluationCard.controls.appendChild(evaluationCasRow);
-    const syncEvaluationSource = (): void => {
-      const cas = evaluationCasRadio.checked;
-      evaluationCasRow.classList.toggle('d-none', !cas);
-      if (cas) void loadEvaluationServers();
-    };
-    evaluationTrackerRadio.addEventListener('change', syncEvaluationSource);
-    evaluationCasRadio.addEventListener('change', syncEvaluationSource);
-    const evaluationButton = document.createElement('button');
-    evaluationButton.type = 'button';
-    evaluationButton.id = `${evaluationPrefix}-run`;
-    evaluationButton.classList.add('btn', 'btn-primary', 'mt-2');
-    evaluationButton.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateButton}`;
-    const evaluationStatus = document.createElement('p');
-    evaluationStatus.id = `${evaluationPrefix}-status`;
-    evaluationStatus.classList.add('pb-status', 'mt-2', 'mb-0');
-    evaluationCard.controls.appendChild(evaluationButton);
-    evaluationCard.controls.appendChild(evaluationStatus);
-    const evaluationResults = document.createElement('div');
-    evaluationResults.id = `${evaluationPrefix}-results`;
-    evaluationCard.wide.appendChild(evaluationResults);
-    evaluatePane.appendChild(evaluationCard.element);
-    /** The cases and answers of the saved decision runs, per model. */
-    const trackerEvaluationCases = (): { questions: DecisionQuestion[]; cases: EvaluationCase[]; answers: Map<string, (DecisionAnswers | null)[]> } => {
-      const questions: DecisionQuestion[] = [];
-      const cases: EvaluationCase[] = [];
-      const answers = new Map<string, (DecisionAnswers | null)[]>();
-      promptExperimentTracker.forEach((trackerEntry) => {
-        if (trackerEntry.mode !== 'decision' || !trackerEntry.expected || Object.keys(trackerEntry.expected).length === 0) return;
-        questionsFromJson(trackerEntry.systemPrompt).forEach((question) => {
-          if (!questions.some((known) => known.id === question.id)) questions.push(question);
-        });
-        const inputs: Record<string, string> = {};
-        (trackerEntry.variables ?? []).forEach((variable) => {
-          inputs[variable.name] = variable.value;
-        });
-        const caseIndex = cases.push({ inputs, expected: trackerEntry.expected }) - 1;
-        Object.keys(trackerEntry)
-          .filter((key) => !TRACKER_META_KEYS.includes(key))
-          .forEach((modelName) => {
-            const perModel = answers.get(modelName) ?? [];
-            perModel[caseIndex] = parseAnswers((trackerEntry[modelName] as ModelExperimentData)?.response);
-            answers.set(modelName, perModel);
+      evaluationLibSelect.addEventListener('change', async () => {
+        fillEvaluationSelect(evaluationTableSelect, []);
+        try {
+          fillEvaluationSelect(evaluationTableSelect, await getCasTables(evaluationServerSelect.value, evaluationLibSelect.value));
+        } catch (error) {
+          console.error('Failed to list the CAS tables.', error);
+        }
+      });
+      const evaluationMaxRowsLabel = document.createElement('label');
+      evaluationMaxRowsLabel.classList.add('form-label', 'mb-0');
+      evaluationMaxRowsLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateMaxRowsLabel}`;
+      const evaluationMaxRows = document.createElement('input');
+      evaluationMaxRows.type = 'number';
+      evaluationMaxRows.id = `${evaluationPrefix}-max-rows`;
+      evaluationMaxRows.classList.add('form-control', 'form-control-sm');
+      evaluationMaxRows.style.width = '6rem';
+      evaluationMaxRows.min = '1';
+      evaluationMaxRows.max = '1000';
+      evaluationMaxRows.value = '100';
+      evaluationMaxRowsLabel.htmlFor = evaluationMaxRows.id;
+      evaluationCasRow.appendChild(evaluationMaxRowsLabel);
+      evaluationCasRow.appendChild(evaluationMaxRows);
+      evaluationCard.controls.appendChild(evaluationCasRow);
+      const syncEvaluationSource = (): void => {
+        const cas = evaluationCasRadio.checked;
+        evaluationCasRow.classList.toggle('d-none', !cas);
+        if (cas) void loadEvaluationServers();
+      };
+      evaluationTrackerRadio.addEventListener('change', syncEvaluationSource);
+      evaluationCasRadio.addEventListener('change', syncEvaluationSource);
+      const evaluationButton = document.createElement('button');
+      evaluationButton.type = 'button';
+      evaluationButton.id = `${evaluationPrefix}-run`;
+      evaluationButton.classList.add('btn', 'btn-primary', 'mt-2');
+      evaluationButton.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateButton}`;
+      const evaluationStatus = document.createElement('p');
+      evaluationStatus.id = `${evaluationPrefix}-status`;
+      evaluationStatus.classList.add('pb-status', 'mt-2', 'mb-0');
+      evaluationCard.controls.appendChild(evaluationButton);
+      evaluationCard.controls.appendChild(evaluationStatus);
+      const evaluationResults = document.createElement('div');
+      evaluationResults.id = `${evaluationPrefix}-results`;
+      evaluationCard.wide.appendChild(evaluationResults);
+      evaluatePane.appendChild(evaluationCard.element);
+      /** The cases and answers of the saved decision runs, per model. */
+      const trackerEvaluationCases = (): { questions: DecisionQuestion[]; cases: EvaluationCase[]; answers: Map<string, (DecisionAnswers | null)[]> } => {
+        const questions: DecisionQuestion[] = [];
+        const cases: EvaluationCase[] = [];
+        const answers = new Map<string, (DecisionAnswers | null)[]>();
+        promptExperimentTracker.forEach((trackerEntry) => {
+          if (trackerEntry.mode !== 'decision' || !trackerEntry.expected || Object.keys(trackerEntry.expected).length === 0) return;
+          questionsFromJson(trackerEntry.systemPrompt).forEach((question) => {
+            if (!questions.some((known) => known.id === question.id)) questions.push(question);
           });
-      });
-      return { questions, cases, answers };
-    };
-    evaluationButton.onclick = async () => {
-      evaluationResults.innerHTML = '';
-      evaluationStatus.innerText = '';
-      evaluationButton.disabled = true;
-      try {
-        if (evaluationTrackerRadio.checked) {
-          const { questions, cases, answers } = trackerEvaluationCases();
+          const inputs: Record<string, string> = {};
+          (trackerEntry.variables ?? []).forEach((variable) => {
+            inputs[variable.name] = variable.value;
+          });
+          const caseIndex = cases.push({ inputs, expected: trackerEntry.expected }) - 1;
+          Object.keys(trackerEntry)
+            .filter((key) => !TRACKER_META_KEYS.includes(key))
+            .forEach((modelName) => {
+              const perModel = answers.get(modelName) ?? [];
+              perModel[caseIndex] = parseAnswers((trackerEntry[modelName] as ModelExperimentData)?.response);
+              answers.set(modelName, perModel);
+            });
+        });
+        return { questions, cases, answers };
+      };
+      evaluationButton.onclick = async () => {
+        evaluationResults.innerHTML = '';
+        evaluationStatus.innerText = '';
+        evaluationButton.disabled = true;
+        try {
+          if (evaluationTrackerRadio.checked) {
+            const { questions, cases, answers } = trackerEvaluationCases();
+            if (cases.length === 0) {
+              evaluationStatus.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateNoRows}`;
+              return;
+            }
+            answers.forEach((perModel, modelName) => {
+              const padded = cases.map((_, index) => perModel[index] ?? null);
+              evaluationResults.appendChild(
+                renderEvaluation(modelName, questions, cases, padded, padded.filter((answer) => answer === null).length, promptBuilderInterfaceText, evaluationPrefix)
+              );
+            });
+            return;
+          }
+          // A CAS table: every row is a case, every selected model that can
+          // take the request answers it.
+          const questions = decisionDesigner.getQuestions();
+          if (questions.length === 0) {
+            evaluationStatus.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateNoQuestions}`;
+            return;
+          }
+          const { fit: models, unfit } = fitDecisionModels();
+          if (models.length === 0) {
+            evaluationStatus.innerText =
+              unfit.length > 0
+                ? `${promptBuilderInterfaceText?.promptBuilderDecisionSkippedUnfit}`.replace('{models}', unfit.map((model) => model.name).join(', '))
+                : `${promptBuilderInterfaceText?.promptBuilderEvaluateNoModels}`;
+            return;
+          }
+          if (!evaluationServerSelect.value || !evaluationLibSelect.value || !evaluationTableSelect.value) {
+            evaluationStatus.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCasMissingToast}`;
+            return;
+          }
+          const maxRows = Math.max(1, Math.min(1000, Number(evaluationMaxRows.value) || 100));
+          const table = await getCasTableRows(evaluationLibSelect.value, evaluationTableSelect.value, evaluationServerSelect.value, maxRows);
+          const columnIndex = (name: string): number => table.columns.findIndex((column) => column.toLowerCase() === name.toLowerCase());
+          const variables = collectPromptVariables();
+          const missingColumns = variables.map((variable) => variable.name).filter((name) => columnIndex(name) < 0);
+          const expectedColumns = questions.filter((question) => columnIndex(`expected_${question.id}`) >= 0);
+          if (expectedColumns.length === 0) missingColumns.push(...questions.map((question) => `expected_${question.id}`));
+          if (missingColumns.length > 0) {
+            evaluationStatus.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateCasColumnsMissing}`.replace('{columns}', missingColumns.join(', '));
+            return;
+          }
+          const cases: EvaluationCase[] = table.rows.map((row) => {
+            const inputs: Record<string, string> = {};
+            variables.forEach((variable) => {
+              inputs[variable.name] = String(row[columnIndex(variable.name)] ?? '');
+            });
+            const expected: Record<string, string> = {};
+            expectedColumns.forEach((question) => {
+              const value = row[columnIndex(`expected_${question.id}`)];
+              if (value !== null && value !== undefined && String(value).trim() !== '') expected[question.id] = String(value);
+            });
+            return { inputs, expected };
+          });
           if (cases.length === 0) {
             evaluationStatus.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateNoRows}`;
             return;
           }
-          answers.forEach((perModel, modelName) => {
-            const padded = cases.map((_, index) => perModel[index] ?? null);
+          const questionsJson = questionsToJson(questions);
+          const stateTemplate = decisionDesigner.stateInput.value;
+          const total = cases.length * models.length;
+          let done = 0;
+          for (const model of models) {
+            const answers: (DecisionAnswers | null)[] = [];
+            let failed = 0;
+            // A few calls in flight at a time: fast enough, gentle on the container.
+            const queue = cases.map((evaluationCase, index) => async () => {
+              const state = substitutePromptVariables(
+                stateTemplate,
+                variables.map((variable) => ({ ...variable, value: evaluationCase.inputs[variable.name] ?? '' }))
+              );
+              const data = (await callSCRDecision(
+                promptBuilderObject.SCREndpoint as string,
+                model.name,
+                state,
+                questionsJson,
+                decisionCallOptions(model),
+                (promptBuilderObject.deploymentType as string) ?? 'k8s'
+              )) as Record<string, unknown>;
+              const parsed = data?.error ? null : parseAnswers(data?.answers);
+              if (!parsed) failed += 1;
+              answers[index] = parsed;
+              done += 1;
+              evaluationStatus.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateProgress}`
+                .replace('{done}', String(done))
+                .replace('{total}', String(total));
+            });
+            const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+              while (queue.length > 0) await queue.shift()!();
+            });
+            await Promise.all(workers);
             evaluationResults.appendChild(
-              renderEvaluation(modelName, questions, cases, padded, padded.filter((answer) => answer === null).length, promptBuilderInterfaceText, evaluationPrefix)
+              renderEvaluation(model.name, questions, cases, cases.map((_, index) => answers[index] ?? null), failed, promptBuilderInterfaceText, evaluationPrefix)
             );
-          });
-          return;
-        }
-        // A CAS table: every row is a case, every selected model that can
-        // take the request answers it.
-        const questions = decisionDesigner.getQuestions();
-        if (questions.length === 0) {
-          evaluationStatus.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateNoQuestions}`;
-          return;
-        }
-        const { fit: models, unfit } = fitDecisionModels();
-        if (models.length === 0) {
+          }
           evaluationStatus.innerText =
             unfit.length > 0
               ? `${promptBuilderInterfaceText?.promptBuilderDecisionSkippedUnfit}`.replace('{models}', unfit.map((model) => model.name).join(', '))
-              : `${promptBuilderInterfaceText?.promptBuilderEvaluateNoModels}`;
-          return;
+              : '';
+        } catch (error) {
+          console.error('The evaluation failed.', error);
+          evaluationStatus.innerText = String(error);
+        } finally {
+          evaluationButton.disabled = false;
         }
-        if (!evaluationServerSelect.value || !evaluationLibSelect.value || !evaluationTableSelect.value) {
-          evaluationStatus.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCasMissingToast}`;
-          return;
-        }
-        const maxRows = Math.max(1, Math.min(1000, Number(evaluationMaxRows.value) || 100));
-        const table = await getCasTableRows(evaluationLibSelect.value, evaluationTableSelect.value, evaluationServerSelect.value, maxRows);
-        const columnIndex = (name: string): number => table.columns.findIndex((column) => column.toLowerCase() === name.toLowerCase());
-        const variables = collectPromptVariables();
-        const missingColumns = variables.map((variable) => variable.name).filter((name) => columnIndex(name) < 0);
-        const expectedColumns = questions.filter((question) => columnIndex(`expected_${question.id}`) >= 0);
-        if (expectedColumns.length === 0) missingColumns.push(...questions.map((question) => `expected_${question.id}`));
-        if (missingColumns.length > 0) {
-          evaluationStatus.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateCasColumnsMissing}`.replace('{columns}', missingColumns.join(', '));
-          return;
-        }
-        const cases: EvaluationCase[] = table.rows.map((row) => {
-          const inputs: Record<string, string> = {};
-          variables.forEach((variable) => {
-            inputs[variable.name] = String(row[columnIndex(variable.name)] ?? '');
-          });
-          const expected: Record<string, string> = {};
-          expectedColumns.forEach((question) => {
-            const value = row[columnIndex(`expected_${question.id}`)];
-            if (value !== null && value !== undefined && String(value).trim() !== '') expected[question.id] = String(value);
-          });
-          return { inputs, expected };
-        });
-        if (cases.length === 0) {
-          evaluationStatus.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateNoRows}`;
-          return;
-        }
-        const questionsJson = questionsToJson(questions);
-        const stateTemplate = decisionDesigner.stateInput.value;
-        const total = cases.length * models.length;
-        let done = 0;
-        for (const model of models) {
-          const answers: (DecisionAnswers | null)[] = [];
-          let failed = 0;
-          // A few calls in flight at a time: fast enough, gentle on the container.
-          const queue = cases.map((evaluationCase, index) => async () => {
-            const state = substitutePromptVariables(
-              stateTemplate,
-              variables.map((variable) => ({ ...variable, value: evaluationCase.inputs[variable.name] ?? '' }))
-            );
-            const data = (await callSCRDecision(
-              promptBuilderObject.SCREndpoint as string,
-              model.name,
-              state,
-              questionsJson,
-              decisionCallOptions(model),
-              (promptBuilderObject.deploymentType as string) ?? 'k8s'
-            )) as Record<string, unknown>;
-            const parsed = data?.error ? null : parseAnswers(data?.answers);
-            if (!parsed) failed += 1;
-            answers[index] = parsed;
-            done += 1;
-            evaluationStatus.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateProgress}`
-              .replace('{done}', String(done))
-              .replace('{total}', String(total));
-          });
-          const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
-            while (queue.length > 0) await queue.shift()!();
-          });
-          await Promise.all(workers);
-          evaluationResults.appendChild(
-            renderEvaluation(model.name, questions, cases, cases.map((_, index) => answers[index] ?? null), failed, promptBuilderInterfaceText, evaluationPrefix)
-          );
-        }
-        evaluationStatus.innerText =
-          unfit.length > 0
-            ? `${promptBuilderInterfaceText?.promptBuilderDecisionSkippedUnfit}`.replace('{models}', unfit.map((model) => model.name).join(', '))
-            : '';
-      } catch (error) {
-        console.error('The evaluation failed.', error);
-        evaluationStatus.innerText = String(error);
-      } finally {
-        evaluationButton.disabled = false;
-      }
-    };
+      };
+    }
 
     /**
      * Switch the page between its two kinds of template. Everything of the other
      * kind stays in the DOM (hidden), so a prompt of either kind can be opened
      * at any time without rebuilding the page.
      */
-    function applyPromptMode(mode: 'llm' | 'decision'): void {
+    function applyPromptMode(mode: PromptKind): void {
+      // With decision templates switched off the page never becomes a decision
+      // page, whatever asks for it (a saved run of that kind, for instance).
+      if (mode === 'decision' && !decisionEnabled) return;
       const changed = promptMode !== mode;
       promptMode = mode;
       const decision = mode === 'decision';
-      if (!promptKindRadios[mode].checked) promptKindRadios[mode].checked = true;
+      // The selector shows the kind of the page - also when the kind was not
+      // chosen there but followed from the prompt-test that was opened.
+      ownKindSelector?.setChecked(mode);
+      hooks?.onKindChanged?.(mode);
       if (changed) {
         // The current selections stay listed (the list helper keeps them), so
         // a prompt opened some other way remains reachable.
@@ -7251,7 +7376,7 @@ ${scoreCodeReturn}`;
       promptBuilderPromptingContainer.style.display = decision ? 'none' : 'flex';
       decisionDesigner.element.style.display = decision ? '' : 'none';
       if (STEP_OPTIMIZE >= 0) promptBuilderStepper.setVisible(STEP_OPTIMIZE, !decision);
-      promptBuilderStepper.setVisible(STEP_EVALUATE, decision);
+      if (STEP_EVALUATE >= 0) promptBuilderStepper.setVisible(STEP_EVALUATE, decision);
       promptExperimentIntegratedCallDiv.classList.toggle('d-none', decision);
       promptExperimentManifestOptions.style.display = decision || !promptExperimentIntegratedCallCheckbox.checked ? 'none' : '';
       promptExperimentDecisionManifestOptions.classList.toggle('d-none', !decision);
@@ -7260,6 +7385,14 @@ ${scoreCodeReturn}`;
       updateRunExperimentsButtonState();
       updateManifestButtonState();
     }
+
+    // Handed out last: setKind ends in applyPromptMode, which reads what the
+    // assembly above declares, so the controller must not exist before that.
+    hooks?.onReady?.({
+      setKind: setPromptKind,
+      currentKind: () => promptMode,
+      showSetup: () => promptBuilderStepper.goTo(STEP_SETUP, { scroll: true }),
+    });
 
     return promptBuilderContainer;
 }
