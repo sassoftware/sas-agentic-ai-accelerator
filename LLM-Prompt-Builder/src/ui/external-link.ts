@@ -33,8 +33,10 @@ export function openExternalLink(event: MouseEvent, anchor: HTMLAnchorElement, c
   // "noreferrer" cannot be asked for here either - it implies "noopener", and
   // the answer is null again. What the new tab is told about this page is
   // decided by the referrer policy of the document instead: index.html sets
-  // "same-origin", so a link to another SAS Viya application keeps its
-  // Referer and a link to another site (the user guide) carries none.
+  // "same-origin", so a link to another origin than the page's (the user
+  // guide) carries no Referer, and a link to another SAS Viya application
+  // keeps it where the page is served from the SAS Viya origin - not where
+  // the viyaHost parameter names another one.
   let opened: Window | null = null;
   try {
     opened = window.open(url, '_blank');

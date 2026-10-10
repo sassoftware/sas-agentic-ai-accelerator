@@ -146,16 +146,40 @@ is a default written at manifest time:
 - A model manifested with the option unticked carries the tag
   `TLS-Verification-Off` in SAS Model Manager, and the step that manifests
   shows a warning above its button. The tag follows the score code the model
-  holds: a manifest whose score code SAS Model Manager did not store is
-  reported as failed and leaves the tag as it was, and a tag that could not be
+  holds: a manifest whose score code SAS Model Manager refused is reported as
+  failed and leaves the tag as it was, and a tag that could not be
   written - or could not be taken away again - is named beside the Manifest
   button, to be put right in SAS Model Manager. The tags are the first thing
-  written once the score code is stored. A request that fails outright while
-  a prompt or decision template is manifested (no answer, or the error page of
-  an ingress instead of one from SAS Model Manager) ends the manifest with a
-  line beside the button - *Not manifested* when the score code was not stored
-  yet, *The manifest was not completed* when it was - and the button is usable
-  again; manifest again once the service answers.
+  written once the score code is stored.
+- A request that fails outright while a prompt or decision template is
+  manifested (no answer, or the error page of an ingress instead of an answer
+  from SAS Model Manager) leaves the button usable again, and where it stops
+  the manifest, a line beside the button says so and no toast says
+  "manifested":
+  - in the save of the experiments, which a click on the button does first:
+    the save did not finish, and *Not manifested* - the manifest is not
+    started, also when the save is refused with an answer;
+  - before the score code: *Not manifested*, the model keeps the score code
+    and the tags it had;
+  - in the upload of the score code itself: *The manifest was not completed,
+    and it is not known whether the score code of this run is stored*. The
+    service may have stored the code before the answer was lost; the page
+    reads nothing back, so until the next manifest that completes, the tag may
+    not match the score code the model holds. `retrieve_context.py` of a RAG
+    setup is reported the same way (*It is not known whether SAS Model Manager
+    stored retrieve_context.py*);
+  - in the step for `requirements.json` (written, or removed again for the
+    *Call LLM* node variant), after the score code and the tags: *The manifest
+    was not completed*.
+
+  Two requests after the score code do not stop the manifest, because the
+  model holds its score code by then. A tag update that fails - refused or
+  outright - gets the line named above while the manifest goes on, and the
+  toast "manifested" is shown when it reaches its end. The last step, which
+  copies the attributes of the LLM or of the decision model onto the
+  manifested model, is best effort: when it fails, the toast is shown and the
+  page says nothing (the browser console has the error). In every other case
+  manifest again once the service answers.
 - The environment of the destination still decides when it says something:
   `LLMCONTAINERSSLVERIFY` set to `false`, `no` or `0` switches verification
   off, set to `true`, `yes` or `1` switches it on, whatever was manifested.
@@ -309,11 +333,24 @@ default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://<sas
 > tab and leaves the clipboard alone.
 
 The page carries the referrer policy `same-origin` (a `<meta name="referrer">`
-in its head). A tab it opens on SAS Viya itself (SAS Model Manager, SAS
-Intelligent Decisioning) is told where the click came from, as before; a
-request to any other site - the user guide link of the Optimize step, a model
-container on another host - carries no `Referer`, so the address of your SAS
-Viya host is not passed on to a third party.
+in its head): what it asks of another origin than its own carries no
+`Referer`, what it asks of its own origin keeps it.
+
+- A link that leaves for another site - the user guide link of the Optimize
+  step - does not tell that site the address of your SAS Viya host.
+- A tab the page opens on SAS Viya itself (SAS Model Manager, SAS Intelligent
+  Decisioning) is told where the click came from, as before, and the calls to
+  SAS Viya keep their `Referer` - where the page is served from the SAS Viya
+  origin, which is the deployment described here. With the `viyaHost`
+  parameter naming another origin, all of them are cross-origin and carry
+  none.
+- A call to a model container on another host carries no `Referer` either,
+  but that host still learns where the page runs: the browser names the origin
+  of the page in the `Origin` header of a cross-origin call, and no referrer
+  policy takes that away. The same holds for SAS Viya under such a `viyaHost`.
+
+This is what a browser does under that policy; it was checked with Edge
+against the mock of the verify suites, not against a SAS Viya deployment.
 
 ## Local development
 

@@ -34,9 +34,9 @@ The committed `dist/index.html` must equal a fresh build, or the
 
 | Suite | What it drives | Needs |
 |---|---|---|
-| `verify.js` | The Prompt Builder with LLM prompts: steps, variables and the names they cannot have, runs, failing models, a run in flight while another prompt-test is opened, judging, optimization, manifest (both variants run in Python; saved runs the manifest refuses), the deletion flows with the decision usage note, a first request answered with 449, a prompt-test created, refused and found again; the page with decision templates off and with RAG on; TLS verification in the manifested model with the option ticked and unticked, and a manifest whose score code or tag update SAS Model Manager refuses, or one of whose requests throws (before the score code, and after it); the Judge button after a run, a judgment that comes back during one (also one nobody answers) and two judgments out at once; the create dialogs, what they say inside, and that they send nothing without a name; the links that leave the page where no tab can open, where one can, and with a real click - and what the opened tab is told (a Referer on SAS Viya, none on another site); the placeholder entries of the two pickers; an entry of a picker chosen while another is still loading | mock, Python |
-| `verify-decision.js` | Decision templates: designer, lint, model cards, runs, evaluation (and the kind change it blocks), manifest (saved runs it refuses; TLS verification with the option ticked and unticked; a score code or a tag update that is refused; a request that throws before or after the score code), the kinds' own project lists, a decision project without a name, both delete dialogs; the page with decision templates off | mock, Python |
-| `verify-rag.js` | The RAG kind: offered only when switched on, the two flows side by side (keyboard included), a setup created, saved, manifested, ingested, asked a question and deleted; what the delete dialogs say about decisions; what a delete acts on; a withheld vector database; failures; the gates; a RAG-only page; what a manifest says beside its button (a stage that fails, TLS verification off, a retrieval template from before that option, a score code or a tag update that is refused); what the create dialogs say inside, a name that is empty or blanks only, and a double click on Create; the one embedding endpoint of job, Studio flow and retrieval model, with and without the SCR endpoint option | mock, Python |
+| `verify.js` | The Prompt Builder with LLM prompts: steps, variables and the names they cannot have, runs, failing models, a run in flight while another prompt-test is opened, judging, optimization, manifest (both variants run in Python; saved runs the manifest refuses), the deletion flows with the decision usage note, a first request answered with 449, a prompt-test created, refused and found again; the page with decision templates off and with RAG on; TLS verification in the manifested model with the option ticked and unticked, and a manifest whose score code or tag update SAS Model Manager refuses, or one of whose requests throws (before the score code, after it, and the upload of the score code itself - also one the service stored); the save of the experiments that throws or is refused, at a click on Manifest, at Save Experiments itself and before an optimization (which is then not launched); a double click on Manifest; the Judge button after a run, a judgment that comes back during one (also one nobody answers) and two judgments out at once; the create dialogs, what they say inside, that they send nothing without a name or with a name that shows nothing, and that they create what stood in them at the click, with the fields locked meanwhile; the links that leave the page where no tab can open, where one can, and with a real click - and what the opened tab is told (a Referer on SAS Viya, none on another site); the placeholder entries of the two pickers; an entry of a picker chosen while another is still loading | mock, Python |
+| `verify-decision.js` | Decision templates: designer, lint, model cards, runs, evaluation (and the kind change it blocks), manifest (saved runs it refuses; TLS verification with the option ticked and unticked; a score code or a tag update that is refused; a request that throws before or after the score code, or is the upload of the score code; a save that throws or is refused before the manifest; a double click), the kinds' own project lists, a decision project without a name or with one that shows nothing, and the name it is created under, both delete dialogs; the page with decision templates off | mock, Python |
+| `verify-rag.js` | The RAG kind: offered only when switched on, the two flows side by side (keyboard included), a setup created, saved, manifested, ingested, asked a question and deleted; what the delete dialogs say about decisions; what a delete acts on; a withheld vector database; failures; the gates; a RAG-only page; what a manifest says beside its button (a stage that fails, TLS verification off, a retrieval template from before that option, a score code or a tag update that is refused, a score code whose upload gets no usable answer); what the create dialogs say inside, a name that is empty, blanks only or made of characters that are not displayed, a double click on Create, and the fields that cannot be edited while a creation is out; the one embedding endpoint of job, Studio flow and retrieval model, with and without the SCR endpoint option | mock, Python |
 | `verify-options.js` | The Options contract: a stand-in for Visual Analytics embeds the app in an iframe, checks the one options group (the checkbox `sslVerify` included: posted, mirrored, read strictly, without effect on the page) and loads every combination of the three switches, asserting what is built and what is requested | mock |
 | `verify-locales.js` | `en.json` against `de.json` and both against the sources (keys, placeholders, unused keys, formal address in German) | nothing |
 | `verify-tokens.js` | The built `dist/index.html` (or `VERIFY_DIST`): every inline script is stored base64-encoded, and no text outside a comment has the shape `$name$`, which SAS Job Execution substitutes as a token before it serves the page | nothing |
@@ -323,15 +323,22 @@ RAG side (stateful; the block sits before the generic routes):
   check: a "link copied" note left by the check before would be taken for it.
 - A create dialog (`<prefix>Modal`, `<prefix>Name`, `<prefix>Description`)
   says why nothing was created in `<prefix>Error` inside its body, keeps the
-  text of its fields between two openings, and has its Create button disabled
-  while a creation is out. A name that is empty or blanks only is refused by
-  the dialog itself: no request, "A ... name is required." in `<prefix>Error`,
-  the name field marked (`is-invalid`, `aria-invalid`) and focused, the button
-  usable. The mock CREATES a project without a name, so a check of this
-  answers the creation request with a route (HTTP 400, as the service does)
-  and counts what reaches it. Prefixes: `promptBuilderCreateProject`,
-  `promptBuilderCreatePrompt`, `app-obj-RGB-create-project`,
-  `app-obj-RGB-create-setup`.
+  text of its fields between two openings, and has its Create button and its
+  two fields disabled while a creation is out. A name that shows nothing -
+  empty, blanks, or characters that are not displayed, such as a zero-width
+  space (`isBlankName` in `src/ui/create-modal.ts`) - is refused by the dialog
+  itself: no request, "A ... name is required." in `<prefix>Error`, the name
+  field marked (`is-invalid`, `aria-invalid`) and focused, the button usable.
+  The mock CREATES a project without a name, so a check of this answers the
+  creation request with a route (HTTP 400, as the service does) and counts
+  what reaches it. Write such a name as an escape (`'\u200B'`) in a suite,
+  never as the character: the line would read `''`. The dialog hands the name
+  and the description of the click to the flow; a check of that slows the
+  request the flow waits for (`**/modelRepository/repositories/**` for Create
+  a new Project), empties the fields with `page.evaluate` meanwhile - a
+  script can set a disabled field - and reads the name in the request.
+  Prefixes: `promptBuilderCreateProject`, `promptBuilderCreatePrompt`,
+  `app-obj-RGB-create-project`, `app-obj-RGB-create-setup`.
 - What a manifest of a prompt or decision template has to say is in
   `#app-obj-LPB-pet-save-result`: `.pet-manifest-failed` (the score code was
   not stored - no tags written, no toast) and `.pet-manifest-tls-tag-failed`
@@ -339,12 +346,32 @@ RAG side (stateful; the block sits before the generic routes):
   with a Playwright route on the upload that holds `def scoreModel(` or on the
   first `PUT` of the model after it - the tag update, which is the first
   request after the score code. A request that THROWS in the page (a 502 with
-  an HTML body, `route.abort('failed')`) ends the manifest with a second kind
-  of `.pet-manifest-failed` line and no toast: `.pet-manifest-stopped` before
-  the score code was stored, `.pet-manifest-incomplete` after it (the tags
-  are written by then). The button is usable again on every path; the checks
-  wait for that with `settles`, which answers instead of throwing, so that a
-  bundle that leaves the button on "Saving..." fails a check.
+  an HTML body, `route.abort('failed')`) and stops the manifest leaves a
+  `.pet-manifest-failed` line of a kind of its own and no toast:
+  `.pet-manifest-stopped` before the score code was stored,
+  `.pet-manifest-unknown` when it is the upload of the score code itself (the
+  service may have stored it: `route.fetch()` and then `route.abort('failed')`
+  is that case, and the log of the mock shows the upload with a status below
+  300), and `.pet-manifest-incomplete` after it (the tags are written by
+  then). Two
+  requests after the score code do NOT stop the manifest when they throw: the
+  tag update (`.pet-manifest-tls-tag-failed`, and the toast is shown) and the
+  last write of the attributes (nothing on the page, the toast is shown).
+  The click saves the experiments first: a save that throws leaves
+  `.pet-save-failed` in the box (beside Save Experiments,
+  `#app-obj-LPB-pet-save-only-result`, when that button was clicked), and
+  after a save that failed in any way the manifest does not start
+  (`.pet-manifest-failed.pet-manifest-not-saved`). The Manifest button is
+  taken at the click, so a double click runs one manifest; both buttons are
+  usable again on every path. The checks wait for that with `settles`, which
+  answers instead of throwing, so that a bundle that leaves a button on
+  "Saving..." fails a check. The mock answers the contents of the fixture
+  models from fixtures: a save that failed there loses nothing for the checks
+  that follow. Run optimization and Compare targets save first as well and
+  launch no job after a save that failed. Run optimization is checked, as
+  the last thing in `verify.js`, because a job the mock has launched stays
+  launched (the page needs `minOptimizeSamples=1` to offer the run with the
+  fixture runs); Compare targets holds the same lines and has no check.
 - Each flow is a row of steps and only the current step's pane is visible, so
   Playwright cannot act on a control of another step: open its step first with
   `#app-obj-<P>-step-{key}` (pane `#app-obj-<P>-pane-{key}`, Back/Continue

@@ -486,7 +486,10 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   // is reported in both directions. The fixture template carries the tag.
   const MANIFEST_BUTTON = '#app-obj-LPB-pet-create-model-button';
   const MANIFEST_BOX = '#app-obj-LPB-pet-save-result';
-  const faultyManifest = async (url, fault, label) => {
+  const SAVE_BUTTON = '#app-obj-LPB-pet-save-button';
+  // What an ingress answers in place of the service: no JSON, so the page throws.
+  const errorPage = { status: 502, contentType: 'text/html', body: '<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center></body></html>' };
+  const openTemplate = async (url, label) => {
     const target = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
     const errors = [];
     target.on('pageerror', (e) => errors.push(e.message));
@@ -500,9 +503,13 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
     await waitUntil(async () => (await target.$$('.pet-run-delete')).length >= 1, `${label}: the saved run is loaded`);
     await target.click('#app-obj-LPB-step-finalize');
     await target.waitForSelector('#app-obj-LPB-pane-finalize:not([hidden])');
+    return { target, errors };
+  };
+  const faultyManifest = async (url, fault, label) => {
+    const { target, errors } = await openTemplate(url, label);
     let scoreCodeSeen = false;
     let injected = 0;
-    await target.route('**/modelRepository/models/model-dec/contents?*', (route) => {
+    await target.route('**/modelRepository/models/model-dec/contents?*', async (route) => {
       const request = route.request();
       if (request.method() === 'POST' && (request.postData() || '').includes('def scoreModel(')) {
         scoreCodeSeen = true;
@@ -510,13 +517,34 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
           injected += 1;
           return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ errorCode: 0, message: 'the files service does not answer', httpStatusCode: 500 }) });
         }
+        // The upload of the score code THROWS in the page: an error page in
+        // place of an answer, or - the service took the upload and stored it,
+        // and the answer never reached the page.
+        if (fault === 'score code, error page') {
+          injected += 1;
+          return route.fulfill(errorPage);
+        }
+        if (fault === 'score code, answer lost') {
+          await route.fetch();
+          injected += 1;
+          return route.abort('failed');
+        }
       }
       // A request that THROWS in the page: an answer that is no JSON (the
       // error page of an ingress), or no answer at all.
       const uploadOf = (file) => request.method() === 'POST' && (request.postData() || '').includes(`filename="${file}"`);
+      // The save of the experiments, which is the first step of the click.
+      if (fault === 'tracker, error page' && uploadOf('Prompt-Experiment-Tracker.json')) {
+        injected += 1;
+        return route.fulfill(errorPage);
+      }
+      if (fault === 'tracker, refused' && uploadOf('Prompt-Experiment-Tracker.json')) {
+        injected += 1;
+        return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ errorCode: 1003, message: 'Forbidden', httpStatusCode: 403 }) });
+      }
       if (fault === 'requirements.json, error page' && uploadOf('requirements.json')) {
         injected += 1;
-        return route.fulfill({ status: 502, contentType: 'text/html', body: '<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center></body></html>' });
+        return route.fulfill(errorPage);
       }
       if (fault === 'requirements.json, no network' && uploadOf('requirements.json')) {
         injected += 1;
@@ -524,7 +552,7 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
       }
       if (fault === 'outputVar.json, error page' && uploadOf('outputVar.json')) {
         injected += 1;
-        return route.fulfill({ status: 502, contentType: 'text/html', body: '<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center></body></html>' });
+        return route.fulfill(errorPage);
       }
       return route.continue();
     });
@@ -544,18 +572,30 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
       12000
     );
     assert(ended, `${label}: the manifest has ended and its button is usable again (button: ${(await target.textContent(MANIFEST_BUTTON)).trim()}${(await target.isDisabled(MANIFEST_BUTTON)) ? ', disabled' : ''})`);
+    // The click saves the experiments first, through the Save button.
+    await settles(async () => !(await target.isDisabled(SAVE_BUTTON)) && (await target.textContent(SAVE_BUTTON)).trim() === 'Save Experiments', 3000);
     await sleep(400);
     const entries = await getLog();
     const modelWrite = entries.find((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-dec');
+    const toasts = await target.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''));
     const outcome = {
       // The tags of the first write of the model, which is the tag update.
       tags: modelWrite ? JSON.parse(modelWrite.body).tags || [] : null,
       scoreCodes: entries.filter((e) => e.method === 'POST' && e.body.includes('def scoreModel(')).length,
+      // What the service took and stored, whatever the page was told.
+      scoreCodesStored: entries.filter((e) => e.method === 'POST' && e.body.includes('def scoreModel(') && e.status < 300).length,
       modelWrites: entries.filter((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-dec').length,
+      // The first requests of the manifest itself, after the save.
+      manifestRequests: entries.filter((e) => (e.method === 'GET' && /\/models\/model-dec\/variables/.test(e.url)) || (e.method === 'POST' && e.body.includes('filename="inputVar.json"'))).length,
       requirements: Boolean(findPart(entries, 'requirements.json')),
-      manifestedToasts: (await target.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).filter((text) => text.includes('has been manifested')).length,
+      manifestedToasts: toasts.filter((text) => text.includes('has been manifested')).length,
+      savedToasts: toasts.filter((text) => text.includes('Experiments saved')).length,
       notManifested: await target.$$eval(`${MANIFEST_BOX} .pet-manifest-failed`, (els) => els.map((e) => e.textContent.trim())),
+      unknown: (await target.$$(`${MANIFEST_BOX} .pet-manifest-failed.pet-manifest-unknown`)).length,
+      saveLines: await target.$$eval(`${MANIFEST_BOX} .pet-save-failed`, (els) => els.map((e) => e.textContent.trim())),
+      box: ((await target.textContent(MANIFEST_BOX)) || '').trim(),
       tagLines: await target.$$eval(`${MANIFEST_BOX} .pet-manifest-tls-tag-failed`, (els) => els.map((e) => e.textContent.trim())),
+      saveButton: `${(await target.textContent(SAVE_BUTTON)).trim()}${(await target.isDisabled(SAVE_BUTTON)) ? ', disabled' : ''}`,
       errors,
     };
     await target.close();
@@ -619,6 +659,82 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
     errorPageBefore.manifestedToasts === 0 && errorPageBefore.notManifested.length === 1 && errorPageBefore.notManifested[0].startsWith('Not manifested: a request to SAS Model Manager failed before the score code was stored') && errorPageBefore.errors.length === 0,
     `and the box says that nothing was manifested and that the template keeps the score code and the tags it had (${describe(errorPageBefore)})`
   );
+
+  // ---- the upload of the decision score code gets no usable answer -----------------------
+  // As for a prompt template (verify.js): a refusal with an answer is certain,
+  // an upload that THROWS is not - the service may have stored the code
+  // before the answer was lost, and the box says that this is not known.
+  assert(
+    notStored.unknown === 0 && notStored.notManifested[0].includes('The model keeps the score code and the tags it had'),
+    `a decision score code SAS Model Manager refused with an answer keeps the certain wording: the model keeps the score code and the tags it had (box: ${notStored.notManifested.join(' | ') || 'nothing'})`
+  );
+  const assertScoreCodeUnknown = (outcome, what, storedInFact) => {
+    assert(
+      outcome.notManifested.length === 1 && outcome.unknown === 1 && outcome.notManifested[0].startsWith('The manifest was not completed, and it is not known whether the score code of this run is stored') && outcome.notManifested[0].includes('Manifest again') && !outcome.notManifested[0].includes('keeps the score code'),
+      `${what}: the box says that it is not known whether the score code was stored, and to manifest again - not that the template keeps the score code it had (${describe(outcome)})`
+    );
+    assert(
+      outcome.scoreCodesStored === storedInFact && outcome.modelWrites === 0 && !outcome.requirements && outcome.manifestedToasts === 0 && outcome.tagLines.length === 0 && outcome.errors.length === 0,
+      `${what}: the manifest stops there - no tag is written, no toast says "manifested", no error is left uncaught - and the service ${storedInFact ? 'did store the score code, which the page could not see' : 'stored nothing'} (score codes stored: ${outcome.scoreCodesStored}; writes of the model: ${outcome.modelWrites}; ${describe(outcome)})`
+    );
+  };
+  assertScoreCodeUnknown(await faultyManifest(APP_URL, 'score code, error page', 'the decision score code answered by an error page'), 'the decision score code answered by an error page', 0);
+  assertScoreCodeUnknown(await faultyManifest(`${APP_URL}&sslVerify=false`, 'score code, answer lost', 'the decision score code stored, its answer lost'), 'the decision score code stored and its answer lost', 1);
+
+  // ---- the save before a decision manifest fails outright --------------------------------
+  // The click saves the experiments first. A request that threw in the save
+  // left "Save Experiments" disabled on "Saving..." for good and said
+  // nothing; a save that was refused was followed by the manifest.
+  const describeSave = (outcome) =>
+    `Save button: ${outcome.saveButton}; box: ${outcome.box || 'nothing'}; "saved" toasts: ${outcome.savedToasts}; "manifested" toasts: ${outcome.manifestedToasts}; errors: ${outcome.errors.join(' | ') || 'none'}`;
+  const saveThrew = await faultyManifest(APP_URL, 'tracker, error page', 'a decision Manifest click whose save is answered by an error page');
+  assert(saveThrew.saveButton === 'Save Experiments', `a decision Manifest click whose save is answered by an error page: Save Experiments is usable again (${describeSave(saveThrew)})`);
+  assert(
+    saveThrew.saveLines.length === 1 && saveThrew.saveLines[0].startsWith('Saving the experiments did not finish') && saveThrew.notManifested.length === 1 && saveThrew.notManifested[0].startsWith('Not manifested: a manifest saves the experiments first'),
+    `the box beside the Manifest button says that the save did not finish, and that nothing was manifested (${describeSave(saveThrew)})`
+  );
+  assert(
+    saveThrew.savedToasts === 0 && saveThrew.manifestedToasts === 0 && saveThrew.errors.length === 0 && saveThrew.manifestRequests === 0 && saveThrew.scoreCodes === 0 && saveThrew.modelWrites === 0,
+    `no toast says "saved" or "manifested", no error is left uncaught, and the manifest does not go on (requests of the manifest: ${saveThrew.manifestRequests}, score codes: ${saveThrew.scoreCodes}; ${describeSave(saveThrew)})`
+  );
+  const saveRefused = await faultyManifest(APP_URL, 'tracker, refused', 'a decision Manifest click whose save is refused');
+  assert(
+    saveRefused.manifestRequests === 0 && saveRefused.scoreCodes === 0 && saveRefused.modelWrites === 0 && saveRefused.manifestedToasts === 0,
+    `a decision Manifest click whose save SAS Model Manager refuses: the manifest does not go on, and no toast says "manifested" (requests of the manifest: ${saveRefused.manifestRequests}, score codes: ${saveRefused.scoreCodes}, writes of the model: ${saveRefused.modelWrites}; ${describeSave(saveRefused)})`
+  );
+  assert(
+    saveRefused.saveButton === 'Save Experiments' && saveRefused.box.includes("The experiment couldn't be saved") && saveRefused.notManifested.length === 1 && saveRefused.notManifested[0].startsWith('Not manifested: a manifest saves the experiments first') && saveRefused.errors.length === 0,
+    `and the box says both: the experiments could not be saved, and nothing was manifested (${describeSave(saveRefused)})`
+  );
+
+  // ---- one decision manifest per click ------------------------------------------------------
+  // The save is made to take its time, so both clicks of a double click land
+  // while it is out: the button is taken at the click, not after the save.
+  {
+    const { target, errors } = await openTemplate(APP_URL, 'a double click on Manifest');
+    await target.route('**/modelRepository/models/model-dec/contents?*', async (route) => {
+      const request = route.request();
+      if (request.method() === 'POST' && (request.postData() || '').includes('filename="Prompt-Experiment-Tracker.json"')) await sleep(700);
+      await route.continue().catch(() => {});
+    });
+    await resetLog();
+    await target.dblclick(MANIFEST_BUTTON);
+    const disabledAtOnce = await target.isDisabled(MANIFEST_BUTTON);
+    const manifestedToasts = async () => (await target.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).filter((text) => text.includes('has been manifested')).length;
+    await waitUntil(async () => (await manifestedToasts()) >= 1, 'a double click on Manifest: a decision manifest goes through', 20000);
+    await settles(async () => !(await target.isDisabled(MANIFEST_BUTTON)) && (await target.textContent(MANIFEST_BUTTON)).trim() === 'Manifest Best Prompt', 12000);
+    // A second run, where there is one, ends within this.
+    await sleep(2000);
+    const entries = await getLog();
+    const trackers = entries.filter((e) => e.method === 'POST' && e.body.includes('filename="Prompt-Experiment-Tracker.json"')).length;
+    const scoreCodes = entries.filter((e) => e.method === 'POST' && e.body.includes('def scoreModel(')).length;
+    assert(disabledAtOnce, `a click on Manifest takes the button at once, while the experiments are still being saved (disabled after the click: ${disabledAtOnce})`);
+    assert(
+      trackers === 1 && scoreCodes === 1 && (await manifestedToasts()) === 1 && errors.length === 0,
+      `a double click on Manifest runs one decision manifest: the experiments are saved once, one score code is stored, one toast says "manifested" (saves: ${trackers}, score codes: ${scoreCodes}, toasts: ${await manifestedToasts()}, errors: ${errors.join(' | ') || 'none'})`
+    );
+    await target.close();
+  }
 
   // ---- a template to start from ---------------------------------------------------------
   await goStep('build');
@@ -823,17 +939,56 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
       createOff: document.querySelector('#promptBuilderCreateProjectModal .btn-primary').disabled,
     };
   });
-  await page.unroute(projectCreation);
   assert(unnamedProjects === 0, `a decision project without a name: no creation request is sent to SAS Model Manager (sent: ${unnamedProjects})`);
   assert(
     unnamed.error === 'A project name is required.' && unnamed.focus === 'promptBuilderCreateProjectName' && !unnamed.createOff,
     `the dialog says that a name is needed, puts the cursor into the name field and keeps its button usable (dialog: ${unnamed.error || 'nothing'}; focus: ${unnamed.focus || 'nowhere'}; button disabled: ${unnamed.createOff})`
   );
-  await page.fill('#promptBuilderCreateProjectName', 'Routing Decisions');
+  // A name that shows nothing is no name either: a zero-width space, with
+  // the word joiner and a blank, got past trim().
+  await page.fill('#promptBuilderCreateProjectName', '\u200B\u2060 ');
   await page.click('#promptBuilderCreateProjectModal .btn-primary');
+  await sleep(800);
+  const invisibleError = await page.evaluate(() => {
+    const error = document.getElementById('promptBuilderCreateProjectError');
+    return error && !error.hidden ? error.textContent.trim() : '';
+  });
+  await page.unroute(projectCreation);
+  assert(
+    unnamedProjects === 0 && invisibleError === 'A project name is required.',
+    `a decision project whose name is made of characters that are not displayed: no creation request is sent, and the dialog says that a name is needed (sent: ${unnamedProjects}; dialog: ${invisibleError || 'nothing'})`
+  );
+  // The project is created under the name of the click. The repository is
+  // asked first and takes its time here; the fields are emptied meanwhile.
+  const repositoryLookup = '**/modelRepository/repositories/**';
+  await page.route(repositoryLookup, async (route) => {
+    await sleep(900);
+    await route.continue().catch(() => {});
+  });
+  await page.fill('#promptBuilderCreateProjectName', 'Routing Decisions');
+  await page.fill('#promptBuilderCreateProjectDescription', 'decisions that route a request');
+  await page.click('#promptBuilderCreateProjectModal .btn-primary');
+  await sleep(250);
+  const pendingFields = await page.evaluate(() => {
+    const name = document.getElementById('promptBuilderCreateProjectName');
+    const description = document.getElementById('promptBuilderCreateProjectDescription');
+    const state = { name: name.disabled || name.readOnly, description: description.disabled || description.readOnly };
+    name.value = '';
+    description.value = '';
+    return state;
+  });
   await waitUntil(async () => (await getLog()).some((e) => e.method === 'POST' && e.url === '/modelRepository/projects'), 'project created');
+  await page.unroute(repositoryLookup);
   const projectPost = (await getLog()).find((e) => e.method === 'POST' && e.url === '/modelRepository/projects');
   assert(JSON.parse(projectPost.body).tags.includes('Decision-Engineering'), 'a project made in the decision view is tagged Decision-Engineering');
+  assert(
+    pendingFields.name && pendingFields.description,
+    `while the decision project is being created its name and description cannot be edited (name: ${pendingFields.name}, description: ${pendingFields.description})`
+  );
+  assert(
+    JSON.parse(projectPost.body).name === 'Routing Decisions' && JSON.parse(projectPost.body).description === 'decisions that route a request',
+    `the decision project is created under the name and the description of the click, also with the fields emptied while the repository is asked (name sent: "${JSON.parse(projectPost.body).name}"; description sent: "${JSON.parse(projectPost.body).description}")`
+  );
   await page.waitForSelector('.modal.show', { state: 'detached' });
   await waitUntil(async () => (await projectValues()) === 'proj-2,proj-new', `the new project joins the decision view (got ${await projectValues()})`);
   await page.click('#LPB-kind-llm');

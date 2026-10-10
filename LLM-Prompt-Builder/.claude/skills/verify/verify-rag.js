@@ -1380,8 +1380,44 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
         blanks.focus === rgb(`${dialog}Name`) && blanks.marked && !blanks.createOff,
         `${label} without a name: the name field is marked and has the cursor, and the Create button is usable (focus: ${blanks.focus || 'nowhere'}, marked: ${blanks.marked}, button disabled: ${blanks.createOff})`
       );
+      // A name that shows nothing is no name either: a zero-width space got
+      // past trim(), and the thing was created under a name nobody can see.
+      // The creation is answered here as the service answers an empty name,
+      // so that a page that does send it creates nothing.
+      let invisibleSent = 0;
+      const creationRoute = `**${creation}`;
+      await page.route(creationRoute, (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        invisibleSent += 1;
+        return route.fulfill({ status: 400, contentType: 'application/json', body: '{"errorCode":0,"message":"The name must not be empty.","httpStatusCode":400}' });
+      });
+      for (const [name, what] of [
+        ['\u200B', 'a zero-width space as its name'],
+        [' \u200B\u200C\u200D\u2060\uFEFF\t\u00AD', 'a name of white space and characters that are not displayed'],
+      ]) {
+        // Each name is judged by what it sends itself.
+        invisibleSent = 0;
+        await page.fill(rgb(`${dialog}Name`), name);
+        await page.click(`${rgb(`${dialog}Modal`)} .btn-primary`);
+        await sleep(700);
+        const invisible = await dialogState(dialog);
+        assert(
+          (await dialogError(dialog)) === message && invisibleSent === 0 && invisible.focus === rgb(`${dialog}Name`) && invisible.marked && !invisible.createOff,
+          `${label} with ${what}: nothing is sent to SAS Model Manager, the dialog says that a name is required, and the name field is marked and has the cursor (dialog: ${(await dialogError(dialog)) || 'nothing'}; requests: ${invisibleSent}; focus: ${invisible.focus || 'nowhere'}; marked: ${invisible.marked})`
+        );
+      }
+      await page.unroute(creationRoute);
       await page.fill(rgb(`${dialog}Name`), '');
     };
+    // While a creation is out, what is being created cannot be typed over.
+    const fieldsOff = (dialog) =>
+      page.evaluate(
+        ([name, description]) => {
+          const off = (selector) => document.querySelector(selector).disabled || document.querySelector(selector).readOnly;
+          return { name: off(name), description: off(description) };
+        },
+        [rgb(`${dialog}Name`), rgb(`${dialog}Description`)]
+      );
     await assertNameIsNeeded('create-project', '/modelRepository/projects', 'A project name is required.', 'Create project');
     // A double click on Create while SAS Model Manager takes its time: one
     // project, not two of the same name.
@@ -1396,11 +1432,27 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       (await page.isDisabled(`${rgb('create-projectModal')} .btn-primary`)) && !(await dialogError('create-project')),
       'while the project is being created the Create button is disabled, and the message of the attempt before is gone'
     );
+    const projectFieldsPending = await fieldsOff('create-project');
+    assert(
+      projectFieldsPending.name && projectFieldsPending.description,
+      `while the project is being created its name and description cannot be edited (name: ${projectFieldsPending.name}, description: ${projectFieldsPending.description})`
+    );
     await waitUntil(async () => (await value(page, 'project')).startsWith('rag-proj-new-'), 'the project of this section is selected');
     const projectId = await value(page, 'project');
     await page.waitForSelector('.modal.show', { state: 'detached' });
     await sleep(1000);
     await page.unroute(slowCreation);
+    // The dialog gives its fields back when the creation has ended, which
+    // includes the listings after it.
+    let projectFieldsAfter = await fieldsOff('create-project');
+    for (let attempt = 0; attempt < 30 && (projectFieldsAfter.name || projectFieldsAfter.description); attempt++) {
+      await sleep(200);
+      projectFieldsAfter = await fieldsOff('create-project');
+    }
+    assert(
+      !projectFieldsAfter.name && !projectFieldsAfter.description,
+      `when the project is created the fields of the dialog can be edited again (name off: ${projectFieldsAfter.name}, description off: ${projectFieldsAfter.description})`
+    );
     const projectPosts = (await getLog()).filter((e) => e.method === 'POST' && e.url === '/modelRepository/projects').length;
     const projectsOfThatName = (await ragState()).projects.filter((project) => project.name === 'ZZ Manifest RAG').length;
     assert(
@@ -1418,13 +1470,25 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     assert((await dialogError('create-setup')) === 'A setup name is required.', `Create setup without a name: the dialog says so inside it (got: ${await dialogError('create-setup')})`);
     await assertNameIsNeeded('create-setup', '/modelRepository/models', 'A setup name is required.', 'Create setup');
     await resetLog();
+    // The creation of the setup takes its time, so the dialog is seen while it is out.
+    const slowSetup = '**/modelRepository/models';
+    await page.route(slowSetup, async (route) => {
+      if (route.request().method() === 'POST') await sleep(800);
+      await route.continue().catch(() => {});
+    });
     await page.fill(rgb('create-setupName'), 'ZZ Manifest Setup');
     await page.dblclick(`${rgb('create-setupModal')} .btn-primary`);
+    const setupFieldsPending = await fieldsOff('create-setup');
+    assert(
+      setupFieldsPending.name && setupFieldsPending.description,
+      `while the setup is being created its name and description cannot be edited (name: ${setupFieldsPending.name}, description: ${setupFieldsPending.description})`
+    );
     const createdSetup = async () => (await ragState()).models.find((model) => model.name === 'ZZ Manifest Setup');
     await waitUntil(async () => Boolean(await createdSetup()), 'the setup of this section is created');
     const setupId = (await createdSetup()).id;
     await waitUntil(async () => (await value(page, 'setup')) === setupId, 'and selected');
     await page.waitForSelector('.modal.show', { state: 'detached' });
+    await page.unroute(slowSetup);
     await page.waitForSelector(EDITOR, { state: 'visible' });
     const setupPosts = (await getLog()).filter((e) => e.method === 'POST' && e.url === '/modelRepository/models');
     assert(
@@ -1561,6 +1625,17 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
             injected += 1;
             return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ errorCode: 0, message: 'the files service does not answer', httpStatusCode: 500 }) });
           }
+          // The upload THROWS in the page: an error page in place of an
+          // answer, or - the service took the upload and stored it, and the
+          // answer never reached the page.
+          if (fault === 'score code, error page') {
+            injected += 1;
+            return route.fulfill({ status: 502, contentType: 'text/html', body: '<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center></body></html>' });
+          }
+          if (fault === 'score code, answer lost') {
+            injected += 1;
+            return route.fetch().then(() => route.abort('failed'));
+          }
         }
         return route.continue();
       });
@@ -1607,6 +1682,35 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       `and the manifest says beside its button that it stopped there, and why (got: ${outcome})`
     );
     assert(!notStored.log.some((e) => e.url === `/modelRepository/models/${setupId}/modelVersions`), 'no model version is recorded for a manifest that stopped');
+    assert(
+      outcome.includes('The setup is not manifested') && outcome.includes('The setup keeps the score code and the tags it had') && !outcome.includes('It is not known'),
+      `a refusal with an answer keeps the certain wording: the setup is not manifested, and keeps the score code and the tags it had (got: ${outcome})`
+    );
+    // The same upload without a usable answer. A refusal is certain; an
+    // upload that THROWS is not - the service may have stored the file before
+    // the answer was lost. The page cannot know and reads nothing back, so
+    // the stage says exactly that, where it used to give the error of the
+    // browser as the reason and nothing else.
+    const errorPageUpload = await faultyManifest('score code, error page');
+    outcome = await resultText();
+    assert(
+      Boolean(await saveResult(page, 'danger')) && !(await saveResult(page, 'success')) && outcome.includes('The manifest stopped while registering the retrieval model. It was not completed.') && outcome.includes('It is not known whether SAS Model Manager stored retrieve_context.py') && outcome.includes('Manifest the setup again') && !outcome.includes('keeps the score code') && !outcome.includes('The setup is not manifested'),
+      `retrieve_context.py answered by an error page: the manifest stops there and says that it was not completed, that it is not known whether the file was stored, and to manifest again - not that the setup is not manifested (got: ${outcome})`
+    );
+    assert(
+      (await storedTlsLine()) === 'SSL_VERIFY = False' && (await tagsOfSetup()).includes(TLS_TAG) && !errorPageUpload.log.some((e) => e.url === `/modelRepository/models/${setupId}/modelVersions`),
+      `and the setup is as it was: the score code it had, its tag, no model version (stored: ${await storedTlsLine()}; tags: ${(await tagsOfSetup()).join(', ')})`
+    );
+    const answerLost = await faultyManifest('score code, answer lost');
+    outcome = await resultText();
+    assert(
+      Boolean(await saveResult(page, 'danger')) && outcome.includes('It is not known whether SAS Model Manager stored retrieve_context.py') && outcome.includes(`The tag ${TLS_TAG} of the setup was not updated and may not say what the stored score code does`) && !outcome.includes('The setup is not manifested'),
+      `retrieve_context.py stored and its answer lost: the page says that it is not known whether the file was stored, and that the tag may not say what the stored score code does (got: ${outcome})`
+    );
+    assert(
+      (await storedTlsLine()) === 'SSL_VERIFY = True' && (await tagsOfSetup()).includes(TLS_TAG) && !answerLost.log.some((e) => e.url === `/modelRepository/models/${setupId}/modelVersions`),
+      `which is the case here: the service did store the score code that verifies, the page could not see it, and the setup still carries ${TLS_TAG} (stored: ${await storedTlsLine()}; tags: ${(await tagsOfSetup()).join(', ')})`
+    );
     // Ticked, the score code is stored, the tag cannot be taken away: the
     // model verifies and is still listed as one that does not.
     await faultyManifest('tags');

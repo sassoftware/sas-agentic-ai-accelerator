@@ -94,7 +94,7 @@ import {
   type PromptContract,
 } from './rag-enrich';
 import { readStepSpec, registerFlow, resolveStepIds } from '../api/dataflows-api';
-import { createCreateModal, type CreateModalDialog } from '../ui/create-modal';
+import { createCreateModal, type CreateModalDialog, type CreateModalEntry } from '../ui/create-modal';
 import { openExternalLink } from '../ui/external-link';
 import { createStepper } from '../ui/stepper';
 import { createInstructionCard } from '../ui/instruction-card';
@@ -473,6 +473,12 @@ export async function buildRagBuilder(
    * its button why it stopped.
    */
   let lastFailure: string[] = [];
+  /**
+   * Whether the stage that failed last may have written what it was writing
+   * all the same: the upload of the score code got no usable answer. A
+   * manifest that stops there cannot say "The setup is not manifested".
+   */
+  let lastFailureLeavesItOpen = false;
   const showStatus = (
     variant: 'success' | 'danger' | 'warning' | 'info',
     message: string,
@@ -2635,12 +2641,13 @@ export async function buildRagBuilder(
   // is scrolled down to the Create buttons: the click then seemed to do
   // nothing. The dialog also keeps its button disabled until the function
   // has ended, so a double click creates one project or setup, not two.
-  // A name that is empty never gets here - the dialog refuses it itself (see
-  // createCreateModal); the checks below stay for a name that is missing for
-  // any other reason.
-  async function createProjectFromModal(dialog: CreateModalDialog): Promise<void> {
-    const name = (document.getElementById(`${idOf('create-project')}Name`) as HTMLInputElement | null)?.value.trim() ?? '';
-    const description = (document.getElementById(`${idOf('create-project')}Description`) as HTMLInputElement | null)?.value.trim() ?? '';
+  // A name that shows nothing never gets here - the dialog refuses it itself
+  // (see createCreateModal); the checks below stay for a name that is missing
+  // for any other reason. The name and the description are the ones the
+  // dialog read at the click, not the fields as they stand now.
+  async function createProjectFromModal(dialog: CreateModalDialog, entry: CreateModalEntry): Promise<void> {
+    const name = entry.name.trim();
+    const description = entry.description.trim();
     if (!name) {
       dialog.showError(str('ragBuilderProjectNameRequired', 'A project name is required.'));
       return;
@@ -2712,9 +2719,9 @@ export async function buildRagBuilder(
     }
   }
 
-  async function createSetupFromModal(dialog: CreateModalDialog): Promise<void> {
-    const name = (document.getElementById(`${idOf('create-setup')}Name`) as HTMLInputElement | null)?.value.trim() ?? '';
-    const description = (document.getElementById(`${idOf('create-setup')}Description`) as HTMLInputElement | null)?.value.trim() ?? '';
+  async function createSetupFromModal(dialog: CreateModalDialog, entry: CreateModalEntry): Promise<void> {
+    const name = entry.name.trim();
+    const description = entry.description.trim();
     if (!selectedProjectID) {
       dialog.showError(str('ragBuilderSetupNeedsProject', 'Select a RAG project before creating a setup.'));
       return;
@@ -3059,6 +3066,7 @@ export async function buildRagBuilder(
       for (const [label, doneLabel, run] of stages) {
         manifestButton.textContent = `${str('ragBuilderManifestBusy', 'Manifesting')} — ${label}…`;
         lastFailure = [];
+        lastFailureLeavesItOpen = false;
         let passed = false;
         try {
           passed = await run();
@@ -3075,8 +3083,14 @@ export async function buildRagBuilder(
           // said why in the banner at the top of the page only - which left
           // a green line here over a manifest that had stopped. So the box
           // says it in one piece: where it stopped, why, and what is written.
+          // "Not manifested" is said where that is certain. After an upload
+          // of the score code that got no usable answer it is not: the heading
+          // then says only that the manifest was not completed.
           showSaveFailure(
-            str('ragBuilderManifestStopped', 'The manifest stopped while {stage}. The setup is not manifested.').replace('{stage}', label),
+            (lastFailureLeavesItOpen
+              ? str('ragBuilderManifestStoppedOpen', 'The manifest stopped while {stage}. It was not completed.')
+              : str('ragBuilderManifestStopped', 'The manifest stopped while {stage}. The setup is not manifested.')
+            ).replace('{stage}', label),
             lastFailure,
             done.length > 0
               ? str('ragBuilderManifestWritten', 'Done before that: {done}.').replace('{done}', done.join('; '))
@@ -3387,7 +3401,27 @@ export async function buildRagBuilder(
       // that was not stored is a stage that failed: going on would set or
       // remove TLS-Verification-Off for code the model does not hold, and
       // report the setup as manifested.
-      const stored = await createModelContent(selectedSetupID, code, 'retrieve_context.py', 'score', 'text/x-python');
+      //
+      // A refusal with an answer is certain: the setup keeps the score code
+      // it had. An upload that THROWS - the connection dropped, or an ingress
+      // answered with its error page in place of the service - is not: the
+      // service may have stored the code before the answer was lost, and the
+      // page cannot know. The stage stops there too, and says exactly that;
+      // nothing is read back.
+      let stored: Awaited<ReturnType<typeof createModelContent>>;
+      try {
+        stored = await createModelContent(selectedSetupID, code, 'retrieve_context.py', 'score', 'text/x-python');
+      } catch (error) {
+        console.error('The upload of retrieve_context.py got no usable answer; it is not known whether it was stored.', error);
+        showSaveErrors([
+          str('ragBuilderScoreCodeUnknown', 'It is not known whether SAS Model Manager stored retrieve_context.py: the upload failed or got no usable answer ({reason}), and the service may have stored the file all the same. The tag TLS-Verification-Off of the setup was not updated and may not say what the stored score code does. Manifest the setup again.').replace(
+            '{reason}',
+            error instanceof Error ? error.message : String(error)
+          ),
+        ]);
+        lastFailureLeavesItOpen = true;
+        return false;
+      }
       if (stored.status_code >= 300) {
         throw new Error(
           str('ragBuilderScoreCodeNotStored', 'SAS Model Manager did not store retrieve_context.py (HTTP {status}). The setup keeps the score code and the tags it had.').replace(

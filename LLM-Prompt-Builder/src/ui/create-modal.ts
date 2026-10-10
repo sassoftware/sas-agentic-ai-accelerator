@@ -43,28 +43,59 @@ export interface CreateModalDialog {
 }
 
 /**
+ * What stood in the two fields at the click, as it was typed. The name is the
+ * one the dialog checked; a caller that reads the fields again after waiting
+ * for a request creates a thing under whatever stands there by then.
+ */
+export interface CreateModalEntry {
+  name: string;
+  description: string;
+}
+
+/**
+ * White space and the characters Unicode sets apart as not displayed
+ * (Default_Ignorable_Code_Point: the zero-width space U+200B, the zero-width
+ * non-joiner and joiner U+200C and U+200D, the word joiner U+2060, the byte
+ * order mark U+FEFF, the soft hyphen, the direction marks and their like).
+ */
+const NOT_DISPLAYED = /[\s\p{Default_Ignorable_Code_Point}]/gu;
+
+/**
+ * Whether a name shows nothing: it is empty, or made of white space and
+ * characters that are not displayed. `trim()` alone lets a zero-width space
+ * through, and the thing was then created under a name nobody can see.
+ */
+export function isBlankName(name: string): boolean {
+  return name.replace(NOT_DISPLAYED, '') === '';
+}
+
+/**
  * Append a trigger button and its modal to `container`.
  *
  * `prefix` names the DOM ids the caller reads back: `<prefix>Modal`,
  * `<prefix>Name`, `<prefix>Description`; a message of `showError` is in
  * `<prefix>Error`.
  *
- * `onSave` runs on a click on the dialog's button. While the promise it
- * returns is pending the button is disabled and further clicks are ignored: a
- * double click must not create the thing twice. A message of the click before
- * is taken away when the next one starts and when the dialog is opened again.
+ * `onSave` runs on a click on the dialog's button, with the name and the
+ * description as they stood in the fields at that click (`entry`): the caller
+ * creates the thing from those, not from the fields. While the promise it
+ * returns is pending the button and the two fields are disabled and further
+ * clicks are ignored: a double click must not create the thing twice, and what
+ * is being created cannot be typed over. A message of the click before is
+ * taken away when the next one starts and when the dialog is opened again.
  *
- * A name that is empty, or white space only, never reaches `onSave`: the
- * dialog says that a name is needed (`nameRequiredText`), marks the field and
- * puts the cursor into it, and its button stays usable. Sent on, the empty
- * name was refused by SAS Model Manager, and the person read that a thing of
- * this name may already exist. Every other rule about a name is the caller's.
+ * A name that shows nothing (see `isBlankName`: empty, white space, characters
+ * that are not displayed) never reaches `onSave`: the dialog says that a name
+ * is needed (`nameRequiredText`), marks the field and puts the cursor into it,
+ * and its button stays usable. Sent on, the empty name was refused by SAS
+ * Model Manager, and the person read that a thing of this name may already
+ * exist. Every other rule about a name is the caller's.
  */
 export function createCreateModal(
   container: HTMLElement,
   prefix: string,
   text: CreateModalText,
-  onSave: (dialog: CreateModalDialog) => void | Promise<void>
+  onSave: (dialog: CreateModalDialog, entry: CreateModalEntry) => void | Promise<void>
 ): void {
   const toggle = document.createElement('button');
   toggle.type = 'button';
@@ -124,7 +155,7 @@ export function createCreateModal(
     return input;
   };
   const nameInput = field(`${prefix}Name`, text.nameLabel, false);
-  field(`${prefix}Description`, text.descriptionLabel, true);
+  const descriptionInput = field(`${prefix}Description`, text.descriptionLabel, true);
   const error = document.createElement('div');
   error.id = `${prefix}Error`;
   error.classList.add('alert', 'alert-danger', 'pb-create-error', 'py-2', 'mt-3', 'mb-0');
@@ -168,7 +199,9 @@ export function createCreateModal(
   save.onclick = async () => {
     if (saving) return;
     clearError();
-    if (nameInput.value.trim() === '') {
+    // Read once: what is checked here is what the caller creates.
+    const entry: CreateModalEntry = { name: nameInput.value, description: descriptionInput.value };
+    if (isBlankName(entry.name)) {
       dialogHandle.showError(text.nameRequiredText ?? 'A name is required.');
       nameInput.classList.add('is-invalid');
       nameInput.setAttribute('aria-invalid', 'true');
@@ -178,11 +211,15 @@ export function createCreateModal(
     }
     saving = true;
     save.disabled = true;
+    nameInput.disabled = true;
+    descriptionInput.disabled = true;
     try {
-      await onSave(dialogHandle);
+      await onSave(dialogHandle, entry);
     } finally {
       saving = false;
       save.disabled = false;
+      nameInput.disabled = false;
+      descriptionInput.disabled = false;
     }
   };
   footer.appendChild(cancel);

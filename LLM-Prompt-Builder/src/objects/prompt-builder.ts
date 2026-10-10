@@ -80,7 +80,7 @@ import { createAccordionItem } from '../ui/accordion';
 import { attachCombobox } from '../ui/combobox';
 import { createListFilter, renderFilteredOptions } from '../ui/list-filter';
 import { createDocSection, createInfoLabel } from '../ui/doc-section';
-import { createCreateModal, type CreateModalDialog } from '../ui/create-modal';
+import { createCreateModal, type CreateModalDialog, type CreateModalEntry } from '../ui/create-modal';
 import { openExternalLink } from '../ui/external-link';
 import { showConfirmModal } from '../ui/confirm-modal';
 import { showToast } from '../ui/toast';
@@ -1246,13 +1246,16 @@ export async function buildPromptBuilder(
     promptBuilderModalButtonContainer.classList.add('d-flex', 'flex-wrap', 'align-items-center', 'row-gap-2');
 
     // Function to call when creating a new project. The dialog keeps its
-    // button disabled until this has ended, and does not call it at all for
-    // a name that is empty (see createCreateModal).
-    async function promptBuilderCreateProject(dialog: CreateModalDialog): Promise<void> {
+    // button and its fields disabled until this has ended, and does not call
+    // it at all for a name that shows nothing (see createCreateModal). The
+    // name and the description are the ones the dialog read at the click:
+    // the repository is asked first, and the name field read after that
+    // answer could be another one than the dialog had checked - an empty one.
+    async function promptBuilderCreateProject(dialog: CreateModalDialog, entry: CreateModalEntry): Promise<void> {
       const promptBuilderRepositoryInformation = await getModelRepositoryInformation(promptBuilderObject?.modelRepositoryID as string);
       const promptBuilderNewProjectDefinition = {
-        name: (document.getElementById('promptBuilderCreateProjectName') as HTMLInputElement).value,
-        description: (document.getElementById('promptBuilderCreateProjectDescription') as HTMLInputElement).value,
+        name: entry.name,
+        description: entry.description,
         function: 'Prompt',
         repositoryId: promptBuilderObject?.modelRepositoryID as string,
         folderId: promptBuilderRepositoryInformation?.folderId,
@@ -1301,12 +1304,12 @@ export async function buildPromptBuilder(
     }
 
     // Function to call when creating a new prompt
-    async function promptBuilderCreatePrompt(dialog: CreateModalDialog): Promise<void> {
+    async function promptBuilderCreatePrompt(dialog: CreateModalDialog, entry: CreateModalEntry): Promise<void> {
       const newPromptIsDecision = promptMode === 'decision';
       const newPromptTags = newPromptIsDecision ? ['Decision', 'Prompt-Template', DECISION_TEMPLATE_TAG] : ['LLM', 'Prompt-Template'];
       const promptBuilderNewPromptDefinition = {
-        name: (document.getElementById('promptBuilderCreatePromptName') as HTMLInputElement).value,
-        description: (document.getElementById('promptBuilderCreatePromptDescription') as HTMLInputElement).value,
+        name: entry.name,
+        description: entry.description,
         function: PROMPT_FUNCTION,
         tool: 'Prompt-Builder',
         modeler: getAppState().userName,
@@ -4266,7 +4269,7 @@ export async function buildPromptBuilder(
     promptExperimentSaveButton.setAttribute('type', 'button');
     promptExperimentSaveButton.setAttribute('class', 'btn btn-outline-secondary');
     promptExperimentSaveButton.onclick = async function () {
-      promptBuilderSaveExperiments();
+      await promptBuilderSaveExperiments();
     };
 
     // Save the prompt run and turn the best prompt into a model
@@ -4275,12 +4278,39 @@ export async function buildPromptBuilder(
     promptExperimentCreateModelButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
     promptExperimentCreateModelButton.setAttribute('type', 'button');
     promptExperimentCreateModelButton.setAttribute('class', 'btn btn-primary');
+    // One manifest per click. The button used to be disabled inside the
+    // manifest function only, after the save had been waited for: a double
+    // click ran two manifests at once, and the failure line of one could
+    // describe the other. The click itself now takes the button, and gives it
+    // back when the run has ended - saved or not, manifested or not.
+    let manifestClickRunning = false;
     promptExperimentCreateModelButton.onclick = async function () {
-      // Persist the manifest configuration with the manifested run so loading
-      // the run later restores it. The save link goes to the manifest box here.
-      stampManifestConfigOnBestRun();
-      await promptBuilderSaveExperiments(promptExperimentResultContainer);
-      await runManifest(promptMode === 'decision' ? promptBuilderCreateDecisionModel : promptBulderCreateBestPromptModel);
+      if (manifestClickRunning) return;
+      manifestClickRunning = true;
+      promptExperimentCreateModelButton.disabled = true;
+      promptExperimentCreateModelButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText.promptBuilderSaveExperimentsButtonStatus}`;
+      try {
+        // Persist the manifest configuration with the manifested run so loading
+        // the run later restores it. The save link goes to the manifest box here.
+        stampManifestConfigOnBestRun();
+        const saved = await promptBuilderSaveExperiments(promptExperimentResultContainer);
+        if (!saved) {
+          // The save has said in the box what happened to it; the manifest
+          // does not go on over experiments that are not saved.
+          const line = document.createElement('p');
+          line.classList.add('text-danger', 'pet-manifest-failed', 'pet-manifest-not-saved');
+          line.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestSaveFailed}`;
+          promptExperimentResultContainer.appendChild(line);
+          return;
+        }
+        await runManifest(promptMode === 'decision' ? promptBuilderCreateDecisionModel : promptBulderCreateBestPromptModel);
+      } finally {
+        manifestClickRunning = false;
+        promptExperimentCreateModelButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
+        // Usable again where there is a best response to manifest - which is
+        // every case but a prompt-test that was left while the run was out.
+        updateManifestButtonState();
+      }
     };
     // Wrapped so the "select a best response first" hint shows on hover even
     // while the button is disabled (a disabled button fires no hover events).
@@ -4374,14 +4404,23 @@ export async function buildPromptBuilder(
       promptExperimentResultContainer.appendChild(line);
     }
     /**
-     * Store the score code of a manifest; false when SAS Model Manager did
-     * not take it. The upload answers with a status instead of throwing, and
-     * a manifest that went on regardless set or removed TLS-Verification-Off
+     * Store the score code of a manifest; false when the manifest has to stop
+     * here. The upload answers with a status instead of throwing, and a
+     * manifest that went on regardless set or removed TLS-Verification-Off
      * for a score code the model does not hold, under a toast that said
      * "manifested". A manifest whose score code was not stored has failed:
      * the box says so, and the caller stops before the tags and the toast.
+     *
+     * Two things are told apart. A refusal SAS Model Manager answered with
+     * (a status of 300 or more, with its JSON body) is certain: the model
+     * keeps the score code it had. An upload that THROWS - the connection
+     * dropped, or an ingress answered with its error page in place of the
+     * service - is not: the service may have stored the code before the
+     * answer was lost, and the page cannot know. The line then says exactly
+     * that, and that the tags were not updated; nothing is read back.
      */
     async function storeManifestScoreCode(modelID: string, scoreCode: Blob, fileName: string): Promise<boolean> {
+      let refused = true;
       try {
         const stored = await createModelContent(modelID, scoreCode, fileName, 'score', 'text/x-python');
         if (stored.status_code < 300) {
@@ -4390,11 +4429,15 @@ export async function buildPromptBuilder(
         }
         console.error(`The score code of the manifest was not stored (status ${stored.status_code}).`, stored.response);
       } catch (error) {
-        console.error('The score code of the manifest was not stored.', error);
+        refused = false;
+        console.error('The upload of the score code got no usable answer; it is not known whether it was stored.', error);
       }
       const line = document.createElement('p');
       line.classList.add('text-danger', 'pet-manifest-failed');
-      line.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestScoreCodeFailed}`;
+      if (!refused) line.classList.add('pet-manifest-unknown');
+      line.innerText = refused
+        ? `${promptBuilderInterfaceText?.promptBuilderManifestScoreCodeFailed}`
+        : `${promptBuilderInterfaceText?.promptBuilderManifestScoreCodeUnknown}`;
       promptExperimentResultContainer.appendChild(line);
       return false;
     }
@@ -4410,7 +4453,9 @@ export async function buildPromptBuilder(
      * the button stayed disabled on "Saving..." for good and nothing was
      * said. Now the box beside the button says that the manifest stopped,
      * and whether the score code of this run is stored, no toast says
-     * "manifested", and the button is usable again.
+     * "manifested", and the button is usable again. (The upload of the score
+     * code itself is caught where it is made, see storeManifestScoreCode:
+     * when that request throws, whether the code is stored is not known.)
      *
      * The tag TLS-Verification-Off is not this function's business: both
      * manifests update the tags directly after the score code is stored, so
@@ -4705,33 +4750,40 @@ export async function buildPromptBuilder(
     // Save the experiments to the SAS Model Manager. The success/failure
     // message goes to `resultContainer` — next to Save for a plain save, or the
     // manifest box when called as the first step of manifesting.
+    //
+    // The answer is true when the experiments are saved, and false in every
+    // other case - nothing to save, a refusal, a request that threw. It does
+    // not throw: a request that fails outright (no answer, or an answer that
+    // is no JSON, such as the error page of an ingress) used to end the
+    // function where it stood, with "Save Experiments" disabled on
+    // "Saving..." for good and nothing said. Now the button is given back on
+    // every path, and such a failure is a line in `resultContainer`. Whoever
+    // saves as a first step (a manifest, an optimization) reads the answer
+    // and does not go on over experiments that are not saved.
     async function promptBuilderSaveExperiments(
       resultContainer: HTMLElement = promptExperimentSaveResultContainer
-    ): Promise<void> {
+    ): Promise<boolean> {
       // Add spinner to save button
       const promptExperimentSaveTargetButton = document.getElementById(
         `${paneID}-obj-${promptBuilderObject?.id}-pet-save-button`
       ) as HTMLButtonElement;
       promptExperimentSaveTargetButton.disabled = true;
       promptExperimentSaveTargetButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText.promptBuilderSaveExperimentsButtonStatus}`;
-      const promptExperimentRunModel = (
-        document.getElementById(`${promptBuilderObject?.id}-prompt-dropdown`) as HTMLSelectElement
-      ).value;
-      // Check if an experiment was run (deleting runs also counts as a change,
-      // so an emptied tracker can still be saved)
-      if (petRows.length === 0 && !experimentsModified) {
-        promptExperimentSaveTargetButton.disabled = false;
-        promptExperimentSaveTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderSaveExperimentsButton}`;
-        alert(promptBuilderInterfaceText.promptExperimentSaveModelsExperimentAlert);
-        return;
-      }
-      // Check if a prompt test was selected
-      if (promptExperimentRunModel === promptBuilderInterfaceText.promptSelect) {
-        promptExperimentSaveTargetButton.disabled = false;
-        promptExperimentSaveTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderSaveExperimentsButton}`;
-        alert(promptBuilderInterfaceText.promptExperimentSaveModelsPromptAlert);
-        return;
-      } else {
+      try {
+        const promptExperimentRunModel = (
+          document.getElementById(`${promptBuilderObject?.id}-prompt-dropdown`) as HTMLSelectElement
+        ).value;
+        // Check if an experiment was run (deleting runs also counts as a change,
+        // so an emptied tracker can still be saved)
+        if (petRows.length === 0 && !experimentsModified) {
+          alert(promptBuilderInterfaceText.promptExperimentSaveModelsExperimentAlert);
+          return false;
+        }
+        // Check if a prompt test was selected
+        if (promptExperimentRunModel === promptBuilderInterfaceText.promptSelect) {
+          alert(promptBuilderInterfaceText.promptExperimentSaveModelsPromptAlert);
+          return false;
+        }
         // Get the ID of a previously created Prompt Experiment Tracker and delete it
         const promptBuilderAvailablePTE = await getModelContents(promptExperimentRunModel);
         for (const promptBuilderAvailablepte in promptBuilderAvailablePTE) {
@@ -4740,30 +4792,42 @@ export async function buildPromptBuilder(
             await deleteModelContent(promptExperimentRunModel, promptBuilderAvailablePTE[promptBuilderAvailablepte]?.id ?? '');
           }
         }
-      }
-      // Create the new Prompt Experiment Tracker
-      const promptExperimentPromptResponseObject = await createModelContent(
-        promptExperimentRunModel,
-        petRows,
-        'Prompt-Experiment-Tracker.json'
-      );
-      if (promptExperimentPromptResponseObject.status_code === 201) {
-        experimentsModified = false;
-        showToast(`${promptBuilderInterfaceText?.promptBuilderSaveToast}`);
-        resultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveSucessResponse} <a target="_blank" rel="noopener noreferrer" href="${VIYA}/SASModelManager/models/${promptExperimentRunModel}">${VIYA}/SASModelManager/models/${promptExperimentRunModel}</a></p>`;
-        // Like every link that leaves the page: a new tab where the browser
-        // allows one, the copied link where the sandboxed iframe of a report
-        // does not - there a plain target="_blank" link does nothing at all.
-        const savedLink = resultContainer.querySelector('a');
-        if (savedLink) savedLink.onclick = (event) => openModelManagerLink(event, savedLink, promptBuilderInterfaceText);
-      } else {
+        // Create the new Prompt Experiment Tracker
+        const promptExperimentPromptResponseObject = await createModelContent(
+          promptExperimentRunModel,
+          petRows,
+          'Prompt-Experiment-Tracker.json'
+        );
+        if (promptExperimentPromptResponseObject.status_code === 201) {
+          experimentsModified = false;
+          showToast(`${promptBuilderInterfaceText?.promptBuilderSaveToast}`);
+          resultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveSucessResponse} <a target="_blank" rel="noopener noreferrer" href="${VIYA}/SASModelManager/models/${promptExperimentRunModel}">${VIYA}/SASModelManager/models/${promptExperimentRunModel}</a></p>`;
+          // Like every link that leaves the page: a new tab where the browser
+          // allows one, the copied link where the sandboxed iframe of a report
+          // does not - there a plain target="_blank" link does nothing at all.
+          const savedLink = resultContainer.querySelector('a');
+          if (savedLink) savedLink.onclick = (event) => openModelManagerLink(event, savedLink, promptBuilderInterfaceText);
+          return true;
+        }
         showToast(`${promptBuilderInterfaceText.promptExperimentSaveFailureResponse}`);
         resultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveFailureResponse}</p>`;
+        return false;
+      } catch (error) {
+        // Which request it was is not known here, and neither is what the
+        // service did with it: the stored tracker is deleted before the new
+        // one is written, so the prompt may hold the old experiments, the new
+        // ones or none. The line says that, and no toast says "saved".
+        console.error('Saving the experiments stopped at a request that failed.', error);
+        const line = document.createElement('p');
+        line.classList.add('text-danger', 'pet-save-failed');
+        line.innerText = `${promptBuilderInterfaceText?.promptExperimentSaveStopped}`;
+        resultContainer.replaceChildren(line);
+        return false;
+      } finally {
+        // Re-enable the save button
+        promptExperimentSaveTargetButton.disabled = false;
+        promptExperimentSaveTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderSaveExperimentsButton}`;
       }
-
-      // Re-enable the save button
-      promptExperimentSaveTargetButton.disabled = false;
-      promptExperimentSaveTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderSaveExperimentsButton}`;
     }
 
     // Turn the best prompt into a model
@@ -6549,7 +6613,11 @@ ${scoreCodeReturn}`;
         // Save first so the job reads the exact prompt (and tracker) the user
         // sees — the dataset gate guarantees there is something to save.
         if (petRows.length > 0 || experimentsModified) {
-          await promptBuilderSaveExperiments();
+          // The save no longer throws; a launch over experiments that are not
+          // saved would have the job read others than the page shows.
+          if (!(await promptBuilderSaveExperiments())) {
+            throw new Error(`${promptBuilderInterfaceText?.promptBuilderOptimizeSaveFailed}`);
+          }
         }
         const jobDefinitionUri = await resolveJobDefinitionUri(String(promptBuilderObject?.optimizeJobProgram ?? ''));
         const maxDemos = Math.max(0, Math.min(16, Number(optimizeUI.maxDemosInput.value) || 4));
@@ -6810,7 +6878,11 @@ ${scoreCodeReturn}`;
         // Save first so the job reads the exact prompt (and tracker) the user
         // sees — same contract as an optimization launch.
         if (petRows.length > 0 || experimentsModified) {
-          await promptBuilderSaveExperiments();
+          // The save no longer throws; a launch over experiments that are not
+          // saved would have the job read others than the page shows.
+          if (!(await promptBuilderSaveExperiments())) {
+            throw new Error(`${promptBuilderInterfaceText?.promptBuilderOptimizeSaveFailed}`);
+          }
         }
         const jobDefinitionUri = await resolveJobDefinitionUri(String(promptBuilderObject?.optimizeJobProgram ?? ''));
         const maxDemos = Math.max(0, Math.min(16, Number(optimizeUI.maxDemosInput.value) || 4));
