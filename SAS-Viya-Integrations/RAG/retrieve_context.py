@@ -56,6 +56,29 @@ Connection resolution (design §4 destination boundary), per value:
   4. the manifested constants below
 A decision definition never stores a secret.
 
+The embedding endpoint has one rung more, in this order:
+  1. scr_endpoint in the per-call options input
+  2. the environment variable RAGEMBED_ENDPOINT
+  3. the manifested EMBED_ENDPOINT, when it is not blank
+  4. SAS_SERVICES_URL + "/llm" (compute sessions set SAS_SERVICES_URL)
+The manifested value comes before SAS_SERVICES_URL because it is the endpoint
+the ingestion job embedded the documents with; a site whose model containers
+are not served under <SAS Viya host>/llm would otherwise embed the question
+somewhere else than the corpus.
+
+TLS verification of the two HTTPS calls this file makes itself (the embedding
+container: prefix RAGEMBED; the credentials service: prefix RAGSTORE):
+  - <prefix>_SSLVERIFY set to false/no/0 switches verification off, set to
+    true/yes/1 switches it on - the environment wins in both directions
+  - unset, or any other word: the manifested constant SSL_VERIFY decides
+  - verification on means the CA bundle named by <prefix>_CABUNDLE (default
+    /security/trustedcerts.pem, which SAS Viya mounts into its pods) when that
+    file exists, else the certificates Python trusts by default
+A copy manifested with the constant set to False is for a destination that
+runs Python where the bundle is not mounted. RAGEMBED_SSLVERIFY=true and
+RAGSTORE_SSLVERIFY=true on the destination turn verification back on without
+manifesting again.
+
 The EMBEDDING provider key is different, and only step 1 or 3 can supply it:
 an API-backed embedding container reads API_KEY out of the SCR options, and a
 decision running in SAS Intelligent Decisioning has no SAS Viya session token,
@@ -85,6 +108,7 @@ STORE_SSLMODE = "prefer"
 CREDENTIAL_DOMAIN = "agentic-ai-keys"
 DEFAULT_K = 4
 INGESTION_RUN_ID = ""  # corpus-version lineage stamp (set by Register Setup)
+SSL_VERIFY = True
 # -----------------------------------------------------------------------------
 
 _FILTER_COLUMNS = {"doc_id", "source_uri", "content_hash", "extractor",
@@ -111,12 +135,21 @@ _DATAGRID_METADATA = [{"document_id": "string"}, {"chunk_id": "string"},
 
 def _ssl_verify(prefix):
     """TLS verification for in-cluster calls: the CA bundle SAS Viya mounts
-    into every pod, an explicit bundle, or disabled via *_SSLVERIFY=false."""
+    into its pods, an explicit bundle, or off.
+
+    <prefix>_SSLVERIFY wins in both directions when it holds a recognised
+    word; unset or unrecognised, the manifested SSL_VERIFY decides. Only the
+    literal False switches verification off there: a copy manifested by a
+    renderer that does not write the constant has none, and it verifies.
+    """
     bundle = os.getenv(prefix + "_CABUNDLE", "/security/trustedcerts.pem")
     verify = bundle if os.path.isfile(bundle) else True
-    if os.getenv(prefix + "_SSLVERIFY", "").strip().lower() in ("false", "no", "0"):
-        verify = False
-    return verify
+    word = os.getenv(prefix + "_SSLVERIFY", "").strip().lower()
+    if word in ("false", "no", "0"):
+        return False
+    if word in ("true", "yes", "1"):
+        return verify
+    return False if globals().get("SSL_VERIFY", True) is False else verify
 
 
 def _domain_secrets():
@@ -220,14 +253,27 @@ def _embed_options(options):
     return "{" + ",".join(str(k) + ":" + str(v) for k, v in embed.items()) + "}"
 
 
+def _embed_endpoint(options):
+    """The SCR base URL the question is embedded at.
+
+    The manifested value outranks SAS_SERVICES_URL: it is the endpoint the
+    ingestion job used, and where the model containers are not served under
+    <SAS Viya host>/llm the two differ - the question would then be embedded
+    by whatever answers there, or by nothing. A blank value is no value on
+    any rung.
+    """
+    services = os.getenv("SAS_SERVICES_URL", "").strip().rstrip("/")
+    return (str(options.get("scr_endpoint") or "").strip()
+            or os.getenv("RAGEMBED_ENDPOINT", "").strip()
+            or str(EMBED_ENDPOINT or "").strip()
+            or (services + "/llm" if services else "")).rstrip("/")
+
+
 def _embed_query(question, options):
     """Embed the question through the SCR embedding container (query mode)."""
     import requests
 
-    endpoint = (options.get("scr_endpoint") or os.getenv("RAGEMBED_ENDPOINT")
-                or (os.getenv("SAS_SERVICES_URL", "").rstrip("/") + "/llm"
-                    if os.getenv("SAS_SERVICES_URL") else "")
-                or EMBED_ENDPOINT).rstrip("/")
+    endpoint = _embed_endpoint(options)
     model = options.get("model") or os.getenv("RAGEMBED_MODEL") or EMBED_MODEL
     if os.getenv("RAGEMBED_DEPLOYMENT_TYPE", "k8s") == "aca":
         host = endpoint.replace("https://", "").replace("http://", "")
