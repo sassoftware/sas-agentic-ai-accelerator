@@ -14,6 +14,13 @@ It ships as a **single self-contained HTML file** designed to be embedded in a
 the app inherits the ambient SAS Viya session, so the `@sassoftware/sas-auth-browser`
 SDK is not used.
 
+One page builds up to three kinds of thing, chosen on its Setup card under
+**"What are you building?"**: a **prompt template** for LLMs, a **decision
+template** for decision models, and a **RAG setup** for a document collection
+(the RAG Builder, with a step row of its own). Which kinds an object offers is
+decided by its switches — see [Configuration](#configuration). There is one
+bundle, one Job Definition and one report object for all three.
+
 ## Features
 
 - Create / select SAS Model Manager projects and prompt tests
@@ -30,12 +37,25 @@ SDK is not used.
 - Mark a "best" response and persist the experiment tracker to Model Manager
 - "Manifest" the best prompt as a Python-scored model (input/output variables +
   score code) ready for use in SAS Intelligent Decisioning
+- **Decision templates** for decision models (Jev, Von): a state and typed
+  questions (a choice, a yes/no, a score) answered with calibrated
+  probabilities, checked against expected answers, evaluated on labelled cases
+  and manifested with typed outputs a decision flow can branch on
+- Optional **prompt optimization** with DSPy in a SAS Job Execution job (an
+  Optimize step of its own)
+- **RAG setups**: a folder of documents wired to a vector store — the RAG
+  Builder saves the setup to SAS Model Manager, generates the ingestion job, the
+  SAS Studio flow and the retrieval model, launches the ingestion and tests the
+  retrieval
 - Multi-language UI (English and German included; easily extended)
 
 ## Requirements
 
 - Node.js `^20.19 || >=22.12` (what Vite 8 requires)
 - A SAS Viya environment with SAS Model Manager and an SCR-deployed LLM endpoint
+- For RAG setups: the RAG runtime in SAS Content (the `deploy-rag-content`
+  scripts), registered embedding models, a vector store and its entries in the
+  credential domain — see the "RAG Ingestion and Retrieval" administration guide
 
 ## Getting started
 
@@ -68,13 +88,55 @@ in the URL or report definition**:
 
 | Setting | Delivered by | How |
 |---|---|---|
-| `viyaHost` | VA properties panel | SAS Viya base URL. Defaults to the embedding origin. |
-| `modelRepositoryID` | VA properties panel | Model Manager repository new prompt projects are created in. |
-| `llmProjectID` | VA properties panel | Model Manager project holding the available LLM definitions (each with an `options.json`). |
-| `SCREndpoint` | VA properties panel | Base URL of the SCR endpoint hosting the LLM containers. |
-| `deploymentType` | VA properties panel | `k8s` (default) or `aca` (Azure Container Apps). |
-| `judgeModel` | VA properties panel | Optional default LLM (by name, from `llmProjectID`) used by the LLM-as-a-Judge. Not a secret; the in-app judge selector always overrides it. |
-| `credentialDomain` | VA properties panel | SAS Viya credential domain provider API keys resolve from (default `agentic-ai-keys`; `none` disables). See below. |
+| Everything in the tables below | VA properties panel | Mirrored by VA into the iframe URL as query parameters of the same name. |
+| Provider API keys, vector-store credentials and location | SAS Viya credential domain | Resolved at run time; never part of the URL or the report. |
+
+**Shared by every kind** (always shown in the panel):
+
+| Option / URL parameter | Label in the panel | Meaning |
+|---|---|---|
+| `viyaHost` | SAS Viya host | SAS Viya base URL. Defaults to the embedding origin. |
+| `modelRepositoryID` | Model Manager repository ID | Repository new prompt, decision and RAG projects are created in. Required by every kind. |
+| `llmProjectID` | LLM project ID | Model Manager project holding the available LLM definitions (each with an `options.json`). Required for prompt and decision templates. |
+| `SCREndpoint` | SCR endpoint | Base URL of the SCR endpoint hosting the model containers. Required for prompt and decision templates; RAG reads a blank value as `<SAS Viya host>/llm`. |
+| `deploymentType` | Deployment type | `k8s` (default) or `aca` (Azure Container Apps). |
+| `judgeModel` | Default judge model | Optional default LLM (by name, from `llmProjectID`) used by the LLM-as-a-Judge. Not a secret; the in-app judge selector always overrides it. |
+| `modelCardReportURI` | Model card report URI | Optional report (`/reports/reports/<uuid>`) embedded on the model card of a manifested prompt. |
+| `credentialDomain` | Credential domain | SAS Viya credential domain (default `agentic-ai-keys`). `none` disables the lookup for prompt and decision templates; RAG cannot be used with `none`. See below. |
+
+**The three switches** (always shown; dropdowns with *Enabled* / *Disabled*,
+stored as `true` / `false`):
+
+| Option / URL parameter | Label in the panel | Default | Off means |
+|---|---|---|---|
+| `enableDecision` | Enable decision templates | Enabled | The decision kind is not offered, no decision model is requested, the Evaluate step is not built. Existing decision projects and templates stay untouched in SAS Model Manager and are not listed. |
+| `enableOptimization` | Enable prompt optimization (DSPy) | Disabled | No Optimize step. |
+| `enableRag` | Enable RAG setups | Disabled | The RAG kind is not offered and nothing of the RAG Builder is built or requested. |
+
+A switch is read strictly: `true`, `1`, `yes`, `on` switch it on, `false`,
+`0`, `no`, `off` switch it off (any case), and anything else — absent, blank,
+a typo — is its default. A report saved before a switch existed therefore keeps
+behaving as it did.
+
+The options of a switch join the panel only while it is on, directly below it,
+their labels prefixed with its name:
+
+| Option / URL parameter | Label in the panel | Meaning |
+|---|---|---|
+| `computeContext` | Optimization: compute context | Compute context of the optimization job (its Python needs `dspy`). Not used by RAG. |
+| `optimizeJobProgram` | Optimization: job path | SAS Content path of the deployed optimize Job Definition. |
+| `minOptimizeSamples` | Optimization: minimum samples | Minimum dataset rows before a run is allowed (default 30). |
+| `embeddingProjectID` | RAG: embedding model project ID | Model Manager project holding the registered embedding models. Without it no setup can be saved. |
+| `contentRoot` | RAG: content root | SAS Content folder the `deploy-rag-content` scripts populated (default `/SAS Agentic AI Accelerator/RAG`). |
+| `casServer` | RAG: CAS server | CAS server of the ledger and the pipeline tables (default `cas-shared-default`). |
+| `ragComputeContext` | RAG: ingestion compute context | Compute context of the ingestion job. It must run as the requesting user. Separate from `computeContext`, which RAG never reads. |
+| `storeSslmode` | RAG: vector store TLS | `prefer` (default), `require`, `verify-ca`, `verify-full`, `allow`, `disable`. |
+| `deletedPolicy` | RAG: when a document disappears from the source | `retire` (default, keep its chunks as history) or `purge`. |
+| `retainDays` | RAG: keep retired chunks for (days) | `0` (default) keeps them forever. |
+| `recordHistory` | RAG: record run history | Checkbox, on by default. |
+| `embedReplicas` | RAG: embedding container replicas | What the ingestion sizes its parallel calls from (default `1`). |
+| `persistElements`, `persistChunks` | RAG: save the element table to disk, RAG: save the chunk table to disk | `1` (default) or `0`. |
+| `enable_pgvector`, `enable_singlestore` | RAG: offer pgvector (PostgreSQL), RAG: offer SingleStore | Checkboxes, on by default: which vector databases a new setup may choose. A stored setup on a database that is no longer offered still opens and keeps it. |
 
 ### Everything-but-the-key: the VA properties panel
 
@@ -89,13 +151,17 @@ Because the group sets `urlOption: true`, VA mirrors the author's values into th
 iframe URL — keyed by each field's `name` — and [`src/config.ts`](src/config.ts)
 reads them back as query parameters on the next (re)load.
 
-Until those values are supplied the object shows a **"Configuration required"**
-message and does **not** call SAS Viya (so it never fails against placeholder
-IDs). The build-time defaults in `src/config.ts` are intentionally blank.
+The page loads as soon as one side is configured: prompt and decision templates
+need `modelRepositoryID`, `llmProjectID` and `SCREndpoint`; RAG setups need
+`enableRag` switched on, `modelRepositoryID` and a credential domain other than
+`none`. Until then the object shows a **"Configuration required"** message that
+names what each side is missing, and does **not** call SAS Viya (so it never
+fails against placeholder IDs). The build-time defaults in `src/config.ts` are
+intentionally blank. An object with only the RAG side configured shows the RAG
+Builder alone.
 
-The same parameters — `viyaHost`, `modelRepositoryID`, `llmProjectID`,
-`SCREndpoint`, `deploymentType` — can also be appended to the object's URL by
-hand (e.g. `.../SASJobExecution/?_program=...&_action=form&llmProjectID=<uuid>&SCREndpoint=<url>`),
+Every parameter of the tables above can also be appended to the object's URL by
+hand (e.g. `.../SASJobExecution/?_program=...&_action=form&llmProjectID=<uuid>&SCREndpoint=<url>&enableRag=true`),
 which is a reliable fallback if your VA version does not render the options panel.
 
 ### The API keys: the credential domain
@@ -113,6 +179,13 @@ paid model calls is an identity decision administered centrally — see the
 > Keys are never persisted in the report definition, the URL, or a data source —
 > they live encrypted in the Credentials service and are fetched per session.
 
+RAG uses the same domain for the vector store: the ingestion job and the
+retrieval model take the store's user and password (`<BACKEND>_RAG_USER` /
+`<BACKEND>_RAG_PW`) and its location (`<BACKEND>_HOST` / `_PORT` / `_DB`) from
+it on the server; the page only checks which entries the signed-in user holds.
+That is why RAG has no `none` mode: with `credentialDomain=none` and RAG
+switched on, the RAG card is shown but cannot be chosen, and says why.
+
 ## Deploying to SAS Visual Analytics
 
 The single-file build is embedded in Visual Analytics through **SAS Job Execution**:
@@ -123,11 +196,17 @@ The single-file build is embedded in Visual Analytics through **SAS Job Executio
 3. In a Visual Analytics report, add a **Data-Driven Content** object pointing at
    that job's execution URL.
 4. Configure the object from its **Properties panel** (Viya host, Model Manager
-   repository, LLM project, SCR endpoint, deployment type, credential domain) —
-   the panel is rendered from the options group the app publishes on load.
+   repository, LLM project, SCR endpoint, deployment type, credential domain,
+   then the three switches and what each of them brings) — the panel is
+   rendered from the options group the app publishes on load.
    Assign the `ACCELERATOR_RELEASES` table (`mdb load-releases`) as the object's
    data - a DDC object renders only with a data assignment; the app reads nothing
    from it, and provider keys come from the credential domain.
+
+RAG setups need no second deployment of this page: switch **Enable RAG setups**
+on in the same object. What they do need is the RAG runtime in SAS Content
+(`deploy-rag-content`) — see the "RAG Ingestion and Retrieval" administration
+guide.
 
 Because SAS Job Execution serves HTML through a **Go template engine** (which
 treats `{{ … }}` as directives), the build base64-encodes every inline `<script>`
@@ -169,8 +248,9 @@ default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://<sas
 
 ## Local development
 
-`npm run dev` proxies SAS Viya API paths (`/modelRepository`, `/modelManagement`,
-`/identities`, `/files`) to the host set in `DEV_VIYA_HOST` in
+`npm run dev` proxies the SAS Viya services the page calls (`/modelRepository`,
+`/identities`, `/files`, `/folders`, `/credentials`, `/jobExecution`, … — the
+`proxyPaths` list) to the host set in `DEV_VIYA_HOST` in
 [`vite.config.ts`](vite.config.ts). Update that value to your Viya host. Note:
 
 - The SCR endpoint is an **absolute URL** and is not proxied; the browser calls it
@@ -183,19 +263,24 @@ default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://<sas
    the values.
 2. Register it in the `LOCALES` map in [`src/i18n/i18n.ts`](src/i18n/i18n.ts).
 
+Every text has to exist in every language. For English and German
+`node .claude/skills/verify/verify-locales.js` checks that: the same keys, the
+same placeholders, and no key that no source file reads.
+
 The active language is chosen from `navigator.language`, falling back to English.
 
 ## Project structure
 
-Two apps are built from one source tree: `index.html` + `src/main.ts` is the
-Prompt Builder (`npm run build` → `dist/index.html`), `rag.html` +
-`src/main-rag.ts` is the RAG Builder (`npm run build:rag` → `dist-rag/rag.html`,
-not committed - it ships inside the RAG Builder transfer package).
+One app is built from this source tree: `index.html` + `src/main.ts`
+(`npm run build` → `dist/index.html`). It holds both builders — the Prompt
+Builder for prompt and decision templates and the RAG Builder for RAG setups —
+inside one shell that shows one of them at a time.
 
 ```
 src/
-  main.ts / main-rag.ts     App bootstraps (no-auth; mount one Builder each)
-  config.ts / config-rag.ts Build-time config + URL-param overrides per app
+  main.ts                   App bootstrap (no-auth; mounts the shell)
+  config.ts                 Build-time config + URL-param overrides: the prompt
+                            side, the RAG side and the three switches
   styles.css                Shared styles (Bootstrap is bundled)
   state/app-state.ts        Minimal global state (viyaHost, CSRF token, user)
   api/
@@ -205,27 +290,50 @@ src/
     folders-api.ts          SAS Content folders
     identity-api.ts         Current-user lookup
     credentials-api.ts      Provider keys from the credential domain
-    scr-api.ts              SCR LLM invocation
+    scr-api.ts              SCR LLM and decision model invocation
     judge-api.ts            LLM-as-a-Judge calls
     jobdef-api.ts / jobexec-api.ts  SAS Job Execution (optimize, ingest, test retrieval)
     dataflows-api.ts        SAS Studio flows and custom steps
     relationships-api.ts    Decision usage of a prompt (delete guard)
     cas-api.ts              CAS servers, caslibs and tables
-  ui/                       stepper (the step shell of both builders),
+  ui/                       stepper (the step row of both builders), kind
+                            selector (the "What are you building?" cards),
                             instruction card, accordion, combobox, modals, doc
                             sections, list filter, markdown (marked +
                             DOMPurify), option controls, toasts, HTML escaping
-  util/validation.ts        DS2 / Python name validation
+  util/
+    flags.ts                The strict reader of the three switches
+    validation.ts           DS2 / Python name validation
   i18n/                     Bundled locale files + loader
-  va/ddc.ts / ddc-rag.ts    VA DDC integration: options-group Properties panel per app
+  va/ddc.ts                 VA DDC integration: the one options group of the page
   objects/
-    prompt-builder.ts       The Prompt Builder UI
+    builder-shell.ts        The page: which kinds are offered, both builders
+                            mounted, one shown, the RAG Builder built on first use
+    prompt-builder.ts       The Prompt Builder UI (prompt and decision templates)
+    prompt-decision.ts      Decision templates: designer, lint, runs, evaluation,
+                            manifest
     rag-builder.ts          The RAG Builder UI
     rag-*.ts                RAG backends, options, enrichment, flow and job
                             generation, manifest, retrieval log
-    embedding-models.ts     Embedding model listing
+    embedding-models.ts     Vector width of the shipped embedding models
   types/                    Shared TypeScript types + vendor module decls
 ```
+
+## Verifying a change
+
+`.claude/skills/verify/` holds a mock of the SAS Viya services the page calls
+and Playwright suites that drive the built bundle in the system Edge browser:
+the Prompt Builder (`verify.js`), decision templates (`verify-decision.js`), the
+RAG kind (`verify-rag.js`), the options group and the three switches
+(`verify-options.js`) and the locale files (`verify-locales.js`). After
+`npm run build`, from a scratch folder in which `playwright` is installed:
+
+```bash
+node <path-to>/LLM-Prompt-Builder/.claude/skills/verify/run-all.cjs
+```
+
+[`SKILL.md`](.claude/skills/verify/SKILL.md) in that folder describes the mock,
+its fixtures and what each suite needs.
 
 ## License
 
