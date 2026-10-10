@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Centralized HTTP client for SAS Viya API calls.
- * Handles CSRF token management and automatic retry on 403/CSRF errors.
+ * Handles CSRF token management, automatic retry on 403/CSRF errors and the
+ * first request to a service the browser has no session with yet (HTTP 449).
  */
 
 import { getAppState } from '../state/app-state';
@@ -16,9 +17,53 @@ export interface ViyaFetchOptions {
   contentType?: string;
 }
 
+// The session warm-ups that are under way, by service (the first path
+// segment). Requests sent in parallel all get their 449 before the first of
+// them has established the session, and then share its warm-up. An entry is
+// dropped once its request has ended, so a 449 that comes later warms up
+// again.
+const sessionWarmUps = new Map<string, Promise<void>>();
+
+/**
+ * Establish the browser's session with the service a path belongs to.
+ *
+ * Every SAS Viya service keeps a session of its own. The first request to a
+ * service the browser has not met yet has to go through the SAS Logon
+ * redirect, and a request that carries `X-Requested-With: XMLHttpRequest` is
+ * not redirected: it is answered with HTTP 449 - seen live on
+ * POST /relationships/relationships, where the delete dialog then read
+ * "Decision usage could not be verified" for a prompt a decision uses. A plain
+ * GET without that header follows the redirect and gets the session cookie;
+ * the request that got the 449 is answered once it is sent again.
+ *
+ * The answer of the GET is of no interest, and neither is a network error: if
+ * the session was not established, the repeated request says so.
+ */
+function establishServiceSession(viyaHost: string, path: string): Promise<void> {
+  const service = /^\/([^/?#]+)/.exec(path)?.[1];
+  if (!service) return Promise.resolve();
+  let warmUp = sessionWarmUps.get(service);
+  if (!warmUp) {
+    warmUp = fetch(`${viyaHost}/${service}/`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      credentials: 'include',
+      redirect: 'follow',
+    })
+      .then(
+        () => undefined,
+        () => undefined
+      )
+      .finally(() => sessionWarmUps.delete(service));
+    sessionWarmUps.set(service, warmUp);
+  }
+  return warmUp;
+}
+
 /**
  * Core fetch wrapper that prepends the Viya host, includes credentials,
- * attaches CSRF tokens, and retries once on CSRF 403 errors.
+ * attaches CSRF tokens, establishes the service session after an HTTP 449 and
+ * retries once on CSRF 403 errors.
  */
 export async function viyaFetch(
   path: string,
@@ -55,6 +100,15 @@ export async function viyaFetch(
   }
 
   let response = await fetch(url, fetchOptions);
+
+  // No session with this service yet: establish it and send the request
+  // again, once. A second 449 goes back to the caller as it is. This comes
+  // before the CSRF handling, because the repeated request is the first one
+  // the service really answers - and that answer may be the CSRF 403.
+  if (response.status === 449) {
+    await establishServiceSession(state.config.viyaHost, path);
+    response = await fetch(url, fetchOptions);
+  }
 
   // Handle CSRF token refresh
   if (
