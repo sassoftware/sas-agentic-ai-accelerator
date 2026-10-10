@@ -384,6 +384,21 @@ def test_shipped_runtime_package_equals_the_repository(path, loaded):
     _settle(package, path, runtime_content_drift(package, REPO_ROOT))
 
 
+def test_every_vector_store_the_ui_offers_has_its_switch_among_the_required_labels():
+    """The UI posts one `enable_<backend>` option per row of RAG_BACKENDS.
+    A store added there needs its label in the shipped report - and so in
+    MERGED_REPORT_LABELS, or the first check above would never ask for it."""
+    import re
+    source = REPO_ROOT / "LLM-Prompt-Builder" / "src" / "objects" / "rag-backends.ts"
+    if not source.is_file():
+        pytest.skip(f"{source} is not in this checkout")
+    table = re.search(r"export const RAG_BACKENDS\b.*?=\s*\[(.*?)\n\];", source.read_text(encoding="utf-8"), re.S)
+    keys = re.findall(r"\bkey:\s*'([A-Za-z0-9_]+)'", table.group(1)) if table else []
+    if not keys:
+        pytest.skip("RAG_BACKENDS is not declared the way this test reads it")
+    assert [f"enable_{key}" for key in keys if f"enable_{key}" not in MERGED_REPORT_LABELS] == []
+
+
 def test_both_builder_packages_are_shipped():
     """The parametrised checks above run over whatever is found; this is what
     notices when one of the two files is not there at all."""
