@@ -284,9 +284,30 @@ const lastLine = (message) => String(message || '').trim().split('\n').pop();
   await page.selectOption('#app-obj-LPB-evaluate-cas-lib', 'Public');
   await waitUntil(async () => (await page.$$('#app-obj-LPB-evaluate-cas-table option')).length >= 2, 'tables listed');
   await page.selectOption('#app-obj-LPB-evaluate-cas-table', 'DEC_CASES');
+  // While the models are asked about the rows of the table the kind cannot be
+  // changed, as during a run: the change would empty the page under the calls.
+  const slowDecisionCalls = '**/scr/**';
+  await page.route(slowDecisionCalls, async (route) => {
+    await sleep(2500);
+    await route.continue();
+  });
   await resetLog();
   await page.click('#app-obj-LPB-evaluate-run');
+  await goStep('setup');
+  await page.click('#LPB-kind-llm');
+  await waitUntil(
+    async () => (await page.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).some((t) => t.includes('cannot be changed while a run, an evaluation')),
+    'a toast says that the kind cannot be changed during an evaluation'
+  );
+  step(true, 'a change of kind during a CAS evaluation is refused with the reason');
+  assert(
+    (await page.isChecked('#LPB-kind-decision')) && (await page.inputValue('#LPB-project-dropdown')) === 'proj-2' && (await page.inputValue('#LPB-prompt-dropdown')) === 'model-dec' && (await visibleSteps()) === 'setup,build,evaluate,finalize',
+    'the decision kind, its project, its template and its steps stay as they were'
+  );
+  assert(!(await page.$$eval('#app-obj-LPB-evaluate-results .pb-evaluation', (els) => els.length)), 'the evaluation was still in flight at that moment');
+  await goStep('evaluate');
   await waitUntil(async () => (await page.$$('#app-obj-LPB-evaluate-results .pb-evaluation')).length >= 1, 'CAS evaluation rendered', 15000);
+  await page.unroute(slowDecisionCalls);
   log = await getLog();
   const casCalls = log.filter((e) => e.url === '/scr/jev_mock/jev_mock' && e.method === 'POST');
   assert(casCalls.length === 4, `one call per table row (got ${casCalls.length})`);
@@ -456,6 +477,80 @@ const lastLine = (message) => String(message || '').trim().split('\n').pop();
     threeQuestions.risk === 'read_only' && threeQuestions.mentions_path === 'no' && threeQuestions.mentions_path_confidence === 0.8,
     `three questions come back as three output pairs (got ${JSON.stringify(threeQuestions)})`
   );
+
+  // ---- saved runs the manifest cannot take over as they are ---------------------------
+  // The manifest is generated from the saved run. A template saved by an
+  // earlier release can carry a question name or a variable name that release
+  // accepted and the score code cannot carry: the checks of the designer are
+  // made again at the manifest, which names what has to be renamed and writes
+  // nothing. The tracker of the template is served from here for these cases.
+  const servedTracker = { rows: null };
+  const trackerFile = '**/files/files/dtrk-1/content';
+  await page.route(trackerFile, (route) =>
+    servedTracker.rows ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(servedTracker.rows) }) : route.continue()
+  );
+  const servedRun = (questions, state, variables, model = 'jev_mock', options = '{API_KEY:OpenAI}') => [
+    {
+      runId: 1, systemPrompt: JSON.stringify(questions), userPrompt: state, model: '', options: '', response: '', run_time: null, prompt_length: null,
+      output_length: null, best_prompt: null, fastest_prompt: null, fewest_tokens_prompt: null, mode: 'decision', expected: {}, variables,
+    },
+    {
+      runId: 1, systemPrompt: '', userPrompt: '', model, options, response: '{}', run_time: 1.2, prompt_length: 10, output_length: 0,
+      best_prompt: 1, fastest_prompt: true, fewest_tokens_prompt: null,
+    },
+  ];
+  const openServedRun = async (rows) => {
+    servedTracker.rows = rows;
+    await goStep('setup');
+    await page.selectOption('#LPB-prompt-dropdown', 'Select an existing Prompt-Test');
+    await page.selectOption('#LPB-prompt-dropdown', 'model-dec');
+    await waitUntil(async () => (await page.$$('#app-obj-LPB-pet > .accordion > .accordion-item')).length === 1, 'the served run is loaded');
+    await goStep('finalize');
+    await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-pet-create-model-button')), 'Manifest is enabled for the served run');
+  };
+  const manifestBox = async () => ((await page.textContent('#app-obj-LPB-pet-save-result')) || '').trim();
+  const bodyVariable = [{ name: 'body', description: '', type: 'string', value: 'Please refund one payment.' }];
+  const urgent = { urgent: { type: 'noul', instructions: 'Is this urgent?' } };
+  for (const [label, rows, named, reason] of [
+    ['a question called class', servedRun({ class: { type: 'noul', instructions: 'Is this urgent?' } }, 'Message: {{body}}', bodyVariable), 'the question "class"', 'Python keyword'],
+    ['a question called answer', servedRun({ answer: { type: 'noul', instructions: 'Is this urgent?' } }, 'Message: {{body}}', bodyVariable), 'the question "answer"', 'Python keyword'],
+    ['a question name of 25 characters', servedRun({ a_question_name_of_25_chr: { type: 'noul', instructions: 'Is this urgent?' } }, 'Message: {{body}}', bodyVariable), 'the question "a_question_name_of_25_chr"', 'at most 21 characters'],
+    ['a state variable called options', servedRun(urgent, 'Message: {{options}}', [{ name: 'options', description: '', type: 'string', value: 'CUSTOMER TEXT' }]), 'the variable "options"', 'score code'],
+  ]) {
+    await openServedRun(rows);
+    await resetLog();
+    await page.click('#app-obj-LPB-pet-create-model-button');
+    await waitUntil(async () => (await manifestBox()).startsWith('Not manifested'), `the manifest of a saved run with ${label} is refused`);
+    const refusal = await manifestBox();
+    assert(refusal.includes(named) && refusal.includes(reason), `the manifest box names ${named} and says why (got: ${refusal})`);
+    await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-pet-create-model-button')), 'the Manifest button is usable again');
+    const written = (await getLog()).filter((e) => e.method === 'POST' && /def scoreModel\(|filename="inputVar\.json"|filename="outputVar\.json"|filename="requirements\.json"/.test(e.body));
+    assert(written.length === 0, `nothing of a model is uploaded for ${label} (got ${written.length} uploads)`);
+  }
+  // An option value with backslashes, as a string option with quotes in it is
+  // stored, and a decision model whose name holds a double quote: both are
+  // inserted as literals, so the code compiles and sends the stored text. The
+  // page knows no key entry for a model of that name, so the run carries none
+  // and the manifested model takes the state variable alone.
+  await openServedRun(servedRun(urgent, 'Message: {{body}}', bodyVariable, 'odd"dec', '{mode:say \\hi\\,API_KEY:OpenAI}'));
+  await resetLog();
+  await page.click('#app-obj-LPB-pet-create-model-button');
+  await waitUntil(async () => Boolean(findPart(await getLog(), 'requirements.json')), 'the manifest of the run with the odd option value is written', 20000);
+  const oddLog = await getLog();
+  const oddCode = multipartText(findPartMatching(oddLog, /filename="[a-z_]+\.py"/).body);
+  const oddCompiled = compilePython(oddCode, 'decision_options.py');
+  assert(oddCompiled.ok, `the score code with a backslash in an option value and a quote in the model name compiles without a warning${oddCompiled.ok ? '' : ' (' + lastLine(oddCompiled.error) + ')'}`);
+  const oddStored = multipartJson(findPart(oddLog, 'Prompt-Experiment-Tracker.json').body).find((row) => row.model === 'odd"dec').options;
+  const oddCalled = callScoreModel(oddCode, ['Please refund one payment.'], answersOf({ urgent: { type: 'noul', noul: 0.9 } }));
+  assert(oddCalled.ok, `it runs${oddCalled.ok ? '' : ' (' + lastLine(oddCalled.error) + ')'}`);
+  const oddOptions = oddCalled.request.body.inputs.find((i) => i.name === 'options').value;
+  assert(
+    /say .*hi/.test(oddStored) && oddStored.includes(String.fromCharCode(92)) && oddOptions === oddStored,
+    `the manifested model sends the options the tracker stores for the run (sent: ${oddOptions}, stored: ${oddStored})`
+  );
+  assert(oddCalled.request.url === `${BASE}/scr/odd"dec/odd"dec`, `the model name reaches the URL as it is stored (got: ${oddCalled.request.url})`);
+  servedTracker.rows = null;
+  await page.unroute(trackerFile);
 
   // ---- back to an LLM prompt: everything switches back --------------------------------
   await goStep('setup');

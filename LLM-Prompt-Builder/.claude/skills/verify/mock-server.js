@@ -931,10 +931,16 @@ http
       }
       // Creating a model (a prompt-test). Like the real service the mock keeps
       // the fields it knows and DROPS the tags sent at creation: the answer and
-      // every later listing carry tags: null until a PUT writes some.
+      // every later listing carry tags: null until a PUT writes some. A name
+      // that a model of the same project already has is refused with 409 and
+      // an error body, which has no id.
       if (p === '/modelRepository/models' && req.method === 'POST') {
         let body = {};
         try { body = JSON.parse(raw); } catch {}
+        const sameName = (model) => model.projectId === body.projectId && model.name === body.name;
+        if (createdModels.some(sameName) || Object.values(ragModels).some(sameName)) {
+          return json(res, 409, { errorCode: 21505, message: `A model named "${body.name}" already exists in the project.`, httpStatusCode: 409 });
+        }
         const model = { id: `model-new-${createdModels.length + 1}`, tags: null, createdBy: 'tester', modifiedBy: 'tester' };
         ['name', 'description', 'function', 'tool', 'modeler', 'projectId', 'algorithm', 'scoreCodeType'].forEach((field) => {
           if (body[field] !== undefined) model[field] = body[field];

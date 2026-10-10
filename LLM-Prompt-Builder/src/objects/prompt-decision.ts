@@ -134,6 +134,61 @@ const EXTRACT_PATTERN = /\b(extract|what is the name|which name|list all|find al
  */
 export const MAX_QUESTION_ID_LENGTH = 32 - '_confidence'.length;
 
+/** The Python keywords: none of them compiles as the name of a variable. */
+const PYTHON_KEYWORDS = [
+  'False', 'None', 'True', 'and', 'as', 'assert', 'async', 'await', 'break', 'class', 'continue', 'def', 'del',
+  'elif', 'else', 'except', 'finally', 'for', 'from', 'global', 'if', 'import', 'in', 'is', 'lambda', 'nonlocal',
+  'not', 'or', 'pass', 'raise', 'return', 'try', 'while', 'with', 'yield',
+];
+
+/**
+ * Names an input of a manifested model cannot have, in either score code (the
+ * prompt template's and the decision template's). Every prompt variable a
+ * template references becomes a parameter of scoreModel, and the function
+ * reads its inputs only after its first statements have run:
+ *
+ * - a Python keyword does not compile as a parameter;
+ * - llm, endpoint, llmURL, options and systemPrompt are assigned before the
+ *   prompt is built, so the prompt would carry that value instead of the
+ *   input - with `options`, the API key;
+ * - a parameter named like a module or a builtin the function calls (os, str,
+ *   json ...) replaces it, and the call fails;
+ * - API_KEY is the input the function declares itself for a model that needs
+ *   a key.
+ *
+ * Compared as written: Python tells `options` from `Options`. A name the code
+ * only assigns after it has read its inputs (response, state, answers ...) is
+ * not listed - such an input works.
+ */
+const SCORE_INPUT_NAMES = new Set([
+  ...PYTHON_KEYWORDS,
+  'os', 'requests', 'json', 'str', 'float', 'isinstance', 'all', 'dict', 'Exception', 'ValueError',
+  'llm', 'endpoint', 'llmURL', 'options', 'systemPrompt', 'API_KEY', '_headline',
+]);
+
+/** Whether a prompt variable of this name would break the manifested model (see SCORE_INPUT_NAMES). */
+export function isReservedScoreInput(name: string): boolean {
+  return SCORE_INPUT_NAMES.has(name);
+}
+
+/**
+ * Names an output variable of a manifested prompt template cannot have: what
+ * an input cannot be called, and the locals the score function assigns or
+ * reads after the output defaults are set. The output would take their place
+ * (llmBody, sslVerify, llmCall ...), or the parsing would read the output
+ * instead of its own value (cleaned, parsed, error). The default outputs are
+ * refused by RESERVED_OUTPUT_NAMES of the builder.
+ */
+const SCORE_OUTPUT_NAMES = new Set([
+  ...SCORE_INPUT_NAMES,
+  'llmBody', 'sslVerify', 'llmCall', 'llmJson', 'llmData', 'cleaned', 'parsed', 'key', 'error', 'userPrompt',
+]);
+
+/** Whether an output variable of this name would break the manifested model (see SCORE_OUTPUT_NAMES). */
+export function isReservedScoreOutput(name: string): boolean {
+  return SCORE_OUTPUT_NAMES.has(name);
+}
+
 /**
  * Names a question cannot take because the manifested score code uses them
  * itself, compared in lower case (SAS names do not distinguish case). A Python
@@ -144,10 +199,7 @@ export const MAX_QUESTION_ID_LENGTH = 32 - '_confidence'.length;
  */
 const SCORE_CODE_NAMES = new Set(
   [
-    // Python keywords
-    'False', 'None', 'True', 'and', 'as', 'assert', 'async', 'await', 'break', 'class', 'continue', 'def', 'del',
-    'elif', 'else', 'except', 'finally', 'for', 'from', 'global', 'if', 'import', 'in', 'is', 'lambda', 'nonlocal',
-    'not', 'or', 'pass', 'raise', 'return', 'try', 'while', 'with', 'yield',
+    ...PYTHON_KEYWORDS,
     // The modules, functions and locals of the generated score code
     'os', 'requests', 'json', '_headline', 'scoreModel', 'llm', 'endpoint', 'llmURL', 'options', 'state', 'questions',
     'llmBody', 'answers', 'answer', 'confidence', 'run_time', 'prompt_length', 'sslVerify', 'llmCall', 'llmJson',
@@ -1734,7 +1786,12 @@ export interface DecisionManifestParams {
   selectedOutputs: string[];
 }
 
-const pythonString = (value: string): string => JSON.stringify(value);
+/**
+ * A text as a Python string literal in double quotes. JSON escapes the quote,
+ * the backslash and the control characters the way Python reads them; the two
+ * line separators JSON leaves alone are harmless inside a Python literal.
+ */
+export const pythonString = (value: string): string => JSON.stringify(value);
 
 /**
  * A text as the body of a Python """...""" literal that evaluates to exactly
@@ -1823,11 +1880,16 @@ export function buildDecisionManifest(params: DecisionManifestParams): {
   );
   const scoreInputs = inputs.map((input) => input.name).join(', ');
   const outputNames = outputs.map((output) => output.name);
+  // The options as the body of an f"""...""" literal: the stored text escaped
+  // like a prompt, so a backslash or a quote in an option value neither ends
+  // the literal nor becomes an escape sequence, and the key appended after
+  // the escaping as the one placeholder of the string.
+  const optionsBody = pythonFStringBody(params.options, []);
   const optionsLiteral = params.requiresAPIKey
-    ? params.options.length > 0
-      ? `${params.options},API_KEY:{API_KEY}`
+    ? optionsBody.length > 0
+      ? `${optionsBody},API_KEY:{API_KEY}`
       : 'API_KEY:{API_KEY}'
-    : params.options;
+    : optionsBody;
   // These lines sit inside the score code's `if llmCall.status_code == 200:`
   // block, three levels deep; the defaults below sit at the function's level.
   const questionLines = params.questions
@@ -1862,13 +1924,13 @@ def _headline(answerObject, questionType):
 def scoreModel(${scoreInputs}):
     "Output: ${outputNames.join(', ')}"
     # The decision model and the target endpoint
-    llm = "${params.model}"
+    llm = ${pythonString(params.model)}
     # Retrieves the endpoint where the containers are hosted - e.g. https://example.com/llm
     # If an environment variable called LLMCONTAINERPATH is set, it will use that instead of the one stored in the prompt builder object
-    endpoint = os.getenv("LLMCONTAINERPATH", "${params.scrEndpoint}")
+    endpoint = os.getenv("LLMCONTAINERPATH", ${pythonString(params.scrEndpoint)})
     llmURL = f"""${params.endpointPattern}"""
     # These are the options that were set for the best run
-    options = f"{{${optionsLiteral}}}"
+    options = f"""{{${optionsLiteral}}}"""
     # The state the questions are asked about, built from the inputs
     state = f"""${stateFString}"""
     # The questions of the decision template, in the System One shape

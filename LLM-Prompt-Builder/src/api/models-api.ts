@@ -152,6 +152,10 @@ export async function getAllModelRepositories(
 
 /**
  * Create a new model.
+ *
+ * Throws when the service refuses the creation (a name that exists in the
+ * project, no permission to write there): the answer is then an error body,
+ * and a caller that read an id from it would go on with the model `undefined`.
  */
 export async function createModel(
   modelDefinition: Record<string, unknown>
@@ -161,6 +165,9 @@ export async function createModel(
     body: JSON.stringify(modelDefinition),
     contentType: 'application/vnd.sas.models.model+json',
   });
+  if (!response.ok) {
+    throw new Error(`Viya request to /modelRepository/models failed with HTTP ${response.status}`);
+  }
   return response.json();
 }
 

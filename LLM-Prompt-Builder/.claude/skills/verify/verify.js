@@ -363,6 +363,25 @@ function assertCompiles(code, label) {
     await varRows.nth(2).locator('.pb-var-name').evaluate((el) => el.classList.contains('is-invalid')),
     'invalid variable name (starts with a digit) is flagged'
   );
+  // A variable becomes an input of the manifested model: a Python keyword and
+  // the names the score code assigns before it reads its inputs are refused,
+  // with the reason. Python tells the case apart, and a name the code only
+  // assigns after reading its inputs works, so neither of those is refused.
+  const variableNameState = async (name) => {
+    await varRows.nth(2).locator('.pb-var-name').fill(name);
+    return varRows.nth(2).evaluate((row) => ({
+      invalid: row.querySelector('.pb-var-name').classList.contains('is-invalid'),
+      reason: row.querySelector('.pb-var-name').nextElementSibling.textContent,
+    }));
+  };
+  for (const name of ['options', 'class', 'llm', 'json', 'API_KEY']) {
+    const state = await variableNameState(name);
+    assert(state.invalid && state.reason.includes('score code'), `a variable named ${name} is refused with the reason (got: ${JSON.stringify(state)})`);
+  }
+  for (const name of ['Options', 'response', 'state']) {
+    const state = await variableNameState(name);
+    assert(!state.invalid, `a variable named ${name} is accepted (got: ${JSON.stringify(state)})`);
+  }
   await varRows.nth(2).locator('.pb-var-remove').click();
 
   await page.fill('#app-obj-LPB-system-prompt', 'Hello {{customer}} with {json} braces');
@@ -568,6 +587,20 @@ function assertCompiles(code, label) {
     'reserved output name (response) is flagged'
   );
   await outRows.nth(2).locator('.pb-outvar-remove').click();
+  // A Python keyword and a module the score code imports: each would be
+  // assigned in scoreModel. Both rows stay in the panel for the manifest
+  // below, which has to leave them out.
+  await page.click('text="Add Output Variable"');
+  await page.click('text="Add Output Variable"');
+  await outRows.nth(2).locator('.pb-outvar-name').fill('class');
+  await outRows.nth(3).locator('.pb-outvar-name').fill('json');
+  const refusedOutputs = await page.$$eval('.pb-outvar-row .pb-outvar-name', (inputs) =>
+    inputs.filter((input) => input.classList.contains('is-invalid')).map((input) => `${input.value}: ${input.nextElementSibling.textContent}`)
+  );
+  assert(
+    refusedOutputs.length === 2 && refusedOutputs[0].startsWith('class: ') && refusedOutputs[1].startsWith('json: ') && refusedOutputs.every((text) => text.includes('score code')),
+    `output variables named class and json are refused with the reason (got: ${refusedOutputs.join(' | ')})`
+  );
   await page.screenshot({ path: 'shot-10-output-parsing.png', fullPage: true });
 
   await resetLog();
@@ -597,7 +630,7 @@ function assertCompiles(code, label) {
         ['score', 'decimal'],
         ['parse_status', 'decimal'],
       ]),
-    `deselected defaults dropped; parsed outputs + parse_status added (got: ${JSON.stringify(outputVarsParsing.map((v) => v.name))})`
+    `deselected defaults dropped; parsed outputs + parse_status added, the refused rows left out (got: ${JSON.stringify(outputVarsParsing.map((v) => v.name))})`
   );
   assert(
     outputVarsParsing.find((v) => v.name === 'sentiment').length === 10000000 &&
@@ -669,7 +702,7 @@ function assertCompiles(code, label) {
   assert(await page.isVisible('#app-obj-LPB-pet-manifest-options'), 'options panel visible again after load');
   assert(!(await page.isChecked('#app-obj-LPB-pet-out-run_time')), 'deselected default output restored by load');
   assert(await page.isChecked('#app-obj-LPB-pet-out-response'), 'selected default output restored by load');
-  assert((await page.locator('.pb-outvar-row').count()) === 2, 'output variable rows restored by load');
+  assert((await page.locator('.pb-outvar-row').count()) === 2, 'output variable rows restored by load, without the two refused ones');
   assert(
     (await page.locator('.pb-outvar-row').nth(0).locator('.pb-outvar-default').inputValue()) === 'neutral',
     'output variable default value restored by load'
@@ -722,7 +755,7 @@ function assertCompiles(code, label) {
   // row and a quote as the last character: the manifested model has to send
   // exactly what the experiment sent.
   const HOSTILE_SYSTEM = 'Reply as JSON {"ok": true} for {{customer}}; never write """ or C:\\Users\\new\\d+ and end with "';
-  const HOSTILE_USER = 'It\'s {{ customer }} asking: "why is \\n no line break?" {{unknown}} }{ \'\'\'"""';
+  const HOSTILE_USER = 'It\'s {{ customer }} asking: "why is \\n no line break?"\t{{unknown}} }{ \'\'\'"""';
   await goStep('build');
   await page.click('text="Add Variable"');
   await page.locator('.pb-variable-row').nth(0).locator('.pb-var-name').fill('customer');
@@ -782,6 +815,84 @@ function assertCompiles(code, label) {
     hostileNode.ok && hostileNode.returned.length === 2,
     `the hostile Call-LLM-node score code runs and returns llmBody and llmURL (${hostileNode.ok ? hostileNode.returned.length + ' values' : lastLine(hostileNode.error)})`
   );
+  // The Call LLM node posts llmBody as it is: it has to be JSON by itself and
+  // carry what the experiment sent - backslashes, the tab and the apostrophes.
+  let nodeInputs = null;
+  try {
+    nodeInputs = JSON.parse(hostileNode.returned[0]).inputs;
+  } catch (e) {
+    nodeInputs = null;
+  }
+  assert(Array.isArray(nodeInputs), `the llmBody of the Call-LLM-node variant is valid JSON (got: ${String(hostileNode.returned[0]).slice(0, 160)})`);
+  const nodeInput = (name) => (nodeInputs.find((i) => i.name === name) || {}).value;
+  assert(nodeInput('systemPrompt') === hostileSystemSent, `its system prompt is the one the experiment sent (got: ${nodeInput('systemPrompt')})`);
+  assert(nodeInput('userPrompt') === hostileUserSent && hostileUserSent.includes('\t') && hostileUserSent.includes("It's"), `its user prompt is the one the experiment sent, tab and apostrophe included (got: ${nodeInput('userPrompt')})`);
+  assert(nodeInput('options') === hostileSent.find((i) => i.name === 'options').value, `and its options are those of the experiment (got: ${nodeInput('options')})`);
+  assert(hostileNode.returned[1] === `${BASE}/scr/demo_llm/demo_llm`, `llmURL is the container the experiment called (got: ${hostileNode.returned[1]})`);
+
+  // ---- saved runs the manifest cannot take over as they are -------------------
+  // The manifest is generated from the saved run, not from the workbench, and
+  // a run may be older than the name checks. The tracker of the prompt is
+  // served from here for these cases.
+  const servedTracker = { rows: null };
+  await page.route('**/files/files/trk-1/content', (route) =>
+    servedTracker.rows ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(servedTracker.rows) }) : route.continue()
+  );
+  const trackerHeader = (system, user, variables) => ({
+    runId: 1, systemPrompt: system, userPrompt: user, model: '', options: '', response: '', run_time: null, prompt_length: null,
+    output_length: null, best_prompt: null, fastest_prompt: null, fewest_tokens_prompt: null, variables,
+  });
+  const trackerAnswer = (model, options) => ({
+    runId: 1, systemPrompt: '', userPrompt: '', model, options, response: 'An answer', run_time: 1.2, prompt_length: 10,
+    output_length: 20, best_prompt: 1, fastest_prompt: true, fewest_tokens_prompt: true,
+  });
+  const openServedTracker = async (rows) => {
+    servedTracker.rows = rows;
+    await goStep('setup');
+    await page.selectOption('#LPB-prompt-dropdown', 'Select an existing Prompt-Test');
+    await page.selectOption('#LPB-prompt-dropdown', 'model-used');
+    await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 1, 'the served run is loaded');
+    await goStep('finalize');
+  };
+  const manifestBox = async () => ((await page.textContent('#app-obj-LPB-pet-save-result')) || '').trim();
+  for (const name of ['options', 'class']) {
+    await openServedTracker([
+      trackerHeader(`Classify: {{${name}}}`, 'Text', [{ name, description: '', type: 'string', value: 'CUSTOMER TEXT' }]),
+      trackerAnswer('demo_llm', '{temperature:0.7,API_KEY:OpenAI}'),
+    ]);
+    await resetLog();
+    await page.click('#app-obj-LPB-pet-create-model-button');
+    await waitUntil(async () => (await manifestBox()).startsWith('Not manifested'), `the manifest of a saved run with the variable ${name} is refused`);
+    const refusal = await manifestBox();
+    assert(refusal.includes(`"${name}"`) && refusal.includes('score code'), `the manifest box names the variable ${name} and says why (got: ${refusal})`);
+    await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-pet-create-model-button')), 'the Manifest button is usable again');
+    const written = (await getLog()).filter((e) => e.method === 'POST' && /def scoreModel\(|filename="inputVar\.json"|filename="outputVar\.json"/.test(e.body));
+    assert(written.length === 0, `no score code and no variable file is uploaded for it (got ${written.length} uploads)`);
+  }
+  // An option value with backslashes, as a string option with quotes in it is
+  // stored, and a model whose name holds a double quote: both are inserted as
+  // literals, so the code compiles and sends the stored text.
+  await openServedTracker([
+    trackerHeader('Classify: {{topic}}', 'Text', [{ name: 'topic', description: '', type: 'string', value: 'CUSTOMER TEXT' }]),
+    trackerAnswer('odd"llm', '{stop:say \\hi\\,temperature:0.7}'),
+  ]);
+  await page.check('#app-obj-LPB-pet-manifest-integrated');
+  await resetLog();
+  await page.click('#app-obj-LPB-pet-create-model-button');
+  await waitUntil(async () => (await getLog()).some((e) => e.method === 'POST' && e.body.includes('def scoreModel(')), 'the score code of the run with the odd option value is uploaded');
+  aLog = await getLog();
+  const oddCode = scoreCodeOf(aLog.find((e) => e.method === 'POST' && e.body.includes('def scoreModel(')).body);
+  assertCompiles(oddCode, 'the score code with a backslash in an option value and a quote in the model name');
+  const oddStored = multipartJson(aLog.find((e) => e.method === 'POST' && e.body.includes('filename="Prompt-Experiment-Tracker.json"')).body).find((r) => r.model === 'odd"llm').options;
+  const oddCall = callScoreModel(oddCode, ['CUSTOMER TEXT'], { data: { response: 'fine', run_time: 1, prompt_length: 2, output_length: 3 } });
+  assert(oddCall.ok, `it runs (${oddCall.ok ? 'scoreModel returned' : lastLine(oddCall.error)})`);
+  const oddInput = (name) => (oddCall.request.body.inputs.find((i) => i.name === name) || {}).value;
+  assert(oddStored.includes('\\') && oddInput('options') === oddStored, `the manifested model sends the options the tracker stores for the run (sent: ${oddInput('options')}, stored: ${oddStored})`);
+  assert(oddInput('systemPrompt') === 'Classify: CUSTOMER TEXT', `and the input where the template has its variable (got: ${oddInput('systemPrompt')})`);
+  assert(oddCall.request.url === `${BASE}/scr/odd"llm/odd"llm`, `the model name reaches the URL as it is stored (got: ${oddCall.request.url})`);
+  await page.uncheck('#app-obj-LPB-pet-manifest-integrated');
+  servedTracker.rows = null;
+  await page.unroute('**/files/files/trk-1/content');
 
   // ============ PHASE B: deletion features (fresh page) ============
   await page.goto(APP_URL);
@@ -1229,6 +1340,57 @@ function assertCompiles(code, label) {
     'the saved flags of the run with the failing first model sit on a model that answered'
   );
 
+  // -- a run in flight and another prompt-test opened meanwhile ------------------
+  // The calls of a run take their time (a slow or dead container is exactly
+  // when someone moves on). Their answers belong to the prompt-test the run
+  // was started on: they must neither take a run from the tracker of the
+  // prompt-test that is open by then, nor be written into it.
+  const slowCalls = '**/scr/**';
+  await page.route(slowCalls, async (route) => {
+    await sleep(4000);
+    await route.continue();
+  });
+  const openPromptDuringRun = async (promptId, runs) => {
+    await page.click('#app-obj-LPB-run-experiment');
+    await goStep('setup');
+    await page.selectOption('#LPB-prompt-dropdown', promptId);
+    await waitUntil(async () => (await page.$$('.pet-run-delete')).length === runs, `the ${runs} saved runs of the other prompt-test are loaded while the calls are out`);
+    await goStep('build');
+    assert(await page.isDisabled('#app-obj-LPB-run-experiment'), 'the run is still in flight when the other prompt-test is open');
+    await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-run-experiment')), 'the Run button is released when the calls have ended', 15000);
+  };
+  // Every model fails, on a prompt-test that is no longer the open one.
+  for (const name of ['demo_llm', 'second_llm', 'contrarian_judge']) await failModel(name, 503);
+  await openPromptDuringRun('model-used', 3);
+  assert((await runErrorLines()).length === 0, `the failures of the run are not reported on the page of another prompt-test (got: ${(await runErrorLines()).join(' | ')})`);
+  assert((await page.textContent('#app-obj-LPB-run-experiment')).trim() === 'Run Experiments', 'the Run button reads Run Experiments again');
+  await failModel();
+  await resetLog();
+  await page.click('#app-obj-LPB-pet-save-button');
+  await waitUntil(
+    async () => (await getLog()).some((e) => e.method === 'POST' && /\/models\/model-used\/contents\?/.test(e.url) && e.body.includes('Prompt-Experiment-Tracker.json')),
+    'the tracker of the open prompt-test is saved'
+  );
+  const keptRows = multipartJson(
+    (await getLog()).find((e) => e.method === 'POST' && /\/models\/model-used\/contents\?/.test(e.url) && e.body.includes('Prompt-Experiment-Tracker.json')).body
+  ).map((r) => `${r.runId}:${r.model}`);
+  assert(
+    JSON.stringify(keptRows) === JSON.stringify(['1:', '1:demo_llm', '2:', '2:demo_llm', '3:', '3:demo_llm', '3:other_llm']),
+    `the failed run of another prompt-test took no run from this one: all three are saved (got: ${keptRows.join(', ')})`
+  );
+  // The models answer, late, for a prompt-test that is no longer the open one.
+  await goStep('setup');
+  await page.selectOption('#LPB-prompt-dropdown', 'model-free');
+  await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 0, 'a prompt-test without saved runs is open');
+  await goStep('build');
+  const errorsBefore = pageErrors.length;
+  await openPromptDuringRun('model-used', 3);
+  await sleep(400);
+  assert(pageErrors.length === errorsBefore, `late answers for another prompt-test raise no error (got: ${pageErrors.slice(errorsBefore).join(' | ')})`);
+  assert((await page.textContent('#app-obj-LPB-run-experiment')).trim() === 'Run Experiments', 'the Run button is not left on Running Experiments');
+  assert((await page.$$('.pet-run-delete')).length === 3, 'and the open prompt-test keeps exactly its three runs');
+  await page.unroute(slowCalls);
+
   // ============ PHASE D: creating a prompt-test (fresh page) ============
   await page.goto(APP_URL);
   await page.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
@@ -1257,6 +1419,57 @@ function assertCompiles(code, label) {
     'the new prompt-test is selected'
   );
   step(true, 'the created prompt-test is listed and selected');
+  // A second prompt-test of the same name: SAS Model Manager refuses it. The
+  // dialog stays open and says so; nothing called "undefined" is listed.
+  await resetLog();
+  await page.click('#LPB-modal-button-container button[data-bs-target="#promptBuilderCreatePromptModal"]');
+  await page.waitForSelector('#promptBuilderCreatePromptModal.show');
+  await page.fill('#promptBuilderCreatePromptName', 'Created Prompt');
+  await page.click('#promptBuilderCreatePromptModal .btn-primary');
+  await waitUntil(
+    async () => (await getLog()).some((e) => e.method === 'POST' && e.url === '/modelRepository/models' && e.status === 409),
+    'the second creation is refused by the service'
+  );
+  await waitUntil(
+    async () => (await page.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).some((t) => t.includes('The prompt-test was not created')),
+    'a toast says that the prompt-test was not created'
+  );
+  step(true, 'a refused creation is reported');
+  await waitUntil(async () => !(await page.isDisabled('#promptBuilderCreatePromptModal .btn-primary')), 'the Create button of the dialog is usable again');
+  assert(await page.isVisible('#promptBuilderCreatePromptModal.show'), 'the dialog stays open after a refusal');
+  const promptsAfterRefusal = await page.$$eval('#LPB-prompt-dropdown option', (els) => els.map((e) => `${e.value}=${e.textContent}`));
+  assert(
+    promptsAfterRefusal.length === 5 && !promptsAfterRefusal.some((entry) => entry.includes('undefined')) && (await page.inputValue('#LPB-prompt-dropdown')) === 'model-new-1',
+    `no prompt-test "undefined" is listed, and the selection is what it was (got: ${promptsAfterRefusal.join(', ')})`
+  );
+  const strayRequests = (await getLog()).filter((e) => e.url.includes('/models/undefined'));
+  assert(strayRequests.length === 0, `no request goes to a model "undefined" (got: ${strayRequests.map((e) => `${e.method} ${e.url}`).join(' | ')})`);
+  await page.click('#promptBuilderCreatePromptModal .btn-secondary');
+  await page.waitForSelector('.modal.show', { state: 'detached' });
+  // The same for a project the service refuses (no permission to write).
+  const projectCreation = '**/modelRepository/projects';
+  await page.route(projectCreation, (route) =>
+    route.request().method() === 'POST'
+      ? route.fulfill({ status: 403, contentType: 'application/json', body: '{"errorCode":1003,"message":"Forbidden","httpStatusCode":403}' })
+      : route.continue()
+  );
+  const projectsBefore = await page.$$eval('#LPB-project-dropdown option', (els) => els.map((e) => e.value).join(','));
+  await page.click('#LPB-modal-button-container button[data-bs-target="#promptBuilderCreateProjectModal"]');
+  await page.waitForSelector('#promptBuilderCreateProjectModal.show');
+  await page.fill('#promptBuilderCreateProjectName', 'Refused Project');
+  await page.click('#promptBuilderCreateProjectModal .btn-primary');
+  await waitUntil(
+    async () => (await page.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).some((t) => t.includes('The project was not created')),
+    'a toast says that the project was not created'
+  );
+  await waitUntil(async () => !(await page.isDisabled('#promptBuilderCreateProjectModal .btn-primary')), 'the Create button of the project dialog is usable again');
+  assert(
+    (await page.isVisible('#promptBuilderCreateProjectModal.show')) && (await page.$$eval('#LPB-project-dropdown option', (els) => els.map((e) => e.value).join(','))) === projectsBefore && (await page.inputValue('#LPB-project-dropdown')) === 'proj-1',
+    'a refused project leaves the dialog open, the project list as it was and the project selected'
+  );
+  await page.unroute(projectCreation);
+  await page.click('#promptBuilderCreateProjectModal .btn-secondary');
+  await page.waitForSelector('.modal.show', { state: 'detached' });
   // After a reload the listing of the project is what brings it back.
   await page.goto(APP_URL);
   await page.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });

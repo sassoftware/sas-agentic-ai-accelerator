@@ -36,15 +36,20 @@ import {
   DECISION_TEMPLATE_ALGORITHM,
   DECISION_TEMPLATE_TAG,
   DEFAULT_DECISION_OUTPUTS,
+  MAX_QUESTION_ID_LENGTH,
   allExpectedMatch,
   buildDecisionManifest,
   createQuestionDesigner,
   describeFailedCall,
   estimateTokens,
   fitCheck,
+  isReservedScoreInput,
+  isReservedScoreOutput,
   parseAnswers,
   pythonFStringBody,
+  pythonString,
   pythonTripleQuotedBody,
+  questionIdProblem,
   questionsFromJson,
   questionsToJson,
   renderAnswers,
@@ -73,6 +78,7 @@ import { attachCombobox } from '../ui/combobox';
 import { createListFilter, renderFilteredOptions } from '../ui/list-filter';
 import { createDocSection, createInfoLabel } from '../ui/doc-section';
 import { createCreateModal } from '../ui/create-modal';
+import { openExternalLink } from '../ui/external-link';
 import { showConfirmModal } from '../ui/confirm-modal';
 import { showToast } from '../ui/toast';
 import { escapeHtml } from '../ui/dom-helpers';
@@ -544,61 +550,20 @@ interface ModalText {
 }
 
 /**
- * Handle a click on the "Open in SAS Model Manager" link. Tries to open a new
- * browser tab; when running inside VA's sandboxed DDC iframe (no 'allow-popups'),
- * window.open is blocked, so we copy the URL to the clipboard and briefly show a
- * hint instead. The link keeps its href, so the browser's own right-click
- * "Open link in new tab" always works regardless.
+ * Handle a click on the "Open in SAS Model Manager" link or on a link to a
+ * decision: a new tab where the browser allows one, the copied link where
+ * VA's sandboxed iframe does not (see openExternalLink).
  */
 function openModelManagerLink(
   event: MouseEvent,
   anchor: HTMLAnchorElement,
   interfaceText: PromptBuilderText
 ): void {
-  event.preventDefault();
-  const url = anchor.href;
-
-  const opened = window.open(url, '_blank', 'noopener,noreferrer');
-  if (opened) return;
-
-  // Popup blocked by the sandbox — copy the link and let the user open it.
-  copyToClipboard(url);
-  const original = anchor.innerHTML;
-  anchor.textContent =
-    (interfaceText?.promptBuilderOpenInMMCopied as string) ??
-    'Link copied — open it in a new tab';
-  window.setTimeout(() => {
-    anchor.innerHTML = original;
-  }, 2500);
-}
-
-/** Copy text to the clipboard, falling back to a hidden-textarea + execCommand. */
-function copyToClipboard(text: string): void {
-  try {
-    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      navigator.clipboard.writeText(text).catch(() => legacyCopyToClipboard(text));
-      return;
-    }
-  } catch {
-    /* fall through to the legacy path */
-  }
-  legacyCopyToClipboard(text);
-}
-
-function legacyCopyToClipboard(text: string): void {
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.style.position = 'fixed';
-  textarea.style.opacity = '0';
-  document.body.appendChild(textarea);
-  textarea.focus();
-  textarea.select();
-  try {
-    document.execCommand('copy');
-  } catch {
-    /* clipboard unavailable — nothing more we can do */
-  }
-  document.body.removeChild(textarea);
+  openExternalLink(
+    event,
+    anchor,
+    (interfaceText?.promptBuilderOpenInMMCopied as string) ?? 'Link copied — open it in a new tab'
+  );
 }
 
 /**
@@ -631,8 +596,9 @@ function parseScrOptionsString(optionsStr: string | null | undefined): Record<st
 export interface PromptBuilderController {
   /**
    * Show the projects, prompt-tests and steps of a kind. Returns false when
-   * the change is refused: while a run or an optimization is in flight (a
-   * toast says so), or for a kind that is switched off. Asking for the kind
+   * the change is refused: while a run, an evaluation over a CAS table or an
+   * optimization is in flight (a toast says so), or for a kind that is
+   * switched off. Asking for the kind
    * that is already shown changes nothing and keeps every selection.
    */
   setKind(kind: PromptKind): boolean;
@@ -795,14 +761,15 @@ export async function buildPromptBuilder(
      *
      * The kind already shown is left exactly as it is - project, prompt-test
      * and tracker included - so coming back to this builder from another part
-     * of the page costs nothing. A change is refused while a run or an
-     * optimization is in flight: it empties the tracker, and the answer that
-     * is still on its way would be written into a run that is no longer there.
+     * of the page costs nothing. A change is refused while a run, an
+     * evaluation over a CAS table or an optimization is in flight: it empties
+     * the tracker and puts the other kind's steps on the page, while the
+     * answers that are still on their way belong to what was there before.
      */
     function setPromptKind(kind: PromptKind): boolean {
       if (kind === promptMode) return true;
       if (kind === 'decision' && !decisionEnabled) return false;
-      if (experimentRunning || optimizeJobActive) {
+      if (experimentRunning || evaluationRunning || optimizeJobActive) {
         showToast(`${promptBuilderInterfaceText?.promptBuilderKindChangeRefused}`);
         return false;
       }
@@ -1239,7 +1206,23 @@ export async function buildPromptBuilder(
         // scans that tag (reporting, the delete checks) still finds it.
         tags: promptMode === 'decision' ? ['Decision', 'Prompt-Engineering', DECISION_PROJECT_TAG] : ['LLM', 'Prompt-Engineering'],
       };
-      const promptBuilderNewProjectObject = await createModelProject(promptBuilderNewProjectDefinition);
+      // A refusal (a name that exists, no permission to write) ends here: the
+      // dialog stays open with its button usable, and nothing is listed.
+      let promptBuilderNewProjectObject: Awaited<ReturnType<typeof createModelProject>>;
+      try {
+        promptBuilderNewProjectObject = await createModelProject(promptBuilderNewProjectDefinition);
+        if (typeof promptBuilderNewProjectObject?.id !== 'string' || promptBuilderNewProjectObject.id === '') {
+          throw new Error('the service answered without a project id');
+        }
+      } catch (error) {
+        console.error('Creating the project failed.', error);
+        showToast(`${promptBuilderInterfaceText?.promptBuilderCreateProjectFailed}`);
+        if (modal) {
+          const btn = (modal.lastChild as HTMLElement)?.lastChild?.lastChild?.lastChild as HTMLButtonElement | null;
+          if (btn) btn.disabled = false;
+        }
+        return;
+      }
       if (promptMode === 'decision') promptBuilderDecisionProjectIds.add(`${promptBuilderNewProjectObject?.id}`);
       promptBuilderAllProjects.push({
         value: `${promptBuilderNewProjectObject?.id}`,
@@ -1286,10 +1269,28 @@ export async function buildPromptBuilder(
         tags: newPromptTags,
         scoreCodeType: 'python',
       };
-      const promptBuilderNewPromptObject = await createModel(promptBuilderNewPromptDefinition);
-      // The service answers with a collection holding the one new model.
-      const newPrompt: Record<string, unknown> = promptBuilderNewPromptObject?.items?.[0] ?? promptBuilderNewPromptObject;
-      const newPromptID = `${newPrompt?.id}`;
+      // A refusal (a name that exists in the project, no permission to write)
+      // ends here: the dialog stays open with its button usable, and nothing
+      // is listed or selected. An answer without an id is treated the same -
+      // going on would list, select and write to a prompt-test "undefined".
+      let newPrompt: Record<string, unknown>;
+      try {
+        const promptBuilderNewPromptObject = await createModel(promptBuilderNewPromptDefinition);
+        // The service answers with a collection holding the one new model.
+        newPrompt = promptBuilderNewPromptObject?.items?.[0] ?? promptBuilderNewPromptObject;
+        if (typeof newPrompt?.id !== 'string' || newPrompt.id === '') {
+          throw new Error('the service answered without a model id');
+        }
+      } catch (error) {
+        console.error('Creating the prompt-test failed.', error);
+        showToast(`${promptBuilderInterfaceText?.promptBuilderCreatePromptFailed}`);
+        if (modal) {
+          const btn = (modal.lastChild as HTMLElement)?.lastChild?.lastChild?.lastChild as HTMLButtonElement | null;
+          if (btn) btn.disabled = false;
+        }
+        return;
+      }
+      const newPromptID = `${newPrompt.id}`;
       // SAS Model Manager drops the tags of a creation request, so they are
       // written again when the answer does not carry them. Best-effort: the
       // tags serve reporting and searching in Model Manager, the kind does
@@ -2104,6 +2105,10 @@ export async function buildPromptBuilder(
         let nameInvalidText = '';
         if (name !== '' && !isValidDS2VariableName(name)) {
           nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderVariablesNameInvalid}`;
+        } else if (name !== '' && isReservedScoreInput(name)) {
+          // A variable becomes an input of the manifested model, and the score
+          // code has names of its own that such an input would run into.
+          nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderVariablesNameReserved}`;
         } else if (name !== '' && seenNames.has(name)) {
           nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderVariablesNameDuplicate}`;
         } else if (name !== '') {
@@ -2118,14 +2123,15 @@ export async function buildPromptBuilder(
     }
 
     // Collect the currently valid variable definitions (rows with an invalid,
-    // empty or duplicate name are highlighted by validation and skipped here).
+    // reserved, empty or duplicate name are highlighted by validation and
+    // skipped here).
     function collectPromptVariables(): PromptVariable[] {
       validatePromptVariableRows();
       const variables: PromptVariable[] = [];
       const seenNames = new Set<string>();
       promptBuilderVariablesContainer.querySelectorAll('.pb-variable-row').forEach((row) => {
         const name = (row.querySelector('.pb-var-name') as HTMLInputElement).value.trim();
-        if (!isValidDS2VariableName(name) || seenNames.has(name)) return;
+        if (!isValidDS2VariableName(name) || isReservedScoreInput(name) || seenNames.has(name)) return;
         seenNames.add(name);
         variables.push({
           name,
@@ -2245,7 +2251,15 @@ export async function buildPromptBuilder(
     };
     // Disabled (with a hint) until at least one LLM is selected - or, for a
     // decision template, one decision model and a complete question.
+    // Set while the calls of a run are out. It blocks what would pull the
+    // tracker from under the run: deleting a run (the run indices would
+    // shift), judging, a change of kind - and a second run, see below.
+    let experimentRunning = false;
     function updateRunExperimentsButtonState(): void {
+      // A run in flight keeps the button as the run left it - disabled, with
+      // its spinner - whatever is selected or opened meanwhile. The run puts
+      // the button back when its calls have ended.
+      if (experimentRunning) return;
       if (promptMode === 'decision') {
         const anyModelSelected = selectedDecisionModels().length > 0;
         const designerReady = decisionDesigner.isValid();
@@ -2553,9 +2567,9 @@ export async function buildPromptBuilder(
     // Set when a run was deleted since the last save/load, so an emptied
     // tracker can still be saved.
     let experimentsModified = false;
-    // Blocks run deletion while an experiment is in flight (the run indices
-    // would shift under the running experiment otherwise).
-    let experimentRunning = false;
+    // Set while the Evaluate step asks the decision models about the rows of
+    // a CAS table: a loop of calls that, like a run, blocks a change of kind.
+    let evaluationRunning = false;
     // One optimization job at a time; the poll handle so a prompt change or a
     // finished job can stop the polling.
     let optimizeJobActive = false;
@@ -2682,12 +2696,29 @@ export async function buildPromptBuilder(
       const promptVariables = collectPromptVariables();
       const resolvedSystemPrompt = substitutePromptVariables(systemPrompt, promptVariables);
       const resolvedUserPrompt = substitutePromptVariables(userPrompt, promptVariables);
-      promptExperimentTracker.push({
+      // The run is kept as an object, not as a position: the tracker it is
+      // pushed into belongs to the prompt-test that is open now, and by the
+      // time the models have answered another one may be open (see below).
+      const runEntry: ExperimentTrackerEntry = {
         systemPrompt: systemPrompt,
         userPrompt: userPrompt,
         variables: promptVariables,
         manifest: collectManifestConfig(),
-      });
+      };
+      promptExperimentTracker.push(runEntry);
+      const restoreRunButton = (): void => {
+        experimentRunning = false;
+        promptBuilderRunExperimentTargetButton.disabled = false;
+        promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
+        // What is selected may have changed while the calls were out.
+        updateRunExperimentsButtonState();
+      };
+      // Whether the tracker still holds this run. Opening another project or
+      // prompt-test, or deleting this one, replaces the tracker while the
+      // calls are out; their answers then belong to nothing on the page and
+      // are dropped - no result, no error text and nothing taken from the
+      // runs of the prompt-test that is open by then.
+      const runIsCurrent = (): boolean => promptExperimentTracker.includes(runEntry);
 
       const allPromises: Promise<ExperimentResult>[] = [];
 
@@ -2708,6 +2739,10 @@ export async function buildPromptBuilder(
       }
 
       const results = await Promise.all(allPromises);
+      if (!runIsCurrent()) {
+        restoreRunButton();
+        return;
+      }
       // A model whose call failed is named with its error and leaves no entry
       // in the run; the models that answered keep their results, so one
       // container that is down does not cost the whole run.
@@ -2718,24 +2753,23 @@ export async function buildPromptBuilder(
           .map((result) => describeFailedCall(result.modelName, result.data?.error, promptBuilderInterfaceText))
           .join('\n');
       }
-      const restoreRunButton = (): void => {
-        promptBuilderRunExperimentTargetButton.disabled = false;
-        promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
-        experimentRunning = false;
-      };
       if (answered.length === 0) {
         // No model answered: the run pushed above would render empty and be
         // saved empty, so it is taken back and nothing is rendered or judged.
-        promptExperimentTracker.pop();
+        promptExperimentTracker.splice(promptExperimentTracker.indexOf(runEntry), 1);
         restoreRunButton();
         return;
       }
       // Load the (cached) cost attributes of just the models that answered, so
       // cost + cheapest can be computed. Guarded internally — never blocks a run.
       await Promise.all(answered.map((result) => ensureLLMCostAttributes(result.modelName)));
+      if (!runIsCurrent()) {
+        restoreRunButton();
+        return;
+      }
       // Identify fastest prompt and fewest tokens used prompt among the answers
       annotatePrompts(answered);
-      const trackerEntry = promptExperimentTracker[promptExperimentTrackerRunID] as Record<string, unknown>;
+      const trackerEntry = runEntry as Record<string, unknown>;
       for (const { modelName, data, options } of answered) {
         trackerEntry[`${modelName}`] = {
           best_prompt: null,
@@ -2780,9 +2814,11 @@ export async function buildPromptBuilder(
     async function promptBuilderRunDecisionExperiment(): Promise<void> {
       const runButton = promptBuilderRunExperimentsButton;
       const restore = (): void => {
+        experimentRunning = false;
         runButton.disabled = false;
         runButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
-        experimentRunning = false;
+        // What is selected may have changed while the calls were out.
+        updateRunExperimentsButtonState();
       };
       runButton.disabled = true;
       runButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText.promptBuilderRunExperimentsButtonRunStatus}`;
@@ -2819,14 +2855,18 @@ export async function buildPromptBuilder(
       // The tracker keeps the question map as the run's system prompt and the
       // state template as its user prompt, so the persisted rows, the SAS table
       // and the loaders keep their shape.
-      promptExperimentTracker.push({
+      // Kept as an object and looked for again after every wait, as in an LLM
+      // run: the tracker may be that of another prompt-test by then.
+      const runEntry: ExperimentTrackerEntry = {
         systemPrompt: questionsJson,
         userPrompt: stateTemplate,
         variables: promptVariables,
         manifest: collectManifestConfig(),
         mode: 'decision',
         expected,
-      });
+      };
+      promptExperimentTracker.push(runEntry);
+      const runIsCurrent = (): boolean => promptExperimentTracker.includes(runEntry);
       const results = await Promise.all(
         models.map((model) => {
           const options = decisionCallOptions(model);
@@ -2840,6 +2880,10 @@ export async function buildPromptBuilder(
           ).then((data) => ({ modelName: model.name, data: data as Record<string, unknown>, options }));
         })
       );
+      if (!runIsCurrent()) {
+        restore();
+        return;
+      }
       // As in an LLM run, a model whose call failed is named with its error
       // and leaves no entry; its line joins the one naming the skipped models.
       const answered = results.filter((result) => !result.data?.error);
@@ -2853,12 +2897,16 @@ export async function buildPromptBuilder(
       if (answered.length === 0) {
         // No model answered: the run pushed above is taken back instead of
         // being rendered, and saved, empty.
-        promptExperimentTracker.pop();
+        promptExperimentTracker.splice(promptExperimentTracker.indexOf(runEntry), 1);
         restore();
         return;
       }
       await Promise.all(answered.map((result) => ensureLLMCostAttributes(result.modelName)));
-      const trackerEntry = promptExperimentTracker[promptExperimentTrackerRunID] as Record<string, unknown>;
+      if (!runIsCurrent()) {
+        restore();
+        return;
+      }
+      const trackerEntry = runEntry as Record<string, unknown>;
       // Fastest and cheapest among the answers; there are no output tokens to count.
       const runTimes = answered.map((result) => Number(result.data?.run_time));
       const fastestIndex = runTimes.reduce<number>(
@@ -4337,7 +4385,7 @@ export async function buildPromptBuilder(
         let nameInvalidText = '';
         if (name !== '' && !isValidDS2VariableName(name)) {
           nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderVariablesNameInvalid}`;
-        } else if (name !== '' && RESERVED_OUTPUT_NAMES.includes(name)) {
+        } else if (name !== '' && (RESERVED_OUTPUT_NAMES.includes(name) || isReservedScoreOutput(name))) {
           nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderOutputVariablesNameReserved}`;
         } else if (name !== '' && seenNames.has(name)) {
           nameInvalidText = `${promptBuilderInterfaceText?.promptBuilderVariablesNameDuplicate}`;
@@ -4416,7 +4464,7 @@ export async function buildPromptBuilder(
       const seenNames = new Set<string>();
       promptBuilderOutputVariablesContainer.querySelectorAll('.pb-outvar-row').forEach((row) => {
         const name = (row.querySelector('.pb-outvar-name') as HTMLInputElement).value.trim();
-        if (!isValidDS2VariableName(name) || RESERVED_OUTPUT_NAMES.includes(name) || seenNames.has(name)) return;
+        if (!isValidDS2VariableName(name) || RESERVED_OUTPUT_NAMES.includes(name) || isReservedScoreOutput(name) || seenNames.has(name)) return;
         seenNames.add(name);
         outputVariables.push({
           name,
@@ -4600,6 +4648,23 @@ export async function buildPromptBuilder(
             });
           }
         }
+        // The inputs come from the saved run, which may be older than the
+        // name check of the variables manager. An input named like a Python
+        // keyword or like a name the score code uses itself would be manifested
+        // into code that does not compile, or that sends something else than
+        // the input: it is refused here, by name, before anything is written.
+        const refusedInput = promptInputs.find((input) => isReservedScoreInput(input.name));
+        if (refusedInput) {
+          if (promptExperimentResultTargetContainer) {
+            promptExperimentResultTargetContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestVariableName}`.replace(
+              '{name}',
+              refusedInput.name
+            );
+          }
+          promptExperimentCreateModelTargetButton.disabled = false;
+          promptExperimentCreateModelTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
+          return;
+        }
         // Check if the options contains an API-Key
         let requiresAPIKey = false;
         const bestPromptOptionsList = (bestPromptItem as PETRow).options
@@ -4648,14 +4713,12 @@ export async function buildPromptBuilder(
         const scoreCodeUserPromptLiteral = runVariables
           ? `f"""${pythonFStringBody(basePrompt!.userPrompt, referencedVariableNames)}"""`
           : `f"${scoreCodeUserPrompt}"`;
-        // Create the options string for the score code
-        let scoreCodeOptions = '';
-        for (let i = 0; i < bestPromptOptionsList.length; i++) {
-          if (i !== 0) {
-            scoreCodeOptions += ',';
-          }
-          scoreCodeOptions += bestPromptOptionsList[i];
-        }
+        // Create the options string for the score code: the stored text as
+        // the body of an f"""...""" literal, escaped like the prompts, so a
+        // backslash or a quote in an option value neither ends the literal nor
+        // becomes an escape sequence. The key is appended after the escaping,
+        // as the one placeholder of the string.
+        let scoreCodeOptions = pythonFStringBody(bestPromptOptionsList.join(','), []);
         if (requiresAPIKey) {
           scoreCodeOptions += scoreCodeOptions.length > 0 ? ',API_KEY:{API_KEY}' : 'API_KEY:{API_KEY}';
         }
@@ -4843,34 +4906,33 @@ ${parseOutputs ? parsingBlock : ''}        else:
         response = f"LLM call failed: {error}"
     return ${scoreCodeOutputList}`
           : `    return llmBody, llmURL`;
-        // With the integrated call the request body is built with json.dumps,
-        // which escapes the prompt texts and runtime input values correctly.
-        // The Call LLM node path keeps the legacy manual escaping that the
-        // node applies when it embeds llmBody into its own request.
-        const scoreCodeBodyBlock = integratedLLMCall
-          ? `    # This is the system prompt that was selected as the best one by the prompt engineer
+        // The request body is built with json.dumps in both variants, which
+        // escapes the prompt texts and the runtime input values correctly. The
+        // Call LLM node posts llmBody as it is, so the body has to be valid
+        // JSON by itself - with a backslash, a tab or an apostrophe in a
+        // prompt as much as without. ensure_ascii=False keeps that body the
+        // UTF-8 text the node has always posted, instead of growing every
+        // character outside ASCII into a six-character escape against the
+        // length of the llmBody output.
+        const scoreCodeBodyBlock = `    # This is the system prompt that was selected as the best one by the prompt engineer
     systemPrompt = ${scoreCodeSystemPromptLiteral}
     # Here the user prompt will be created from the inputs of the call
     userPrompt = ${scoreCodeUserPromptLiteral}
     # The request body for the LLM container in the SCR input format
-    llmBody = json.dumps({"inputs": [{"name": "systemPrompt", "value": systemPrompt}, {"name": "userPrompt", "value": userPrompt}, {"name": "options", "value": options}]})`
-          : `    # This is the system prompt that was selected as the best one by the prompt engineer
-    systemPrompt = ${scoreCodeSystemPromptLiteral}.replace('\\n', "\\\\n").replace("'", '"').replace('"', '\\\\"')
-    # Here the user prompt will be created from the inputs of the call
-    userPrompt = ${scoreCodeUserPromptLiteral}.replace('\\n', "\\\\n").replace("'", '"').replace('"', '\\\\"')
-    llmBody = '{"inputs":[{"name":"systemPrompt","value":"' + systemPrompt + '"},{"name":"userPrompt","value":"' + userPrompt + '"},{"name":"options","value":"' + options + '"}]}'`;
+    llmBody = json.dumps({"inputs": [{"name": "systemPrompt", "value": systemPrompt}, {"name": "userPrompt", "value": userPrompt}, {"name": "options", "value": options}]}${integratedLLMCall ? '' : ', ensure_ascii=False'})`;
         const scoreCode = `import os
-${integratedLLMCall ? 'import requests\nimport json\n' : ''}
+${integratedLLMCall ? 'import requests\n' : ''}import json
+
 def scoreModel(${scoreCodeInput}):
     "Output: ${scoreCodeOutputList}"
     # The llm and the target endpoint
-    llm = "${(bestPromptItem as PETRow).model}"
+    llm = ${pythonString((bestPromptItem as PETRow).model)}
     # Retrieves the endpoint where the LLM containers are hosted - e.g. https://example.com/llm
     # If an environment variable called LLMCONTAINERPATH is set, it will use that instead of the one stored in the prompt builder object
-    endpoint = os.getenv("LLMCONTAINERPATH", "${promptBuilderObject?.SCREndpoint}")
+    endpoint = os.getenv("LLMCONTAINERPATH", ${pythonString(String(promptBuilderObject?.SCREndpoint ?? ''))})
     llmURL = f"""${llmEndpoint}"""
     # These are the options that were set for the best prompt
-    options = f"{{${scoreCodeOptions}}}"
+    options = f"""{{${scoreCodeOptions}}}"""
 ${scoreCodeBodyBlock}
 ${scoreCodeReturn}`;
         const mainfestPromptScoreCodeBlob = new Blob([scoreCode], { type: 'text/x-python' });
@@ -5008,6 +5070,31 @@ ${scoreCodeReturn}`;
       const referencedVariables = runVariables.filter((variable) =>
         new RegExp(`\\{\\{\\s*${variable.name}\\s*\\}\\}`).test(stateTemplate)
       );
+      // The questions and the variables come from the saved run, which may be
+      // older than the name checks of the designer and of the variables
+      // manager (a template saved by an earlier release). The checks are made
+      // again here, because the code is generated from the run: a name they
+      // refuse would be manifested into code that does not compile or that
+      // returns an output twice.
+      const refusedVariable = referencedVariables.find((variable) => isReservedScoreInput(variable.name));
+      if (refusedVariable) {
+        promptExperimentResultContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestVariableName}`.replace(
+          '{name}',
+          refusedVariable.name
+        );
+        restore();
+        return;
+      }
+      const stateVariableNames = referencedVariables.map((variable) => variable.name);
+      for (const question of questions) {
+        const problem = questionIdProblem(question, questions, stateVariableNames);
+        if (problem === null) continue;
+        promptExperimentResultContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderDecisionManifestQuestionName}`
+          .replace('{name}', question.id)
+          .replace('{reason}', `${promptBuilderInterfaceText?.[problem]}`.replace('{max}', String(MAX_QUESTION_ID_LENGTH)));
+        restore();
+        return;
+      }
       // The options of the winning run, the key entry replaced by an input.
       let requiresAPIKey = false;
       const optionParts = chosen.options
@@ -7268,6 +7355,9 @@ ${scoreCodeReturn}`;
             return;
           }
           const maxRows = Math.max(1, Math.min(1000, Number(evaluationMaxRows.value) || 100));
+          // From here on calls are in flight until the last model has answered
+          // its last row.
+          evaluationRunning = true;
           const table = await getCasTableRows(evaluationLibSelect.value, evaluationTableSelect.value, evaluationServerSelect.value, maxRows);
           const columnIndex = (name: string): number => table.columns.findIndex((column) => column.toLowerCase() === name.toLowerCase());
           const variables = collectPromptVariables();
@@ -7339,6 +7429,7 @@ ${scoreCodeReturn}`;
           console.error('The evaluation failed.', error);
           evaluationStatus.innerText = String(error);
         } finally {
+          evaluationRunning = false;
           evaluationButton.disabled = false;
         }
       };
