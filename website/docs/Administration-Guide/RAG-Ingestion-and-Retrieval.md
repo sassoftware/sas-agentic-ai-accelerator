@@ -78,8 +78,8 @@ Builder as described in
    pane. The release table `Public.ACCELERATOR_RELEASES` has to be assigned to
    the object, as for every use of it — see
    [step 5](./Setup-Additional-UIs.md#5-add-the-object-to-a-visual-analytics-report).
-3. Set **Enable RAG setups** to *Enabled*. The options that start with `RAG:`
-   appear below the switch.
+3. Tick **Enable RAG setups**. The options that start with `RAG:` appear
+   below the checkbox.
 4. Fill them in: the **embedding model project**, the content root, the CAS
    server, the **ingestion compute context**, a checkbox per vector database
    the deployment offers, and the operational policy (TLS, deleted-document
@@ -92,7 +92,7 @@ Builder as described in
 
 The Setup card of the Prompt Builder then offers *RAG setup for a document
 collection* beside the template kinds, and choosing it shows the Builder's own
-four steps. While the switch is *Disabled* — the default — the kind is not
+four steps. While the switch is not ticked — the default — the kind is not
 offered, nothing of the Builder is loaded and nothing RAG is requested from
 SAS Viya. With it enabled, the first request for RAG is made when a user
 chooses the kind.
@@ -614,7 +614,7 @@ PostgreSQL, on/off for SingleStore) and defaults to enabled.
 | The Builder says the store is unresolved | The domain has no `<BACKEND>_HOST` / `_DB` — rerun `create-credential-domain` after adding them to your `.env` |
 | No embedding model can be chosen, and no setup can be saved | No **embedding model project** is configured (`embeddingProjectID`), it holds no registered embedding model, or the user cannot read it |
 | Documents are missing from the collection | Read the run log's `rag skipped:` lines — they name every document and why. Code files are skipped unless the setup opts in |
-| The Setup card does not offer the RAG setup | **Enable RAG setups** is *Disabled* in the Options pane of the Prompt Builder object (the default, and what a report import without saved options leaves), or the repository ID is blank |
+| The Setup card does not offer the RAG setup | **Enable RAG setups** is not ticked in the Options pane of the Prompt Builder object (the default, and what a report import without saved options leaves), or the repository ID is blank |
 | The RAG setup card is shown but cannot be chosen | The credential domain option is `none` — RAG needs a domain |
 | *Launch ingestion* or *Test retrieval* names a missing compute context | `ragComputeContext` is blank. The optimization `computeContext` is a different option |
 | A setup shows its vector database as *not offered for new setups* | The deployment withholds that database in the Options pane. The setup keeps it and can still be saved, launched and tested |

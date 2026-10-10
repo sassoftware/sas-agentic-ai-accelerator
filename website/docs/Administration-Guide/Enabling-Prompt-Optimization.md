@@ -6,7 +6,7 @@ sidebar_position: 11.5
 
 This step is optional. With it, the LLM Prompt Builder gains an **Optimize** section that improves a prompt automatically with [DSPy](https://dspy.ai): a SAS Job Execution job rewrites nothing by hand — it uses the experiment runs the prompt engineer marked as **Best Response** (or a governed CAS table) as training data, runs an optimizer (bootstrap few-shot; MIPROv2, which also rewrites the instruction; or GEPA, which evolves it from natural-language feedback) against a metric (exact match, token-overlap F1 or an LLM judge), and records the result **on the prompt itself** for the user to review, judge and accept. Nothing is ever applied automatically.
 
-The feature is off by default. It is switched on with **Enable prompt optimization (DSPy)** (`enableOptimization`), one of the three switches among the options of the Prompt Builder object — the other two, for decision templates and for RAG setups, are independent of it. While the switch is *Disabled* the Optimize step is not shown and nothing is requested for it. Enabling it takes four steps:
+The feature is off by default. It is switched on with **Enable prompt optimization (DSPy)** (`enableOptimization`), one of the three switches among the options of the Prompt Builder object — the other two, for decision templates and for RAG setups, are independent of it. The switch is a checkbox; while it is not ticked the Optimize step is not shown and nothing is requested for it. Enabling it takes four steps:
 
 1. [Prepare a compute context whose Python has `dspy`](#1-prepare-the-compute-context) — the key prerequisite.
 2. [Import the optimize job definition](#2-import-the-optimize-job).
@@ -65,15 +65,15 @@ In the Visual Analytics report, select the Prompt Builder object and open its **
 
 | Option | Value |
 | --- | --- |
-| **Enable prompt optimization (DSPy)** | *Enabled* — a dropdown with *Enabled* and *Disabled*. Enabling it reveals the three `Optimization:` options directly below it and the in-app Optimize step |
+| **Enable prompt optimization (DSPy)** | Ticked — it is a checkbox. Ticking it reveals the three `Optimization:` options directly below it and the in-app Optimize step |
 | **Optimization: compute context** | The compute context from step 1 |
 | **Optimization: job path** | The job's Content path from step 2, e.g. `/Public/Jobs/Optimize-Prompt-DSPy` |
 | **Optimization: minimum samples** | Minimum Best-Response runs required before a run is allowed. Default `30`; the panel warns below 50 |
 | **Credential domain** | The domain from step 3, among the shared options at the top of the pane. Defaults to `agentic-ai-keys`; enter `none` when only key-less models are used (RAG setups cannot be used with `none`) |
 
-The three `Optimization:` options are not shown while the switch is *Disabled*: Visual Analytics reloads the object when the switch changes, and the options appear with the reload. The compute context set here is the optimization job's only — a deployment that also builds RAG setups sets the ingestion context separately, as **RAG: ingestion compute context** (see [Deploying the Builder UIs](./Setup-Additional-UIs.md#configuration-properties-panel)).
+The three `Optimization:` options are not shown while the checkbox is not ticked: Visual Analytics reloads the object when the switch changes, and the options appear with the reload. Up to release 2.2 the switch was a dropdown with *Enabled* and *Disabled*, and Visual Analytics showed *Disabled* in it after every reload, whatever was stored. A report saved then keeps its setting: where optimization was enabled, the checkbox is ticked. The compute context set here is the optimization job's only — a deployment that also builds RAG setups sets the ingestion context separately, as **RAG: ingestion compute context** (see [Deploying the Builder UIs](./Setup-Additional-UIs.md#configuration-properties-panel)).
 
-The same values can be supplied as URL parameters (`enableOptimization=true&computeContext=...&optimizeJobProgram=...`) when the Builder is used outside Visual Analytics. The switch reads `true`, `1`, `yes` or `on` as enabled; a missing or unreadable value leaves it off.
+The same values can be supplied as URL parameters (`enableOptimization=true&computeContext=...&optimizeJobProgram=...`) when the Builder is used outside Visual Analytics. The switch reads `true` (what Visual Analytics writes for a ticked checkbox), `1`, `yes` or `on` as enabled; a missing or unreadable value leaves it off.
 
 ## What a run produces
 
@@ -92,7 +92,7 @@ Everything stays **on the prompt-test itself**, next to its `Prompt-Experiment-T
 | Job fails: *"MIPROv2 … needs the optuna package"* | dspy's MIPROv2 requires the optional `optuna` package — install it in the context's Python (see step 1) or use the bootstrap optimizer. |
 | Job fails: *"needs an API key for provider …"* | The credential domain has no entry for that provider for the launching user or their groups — see step 3 and [Managing Credentials](./Managing-Credentials.md). |
 | Launch blocked: *"The CAS table … was not found"* / *"lacks required columns"* | The dataset table isn't loaded/promoted in that caslib, or its columns don't match the prompt's variables + `response` — rebuild it with `Create-Optimization-Dataset.sas`. |
-| The flow has no **Optimize** step | **Enable prompt optimization (DSPy)** is *Disabled* in the Options pane — the default, and what a report import without saved options leaves behind. For a decision template the step is **Evaluate** by design. |
+| The flow has no **Optimize** step | **Enable prompt optimization (DSPy)** is not ticked in the Options pane — the default, and what a report import without saved options leaves behind. For a decision template the step is **Evaluate** by design. |
 | Optimize button disabled: *"not fully configured"* | **Optimization: compute context** (`computeContext`) or **Optimization: job path** (`optimizeJobProgram`) is blank in the Options pane. |
 | Optimize button disabled: *"At least N runs …"* | The prompt has fewer Best-Response runs than the minimum — run and mark more experiments. |
 | Launch fails: *"is not a Job Execution job definition"* | `optimizeJobProgram` doesn't point at the imported job's Content path — see step 2. |

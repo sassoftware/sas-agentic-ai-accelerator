@@ -104,19 +104,27 @@ in the URL or report definition**:
 | `modelCardReportURI` | Model card report URI | Optional report (`/reports/reports/<uuid>`) embedded on the model card of a manifested prompt. |
 | `credentialDomain` | Credential domain | SAS Viya credential domain (default `agentic-ai-keys`). `none` disables the lookup for prompt and decision templates; RAG cannot be used with `none`. See below. |
 
-**The three switches** (always shown; dropdowns with *Enabled* / *Disabled*,
-stored as `true` / `false`):
+**The three switches** (always shown; checkboxes, stored and mirrored into the
+URL as `true` / `false`):
 
 | Option / URL parameter | Label in the panel | Default | Off means |
 |---|---|---|---|
-| `enableDecision` | Enable decision templates | Enabled | The decision kind is not offered, no decision model is requested, the Evaluate step is not built. Existing decision projects and templates stay untouched in SAS Model Manager and are not listed. |
-| `enableOptimization` | Enable prompt optimization (DSPy) | Disabled | No Optimize step. |
-| `enableRag` | Enable RAG setups | Disabled | The RAG kind is not offered and nothing of the RAG Builder is built or requested. |
+| `enableDecision` | Enable decision templates | Ticked | The decision kind is not offered, no decision model is requested, the Evaluate step is not built. Existing decision projects and templates stay untouched in SAS Model Manager and are not listed. |
+| `enableOptimization` | Enable prompt optimization (DSPy) | Not ticked | No Optimize step. |
+| `enableRag` | Enable RAG setups | Not ticked | The RAG kind is not offered and nothing of the RAG Builder is built or requested. |
 
 A switch is read strictly: `true`, `1`, `yes`, `on` switch it on, `false`,
 `0`, `no`, `off` switch it off (any case), and anything else — absent, blank,
 a typo — is its default. A report saved before a switch existed therefore keeps
 behaving as it did.
+
+The switches are `Boolean` options and not dropdowns with the keys `true` and
+`false`, which is what `enableOptimization` was up to 2.2: VA does not restore
+such a dropdown. After every reload of the object the panel showed its first
+entry (*Disabled*) whatever the report stored, while the URL carried the stored
+value. A checkbox shows the stored state, and a `true` that the old dropdown
+stored shows as ticked. No dropdown of the options group may use the words
+`true` / `false` as keys; `verify-options.js` checks that.
 
 The options of a switch join the panel only while it is on, directly below it,
 their labels prefixed with its name:

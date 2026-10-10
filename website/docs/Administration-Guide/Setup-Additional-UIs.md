@@ -126,7 +126,7 @@ Points worth knowing:
 
 - **The report is matched by name** (`Prompt Builder`). If you have renamed the report in your deployment, rename it in the file to match, or the restore skips it.
 - **An option the report does not have is reported, not inserted.** That usually means the option was renamed or removed in the newer version of the app — worth reading the message rather than ignoring it. It is also why the shipped report already holds every option, including the ones that only show while a switch is on.
-- **A switch is saved as the word `true` or `false`**, which is what the dropdown in the Options pane stores.
+- **A switch is saved as the word `true` or `false`**, which is what its checkbox in the Options pane stores. A file saved with 2.2.x holds the same two words for `enableOptimization`, so it restores unchanged.
 - **API keys are deliberately not saved.** This file is meant to be kept with deployment paperwork and reviewed in a diff, which is no place for a provider key. The Prompt Builder reads its keys from the credential domain at run time — see [Managing Credentials](./Managing-Credentials.md).
 - **The file records which deployment it came from.** Restoring it against a different SAS Viya URL still works — moving configuration between environments is a legitimate thing to do — but the command says so first, because doing it by accident is exactly the failure this guards against.
 - **Concurrent edits fail loudly.** The write is conditional on the report being unchanged since it was read, so a colleague editing the report in Visual Analytics at that moment causes an error rather than silently losing their work.
@@ -252,15 +252,17 @@ The five environment-specific values are exactly those captured in your `llm-pro
 | Model card report URI | `modelCardReportURI` | *blank* | Optional. A SAS Visual Analytics report path (`/reports/reports/<uuid>`). When set, manifesting the best prompt embeds that report on its model card as the custom chart, hosted from the *SAS Viya host* above. Leave blank to omit. |
 | Credential domain | `credentialDomain` | `agentic-ai-keys` | Credential domain that provider API keys and, for RAG, the vector-store credentials resolve from (see step 3). Enter `none` when only key-less self-hosted models are used: no credential is then looked up for prompt and decision templates. **RAG needs a domain** — with `none` its card is shown disabled with that reason. |
 
-**The three switches** — always shown, each a dropdown with *Enabled* and *Disabled*:
+**The three switches** — always shown, each a checkbox:
 
-| Properties-panel field | URL parameter | Default | Enabled | Disabled |
+| Properties-panel field | URL parameter | Default | Ticked | Not ticked |
 |---|---|---|---|---|
-| Enable decision templates | `enableDecision` | *Enabled* | The Setup card offers decision templates for decision models, with the question designer, the **Evaluate** step and the typed manifest. | The kind is not offered and nothing is shown for it. The *Decision Model Project* is not looked up and no decision model is called. Existing decision projects and templates are not listed; they stay untouched in SAS Model Manager. |
-| Enable prompt optimization (DSPy) | `enableOptimization` | *Disabled* | Prompt templates gain the **Optimize** step, and the three `Optimization:` options below appear. See [Enabling Prompt Optimization](./Enabling-Prompt-Optimization.md). | No Optimize step, and no request to SAS Job Execution or to the folder of the optimize job. |
-| Enable RAG setups | `enableRag` | *Disabled* | The Setup card offers the RAG setup, and the `RAG:` options below appear. Nothing is requested for RAG until a user chooses that kind — the RAG Builder is loaded on first use. | The kind is not offered; nothing of the RAG Builder is loaded and no RAG project, embedding project, CAS library or content folder is requested. Stored RAG setups stay untouched. |
+| Enable decision templates | `enableDecision` | ticked | The Setup card offers decision templates for decision models, with the question designer, the **Evaluate** step and the typed manifest. | The kind is not offered and nothing is shown for it. The *Decision Model Project* is not looked up and no decision model is called. Existing decision projects and templates are not listed; they stay untouched in SAS Model Manager. |
+| Enable prompt optimization (DSPy) | `enableOptimization` | not ticked | Prompt templates gain the **Optimize** step, and the three `Optimization:` options below appear. See [Enabling Prompt Optimization](./Enabling-Prompt-Optimization.md). | No Optimize step, and no request to SAS Job Execution or to the folder of the optimize job. |
+| Enable RAG setups | `enableRag` | not ticked | The Setup card offers the RAG setup, and the `RAG:` options below appear. Nothing is requested for RAG until a user chooses that kind — the RAG Builder is loaded on first use. | The kind is not offered; nothing of the RAG Builder is loaded and no RAG project, embedding project, CAS library or content folder is requested. Stored RAG setups stay untouched. |
 
 A switch that is off costs nothing at run time, which is the point of having it: a site that does not publish decision models, or has no vector store, should neither show the kind nor make requests that can only fail. With one kind left, the question *What are you building?* is not shown at all.
+
+The report stores a switch as the word `true` or `false`. Up to release 2.2 **Enable prompt optimization (DSPy)** was a dropdown with *Enabled* and *Disabled* that stored the same two words, so a report saved then keeps its setting: a stored `true` shows as a ticked checkbox.
 
 **Only while prompt optimization is enabled:**
 
@@ -293,7 +295,7 @@ A switch that is off costs nothing at run time, which is the point of having it:
 :::
 
 :::info
-Until the object is configured it shows a **"Configuration required"** message and does not call SAS Viya, so it never fails against placeholder IDs. The message names what is missing for each side, and completing either is enough for the page to load: prompt and decision templates need the repository ID, the LLM project ID and the SCR endpoint; RAG setups need the repository ID, **Enable RAG setups** set to *Enabled* and a credential domain other than `none`. A site with no LLM project therefore gets the RAG Builder alone.
+Until the object is configured it shows a **"Configuration required"** message and does not call SAS Viya, so it never fails against placeholder IDs. The message names what is missing for each side, and completing either is enough for the page to load: prompt and decision templates need the repository ID, the LLM project ID and the SCR endpoint; RAG setups need the repository ID, **Enable RAG setups** ticked and a credential domain other than `none`. A site with no LLM project therefore gets the RAG Builder alone.
 
-Every field can also be appended to the object's URL by hand using its **URL parameter** name above (for example `&judgeModel=...&modelCardReportURI=/reports/reports/<uuid>`), which is a reliable fallback if your Visual Analytics version does not render the options panel. A switch reads `true`, `1`, `yes` or `on` as enabled and `false`, `0`, `no` or `off` as disabled; anything else, and a blank or missing value, is its default.
+Every field can also be appended to the object's URL by hand using its **URL parameter** name above (for example `&judgeModel=...&modelCardReportURI=/reports/reports/<uuid>`), which is a reliable fallback if your Visual Analytics version does not render the options panel. For a switch, Visual Analytics writes `true` for a ticked checkbox and `false` for one that is not; in a URL written by hand a switch also reads `1`, `yes` or `on` as on and `0`, `no` or `off` as off. Anything else, and a blank or missing value, is its default.
 :::
