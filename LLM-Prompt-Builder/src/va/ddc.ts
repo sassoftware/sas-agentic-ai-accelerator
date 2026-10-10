@@ -241,7 +241,7 @@ function buildOptionsConfig(config: RuntimeConfig): Record<string, unknown> {
               'embeddingProjectID',
               'RAG: embedding model project ID',
               rb.embeddingProjectID,
-              'SAS Model Manager project holding the registered embedding models. The Builder lists that project instead of asking users to type a model name - a name with no container behind it fails at the first embed call, long after the crawl and chunking have run. Leave blank only if you have no such project; the Builder then falls back to free text.'
+              'SAS Model Manager project holding the registered embedding models. The Builder lists that project instead of asking users to type a model name - a name with no container behind it fails at the first embed call, long after the crawl and chunking have run. Required for RAG: without it no embedding model can be chosen and no setup can be saved.'
             ),
             textField(
               'contentRoot',

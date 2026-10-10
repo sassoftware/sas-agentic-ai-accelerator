@@ -686,6 +686,8 @@ a[role='button'] {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* Beside a text field in a flex row the circle would be squeezed to a sliver. */
+  flex-shrink: 0;
 }
 .pb-help {
   display: block;

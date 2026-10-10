@@ -140,7 +140,8 @@ const RAG_DEFAULTS: RagBuilderConfig = {
   // the app never calls SAS Viya with someone else's IDs (see isRagConfigured).
   modelRepositoryID: '',
   // Model Manager project holding the registered embedding models. Blank =
-  // the Builder cannot list them and falls back to a free-text model name.
+  // the Builder cannot list them, and without an embedding model to choose no
+  // setup can be saved (the page says so on the Embedding card).
   embeddingProjectID: '',
   // Blank = <viyaHost>/llm at runtime.
   SCREndpoint: '',

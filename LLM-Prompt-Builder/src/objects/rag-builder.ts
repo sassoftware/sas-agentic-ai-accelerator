@@ -839,10 +839,10 @@ export async function buildRagBuilder(
     sasserver: str('ragBuilderSourceKindServer', 'Compute server file system'),
     sascontent: str('ragBuilderSourceKindContent', 'SAS Content'),
   });
-  labeled(documentsRow, idOf('source-kind'), str('ragBuilderSourceKindLabel', 'Document location:'), sourceKindField, 'col-md-4',
+  labeled(documentsRow, idOf('source-kind'), str('ragBuilderSourceKindLabel', 'Document location:'), sourceKindField, 'col-md-5',
     str('ragBuilderSourceKindInfo', 'Where the corpus lives. The compute server file system is a path on the SAS Compute server (not your workstation) and suits large corpora already staged on disk. SAS Content is the governed folder tree you see in SAS Drive, read over the Files API - convenient, permission-aware, and slower per document.'), true);
   const sourcePathField = textInput('', '/data/documents');
-  labeled(documentsRow, idOf('source-path'), str('ragBuilderSourcePathLabel', 'Document folder:'), sourcePathField, 'col-md-8',
+  labeled(documentsRow, idOf('source-path'), str('ragBuilderSourcePathLabel', 'Document folder:'), sourcePathField, 'col-md-7',
     str('ragBuilderSourcePathInfo', 'The folder to crawl, walked recursively, with every readable file treated as a candidate document. A path the ingestion cannot see yields a run that finds nothing rather than one that fails loudly, so check it against the location type on the left.'), true);
   const sourcePlaceholder = (): void => {
     sourcePathField.placeholder =
@@ -851,14 +851,14 @@ export async function buildRagBuilder(
   sourceKindField.addEventListener('change', sourcePlaceholder);
   sourcePlaceholder();
   const extractorField = selectInput(EXTRACTORS, '', { '': str('ragBuilderExtractorAuto', 'Automatic (by file format)') });
-  labeled(documentsRow, idOf('extractor'), str('ragBuilderExtractorLabel', 'Extractor:'), extractorField, 'col-md-4',
+  labeled(documentsRow, idOf('extractor'), str('ragBuilderExtractorLabel', 'Extractor:'), extractorField, 'col-md-5',
     str('ragBuilderExtractorInfo', 'How text is pulled out of each file. Automatic picks per file format and is almost always right; forcing one applies it to EVERY file, so a PDF read as plain text yields nonsense rather than an error. Some formats need optional Python packages — see the administration guide.'));
   // Source files are their own decision, not an extractor choice: the
   // question is whether they belong in the corpus at all, and the answer is
   // usually no. Off by default, and never a silent exclusion - a skipped file
   // is listed in the ledger and the run log with its reason.
   const includeCodeWrap = document.createElement('div');
-  includeCodeWrap.className = 'col-md-8 d-flex align-items-center';
+  includeCodeWrap.className = 'col-md-7 d-flex align-items-center';
   const includeCodeCheck = document.createElement('div');
   includeCodeCheck.className = 'form-check mb-0';
   const includeCodeField = document.createElement('input');
@@ -1718,7 +1718,10 @@ export async function buildRagBuilder(
       .replace('{entries}', missing.join(' / '))
       .replace('{domain}', credentialDomain);
   }
-  labeled(storeRow, idOf('backend'), str('ragBuilderBackendLabel', 'Vector database:'), backendField, 'col-md-3',
+  // A wide column: an option can carry a note after the name ("not offered
+  // for new setups", "no credential"), and the closed dropdown has to show
+  // the chosen one in full - in German too, in a narrow report object.
+  labeled(storeRow, idOf('backend'), str('ragBuilderBackendLabel', 'Vector database:'), backendField, 'col-md-8',
     str('ragBuilderBackendInfo', 'Where the chunks and their vectors are stored. Both backends carry the same features, but they are not interchangeable once built — moving a collection means re-ingesting it. A database you hold no credentials for is shown disabled rather than hidden, so you can see it exists and ask for access.'), true);
   if (!usable.length) {
     const warning = document.createElement('div');
