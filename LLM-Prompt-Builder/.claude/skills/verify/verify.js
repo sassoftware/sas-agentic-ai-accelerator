@@ -870,12 +870,99 @@ function assertCompiles(code, label) {
   assert(Array.isArray(emptyRows) && emptyRows.length === 0, 'an emptied tracker persists as []');
   assert(dialogs.length === dialogsBefore, 'no "run at least one experiment" alert blocked the empty save');
 
-  // ---- prompt deletion: usage found, cancel then confirm ---------------------
+  // ---- the first request to a service of this session: HTTP 449 --------------
+  // A SAS Viya service the browser has no session with answers a request of
+  // the app's HTTP client with 449. The client establishes the session with a
+  // plain GET to the service and sends the request again, so the delete dialog
+  // names the decisions all the same.
+  const noSession = (service, how = {}) =>
+    fetch(BASE + '/__nosession', { method: 'POST', body: JSON.stringify({ service, ...how }) });
+  // The requests to the relationships service, as "METHOD path status"; the
+  // one that was not sent by the app's HTTP client is marked plain.
+  const usageRequests = async () =>
+    (await getLog())
+      .filter((e) => e.url.startsWith('/relationships/'))
+      .map((e) => `${e.method} ${e.url.split('?')[0]}${e.xhr ? '' : ' (plain)'} ${e.status}`);
+  const cancelDeletePrompt = async () => {
+    await page.click('.modal.show .btn-secondary');
+    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await waitUntil(async () => !(await page.isDisabled('#LPB-delete-prompt-button')), 'Delete Prompt enabled again');
+  };
   await goStep('setup');
   await resetLog();
+  await noSession('relationships');
   await page.click('#LPB-delete-prompt-button');
   await page.waitForSelector('.modal.show .modal-body');
   let modalBody = await page.textContent('.modal.show .modal-body');
+  assert(
+    modalBody.includes('2 decision(s) currently use this prompt') && modalBody.includes('Loan Approval Decision') && modalBody.includes('Fraud Check Decision'),
+    `a first request answered with 449 still ends in a dialog that names the decisions (got: ${modalBody.trim()})`
+  );
+  let usageLog = await usageRequests();
+  assert(
+    JSON.stringify(usageLog) ===
+      JSON.stringify(['POST /relationships/relationships 449', 'GET /relationships/ (plain) 200', 'POST /relationships/relationships 200']),
+    `the 449 is followed by one plain GET to the service and the same request again (got: ${usageLog.join(' | ')})`
+  );
+  const usageBodies = (await getLog()).filter((e) => e.method === 'POST' && e.url.startsWith('/relationships/')).map((e) => e.body);
+  assert(
+    usageBodies.length === 2 && usageBodies[0] === usageBodies[1] && usageBodies[0].includes('/modelRepository/models/model-used'),
+    'the request is repeated with the body it had'
+  );
+  await cancelDeletePrompt();
+  assert(!(await getLog()).some((e) => e.method === 'DELETE'), 'cancelling that dialog deleted nothing');
+
+  // The repeated request is the first one the service answers, and a first
+  // write is answered with the CSRF 403: both recoveries happen in a row.
+  await resetLog();
+  await noSession('relationships', { csrf: true });
+  await page.click('#LPB-delete-prompt-button');
+  await page.waitForSelector('.modal.show .modal-body');
+  modalBody = await page.textContent('.modal.show .modal-body');
+  usageLog = await usageRequests();
+  assert(
+    JSON.stringify(usageLog) ===
+      JSON.stringify([
+        'POST /relationships/relationships 449',
+        'GET /relationships/ (plain) 200',
+        'POST /relationships/relationships 403',
+        'POST /relationships/relationships 200',
+      ]),
+    `a 449 and then a CSRF 403 are each answered with one more attempt (got: ${usageLog.join(' | ')})`
+  );
+  const csrfSent = (await getLog()).filter((e) => e.method === 'POST' && e.url.startsWith('/relationships/')).map((e) => e.csrf);
+  assert(
+    csrfSent[2] === 'mock-csrf-token' && !csrfSent.slice(0, 2).includes('mock-csrf-token'),
+    `the last attempt carries the token the 403 handed out (got: ${csrfSent.join(', ')})`
+  );
+  assert(modalBody.includes('2 decision(s) currently use this prompt'), 'and the dialog names the decisions');
+  await cancelDeletePrompt();
+
+  // A session that cannot be established: one warm-up, one more attempt, and
+  // the dialog says that the usage is unknown - as it did before.
+  await resetLog();
+  await noSession('relationships', { stuck: true });
+  await page.click('#LPB-delete-prompt-button');
+  await page.waitForSelector('.modal.show .modal-body');
+  modalBody = await page.textContent('.modal.show .modal-body');
+  assert(
+    modalBody.includes('could not be verified') && !modalBody.includes('Loan Approval Decision'),
+    `a service that keeps answering 449 leaves the dialog with the could-not-be-verified note (got: ${modalBody.trim()})`
+  );
+  const stuckLog = ['POST /relationships/relationships 449', 'GET /relationships/ (plain) 200', 'POST /relationships/relationships 449'];
+  usageLog = await usageRequests();
+  assert(JSON.stringify(usageLog) === JSON.stringify(stuckLog), `the request is sent twice and the session asked for once (got: ${usageLog.join(' | ')})`);
+  await sleep(600);
+  usageLog = await usageRequests();
+  assert(JSON.stringify(usageLog) === JSON.stringify(stuckLog), `and nothing more is sent while the dialog is open (got: ${usageLog.join(' | ')})`);
+  await cancelDeletePrompt();
+  await noSession();
+
+  // ---- prompt deletion: usage found, cancel then confirm ---------------------
+  await resetLog();
+  await page.click('#LPB-delete-prompt-button');
+  await page.waitForSelector('.modal.show .modal-body');
+  modalBody = await page.textContent('.modal.show .modal-body');
   assert(modalBody.includes('2 decision(s) currently use this prompt'), `usage count shown (got: ${modalBody.trim()})`);
   const linkA = await page.$('.modal.show a[href$="/SASDecisionManager/decisions/flow-A"]');
   const linkB = await page.$('.modal.show a[href$="/SASDecisionManager/decisions/flow-B"]');
@@ -948,6 +1035,32 @@ function assertCompiles(code, label) {
   await page.waitForSelector('.modal.show .modal-title');
   let title = await page.textContent('.modal.show .modal-title');
   assert(title.includes('Used Prompt (1/3)'), `sequential confirm shows progress counter (got: ${title.trim()})`);
+  // Every confirmation of a project deletion carries the usage note of its
+  // prompt: the decisions with their links, that there are none, or that the
+  // check failed.
+  const projectUsageNote = async (n) => {
+    const body = (await page.textContent('.modal.show .modal-body')).trim();
+    const links = await page.$$eval('.modal.show .modal-body a', (els) => els.map((a) => `${a.textContent} -> ${a.getAttribute('href')}`));
+    if (n === '(1/3)') {
+      assert(
+        body.includes('2 decision(s) currently use this prompt') &&
+          links.join(', ') ===
+            `Loan Approval Decision -> ${BASE}/SASDecisionManager/decisions/flow-A, Fraud Check Decision -> ${BASE}/SASDecisionManager/decisions/flow-B`,
+        `project deletion ${n}: the used prompt lists its two decisions with their links (got: ${body} / ${links.join(', ')})`
+      );
+    } else if (n === '(2/3)') {
+      assert(
+        body.includes('No decisions were found using this prompt.') && links.length === 0,
+        `project deletion ${n}: the prompt no decision uses says so (got: ${body})`
+      );
+    } else {
+      assert(
+        body.includes('could not be verified') && links.length === 0,
+        `project deletion ${n}: the prompt whose check failed says that its usage is unknown (got: ${body})`
+      );
+    }
+  };
+  await projectUsageNote('(1/3)');
   await page.screenshot({ path: 'shot-05-delete-project-step1.png', fullPage: true });
   await page.click('.modal.show .btn-danger'); // confirm prompt 1
   await waitUntil(async () => {
@@ -973,6 +1086,7 @@ function assertCompiles(code, label) {
       const t = await page.textContent('.modal.show .modal-title').catch(() => '');
       return t && t.includes(n);
     }, `confirmation modal ${n}`);
+    await projectUsageNote(n);
     await page.click('.modal.show .btn-danger');
   }
   await waitUntil(

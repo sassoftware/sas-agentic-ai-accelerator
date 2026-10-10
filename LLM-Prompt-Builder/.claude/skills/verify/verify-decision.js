@@ -3,8 +3,9 @@
  * decision mode: a decision template is opened, its saved run and designer
  * restored, a run made against a decision model, a question added, the runs
  * saved, the evaluation run over the saved runs and over a CAS table, the
- * template manifested with typed outputs, and the page switched back to an
- * LLM prompt. Run against a FRESH mock instance.
+ * template manifested with typed outputs, the page switched back to an LLM
+ * prompt, and a decision template and its project deleted with the note on
+ * the decisions that still use it. Run against a FRESH mock instance.
  *
  * The mock is found at VERIFY_BASE (default http://localhost:4173). Every
  * score code a manifest uploads is compiled and run with a real Python
@@ -547,6 +548,92 @@ const lastLine = (message) => String(message || '').trim().split('\n').pop();
   step(true, 'on the page with three kinds the decision kind shows its steps and its projects');
   assert(!(await threeKindsPage.$('#app-obj-RGB')), 'choosing the decision kind there builds nothing of the RAG Builder');
   await threeKindsPage.close();
+
+  // ---- deleting a decision template and its project -------------------------------
+  // A manifested decision template is a model a decision flow can call, like
+  // an LLM prompt, so both delete dialogs say which decisions still use it:
+  // the decisions with their links, that there are none, or that the check
+  // failed. On a page of its own - the mock keeps its fixtures whatever a page
+  // deleted, a page does not.
+  const setUsage = (model, answer = {}) => fetch(BASE + '/__usage', { method: 'POST', body: JSON.stringify({ model, ...answer }) });
+  const deletePage = await openPage('enableDecision=true');
+  await deletePage.click('#LPB-kind-decision');
+  await waitUntil(async () => (await projectsOf(deletePage)) === 'proj-2', 'the decision project is listed on the page for the deletions');
+  await deletePage.selectOption('#LPB-project-dropdown', 'proj-2');
+  await waitUntil(async () => (await deletePage.$$('#LPB-prompt-dropdown option')).length === 2, 'the decision template is listed there');
+  await deletePage.selectOption('#LPB-prompt-dropdown', 'model-dec');
+  await waitUntil(async () => !(await deletePage.isDisabled('#LPB-delete-prompt-button')), 'Delete Prompt is enabled for the decision template');
+  const openDeleteDialog = async (button) => {
+    await deletePage.click(button);
+    await deletePage.waitForSelector('.modal.show .modal-body');
+    return {
+      title: (await deletePage.textContent('.modal.show .modal-title')).trim(),
+      body: (await deletePage.textContent('.modal.show .modal-body')).trim(),
+      links: (await deletePage.$$eval('.modal.show .modal-body a', (els) => els.map((a) => `${a.textContent} -> ${a.getAttribute('href')}`))).join(', '),
+    };
+  };
+  const closeDeleteDialog = async (button, confirm) => {
+    await deletePage.click(confirm ? '.modal.show .btn-danger' : '.modal.show .btn-secondary');
+    await deletePage.waitForSelector('.modal.show', { state: 'detached' });
+    if (!confirm) await waitUntil(async () => !(await deletePage.isDisabled(button)), 'the delete button is enabled again after a cancel');
+  };
+  const BOTH_DECISIONS = `Loan Approval Decision -> ${BASE}/SASDecisionManager/decisions/flow-A, Fraud Check Decision -> ${BASE}/SASDecisionManager/decisions/flow-B`;
+  await resetLog();
+  for (const [button, what, title] of [
+    ['#LPB-delete-prompt-button', 'Delete Prompt', 'Delete this prompt: Ticket Routing'],
+    ['#LPB-delete-project-button', 'Delete Project', 'Ticket Routing (1/1)'],
+  ]) {
+    await setUsage('model-dec', { flows: ['flow-A', 'flow-B'] });
+    let shown = await openDeleteDialog(button);
+    assert(shown.title.includes(title), `${what} on a decision template names it in the title (got: ${shown.title})`);
+    assert(
+      shown.body.includes('2 decision(s) currently use this prompt') && shown.links === BOTH_DECISIONS,
+      `${what}: a template two decisions use lists them with their links (got: ${shown.body} / ${shown.links})`
+    );
+    await closeDeleteDialog(button, false);
+    await setUsage('model-dec', { flows: [] });
+    shown = await openDeleteDialog(button);
+    assert(
+      shown.body.includes('No decisions were found using this prompt.') && shown.links === '',
+      `${what}: a template no decision uses says so (got: ${shown.body})`
+    );
+    await closeDeleteDialog(button, false);
+    await setUsage('model-dec', { status: 503 });
+    shown = await openDeleteDialog(button);
+    assert(
+      shown.body.includes('could not be verified') && shown.links === '',
+      `${what}: a failed check says that the usage is unknown (got: ${shown.body})`
+    );
+    await closeDeleteDialog(button, false);
+  }
+  log = await getLog();
+  assert(
+    log.filter((e) => e.method === 'POST' && e.url.startsWith('/relationships/relationships') && e.body.includes('/modelRepository/models/model-dec')).length === 6,
+    'every one of the six dialogs asked the relationships service about the template'
+  );
+  assert(!log.some((e) => e.method === 'DELETE'), 'and cancelling them deleted nothing');
+  // Confirmed, with the decisions named: the template goes, then the project
+  // with the template the mock still lists in it.
+  await setUsage('model-dec', { flows: ['flow-A', 'flow-B'] });
+  await openDeleteDialog('#LPB-delete-prompt-button');
+  await closeDeleteDialog('#LPB-delete-prompt-button', true);
+  await waitUntil(async () => (await getLog()).some((e) => e.method === 'DELETE' && e.url === '/modelRepository/models/model-dec'), 'the decision template is deleted in Model Manager');
+  await waitUntil(async () => (await deletePage.$$('#LPB-prompt-dropdown option[value="model-dec"]')).length === 0, 'the deleted template leaves the list');
+  step(true, 'a confirmed Delete Prompt deletes the decision template');
+  await resetLog();
+  const projectDialog = await openDeleteDialog('#LPB-delete-project-button');
+  assert(projectDialog.links === BOTH_DECISIONS, `the project deletion names the decisions again before it deletes (got: ${projectDialog.links})`);
+  await closeDeleteDialog('#LPB-delete-project-button', true);
+  await waitUntil(async () => (await getLog()).some((e) => e.method === 'DELETE' && e.url === '/modelRepository/projects/proj-2'), 'the decision project is deleted in Model Manager');
+  const decisionDeletes = (await getLog()).filter((e) => e.method === 'DELETE').map((e) => e.url).join(', ');
+  assert(
+    decisionDeletes === '/modelRepository/models/model-dec, /modelRepository/projects/proj-2',
+    `the template is deleted first, its project last (got: ${decisionDeletes})`
+  );
+  await waitUntil(async () => (await projectsOf(deletePage)) === '', 'the deleted project leaves the list');
+  step(true, 'a confirmed Delete Project deletes the decision project');
+  await setUsage();
+  await deletePage.close();
 
   assert(pageErrors.length === 0, `no uncaught page errors (got: ${pageErrors.join(' | ')})`);
   await browser.close();

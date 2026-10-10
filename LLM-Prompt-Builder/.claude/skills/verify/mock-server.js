@@ -2,7 +2,11 @@
  * Minimal mock of the SAS Viya endpoints the LLM Prompt Builder calls, plus a
  * static route serving the built dist/index.html same-origin (the app defaults
  * viyaHost to window.location.origin). Every request is recorded and exposed
- * at GET /__log for assertions; POST /__reset clears the log.
+ * at GET /__log for assertions; POST /__reset clears the log. An entry holds
+ * the method, the URL, the body, the If-Match header, whether the request
+ * carried X-Requested-With: XMLHttpRequest (xhr - every request of the app's
+ * HTTP client does), its X-CSRF-TOKEN (csrf) and the status it was answered
+ * with.
  *
  * The RAG kind of the Builder reads the deployed RAG runtime from SAS Content.
  * The mock serves those files from the repository, which it finds from the
@@ -27,6 +31,25 @@ let decisionProject = false;
 // the connection without an answer (the browser sees a network failure).
 // Without a status the model answers again; without a name all of them do.
 const failingModels = {};
+// POST /__nosession { service, stuck, csrf } takes the browser's session with
+// one service (the first path segment, relationships for example) away. Every
+// request to it that carries X-Requested-With: XMLHttpRequest is then answered
+// with HTTP 449, until a plain GET to /<service>/ was seen: what a SAS Viya
+// service answers a browser it has no session with, and the request that
+// follows the logon redirect there. stuck: true keeps answering 449 after that
+// GET (a session that cannot be established). csrf: true makes the service ask
+// for a CSRF token once the session exists, the way a first write is answered
+// on SAS Viya: 403 with x-forbidden-reason: CSRF and the token to repeat the
+// request with. Without a service every session is back.
+const noSession = {};
+const MOCK_CSRF_TOKEN = 'mock-csrf-token';
+// POST /__usage { model, flows, status } decides what the relationships query
+// answers for one model. flows (ids of decision flows, flow-A and flow-B have
+// a name) makes these decisions depend on it, each reported as the flow and
+// once more as a revision of it; an empty list is a model nothing uses.
+// status makes the query fail with that HTTP status. Without both the model
+// answers as its fixture does; without a model all of them do.
+const usageFor = {};
 // Models created through POST /modelRepository/models, kept so the listing of
 // their project, their own GET and their contents answer for them afterwards.
 const createdModels = [];
@@ -533,8 +556,14 @@ http
       const raw = Buffer.concat(chunks).toString('utf8');
       const u = new URL(req.url, 'http://localhost');
       const p = u.pathname;
+      const xhr = req.headers['x-requested-with'] === 'XMLHttpRequest';
       if (p !== '/__log' && p !== '/__reset') {
-        log.push({ method: req.method, url: req.url, body: raw, ifMatch: req.headers['if-match'] || null });
+        const entry = {
+          method: req.method, url: req.url, body: raw, ifMatch: req.headers['if-match'] || null,
+          xhr, csrf: req.headers['x-csrf-token'] || null, status: null,
+        };
+        log.push(entry);
+        res.on('finish', () => { entry.status = res.statusCode; });
       }
 
       if (p === '/__log') return json(res, 200, log);
@@ -547,6 +576,21 @@ http
         else if (body.status) failingModels[body.name] = body.status;
         else delete failingModels[body.name];
         return json(res, 200, failingModels);
+      }
+      if (p === '/__nosession') {
+        let body = {};
+        try { body = JSON.parse(raw); } catch {}
+        if (!body.service) Object.keys(noSession).forEach((name) => delete noSession[name]);
+        else noSession[body.service] = { stuck: Boolean(body.stuck), csrf: Boolean(body.csrf), established: false };
+        return json(res, 200, noSession);
+      }
+      if (p === '/__usage') {
+        let body = {};
+        try { body = JSON.parse(raw); } catch {}
+        if (!body.model) Object.keys(usageFor).forEach((name) => delete usageFor[name]);
+        else if (body.status || Array.isArray(body.flows)) usageFor[body.model] = { status: body.status || null, flows: body.flows || [] };
+        else delete usageFor[body.model];
+        return json(res, 200, usageFor);
       }
       // The decision fixtures live in a second project that only exists once a
       // suite asks for it, so the regression suite's project counts stay put.
@@ -585,6 +629,22 @@ http
         });
       }
       if (p === '/favicon.ico') { res.writeHead(204); return res.end(); }
+
+      // A service a suite took the session away from (see /__nosession). The
+      // plain GET to its root is the request that establishes the session.
+      const sessionService = p.split('/')[1];
+      const sessionless = noSession[sessionService];
+      if (sessionless) {
+        if (!xhr && req.method === 'GET' && p === `/${sessionService}/`) {
+          if (!sessionless.stuck) sessionless.established = true;
+          return json(res, 200, { version: 1, links: [] });
+        }
+        if (xhr && !sessionless.established) { res.writeHead(449); return res.end(); }
+        if (xhr && sessionless.csrf && req.method !== 'GET' && req.headers['x-csrf-token'] !== MOCK_CSRF_TOKEN) {
+          res.writeHead(403, { 'x-forbidden-reason': 'CSRF', 'x-csrf-token': MOCK_CSRF_TOKEN });
+          return res.end();
+        }
+      }
 
       // -- SAS Model Manager: projects, setups and what a setup lists -----------
       if (p === '/modelRepository/projects' && req.method === 'GET' &&
@@ -1313,6 +1373,19 @@ http
         try {
           modelId = (JSON.parse(raw).resourceURI[0] || '').split('/').pop();
         } catch {}
+        const usage = usageFor[modelId];
+        if (usage && usage.status) return json(res, Number(usage.status), { message: 'the relationships service does not answer' });
+        if (usage) {
+          return json(res, 200, {
+            items: [
+              { type: 'Parent', resourceUri: '/modelRepository/projects/proj-1' },
+              ...usage.flows.flatMap((flow) => [
+                { type: 'Dependent', resourceUri: `/decisions/flows/${flow}` },
+                { type: 'Dependent', resourceUri: `/decisions/flows/${flow}/revisions/rev-1` },
+              ]),
+            ],
+          });
+        }
         if (modelId === 'model-err') return json(res, 500, { message: 'boom' });
         return json(res, 200, relationshipsFor[modelId] || { items: [] });
       }

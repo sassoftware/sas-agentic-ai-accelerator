@@ -16,6 +16,7 @@
  *   offered   the RAG kind exists only with enableRag=true
  *   shell     the two flows: steps, hidden areas, state kept, one heading
  *   flow      project, setup, save, manifest, ingestion, retrieval test, delete
+ *   usage     what the two delete dialogs say about decisions that use a setup
  *   withheld  a stored setup on a vector database the deployment withholds
  *   failure   a RAG project listing that fails stays inside the RAG area
  *   gates     credentialDomain=none; the ingestion compute context
@@ -622,6 +623,8 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       beforeConfirm.some((e) => e.method === 'POST' && e.url.startsWith('/relationships/relationships') && e.body.includes(`/modelRepository/models/${setupId}`)) && !beforeConfirm.some((e) => e.method === 'DELETE'),
       'what depends on the setup is asked before the confirmation, and nothing is deleted yet'
     );
+    const setupDialog = (await page.textContent('.modal.show .modal-body')).trim();
+    assert(setupDialog.includes('No decision references this.'), `the dialog says that no decision uses the new setup (got: ${setupDialog})`);
     await page.click('.modal.show .btn-danger');
     await page.waitForSelector('.modal.show', { state: 'detached' });
     await waitUntil(async () => (await getLog()).some((e) => e.method === 'DELETE' && e.url === `/modelRepository/models/${setupId}`), 'the setup is deleted in Model Manager');
@@ -629,11 +632,125 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     assert(!(await page.isVisible(EDITOR)), 'the editor closes with it');
     await page.click(rgb('delete-project'));
     await page.waitForSelector('.modal.show .btn-danger');
+    const emptyProjectDialog = (await page.textContent('.modal.show .modal-body')).trim();
+    assert(
+      emptyProjectDialog.includes('This project holds no setups.') && !/decision/i.test(emptyProjectDialog),
+      `the dialog of a project without setups says so and carries no usage note (got: ${emptyProjectDialog})`
+    );
     await page.click('.modal.show .btn-danger');
     await page.waitForSelector('.modal.show', { state: 'detached' });
     await waitUntil(async () => (await getLog()).some((e) => e.method === 'DELETE' && e.url === `/modelRepository/projects/${projectId}`), 'the project is deleted in Model Manager');
     await waitUntil(async () => !(await optionValues(page, 'project')).includes(projectId), 'the deleted project leaves the list');
     step(true, 'the setup and its project are deleted');
+  });
+
+  // ---- usage: what the delete dialogs say about decisions ------------------------
+  // A manifested setup is a model a decision flow can call. Both delete dialogs
+  // ask the relationships service first and say what they learned: the
+  // decisions, that there are none, or that the check failed. Every dialog here
+  // is cancelled, so the fixture project keeps its three setups.
+  await section('usage', async (page) => {
+    const setUsage = (model, answer = {}) => fetch(BASE + '/__usage', { method: 'POST', body: JSON.stringify({ model, ...answer }) });
+    const noSession = (service, how = {}) => fetch(BASE + '/__nosession', { method: 'POST', body: JSON.stringify({ service, ...how }) });
+    const openDeleteDialog = async (button) => {
+      await page.click(rgb(button));
+      await page.waitForSelector('.modal.show .modal-body');
+      return {
+        title: (await page.textContent('.modal.show .modal-title')).trim(),
+        body: (await page.textContent('.modal.show .modal-body')).trim(),
+        links: (await page.$$eval('.modal.show .modal-body a', (els) => els.map((a) => `${a.textContent} -> ${a.getAttribute('href')}`))).join(', '),
+      };
+    };
+    const cancelDeleteDialog = async () => {
+      await page.click('.modal.show .btn-secondary');
+      await page.waitForSelector('.modal.show', { state: 'detached' });
+    };
+    const usageRequests = async () =>
+      (await getLog())
+        .filter((e) => e.url.startsWith('/relationships/'))
+        .map((e) => `${e.method} ${e.url.split('?')[0]}${e.xhr ? '' : ' (plain)'} ${e.status}`);
+    const BOTH_DECISIONS = `Loan Approval Decision -> ${BASE}/SASDecisionManager/decisions/flow-A, Fraud Check Decision -> ${BASE}/SASDecisionManager/decisions/flow-B`;
+    const USED = '2 decision(s) reference this and will break:';
+    const UNUSED = 'No decision references this.';
+    const UNKNOWN = 'Whether anything still uses this could not be checked';
+
+    // One setup two decisions use, one nothing uses, one whose check fails.
+    await setUsage('rag-setup-1', { flows: ['flow-A', 'flow-B'] });
+    await setUsage('rag-setup-2', { flows: [] });
+    await setUsage('rag-setup-ss', { status: 503 });
+    await openRag(page);
+    await selectRagProject(page, 'rag-proj');
+
+    // -- Delete setup ------------------------------------------------------------
+    await openSetup(page, 'rag-setup-1', async () => (await value(page, 'collection')) === 'policy_handbook', 'the setup two decisions use opens');
+    await resetLog();
+    let shown = await openDeleteDialog('delete-setup');
+    assert(shown.title === 'Delete setup: Policy Handbook', `Delete setup names the setup in the title (got: ${shown.title})`);
+    assert(
+      shown.body.includes(USED) && shown.links === BOTH_DECISIONS,
+      `Delete setup: a setup two decisions use lists them with their links (got: ${shown.body} / ${shown.links})`
+    );
+    assert(!shown.body.includes(UNUSED) && !shown.body.includes(UNKNOWN), 'and carries neither of the other two notes');
+    await cancelDeleteDialog();
+    await openSetup(page, 'rag-setup-2', async () => (await page.inputValue(rgb('setup-doc-modelPurpose'))) === 'Documented before anything else was decided.', 'the setup nothing uses opens');
+    shown = await openDeleteDialog('delete-setup');
+    assert(shown.body.includes(UNUSED) && shown.links === '', `Delete setup: a setup no decision uses says so (got: ${shown.body})`);
+    await cancelDeleteDialog();
+    await openSetup(page, 'rag-setup-ss', async () => (await value(page, 'collection')) === 'legacy_manuals', 'the setup whose check fails opens');
+    shown = await openDeleteDialog('delete-setup');
+    assert(
+      shown.body.includes(UNKNOWN) && !shown.body.includes(UNUSED) && shown.links === '',
+      `Delete setup: a failed check says that the usage is unknown, not that there is none (got: ${shown.body})`
+    );
+    await cancelDeleteDialog();
+    assert(!(await getLog()).some((e) => e.method === 'DELETE'), 'cancelling the three dialogs deleted nothing');
+
+    // -- Delete project ----------------------------------------------------------
+    // The project asks about its three setups at once. Without a session each
+    // of the three requests is answered with 449: they share one warm-up.
+    await resetLog();
+    await noSession('relationships');
+    shown = await openDeleteDialog('delete-project');
+    assert(shown.title === 'Delete project: RAG Demo Project', `Delete project names the project in the title (got: ${shown.title})`);
+    assert(shown.body.includes('This deletes the project and the 3 setup(s) it holds'), `it says how many setups go with it (got: ${shown.body})`);
+    assert(
+      shown.body.includes('1 of these setup(s) are referenced by decisions, which will break:') &&
+        shown.body.includes('Policy Handbook: Loan Approval Decision, Fraud Check Decision'),
+      `Delete project: the setup that is used is listed with its decisions by name (got: ${shown.body})`
+    );
+    assert(
+      shown.body.includes('Usage could not be checked for 1 setup(s)') && !shown.body.includes(UNUSED),
+      'Delete project: the setup whose check failed is counted, and the dialog does not say that nothing is used'
+    );
+    const projectRequests = await usageRequests();
+    assert(
+      projectRequests.slice(0, 3).join(' | ') === Array(3).fill('POST /relationships/relationships 449').join(' | ') &&
+        projectRequests[3] === 'GET /relationships/ (plain) 200' &&
+        projectRequests.slice(4).sort().join(' | ') === 'POST /relationships/relationships 200 | POST /relationships/relationships 200 | POST /relationships/relationships 503',
+      `three requests answered with 449 share one plain GET and are each sent again (got: ${projectRequests.join(' | ')})`
+    );
+    await cancelDeleteDialog();
+    await noSession();
+
+    await setUsage('rag-setup-1', { flows: [] });
+    await setUsage('rag-setup-ss', { flows: [] });
+    shown = await openDeleteDialog('delete-project');
+    assert(
+      shown.body.includes(UNUSED) && !shown.body.includes('referenced by decisions') && !shown.body.includes('could not be checked'),
+      `Delete project: a project whose setups no decision uses says so (got: ${shown.body})`
+    );
+    await cancelDeleteDialog();
+    for (const setup of ['rag-setup-1', 'rag-setup-2', 'rag-setup-ss']) await setUsage(setup, { status: 503 });
+    shown = await openDeleteDialog('delete-project');
+    assert(
+      shown.body.includes('Usage could not be checked for 3 setup(s)') && !shown.body.includes(UNUSED) && !shown.body.includes('referenced by decisions'),
+      `Delete project: when every check failed the dialog says so for all three setups (got: ${shown.body})`
+    );
+    await cancelDeleteDialog();
+    await setUsage();
+    assert(!(await getLog()).some((e) => e.method === 'DELETE'), 'cancelling the project dialogs deleted nothing');
+    const kept = (await ragState()).models.filter((model) => model.projectId === 'rag-proj').length;
+    assert(kept === 3 && (await optionValues(page, 'project')).includes('rag-proj'), `the project and its three setups are still there (got ${kept} setups)`);
   });
 
   // ---- withheld: a setup on a vector database the deployment no longer offers ---
