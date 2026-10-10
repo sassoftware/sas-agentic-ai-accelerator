@@ -59,10 +59,27 @@ const portless = (code) => code.split(BASE).join('http://mock');
 // the last one before the option "Verify TLS certificates in manifested
 // models". Recorded by running this suite against that bundle.
 const INTEGRATED_CODE_BEFORE_THE_TLS_OPTION = '009acb271cff755ba2cdeb39e1e8bf67a400c070fc652592c0ec478e39d27a11';
+// The text a link shows when it is left alone. It is never read from the link
+// at the moment of a check: a check before may have left the "link copied"
+// note in it, and a check that took the note for the text of the link would
+// pass on a link that shows the note for good. The links to a saved
+// prompt-test show their own address, exactly as their href attribute holds
+// it; a link with a label of its own is given that label by the test (`own`).
+const ownLinkText = async (target, selector, own) => own ?? (await target.$eval(selector, (link) => link.getAttribute('href')));
+// A wait that answers instead of throwing: true as soon as `fn` holds, false
+// when it did not within `timeout`.
+async function settles(fn, timeout = 8000) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    if (await fn()) return true;
+    await sleep(100);
+  }
+  return false;
+}
 // What a link that leaves the page does when no tab can be opened: it shows
 // for a moment that the link was copied. `window.open` is made to answer the
 // way the sandboxed iframe of a report does.
-async function assertLinkCopies(target, selector, label) {
+async function assertLinkCopies(target, selector, label, own) {
   await target.evaluate(() => {
     window.__verifyOpened = [];
     window.__verifyRealOpen = window.__verifyRealOpen || window.open;
@@ -72,7 +89,7 @@ async function assertLinkCopies(target, selector, label) {
     };
   });
   const href = await target.$eval(selector, (link) => link.href);
-  const shown = (await target.textContent(selector)).trim();
+  const shown = await ownLinkText(target, selector, own);
   const tabs = target.context().pages().length;
   await target.click(selector);
   await waitUntil(async () => /link copied/i.test(await target.textContent(selector)), `${label}: says that the link was copied when no tab can be opened`, 3000);
@@ -93,7 +110,7 @@ async function assertLinkCopies(target, selector, label) {
 // The link has to open its tab and do nothing else: no note that the link was
 // copied, nothing written to the clipboard, and the new window cut off from
 // this page.
-async function assertLinkOpensTab(target, selector, label) {
+async function assertLinkOpensTab(target, selector, label, own) {
   await target.evaluate(() => {
     window.__verifyOpened = [];
     window.__verifyCopied = [];
@@ -117,7 +134,7 @@ async function assertLinkOpensTab(target, selector, label) {
     }
   });
   const href = await target.$eval(selector, (link) => link.href);
-  const shown = (await target.textContent(selector)).trim();
+  const shown = await ownLinkText(target, selector, own);
   await target.click(selector);
   await sleep(500);
   const seen = await target.evaluate(() => ({
@@ -143,13 +160,20 @@ async function assertLinkOpensTab(target, selector, label) {
 }
 // And with nothing stubbed: a real click on a page where a tab can open. The
 // tab asks for a page of SAS Model Manager, which the mock does not serve and
-// would list under GET /__direct; the browser context answers it instead.
-async function assertLinkOpensRealTab(target, selector, label) {
+// would list under GET /__direct; the browser context answers it instead, and
+// reads the Referer the tab was sent with. SAS Model Manager is on the origin
+// of the page, and the referrer policy of the page ("same-origin") keeps the
+// Referer for it.
+async function assertLinkOpensRealTab(target, selector, label, own) {
   const context = target.context();
   const otherApplication = '**/SASModelManager/**';
-  await context.route(otherApplication, (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<title>SAS Model Manager</title>' }));
+  let referer = null;
+  await context.route(otherApplication, (route) => {
+    if (referer === null) referer = route.request().headers().referer || '';
+    return route.fulfill({ status: 200, contentType: 'text/html', body: '<title>SAS Model Manager</title>' });
+  });
   const href = await target.$eval(selector, (link) => link.href);
-  const shown = (await target.textContent(selector)).trim();
+  const shown = await ownLinkText(target, selector, own);
   const [tab] = await Promise.all([context.waitForEvent('page', { timeout: 10000 }), target.click(selector)]);
   await tab.waitForLoadState('domcontentloaded');
   const tabUrl = tab.url();
@@ -161,16 +185,56 @@ async function assertLinkOpensRealTab(target, selector, label) {
   await target.bringToFront();
   assert(tabUrl === href && cutOff, `${label}: a real click opens the link in a new tab that has no opener (tab: ${tabUrl}, opener cleared: ${cutOff})`);
   assert(text === shown, `${label}: and the page that opened the tab does not claim that popups are blocked (text: ${text})`);
+  assert(
+    String(referer).startsWith(`${BASE}/`),
+    `${label}: SAS Model Manager is on the origin of the page, so its tab is still told where the click came from (Referer: ${referer || 'none'})`
+  );
+}
+// A link to ANOTHER site - the user guide. Its tab must not be told where the
+// click came from: the Referer would name the SAS Viya host to a third party.
+// The link is opened through window.open without "noreferrer" (with it the
+// answer is null where the tab did open), so it is the referrer policy of the
+// page that keeps the Referer back. A real click with nothing stubbed; the
+// browser context answers the request of the tab, so that nothing leaves the
+// machine, and reads its headers.
+async function assertLinkTellsAnotherSiteNothing(target, selector, label) {
+  const context = target.context();
+  const href = await target.$eval(selector, (link) => link.href);
+  const site = `${new URL(href).origin}/**`;
+  const requests = [];
+  await context.route(site, (route) => {
+    requests.push({ url: route.request().url(), referer: route.request().headers().referer || '' });
+    return route.fulfill({ status: 200, contentType: 'text/html', body: '<title>user guide</title>' });
+  });
+  const [tab] = await Promise.all([context.waitForEvent('page', { timeout: 10000 }), target.click(selector)]);
+  await tab.waitForLoadState('domcontentloaded');
+  const inTab = await tab.evaluate(() => ({ referrer: document.referrer, cutOff: window.opener === null }));
+  await tab.close();
+  await context.unroute(site);
+  await target.bringToFront();
+  assert(
+    new URL(href).origin !== new URL(BASE).origin && requests.length >= 1 && requests[0].url === href.split('#')[0] && inTab.cutOff,
+    `${label}: a real click opens the link to the other site in a new tab that has no opener (asked for: ${requests.map((request) => request.url).join(', ') || 'nothing'}; opener cleared: ${inTab.cutOff})`
+  );
+  assert(
+    requests.length >= 1 && requests.every((request) => request.referer === '') && inTab.referrer === '',
+    `${label}: the other site is not told where the click came from - no Referer in the request of the tab, none in its document (Referer: ${requests.map((request) => request.referer || 'none').join(', ') || 'no request'}; document.referrer: ${inTab.referrer || 'empty'})`
+  );
+  const rel = String(await target.getAttribute(selector, 'rel')).split(/\s+/);
+  assert(
+    rel.includes('noreferrer') && rel.includes('noopener'),
+    `${label}: opened without the click handler (the middle mouse button, "Open link in new tab"), the plain link says rel="noopener noreferrer" (got: ${rel.join(' ')})`
+  );
 }
 // Two clicks in a row where no tab can open. Nothing visible happens on the
 // first click but the note, so a second one is likely - and the link must
 // still get its own text back, not the note for good.
-async function assertLinkTextSurvivesSecondClick(target, selector, label) {
+async function assertLinkTextSurvivesSecondClick(target, selector, label, own) {
   await target.evaluate(() => {
     window.__verifyRealOpen = window.__verifyRealOpen || window.open;
     window.open = () => null;
   });
-  const shown = (await target.textContent(selector)).trim();
+  const shown = await ownLinkText(target, selector, own);
   await target.click(selector);
   await sleep(600);
   await target.click(selector);
@@ -181,7 +245,10 @@ async function assertLinkTextSurvivesSecondClick(target, selector, label) {
   await target.evaluate(() => {
     window.open = window.__verifyRealOpen;
   });
-  assert(text === shown, `${label}: after two clicks in a row the link shows its own text again, not the note for good (got: ${text})`);
+  assert(
+    !/link copied/i.test(shown) && text === shown,
+    `${label}: after two clicks in a row the link shows its own text again, not the note for good (own text: ${shown}; got: ${text})`
+  );
 }
 // A create dialog that is open: each field is its label above an input as
 // wide as the dialog body.
@@ -289,6 +356,17 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   await optimizePage.click('#app-obj-LPB-step-optimize');
   assert(await optimizePage.isVisible('#app-obj-LPB-optimize-run'), 'the optimize card sits on its own step');
   assert(!(await optimizePage.isVisible('#app-obj-LPB-pet-create-model-button')), 'Manifest stays on Finalize');
+  // The user guide link of this step is the one link that leaves SAS Viya.
+  const referrerPolicy = await optimizePage.evaluate(() => (document.querySelector('meta[name="referrer"]') || {}).content || '');
+  assert(
+    referrerPolicy === 'same-origin',
+    `the page carries the referrer policy "same-origin": what it asks of another site does not name the SAS Viya host (got: ${referrerPolicy || 'no meta element'})`
+  );
+  await assertLinkTellsAnotherSiteNothing(
+    optimizePage,
+    '#app-obj-LPB-pane-optimize a[href^="https://sassoftware.github.io/"]',
+    'the user guide link of the Optimize step'
+  );
   await optimizePage.close();
   // Decision templates are a switch of the object. Off, nothing of them is
   // built, and with one kind left there is no kind to choose.
@@ -884,6 +962,21 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
           return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ errorCode: 0, message: 'the files service does not answer', httpStatusCode: 500 }) });
         }
       }
+      // A request that THROWS in the page: an answer that is no JSON (the
+      // error page of an ingress), or no answer at all.
+      const uploadOf = (file) => request.method() === 'POST' && (request.postData() || '').includes(`filename="${file}"`);
+      if (fault === 'requirements.json, error page' && uploadOf('requirements.json')) {
+        injected += 1;
+        return route.fulfill({ status: 502, contentType: 'text/html', body: '<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center></body></html>' });
+      }
+      if (fault === 'requirements.json, no network' && uploadOf('requirements.json')) {
+        injected += 1;
+        return route.abort('failed');
+      }
+      if (fault === 'outputVar.json, error page' && uploadOf('outputVar.json')) {
+        injected += 1;
+        return route.fulfill({ status: 502, contentType: 'text/html', body: '<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center></body></html>' });
+      }
       return route.continue();
     });
     // The first write of the model after the score code is the tag update.
@@ -897,14 +990,18 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     await resetLog();
     await target.click(MANIFEST_BUTTON);
     await waitUntil(async () => injected === 1, `${label}: the ${fault} request is refused`, 20000);
-    await waitUntil(
+    const ended = await settles(
       async () => !(await target.isDisabled(MANIFEST_BUTTON)) && (await target.textContent(MANIFEST_BUTTON)).trim() === 'Manifest Best Prompt',
-      `${label}: the manifest has ended and its button is usable again`,
-      20000
+      12000
     );
+    assert(ended, `${label}: the manifest has ended and its button is usable again (button: ${(await target.textContent(MANIFEST_BUTTON)).trim()}${(await target.isDisabled(MANIFEST_BUTTON)) ? ', disabled' : ''})`);
     await sleep(400);
     const entries = await getLog();
+    const modelWrite = entries.find((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-used');
     const outcome = {
+      // The tags of the first write of the model, which is the tag update.
+      tags: modelWrite ? JSON.parse(modelWrite.body).tags || [] : null,
+      scoreCodes: entries.filter((e) => e.method === 'POST' && e.body.includes('def scoreModel(')).length,
       modelWrites: entries.filter((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-used').length,
       manifestedToasts: (await target.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).filter((text) => text.includes('has been manifested')).length,
       notManifested: await target.$$eval(`${MANIFEST_BOX} .pet-manifest-failed`, (els) => els.map((e) => e.textContent.trim())),
@@ -934,6 +1031,44 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   assert(
     notWritten.tagLines.length === 1 && notWritten.tagLines[0].includes('could not be written') && notWritten.tagLines[0].includes('add the tag in SAS Model Manager'),
     `option unticked: a tag update that failed is reported the other way round - the model does not verify and the tag has to be added (got: ${notWritten.tagLines.join(' | ') || 'nothing'})`
+  );
+
+  // ---- a request that throws while the manifest runs -----------------------------
+  // A refusal with a JSON body comes back as a status. An answer that is no
+  // JSON (the 502 page of an ingress) and a request that gets no answer THROW
+  // in the page, and the manifest used to end where it stood: the button
+  // stayed disabled on "Saving..." for good, nothing was said, and - after
+  // the score code - the tags were never updated, so TLS-Verification-Off did
+  // not say what the stored score code does. The model carries the tag here.
+  const describe = (outcome) =>
+    `tags: ${outcome.tags ? outcome.tags.join(', ') : 'not written'}; box: ${outcome.notManifested.join(' | ') || 'nothing'}; toasts: ${outcome.manifestedToasts}; errors: ${outcome.errors.join(' | ') || 'none'}`;
+  const errorPageAfter = await faultyManifest(APP_URL, 'requirements.json, error page', 'option ticked, requirements.json answered by an error page');
+  assert(
+    errorPageAfter.scoreCodes === 1 && errorPageAfter.tags !== null && !errorPageAfter.tags.includes(TLS_TAG) && errorPageAfter.tags.includes('LLM-Call-Included'),
+    `option ticked: the tags are updated directly after the score code is stored, so a request that throws after it leaves no ${TLS_TAG} on a model whose stored code verifies (${describe(errorPageAfter)})`
+  );
+  assert(
+    errorPageAfter.manifestedToasts === 0 && errorPageAfter.notManifested.length === 1 && errorPageAfter.notManifested[0].startsWith('The manifest was not completed: the score code of this run is stored'),
+    `and the box beside the button says that the manifest was not completed, with no toast saying "manifested" (${describe(errorPageAfter)})`
+  );
+  assert(errorPageAfter.tagLines.length === 0 && errorPageAfter.errors.length === 0, `nothing is said about the tags, which were written, and no error is left uncaught (${describe(errorPageAfter)})`);
+  const noNetworkAfter = await faultyManifest(`${APP_URL}&sslVerify=false`, 'requirements.json, no network', 'option unticked, requirements.json gets no answer');
+  assert(
+    noNetworkAfter.scoreCodes === 1 && noNetworkAfter.tags !== null && noNetworkAfter.tags.includes(TLS_TAG),
+    `option unticked: a request that gets no answer after the score code leaves the model tagged ${TLS_TAG}, as its stored code does not verify (${describe(noNetworkAfter)})`
+  );
+  assert(
+    noNetworkAfter.manifestedToasts === 0 && noNetworkAfter.notManifested.length === 1 && noNetworkAfter.notManifested[0].startsWith('The manifest was not completed') && noNetworkAfter.errors.length === 0,
+    `and it is reported the same way: not completed, no "manifested" toast, no uncaught error (${describe(noNetworkAfter)})`
+  );
+  const errorPageBefore = await faultyManifest(APP_URL, 'outputVar.json, error page', 'the output variables answered by an error page');
+  assert(
+    errorPageBefore.scoreCodes === 0 && errorPageBefore.modelWrites === 0,
+    `a request that throws BEFORE the score code stores no score code and changes no tag (score codes: ${errorPageBefore.scoreCodes}, writes of the model: ${errorPageBefore.modelWrites})`
+  );
+  assert(
+    errorPageBefore.manifestedToasts === 0 && errorPageBefore.notManifested.length === 1 && errorPageBefore.notManifested[0].startsWith('Not manifested: a request to SAS Model Manager failed before the score code was stored') && errorPageBefore.errors.length === 0,
+    `and the box says that nothing was manifested and that the model keeps the score code and the tags it had (${describe(errorPageBefore)})`
   );
 
   // ---- parse the LLM response into output variables --------------------------
@@ -1942,6 +2077,69 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   assert(strayRequests.length === 0, `no request goes to a model "undefined" (got: ${strayRequests.map((e) => `${e.method} ${e.url}`).join(' | ')})`);
   await page.click('#promptBuilderCreatePromptModal .btn-secondary');
   await page.waitForSelector('.modal.show', { state: 'detached' });
+  // A dialog whose name is empty, or blanks only, asks SAS Model Manager for
+  // nothing. Sent on, the empty name was refused there, and the dialog said
+  // that a project of this name may already exist. The creation request is
+  // answered here the way the service answers an empty name, so that a page
+  // that does send it shows what it then says.
+  // The toasts of the refusals above are still on the page and go on their
+  // own: they are marked as seen, and only a toast that comes after counts.
+  const markToastsSeen = () => page.$$eval('.toast-body', (els) => els.forEach((e) => e.setAttribute('data-verify-seen', '1')));
+  const newNotCreatedToasts = async () =>
+    (await page.$$eval('.toast-body:not([data-verify-seen])', (els) => els.map((e) => e.textContent || ''))).filter((text) => text.includes('was not created')).length;
+  const assertNameIsNeeded = async (dialog, creation, message, label) => {
+    const sent = [];
+    await page.route(creation, (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      sent.push(route.request().postData() || '');
+      return route.fulfill({ status: 400, contentType: 'application/json', body: '{"errorCode":0,"message":"The name must not be empty.","httpStatusCode":400}' });
+    });
+    await markToastsSeen();
+    await page.click(`#LPB-modal-button-container button[data-bs-target="#${dialog}Modal"]`);
+    await page.waitForSelector(`#${dialog}Modal.show`);
+    const state = () =>
+      page.evaluate((id) => {
+        const error = document.getElementById(`${id}Error`);
+        const name = document.getElementById(`${id}Name`);
+        return {
+          error: error && !error.hidden ? error.textContent.trim() : '',
+          focus: document.activeElement ? document.activeElement.id : '',
+          marked: name.getAttribute('aria-invalid') === 'true' && name.classList.contains('is-invalid'),
+          open: document.getElementById(`${id}Modal`).classList.contains('show'),
+          createOff: document.querySelector(`#${id}Modal .btn-primary`).disabled,
+        };
+      }, dialog);
+    for (const [name, what] of [['', 'no name'], ['   ', 'a name of blanks only']]) {
+      await page.fill(`#${dialog}Name`, name);
+      await page.fill(`#${dialog}Description`, 'described, but not named');
+      await page.click(`#${dialog}Modal .btn-primary`);
+      await sleep(800);
+      const seen = await state();
+      assert(sent.length === 0, `${label} with ${what}: no creation request is sent to SAS Model Manager (sent: ${sent.length})`);
+      assert(
+        seen.error === message && (await newNotCreatedToasts()) === 0,
+        `${label} with ${what}: the dialog says that a name is needed, and nothing says "not created" or blames a name that exists already (dialog: ${seen.error || 'nothing'}; new toasts: ${await newNotCreatedToasts()})`
+      );
+      assert(
+        seen.open && seen.focus === `${dialog}Name` && seen.marked && !seen.createOff,
+        `${label} with ${what}: the dialog stays open, the name field is marked and has the cursor, and the button is usable (open: ${seen.open}, focus: ${seen.focus || 'nowhere'}, marked: ${seen.marked}, button disabled: ${seen.createOff})`
+      );
+    }
+    // The cursor is in the field: what is typed now is the name.
+    await page.keyboard.type('n');
+    const typed = await state();
+    assert(
+      (await page.inputValue(`#${dialog}Name`)).trim() === 'n' && !typed.marked,
+      `${label}: typing goes into the name field, and the mark of the missing name is gone with the first letter (name: "${await page.inputValue(`#${dialog}Name`)}", marked: ${typed.marked})`
+    );
+    await page.fill(`#${dialog}Name`, '');
+    await page.fill(`#${dialog}Description`, '');
+    await page.unroute(creation);
+    await page.click(`#${dialog}Modal .btn-secondary`);
+    await page.waitForSelector('.modal.show', { state: 'detached' });
+  };
+  await assertNameIsNeeded('promptBuilderCreateProject', '**/modelRepository/projects', 'A project name is required.', 'Create a new Project');
+  await assertNameIsNeeded('promptBuilderCreatePrompt', '**/modelRepository/models', 'A prompt name is required.', 'Create a new Prompt');
   // The same for a project the service refuses (no permission to write).
   const projectCreation = '**/modelRepository/projects';
   await page.route(projectCreation, (route) =>

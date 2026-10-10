@@ -29,6 +29,12 @@ export function openExternalLink(event: MouseEvent, anchor: HTMLAnchorElement, c
   // although the tab was there. Without it the answer says what happened: a
   // window where a tab opened, null where the sandbox refused one. The new
   // tab is cut off from this page by clearing its opener instead.
+  //
+  // "noreferrer" cannot be asked for here either - it implies "noopener", and
+  // the answer is null again. What the new tab is told about this page is
+  // decided by the referrer policy of the document instead: index.html sets
+  // "same-origin", so a link to another SAS Viya application keeps its
+  // Referer and a link to another site (the user guide) carries none.
   let opened: Window | null = null;
   try {
     opened = window.open(url, '_blank');

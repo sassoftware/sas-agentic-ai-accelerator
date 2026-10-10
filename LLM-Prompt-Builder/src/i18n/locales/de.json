@@ -211,7 +211,8 @@
       "nameLabel": "Gebe einen Projekt Namen ein",
       "descriptionLabel": "Gebe einen Projekt Beschreibung ein",
       "closeButtonText": "Schließen",
-      "saveButtonText": "Speichern"
+      "saveButtonText": "Speichern",
+      "nameRequiredText": "Ein Projektname ist erforderlich."
     },
     "promptBuilderCreatePrompt": {
       "modalTitle": "Erstelle einen neuen Prompt",
@@ -219,7 +220,8 @@
       "nameLabel": "Gebe einen Prompt Namen ein",
       "descriptionLabel": "Gebe ein Prompt Beschreibung ein",
       "closeButtonText": "Schließen",
-      "saveButtonText": "Speichern"
+      "saveButtonText": "Speichern",
+      "nameRequiredText": "Ein Name für den Prompt ist erforderlich."
     },
     "promptBuilderModelSelectorHeading": "Wähle die LLMs zum Testen der Prompts",
     "promptBuilderPromptingHeader": "Beginne deine Prompts zu schreiben und zu testen",
@@ -290,6 +292,8 @@
     "promptBuilderManifestTlsTagFailed": "Das Tag TLS-Verification-Off konnte nicht an das Modell geschrieben werden. Das Modell prüft TLS nicht: Tragen Sie das Tag im SAS Model Manager nach, damit es als solches zu finden ist.",
     "promptBuilderManifestTlsTagNotRemoved": "Die Tags des Modells konnten nicht aktualisiert werden. Dieser Score-Code schaltet die TLS-Prüfung nicht aus: Trägt das Modell noch das Tag TLS-Verification-Off, entfernen Sie es im SAS Model Manager, damit es nicht als Modell geführt wird, das nicht prüft.",
     "promptBuilderManifestScoreCodeFailed": "Nicht manifestiert: Der Score-Code konnte nicht im SAS Model Manager gespeichert werden. Das Modell behält den Score-Code und die Tags, die es hatte; seine Ein- und Ausgabevariablen können bereits die dieses Laufs sein. Prüfen Sie Ihre Berechtigungen für das Modell und manifestieren Sie erneut.",
+    "promptBuilderManifestStopped": "Nicht manifestiert: Eine Anfrage an den SAS Model Manager ist fehlgeschlagen, bevor der Score-Code gespeichert wurde. Das Modell behält den Score-Code und die Tags, die es hatte; seine Ein- und Ausgabevariablen können bereits die dieses Laufs sein. Manifestieren Sie erneut; schlägt auch das fehl, prüfen Sie die Verbindung zu SAS Viya und Ihre Berechtigungen für das Modell.",
+    "promptBuilderManifestIncomplete": "Das Manifestieren wurde nicht abgeschlossen: Der Score-Code dieses Laufs ist gespeichert, aber eine Anfrage an den SAS Model Manager ist danach fehlgeschlagen. Die Anforderungsdatei (requirements.json) und die Attribute des Modells können fehlen oder noch die eines früheren Manifests sein. Manifestieren Sie erneut; schlägt auch das fehl, prüfen Sie die Verbindung zu SAS Viya und Ihre Berechtigungen für das Modell.",
     "promptBuilderFastestPrompt": "Dieses Modell hatte die schnellste Antwortzeit in diesem Experiment",
     "promptBuilderFewestTokensPrompt": "Dieses Modell hatte die Antwort mit den wenigsten Output-Tokens in diesem Experiment",
     "promptBuilderCheapestPrompt": "Diese Antwort hatte die geringsten geschätzten Kosten in diesem Experiment",

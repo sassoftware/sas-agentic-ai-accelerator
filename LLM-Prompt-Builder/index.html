@@ -7,11 +7,21 @@ Single entry document. Everything (CSS, JS, locales) is bundled and inlined into
 one self-contained HTML file at build time — there are no external CDN scripts,
 fonts, or a runtime config.js, so the built file works inside a locked-down SAS
 Visual Analytics / SAS Job Execution embed.
+
+The referrer policy "same-origin" belongs to that: the page is served from the
+SAS Viya host, and a request it sends to another site (the user guide link of
+the Optimize step, a link in a rendered LLM response, a model container on
+another host) must not tell that site where SAS Viya runs. Requests to SAS Viya
+itself keep their Referer. The links are opened through window.open without the
+"noreferrer" feature, because the answer of window.open has to say whether a
+tab opened (see src/ui/external-link.ts) - so the policy of the document is
+what keeps the Referer back.
 -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="same-origin" />
     <title>LLM Prompt Builder</title>
   </head>
   <body>

@@ -679,6 +679,7 @@ export async function buildRagBuilder(
       descriptionLabel: str('ragBuilderNewProjectDescriptionLabel', 'Description'),
       closeButtonText: str('ragBuilderModalClose', 'Cancel'),
       saveButtonText: str('ragBuilderModalSave', 'Create'),
+      nameRequiredText: str('ragBuilderProjectNameRequired', 'A project name is required.'),
     },
     createProjectFromModal
   );
@@ -695,6 +696,7 @@ export async function buildRagBuilder(
       descriptionLabel: str('ragBuilderNewSetupDescriptionLabel', 'Description'),
       closeButtonText: str('ragBuilderModalClose', 'Cancel'),
       saveButtonText: str('ragBuilderModalSave', 'Create'),
+      nameRequiredText: str('ragBuilderSetupNameRequired', 'A setup name is required.'),
     },
     createSetupFromModal
   );
@@ -2633,6 +2635,9 @@ export async function buildRagBuilder(
   // is scrolled down to the Create buttons: the click then seemed to do
   // nothing. The dialog also keeps its button disabled until the function
   // has ended, so a double click creates one project or setup, not two.
+  // A name that is empty never gets here - the dialog refuses it itself (see
+  // createCreateModal); the checks below stay for a name that is missing for
+  // any other reason.
   async function createProjectFromModal(dialog: CreateModalDialog): Promise<void> {
     const name = (document.getElementById(`${idOf('create-project')}Name`) as HTMLInputElement | null)?.value.trim() ?? '';
     const description = (document.getElementById(`${idOf('create-project')}Description`) as HTMLInputElement | null)?.value.trim() ?? '';

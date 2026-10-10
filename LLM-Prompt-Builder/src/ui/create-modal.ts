@@ -28,6 +28,8 @@ export interface CreateModalText {
   descriptionLabel?: string;
   closeButtonText?: string;
   saveButtonText?: string;
+  /** Said in the dialog when its button is clicked with no name entered. */
+  nameRequiredText?: string;
 }
 
 /** What the dialog hands to `onSave`. */
@@ -51,6 +53,12 @@ export interface CreateModalDialog {
  * returns is pending the button is disabled and further clicks are ignored: a
  * double click must not create the thing twice. A message of the click before
  * is taken away when the next one starts and when the dialog is opened again.
+ *
+ * A name that is empty, or white space only, never reaches `onSave`: the
+ * dialog says that a name is needed (`nameRequiredText`), marks the field and
+ * puts the cursor into it, and its button stays usable. Sent on, the empty
+ * name was refused by SAS Model Manager, and the person read that a thing of
+ * this name may already exist. Every other rule about a name is the caller's.
  */
 export function createCreateModal(
   container: HTMLElement,
@@ -99,7 +107,7 @@ export function createCreateModal(
   // Each field is its label above an input as wide as the dialog. Label and
   // input on one line left the input at the browser's default width, beside
   // a label of any length: a name was cut off while it was typed.
-  const field = (id: string, labelText: string | undefined, last: boolean): void => {
+  const field = (id: string, labelText: string | undefined, last: boolean): HTMLInputElement => {
     const group = document.createElement('div');
     group.classList.add('pb-create-field', last ? 'mb-0' : 'mb-3');
     const label = document.createElement('label');
@@ -113,8 +121,9 @@ export function createCreateModal(
     group.appendChild(label);
     group.appendChild(input);
     body.appendChild(group);
+    return input;
   };
-  field(`${prefix}Name`, text.nameLabel, false);
+  const nameInput = field(`${prefix}Name`, text.nameLabel, false);
   field(`${prefix}Description`, text.descriptionLabel, true);
   const error = document.createElement('div');
   error.id = `${prefix}Error`;
@@ -126,7 +135,16 @@ export function createCreateModal(
   const clearError = (): void => {
     error.textContent = '';
     error.hidden = true;
+    nameInput.classList.remove('is-invalid');
+    nameInput.removeAttribute('aria-invalid');
+    nameInput.removeAttribute('aria-describedby');
   };
+  // The mark of a missing name goes as soon as something is typed; the
+  // message stays until the next click, like every other one.
+  nameInput.addEventListener('input', () => {
+    nameInput.classList.remove('is-invalid');
+    nameInput.removeAttribute('aria-invalid');
+  });
   const dialogHandle: CreateModalDialog = {
     showError: (message) => {
       error.textContent = message;
@@ -149,9 +167,17 @@ export function createCreateModal(
   let saving = false;
   save.onclick = async () => {
     if (saving) return;
+    clearError();
+    if (nameInput.value.trim() === '') {
+      dialogHandle.showError(text.nameRequiredText ?? 'A name is required.');
+      nameInput.classList.add('is-invalid');
+      nameInput.setAttribute('aria-invalid', 'true');
+      nameInput.setAttribute('aria-describedby', error.id);
+      nameInput.focus();
+      return;
+    }
     saving = true;
     save.disabled = true;
-    clearError();
     try {
       await onSave(dialogHandle);
     } finally {

@@ -149,7 +149,13 @@ is a default written at manifest time:
   holds: a manifest whose score code SAS Model Manager did not store is
   reported as failed and leaves the tag as it was, and a tag that could not be
   written - or could not be taken away again - is named beside the Manifest
-  button, to be put right in SAS Model Manager.
+  button, to be put right in SAS Model Manager. The tags are the first thing
+  written once the score code is stored. A request that fails outright while
+  a prompt or decision template is manifested (no answer, or the error page of
+  an ingress instead of one from SAS Model Manager) ends the manifest with a
+  line beside the button - *Not manifested* when the score code was not stored
+  yet, *The manifest was not completed* when it was - and the button is usable
+  again; manifest again once the service answers.
 - The environment of the destination still decides when it says something:
   `LLMCONTAINERSSLVERIFY` set to `false`, `no` or `0` switches verification
   off, set to `true`, `yes` or `1` switches it on, whatever was manifested.
@@ -301,6 +307,13 @@ default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://<sas
 > Attribute Value*. The link is copied only where no tab opened: with
 > `allow-popups`, and on the job URL opened in a browser tab, a click opens the
 > tab and leaves the clipboard alone.
+
+The page carries the referrer policy `same-origin` (a `<meta name="referrer">`
+in its head). A tab it opens on SAS Viya itself (SAS Model Manager, SAS
+Intelligent Decisioning) is told where the click came from, as before; a
+request to any other site - the user guide link of the Optimize step, a model
+container on another host - carries no `Referer`, so the address of your SAS
+Viya host is not passed on to a third party.
 
 ## Local development
 

@@ -211,7 +211,8 @@
       "nameLabel": "Enter the Project Name",
       "descriptionLabel": "Enter the Project Description",
       "closeButtonText": "Close",
-      "saveButtonText": "Save"
+      "saveButtonText": "Save",
+      "nameRequiredText": "A project name is required."
     },
     "promptBuilderCreatePrompt": {
       "modalTitle": "Create a new Prompt",
@@ -219,7 +220,8 @@
       "nameLabel": "Enter the Prompt Name",
       "descriptionLabel": "Enter the Prompt Description",
       "closeButtonText": "Close",
-      "saveButtonText": "Save"
+      "saveButtonText": "Save",
+      "nameRequiredText": "A prompt name is required."
     },
     "promptBuilderModelSelectorHeading": "Select the LLMs to test Prompts with",
     "promptBuilderPromptingHeader": "Start building and testing your prompt",
@@ -290,6 +292,8 @@
     "promptBuilderManifestTlsTagFailed": "The tag TLS-Verification-Off could not be written to the model. The model does not verify TLS: add the tag in SAS Model Manager, so that it can be found as such.",
     "promptBuilderManifestTlsTagNotRemoved": "The tags of the model could not be updated. This score code does not switch TLS verification off: if the model still carries the tag TLS-Verification-Off, remove it in SAS Model Manager, so that it is not listed as a model that does not verify.",
     "promptBuilderManifestScoreCodeFailed": "Not manifested: the score code could not be stored in SAS Model Manager. The model keeps the score code and the tags it had; its input and output variables may already be those of this run. Check your permissions on the model and manifest again.",
+    "promptBuilderManifestStopped": "Not manifested: a request to SAS Model Manager failed before the score code was stored. The model keeps the score code and the tags it had; its input and output variables may already be those of this run. Manifest again; if that fails too, check the connection to SAS Viya and your permissions on the model.",
+    "promptBuilderManifestIncomplete": "The manifest was not completed: the score code of this run is stored, but a request to SAS Model Manager failed after that. The requirements file (requirements.json) and the attributes of the model may be missing or still those of an earlier manifest. Manifest again; if that fails too, check the connection to SAS Viya and your permissions on the model.",
     "promptBuilderFastestPrompt": "This model had the fastest response time in this experiment run",
     "promptBuilderFewestTokensPrompt": "This model had the fewest output tokens in this experiment run",
     "promptBuilderCheapestPrompt": "This response had the lowest estimated cost in this experiment run",

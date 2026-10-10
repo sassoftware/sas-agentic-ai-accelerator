@@ -90,7 +90,11 @@ const lastLine = (message) => String(message || '').trim().split('\n').pop();
 // What a link that leaves the page does when no tab can be opened: it shows
 // for a moment that the link was copied. `window.open` is made to answer the
 // way the sandboxed iframe of a report does.
-async function assertLinkCopies(target, selector, label) {
+// `own` is the text the link shows when it is left alone, as the test knows
+// it. It is not read from the link at the moment of the check: a check before
+// may have left the "link copied" note in it, and a check that took the note
+// for the text of the link would pass on a link that shows the note for good.
+async function assertLinkCopies(target, selector, own, label) {
   await target.evaluate(() => {
     window.__verifyOpened = [];
     window.__verifyRealOpen = window.__verifyRealOpen || window.open;
@@ -100,7 +104,6 @@ async function assertLinkCopies(target, selector, label) {
     };
   });
   const href = await target.$eval(selector, (link) => link.href);
-  const shown = (await target.textContent(selector)).trim();
   const tabs = target.context().pages().length;
   await target.click(selector);
   await waitUntil(async () => /link copied/i.test(await target.textContent(selector)), `${label}: says that the link was copied when no tab can be opened`, 3000);
@@ -109,7 +112,7 @@ async function assertLinkCopies(target, selector, label) {
     opened.length === 1 && opened[0] === href && target.context().pages().length === tabs,
     `${label}: asks for a new tab once, through window.open, and follows no plain target="_blank" link (asked for: ${opened.join(', ') || 'nothing'})`
   );
-  await waitUntil(async () => (await target.textContent(selector)).trim() === shown, `${label}: shows its text again afterwards`, 5000);
+  await waitUntil(async () => (await target.textContent(selector)).trim() === own, `${label}: shows its own text again afterwards ("${own}")`, 5000);
   await target.evaluate(() => {
     window.open = window.__verifyRealOpen;
   });
@@ -119,7 +122,7 @@ async function assertLinkCopies(target, selector, label) {
 // a browser does there: with a window, and with null when the features hold
 // "noopener" (the specification asks for null then, although the tab opens).
 // The link has to open its tab and do nothing else.
-async function assertLinkOpensTab(target, selector, label) {
+async function assertLinkOpensTab(target, selector, own, label) {
   await target.evaluate(() => {
     window.__verifyOpened = [];
     window.__verifyTab = { opener: window };
@@ -130,7 +133,6 @@ async function assertLinkOpensTab(target, selector, label) {
     };
   });
   const href = await target.$eval(selector, (link) => link.href);
-  const shown = (await target.textContent(selector)).trim();
   await target.click(selector);
   await sleep(500);
   const seen = await target.evaluate(() => ({ opened: window.__verifyOpened, cutOff: window.__verifyTab.opener === null }));
@@ -142,7 +144,7 @@ async function assertLinkOpensTab(target, selector, label) {
     seen.opened.length === 1 && seen.opened[0].url === href && !/noopener/i.test(seen.opened[0].features) && seen.cutOff,
     `${label}: asks for a new tab once, without the "noopener" feature that makes window.open answer null where the tab did open, and clears the opener of that tab (features: ${seen.opened.map((call) => call.features || 'none').join(' | ') || 'not asked'}; opener cleared: ${seen.cutOff})`
   );
-  assert(text === shown, `${label}: where the tab opens, the link keeps its text and does not claim that popups are blocked (text: ${text})`);
+  assert(text === own, `${label}: where the tab opens, the link keeps its own text ("${own}") and does not claim that popups are blocked (text: ${text})`);
 }
 // A create dialog that is open: each field is its label above an input as
 // wide as the dialog body.
@@ -1352,6 +1354,35 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       `Create project without a name: the dialog stays open and says inside it that a name is required (dialog: ${await dialogError('create-project')}; banner: ${(await bannerDanger()) || 'empty'})`
     );
     assert(!(await getLog()).some((e) => e.method === 'POST' && e.url === '/modelRepository/projects'), 'and nothing is sent to SAS Model Manager');
+    // The dialog itself refuses a name that is empty or blanks only: the name
+    // field is marked and gets the cursor, and the button stays usable.
+    const dialogState = (dialog) =>
+      page.evaluate(
+        ([modal, name]) => ({
+          focus: document.activeElement ? `#${document.activeElement.id}` : '',
+          marked: document.querySelector(name).getAttribute('aria-invalid') === 'true' && document.querySelector(name).classList.contains('is-invalid'),
+          createOff: document.querySelector(`${modal} .btn-primary`).disabled,
+        }),
+        [rgb(`${dialog}Modal`), rgb(`${dialog}Name`)]
+      );
+    const assertNameIsNeeded = async (dialog, creation, message, label) => {
+      await resetLog();
+      await page.fill(rgb(`${dialog}Name`), '   ');
+      await page.click(`${rgb(`${dialog}Modal`)} .btn-primary`);
+      await sleep(700);
+      const blanks = await dialogState(dialog);
+      const sent = (await getLog()).filter((e) => e.method === 'POST' && e.url === creation).length;
+      assert(
+        (await dialogError(dialog)) === message && sent === 0,
+        `${label} with a name of blanks only: the dialog says that a name is required and nothing is sent to SAS Model Manager (dialog: ${(await dialogError(dialog)) || 'nothing'}; requests: ${sent})`
+      );
+      assert(
+        blanks.focus === rgb(`${dialog}Name`) && blanks.marked && !blanks.createOff,
+        `${label} without a name: the name field is marked and has the cursor, and the Create button is usable (focus: ${blanks.focus || 'nowhere'}, marked: ${blanks.marked}, button disabled: ${blanks.createOff})`
+      );
+      await page.fill(rgb(`${dialog}Name`), '');
+    };
+    await assertNameIsNeeded('create-project', '/modelRepository/projects', 'A project name is required.', 'Create project');
     // A double click on Create while SAS Model Manager takes its time: one
     // project, not two of the same name.
     const slowCreation = '**/modelRepository/projects';
@@ -1385,6 +1416,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     await page.click(`${rgb('create-setupModal')} .btn-primary`);
     await waitUntil(async () => (await dialogError('create-setup')) !== '', 'Create setup without a name: the dialog says something');
     assert((await dialogError('create-setup')) === 'A setup name is required.', `Create setup without a name: the dialog says so inside it (got: ${await dialogError('create-setup')})`);
+    await assertNameIsNeeded('create-setup', '/modelRepository/models', 'A setup name is required.', 'Create setup');
     await resetLog();
     await page.fill(rgb('create-setupName'), 'ZZ Manifest Setup');
     await page.dblclick(`${rgb('create-setupModal')} .btn-primary`);
@@ -1446,8 +1478,8 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       sslVerifyOf(ticked.code, { RAGEMBED_SSLVERIFY: 'false' }) === '[false,true]',
       `option ticked: RAGEMBED_SSLVERIFY=false still switches that one call off (got: ${sslVerifyOf(ticked.code, { RAGEMBED_SSLVERIFY: 'false' })})`
     );
-    await assertLinkCopies(page, `${rgb('save-result')} a`, 'the link to the saved setup beside Manifest setup');
-    await assertLinkOpensTab(page, `${rgb('save-result')} a`, 'the link to the saved setup beside Manifest setup');
+    await assertLinkCopies(page, `${rgb('save-result')} a`, 'Open in SAS Model Manager', 'the link to the saved setup beside Manifest setup');
+    await assertLinkOpensTab(page, `${rgb('save-result')} a`, 'Open in SAS Model Manager', 'the link to the saved setup beside Manifest setup');
 
     // -- the option unticked --------------------------------------------------------
     await openRag(page, `${APP_URL}&sslVerify=false`);

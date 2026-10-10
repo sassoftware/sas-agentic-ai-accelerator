@@ -38,6 +38,16 @@ async function waitUntil(fn, label, timeout = 8000) {
   }
   throw new Error('timeout waiting for: ' + label);
 }
+// A wait that answers instead of throwing: true as soon as `fn` holds, false
+// when it did not within `timeout`.
+async function settles(fn, timeout = 8000) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    if (await fn()) return true;
+    await sleep(100);
+  }
+  return false;
+}
 function multipartJson(body) {
   const m = body.match(/\r\n\r\n([\s\S]*?)\r\n--/);
   return m ? JSON.parse(m[1]) : null;
@@ -501,6 +511,21 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
           return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ errorCode: 0, message: 'the files service does not answer', httpStatusCode: 500 }) });
         }
       }
+      // A request that THROWS in the page: an answer that is no JSON (the
+      // error page of an ingress), or no answer at all.
+      const uploadOf = (file) => request.method() === 'POST' && (request.postData() || '').includes(`filename="${file}"`);
+      if (fault === 'requirements.json, error page' && uploadOf('requirements.json')) {
+        injected += 1;
+        return route.fulfill({ status: 502, contentType: 'text/html', body: '<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center></body></html>' });
+      }
+      if (fault === 'requirements.json, no network' && uploadOf('requirements.json')) {
+        injected += 1;
+        return route.abort('failed');
+      }
+      if (fault === 'outputVar.json, error page' && uploadOf('outputVar.json')) {
+        injected += 1;
+        return route.fulfill({ status: 502, contentType: 'text/html', body: '<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center></body></html>' });
+      }
       return route.continue();
     });
     // The first write of the model after the score code is the tag update.
@@ -514,14 +539,18 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
     await resetLog();
     await target.click(MANIFEST_BUTTON);
     await waitUntil(async () => injected === 1, `${label}: the ${fault} request is refused`, 20000);
-    await waitUntil(
+    const ended = await settles(
       async () => !(await target.isDisabled(MANIFEST_BUTTON)) && (await target.textContent(MANIFEST_BUTTON)).trim() === 'Manifest Best Prompt',
-      `${label}: the manifest has ended and its button is usable again`,
-      20000
+      12000
     );
+    assert(ended, `${label}: the manifest has ended and its button is usable again (button: ${(await target.textContent(MANIFEST_BUTTON)).trim()}${(await target.isDisabled(MANIFEST_BUTTON)) ? ', disabled' : ''})`);
     await sleep(400);
     const entries = await getLog();
+    const modelWrite = entries.find((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-dec');
     const outcome = {
+      // The tags of the first write of the model, which is the tag update.
+      tags: modelWrite ? JSON.parse(modelWrite.body).tags || [] : null,
+      scoreCodes: entries.filter((e) => e.method === 'POST' && e.body.includes('def scoreModel(')).length,
       modelWrites: entries.filter((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-dec').length,
       requirements: Boolean(findPart(entries, 'requirements.json')),
       manifestedToasts: (await target.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).filter((text) => text.includes('has been manifested')).length,
@@ -551,6 +580,44 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   assert(
     notWritten.tagLines.length === 1 && notWritten.tagLines[0].includes('could not be written') && notWritten.tagLines[0].includes('add the tag in SAS Model Manager'),
     `option unticked: a tag update that failed is reported the other way round - the model does not verify and the tag has to be added (got: ${notWritten.tagLines.join(' | ') || 'nothing'})`
+  );
+
+  // ---- a request that throws while the decision manifest runs --------------------------
+  // An answer that is no JSON (the 502 page of an ingress) and a request that
+  // gets no answer THROW in the page. The manifest used to end where it
+  // stood: the button stayed disabled on "Saving..." for good, nothing was
+  // said, and the tags - written after requirements.json - were never
+  // updated, so TLS-Verification-Off did not say what the stored score code
+  // does. The template carries the tag here.
+  const describe = (outcome) =>
+    `tags: ${outcome.tags ? outcome.tags.join(', ') : 'not written'}; box: ${outcome.notManifested.join(' | ') || 'nothing'}; toasts: ${outcome.manifestedToasts}; errors: ${outcome.errors.join(' | ') || 'none'}`;
+  const errorPageAfter = await faultyManifest(APP_URL, 'requirements.json, error page', 'option ticked, requirements.json answered by an error page');
+  assert(
+    errorPageAfter.scoreCodes === 1 && errorPageAfter.tags !== null && !errorPageAfter.tags.includes(TLS_TAG) && errorPageAfter.tags.includes('Decision-Call-Included'),
+    `option ticked: the tags are updated directly after the score code is stored, so a request that throws after it leaves no ${TLS_TAG} on a template whose stored code verifies (${describe(errorPageAfter)})`
+  );
+  assert(
+    errorPageAfter.manifestedToasts === 0 && errorPageAfter.notManifested.length === 1 && errorPageAfter.notManifested[0].startsWith('The manifest was not completed: the score code of this run is stored'),
+    `and the box beside the button says that the manifest was not completed, with no toast saying "manifested" (${describe(errorPageAfter)})`
+  );
+  assert(errorPageAfter.tagLines.length === 0 && errorPageAfter.errors.length === 0, `nothing is said about the tags, which were written, and no error is left uncaught (${describe(errorPageAfter)})`);
+  const noNetworkAfter = await faultyManifest(`${APP_URL}&sslVerify=false`, 'requirements.json, no network', 'option unticked, requirements.json gets no answer');
+  assert(
+    noNetworkAfter.scoreCodes === 1 && noNetworkAfter.tags !== null && noNetworkAfter.tags.includes(TLS_TAG),
+    `option unticked: a request that gets no answer after the score code leaves the template tagged ${TLS_TAG}, as its stored code does not verify (${describe(noNetworkAfter)})`
+  );
+  assert(
+    noNetworkAfter.manifestedToasts === 0 && noNetworkAfter.notManifested.length === 1 && noNetworkAfter.notManifested[0].startsWith('The manifest was not completed') && noNetworkAfter.errors.length === 0,
+    `and it is reported the same way: not completed, no "manifested" toast, no uncaught error (${describe(noNetworkAfter)})`
+  );
+  const errorPageBefore = await faultyManifest(APP_URL, 'outputVar.json, error page', 'the output variables answered by an error page');
+  assert(
+    errorPageBefore.scoreCodes === 0 && errorPageBefore.modelWrites === 0,
+    `a request that throws BEFORE the score code stores no score code and changes no tag (score codes: ${errorPageBefore.scoreCodes}, writes of the model: ${errorPageBefore.modelWrites})`
+  );
+  assert(
+    errorPageBefore.manifestedToasts === 0 && errorPageBefore.notManifested.length === 1 && errorPageBefore.notManifested[0].startsWith('Not manifested: a request to SAS Model Manager failed before the score code was stored') && errorPageBefore.errors.length === 0,
+    `and the box says that nothing was manifested and that the template keeps the score code and the tags it had (${describe(errorPageBefore)})`
   );
 
   // ---- a template to start from ---------------------------------------------------------
@@ -735,6 +802,33 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   await resetLog();
   await page.click('[data-bs-target="#promptBuilderCreateProjectModal"]');
   await page.waitForSelector('#promptBuilderCreateProjectModal.show');
+  // Without a name the dialog asks SAS Model Manager for nothing, in this
+  // kind as in the other. The request is answered here the way the service
+  // answers an empty name, so that a page that does send it creates nothing.
+  let unnamedProjects = 0;
+  const projectCreation = '**/modelRepository/projects';
+  await page.route(projectCreation, (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    unnamedProjects += 1;
+    return route.fulfill({ status: 400, contentType: 'application/json', body: '{"errorCode":0,"message":"The name must not be empty.","httpStatusCode":400}' });
+  });
+  await page.fill('#promptBuilderCreateProjectName', '  ');
+  await page.click('#promptBuilderCreateProjectModal .btn-primary');
+  await sleep(800);
+  const unnamed = await page.evaluate(() => {
+    const error = document.getElementById('promptBuilderCreateProjectError');
+    return {
+      error: error && !error.hidden ? error.textContent.trim() : '',
+      focus: document.activeElement ? document.activeElement.id : '',
+      createOff: document.querySelector('#promptBuilderCreateProjectModal .btn-primary').disabled,
+    };
+  });
+  await page.unroute(projectCreation);
+  assert(unnamedProjects === 0, `a decision project without a name: no creation request is sent to SAS Model Manager (sent: ${unnamedProjects})`);
+  assert(
+    unnamed.error === 'A project name is required.' && unnamed.focus === 'promptBuilderCreateProjectName' && !unnamed.createOff,
+    `the dialog says that a name is needed, puts the cursor into the name field and keeps its button usable (dialog: ${unnamed.error || 'nothing'}; focus: ${unnamed.focus || 'nowhere'}; button disabled: ${unnamed.createOff})`
+  );
   await page.fill('#promptBuilderCreateProjectName', 'Routing Decisions');
   await page.click('#promptBuilderCreateProjectModal .btn-primary');
   await waitUntil(async () => (await getLog()).some((e) => e.method === 'POST' && e.url === '/modelRepository/projects'), 'project created');

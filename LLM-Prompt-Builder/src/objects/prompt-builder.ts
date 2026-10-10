@@ -550,6 +550,7 @@ interface ModalText {
   descriptionLabel?: string;
   closeButtonText?: string;
   saveButtonText?: string;
+  nameRequiredText?: string;
 }
 
 /**
@@ -1245,7 +1246,8 @@ export async function buildPromptBuilder(
     promptBuilderModalButtonContainer.classList.add('d-flex', 'flex-wrap', 'align-items-center', 'row-gap-2');
 
     // Function to call when creating a new project. The dialog keeps its
-    // button disabled until this has ended (see createCreateModal).
+    // button disabled until this has ended, and does not call it at all for
+    // a name that is empty (see createCreateModal).
     async function promptBuilderCreateProject(dialog: CreateModalDialog): Promise<void> {
       const promptBuilderRepositoryInformation = await getModelRepositoryInformation(promptBuilderObject?.modelRepositoryID as string);
       const promptBuilderNewProjectDefinition = {
@@ -4278,8 +4280,7 @@ export async function buildPromptBuilder(
       // the run later restores it. The save link goes to the manifest box here.
       stampManifestConfigOnBestRun();
       await promptBuilderSaveExperiments(promptExperimentResultContainer);
-      if (promptMode === 'decision') await promptBuilderCreateDecisionModel();
-      else await promptBulderCreateBestPromptModel();
+      await runManifest(promptMode === 'decision' ? promptBuilderCreateDecisionModel : promptBulderCreateBestPromptModel);
     };
     // Wrapped so the "select a best response first" hint shows on hover even
     // while the button is disabled (a disabled button fires no hover events).
@@ -4383,7 +4384,10 @@ export async function buildPromptBuilder(
     async function storeManifestScoreCode(modelID: string, scoreCode: Blob, fileName: string): Promise<boolean> {
       try {
         const stored = await createModelContent(modelID, scoreCode, fileName, 'score', 'text/x-python');
-        if (stored.status_code < 300) return true;
+        if (stored.status_code < 300) {
+          manifestScoreCodeStored = true;
+          return true;
+        }
         console.error(`The score code of the manifest was not stored (status ${stored.status_code}).`, stored.response);
       } catch (error) {
         console.error('The score code of the manifest was not stored.', error);
@@ -4393,6 +4397,46 @@ export async function buildPromptBuilder(
       line.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestScoreCodeFailed}`;
       promptExperimentResultContainer.appendChild(line);
       return false;
+    }
+    /**
+     * Whether the manifest that is running has stored its score code: what
+     * has to be said when a later request fails depends on it.
+     */
+    let manifestScoreCodeStored = false;
+    /**
+     * Run a manifest so that it ends whatever happens in it. A request that
+     * throws - the network is gone, or the answer is no JSON, such as the
+     * error page of an ingress - used to end the function where it stood:
+     * the button stayed disabled on "Saving..." for good and nothing was
+     * said. Now the box beside the button says that the manifest stopped,
+     * and whether the score code of this run is stored, no toast says
+     * "manifested", and the button is usable again.
+     *
+     * The tag TLS-Verification-Off is not this function's business: both
+     * manifests update the tags directly after the score code is stored, so
+     * the tag says what the stored code does wherever the manifest stops
+     * after that.
+     */
+    async function runManifest(manifest: () => Promise<void>): Promise<void> {
+      manifestScoreCodeStored = false;
+      try {
+        await manifest();
+      } catch (error) {
+        console.error('The manifest stopped at a request that failed.', error);
+        const line = document.createElement('p');
+        line.classList.add(
+          'text-danger',
+          'pet-manifest-failed',
+          manifestScoreCodeStored ? 'pet-manifest-incomplete' : 'pet-manifest-stopped'
+        );
+        line.innerText = manifestScoreCodeStored
+          ? `${promptBuilderInterfaceText?.promptBuilderManifestIncomplete}`
+          : `${promptBuilderInterfaceText?.promptBuilderManifestStopped}`;
+        promptExperimentResultContainer.appendChild(line);
+      } finally {
+        promptExperimentCreateModelButton.disabled = false;
+        promptExperimentCreateModelButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
+      }
     }
     const manifestOutputsLabel = document.createElement('p');
     manifestOutputsLabel.classList.add('fw-bold', 'mb-1');
@@ -5137,33 +5181,15 @@ ${scoreCodeReturn}`;
           promptExperimentCreateModelTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
           return;
         }
-        // The integrated call imports the requests package at score time: ship
-        // a requirements.json (same format and role as the LLM definitions) so
-        // publishing destinations that build a Python environment install it.
-        // A stale one from an earlier manifest is removed when the LLM call is
-        // no longer included.
-        if (integratedLLMCall) {
-          await createModelContent(
-            promptExperimentRunModel,
-            [{ step: 'install requests', command: 'pip3 -q install requests' }],
-            'requirements.json',
-            'python pickle'
-          );
-        } else {
-          const manifestModelContents = await getModelContents(promptExperimentRunModel);
-          const staleRequirements = manifestModelContents.find(
-            (modelContent) => modelContent.name === 'requirements.json'
-          );
-          if (staleRequirements?.id) {
-            await deleteModelContent(promptExperimentRunModel, staleRequirements.id);
-          }
-        }
         // Tag the model with the manifested LLM and the chosen manifest mode.
         // Tags from an earlier manifest (other LLM names, mode flags) are
         // removed first so re-manifesting does not leave stale tags behind.
         // A model whose score code calls the container without verifying the
         // certificate says so with a tag; the Call LLM node variant makes no
         // call and never carries it.
+        // This is the first thing done once the score code is stored, before
+        // any other request: whatever fails after it, the tag says what the
+        // stored score code does.
         const manifestTags = [
           (bestPromptItem as PETRow).model,
           ...(integratedLLMCall ? ['LLM-Call-Included'] : []),
@@ -5186,6 +5212,27 @@ ${scoreCodeReturn}`;
           console.error('Failed to update the tags of the manifested model.', error);
         }
         if (!manifestTagsWritten) reportTlsTagFailure(!manifestTags.includes(TLS_VERIFICATION_OFF_TAG));
+        // The integrated call imports the requests package at score time: ship
+        // a requirements.json (same format and role as the LLM definitions) so
+        // publishing destinations that build a Python environment install it.
+        // A stale one from an earlier manifest is removed when the LLM call is
+        // no longer included.
+        if (integratedLLMCall) {
+          await createModelContent(
+            promptExperimentRunModel,
+            [{ step: 'install requests', command: 'pip3 -q install requests' }],
+            'requirements.json',
+            'python pickle'
+          );
+        } else {
+          const manifestModelContents = await getModelContents(promptExperimentRunModel);
+          const staleRequirements = manifestModelContents.find(
+            (modelContent) => modelContent.name === 'requirements.json'
+          );
+          if (staleRequirements?.id) {
+            await deleteModelContent(promptExperimentRunModel, staleRequirements.id);
+          }
+        }
         // Copy the winning LLM's governance/cost attributes onto the manifested
         // prompt model (so a prompt carries the same metadata the mdb-registered
         // LLMs do) and (re)assert the current function value. Best-effort.
@@ -5340,12 +5387,8 @@ ${scoreCodeReturn}`;
         restore();
         return;
       }
-      await createModelContent(
-        promptExperimentRunModel,
-        [{ step: 'install requests', command: 'pip3 -q install requests' }],
-        'requirements.json',
-        'python pickle'
-      );
+      // The tags first, before any other request: whatever fails after the
+      // score code is stored, TLS-Verification-Off says what that code does.
       const staleManifestTags = [
         'LLM-Call-Included',
         'Output-Parsing',
@@ -5368,6 +5411,12 @@ ${scoreCodeReturn}`;
         console.error('Failed to update the tags of the manifested model.', error);
       }
       if (!manifestTagsWritten) reportTlsTagFailure(tlsVerificationOn);
+      await createModelContent(
+        promptExperimentRunModel,
+        [{ step: 'install requests', command: 'pip3 -q install requests' }],
+        'requirements.json',
+        'python pickle'
+      );
       await ensureLLMCostAttributes(chosen.model);
       const decisionModel = llmAttributesByName.get(chosen.model);
       const manifestAttributes: Record<string, unknown> = { function: PROMPT_FUNCTION };
@@ -6810,7 +6859,12 @@ ${scoreCodeReturn}`;
       optimizeLearnMore.href =
         'https://sassoftware.github.io/sas-agentic-ai-accelerator/User-Guide/Prompt-Builder#choosing-the-dataset-metric-and-optimizer';
       optimizeLearnMore.target = '_blank';
-      optimizeLearnMore.rel = 'noopener';
+      // The one link that leaves SAS Viya. "noreferrer" is for the ways of
+      // opening it that do not come through the click handler below (the
+      // middle mouse button, "Open link in new tab"); the click itself is
+      // kept from telling the other site where SAS Viya runs by the referrer
+      // policy of the page (see index.html).
+      optimizeLearnMore.rel = 'noopener noreferrer';
       optimizeLearnMore.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeLearnMore}`;
       // The user guide is another site, and the sandboxed iframe blocks its
       // new tab the same way.
