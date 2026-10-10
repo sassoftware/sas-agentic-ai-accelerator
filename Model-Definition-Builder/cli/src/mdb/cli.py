@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+import re
+from pathlib import Path, PurePath
 from typing import Optional
 
 import typer
@@ -1598,19 +1599,44 @@ def package_export(
 IMPORT_TIMEOUT = 600
 
 
-def _shell_word(value) -> str:
-    """A command-line argument as it has to be typed: quoted when it holds a space."""
-    text = str(value)
-    return f'"{text}"' if " " in text else text
+#: An argument no shell reads anything into, and what double quotes do not
+#: keep as it is: PowerShell and bash expand `$` and read a backtick, bash
+#: reads `\` and (at a prompt) `!`, and neither spells a `"` the other's way.
+_BARE_WORD = re.compile(r"[A-Za-z0-9_./:-]+")
+_NOT_KEPT_IN_DOUBLE_QUOTES = frozenset('"$`!\\')
+
+
+def _shell_word(value, windows: bool = os.name == "nt") -> str:
+    """A command-line argument as it can be pasted into PowerShell or bash,
+    whichever the admin is in: bare when it holds nothing a shell reads, else
+    in double quotes (cmd reads those too), in single quotes when it holds a
+    character double quotes do not keep. A path is spelled with forward
+    slashes, which Windows reads as well and bash does not eat.
+
+    One case has no spelling both shells read: a value with a single quote
+    and one of those characters. It is quoted for the platform's own shell
+    (PowerShell on Windows), so Git Bash on Windows does not read it back. A
+    single-quoted word is not a quoted word in cmd at all.
+    """
+    text = value.as_posix() if isinstance(value, PurePath) else str(value)
+    if _BARE_WORD.fullmatch(text):
+        return text
+    if not _NOT_KEPT_IN_DOUBLE_QUOTES.intersection(text):
+        return f'"{text}"'
+    return "'" + text.replace("'", "''" if windows else "'\\''") + "'"
 
 
 def _import_command(packages, options, caslib, table, server, no_releases: bool, timeout: int) -> str:
     """`mdb builders-import` with the arguments a run was given, for the line
     that tells an admin to run it again. An argument that was not given is
-    left out, so the repeat reads the same environment the first run did."""
+    left out, so the repeat reads the same environment the first run did -
+    and so is an empty --caslib, --table or --server, which the run reads as
+    not given."""
     words = ["mdb", "builders-import", *(_shell_word(path) for path in packages or [])]
-    for flag, value in (("--options", options), ("--caslib", caslib), ("--table", table), ("--server", server)):
-        if value is not None:
+    if options is not None:
+        words += ["--options", _shell_word(options)]
+    for flag, value in (("--caslib", caslib), ("--table", table), ("--server", server)):
+        if value:
             words += [flag, _shell_word(value)]
     if no_releases:
         words.append("--no-releases")
@@ -1818,8 +1844,14 @@ def builders_import(
             else:
                 again = f"mdb options-restore --file {_shell_word(options)}"
                 does = "every package imported - only the options are left to write"
-            console.print(f"\n[red]Not everything was imported and configured.[/red] Fix what is reported "
-                          f"above, then run: [bold]{again}[/bold] ({does})")
+            console.print("\n[red]Not everything was imported and configured.[/red] Fix what is reported "
+                          "above, then run:")
+            # The command is selected and pasted, so it is one line whatever
+            # the width of the terminal, and printed as it is: wrapped, its
+            # first line is `mdb builders-import` without the options file,
+            # and read as markup a directory named `[old]` is gone from it.
+            console.print(again, markup=False, highlight=False, soft_wrap=True)
+            console.print(f"({does})", markup=False, highlight=False)
         raise typer.Exit(1)
     if dry_run:
         return

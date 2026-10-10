@@ -18,7 +18,8 @@ is one way an upgrade from 2.2.x could lose something:
 """
 import io
 import json
-from pathlib import Path
+import shlex
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -508,9 +509,9 @@ def test_a_failed_runtime_import_still_restores_the_report(importing, tmp_path):
     assert fake.options("Prompt Builder")["enableRag"] == "true"
     assert "Not everything was imported and configured." in text
     # options-restore would leave the runtime package unimported for good
-    assert f"then run: mdb builders-import --options {options} --no-releases" in text
-    assert f"({RAG_RUNTIME_PACKAGE} did not import - this imports again and writes the options back" in text
-    assert "then run: mdb options-restore" not in text
+    assert (f"then run:\nmdb builders-import --options {cli._shell_word(options)} --no-releases\n"
+            f"({RAG_RUNTIME_PACKAGE} did not import - this imports again and writes the options back") in text
+    assert "\nmdb options-restore" not in text
     assert "Done." not in text
 
 
@@ -524,9 +525,9 @@ def test_a_failed_prompt_builder_import_leaves_the_old_report_alone(importing, t
     assert "Prompt Builder: its package did not import - options not restored." in text
     assert "not an option of this report version" not in text
     # the report on the site is the 2.2.x one: a restore alone cannot reach it
-    assert f"then run: mdb builders-import --options {options} --no-releases" in text
-    assert f"({PROMPT_BUILDER_PACKAGE} did not import" in text
-    assert "then run: mdb options-restore" not in text
+    assert (f"then run:\nmdb builders-import --options {cli._shell_word(options)} --no-releases\n"
+            f"({PROMPT_BUILDER_PACKAGE} did not import") in text
+    assert "\nmdb options-restore" not in text
 
 
 @pytest.fixture
@@ -553,7 +554,7 @@ def test_a_failed_first_install_discovers_nothing_and_says_how_to_go_on(importin
     assert result.exit_code == 1 and asked == []
     assert fake.written == [] and "Prompt Builder" not in fake.reports
     assert "No Builder report was imported" in text
-    assert "then run: mdb builders-import --no-releases (it imports again and configures the report" in text
+    assert "then run:\nmdb builders-import --no-releases\n(it imports again and configures the report" in text
 
 
 TUNED = {**NEW_DEFAULTS, "viyaHost": "https://site.example", "SCREndpoint": "https://scr.site.example/llm",
@@ -614,9 +615,9 @@ def test_a_restore_that_cannot_reach_the_report_does_not_end_with_done(importing
     assert "Prompt Builder: 7 option(s) the Prompt Builder reads cannot be written" in text
     assert "Not everything was imported and configured." in text and "Done." not in text
     # the package that was named imported: what is left is the options
-    assert (f"then run: mdb options-restore --file {options} (every package imported - only the options "
-            "are left to write)") in text
-    assert "then run: mdb builders-import" not in text
+    assert (f"then run:\nmdb options-restore --file {cli._shell_word(options)}\n(every package imported - "
+            "only the options are left to write)") in text
+    assert "\nmdb builders-import" not in text
 
 
 def test_the_command_to_repeat_is_the_one_that_was_run(importing, tmp_path):
@@ -630,15 +631,84 @@ def test_the_command_to_repeat_is_the_one_that_was_run(importing, tmp_path):
                                    "--caslib", "Team", "--table", "RELEASES", "--timeout", "30",
                                    runtime_fails=True)
     assert result.exit_code == 1
-    assert (f"then run: mdb builders-import {runtime} --options {options} --caslib Team --table RELEASES "
-            "--no-releases --timeout 30 (") in text
+    assert (f"then run:\nmdb builders-import {cli._shell_word(runtime)} --options {cli._shell_word(options)} "
+            "--caslib Team --table RELEASES --no-releases --timeout 30\n(") in text
+
+
+@pytest.mark.parametrize("width", [80, 120, 40])
+def test_the_command_to_repeat_is_one_line_on_a_terminal_of_any_width(importing, monkeypatch, out, tmp_path, width):
+    """The line is selected and pasted. Wrapped by the console at the width
+    of the terminal it is several commands, and the first of them - `mdb
+    builders-import` alone - imports the default packages without the options
+    file. A directory named like a Rich style tag has to stay in it too."""
+    monkeypatch.setattr(cli, "console", Console(file=out, width=width, force_terminal=False))
+    options = tmp_path / "builder-options.json"
+    options.write_text(json.dumps({"version": 1, "reports": SAVED_2_2}), encoding="utf-8")
+    runtime = tmp_path / "pkgs[old]" / "RAG[old].json"
+    runtime.parent.mkdir()
+    runtime.write_text(json.dumps({"name": "RAG Runtime", "transferDetails": [_other("folder", "RAG")]}),
+                       encoding="utf-8")
+    prompt = tmp_path / "SAS-Viya-Integrations" / PROMPT_BUILDER_PACKAGE
+    result, fake, text = importing(Site(**{"Prompt Builder": OLD_PROMPT}), str(prompt), str(runtime),
+                                   "--options", str(options), runtime_fails=True)
+    assert result.exit_code == 1
+    command = (f"mdb builders-import {cli._shell_word(prompt)} {cli._shell_word(runtime)} "
+               f"--options {cli._shell_word(options)} --no-releases")
+    assert len(command) > width and "pkgs[old]/RAG[old].json" in command
+    lines = text.splitlines()
+    assert command in lines, text
+    at = lines.index(command)
+    # the sentences around it are prose, and wrap as the console likes
+    assert lines[at - 1].endswith("run:")
+    assert "".join(lines[at + 1:]).replace(" ", "").startswith("(RAG[old].jsondidnotimport")
+    # and what is pasted is what was run
+    assert shlex.split(command)[2:] == [prompt.as_posix(), runtime.as_posix(), "--options", options.as_posix(),
+                                        "--no-releases"]
 
 
 def test_the_command_to_repeat_quotes_a_path_with_a_space():
     assert cli._import_command(None, None, None, None, None, False, cli.IMPORT_TIMEOUT) == "mdb builders-import"
     packages, options = Path("my packages") / "p.json", Path("my files") / "o.json"
     assert cli._import_command([packages], options, None, None, "cas a", True, cli.IMPORT_TIMEOUT) == (
-        f'mdb builders-import "{packages}" --options "{options}" --server "cas a" --no-releases')
+        'mdb builders-import "my packages/p.json" --options "my files/o.json" --server "cas a" --no-releases')
+
+
+@pytest.mark.parametrize("value, word", [
+    # nothing a shell reads: as it is
+    ("Team", "Team"), ("cas-shared-default", "cas-shared-default"), ("A_B.c:1", "A_B.c:1"),
+    (PurePosixPath("saved/builder-options.json"), "saved/builder-options.json"),
+    # a Windows path with forward slashes: bash eats a backslash, and Windows reads both
+    (PureWindowsPath(r"saved\builder-options.json"), "saved/builder-options.json"),
+    (PureWindowsPath(r"C:\Users\me\o.json"), "C:/Users/me/o.json"),
+    # anything else in double quotes, which PowerShell, bash and cmd all read
+    (PureWindowsPath(r"C:\a b\o.json"), '"C:/a b/o.json"'),
+    (PureWindowsPath(r"C:\R&D\p.json"), '"C:/R&D/p.json"'),
+    (PureWindowsPath(r"C:\Users\O'Brien\p.json"), '"C:/Users/O\'Brien/p.json"'),
+    (PurePosixPath("a(b).json"), '"a(b).json"'), ("a;b", '"a;b"'), ("~x", '"~x"'), ("a*", '"a*"'),
+    ("=ls", '"=ls"'),                                        # zsh reads a leading = as "the path of"
+    ("", '""'),
+    # what double quotes do not keep as it is, in single quotes
+    (PurePosixPath('a"b.json'), "'a\"b.json'"), ("cost$HOME", "'cost$HOME'"), ("a`b", "'a`b'"),
+    ("wow!now", "'wow!now'"), ("a\\\\b c", "'a\\\\b c'"),
+])
+def test_an_argument_of_the_command_to_repeat_is_safe_to_paste(value, word):
+    assert cli._shell_word(value) == word
+    # read back the way a POSIX shell reads it
+    assert shlex.split(word) == [value.as_posix() if hasattr(value, "as_posix") else value]
+
+
+def test_an_argument_with_both_kinds_of_quote_is_quoted_for_the_shell_of_the_platform():
+    """The one case with no spelling that both shells read."""
+    assert cli._shell_word("it's $5", windows=False) == "'it'\\''s $5'"
+    assert shlex.split(cli._shell_word("it's $5", windows=False)) == ["it's $5"]
+    assert cli._shell_word("it's $5", windows=True) == "'it''s $5'"
+
+
+def test_the_command_to_repeat_leaves_out_an_empty_value():
+    """`--caslib ""` is read as not given by the run. Printed as `--caslib`
+    with nothing behind it, the repeat takes the next flag as the name."""
+    assert cli._import_command(None, None, "", "", "", True, cli.IMPORT_TIMEOUT) == \
+        "mdb builders-import --no-releases"
 
 
 def test_a_dry_run_without_options_discovers_nothing(importing, no_discovery):
