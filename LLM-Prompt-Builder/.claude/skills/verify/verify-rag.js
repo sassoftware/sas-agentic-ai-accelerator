@@ -17,6 +17,8 @@
  *   shell     the two flows: steps, hidden areas, state kept, one heading
  *   flow      project, setup, save, manifest, ingestion, retrieval test, delete
  *   usage     what the two delete dialogs say about decisions that use a setup
+ *   selection a delete acts on what was selected at the click; a project that
+ *             was created although its listing failed
  *   withheld  a stored setup on a vector database the deployment withholds
  *   failure   a RAG project listing that fails stays inside the RAG area
  *   gates     credentialDomain=none; the ingestion compute context
@@ -154,6 +156,22 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     await waitUntil(settled, label || `setup ${setupId} opened`);
   };
   const saveResult = (page, kind) => page.$(`${rgb('save-result')} .alert-${kind}`);
+  // What the relationships query answers for a model, and a service without a session (see the mock).
+  const setUsage = (model, answer = {}) => fetch(BASE + '/__usage', { method: 'POST', body: JSON.stringify({ model, ...answer }) });
+  const noSession = (service, how = {}) => fetch(BASE + '/__nosession', { method: 'POST', body: JSON.stringify({ service, ...how }) });
+  // The delete dialog that is open: its title, its text and the links in it.
+  const shownDeleteDialog = async (page) => {
+    await page.waitForSelector('.modal.show .modal-body');
+    return {
+      title: (await page.textContent('.modal.show .modal-title')).trim(),
+      body: (await page.textContent('.modal.show .modal-body')).trim(),
+      links: (await page.$$eval('.modal.show .modal-body a', (els) => els.map((a) => `${a.textContent} -> ${a.getAttribute('href')}`))).join(', '),
+    };
+  };
+  const cancelDeleteDialogOf = async (page) => {
+    await page.click('.modal.show .btn-secondary');
+    await page.waitForSelector('.modal.show', { state: 'detached' });
+  };
 
   // ---- offered: the RAG kind exists only when it is switched on ----------------
   await section('offered', async (page) => {
@@ -192,10 +210,56 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     const promptRuns = () => page.$$eval('#app-obj-LPB-pet > .accordion > .accordion-item', (els) => els.length);
     await waitUntil(async () => (await promptRuns()) === 3, 'the saved runs of the prompt are loaded');
 
-    // Choosing RAG builds it and swaps the flow.
+    // With the keyboard an arrow key moves the focus from card to card and
+    // chooses nothing: on the way from the first card to the third the decision
+    // kind would otherwise be chosen in passing, and a change of prompt kind
+    // drops the project, the prompt-test and its runs.
+    const focused = () => page.evaluate(() => document.activeElement && document.activeElement.id);
+    const checkedKind = (prefix) => page.$eval(`input[name="${prefix}-kind"]:checked`, (radio) => radio.value);
+    await page.focus('#LPB-kind-llm');
+    await page.keyboard.press('ArrowDown');
+    assert((await focused()) === 'LPB-kind-decision' && (await checkedKind('LPB')) === 'llm', `an arrow key moves the focus to the next card and leaves the choice alone (focus: ${await focused()}, chosen: ${await checkedKind('LPB')})`);
+    await page.keyboard.press('ArrowDown');
+    assert((await focused()) === 'LPB-kind-rag' && (await checkedKind('LPB')) === 'llm', `a second one reaches the RAG card, still without choosing (focus: ${await focused()}, chosen: ${await checkedKind('LPB')})`);
+    assert(
+      (await page.inputValue('#LPB-project-dropdown')) === 'proj-1' && (await page.inputValue('#LPB-prompt-dropdown')) === 'model-used' && (await promptRuns()) === 3,
+      'the project, the prompt and its runs are untouched on the way'
+    );
+    assert(!(await page.$('#app-obj-RGB')) && (await visibleSteps(page, 'LPB')) === 'setup,build,finalize', 'neither the kind nor the flow changed');
+    await page.keyboard.press('ArrowRight');
+    assert((await focused()) === 'LPB-kind-llm', 'the focus wraps from the last card to the first');
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('ArrowUp');
+    assert((await focused()) === 'LPB-kind-decision' && (await checkedKind('LPB')) === 'llm', 'and moves backwards the same way');
+
+    // Choosing RAG builds it and swaps the flow. While it is being built the
+    // prompt flow stays on screen and cannot be used: a dialog opened now
+    // would be hidden with the flow and leave its backdrop over the RAG steps.
+    const embeddingModels = '**/modelRepository/projects/emb-proj/models*';
+    await page.route(embeddingModels, async (route) => {
+      await sleep(2500);
+      await route.continue().catch(() => {});
+    });
     await page.click('#LPB-kind-rag');
+    await waitUntil(async () => await page.isDisabled('#LPB-kind-llm'), 'the cards are busy while the RAG Builder loads');
+    const whileLoading = await page.$eval('#app-area-prompt', (area) => ({ inert: area.inert === true, busy: area.getAttribute('aria-busy'), hidden: area.hidden }));
+    assert(whileLoading.inert && whileLoading.busy === 'true' && !whileLoading.hidden, `the prompt flow stays on screen and takes no input meanwhile (got: ${JSON.stringify(whileLoading)})`);
+    await page.click('[data-bs-target="#promptBuilderCreateProjectModal"]', { force: true, timeout: 1000 }).catch(() => {});
+    await sleep(400);
+    assert(!(await page.$('.modal.show')) && !(await page.$('#app-obj-RGB-stepper')), 'a click on Create a new Project opens no dialog while the RAG Builder loads');
     await page.waitForSelector('#app-obj-RGB-stepper', { state: 'visible', timeout: 15000 });
+    await page.unroute(embeddingModels);
     step(true, 'choosing the RAG kind shows the RAG flow');
+    const afterSwap = await page.evaluate(() => ({
+      backdrops: document.querySelectorAll('.modal-backdrop').length,
+      modalOpen: document.body.classList.contains('modal-open'),
+      inert: document.getElementById('app-area-prompt').inert,
+      busy: document.getElementById('app-area-prompt').hasAttribute('aria-busy'),
+    }));
+    assert(
+      afterSwap.backdrops === 0 && !afterSwap.modalOpen && !afterSwap.inert && !afterSwap.busy,
+      `nothing of the prompt flow lies over the RAG flow, and the prompt flow is released (got: ${JSON.stringify(afterSwap)})`
+    );
     assert((await visibleSteps(page, 'RGB')) === 'setup,documents,store,run', `the RAG flow has exactly its four steps (got: ${await visibleSteps(page, 'RGB')})`);
     const shownSteps = await page.$$eval('.pb-step-button', (els) => els.filter((e) => e.getClientRects().length > 0).map((e) => e.id).join(','));
     assert(
@@ -246,10 +310,20 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     assert((await promptRuns()) === 3, 'its runs are still loaded');
     step(true, 'switching back keeps the state of the prompt side');
 
-    // And to RAG again: the same builder, as it was left.
+    // And to RAG again, with the keyboard: two arrow keys to its card, Space
+    // to choose it. The same builder, as it was left.
     await resetLog();
-    await page.click('#LPB-kind-rag');
+    assert((await focused()) === 'LPB-kind-llm', 'back in the prompt flow the focus is on its chosen card');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
+    assert((await focused()) === 'LPB-kind-rag' && (await page.isVisible('#app-obj-LPB-stepper')) && (await checkedKind('LPB')) === 'llm', 'the arrow keys reach the RAG card without leaving the prompt flow');
+    await page.keyboard.press('Space');
     await page.waitForSelector('#app-obj-RGB-stepper', { state: 'visible' });
+    step(true, 'Space chooses the card that has the focus');
+    assert((await page.inputValue('#LPB-project-dropdown')) === 'proj-1' && (await page.inputValue('#LPB-prompt-dropdown')) === 'model-used' && (await promptRuns()) === 3, 'the prompt side kept its project, its prompt and its runs on the way by keyboard');
+    // In the RAG flow an arrow key does not leave the flow either.
+    await page.keyboard.press('ArrowUp');
+    assert((await focused()) === 'RGB-kind-decision' && (await page.isVisible('#app-obj-RGB-stepper')) && (await checkedKind('LPB')) === 'llm', 'an arrow key on the RAG card moves the focus and keeps the RAG flow and the prompt kind');
     assert(await page.isVisible(rgb('pane-setup')), 'returning to the RAG flow shows its Setup step');
     assert((await page.$$('#app-obj-RGB')).length === 1, 'there is still one RAG Builder');
     assert(listings(await getLog()) === 0, 'returning does not build the RAG Builder a second time');
@@ -429,6 +503,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     const flow = JSON.parse(flowPosts[0].body);
     const nodes = Object.values(flow.nodes).sort((left, right) => left.priority - right.priority);
     assert(flow.name === 'RAG Ingest - ZZ Verify Setup' && flow.id === undefined, 'the flow is named after the setup and leaves its id to the service');
+    assert(flow.createdBy === 'tester' && flow.modifiedBy === 'tester', `the flow names the signed-in user as its author (got: ${flow.createdBy} / ${flow.modifiedBy})`);
     assert(
       nodes.map((node) => node.name).join(' > ') === 'RAG - List Documents > RAG - Extract Text > RAG - Chunk Documents > RAG - Embed Chunks > RAG - Load Vector Store',
       `the flow chains the five ingestion steps (got: ${nodes.map((node) => node.name).join(' > ')})`
@@ -457,6 +532,13 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     const manifestLines = ['BACKEND = "pgvector"', 'COLLECTION = "zz_verify_v1"', 'EMBED_MODEL = "bge_small_en_v15"', 'STORE_HOST = "pg.mock.local"', 'STORE_PORT = "5432"', 'STORE_DB = "ragdb"', 'CREDENTIAL_DOMAIN = "agentic-ai-keys"'];
     const missingLines = manifestLines.filter((line) => !scoreCode.split(/\r?\n/).includes(line));
     assert(missingLines.length === 0, `its MANIFEST block carries the setup (missing: ${missingLines.join(' ; ') || 'none'})`);
+    // The retrieval model embeds the question where the ingestion job embedded
+    // the chunks: the SCR endpoint of the object, which is not <host>/llm here.
+    const embedEndpoint = (/^EMBED_ENDPOINT = "([^"]*)"$/m.exec(scoreCode) || [])[1];
+    assert(
+      embedEndpoint === parameter('scrEndpoint') && embedEndpoint === `${BASE}/scr`,
+      `the retrieval model calls the embedding endpoint the ingestion job calls (model: ${embedEndpoint}, job: ${parameter('scrEndpoint')})`
+    );
     assert(!/your-database-host|your-database-name|your-sas-viya-host/.test(scoreCode), 'no placeholder of the template is left in it');
     const outsideBlock = (code) => code.replace(/# ---- MANIFEST[\s\S]*?\n# -{20,}\r?\n/, '');
     assert(outsideBlock(scoreCode) === outsideBlock(retrieveTemplate) && outsideBlock(scoreCode) !== scoreCode, 'everything outside the MANIFEST block is the deployed template');
@@ -475,7 +557,14 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     assert((await page.textContent(rgb('run-milestones'))).includes('connected: pgvector + bge_small_en_v15'), 'the milestones come from the job that was launched with the values of the setup');
     await waitUntil(async () => (await page.textContent(rgb('run-state'))) === 'completed', 'the run is polled to completion', 20000);
     assert((await page.getAttribute(rgb('run-state'), 'class')).includes('text-bg-success'), 'a completed run is marked as a success');
-    assert((await page.textContent(rgb('run-milestones'))).includes('23 chunks; documents ingested=2'), 'the final milestones are read from the log file');
+    const finalMilestones = await page.textContent(rgb('run-milestones'));
+    assert(finalMilestones.includes('23 chunks  documents ingested=2'), 'the final milestones are read from the log file');
+    // Every step of a clean run reports "0 failed": the word alone must not
+    // turn the run red.
+    assert(
+      finalMilestones.includes('2 extracted, 1 skipped, 0 failed') && !(await page.$(`${rgb('status')} .alert-danger`)) && !(await page.$(`${rgb('status')} .alert-warning`)),
+      'the steps that report "0 failed" leave a clean run a success, with no alert on the page'
+    );
     log = await getLog();
     const launch = JSON.parse(log.find((e) => e.method === 'POST' && e.url === '/jobExecution/jobs').body);
     assert(launch.jobDefinitionUri === `/jobDefinitions/definitions/${definitionId}` && launch.name === 'RAG Ingest - ZZ Verify Setup', 'the generated job definition is what was launched');
@@ -484,6 +573,23 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     await waitUntil(async () => (await page.$$(`${rgb('ledger-panel')} table tbody tr`)).length === 3, 'the ledger shows on its own once the run has finished');
     assert(!(await page.isDisabled(rgb('launch'))), 'Launch ingestion is available again');
     step(true, 'an ingestion is launched and followed to its end');
+
+    // A run that did its work and could not ingest one document: completed,
+    // with a warning that names the number, and the ledger that names the document.
+    await armFailure({ documents: 1 });
+    await page.click(rgb('launch'));
+    await waitUntil(async () => (await page.getAttribute(rgb('run-state'), 'class')).includes('text-bg-warning') && (await page.textContent(rgb('run-state'))) === 'completed', 'a completed run with a failed document is marked as completed with a warning', 20000);
+    assert((await page.textContent(rgb('run-milestones'))).includes('documents failed=1, ingested=2'), 'its summary counts the failed document');
+    const failedDocumentsAlert = ((await page.textContent(`${rgb('status')} .alert-warning`).catch(() => '')) || '').trim();
+    assert(
+      failedDocumentsAlert.includes('completed') && failedDocumentsAlert.includes('1 document(s) failed') && !(await page.$(`${rgb('status')} .alert-danger`)),
+      `the page says that the run completed and how many documents failed, and does not call the run failed (got: ${failedDocumentsAlert})`
+    );
+    await waitUntil(
+      async () => (await page.$$eval(`${rgb('ledger-panel')} table tbody tr`, (rows) => rows.map((row) => row.textContent).filter((row) => row.includes('failed')).length)) === 1,
+      'the ledger of that run shows on its own and marks the one failed document'
+    );
+    assert(!(await page.isDisabled(rgb('launch'))), 'Launch ingestion is available after it');
 
     // A run the job reports as failed: the job completes, the log says how it went.
     await armFailure({ run: 'OperationalError: the vector store refused the connection' });
@@ -650,21 +756,11 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
   // decisions, that there are none, or that the check failed. Every dialog here
   // is cancelled, so the fixture project keeps its three setups.
   await section('usage', async (page) => {
-    const setUsage = (model, answer = {}) => fetch(BASE + '/__usage', { method: 'POST', body: JSON.stringify({ model, ...answer }) });
-    const noSession = (service, how = {}) => fetch(BASE + '/__nosession', { method: 'POST', body: JSON.stringify({ service, ...how }) });
     const openDeleteDialog = async (button) => {
       await page.click(rgb(button));
-      await page.waitForSelector('.modal.show .modal-body');
-      return {
-        title: (await page.textContent('.modal.show .modal-title')).trim(),
-        body: (await page.textContent('.modal.show .modal-body')).trim(),
-        links: (await page.$$eval('.modal.show .modal-body a', (els) => els.map((a) => `${a.textContent} -> ${a.getAttribute('href')}`))).join(', '),
-      };
+      return shownDeleteDialog(page);
     };
-    const cancelDeleteDialog = async () => {
-      await page.click('.modal.show .btn-secondary');
-      await page.waitForSelector('.modal.show', { state: 'detached' });
-    };
+    const cancelDeleteDialog = () => cancelDeleteDialogOf(page);
     const usageRequests = async () =>
       (await getLog())
         .filter((e) => e.url.startsWith('/relationships/'))
@@ -691,7 +787,27 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       `Delete setup: a setup two decisions use lists them with their links (got: ${shown.body} / ${shown.links})`
     );
     assert(!shown.body.includes(UNUSED) && !shown.body.includes(UNKNOWN), 'and carries neither of the other two notes');
+    // In a report the page sits in a sandboxed iframe that may open no tab:
+    // the link then copies itself and says so, as the Prompt Builder's does.
+    await page.evaluate(() => {
+      window.__opened = [];
+      window.open = (url) => {
+        window.__opened.push(String(url));
+        return null;
+      };
+    });
+    await page.click('.modal.show .modal-body a >> nth=0');
+    await waitUntil(async () => /link copied/i.test(await page.textContent('.modal.show .modal-body a >> nth=0')), 'a decision link that cannot open a tab says that the link was copied');
+    assert(
+      (await page.evaluate(() => window.__opened.join(','))) === `${BASE}/SASDecisionManager/decisions/flow-A` && page.context().pages().length === 1,
+      'the link asked for a new tab with the decision and opened nothing by itself'
+    );
+    await waitUntil(async () => (await page.textContent('.modal.show .modal-body a >> nth=0')) === 'Loan Approval Decision', 'and shows its name again afterwards');
     await cancelDeleteDialog();
+    await page.click(rgb('open-in-mm'));
+    await waitUntil(async () => /link copied/i.test(await page.textContent(rgb('open-in-mm'))), 'Open in SAS Model Manager does the same when no tab can be opened');
+    assert((await page.evaluate(() => window.__opened[1])) === `${BASE}/SASModelManager/models/rag-setup-1/files`, 'it asked for the files of the open setup');
+    await waitUntil(async () => !/link copied/i.test(await page.textContent(rgb('open-in-mm'))), 'and shows its label again afterwards');
     await openSetup(page, 'rag-setup-2', async () => (await page.inputValue(rgb('setup-doc-modelPurpose'))) === 'Documented before anything else was decided.', 'the setup nothing uses opens');
     shown = await openDeleteDialog('delete-setup');
     assert(shown.body.includes(UNUSED) && shown.links === '', `Delete setup: a setup no decision uses says so (got: ${shown.body})`);
@@ -718,6 +834,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
         shown.body.includes('Policy Handbook: Loan Approval Decision, Fraud Check Decision'),
       `Delete project: the setup that is used is listed with its decisions by name (got: ${shown.body})`
     );
+    assert(shown.links === BOTH_DECISIONS, `Delete project: each of those decisions is a link, as in the dialog of one setup (got: ${shown.links})`);
     assert(
       shown.body.includes('Usage could not be checked for 1 setup(s)') && !shown.body.includes(UNUSED),
       'Delete project: the setup whose check failed is counted, and the dialog does not say that nothing is used'
@@ -751,6 +868,173 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     assert(!(await getLog()).some((e) => e.method === 'DELETE'), 'cancelling the project dialogs deleted nothing');
     const kept = (await ragState()).models.filter((model) => model.projectId === 'rag-proj').length;
     assert(kept === 3 && (await optionValues(page, 'project')).includes('rag-proj'), `the project and its three setups are still there (got ${kept} setups)`);
+  });
+
+  // ---- selection: a delete is about what was selected at the click -----------------
+  // The setup list of a project arrives a round trip after the project is
+  // chosen, and the usage of a setup a round trip after Delete is clicked.
+  // Neither delete may act on what the page held before, or holds afterwards.
+  await section('selection', async (page) => {
+    const deletes = async () => (await getLog()).filter((e) => e.method === 'DELETE').map((e) => e.url);
+    const usageAsked = async () => (await getLog()).filter((e) => e.url.startsWith('/relationships/relationships')).length;
+    const selectInPage = (suffix, optionValue, thenClick) =>
+      page.evaluate(
+        ([selectId, wanted, buttonId]) => {
+          const select = document.getElementById(selectId);
+          select.value = wanted;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+          if (buttonId) document.getElementById(buttonId).click();
+        },
+        [`app-obj-RGB-${suffix}`, optionValue, thenClick ? `app-obj-RGB-${thenClick}` : '']
+      );
+    // A second project without setups, beside the fixture project with three.
+    const second = await (
+      await fetch(BASE + '/modelRepository/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Second RAG project', function: 'RAG', tags: ['LLM', 'RAG-Engineering'] }),
+      })
+    ).json();
+    const secondModels = `**/modelRepository/projects/${second.id}/models?*`;
+    await openRag(page);
+    await selectRagProject(page, 'rag-proj');
+    await waitUntil(async () => (await optionValues(page, 'setup')).length === 4, 'the three setups of the first project are listed');
+
+    // -- Delete project, clicked before the setups of the new selection arrived ---
+    await resetLog();
+    await selectInPage('project', second.id, 'delete-project');
+    let shown = await shownDeleteDialog(page);
+    assert(shown.title === 'Delete project: Second RAG project', `the dialog names the project that was selected at the click (got: ${shown.title})`);
+    assert(
+      shown.body.includes('This project holds no setups.') && !/setup\(s\)/.test(shown.body),
+      `it counts the setups of that project, not those the page still listed (got: ${shown.body})`
+    );
+    assert((await usageAsked()) === 0, 'no setup of the project shown before is asked about');
+    await page.click('.modal.show .btn-danger');
+    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await waitUntil(async () => (await deletes()).length > 0, 'the confirmed delete reaches Model Manager');
+    await waitUntil(async () => !(await optionValues(page, 'project')).includes(second.id), 'the deleted project leaves the list');
+    assert((await deletes()).join(' | ') === `/modelRepository/projects/${second.id}`, `only the empty project is deleted (got: ${(await deletes()).join(' | ')})`);
+    const keptSetups = (await ragState()).models.filter((model) => model.projectId === 'rag-proj').length;
+    assert(keptSetups === 3, `the three setups of the other project are still there (got ${keptSetups})`);
+
+    // -- a setup listing that fails ------------------------------------------------
+    const third = await (
+      await fetch(BASE + '/modelRepository/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Third RAG project', function: 'RAG', tags: ['LLM', 'RAG-Engineering'] }),
+      })
+    ).json();
+    const thirdModels = `**/modelRepository/projects/${third.id}/models?*`;
+    await openRag(page);
+    await selectRagProject(page, 'rag-proj');
+    await waitUntil(async () => (await optionValues(page, 'setup')).length === 4, 'the three setups are listed again');
+    await page.route(thirdModels, (route) => route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"listing failed"}' }));
+    await selectRagProject(page, third.id);
+    await page.waitForSelector(`${rgb('status')} .alert-danger`);
+    assert((await page.textContent(`${rgb('status')} .alert-danger`)).includes('could not be listed'), 'a setup listing that fails is reported on the page');
+    assert((await optionValues(page, 'setup')).length === 1, `the setup picker holds its placeholder only, not the setups of the project shown before (got: ${await optionValues(page, 'setup')})`);
+    await resetLog();
+    await page.click(rgb('delete-project'));
+    await waitUntil(async () => ((await page.textContent(`${rgb('status')} .alert-danger`).catch(() => '')) || '').includes('nothing was deleted'), 'Delete project says that nothing was deleted while the setups cannot be listed');
+    assert(!(await page.$('.modal.show')) && (await usageAsked()) === 0 && (await deletes()).length === 0, 'it opens no dialog, asks about no setup and deletes nothing');
+    await page.unroute(thirdModels);
+
+    // -- two listings that answer out of order --------------------------------------
+    // The listing of the third project is held back; the first project is
+    // chosen again meanwhile and answers first.
+    await page.route(thirdModels, async (route) => {
+      await sleep(1200);
+      await route.continue().catch(() => {});
+    });
+    await selectInPage('project', 'rag-proj');
+    await waitUntil(async () => (await optionValues(page, 'setup')).length === 4, 'the first project lists its setups again');
+    await selectInPage('project', third.id);
+    await selectInPage('project', 'rag-proj');
+    await waitUntil(async () => (await optionValues(page, 'setup')).length === 4, 'its setups are listed');
+    await sleep(1800);
+    assert(
+      (await value(page, 'project')) === 'rag-proj' && (await optionValues(page, 'setup')).length === 4,
+      `a listing that answers late for a project no longer selected is dropped (got: ${await optionValues(page, 'setup')})`
+    );
+    await page.unroute(thirdModels);
+
+    // -- Delete setup, and another setup chosen while the usage is asked ------------
+    await setUsage('rag-setup-1', { flows: [] });
+    await setUsage('rag-setup-2', { flows: ['flow-A'] });
+    await openSetup(page, 'rag-setup-1', async () => (await value(page, 'collection')) === 'policy_handbook', 'the setup nothing uses opens');
+    await resetLog();
+    await page.evaluate(() => {
+      document.getElementById('app-obj-RGB-delete-setup').click();
+      const select = document.getElementById('app-obj-RGB-setup');
+      select.value = 'rag-setup-2';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await waitUntil(async () => (await usageAsked()) >= 1, 'the usage of the setup the click was made on is asked');
+    await waitUntil(async () => !(await page.isDisabled(rgb('delete-setup'))), 'Delete setup is available again');
+    await sleep(600);
+    const strayDialog = (await page.$('.modal.show')) ? (await shownDeleteDialog(page)) : null;
+    assert(
+      !strayDialog,
+      `no dialog is shown about a setup that is no longer the selected one (got: ${strayDialog ? `${strayDialog.title} / ${strayDialog.body}` : 'none'})`
+    );
+    assert((await deletes()).length === 0, 'and nothing is deleted');
+    assert((await value(page, 'setup')) === 'rag-setup-2', 'the setup chosen meanwhile stays selected');
+    await page.click(rgb('delete-setup'));
+    shown = await shownDeleteDialog(page);
+    assert(
+      shown.title === 'Delete setup: Empty Setup' && shown.body.includes('1 decision(s) reference this and will break:') && shown.links === `Loan Approval Decision -> ${BASE}/SASDecisionManager/decisions/flow-A`,
+      `Delete setup on that setup names the decision that uses it (got: ${shown.title} / ${shown.body} / ${shown.links})`
+    );
+    await cancelDeleteDialogOf(page);
+    await setUsage();
+
+    // -- a setup SAS Model Manager refuses -------------------------------------------
+    // A name the project already has: the answer is an error body without an id.
+    await page.click(`[data-bs-target="${rgb('create-setupModal')}"]`);
+    await page.waitForSelector(`${rgb('create-setupModal')}.show`);
+    await page.fill(rgb('create-setupName'), 'Policy Handbook');
+    await resetLog();
+    await page.click(`${rgb('create-setupModal')} .btn-primary`);
+    await waitUntil(async () => (await getLog()).some((e) => e.method === 'POST' && e.url === '/modelRepository/models' && e.status === 409), 'the creation of a second setup of that name is refused by the service');
+    const statusAlert = async (kind = 'danger') => ((await page.textContent(`${rgb('status')} .alert-${kind}`, { timeout: 500 }).catch(() => '')) || '').trim();
+    await waitUntil(async () => (await statusAlert()).includes('Creating the RAG setup failed'), 'a refused setup is reported as not created');
+    const createdToasts = (await page.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).filter((text) => text.includes('RAG setup created'));
+    assert(createdToasts.length === 0 && (await value(page, 'setup')) === 'rag-setup-2', 'nothing says "created", and the selection is what it was');
+    assert((await ragState()).models.filter((model) => model.name === 'Policy Handbook').length === 1, 'there is still one setup of that name');
+    await page.click(`${rgb('create-setupModal')} .btn-secondary`);
+    await page.waitForSelector('.modal.show', { state: 'detached' });
+
+    // -- a project that was created although the listing after it failed -------------
+    const projectListing = '**/modelRepository/projects?*';
+    await page.route(projectListing, (route) =>
+      route.request().method() === 'GET'
+        ? route.fulfill({ status: 503, contentType: 'application/json', body: '{"message":"the model repository does not answer"}' })
+        : route.continue()
+    );
+    await resetLog();
+    await page.click(`[data-bs-target="${rgb('create-projectModal')}"]`);
+    await page.waitForSelector(`${rgb('create-projectModal')}.show`);
+    await page.fill(rgb('create-projectName'), 'ZZ Listed Late');
+    await page.click(`${rgb('create-projectModal')} .btn-primary`);
+    await waitUntil(async () => (await ragState()).projects.some((project) => project.name === 'ZZ Listed Late'), 'the project is created in Model Manager');
+    await waitUntil(async () => (await statusAlert('warning')).includes('ZZ Listed Late'), 'the page reports on the new project, as a warning');
+    const createdNote = await statusAlert('warning');
+    assert(!(await page.$(`${rgb('status')} .alert-danger`)), 'no failure is reported beside it');
+    assert(
+      createdNote.includes('"ZZ Listed Late" was created') && createdNote.includes('could not be refreshed') && !createdNote.includes('Creating the RAG project failed'),
+      `the page says that the project exists and the list could not be refreshed, not that creating failed (got: ${createdNote})`
+    );
+    await page.waitForSelector('.modal.show', { state: 'detached' });
+    const late = (await ragState()).projects.find((project) => project.name === 'ZZ Listed Late');
+    assert((await value(page, 'project')) === late.id && (await optionValues(page, 'setup')).length === 1, 'the new project is selected, with no setup listed');
+    assert(!(await page.isVisible(EDITOR)), 'the setup that was open before is closed');
+    await page.unroute(projectListing);
+    await page.click(rgb('retry-projects'));
+    await waitUntil(async () => (await page.$$(`${rgb('status')} .alert`)).length === 0, 'trying again lists the projects and the alert goes');
+    assert((await value(page, 'project')) === late.id, 'the new project is still the selected one');
+    assert((await ragState()).projects.filter((project) => project.name === 'ZZ Listed Late').length === 1, 'the project was created once');
   });
 
   // ---- withheld: a setup on a vector database the deployment no longer offers ---

@@ -1619,6 +1619,12 @@ async function checkRagRoundTrip({ check, need }, app, stored, flags) {
     });
     const after = await snapshot(app);
     check(recovered, 'the kind that was chosen before is chosen again, and every card can be clicked');
+    // The prompt flow is made inert while RAG loads; a failed load has to give it back.
+    const released = await app.evaluate(() => {
+      const area = document.getElementById('app-area-prompt');
+      return Boolean(area) && area.inert === false && !area.hasAttribute('aria-busy');
+    });
+    check(released, 'the prompt flow can be used again after the failed attempt (its area is neither inert nor busy)');
     check(after.lpb.visible && sameList(shownSteps(after.lpb), promptStepsLlm(flags)), `the prompt flow stays visible with its steps (got ${shownSteps(after.lpb).join(', ')})`);
     check(!(after.rgb && after.rgb.visible), 'the RAG flow is not shown');
     const newAlerts = after.alertsUnderPromptKinds.filter((text) => !before.alertsUnderPromptKinds.includes(text));

@@ -141,7 +141,7 @@ export async function mountBuilderShell(root: HTMLElement): Promise<void> {
       promptBuilder.SCREndpoint ? '' : say('promptBuilderConfigOptionSCREndpoint', 'the SCR endpoint'),
     ].filter((name) => name !== '');
     const missingForRag = [
-      features.rag ? '' : say('promptBuilderConfigOptionEnableRag', 'the switch "Enable RAG setups" set to Enabled'),
+      features.rag ? '' : say('promptBuilderConfigOptionEnableRag', 'the checkbox "Enable RAG setups" ticked'),
       ragBuilder.modelRepositoryID ? '' : say('promptBuilderConfigOptionRepository', 'the Model Manager repository ID'),
       ragBlockedReason === 'credentialDomainNone'
         ? say('promptBuilderConfigOptionCredentialDomain', 'a credential domain other than none')
@@ -298,11 +298,23 @@ export async function mountBuilderShell(root: HTMLElement): Promise<void> {
     if (!ragBuilt) {
       // The prompt flow stays on screen while RAG loads: the spinner sits on
       // the card that was chosen, and no other card can be chosen meanwhile.
+      // Nothing else of it can be used either. The flow is swapped when the
+      // build ends, whatever is on screen by then, and a dialog opened in
+      // between would be hidden with its backdrop left over the RAG flow.
       selector?.setBusy('rag');
+      promptArea.inert = true;
+      promptArea.setAttribute('aria-busy', 'true');
+      const releasePromptFlow = (): void => {
+        promptArea.inert = false;
+        promptArea.removeAttribute('aria-busy');
+      };
       try {
         await ensureRagBuilt();
       } catch (error) {
         console.error('Failed to build the RAG Builder.', error);
+        // Before the focus goes back to the selector: nothing inside an inert
+        // area takes the focus.
+        releasePromptFlow();
         selector?.setBusy(null);
         selector?.setChecked(kindBefore);
         selector?.setNotice(
@@ -311,6 +323,7 @@ export async function mountBuilderShell(root: HTMLElement): Promise<void> {
         selector?.focusChecked();
         return;
       }
+      releasePromptFlow();
       selector?.setBusy(null);
     }
     // This instance sits in the prompt flow, so it goes back to showing the

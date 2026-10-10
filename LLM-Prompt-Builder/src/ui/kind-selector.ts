@@ -151,6 +151,23 @@ export function createKindSelector(options: KindSelectorOptions): KindSelector {
     radio.addEventListener('change', () => {
       if (radio.checked) options.onSelect(kind);
     });
+    // An arrow key moves the focus to the neighbouring card and chooses
+    // nothing; Space chooses the card that has the focus. A radio group
+    // chooses with the arrow keys by itself, and a choice here is not a mark
+    // that is free to move: it changes the kind or the flow. On the way from
+    // the first card to the third the second would be chosen in passing, and
+    // a change of prompt kind empties the project, the prompt-test and the
+    // runs that were not saved.
+    radio.addEventListener('keydown', (event) => {
+      const forward = event.key === 'ArrowDown' || event.key === 'ArrowRight';
+      const backward = event.key === 'ArrowUp' || event.key === 'ArrowLeft';
+      if (!forward && !backward) return;
+      event.preventDefault();
+      const enabled = [...radios.values()].filter((candidate) => !candidate.disabled);
+      const position = enabled.indexOf(radio);
+      if (position < 0 || enabled.length < 2) return;
+      enabled[(position + (forward ? 1 : enabled.length - 1)) % enabled.length].focus();
+    });
 
     card.appendChild(radio);
     card.appendChild(body);

@@ -315,6 +315,8 @@ let ragFixtures = true;
 // POST /__ragfail arms failures, an empty body clears them all:
 //   { projects: 500 }    the RAG project listing answers that status
 //   { run: 'reason' }    the next ingestion job reports "Ingestion failed: reason"
+//   { documents: 1 }     the next ingestion job does its work and counts that
+//                        many failed documents in its summary and its ledger
 //   { retrieval: 'reason' } the next retrieval probe reports "FAILED reason"
 const ragFailures = {};
 const ragProjects = [{ id: 'rag-proj', name: 'RAG Demo Project', createdBy: 'anna', modifiedBy: 'anna' }];
@@ -498,12 +500,20 @@ function ragJobMessages(job) {
   ];
   if (job.polls < 2) return lines;
   if (job.failure) return [...lines, `RAGINGEST Ingestion failed: ${job.failure}`];
-  // The last line is the job's summary: the chunk total and one count per
-  // ledger status, for the ledger rows this run publishes (see ragLedgerRows).
+  // A job whose pipeline ran logs one line per step, each with its own count
+  // of failures ("0 failed" on a clean run), and its summary last: the chunk
+  // total and one count per ledger status, for the ledger rows this run
+  // publishes (see ragLedgerRows). The lines are written as they arrive in a
+  // SAS log: the job blanks ; % & and quotes in every message, so the
+  // semicolon its code puts before "documents" is a second space here.
+  const failed = job.failedDocuments || 0;
   return [
     ...lines,
     `RAGINGEST source: ${args.sourcePath} (3 files)`,
-    `RAGINGEST collection ${args.collection}: 23 chunks; documents ingested=2, skipped=1`,
+    `RAGINGEST rag extract: 2 extracted, ${failed ? 0 : 1} skipped, ${failed} failed`,
+    'RAGINGEST rag embed: 23 embedded, 0 failed, usage { calls : 23,  tokens : 4100}',
+    `RAGINGEST rag load: 2 docs loaded, 0 removed (retire), ${failed} failed -> collection  ${args.collection}  now 23 chunks`,
+    `RAGINGEST collection ${args.collection}: 23 chunks  documents ${failed ? `failed=${failed}, ingested=2` : 'ingested=2, skipped=1'}`,
   ];
 }
 // A SAS log wraps at its line size: a long milestone continues on unprefixed
@@ -524,8 +534,8 @@ function ragLogLines(messages) {
 }
 // The promoted ledger tables: the fixture's, and that of every setup whose
 // ingestion has completed since. The fixture's third document FAILED in its
-// run; a run of the mock skips it instead, because the Builder reads a
-// summary that counts a failed document as a run that did not succeed.
+// run; a run of the mock skips it, unless the run was armed with failed
+// documents (see /__ragfail).
 const RAG_LEDGER_COLUMNS = ['doc_id', 'source_uri', 'status', 'chunk_count', 'error_text', 'run_id', 'updated_at'];
 const ragLedgerRows = (runId, thirdStatus) => [
   { cells: ['d-001', '/mnt/data/policies/leave.pdf', 'ingested', 14, '', runId, '2026-10-01T08:00:00Z'] },
@@ -849,6 +859,10 @@ http
           const armed = kind === 'retrieval' ? 'retrieval' : 'run';
           ragJobs[id] = { id, kind, name: request.name, definitionId: definition.body.id, args: request.arguments || {}, polls: 0, failure: ragFailures[armed] || '' };
           delete ragFailures[armed];
+          if (kind === 'ingestion') {
+            ragJobs[id].failedDocuments = Number(ragFailures.documents) || 0;
+            delete ragFailures.documents;
+          }
           return json(res, 201, { id, state: 'pending' });
         }
       }
@@ -860,7 +874,7 @@ http
           return json(res, 200, { id: job.id, state: 'running', results: { COMPUTE_SESSION: `rag-cs-${job.id} (${job.args._contextName || ''})`, COMPUTE_JOB: `rag-cj-${job.id}` } });
         }
         if (job.kind === 'ingestion' && !job.failure) {
-          ragLedgers[`${job.args.ledgerCaslib}/${job.args.ledgerTable}`] = ragLedgerRows(job.id, 'skipped');
+          ragLedgers[`${job.args.ledgerCaslib}/${job.args.ledgerTable}`] = ragLedgerRows(job.id, job.failedDocuments ? 'failed' : 'skipped');
         }
         return json(res, 200, { id: job.id, state: 'completed', logLocation: `/files/files/raglog-${job.id}` });
       }
