@@ -51,7 +51,17 @@ export interface DecisionAnswer {
 
 export type DecisionAnswers = Record<string, DecisionAnswer>;
 
-/** The tag that marks a prompt-test as a decision template in SAS Model Manager. */
+/**
+ * The `algorithm` of a prompt-test that is a decision template. This is what
+ * tells the two kinds apart: SAS Model Manager keeps the algorithm sent when
+ * the model is created, and lists it with every model of a project.
+ */
+export const DECISION_TEMPLATE_ALGORITHM = 'Decision-Template';
+/**
+ * The tag a decision template carries as well. Not relied on alone: SAS Model
+ * Manager drops the tags sent with a creation request, so it is written in a
+ * second request that may fail.
+ */
 export const DECISION_TEMPLATE_TAG = 'Decision-Template';
 /** The tag that marks a Prompt-Engineering project as one made for decision templates. */
 export const DECISION_PROJECT_TAG = 'Decision-Engineering';

@@ -43,7 +43,14 @@ export async function getModelProjects(
 }
 
 /**
- * Get models within a project.
+ * Get models within a project, shaped for dropdown options.
+ *
+ * Each option also carries the model's `algorithm` and `tags` as the listing
+ * returns them. That is what lets a caller tell kinds of model apart from
+ * this one request - the Prompt Builder separates decision templates from
+ * prompt templates by it - instead of asking once more per kind. A filter
+ * that combines the two (`or(contains(tags,…),eq(algorithm,…))`) is not an
+ * alternative: the service answers it with an empty list.
  */
 export async function getModelProjectModels(
   projectID: string,
@@ -58,7 +65,15 @@ export async function getModelProjectModels(
   let options: DropdownOption[] = [];
   if (data?.items) {
     for (const item of data.items) {
-      options.push({ value: item.id, innerHTML: item.name, createdBy: item.createdBy, modifiedBy: item.modifiedBy });
+      options.push({
+        value: item.id,
+        innerHTML: item.name,
+        createdBy: item.createdBy,
+        modifiedBy: item.modifiedBy,
+        algorithm: typeof item.algorithm === 'string' ? item.algorithm : undefined,
+        // A model without tags is listed with `tags: null`.
+        tags: Array.isArray(item.tags) ? item.tags.map(String) : [],
+      });
     }
   }
 
