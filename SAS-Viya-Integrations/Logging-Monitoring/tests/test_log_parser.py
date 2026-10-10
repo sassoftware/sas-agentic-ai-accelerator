@@ -106,6 +106,8 @@ def test_log_without_requests_gives_an_empty_table_and_uploads_nothing(monkeypat
     assert list(frame.columns) == LLM_LOGS_COLUMNS
     assert run.uploads == []
     assert run.row_count == "0"
+    # Nothing in these logs looks like a request, so nothing is said about them
+    assert run.sas.messages == []
 
 
 def test_rows_are_uploaded_once_under_the_staging_name_with_replace(monkeypatch, tmp_path):
@@ -144,6 +146,52 @@ def test_timestamp_becomes_a_sas_datetime(monkeypatch, tmp_path):
 
     seconds_since_1960 = (datetime(2026, 1, 5, 9, 15, 0) - datetime(1960, 1, 1)).total_seconds()
     assert run.namespace["df"].loc[0, "timestamp"] == seconds_since_1960
+
+
+# ---------------------------------------------------------------------------
+# The SAS code that writes the output table
+#
+# It only runs on a SAS Viya server. What is held here is its text: the order of
+# the actions in append mode, in the code file and in the step.
+# ---------------------------------------------------------------------------
+
+def _append_branch(program):
+    """The CASL the output macro runs in append mode."""
+    start = program.index("%if &_log_append_table. %then %do;")
+    return program[start:program.index("%else %do;", start)]
+
+
+@pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
+def test_appending_loads_a_saved_table_before_it_starts_a_new_one(program):
+    """table.tableExists only sees the tables in memory. After a restart of the CAS
+    server the table is on disk only, and a new table started from the rows of one log
+    would be saved over the file that holds the rows of every run before."""
+    branch = _append_branch(program())
+
+    listing, load, look_again, append, new_table = (branch.index(action) for action in (
+        "table.fileInfo", "table.loadTable", "table.tableExists result=re", "table.append", "table.copyTable"))
+    assert listing < load < look_again < append < new_table
+    # The file keeps the case the table name was saved with, a CAS table name has none
+    assert 'if savedEntry.Name EQ "&_log_target_table_name..sashdat" then savedFile = savedEntry.Name;' in branch
+    assert 'upcase(savedEntry.Name) EQ upcase("&_log_target_table_name..sashdat") then savedFile = savedEntry.Name;' in branch
+    # Loaded into the session: whether the table is promoted stays the choice of the user
+    assert "promote" not in branch[load:look_again].lower()
+
+
+@pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
+def test_saved_table_that_can_not_be_loaded_is_not_overwritten(program):
+    program = program()
+    branch = _append_branch(program)
+
+    failed_load = branch[branch.index("else if savedFile NE '' then do;"):branch.index("table.copyTable")]
+    assert "print (error)" in failed_load
+    assert "tableWritten = False;" in failed_load
+    # A new table is only started when no saved file was found
+    assert failed_load.rstrip().endswith("else do;")
+    # Neither promoted nor saved without a written table
+    assert "if tableWritten and re.exists LE 1 then do;" in branch
+    save = program[program.index("%if &_log_save_table. %then %do;"):]
+    assert save.index("if tableWritten then do;") < save.index("table.save")
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +342,27 @@ def test_score_lines_between_two_blocks_belong_to_no_request(monkeypatch, tmp_pa
     assert missing(frame.loc[1, "response"])
 
 
+def test_request_that_is_still_running_takes_no_lines_of_the_next_container(monkeypatch, tmp_path):
+    """The last request of a container can be cut off before its response was logged.
+    The next container's part of the file starts earlier in time, which is what ends it:
+    the leftover score lines there are not its numbers and not its answer."""
+    # The first nine lines of a block are logged before the model is scored
+    running = llm_block(timestamp="2026-01-05 09:59:59", user_prompt="still running")[:9]
+    leftover = [
+        log_line("2026-01-05 09:00:00", "scoreModel", "prompt_length: 999"),
+        log_line("2026-01-05 09:00:00", "scoreModel", "output_length: 99"),
+        log_line("2026-01-05 09:00:00", "scoreModel", "run_time: 99.5"),
+        log_line("2026-01-05 09:00:00", "scoreModel", "response: the answer of another container"),
+        log_line("2026-01-05 09:00:00", "api", "Response: Status Code 200"),
+    ]
+    frame = parse(monkeypatch, tmp_path, as_log(running, leftover, embedding_block(timestamp="2026-01-05 09:30:00")))
+
+    assert len(frame) == 2
+    assert frame.loc[0, "user_prompt"] == "still running"
+    assert all(missing(frame.loc[0, column]) for column in ("prompt_length", "output_length", "runtime", "response"))
+    assert (frame.loc[1, "model"], frame.loc[1, "prompt_length"]) == ("demo_embedder", 17)
+
+
 def test_log_lines_quoted_in_a_prompt_or_a_response_are_text(monkeypatch, tmp_path):
     """Only a line that starts as a log line counts. The same words inside a prompt (one
     long 'Request Data:' line) or at the start of a response line are part of the text."""
@@ -341,6 +410,49 @@ def test_request_without_a_response_line_ends_at_the_next_request(monkeypatch, t
     assert frame.loc[0, "user_prompt"] == "a call that failed"
     assert all(missing(frame.loc[0, column]) for column in ("prompt_length", "output_length", "runtime", "response"))
     assert (frame.loc[1, "prompt_length"], frame.loc[1, "response"]) == (21, "The capital of Austria is Vienna.")
+
+
+@pytest.mark.parametrize("prefix", [
+    "2026-01-05T09:15:00.123456789Z ",
+    "[pod/demo-llm-5d8f7c9b6-abcde/demo-llm] ",
+], ids=["kubectl logs --timestamps", "kubectl logs --prefix"])
+def test_requests_behind_a_line_prefix_are_reported_with_a_warning(monkeypatch, tmp_path, prefix):
+    """A log pipeline that puts something in front of every line leaves nothing the
+    parser can read. That is not a log without requests, and the SAS log has to say so."""
+    block = llm_block() + decision_block()
+    run = run_parser(monkeypatch, _write(tmp_path, as_log([prefix + line for line in block])))
+
+    assert run.row_count == "0"
+    assert run.uploads == []
+    assert [kind for kind, _ in run.sas.messages] == ["WARNING"]
+    warning = run.sas.messages[0][1]
+    assert "'Request: POST' was found in 2 line(s)" in warning
+    assert "<timestamp> - <logger> - <level> - " in warning
+
+
+def test_no_warning_while_requests_are_read(monkeypatch, tmp_path):
+    """The words can stand in a line that is no log line - a response that quotes them."""
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        llm_block(response="A request starts like this:\nRequest: POST /other_model"))))
+
+    assert run.row_count == "1"
+    assert run.sas.messages == []
+
+
+def test_byte_that_is_not_utf8_does_not_cost_the_file(monkeypatch, tmp_path):
+    text = as_log(llm_block(response="Ein Café in Wien."), embedding_block())
+    # The same word as a Latin-1 writer leaves it behind: one byte that is no UTF-8
+    damaged = text.encode("utf-8").replace("Café".encode("utf-8"), b"Caf\xe9")
+    assert damaged != text.encode("utf-8")
+    path = tmp_path / "llms.log"
+    path.write_bytes(damaged)
+
+    run = run_parser(monkeypatch, path)
+
+    assert run.row_count == "2"
+    frame = run.uploads[0]["frame"]
+    assert frame.loc[0, "response"] == "Ein Caf\ufffd in Wien."
+    assert (frame.loc[0, "prompt_length"], frame.loc[1, "prompt_length"]) == (21, 17)
 
 
 def test_unreadable_request_data_keeps_the_row_and_its_numbers(monkeypatch, tmp_path):

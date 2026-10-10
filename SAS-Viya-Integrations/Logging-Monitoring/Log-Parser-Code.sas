@@ -174,8 +174,9 @@ def parse_log_file(file_path):
     - Multiline model response (for a decision model the answers with their confidence)
 
     Each request block starts with 'Request: POST' and ends with its 'Response: Status Code'
-    line or, if that line is missing, before the next 'Request: POST'. Lines between two
-    blocks belong to no request and are skipped.
+    line or, if that line is missing, before the next 'Request: POST' or before the first
+    line that is older than the request. Lines between two blocks belong to no request
+    and are skipped.
 
     Args:
         file_path (str): Path to the log file to parse.
@@ -183,18 +184,26 @@ def parse_log_file(file_path):
     Returns:
         pandas.DataFrame: A DataFrame containing one row per request with the columns in COLUMNS.
     """
-    with open(file_path, 'r', encoding='utf-8') as f:
+    # A byte that is not UTF-8 is replaced, so one damaged line does not cost the whole file
+    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
         lines = f.readlines()
 
     records = []
     entry = None
+    unmatched_requests = 0
     i = 0
     while i < len(lines):
         match_line = LOG_LINE.match(lines[i].rstrip('\r\n'))
         i += 1
         if not match_line:
+            # A request in a line that does not start as a log line, for example behind a prefix of the log pipeline
+            if 'Request: POST' in lines[i - 1]:
+                unmatched_requests += 1
             continue
         timestamp, message = match_line.groups()
+        # A line that is older than the open request belongs to the next container's part of the file
+        if entry is not None and timestamp < entry['timestamp']:
+            entry = None
 
         if message.startswith('Request: POST'):
             entry = dict.fromkeys(COLUMNS)
@@ -221,6 +230,10 @@ def parse_log_file(file_path):
                     response_lines.append(lines[i].strip())
                     i += 1
                 entry['response'] = ' '.join(response_lines)
+
+    # Requests that were all skipped must not pass as a log without requests
+    if not records and unmatched_requests > 0:
+        SAS.logMessage(f"No request was read: 'Request: POST' was found in {unmatched_requests} line(s) that do not start as a log line ('<timestamp> - <logger> - <level> - '). The parser needs the lines as the containers write them, with nothing in front.", messageType='WARNING')
 
     df = pd.DataFrame(records, columns=COLUMNS)
     return df
@@ -301,10 +314,46 @@ run; quit;
                 name = "&_log_target_table_name.";
 
             %if &_log_append_table. %then %do;
+                /* A table that was saved but is not in memory, which is how a restart of the CAS server
+                   leaves it, is loaded back before the rows are appended. tableExists only sees the
+                   tables in memory, so without this a new table would be started and saved over the
+                   file that holds the rows of all runs before */
+                savedFile = '';
+                if re.exists EQ 0 then do;
+                    /* The whole caslib is listed, so a file that does not exist is not an error. The file
+                       keeps the case the table name was saved with and a CAS table name has none: the
+                       exact name is taken when there is one, otherwise the same name in another case */
+                    table.fileInfo result=listing status=listed /
+                        casLib = "&_log_target_table_lib.";
+                    if listed.severity EQ 0 then do;
+                        if exists(listing, 'FileInfo') then do;
+                            do savedEntry over listing.FileInfo;
+                                if savedEntry.Name EQ "&_log_target_table_name..sashdat" then savedFile = savedEntry.Name;
+                                else if savedFile EQ '' and upcase(savedEntry.Name) EQ upcase("&_log_target_table_name..sashdat") then savedFile = savedEntry.Name;
+                            end;
+                        end;
+                    end;
+                    if savedFile NE '' then do;
+                        table.loadTable /
+                            casLib = "&_log_target_table_lib.",
+                            path = savedFile,
+                            casOut = {casLib = "&_log_target_table_lib.", name = "&_log_target_table_name."};
+                        table.tableExists result=re /
+                            casLib = "&_log_target_table_lib.",
+                            name = "&_log_target_table_name.";
+                    end;
+                end;
+
+                tableWritten = True;
                 if re.exists GE 1 then do;
                     table.append /
                         source = {casLib = 'CASUSER', name = '_TEMP_LLM_LOGS'},
                         target = {casLib = "&_log_target_table_lib.", name = "&_log_target_table_name."};
+                end;
+                else if savedFile NE '' then do;
+                    /* Starting a new table here would end in a save over the file that could not be loaded */
+                    print (error) "The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded, nothing was appended and the saved file was left as it is.";
+                    tableWritten = False;
                 end;
                 else do;
                     table.copyTable /
@@ -313,7 +362,7 @@ run; quit;
                 end;
 
                 %if &_log_promote_table. %then %do;
-                    if re.exists LE 1 then do;
+                    if tableWritten and re.exists LE 1 then do;
                         table.promote /
                             casLib = "&_log_target_table_lib.",
                             name = "&_log_target_table_name.",
@@ -322,7 +371,6 @@ run; quit;
                             quiet = True;
                     end;
                 %end;
-                tableWritten = True;
             %end;
             %else %do;
                 /* The new table is built beside the existing one, which is only dropped once its replacement exists */
