@@ -9,7 +9,9 @@
  *   - vite-plugin-singlefile inlines all JS and CSS into the one HTML file.
  *   - goTemplateSafeScripts() then base64-encodes every inline <script> body so
  *     the SAS Job Execution Go template engine does not choke on the `{{`/`}}`
- *     sequences that a minified bundle inevitably contains.
+ *     sequences that a minified bundle inevitably contains, and removes the
+ *     bundler's `$vite$` marker comment from the stylesheet, which SAS Job
+ *     Execution would take for a parameter token.
  *
  * That single file is uploaded as a SAS Job Execution definition and embedded in
  * a SAS Visual Analytics report. Requires `'unsafe-inline'` and `'unsafe-eval'`
@@ -56,6 +58,20 @@ function goTemplateSafeScripts(): Plugin {
           // output is byte-identical regardless of the checkout's line endings
           // (CI compares the committed file against a fresh Linux build).
           html = html.replace(/\r\n?/g, '\n');
+          // The bundler ends the inlined stylesheet with a marker comment,
+          // /*$vite$:1*/. SAS Job Execution serves this page as the form of a
+          // job definition and replaces text between two dollar signs that
+          // reads like a name by the value of that parameter - by nothing
+          // when there is none. Inside a comment that cuts no code, but the
+          // served page then differs from the built one, and the token scan
+          // of the verify suites would have to make an exception for it. The
+          // marker has no use once everything is inlined, so it is removed -
+          // from the stylesheets only; the scripts are left as they are.
+          html = html.replace(
+            /<style([^>]*)>([\s\S]*?)<\/style>/gi,
+            (_match, attrs: string, css: string) =>
+              `<style${attrs}>${css.replace(/\/\*\$vite\$:\d+\*\//g, '')}</style>`
+          );
           html = html.replace(
             /<script([^>]*)>([\s\S]*?)<\/script>/gi,
             (match, attrs: string, code: string) => {

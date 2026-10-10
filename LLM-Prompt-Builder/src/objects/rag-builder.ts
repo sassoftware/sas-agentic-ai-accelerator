@@ -457,11 +457,19 @@ export async function buildRagBuilder(
   // has to act on stays in the inline alert until it is resolved. `action`
   // puts the way out into the alert itself, for a failure the user can do
   // something about from here.
+  /**
+   * What the last failure said, whichever of the two places showed it (the
+   * banner above, or the list beside the Save and Manifest buttons). A
+   * manifest reads it after a stage that did not go through, to say beside
+   * its button why it stopped.
+   */
+  let lastFailure: string[] = [];
   const showStatus = (
     variant: 'success' | 'danger' | 'warning' | 'info',
     message: string,
     action?: { id: string; label: string; run: () => void }
   ): void => {
+    if (variant === 'danger') lastFailure = [message];
     if (variant === 'success') {
       status.replaceChildren();
       showToast(message);
@@ -1929,6 +1937,7 @@ export async function buildRagBuilder(
   saveBody.appendChild(saveResult);
   const clearSaveResult = (): void => saveResult.replaceChildren();
   const showSaveErrors = (problems: string[]): void => {
+    lastFailure = problems;
     const alert = document.createElement('div');
     alert.className = 'alert alert-danger py-2 px-3 mb-0';
     alert.setAttribute('role', 'alert');
@@ -1950,9 +1959,13 @@ export async function buildRagBuilder(
     saveResult.replaceChildren(alert);
     saveResult.scrollIntoView({ block: 'nearest' });
   };
-  const showSaveSuccess = (message: string): void => {
+  /**
+   * What was written, beside the button. `variant` is 'warning' for an
+   * outcome that went through and still needs a second look.
+   */
+  const showSaveSuccess = (message: string, variant: 'success' | 'warning' = 'success'): void => {
     const alert = document.createElement('div');
-    alert.className = 'alert alert-success py-2 px-3 mb-0';
+    alert.className = `alert alert-${variant} py-2 px-3 mb-0`;
     alert.setAttribute('role', 'status');
     alert.append(`${message} `);
     // The saved artifact is a Model Manager model, and its versions, history
@@ -1964,7 +1977,44 @@ export async function buildRagBuilder(
       link.target = '_blank';
       link.rel = 'noopener noreferrer';
       link.textContent = str('ragBuilderOpenInMM', 'Open in SAS Model Manager');
+      // A new tab where the browser allows one, the copied link where the
+      // sandboxed iframe of a report does not.
+      link.addEventListener('click', (event) => openExternalLink(event, link, linkCopiedText()));
       alert.appendChild(link);
+    }
+    saveResult.replaceChildren(alert);
+    saveResult.scrollIntoView({ block: 'nearest' });
+  };
+  /**
+   * A save or a manifest that did not go through, beside the button that
+   * started it: what stopped, why, and what had been written by then. The
+   * banner at the top of the page may say the reason too, but that is out of
+   * view from down here, and a line that still said "saved" would be read as
+   * the outcome.
+   */
+  const showSaveFailure = (heading: string, reasons: string[], written = ''): void => {
+    const alert = document.createElement('div');
+    alert.className = 'alert alert-danger py-2 px-3 mb-0';
+    alert.setAttribute('role', 'alert');
+    const title = document.createElement('div');
+    title.className = 'fw-semibold mb-1';
+    title.textContent = heading;
+    alert.appendChild(title);
+    if (reasons.length > 0) {
+      const list = document.createElement('ul');
+      list.className = 'mb-1 ps-3';
+      for (const reason of reasons) {
+        const item = document.createElement('li');
+        item.textContent = reason;
+        list.appendChild(item);
+      }
+      alert.appendChild(list);
+    }
+    if (written) {
+      const note = document.createElement('div');
+      note.className = 'rag-save-written';
+      note.textContent = written;
+      alert.appendChild(note);
     }
     saveResult.replaceChildren(alert);
     saveResult.scrollIntoView({ block: 'nearest' });
@@ -2777,7 +2827,11 @@ export async function buildRagBuilder(
       return true;
     } catch (error) {
       console.error('Saving the RAG setup failed.', error);
-      showStatus('danger', str('ragBuilderSaveError', 'Saving the RAG setup failed - check the browser console and your Model Manager permissions.'));
+      const message = str('ragBuilderSaveError', 'Saving the RAG setup failed - check the browser console and your Model Manager permissions.');
+      showStatus('danger', message);
+      // Beside the button as well: the banner is at the top of the page, and
+      // what the result box said before this save is gone.
+      showSaveFailure(message, []);
       return false;
     } finally {
       saveButton.disabled = false;
@@ -2940,20 +2994,45 @@ export async function buildRagBuilder(
     }
     manifestButton.disabled = true;
     try {
-      const stages: Array<[string, () => Promise<boolean>]> = [
-        [str('ragBuilderStageSave', 'saving the setup'), saveSetup],
-        [str('ragBuilderStageJob', 'generating the ingestion job'), generateIngestionJob],
-        [str('ragBuilderStageFlow', 'generating the Studio flow'), generateStudioFlow],
-        [str('ragBuilderStageRegister', 'registering the retrieval model'), registerRetrievalModel],
+      // Each stage with what it is called while it runs and what is true once
+      // it went through.
+      const stages: Array<[string, string, () => Promise<boolean>]> = [
+        [str('ragBuilderStageSave', 'saving the setup'), str('ragBuilderStageSaveDone', 'the setup was saved to SAS Model Manager'), saveSetup],
+        [str('ragBuilderStageJob', 'generating the ingestion job'), str('ragBuilderStageJobDone', 'the ingestion job was generated'), generateIngestionJob],
+        [str('ragBuilderStageFlow', 'generating the Studio flow'), str('ragBuilderStageFlowDone', 'the Studio flow was generated'), generateStudioFlow],
+        [str('ragBuilderStageRegister', 'registering the retrieval model'), str('ragBuilderStageRegisterDone', 'the retrieval model was registered'), registerRetrievalModel],
       ];
-      for (const [label, run] of stages) {
+      const done: string[] = [];
+      for (const [label, doneLabel, run] of stages) {
         manifestButton.textContent = `${str('ragBuilderManifestBusy', 'Manifesting')} — ${label}…`;
-        if (!(await run())) {
-          // The stage that failed has already said why, in the panel beside
-          // this button; repeating it would only push its detail off screen.
+        lastFailure = [];
+        let passed = false;
+        try {
+          passed = await run();
+        } catch (error) {
+          // A stage reports its own failures; one that throws all the same
+          // must not leave the result of the stage before it standing.
+          console.error(`Manifesting stopped while ${label}.`, error);
+          lastFailure = [error instanceof Error ? error.message : String(error)];
+        }
+        if (!passed) {
+          // The outcome of a manifest belongs where its button is. The
+          // stages before this one each left their own "saved" or
+          // "generated" line in this box, and the stage that failed may have
+          // said why in the banner at the top of the page only - which left
+          // a green line here over a manifest that had stopped. So the box
+          // says it in one piece: where it stopped, why, and what is written.
+          showSaveFailure(
+            str('ragBuilderManifestStopped', 'The manifest stopped while {stage}. The setup is not manifested.').replace('{stage}', label),
+            lastFailure,
+            done.length > 0
+              ? str('ragBuilderManifestWritten', 'Done before that: {done}.').replace('{done}', done.join('; '))
+              : str('ragBuilderManifestNothingWritten', 'Nothing was written before that.')
+          );
           manifestButton.textContent = str('ragBuilderManifestButton', 'Manifest setup');
           return;
         }
+        done.push(doneLabel);
       }
       // A new MINOR version, as manifesting a prompt does. Without it every
       // manifest overwrote the same version and the model carried no history
@@ -2965,7 +3044,9 @@ export async function buildRagBuilder(
         // The artifacts are written and correct; only the version marker is
         // missing. Say so rather than reporting the manifest as failed.
         console.error('Creating the model version failed.', error);
-        showStatus('info', str('ragBuilderVersionFailed', 'Everything was generated and registered, but recording a new model version failed - check your permissions on the setup model.'));
+        const message = str('ragBuilderVersionFailed', 'Everything was generated and registered, but recording a new model version failed - check your permissions on the setup model.');
+        showStatus('info', message);
+        showSaveSuccess(message, 'warning');
         return;
       }
       showSaveSuccess(

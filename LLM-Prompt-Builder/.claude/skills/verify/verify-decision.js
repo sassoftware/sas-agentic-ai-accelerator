@@ -730,6 +730,13 @@ const lastLine = (message) => String(message || '').trim().split('\n').pop();
   await setUsage();
   await deletePage.close();
 
+  // ---- every request to SAS Viya went through the HTTP client of the app -------
+  const directRequests = await (await fetch(BASE + '/__direct')).json();
+  assert(
+    directRequests.length === 0,
+    `no request to a SAS Viya service went around the HTTP client, which handles HTTP 449 and the CSRF token (direct: ${directRequests.join(' | ') || 'none'})`
+  );
+
   assert(pageErrors.length === 0, `no uncaught page errors (got: ${pageErrors.join(' | ')})`);
   await browser.close();
   console.log('\n===== SUMMARY =====');

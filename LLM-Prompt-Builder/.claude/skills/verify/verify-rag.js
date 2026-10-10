@@ -23,6 +23,8 @@
  *   failure   a RAG project listing that fails stays inside the RAG area
  *   gates     credentialDomain=none; the ingestion compute context
  *   ragonly   a page without the prompt side shows the RAG flow alone
+ *   manifest  what a manifest says beside its button when a stage fails; the
+ *             create dialogs and the link to the saved setup
  * VERIFY_RAG_SECTIONS (comma separated) runs a subset; the summary names the
  * sections that ran, so a partial run cannot pass for a full one.
  */
@@ -77,6 +79,56 @@ const lastUpload = (log, modelId, name) => uploads(log, modelId, name).pop();
 // embedding models and the prompts the enrichment stage can call.
 const isRagRequest = (e) => e.url.startsWith('/modelRepository/') && /RAG-Engineering|emb-proj|Output-Parsing/.test(decodeURIComponent(e.url));
 const lastLine = (message) => String(message || '').trim().split('\n').pop();
+// What a link that leaves the page does when no tab can be opened: it shows
+// for a moment that the link was copied. `window.open` is made to answer the
+// way the sandboxed iframe of a report does.
+async function assertLinkCopies(target, selector, label) {
+  await target.evaluate(() => {
+    window.__verifyOpened = [];
+    window.__verifyRealOpen = window.__verifyRealOpen || window.open;
+    window.open = (url) => {
+      window.__verifyOpened.push(String(url));
+      return null;
+    };
+  });
+  const href = await target.$eval(selector, (link) => link.href);
+  const shown = (await target.textContent(selector)).trim();
+  const tabs = target.context().pages().length;
+  await target.click(selector);
+  await waitUntil(async () => /link copied/i.test(await target.textContent(selector)), `${label}: says that the link was copied when no tab can be opened`, 3000);
+  const opened = await target.evaluate(() => window.__verifyOpened);
+  assert(
+    opened.length === 1 && opened[0] === href && target.context().pages().length === tabs,
+    `${label}: asks for a new tab once, through window.open, and follows no plain target="_blank" link (asked for: ${opened.join(', ') || 'nothing'})`
+  );
+  await waitUntil(async () => (await target.textContent(selector)).trim() === shown, `${label}: shows its text again afterwards`, 5000);
+  await target.evaluate(() => {
+    window.open = window.__verifyRealOpen;
+  });
+}
+// A create dialog that is open: each field is its label above an input as
+// wide as the dialog body.
+async function assertCreateDialogLayout(target, modalSelector, label) {
+  const fields = await target.$$eval(`${modalSelector} .modal-body input`, (inputs) =>
+    inputs.map((input) => {
+      const body = input.closest('.modal-body');
+      const caption = body.querySelector(`label[for="${input.id}"]`);
+      const style = getComputedStyle(body);
+      const inner = body.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      return {
+        id: input.id,
+        width: Math.round(input.getBoundingClientRect().width),
+        inner: Math.round(inner),
+        labelled: Boolean(caption),
+        above: Boolean(caption) && caption.getBoundingClientRect().bottom <= input.getBoundingClientRect().top + 1,
+      };
+    })
+  );
+  assert(
+    fields.length === 2 && fields.every((field) => field.labelled && field.above && field.width >= field.inner - 2),
+    `${label}: name and description each have their label above an input as wide as the dialog (got: ${fields.map((field) => `${field.id} ${field.width}px of ${field.inner}px, label ${field.labelled ? (field.above ? 'above' : 'beside') : 'missing'}`).join('; ')})`
+  );
+}
 
 // The page with the prompt side configured, and the options that switch RAG on.
 const PROMPT = `modelRepositoryID=repo-1&llmProjectID=llm-proj&SCREndpoint=${BASE}/scr`;
@@ -1181,6 +1233,93 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     const promptRequests = (await getLog()).filter((e) => /llm-proj|Prompt-Engineering|Decision/.test(decodeURIComponent(e.url)) || e.url.startsWith('/scr/'));
     assert(promptRequests.length === 0, `no request of the prompt side is made (got: ${promptRequests.map((e) => e.url).join(' | ')})`);
   });
+
+  // ---- manifest: what a manifest says beside its button ---------------------------
+  await section('manifest', async (page) => {
+    const resultText = async () => ((await page.textContent(rgb('save-result'))) || '').replace(/\s+/g, ' ').trim();
+    // Manifest and wait for the end: the model version when it goes through.
+    const manifest = async (setupId, { through = true } = {}) => {
+      await goRagStep(page, 'store');
+      await resetLog();
+      await page.click(rgb('manifest'));
+      if (through) {
+        await waitUntil(async () => (await getLog()).some((e) => e.method === 'POST' && e.url === `/modelRepository/models/${setupId}/modelVersions`), 'the manifest records a model version', 30000);
+      }
+      await waitUntil(async () => !(await page.isDisabled(rgb('manifest'))) && (await page.textContent(rgb('manifest'))).trim() === 'Manifest setup' && Boolean(await page.$(`${rgb('save-result')} .alert`)), 'the manifest has ended and says how', 30000);
+      const log = await getLog();
+      const score = lastUpload(log, setupId, 'retrieve_context.py');
+      return { log, code: score ? multipartFile(score.body) : '' };
+    };
+
+    // -- a project and a setup of this section, through the two create dialogs ----
+    await openRag(page);
+    await waitUntil(async () => (await optionValues(page, 'project')).includes('rag-proj'), 'the RAG projects are listed');
+    await page.click(`[data-bs-target="${rgb('create-projectModal')}"]`);
+    await page.waitForSelector(`${rgb('create-projectModal')}.show`);
+    await assertCreateDialogLayout(page, rgb('create-projectModal'), 'Create project');
+    await page.fill(rgb('create-projectName'), 'ZZ Manifest RAG');
+    await page.click(`${rgb('create-projectModal')} .btn-primary`);
+    await waitUntil(async () => (await value(page, 'project')).startsWith('rag-proj-new-'), 'the project of this section is selected');
+    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await page.click(`[data-bs-target="${rgb('create-setupModal')}"]`);
+    await page.waitForSelector(`${rgb('create-setupModal')}.show`);
+    await assertCreateDialogLayout(page, rgb('create-setupModal'), 'Create setup');
+    await page.fill(rgb('create-setupName'), 'ZZ Manifest Setup');
+    await page.click(`${rgb('create-setupModal')} .btn-primary`);
+    const createdSetup = async () => (await ragState()).models.find((model) => model.name === 'ZZ Manifest Setup');
+    await waitUntil(async () => Boolean(await createdSetup()), 'the setup of this section is created');
+    const setupId = (await createdSetup()).id;
+    await waitUntil(async () => (await value(page, 'setup')) === setupId, 'and selected');
+    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await page.waitForSelector(EDITOR, { state: 'visible' });
+    await goRagStep(page, 'documents');
+    await page.fill(rgb('source-path'), '/mnt/data/zz manifest');
+    await page.selectOption(rgb('embed-model'), 'bge_small_en_v15');
+    await goRagStep(page, 'store');
+    await page.selectOption(rgb('backend'), 'pgvector');
+    await page.fill(rgb('collection'), 'zz_manifest_v1');
+    await page.fill(rgb('tables-prefix'), 'zzm');
+    await page.selectOption(rgb('tables-caslib'), 'Public');
+
+    // -- a stage that fails: the outcome is said where the button is ---------------
+    // The setup is saved, then the request that writes the job definition
+    // fails once. Beside the button nothing may still read as a success.
+    await armFailure({ jobDefinition: 500 });
+    const stopped = await manifest(setupId, { through: false });
+    const stoppedText = await resultText();
+    assert(
+      Boolean(await saveResult(page, 'danger')) && !(await saveResult(page, 'success')),
+      `a manifest that stopped half way says so beside its button, in the danger style, and leaves no "saved" line of an earlier stage there (got: ${stoppedText.slice(0, 200)})`
+    );
+    assert(
+      stoppedText.includes('The manifest stopped while generating the ingestion job') && stoppedText.includes('The setup is not manifested'),
+      `the line names the stage that stopped the manifest (got: ${stoppedText})`
+    );
+    assert(stoppedText.includes('Generating the ingestion job failed'), 'it gives the reason the stage gave');
+    assert(stoppedText.includes('Done before that: the setup was saved to SAS Model Manager.'), 'and says what had been written by then');
+    assert(
+      ((await page.textContent(`${rgb('status')} .alert-danger`).catch(() => '')) || '').includes('Generating the ingestion job failed'),
+      'the banner at the top of the page repeats the reason'
+    );
+    assert(
+      uploads(stopped.log, setupId, 'rag-setup.json').length >= 1 && !stopped.code && !stopped.log.some((e) => e.url === `/modelRepository/models/${setupId}/modelVersions`),
+      'the setup was saved, and neither a retrieval model nor a model version was written'
+    );
+    await goRagStep(page, 'run');
+    assert(await page.isDisabled(rgb('launch')), 'Launch ingestion stays disabled: the setup is not manifested');
+
+    // -- the same manifest once more: it goes through ------------------------------
+    await manifest(setupId);
+    assert(Boolean(await saveResult(page, 'success')) && !(await saveResult(page, 'danger')) && !(await saveResult(page, 'warning')), 'the next manifest goes through and says so in the success style');
+    await assertLinkCopies(page, `${rgb('save-result')} a`, 'the link to the saved setup beside Manifest setup');
+  });
+
+  // ---- every request to SAS Viya went through the HTTP client of the app -------
+  const directRequests = await (await fetch(BASE + '/__direct')).json();
+  assert(
+    directRequests.length === 0,
+    `no request to a SAS Viya service went around the HTTP client, which handles HTTP 449 and the CSRF token (direct: ${directRequests.join(' | ') || 'none'})`
+  );
 
   assert(pageErrors.length === 0, `no uncaught page errors (got: ${pageErrors.join(' | ')})`);
   await browser.close();

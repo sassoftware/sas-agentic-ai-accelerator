@@ -338,7 +338,8 @@ the Prompt Builder (`verify.js`), decision templates (`verify-decision.js`), the
 RAG kind (`verify-rag.js`), the options group and the three switches
 (`verify-options.js`), the locale files (`verify-locales.js`) and the built
 page itself (`verify-tokens.js`: no text SAS Job Execution would substitute as
-a `$token$`). After `npm run build`, from a scratch folder in which
+a `$token$` - the build removes the one marker comment of the bundler that
+had that shape). After `npm run build`, from a scratch folder in which
 `playwright` is installed:
 
 ```bash

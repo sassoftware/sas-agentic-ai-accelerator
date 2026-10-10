@@ -80,23 +80,26 @@ export function createCreateModal(
     description.innerText = text.modalDescription;
     body.appendChild(description);
   }
-  const nameText = document.createElement('span');
-  nameText.innerHTML = `${text.nameLabel}:`;
-  const nameInput = document.createElement('input');
-  nameInput.setAttribute('type', 'text');
-  nameInput.setAttribute('placeholder', text.nameLabel ?? '');
-  nameInput.setAttribute('id', `${prefix}Name`);
-  const descriptionText = document.createElement('span');
-  descriptionText.innerHTML = `${text.descriptionLabel}:`;
-  const descriptionInput = document.createElement('input');
-  descriptionInput.setAttribute('type', 'text');
-  descriptionInput.setAttribute('placeholder', text.descriptionLabel ?? '');
-  descriptionInput.setAttribute('id', `${prefix}Description`);
-  body.appendChild(nameText);
-  body.appendChild(nameInput);
-  body.appendChild(document.createElement('br'));
-  body.appendChild(descriptionText);
-  body.appendChild(descriptionInput);
+  // Each field is its label above an input as wide as the dialog. Label and
+  // input on one line left the input at the browser's default width, beside
+  // a label of any length: a name was cut off while it was typed.
+  const field = (id: string, labelText: string | undefined, last: boolean): void => {
+    const group = document.createElement('div');
+    group.classList.add('pb-create-field', last ? 'mb-0' : 'mb-3');
+    const label = document.createElement('label');
+    label.classList.add('form-label');
+    label.htmlFor = id;
+    label.textContent = labelText ?? '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.classList.add('form-control');
+    input.id = id;
+    group.appendChild(label);
+    group.appendChild(input);
+    body.appendChild(group);
+  };
+  field(`${prefix}Name`, text.nameLabel, false);
+  field(`${prefix}Description`, text.descriptionLabel, true);
   content.appendChild(body);
 
   const footer = document.createElement('div');

@@ -49,6 +49,56 @@ function assertCompiles(code, label) {
   const compiled = compilePython(code, 'llm_manifest.py');
   assert(compiled.ok, `${label} compiles without a warning (${compiled.python}${compiled.ok ? '' : ': ' + lastLine(compiled.error)})`);
 }
+// What a link that leaves the page does when no tab can be opened: it shows
+// for a moment that the link was copied. `window.open` is made to answer the
+// way the sandboxed iframe of a report does.
+async function assertLinkCopies(target, selector, label) {
+  await target.evaluate(() => {
+    window.__verifyOpened = [];
+    window.__verifyRealOpen = window.__verifyRealOpen || window.open;
+    window.open = (url) => {
+      window.__verifyOpened.push(String(url));
+      return null;
+    };
+  });
+  const href = await target.$eval(selector, (link) => link.href);
+  const shown = (await target.textContent(selector)).trim();
+  const tabs = target.context().pages().length;
+  await target.click(selector);
+  await waitUntil(async () => /link copied/i.test(await target.textContent(selector)), `${label}: says that the link was copied when no tab can be opened`, 3000);
+  const opened = await target.evaluate(() => window.__verifyOpened);
+  assert(
+    opened.length === 1 && opened[0] === href && target.context().pages().length === tabs,
+    `${label}: asks for a new tab once, through window.open, and follows no plain target="_blank" link (asked for: ${opened.join(', ') || 'nothing'})`
+  );
+  await waitUntil(async () => (await target.textContent(selector)).trim() === shown, `${label}: shows its text again afterwards`, 5000);
+  await target.evaluate(() => {
+    window.open = window.__verifyRealOpen;
+  });
+}
+// A create dialog that is open: each field is its label above an input as
+// wide as the dialog body.
+async function assertCreateDialogLayout(target, modalSelector, label) {
+  const fields = await target.$$eval(`${modalSelector} .modal-body input`, (inputs) =>
+    inputs.map((input) => {
+      const body = input.closest('.modal-body');
+      const caption = body.querySelector(`label[for="${input.id}"]`);
+      const style = getComputedStyle(body);
+      const inner = body.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      return {
+        id: input.id,
+        width: Math.round(input.getBoundingClientRect().width),
+        inner: Math.round(inner),
+        labelled: Boolean(caption),
+        above: Boolean(caption) && caption.getBoundingClientRect().bottom <= input.getBoundingClientRect().top + 1,
+      };
+    })
+  );
+  assert(
+    fields.length === 2 && fields.every((field) => field.labelled && field.above && field.width >= field.inner - 2),
+    `${label}: name and description each have their label above an input as wide as the dialog (got: ${fields.map((field) => `${field.id} ${field.width}px of ${field.inner}px, label ${field.labelled ? (field.above ? 'above' : 'beside') : 'missing'}`).join('; ')})`
+  );
+}
 
 (async () => {
   // Without an interpreter the generated score code would go unchecked: a failure, not a skip.
@@ -216,6 +266,12 @@ function assertCompiles(code, label) {
     (await page.textContent('.modal.show .modal-title')).trim() === 'Create a new Prompt',
     'create-prompt button/title shortened'
   );
+  await assertCreateDialogLayout(page, '#promptBuilderCreatePromptModal', 'Create a new Prompt');
+  await page.click('.modal.show .btn-close');
+  await page.waitForSelector('.modal.show', { state: 'detached' });
+  await page.click('#LPB-modal-button-container button[data-bs-target="#promptBuilderCreateProjectModal"]');
+  await page.waitForSelector('#promptBuilderCreateProjectModal.show .modal-body');
+  await assertCreateDialogLayout(page, '#promptBuilderCreateProjectModal', 'Create a new Project');
   await page.click('.modal.show .btn-close');
   await page.waitForSelector('.modal.show', { state: 'detached' });
 
@@ -440,6 +496,8 @@ function assertCompiles(code, label) {
   // Manifesting shows the link in the manifest box (not next to Save).
   await waitUntil(async () => Boolean(await page.$('#app-obj-LPB-pet-save-result a')), 'manifest link in the manifest box');
   step(true, 'manifest shows the Model Manager link in the manifest box');
+  await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-pet-create-model-button')), 'the manifest has ended');
+  await assertLinkCopies(page, '#app-obj-LPB-pet-save-result a', 'the link to the saved prompt-test in the manifest box');
   aLog = await getLog();
   const findPart = (name) => aLog.find((e) => e.method === 'POST' && e.body.includes(`filename="${name}"`));
   const savedTracker = multipartJson(findPart('Prompt-Experiment-Tracker.json').body);
@@ -954,6 +1012,7 @@ function assertCompiles(code, label) {
   // the manifest box.
   const saveOnlyLink = await page.$('#app-obj-LPB-pet-save-only-result a');
   assert(saveOnlyLink, 'plain Save shows the link next to the Save button');
+  await assertLinkCopies(page, '#app-obj-LPB-pet-save-only-result a', 'the link to the saved prompt-test beside Save');
   assert(
     !(await page.$('#app-obj-LPB-pet-save-result a')),
     'plain Save does not put the link in the manifest box'
@@ -1280,6 +1339,10 @@ function assertCompiles(code, label) {
   );
   step(true, 'a toast reports that one of three models did not answer');
   assert(!(await page.isDisabled('#app-obj-LPB-run-experiment')), 'Run Experiments is enabled again after a partial failure');
+  // Two models answered, so the run can be judged - at once, not only after
+  // the prompt-test was opened again.
+  const judgeDisabled = (runIndex) => page.isDisabled(`#app-obj-LPB-pet-${runIndex}-judge`);
+  assert(!(await judgeDisabled(0)), 'Judge this run is usable as soon as a run with two answers has ended');
 
   // -- the FIRST model fails: the flags must still land on models that answered
   await failModel('second_llm', null);
@@ -1301,6 +1364,7 @@ function assertCompiles(code, label) {
     errorLines.length === 1 && errorLines[0].startsWith('demo_llm: LLM call failed with status 404') && errorLines[0].includes(NO_CONTAINER),
     `a 404 gets the same hint, and the earlier error is gone (got: ${errorLines.join(' | ')})`
   );
+  assert(!(await judgeDisabled(0)) && !(await judgeDisabled(1)), 'after the second run both runs can be judged');
 
   // -- every model fails: no run is added, every failure is listed
   await failModel('second_llm', 429);
@@ -1340,6 +1404,37 @@ function assertCompiles(code, label) {
     'the saved flags of the run with the failing first model sit on a model that answered'
   );
 
+  // -- a judgment that comes back while a run is out -------------------------------
+  // A judgment redraws the whole tracker. When it comes back while the calls
+  // of a run are out, the run is drawn without its answers and every Judge
+  // button is drawn disabled; the run that ends afterwards has to be drawn
+  // with its answers, and the buttons have to come back.
+  await page.selectOption('#app-obj-LPB-judge-model', 'second_llm');
+  const timedCalls = '**/scr/**';
+  await page.route(timedCalls, async (route) => {
+    const judgment = (route.request().postData() || '').includes('impartial evaluator');
+    await sleep(judgment ? 1500 : 4500);
+    await route.continue().catch(() => {});
+  });
+  await page.click('#app-obj-LPB-pet-0-judge');
+  assert(await judgeDisabled(0), 'the Judge button of a run is disabled while its judgment is out');
+  await page.click('#app-obj-LPB-run-experiment');
+  await waitUntil(async () => Boolean(await page.$('#app-obj-LPB-pet-0 .pb-judge-banner')), 'the judgment of the first run is shown', 15000);
+  assert(await page.isDisabled('#app-obj-LPB-run-experiment'), 'the calls of the run are still out when the judgment is back');
+  await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-run-experiment')), 'the run has ended', 20000);
+  await sleep(300);
+  runResults = await runModels(2);
+  assert(
+    runResults.map((r) => r.model).join(',') === 'demo_llm,second_llm,contrarian_judge',
+    `the run that ended after the judgment came back is drawn with its answers (got: ${runResults.map((r) => r.model).join(',') || 'no model'})`
+  );
+  assert((await page.$$('.pet-run-delete')).length === 3, `the tracker shows three runs, each once (got ${(await page.$$('.pet-run-delete')).length})`);
+  assert(
+    !(await judgeDisabled(0)) && !(await judgeDisabled(1)) && !(await judgeDisabled(2)),
+    'and every run can be judged, the one that was judged meanwhile included'
+  );
+  await page.unroute(timedCalls);
+
   // -- a run in flight and another prompt-test opened meanwhile ------------------
   // The calls of a run take their time (a slow or dead container is exactly
   // when someone moves on). Their answers belong to the prompt-test the run
@@ -1373,6 +1468,9 @@ function assertCompiles(code, label) {
   await openPromptDuringRun('model-used', 3);
   assert((await runErrorLines()).length === 0, `the failures of the run are not reported on the page of another prompt-test (got: ${(await runErrorLines()).join(' | ')})`);
   assert((await page.textContent('#app-obj-LPB-run-experiment')).trim() === 'Run Experiments', 'the Run button reads Run Experiments again');
+  // The runs of this prompt-test were drawn while the calls were out. Its
+  // third run has two answers: it can be judged now that the calls have ended.
+  assert(!(await judgeDisabled(2)), 'a run of the prompt-test that was opened while a run was out can be judged once that run has ended');
   await failModel();
   // The manifest writes the tracker from the runs the page holds now (a plain
   // Save would write the rows it made when the prompt-test was opened).
@@ -1490,6 +1588,41 @@ function assertCompiles(code, label) {
   await waitUntil(async () => (await page.$$('#LPB-prompt-dropdown option')).length === 5, 'created prompt listed after a reload');
   const promptsAfterReload = await page.$$eval('#LPB-prompt-dropdown option', (els) => els.map((e) => e.textContent));
   assert(promptsAfterReload.includes('Created Prompt'), `the created prompt-test is listed after a reload (got: ${promptsAfterReload})`);
+
+  // ---- the first entry of a picker is a placeholder, not an id ------------------
+  await page.selectOption('#LPB-prompt-dropdown', 'model-used');
+  await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 3, 'a prompt-test is open before the placeholder is chosen');
+  const viyaRequests = async () => (await getLog()).filter((e) => !e.url.startsWith('/__') && !e.url.startsWith('/scr/')).map((e) => `${e.method} ${decodeURIComponent(e.url)}`);
+  await resetLog();
+  await page.selectOption('#LPB-prompt-dropdown', { index: 0 });
+  await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 0, 'choosing the placeholder of the prompt picker empties the tracker');
+  await sleep(600);
+  let placeholderRequests = await viyaRequests();
+  assert(
+    placeholderRequests.length === 0,
+    `choosing the placeholder of the prompt picker asks SAS Viya for nothing - its text is not a model id (asked: ${placeholderRequests.join(' | ') || 'nothing'})`
+  );
+  assert(
+    (await page.isDisabled('#LPB-delete-prompt-button')) && (await page.getAttribute('#LPB-openInMMButton', 'href')) === null && (await page.getAttribute('#LPB-openInMMButton', 'aria-disabled')) === 'true',
+    'with the placeholder chosen Delete Prompt and Open in SAS Model Manager are off, and the link leads nowhere'
+  );
+  await resetLog();
+  await page.selectOption('#LPB-project-dropdown', { index: 0 });
+  await waitUntil(async () => (await page.$$('#LPB-prompt-dropdown option')).length === 1, 'choosing the placeholder of the project picker empties the prompt list');
+  await sleep(600);
+  placeholderRequests = await viyaRequests();
+  assert(
+    placeholderRequests.length === 0,
+    `choosing the placeholder of the project picker asks SAS Viya for nothing - its text is not a project id (asked: ${placeholderRequests.join(' | ') || 'nothing'})`
+  );
+  assert(await page.isDisabled('#LPB-delete-project-button'), 'with the placeholder chosen Delete Project is off');
+
+  // ---- every request to SAS Viya went through the HTTP client of the app -------
+  const directRequests = await (await fetch(BASE + '/__direct')).json();
+  assert(
+    directRequests.length === 0,
+    `no request to a SAS Viya service went around the HTTP client, which handles HTTP 449 and the CSRF token (direct: ${directRequests.join(' | ') || 'none'})`
+  );
 
   assert(pageErrors.length === 0, `no uncaught page errors during the whole session (got: ${pageErrors.join(' | ')})`);
 

@@ -8,6 +8,13 @@
  * HTTP client does), its X-CSRF-TOKEN (csrf) and the status it was answered
  * with.
  *
+ * GET /__direct lists the requests a BROWSER made to a SAS Viya service
+ * without X-Requested-With: XMLHttpRequest - a request that went around the
+ * app's HTTP client and so around its handling of HTTP 449 and of the CSRF
+ * token. The page itself, the model containers under /scr/ and the plain GET
+ * to /<service>/ with which the client establishes a session are not listed.
+ * POST /__reset does not clear this list: a suite reads it once, at its end.
+ *
  * The RAG kind of the Builder reads the deployed RAG runtime from SAS Content.
  * The mock serves those files from the repository, which it finds from the
  * served bundle or the working directory, or is told through MOCK_REPO_ROOT.
@@ -24,6 +31,8 @@ const DIST_HTML = process.argv[2];
 const PORT = Number(process.env.MOCK_PORT) || 4173;
 
 const log = [];
+// See GET /__direct in the header.
+const directRequests = [];
 let decisionProject = false;
 // POST /__failmodel { name, status } makes every later SCR call of that model
 // fail: a number is answered as that HTTP status (503 or 404 is what the
@@ -318,6 +327,8 @@ let ragFixtures = true;
 //   { documents: 1 }     the next ingestion job does its work and counts that
 //                        many failed documents in its summary and its ledger
 //   { retrieval: 'reason' } the next retrieval probe reports "FAILED reason"
+//   { jobDefinition: 500 }  the next request that writes a job definition
+//                        (POST or PUT) answers that status, once
 const ragFailures = {};
 const ragProjects = [{ id: 'rag-proj', name: 'RAG Demo Project', createdBy: 'anna', modifiedBy: 'anna' }];
 let ragProjectCount = 0;
@@ -574,9 +585,18 @@ http
         };
         log.push(entry);
         res.on('finish', () => { entry.status = res.statusCode; });
+        // A browser (the suites themselves ask from Node) that asks a SAS Viya
+        // service without the header of the app's HTTP client.
+        const fromBrowser = /Mozilla/.test(req.headers['user-agent'] || '');
+        const pageItself = p === '/' || p === '/index.html' || p === '/favicon.ico';
+        const sessionWarmUp = req.method === 'GET' && /^\/[^/]+\/$/.test(p);
+        if (fromBrowser && !xhr && !pageItself && !sessionWarmUp && !p.startsWith('/__') && !p.startsWith('/scr/')) {
+          directRequests.push(`${req.method} ${req.url}`);
+        }
       }
 
       if (p === '/__log') return json(res, 200, log);
+      if (p === '/__direct') return json(res, 200, directRequests);
       if (p === '/__reset') { log.length = 0; return json(res, 200, {}); }
       if (p === '/__failjob') { failNextJob = true; return json(res, 200, {}); }
       if (p === '/__failmodel') {
@@ -813,6 +833,12 @@ http
           return res.end();
         }
       }
+      // An armed failure of the next write of a job definition (see /__ragfail).
+      if (ragFailures.jobDefinition && /^\/jobDefinitions\/definitions(\/[^/]+)?$/.test(p) && (req.method === 'POST' || req.method === 'PUT')) {
+        const status = Number(ragFailures.jobDefinition);
+        delete ragFailures.jobDefinition;
+        return json(res, status, { message: 'the job definition service does not answer' });
+      }
       // Without a parent folder a definition is unfiled: it exists and can be
       // launched, and no folder lists it (the transient retrieval probe).
       if (p === '/jobDefinitions/definitions' && req.method === 'POST') {
@@ -977,6 +1003,10 @@ http
         }
         if (req.method === 'DELETE') {
           createdModels.splice(createdModels.indexOf(createdModel), 1);
+          // Its files go with it. The id is given out again to the next model
+          // that is created, which must not open with the rag-setup.json - and
+          // the generated job - of a setup that was deleted.
+          delete ragContents[createdModel.id];
           res.writeHead(204);
           return res.end();
         }

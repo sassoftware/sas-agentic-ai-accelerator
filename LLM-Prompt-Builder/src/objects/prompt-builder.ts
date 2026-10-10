@@ -550,9 +550,10 @@ interface ModalText {
 }
 
 /**
- * Handle a click on the "Open in SAS Model Manager" link or on a link to a
- * decision: a new tab where the browser allows one, the copied link where
- * VA's sandboxed iframe does not (see openExternalLink).
+ * Handle a click on a link that leaves the page - "Open in SAS Model
+ * Manager", the link to a saved prompt-test, a link to a decision, the user
+ * guide: a new tab where the browser allows one, the copied link where VA's
+ * sandboxed iframe does not (see openExternalLink).
  */
 function openModelManagerLink(
   event: MouseEvent,
@@ -810,6 +811,12 @@ export async function buildPromptBuilder(
       const currentProject = self.options[self.selectedIndex].value;
       // Enable project deletion only for a real project selection
       deleteProjectButton.disabled = currentProject === `${promptBuilderInterfaceText?.projectSelect}`;
+      // The placeholder entry is no project: its text must not be sent to
+      // SAS Model Manager as a project id. The lists are empty by now.
+      if (currentProject === `${promptBuilderInterfaceText?.projectSelect}`) {
+        promptFilter.setUsers(promptBuilderProjectPrompts);
+        return;
+      }
       try {
         // One listing answers both questions - which prompt-tests there are
         // and which of them are decision templates - because every item
@@ -947,6 +954,10 @@ export async function buildPromptBuilder(
       // Load the prompt's documentation (and migrate a legacy function value);
       // the same registration says which kind of template this is.
       const promptDetails = await loadPromptDocumentation(promptBuilderPromptSelectedModelID);
+      // The placeholder entry is no prompt-test: its text must not be sent to
+      // SAS Model Manager as a model id, nor become a link. The reset above
+      // has emptied the tracker and switched the link and Delete off.
+      if (promptBuilderPromptSelectedModelID === `${promptBuilderInterfaceText?.promptSelect}`) return;
       // With decision templates switched off the list does not offer one, so
       // this is a template selected some other way. It is not opened: say why,
       // go back to the placeholder and leave nothing of it on the page.
@@ -2254,7 +2265,13 @@ export async function buildPromptBuilder(
     // Set while the calls of a run are out. It blocks what would pull the
     // tracker from under the run: deleting a run (the run indices would
     // shift), judging, a change of kind - and a second run, see below.
+    // A Judge button drawn while it is set is drawn disabled, so it is
+    // cleared BEFORE the run that has ended is drawn (see drawFinishedRun),
+    // and the buttons drawn meanwhile are put right (refreshJudgeButtons).
     let experimentRunning = false;
+    // The runs a judgment is out for. Their Judge button shows a spinner and
+    // stays disabled until the judgment is back, whatever else redraws it.
+    const judgingRuns = new Set<ExperimentTrackerEntry>();
     function updateRunExperimentsButtonState(): void {
       // A run in flight keeps the button as the run left it - disabled, with
       // its spinner - whatever is selected or opened meanwhile. The run puts
@@ -2712,6 +2729,8 @@ export async function buildPromptBuilder(
         promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
         // What is selected may have changed while the calls were out.
         updateRunExperimentsButtonState();
+        // Runs drawn while the calls were out got a disabled Judge button.
+        refreshJudgeButtons();
       };
       // Whether the tracker still holds this run. Opening another project or
       // prompt-test, or deleting this one, replaces the tracker while the
@@ -2787,9 +2806,12 @@ export async function buildPromptBuilder(
         } as ModelExperimentData;
       }
 
-      createPromptExperimentTracker(promptExperimentTracker, systemPrompt, userPrompt);
-
+      // The run has ended: the flag is cleared before the run is drawn. Drawn
+      // first, the run got its Judge button disabled ("a run is out") and
+      // nothing enabled it again - Judge this run stayed unusable after every
+      // run until the prompt-test was opened anew.
       restoreRunButton();
+      drawFinishedRun(runEntry, systemPrompt, userPrompt);
 
       // The new run sits at the top of the tracker, right below the prompts.
       promptExperimentTrackerHeader.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2819,6 +2841,7 @@ export async function buildPromptBuilder(
         runButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
         // What is selected may have changed while the calls were out.
         updateRunExperimentsButtonState();
+        refreshJudgeButtons();
       };
       runButton.disabled = true;
       runButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText.promptBuilderRunExperimentsButtonRunStatus}`;
@@ -2938,8 +2961,9 @@ export async function buildPromptBuilder(
           response: answers ? JSON.stringify(answers) : String(data?.answers ?? ''),
         } as ModelExperimentData;
       });
-      createPromptExperimentTracker(promptExperimentTracker, questionsJson, stateTemplate);
+      // As in an LLM run: the flag is cleared before the run is drawn.
       restore();
+      drawFinishedRun(runEntry, questionsJson, stateTemplate);
       promptExperimentTrackerHeader.scrollIntoView({ behavior: 'smooth', block: 'start' });
       if (failed.length > 0) showToast(partialFailureText(failed.length, results.length));
     }
@@ -3241,6 +3265,65 @@ export async function buildPromptBuilder(
       return banner;
     }
 
+    /** How many responses of a run a judge can compare: the ones that are there and did not fail. */
+    function judgeableResponseCount(trackerEntry: ExperimentTrackerEntry): number {
+      const judgeFailedText = promptBuilderInterfaceText?.promptBuilderModelInferenceFailed as string;
+      return Object.keys(trackerEntry)
+        .filter((key) => !TRACKER_META_KEYS.includes(key))
+        .map((key) => trackerEntry[key] as ModelExperimentData)
+        .filter(
+          (modelData) =>
+            modelData &&
+            typeof modelData.response === 'string' &&
+            modelData.response !== '' &&
+            modelData.response !== judgeFailedText
+        ).length;
+    }
+
+    /**
+     * The state of one Judge button: usable when its run has two responses to
+     * compare, no run is out and no judgment of this run is out. With fewer
+     * than two responses the hint says so.
+     */
+    function applyJudgeButtonState(button: HTMLButtonElement, wrapper: HTMLElement, trackerEntry: ExperimentTrackerEntry): void {
+      const judgeableResponses = judgeableResponseCount(trackerEntry);
+      setDisabledHint(
+        button,
+        wrapper,
+        experimentRunning || judgingRuns.has(trackerEntry) || judgeableResponses < 2,
+        judgeableResponses < 2 ? `${promptBuilderInterfaceText?.promptBuilderJudgeNeedsTwoResponses}` : ''
+      );
+    }
+
+    /**
+     * Put the Judge button of every drawn run into the state that holds now.
+     * A button is drawn once, with the state of that moment; the runs drawn
+     * while a run was out (another prompt-test opened meanwhile, a judgment
+     * that came back) were drawn disabled and are enabled here when the run
+     * has ended. A run whose judgment is still out keeps its spinner.
+     */
+    function refreshJudgeButtons(): void {
+      promptExperimentTracker.forEach((trackerEntry, index) => {
+        if (judgingRuns.has(trackerEntry)) return;
+        const button = document.getElementById(
+          `${paneID}-obj-${promptBuilderObject?.id}-pet-${index}-judge`
+        ) as HTMLButtonElement | null;
+        if (button?.parentElement) applyJudgeButtonState(button, button.parentElement, trackerEntry);
+      });
+    }
+
+    /**
+     * Draw the run that has just ended. The tracker draws its runs one after
+     * the other and counts them. When the whole tracker was drawn again while
+     * this run was out (a judgment of an earlier run came back), the run was
+     * drawn then, without its answers, and counted - drawing "the next run"
+     * would draw nothing. In that case everything is drawn again.
+     */
+    function drawFinishedRun(runEntry: ExperimentTrackerEntry, first: string, second: string): void {
+      if (promptExperimentTracker.indexOf(runEntry) < promptExperimentTrackerRunID) renderAllExperimentRuns(true);
+      else createPromptExperimentTracker(promptExperimentTracker, first, second);
+    }
+
     // Add a prompt experiment tracker to the UI
     function createPromptExperimentTracker(
       tracker: ExperimentTrackerEntry[],
@@ -3314,27 +3397,11 @@ export async function buildPromptBuilder(
             // Judging compares responses, so it needs at least two successful
             // ones in the run. When it can't (e.g. only one model was included),
             // disable it with a hint on hover rather than fail silently on click.
-            const judgeFailedText = promptBuilderInterfaceText?.promptBuilderModelInferenceFailed as string;
-            const judgeableResponses = Object.keys(promptExperimentTrackerRunResult)
-              .filter((key) => !TRACKER_META_KEYS.includes(key))
-              .map((key) => promptExperimentTrackerRunResult[key] as ModelExperimentData)
-              .filter(
-                (modelData) =>
-                  modelData &&
-                  typeof modelData.response === 'string' &&
-                  modelData.response !== '' &&
-                  modelData.response !== judgeFailedText
-              ).length;
             const judgeRunButtonWrapper = wrapForHint(judgeRunButton);
             // Align with the sibling load/delete buttons in the flex header
             // (the wrapper span would otherwise sit on the text baseline).
             judgeRunButtonWrapper.classList.add('d-inline-flex', 'align-items-center');
-            setDisabledHint(
-              judgeRunButton,
-              judgeRunButtonWrapper,
-              experimentRunning || judgeableResponses < 2,
-              judgeableResponses < 2 ? `${promptBuilderInterfaceText?.promptBuilderJudgeNeedsTwoResponses}` : ''
-            );
+            applyJudgeButtonState(judgeRunButton, judgeRunButtonWrapper, promptExperimentTrackerRunResult);
             promptExperimentRunHeader.appendChild(judgeRunButtonWrapper);
             // Judging compares free text; a decision run has answers to compare with expected ones instead.
             if (runIsDecision) judgeRunButtonWrapper.classList.add('d-none');
@@ -3752,6 +3819,7 @@ export async function buildPromptBuilder(
       const judgeButton = document.getElementById(
         `${paneID}-obj-${promptBuilderObject?.id}-pet-${index}-judge`
       ) as HTMLButtonElement | null;
+      judgingRuns.add(trackerEntry);
       if (judgeButton) {
         judgeButton.disabled = true;
         judgeButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>`;
@@ -3916,6 +3984,7 @@ export async function buildPromptBuilder(
           };
         }
       }
+      judgingRuns.delete(trackerEntry);
       // Preserve which run/model accordions are open so a judged run the user
       // had expanded doesn't collapse under them on the re-render.
       renderAllExperimentRuns(true);
@@ -4532,6 +4601,11 @@ export async function buildPromptBuilder(
         experimentsModified = false;
         showToast(`${promptBuilderInterfaceText?.promptBuilderSaveToast}`);
         resultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveSucessResponse} <a target="_blank" rel="noopener noreferrer" href="${VIYA}/SASModelManager/models/${promptExperimentRunModel}">${VIYA}/SASModelManager/models/${promptExperimentRunModel}</a></p>`;
+        // Like every link that leaves the page: a new tab where the browser
+        // allows one, the copied link where the sandboxed iframe of a report
+        // does not - there a plain target="_blank" link does nothing at all.
+        const savedLink = resultContainer.querySelector('a');
+        if (savedLink) savedLink.onclick = (event) => openModelManagerLink(event, savedLink, promptBuilderInterfaceText);
       } else {
         showToast(`${promptBuilderInterfaceText.promptExperimentSaveFailureResponse}`);
         resultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveFailureResponse}</p>`;
@@ -5799,6 +5873,7 @@ ${scoreCodeReturn}`;
         legacyAnchor.rel = 'noopener noreferrer';
         legacyAnchor.href = `${VIYA}/SASModelManager/models/${entry.producedPromptModelId}`;
         legacyAnchor.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeOpenProduced}`;
+        legacyAnchor.onclick = (event) => openModelManagerLink(event, legacyAnchor, promptBuilderInterfaceText);
         legacyLine.appendChild(legacyAnchor);
         body.appendChild(legacyLine);
       }
@@ -6606,6 +6681,9 @@ ${scoreCodeReturn}`;
       optimizeLearnMore.target = '_blank';
       optimizeLearnMore.rel = 'noopener';
       optimizeLearnMore.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeLearnMore}`;
+      // The user guide is another site, and the sandboxed iframe blocks its
+      // new tab the same way.
+      optimizeLearnMore.onclick = (event) => openModelManagerLink(event, optimizeLearnMore, promptBuilderInterfaceText);
       const optimizeLearnMoreLine = document.createElement('p');
       optimizeLearnMoreLine.appendChild(optimizeLearnMore);
 
