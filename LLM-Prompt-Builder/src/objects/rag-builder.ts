@@ -99,7 +99,13 @@ import { createInstructionCard } from '../ui/instruction-card';
 import { showConfirmModal } from '../ui/confirm-modal';
 import type { InterfaceText } from '../types';
 import type { DropdownOption } from '../types/models';
-import type { RagBuilderConfig, RagBuilderText, RagEnrichStep, RagSetup } from '../types/rag';
+import type {
+  RagBuilderConfig,
+  RagBuilderHooks,
+  RagBuilderText,
+  RagEnrichStep,
+  RagSetup,
+} from '../types/rag';
 
 const SETUP_FILE = 'rag-setup.json';
 const PIPELINE_FILE = 'pipeline.yaml';
@@ -155,21 +161,36 @@ function isPersonalCaslib(name: string): boolean {
 /**
  * Set a picker to a saved value, keeping it even when the live listing does
  * not carry it (a model retired from the project, a caslib the user can no
- * longer see). The alternative is a select silently snapping to its first
- * option, which is how a saved corpus starts writing somewhere else.
+ * longer see, a vector database the deployment no longer offers). The
+ * alternative is a select silently snapping to its first option, which is
+ * how a saved corpus starts writing somewhere else.
+ *
+ * The kept value belongs to the setup being shown and to no other: its option
+ * is marked, and the mark is what lets the next call take it out again.
+ * Without that, every setup opened in a session would leave its retired
+ * model behind as a choice for all the setups opened after it. The option
+ * goes below the placeholder, so an empty picker still reads as "choose one".
+ *
+ * `label` is what a person sees for the value when the two differ.
  */
 function keepUnlisted(
   field: HTMLSelectElement | HTMLInputElement,
   value: string,
-  missingNote: string
+  missingNote: string,
+  label: string = value
 ): void {
-  if (field instanceof HTMLSelectElement && value) {
+  if (field instanceof HTMLSelectElement) {
+    field
+      .querySelectorAll<HTMLOptionElement>('option[data-unlisted]')
+      .forEach((kept) => kept.remove());
     const listed = Array.from(field.options).some((option) => option.value === value);
-    if (!listed) {
+    if (value && !listed) {
       const option = document.createElement('option');
       option.value = value;
-      option.textContent = `${value} — ${missingNote}`;
-      field.insertBefore(option, field.firstChild);
+      option.textContent = `${label} — ${missingNote}`;
+      option.dataset.unlisted = 'true';
+      const placeholder = field.options[0]?.value === '' ? field.options[0] : null;
+      field.insertBefore(option, placeholder ? placeholder.nextSibling : field.firstChild);
     }
   }
   field.value = value;
@@ -223,9 +244,13 @@ function defaultSetup(config: RagBuilderConfig): RagSetup {
       scrEndpoint: '',
     },
     store: {
-      backend: 'pgvector',
+      // No backend, and so no port, until one is chosen: which store a corpus
+      // lands in decides where the data physically lives, so it is never
+      // inherited from a default. collectSetup resolves host, port and
+      // database from the credential domain once a backend is selected.
+      backend: '',
       host: '',
-      port: 5432,
+      port: 0,
       database: '',
       // admin-set: see RagBuilderConfig.storeSslmode
       sslmode: config.storeSslmode || 'prefer',
@@ -327,10 +352,22 @@ function renderPipelineYaml(setup: RagSetup): string {
   return lines.join('\n') + '\n';
 }
 
+/**
+ * Build the RAG Builder and return it detached.
+ *
+ * `hooks` is how a page that hosts more than this builder ties it in: the
+ * kind selector it hands over is placed at the top of the Setup card, and
+ * `onReady` receives the controller once everything below exists.
+ *
+ * The promise resolves even when SAS Model Manager cannot list the RAG
+ * projects - the page then carries an alert with a retry instead of the
+ * project list - so a host can always show what was built.
+ */
 export async function buildRagBuilder(
   config: RagBuilderConfig,
   paneID: string,
-  interfaceText: InterfaceText
+  interfaceText: InterfaceText,
+  hooks: RagBuilderHooks = {}
 ): Promise<HTMLElement> {
   const text = (interfaceText.ragBuilder ?? {}) as RagBuilderText;
   const str = (key: string, fallback: string): string => {
@@ -365,7 +402,11 @@ export async function buildRagBuilder(
   let runStartedAt = 0;
   let runActive = false;
 
+  // The root carries the id every other id here starts with, as the Prompt
+  // Builder's root does, so a stylesheet or a test can address this builder
+  // alone when both are in the document.
   const container = document.createElement('div');
+  container.id = `${paneID}-obj-${config.id}`;
 
   // ---- steps ----------------------------------------------------------------
   // The page is a four-step flow, the same shell the Prompt Builder uses. The
@@ -390,8 +431,10 @@ export async function buildRagBuilder(
 
   // ---- header ---------------------------------------------------------------
   // The heading stays for the document outline only - the embedding report
-  // already titles the page; the description opens the first card.
-  const heading = document.createElement('h1');
+  // already titles the page; the description opens the first card. A second
+  // level heading, because the page this builder is mounted in has its own
+  // first-level one and a document carries a single h1.
+  const heading = document.createElement('h2');
   heading.className = 'visually-hidden';
   heading.textContent = str('ragBuilderHeading', 'RAG Builder');
   const subtitle = document.createElement('p');
@@ -410,8 +453,14 @@ export async function buildRagBuilder(
   // Success is transient, failure is not. A confirmation the user has already
   // seen should not sit on the page competing with the next one, so it goes
   // through the same toast the Prompt Builder uses; anything the user still
-  // has to act on stays in the inline alert until it is resolved.
-  const showStatus = (variant: 'success' | 'danger' | 'info', message: string): void => {
+  // has to act on stays in the inline alert until it is resolved. `action`
+  // puts the way out into the alert itself, for a failure the user can do
+  // something about from here.
+  const showStatus = (
+    variant: 'success' | 'danger' | 'info',
+    message: string,
+    action?: { id: string; label: string; run: () => void }
+  ): void => {
     if (variant === 'success') {
       status.replaceChildren();
       showToast(message);
@@ -421,6 +470,16 @@ export async function buildRagBuilder(
     alert.className = `alert alert-${variant} py-2 mb-0`;
     alert.setAttribute('role', 'alert');
     alert.textContent = message;
+    if (action) {
+      alert.classList.add('d-flex', 'flex-wrap', 'align-items-center', 'gap-2');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.id = action.id;
+      button.className = `btn btn-sm btn-outline-${variant}`;
+      button.textContent = action.label;
+      button.addEventListener('click', action.run);
+      alert.appendChild(button);
+    }
     status.replaceChildren(alert);
   };
   const clearStatus = (): void => status.replaceChildren();
@@ -549,6 +608,11 @@ export async function buildRagBuilder(
   );
   const selectionCard = createInstructionCard(selectionHeading, instructionsTitle, [subtitle, selectionHint]);
   const selectionSection = selectionCard.controls;
+  // What is being built is chosen before which project it goes into, so the
+  // kind selector of the hosting page opens the controls column - the place
+  // it has on the Prompt Builder's Setup card. Its behaviour stays with the
+  // page that made it; a builder running on its own has none to place.
+  if (hooks.kindSelector) selectionSection.appendChild(hooks.kindSelector);
 
   const filterLabels = {
     namePlaceholder: str('ragBuilderFilterNamePlaceholder', 'Filter by name…'),
@@ -1992,7 +2056,18 @@ export async function buildRagBuilder(
     capTokenWindow(false);
     followChunker(false);
     boundOverlap();
-    backendField.value = setup.store.backend;
+    // A setup built on a vector database this deployment has since stopped
+    // offering keeps naming it. The corpus is still there, so the setup can
+    // be read, re-saved, manifested, launched and tested as before; what the
+    // deployment withdrew is the choice for NEW setups, and the option says
+    // so. It stays selectable for this setup only - opening another one
+    // removes it again.
+    keepUnlisted(
+      backendField,
+      setup.store.backend,
+      str('ragBuilderUnlistedBackend', 'not offered for new setups'),
+      RAG_BACKENDS.find((backend) => backend.key === setup.store.backend)?.label
+    );
     // a setup saved before policies existed carries none
     currentPolicies = setup.policies ?? policiesFrom(config);
     showStoreLocation();
@@ -3508,8 +3583,41 @@ export async function buildRagBuilder(
   });
 
   // ---- initial load ---------------------------------------------------------
-  await refreshProjects();
-  await refreshSetups();
+  /**
+   * Fill the two pickers, and say so in the page when that fails.
+   *
+   * A project listing SAS Model Manager refuses (a permission, an outage, an
+   * expired session) is a state of the page, not a reason to have no page:
+   * everything else is built and usable, and whoever hosts this builder gets
+   * an element it can show either way. The alert carries the retry, because
+   * the usual cause passes and a reload would throw away the other builder's
+   * work on the same page.
+   */
+  async function loadSelectionLists(): Promise<void> {
+    try {
+      await refreshProjects();
+      await refreshSetups();
+      clearStatus();
+    } catch (error) {
+      console.error('Listing the RAG projects failed.', error);
+      showStatus(
+        'danger',
+        str(
+          'ragBuilderProjectsLoadError',
+          'The RAG projects could not be listed from SAS Model Manager. Check that you are signed in to SAS Viya and may read the model repository, then try again.'
+        ),
+        {
+          id: idOf('retry-projects'),
+          label: str('ragBuilderProjectsRetry', 'Try again'),
+          run: () => void loadSelectionLists(),
+        }
+      );
+    }
+  }
+  await loadSelectionLists();
+
+  // Last, so the host never steers a builder that is still being put together.
+  hooks.onReady?.({ showSetup: () => stepper.goTo(0, { scroll: true }) });
 
   return container;
 }
