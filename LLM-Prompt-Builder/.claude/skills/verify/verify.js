@@ -86,6 +86,103 @@ async function assertLinkCopies(target, selector, label) {
     window.open = window.__verifyRealOpen;
   });
 }
+// The same link where a tab CAN open - the job URL in a browser tab, or a
+// report whose sandbox allows popups. `window.open` is made to answer the way
+// a browser does there: with a window, and with null when the features hold
+// "noopener" (the specification asks for null then, although the tab opens).
+// The link has to open its tab and do nothing else: no note that the link was
+// copied, nothing written to the clipboard, and the new window cut off from
+// this page.
+async function assertLinkOpensTab(target, selector, label) {
+  await target.evaluate(() => {
+    window.__verifyOpened = [];
+    window.__verifyCopied = [];
+    window.__verifyTab = { opener: window };
+    window.__verifyRealOpen = window.__verifyRealOpen || window.open;
+    window.open = (url, name, features) => {
+      window.__verifyOpened.push({ url: String(url), features: features === undefined ? '' : String(features) });
+      return /noopener/i.test(String(features || '')) ? null : window.__verifyTab;
+    };
+    window.__verifyRealExec = window.__verifyRealExec || document.execCommand;
+    document.execCommand = (command) => {
+      if (command === 'copy') window.__verifyCopied.push('execCommand');
+      return true;
+    };
+    if (navigator.clipboard) {
+      window.__verifyRealWrite = window.__verifyRealWrite || navigator.clipboard.writeText;
+      navigator.clipboard.writeText = (text) => {
+        window.__verifyCopied.push(String(text));
+        return Promise.resolve();
+      };
+    }
+  });
+  const href = await target.$eval(selector, (link) => link.href);
+  const shown = (await target.textContent(selector)).trim();
+  await target.click(selector);
+  await sleep(500);
+  const seen = await target.evaluate(() => ({
+    opened: window.__verifyOpened,
+    copied: window.__verifyCopied,
+    cutOff: window.__verifyTab.opener === null,
+  }));
+  const text = (await target.textContent(selector)).trim();
+  await target.evaluate(() => {
+    window.open = window.__verifyRealOpen;
+    document.execCommand = window.__verifyRealExec;
+    if (navigator.clipboard) navigator.clipboard.writeText = window.__verifyRealWrite;
+  });
+  assert(
+    seen.opened.length === 1 && seen.opened[0].url === href && !/noopener/i.test(seen.opened[0].features),
+    `${label}: asks for a new tab once, without the "noopener" feature that makes window.open answer null where the tab did open (features: ${seen.opened.map((call) => call.features || 'none').join(' | ') || 'not asked'})`
+  );
+  assert(
+    text === shown && seen.copied.length === 0,
+    `${label}: where the tab opens, the link keeps its text and nothing is copied over the clipboard (text: ${text}; copied: ${seen.copied.join(', ') || 'nothing'})`
+  );
+  assert(seen.cutOff, `${label}: the tab that opened is cut off from this page - its opener is cleared`);
+}
+// And with nothing stubbed: a real click on a page where a tab can open. The
+// tab asks for a page of SAS Model Manager, which the mock does not serve and
+// would list under GET /__direct; the browser context answers it instead.
+async function assertLinkOpensRealTab(target, selector, label) {
+  const context = target.context();
+  const otherApplication = '**/SASModelManager/**';
+  await context.route(otherApplication, (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<title>SAS Model Manager</title>' }));
+  const href = await target.$eval(selector, (link) => link.href);
+  const shown = (await target.textContent(selector)).trim();
+  const [tab] = await Promise.all([context.waitForEvent('page', { timeout: 10000 }), target.click(selector)]);
+  await tab.waitForLoadState('domcontentloaded');
+  const tabUrl = tab.url();
+  const cutOff = await tab.evaluate(() => window.opener === null);
+  await sleep(400);
+  const text = (await target.textContent(selector)).trim();
+  await tab.close();
+  await context.unroute(otherApplication);
+  await target.bringToFront();
+  assert(tabUrl === href && cutOff, `${label}: a real click opens the link in a new tab that has no opener (tab: ${tabUrl}, opener cleared: ${cutOff})`);
+  assert(text === shown, `${label}: and the page that opened the tab does not claim that popups are blocked (text: ${text})`);
+}
+// Two clicks in a row where no tab can open. Nothing visible happens on the
+// first click but the note, so a second one is likely - and the link must
+// still get its own text back, not the note for good.
+async function assertLinkTextSurvivesSecondClick(target, selector, label) {
+  await target.evaluate(() => {
+    window.__verifyRealOpen = window.__verifyRealOpen || window.open;
+    window.open = () => null;
+  });
+  const shown = (await target.textContent(selector)).trim();
+  await target.click(selector);
+  await sleep(600);
+  await target.click(selector);
+  // The note of the first click would have gone 1.9 s from here, the second
+  // click starts its 2.5 s anew.
+  await sleep(3400);
+  const text = (await target.textContent(selector)).trim();
+  await target.evaluate(() => {
+    window.open = window.__verifyRealOpen;
+  });
+  assert(text === shown, `${label}: after two clicks in a row the link shows its own text again, not the note for good (got: ${text})`);
+}
 // A create dialog that is open: each field is its label above an input as
 // wide as the dialog body.
 async function assertCreateDialogLayout(target, modalSelector, label) {
@@ -755,6 +852,90 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   assert(tlsPageErrors.length === 0, `no uncaught error on the page with the option unticked (got: ${tlsPageErrors.join(' | ')})`);
   await tlsPage.close();
 
+  // ---- the tag follows what was stored, and a failed tag update is said ---------
+  // TLS-Verification-Off is what an administrator filters on. It has to say
+  // what the model HOLDS: a score code that was not stored changes no tag and
+  // is no manifest, and a tag update that did not go through is reported -
+  // when the tag was to be written, and when it was to be taken away. The
+  // fixture model carries the tag, left by an earlier manifest.
+  const MANIFEST_BUTTON = '#app-obj-LPB-pet-create-model-button';
+  const MANIFEST_BOX = '#app-obj-LPB-pet-save-result';
+  const faultyManifest = async (url, fault, label) => {
+    const target = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
+    const errors = [];
+    target.on('pageerror', (e) => errors.push(e.message));
+    await target.goto(url);
+    await target.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+    await target.selectOption('#LPB-project-dropdown', 'proj-1');
+    await waitUntil(async () => (await target.$$('#LPB-prompt-dropdown option')).length === 4, `${label}: prompts listed`);
+    await target.selectOption('#LPB-prompt-dropdown', 'model-used');
+    await waitUntil(async () => (await target.$$('.pet-run-delete')).length === 3, `${label}: the saved runs are loaded`);
+    await target.click('#app-obj-LPB-step-finalize');
+    await target.waitForSelector('#app-obj-LPB-pane-finalize:not([hidden])');
+    await target.check('#app-obj-LPB-pet-manifest-integrated');
+    let scoreCodeSeen = false;
+    let injected = 0;
+    await target.route('**/modelRepository/models/model-used/contents?*', (route) => {
+      const request = route.request();
+      if (request.method() === 'POST' && (request.postData() || '').includes('def scoreModel(')) {
+        scoreCodeSeen = true;
+        if (fault === 'score code') {
+          injected += 1;
+          return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ errorCode: 0, message: 'the files service does not answer', httpStatusCode: 500 }) });
+        }
+      }
+      return route.continue();
+    });
+    // The first write of the model after the score code is the tag update.
+    await target.route('**/modelRepository/models/model-used', (route) => {
+      if (route.request().method() === 'PUT' && scoreCodeSeen && fault === 'tags' && injected === 0) {
+        injected += 1;
+        return route.fulfill({ status: 412, contentType: 'application/json', body: JSON.stringify({ errorCode: 0, message: 'the model changed since it was read', httpStatusCode: 412 }) });
+      }
+      return route.continue();
+    });
+    await resetLog();
+    await target.click(MANIFEST_BUTTON);
+    await waitUntil(async () => injected === 1, `${label}: the ${fault} request is refused`, 20000);
+    await waitUntil(
+      async () => !(await target.isDisabled(MANIFEST_BUTTON)) && (await target.textContent(MANIFEST_BUTTON)).trim() === 'Manifest Best Prompt',
+      `${label}: the manifest has ended and its button is usable again`,
+      20000
+    );
+    await sleep(400);
+    const entries = await getLog();
+    const outcome = {
+      modelWrites: entries.filter((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-used').length,
+      manifestedToasts: (await target.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).filter((text) => text.includes('has been manifested')).length,
+      notManifested: await target.$$eval(`${MANIFEST_BOX} .pet-manifest-failed`, (els) => els.map((e) => e.textContent.trim())),
+      tagLines: await target.$$eval(`${MANIFEST_BOX} .pet-manifest-tls-tag-failed`, (els) => els.map((e) => e.textContent.trim())),
+      errors,
+    };
+    await target.close();
+    return outcome;
+  };
+  const notStored = await faultyManifest(APP_URL, 'score code', 'score code refused');
+  assert(
+    notStored.modelWrites === 0,
+    `a score code SAS Model Manager did not store changes no tag: the model is not written, and keeps ${TLS_TAG} (writes of the model: ${notStored.modelWrites})`
+  );
+  assert(
+    notStored.manifestedToasts === 0 && notStored.notManifested.length === 1 && notStored.notManifested[0].startsWith('Not manifested: the score code could not be stored'),
+    `and it is reported as a manifest that failed, beside the button, with no toast saying "manifested" (box: ${notStored.notManifested.join(' | ') || 'nothing'}; toasts: ${notStored.manifestedToasts})`
+  );
+  assert(notStored.tagLines.length === 0 && notStored.errors.length === 0, `nothing is said about a tag update that was never tried, and no error is thrown (got: ${[...notStored.tagLines, ...notStored.errors].join(' | ') || 'nothing'})`);
+  const notRemoved = await faultyManifest(APP_URL, 'tags', 'option ticked, tag update refused');
+  assert(
+    notRemoved.tagLines.length === 1 && notRemoved.tagLines[0].includes('could not be updated') && notRemoved.tagLines[0].includes(TLS_TAG) && notRemoved.tagLines[0].includes('remove it in SAS Model Manager'),
+    `option ticked: a tag update that failed is reported - the model verifies and may still carry ${TLS_TAG} (got: ${notRemoved.tagLines.join(' | ') || 'nothing'})`
+  );
+  assert(notRemoved.manifestedToasts === 1 && notRemoved.notManifested.length === 0, 'the score code was stored, so this manifest did happen and says so');
+  const notWritten = await faultyManifest(`${APP_URL}&sslVerify=false`, 'tags', 'option unticked, tag update refused');
+  assert(
+    notWritten.tagLines.length === 1 && notWritten.tagLines[0].includes('could not be written') && notWritten.tagLines[0].includes('add the tag in SAS Model Manager'),
+    `option unticked: a tag update that failed is reported the other way round - the model does not verify and the tag has to be added (got: ${notWritten.tagLines.join(' | ') || 'nothing'})`
+  );
+
   // ---- parse the LLM response into output variables --------------------------
   await page.uncheck('#app-obj-LPB-pet-out-run_time');
   await page.uncheck('#app-obj-LPB-pet-out-prompt_length');
@@ -1144,6 +1325,9 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   const saveOnlyLink = await page.$('#app-obj-LPB-pet-save-only-result a');
   assert(saveOnlyLink, 'plain Save shows the link next to the Save button');
   await assertLinkCopies(page, '#app-obj-LPB-pet-save-only-result a', 'the link to the saved prompt-test beside Save');
+  await assertLinkOpensRealTab(page, '#app-obj-LPB-pet-save-only-result a', 'the link to the saved prompt-test beside Save');
+  await assertLinkOpensTab(page, '#app-obj-LPB-pet-save-only-result a', 'the link to the saved prompt-test beside Save');
+  await assertLinkTextSurvivesSecondClick(page, '#app-obj-LPB-pet-save-only-result a', 'the link to the saved prompt-test beside Save');
   assert(
     !(await page.$('#app-obj-LPB-pet-save-result a')),
     'plain Save does not put the link in the manifest box'
@@ -1291,6 +1475,10 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   );
   assert((await page.$$('#LPB-prompt-dropdown option[value="model-used"]')).length === 0, 'deleted prompt removed from dropdown');
   assert(await page.isDisabled('#LPB-delete-prompt-button'), 'Delete Prompt disabled again (selection reset)');
+  assert(
+    await page.isDisabled('#app-obj-LPB .pb-doc-section > button'),
+    'Save documentation is off after the prompt-test was deleted: there is nothing left to write it to'
+  );
   assert(
     (await page.getAttribute('#LPB-openInMMButton', 'class')).includes('disabled'),
     'Open in SAS Model Manager deactivated after prompt deletion'
@@ -1566,6 +1754,68 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   );
   await page.unroute(timedCalls);
 
+  // -- two judgments out, the first one back ---------------------------------------
+  // The judgment that comes back redraws every run. The Judge button of the
+  // run whose judgment is still out is drawn anew: it has to show that it is
+  // waiting, not stand there disabled with its icon and no hint.
+  let judgmentsAsked = 0;
+  await page.route(timedCalls, async (route) => {
+    if ((route.request().postData() || '').includes('impartial evaluator')) {
+      judgmentsAsked += 1;
+      await sleep(judgmentsAsked === 1 ? 1000 : 5000);
+    }
+    await route.continue().catch(() => {});
+  });
+  const judgeButton = (runIndex) =>
+    page.$eval(`#app-obj-LPB-pet-${runIndex}-judge`, (button) => ({ disabled: button.disabled, spinner: Boolean(button.querySelector('.spinner-border')) }));
+  await page.click('#app-obj-LPB-pet-0-judge');
+  await page.click('#app-obj-LPB-pet-2-judge');
+  assert(
+    (await judgeButton(0)).spinner && (await judgeButton(2)).spinner,
+    'two runs are being judged: both Judge buttons show a spinner'
+  );
+  await waitUntil(async () => !(await judgeDisabled(0)), 'the judgment of the first of them is back', 15000);
+  const waiting = await judgeButton(2);
+  assert(
+    waiting.disabled && waiting.spinner,
+    `the Judge button of the run whose judgment is still out keeps its spinner through the redraw (disabled: ${waiting.disabled}, spinner: ${waiting.spinner})`
+  );
+  await waitUntil(async () => !(await judgeDisabled(2)), 'the second judgment is back', 20000);
+  assert(
+    !(await judgeButton(2)).spinner && Boolean(await page.$('#app-obj-LPB-pet-2 .pb-judge-banner')),
+    'when it is back the run shows its judgment and the button its icon again'
+  );
+  await page.unroute(timedCalls);
+
+  // -- a judgment that comes back while a run is out that nobody answers -------------
+  // The redraw draws the run that is out, empty, and counts it. No model
+  // answers, the run is taken back - and must not stay on the page.
+  await page.route(timedCalls, async (route) => {
+    if ((route.request().postData() || '').includes('impartial evaluator')) {
+      await sleep(1500);
+      return route.continue().catch(() => {});
+    }
+    await sleep(4500);
+    return route.fulfill({ status: 503, contentType: 'application/json', body: '{"message":"no container answers"}' }).catch(() => {});
+  });
+  await page.click('#app-obj-LPB-pet-0-judge');
+  await page.click('#app-obj-LPB-run-experiment');
+  await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 4, 'the judgment came back while the run was out, and the redraw drew the run that is out', 15000);
+  assert(await page.isDisabled('#app-obj-LPB-run-experiment'), 'the calls of that run are still out');
+  await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-run-experiment')), 'the run nobody answered has ended', 20000);
+  await sleep(300);
+  assert((await runErrorLines()).length === 3, `every model of the run is named with its failure (got: ${(await runErrorLines()).join(' | ')})`);
+  const runsShown = await runHeaderTexts();
+  assert(
+    runsShown.length === 3,
+    `a run nobody answered leaves no empty run on the page, also when it was drawn meanwhile (shown: ${runsShown.join(' | ')})`
+  );
+  assert(
+    !(await judgeDisabled(0)) && !(await judgeDisabled(1)) && !(await judgeDisabled(2)),
+    'and the three runs that are there can be judged'
+  );
+  await page.unroute(timedCalls);
+
   // -- a run in flight and another prompt-test opened meanwhile ------------------
   // The calls of a run take their time (a slow or dead container is exactly
   // when someone moves on). Their answers belong to the prompt-test the run
@@ -1677,6 +1927,10 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     'a toast says that the prompt-test was not created'
   );
   step(true, 'a refused creation is reported');
+  assert(
+    (await page.isVisible('#promptBuilderCreatePromptModal.show #promptBuilderCreatePromptError')) && (await page.textContent('#promptBuilderCreatePromptError')).includes('The prompt-test was not created'),
+    'and the dialog itself says so, where the person is looking'
+  );
   await waitUntil(async () => !(await page.isDisabled('#promptBuilderCreatePromptModal .btn-primary')), 'the Create button of the dialog is usable again');
   assert(await page.isVisible('#promptBuilderCreatePromptModal.show'), 'the dialog stays open after a refusal');
   const promptsAfterRefusal = await page.$$eval('#LPB-prompt-dropdown option', (els) => els.map((e) => `${e.value}=${e.textContent}`));
@@ -1709,7 +1963,17 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     (await page.isVisible('#promptBuilderCreateProjectModal.show')) && (await page.$$eval('#LPB-project-dropdown option', (els) => els.map((e) => e.value).join(','))) === projectsBefore && (await page.inputValue('#LPB-project-dropdown')) === 'proj-1',
     'a refused project leaves the dialog open, the project list as it was and the project selected'
   );
+  assert(
+    (await page.isVisible('#promptBuilderCreateProjectModal.show #promptBuilderCreateProjectError')) && (await page.textContent('#promptBuilderCreateProjectError')).includes('The project was not created'),
+    'the project dialog says inside it that the project was not created'
+  );
   await page.unroute(projectCreation);
+  await page.click('#promptBuilderCreateProjectModal .btn-secondary');
+  await page.waitForSelector('.modal.show', { state: 'detached' });
+  // Opened again, the dialog does not repeat the message of the last attempt.
+  await page.click('#LPB-modal-button-container button[data-bs-target="#promptBuilderCreateProjectModal"]');
+  await page.waitForSelector('#promptBuilderCreateProjectModal.show');
+  assert(!(await page.isVisible('#promptBuilderCreateProjectError')), 'a create dialog that is opened again shows no message of the attempt before');
   await page.click('#promptBuilderCreateProjectModal .btn-secondary');
   await page.waitForSelector('.modal.show', { state: 'detached' });
   // After a reload the listing of the project is what brings it back.
@@ -1747,6 +2011,97 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     `choosing the placeholder of the project picker asks SAS Viya for nothing - its text is not a project id (asked: ${placeholderRequests.join(' | ') || 'nothing'})`
   );
   assert(await page.isDisabled('#LPB-delete-project-button'), 'with the placeholder chosen Delete Project is off');
+
+  // ---- an entry that is still loading when another one is chosen ------------------
+  // Every request to SAS Model Manager and to the files service takes 300 ms
+  // here, which a real SAS Viya easily does. Opening a prompt-test is three
+  // requests in a row; an arrow key in the picker chooses an entry per press.
+  // What is drawn has to belong to the entry chosen LAST - with the runs of
+  // another prompt-test on the page, Save would write them to the one the
+  // picker names.
+  const slowViya = async (route) => {
+    await sleep(300);
+    await route.continue().catch(() => {});
+  };
+  await page.route('**/modelRepository/**', slowViya);
+  await page.route('**/files/**', slowViya);
+  const DOC_SAVE = '#app-obj-LPB .pb-doc-section > button';
+  const openState = async () => ({
+    picked: await page.inputValue('#LPB-prompt-dropdown'),
+    runs: (await page.$$('.pet-run-delete')).length,
+    link: await page.getAttribute('#LPB-openInMMButton', 'href'),
+    deleteOff: await page.isDisabled('#LPB-delete-prompt-button'),
+    documentationOff: await page.isDisabled(DOC_SAVE),
+  });
+  const promptsListed = async () => (await page.$$eval('#LPB-prompt-dropdown option', (els) => els.map((e) => e.value))).includes('model-used');
+  await page.selectOption('#LPB-project-dropdown', 'proj-1');
+  await waitUntil(promptsListed, 'the prompt-tests of the project are listed, slowly');
+  // Another prompt-test is chosen while the first one is still loading.
+  await page.selectOption('#LPB-prompt-dropdown', 'model-used');
+  await sleep(150);
+  await page.selectOption('#LPB-prompt-dropdown', 'model-free');
+  await waitUntil(async () => (await page.getAttribute('#LPB-openInMMButton', 'href')) !== null, 'the prompt-test chosen last is open');
+  await sleep(1500);
+  let open = await openState();
+  assert(
+    open.picked === 'model-free' && open.runs === 0 && String(open.link).endsWith('/SASModelManager/models/model-free/files'),
+    `a prompt-test that was still loading when another one was chosen is not drawn: the page shows the one the picker names (picker: ${open.picked}, runs drawn: ${open.runs}, link: ${open.link})`
+  );
+  // The placeholder is chosen while a prompt-test is still loading.
+  await page.selectOption('#LPB-prompt-dropdown', 'model-used');
+  await sleep(100);
+  await page.selectOption('#LPB-prompt-dropdown', { index: 0 });
+  await sleep(1800);
+  open = await openState();
+  assert(
+    open.runs === 0 && open.link === null && open.deleteOff && open.documentationOff,
+    `nor after the placeholder was chosen: no runs, no link, Delete Prompt and Save documentation off (runs drawn: ${open.runs}, link: ${open.link}, Delete off: ${open.deleteOff}, Save documentation off: ${open.documentationOff})`
+  );
+  // The same prompt-test chosen again while its first loading is out: drawn once.
+  await page.selectOption('#LPB-prompt-dropdown', 'model-used');
+  await sleep(100);
+  await page.selectOption('#LPB-prompt-dropdown', { index: 0 });
+  await sleep(100);
+  await page.selectOption('#LPB-prompt-dropdown', 'model-used');
+  await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 3, 'chosen, left and chosen again, the prompt-test opens');
+  await sleep(1200);
+  open = await openState();
+  assert(
+    open.picked === 'model-used' && open.runs === 3 && !open.deleteOff && !open.documentationOff,
+    `chosen, left and chosen again within a moment, the prompt-test is open with its three runs, each once (runs drawn: ${open.runs})`
+  );
+  // The documentation section belongs to the prompt-test that is open. With
+  // another project (or none) chosen it belongs to nothing: Save documentation
+  // would write what is typed now to the prompt-test that was open before.
+  await resetLog();
+  await page.selectOption('#LPB-project-dropdown', { index: 0 });
+  await sleep(900);
+  assert(
+    (await page.isDisabled(DOC_SAVE)) && (await page.$$('.pet-run-delete')).length === 0,
+    'with the placeholder of the project picker chosen, Save documentation is off and its fields no longer belong to the prompt-test that was open'
+  );
+  // A project whose prompt-tests are still being listed when the placeholder is chosen.
+  await page.selectOption('#LPB-project-dropdown', 'proj-1');
+  await sleep(100);
+  await page.selectOption('#LPB-project-dropdown', { index: 0 });
+  await sleep(1200);
+  const listedUnderPlaceholder = await page.$$eval('#LPB-prompt-dropdown option', (els) => els.map((e) => e.value));
+  assert(
+    listedUnderPlaceholder.length === 1,
+    `the prompt-tests of a project whose listing was still out are not listed once the placeholder is chosen (listed: ${listedUnderPlaceholder.join(', ')})`
+  );
+  // The other kind chosen with a prompt-test open: the same for the documentation.
+  await page.selectOption('#LPB-project-dropdown', 'proj-1');
+  await waitUntil(promptsListed, 'the prompt-tests of the project are listed again');
+  await page.selectOption('#LPB-prompt-dropdown', 'model-used');
+  await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 3 && !(await page.isDisabled(DOC_SAVE)), 'a prompt-test is open and its documentation can be saved');
+  await page.click('#LPB-kind-decision');
+  await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 0, 'the other kind is shown, with nothing open');
+  await sleep(900);
+  assert(await page.isDisabled(DOC_SAVE), 'after a change of kind Save documentation is off as well');
+  await page.click('#LPB-kind-llm');
+  await page.unroute('**/modelRepository/**', slowViya);
+  await page.unroute('**/files/**', slowViya);
 
   // ---- every request to SAS Viya went through the HTTP client of the app -------
   const directRequests = await (await fetch(BASE + '/__direct')).json();

@@ -98,7 +98,7 @@ in the URL or report definition**:
 | `viyaHost` | SAS Viya host | SAS Viya base URL. Defaults to the embedding origin. |
 | `modelRepositoryID` | Model Manager repository ID | Repository new prompt, decision and RAG projects are created in. Required by every kind. |
 | `llmProjectID` | LLM project ID | Model Manager project holding the available LLM definitions (each with an `options.json`). Required for prompt and decision templates. |
-| `SCREndpoint` | SCR endpoint | Base URL of the SCR endpoint hosting the model containers. Required for prompt and decision templates; RAG reads a blank value as `<SAS Viya host>/llm`. The ingestion job gets it as `scrEndpoint`, the manifested retrieval model as `EMBED_ENDPOINT`. |
+| `SCREndpoint` | SCR endpoint | Base URL of the SCR endpoint hosting the model containers. Required for prompt and decision templates; RAG reads a blank value as `<SAS Viya host>/llm` (the `viyaHost` option, or the address the page is opened at), which then has to be reachable from the compute session of the ingestion and from the publishing destination. One resolved value goes to everything a manifest generates: the ingestion job gets it as `scrEndpoint`, the Embed step of the Studio flow as `_rgem_scrEndpoint`, the manifested retrieval model as `EMBED_ENDPOINT`. |
 | `deploymentType` | Deployment type | `k8s` (default) or `aca` (Azure Container Apps). |
 | `judgeModel` | Default judge model | Optional default LLM (by name, from `llmProjectID`) used by the LLM-as-a-Judge. Not a secret; the in-app judge selector always overrides it. |
 | `modelCardReportURI` | Model card report URI | Optional report (`/reports/reports/<uuid>`) embedded on the model card of a manifested prompt. |
@@ -145,7 +145,11 @@ is a default written at manifest time:
   manifested keeps what it was manifested with.
 - A model manifested with the option unticked carries the tag
   `TLS-Verification-Off` in SAS Model Manager, and the step that manifests
-  shows a warning above its button.
+  shows a warning above its button. The tag follows the score code the model
+  holds: a manifest whose score code SAS Model Manager did not store is
+  reported as failed and leaves the tag as it was, and a tag that could not be
+  written - or could not be taken away again - is named beside the Manifest
+  button, to be put right in SAS Model Manager.
 - The environment of the destination still decides when it says something:
   `LLMCONTAINERSSLVERIFY` set to `false`, `no` or `0` switches verification
   off, set to `true`, `yes` or `1` switches it on, whatever was manifested.
@@ -294,7 +298,9 @@ default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://<sas
 > Model Manager" link cannot force a new tab on a normal click and instead copies
 > the URL (use the browser's right-click → *Open link in new tab*). To let that
 > link open a tab on a normal click, add `allow-popups` to the *IFrame Sandbox
-> Attribute Value*.
+> Attribute Value*. The link is copied only where no tab opened: with
+> `allow-popups`, and on the job URL opened in a browser tab, a click opens the
+> tab and leaves the clipboard alone.
 
 ## Local development
 

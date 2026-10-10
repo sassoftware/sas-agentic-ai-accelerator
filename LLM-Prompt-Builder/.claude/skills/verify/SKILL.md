@@ -34,9 +34,9 @@ The committed `dist/index.html` must equal a fresh build, or the
 
 | Suite | What it drives | Needs |
 |---|---|---|
-| `verify.js` | The Prompt Builder with LLM prompts: steps, variables and the names they cannot have, runs, failing models, a run in flight while another prompt-test is opened, judging, optimization, manifest (both variants run in Python; saved runs the manifest refuses), the deletion flows with the decision usage note, a first request answered with 449, a prompt-test created, refused and found again; the page with decision templates off and with RAG on; TLS verification in the manifested model with the option ticked and unticked; the Judge button after a run and a judgment that comes back during one; the create dialogs, the links that leave the page, the placeholder entries of the two pickers | mock, Python |
-| `verify-decision.js` | Decision templates: designer, lint, model cards, runs, evaluation (and the kind change it blocks), manifest (saved runs it refuses; TLS verification with the option ticked and unticked), the kinds' own project lists, both delete dialogs; the page with decision templates off | mock, Python |
-| `verify-rag.js` | The RAG kind: offered only when switched on, the two flows side by side (keyboard included), a setup created, saved, manifested, ingested, asked a question and deleted; what the delete dialogs say about decisions; what a delete acts on; a withheld vector database; failures; the gates; a RAG-only page; what a manifest says beside its button (a stage that fails, TLS verification off, a retrieval template from before that option) | mock, Python |
+| `verify.js` | The Prompt Builder with LLM prompts: steps, variables and the names they cannot have, runs, failing models, a run in flight while another prompt-test is opened, judging, optimization, manifest (both variants run in Python; saved runs the manifest refuses), the deletion flows with the decision usage note, a first request answered with 449, a prompt-test created, refused and found again; the page with decision templates off and with RAG on; TLS verification in the manifested model with the option ticked and unticked, and a manifest whose score code or tag update SAS Model Manager refuses; the Judge button after a run, a judgment that comes back during one (also one nobody answers) and two judgments out at once; the create dialogs and what they say inside; the links that leave the page where no tab can open, where one can, and with a real click; the placeholder entries of the two pickers; an entry of a picker chosen while another is still loading | mock, Python |
+| `verify-decision.js` | Decision templates: designer, lint, model cards, runs, evaluation (and the kind change it blocks), manifest (saved runs it refuses; TLS verification with the option ticked and unticked; a score code or a tag update that is refused), the kinds' own project lists, both delete dialogs; the page with decision templates off | mock, Python |
+| `verify-rag.js` | The RAG kind: offered only when switched on, the two flows side by side (keyboard included), a setup created, saved, manifested, ingested, asked a question and deleted; what the delete dialogs say about decisions; what a delete acts on; a withheld vector database; failures; the gates; a RAG-only page; what a manifest says beside its button (a stage that fails, TLS verification off, a retrieval template from before that option, a score code or a tag update that is refused); what the create dialogs say inside and a double click on Create; the one embedding endpoint of job, Studio flow and retrieval model, with and without the SCR endpoint option | mock, Python |
 | `verify-options.js` | The Options contract: a stand-in for Visual Analytics embeds the app in an iframe, checks the one options group (the checkbox `sslVerify` included: posted, mirrored, read strictly, without effect on the page) and loads every combination of the three switches, asserting what is built and what is requested | mock |
 | `verify-locales.js` | `en.json` against `de.json` and both against the sources (keys, placeholders, unused keys, formal address in German) | nothing |
 | `verify-tokens.js` | The built `dist/index.html` (or `VERIFY_DIST`): every inline script is stored base64-encoded, and no text outside a comment has the shape `$name$`, which SAS Job Execution substitutes as a token before it serves the page | nothing |
@@ -300,6 +300,26 @@ RAG side (stateful; the block sits before the generic routes):
   check that changes the selection right after the click has to expect that.
 - A run in flight keeps Run Experiments disabled until its calls have ended,
   also after another prompt-test was opened; the answers are then dropped.
+- A link that leaves the page calls `window.open(url, '_blank')` WITHOUT a
+  features string and clears the opener of the window it gets. A stand-in for
+  `window.open` has to answer the way a browser does - `null` when the
+  features hold `noopener`, a window otherwise - or it cannot tell a tab that
+  opened from one that was blocked (`assertLinkOpensTab`). A check that lets
+  the real tab open answers its request from the browser context
+  (`context.route('**/SASModelManager/**', ...)`): the mock does not serve
+  that page and would list the request under `GET /__direct`.
+- A create dialog (`<prefix>Modal`, `<prefix>Name`, `<prefix>Description`)
+  says why nothing was created in `<prefix>Error` inside its body, keeps the
+  text of its fields between two openings, and has its Create button disabled
+  while a creation is out. Prefixes: `promptBuilderCreateProject`,
+  `promptBuilderCreatePrompt`, `app-obj-RGB-create-project`,
+  `app-obj-RGB-create-setup`.
+- What a manifest of a prompt or decision template has to say is in
+  `#app-obj-LPB-pet-save-result`: `.pet-manifest-failed` (the score code was
+  not stored - no tags written, no toast) and `.pet-manifest-tls-tag-failed`
+  (the tags could not be updated, in either direction). A fault is injected
+  with a Playwright route on the upload that holds `def scoreModel(` or on the
+  first `PUT` of the model after it.
 - Each flow is a row of steps and only the current step's pane is visible, so
   Playwright cannot act on a control of another step: open its step first with
   `#app-obj-<P>-step-{key}` (pane `#app-obj-<P>-pane-{key}`, Back/Continue

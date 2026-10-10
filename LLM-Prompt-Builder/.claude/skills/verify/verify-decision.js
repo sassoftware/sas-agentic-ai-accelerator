@@ -470,6 +470,89 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   assert(tlsPageErrors.length === 0, `no uncaught error on the page with the option unticked (got: ${tlsPageErrors.join(' | ')})`);
   await tlsPage.close();
 
+  // ---- the tag follows what was stored, and a failed tag update is said ------------------
+  // As for a prompt template (verify.js): a score code SAS Model Manager did
+  // not store changes no tag and is no manifest, and a tag update that failed
+  // is reported in both directions. The fixture template carries the tag.
+  const MANIFEST_BUTTON = '#app-obj-LPB-pet-create-model-button';
+  const MANIFEST_BOX = '#app-obj-LPB-pet-save-result';
+  const faultyManifest = async (url, fault, label) => {
+    const target = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
+    const errors = [];
+    target.on('pageerror', (e) => errors.push(e.message));
+    await target.goto(url);
+    await target.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+    await target.click('#LPB-kind-decision');
+    await waitUntil(async () => (await target.$$eval('#LPB-project-dropdown option', (els) => els.map((e) => e.value))).includes('proj-2'), `${label}: the decision project is listed`);
+    await target.selectOption('#LPB-project-dropdown', 'proj-2');
+    await waitUntil(async () => (await target.$$('#LPB-prompt-dropdown option')).length === 2, `${label}: the decision template is listed`);
+    await target.selectOption('#LPB-prompt-dropdown', 'model-dec');
+    await waitUntil(async () => (await target.$$('.pet-run-delete')).length >= 1, `${label}: the saved run is loaded`);
+    await target.click('#app-obj-LPB-step-finalize');
+    await target.waitForSelector('#app-obj-LPB-pane-finalize:not([hidden])');
+    let scoreCodeSeen = false;
+    let injected = 0;
+    await target.route('**/modelRepository/models/model-dec/contents?*', (route) => {
+      const request = route.request();
+      if (request.method() === 'POST' && (request.postData() || '').includes('def scoreModel(')) {
+        scoreCodeSeen = true;
+        if (fault === 'score code') {
+          injected += 1;
+          return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ errorCode: 0, message: 'the files service does not answer', httpStatusCode: 500 }) });
+        }
+      }
+      return route.continue();
+    });
+    // The first write of the model after the score code is the tag update.
+    await target.route('**/modelRepository/models/model-dec', (route) => {
+      if (route.request().method() === 'PUT' && scoreCodeSeen && fault === 'tags' && injected === 0) {
+        injected += 1;
+        return route.fulfill({ status: 412, contentType: 'application/json', body: JSON.stringify({ errorCode: 0, message: 'the model changed since it was read', httpStatusCode: 412 }) });
+      }
+      return route.continue();
+    });
+    await resetLog();
+    await target.click(MANIFEST_BUTTON);
+    await waitUntil(async () => injected === 1, `${label}: the ${fault} request is refused`, 20000);
+    await waitUntil(
+      async () => !(await target.isDisabled(MANIFEST_BUTTON)) && (await target.textContent(MANIFEST_BUTTON)).trim() === 'Manifest Best Prompt',
+      `${label}: the manifest has ended and its button is usable again`,
+      20000
+    );
+    await sleep(400);
+    const entries = await getLog();
+    const outcome = {
+      modelWrites: entries.filter((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-dec').length,
+      requirements: Boolean(findPart(entries, 'requirements.json')),
+      manifestedToasts: (await target.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).filter((text) => text.includes('has been manifested')).length,
+      notManifested: await target.$$eval(`${MANIFEST_BOX} .pet-manifest-failed`, (els) => els.map((e) => e.textContent.trim())),
+      tagLines: await target.$$eval(`${MANIFEST_BOX} .pet-manifest-tls-tag-failed`, (els) => els.map((e) => e.textContent.trim())),
+      errors,
+    };
+    await target.close();
+    return outcome;
+  };
+  const notStored = await faultyManifest(APP_URL, 'score code', 'score code refused');
+  assert(
+    notStored.modelWrites === 0 && !notStored.requirements,
+    `a decision score code SAS Model Manager did not store changes no tag: the model is not written and keeps ${TLS_TAG}, and the manifest stops there (writes of the model: ${notStored.modelWrites}, requirements.json uploaded: ${notStored.requirements})`
+  );
+  assert(
+    notStored.manifestedToasts === 0 && notStored.notManifested.length === 1 && notStored.notManifested[0].startsWith('Not manifested: the score code could not be stored') && notStored.errors.length === 0,
+    `and it is reported as a manifest that failed, beside the button, with no toast saying "manifested" (box: ${notStored.notManifested.join(' | ') || 'nothing'}; toasts: ${notStored.manifestedToasts}; errors: ${notStored.errors.join(' | ') || 'none'})`
+  );
+  const notRemoved = await faultyManifest(APP_URL, 'tags', 'option ticked, tag update refused');
+  assert(
+    notRemoved.tagLines.length === 1 && notRemoved.tagLines[0].includes('could not be updated') && notRemoved.tagLines[0].includes(TLS_TAG) && notRemoved.tagLines[0].includes('remove it in SAS Model Manager'),
+    `option ticked: a tag update that failed is reported - the model verifies and may still carry ${TLS_TAG} (got: ${notRemoved.tagLines.join(' | ') || 'nothing'})`
+  );
+  assert(notRemoved.manifestedToasts === 1 && notRemoved.notManifested.length === 0, 'the score code was stored, so this manifest did happen and says so');
+  const notWritten = await faultyManifest(`${APP_URL}&sslVerify=false`, 'tags', 'option unticked, tag update refused');
+  assert(
+    notWritten.tagLines.length === 1 && notWritten.tagLines[0].includes('could not be written') && notWritten.tagLines[0].includes('add the tag in SAS Model Manager'),
+    `option unticked: a tag update that failed is reported the other way round - the model does not verify and the tag has to be added (got: ${notWritten.tagLines.join(' | ') || 'nothing'})`
+  );
+
   // ---- a template to start from ---------------------------------------------------------
   await goStep('build');
   await page.selectOption('#app-obj-LPB-decision-template', 'guardrail');

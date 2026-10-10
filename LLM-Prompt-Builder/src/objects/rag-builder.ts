@@ -94,7 +94,7 @@ import {
   type PromptContract,
 } from './rag-enrich';
 import { readStepSpec, registerFlow, resolveStepIds } from '../api/dataflows-api';
-import { createCreateModal } from '../ui/create-modal';
+import { createCreateModal, type CreateModalDialog } from '../ui/create-modal';
 import { openExternalLink } from '../ui/external-link';
 import { createStepper } from '../ui/stepper';
 import { createInstructionCard } from '../ui/instruction-card';
@@ -680,7 +680,7 @@ export async function buildRagBuilder(
       closeButtonText: str('ragBuilderModalClose', 'Cancel'),
       saveButtonText: str('ragBuilderModalSave', 'Create'),
     },
-    () => void createProjectFromModal()
+    createProjectFromModal
   );
   createCreateModal(
     selectionButtons,
@@ -696,7 +696,7 @@ export async function buildRagBuilder(
       closeButtonText: str('ragBuilderModalClose', 'Cancel'),
       saveButtonText: str('ragBuilderModalSave', 'Create'),
     },
-    () => void createSetupFromModal()
+    createSetupFromModal
   );
 
   // Open in SAS Model Manager: the setup IS a Model Manager model, and its
@@ -2627,11 +2627,17 @@ export async function buildRagBuilder(
     }
   }
 
-  async function createProjectFromModal(): Promise<void> {
+  // What a create dialog has to say - a name that is missing, a refusal of
+  // SAS Model Manager - is said inside the dialog. The banner at the top of
+  // the page lies behind the dialog's backdrop, and out of view once the page
+  // is scrolled down to the Create buttons: the click then seemed to do
+  // nothing. The dialog also keeps its button disabled until the function
+  // has ended, so a double click creates one project or setup, not two.
+  async function createProjectFromModal(dialog: CreateModalDialog): Promise<void> {
     const name = (document.getElementById(`${idOf('create-project')}Name`) as HTMLInputElement | null)?.value.trim() ?? '';
     const description = (document.getElementById(`${idOf('create-project')}Description`) as HTMLInputElement | null)?.value.trim() ?? '';
     if (!name) {
-      showStatus('danger', str('ragBuilderProjectNameRequired', 'A project name is required.'));
+      dialog.showError(str('ragBuilderProjectNameRequired', 'A project name is required.'));
       return;
     }
     let project: { id?: string; name?: string; createdBy?: string; modifiedBy?: string };
@@ -2649,7 +2655,7 @@ export async function buildRagBuilder(
       if (!project?.id) throw new Error('the service answered without a project id');
     } catch (error) {
       console.error('Creating the RAG project failed.', error);
-      showStatus('danger', str('ragBuilderProjectCreateFailed', 'Creating the RAG project failed - check your Model Manager permissions.'));
+      dialog.showError(str('ragBuilderProjectCreateFailed', 'Creating the RAG project failed - check your Model Manager permissions.'));
       return;
     }
     // From here on the project exists. A listing that fails now is a list
@@ -2701,15 +2707,15 @@ export async function buildRagBuilder(
     }
   }
 
-  async function createSetupFromModal(): Promise<void> {
+  async function createSetupFromModal(dialog: CreateModalDialog): Promise<void> {
     const name = (document.getElementById(`${idOf('create-setup')}Name`) as HTMLInputElement | null)?.value.trim() ?? '';
     const description = (document.getElementById(`${idOf('create-setup')}Description`) as HTMLInputElement | null)?.value.trim() ?? '';
     if (!selectedProjectID) {
-      showStatus('danger', str('ragBuilderSetupNeedsProject', 'Select a RAG project before creating a setup.'));
+      dialog.showError(str('ragBuilderSetupNeedsProject', 'Select a RAG project before creating a setup.'));
       return;
     }
     if (!name) {
-      showStatus('danger', str('ragBuilderSetupNameRequired', 'A setup name is required.'));
+      dialog.showError(str('ragBuilderSetupNameRequired', 'A setup name is required.'));
       return;
     }
     try {
@@ -2738,7 +2744,7 @@ export async function buildRagBuilder(
       showStatus('success', str('ragBuilderSetupCreated', 'RAG setup created. Author it below and save.'));
     } catch (error) {
       console.error('Creating the RAG setup failed.', error);
-      showStatus('danger', str('ragBuilderSetupCreateFailed', 'Creating the RAG setup failed - check your Model Manager permissions.'));
+      dialog.showError(str('ragBuilderSetupCreateFailed', 'Creating the RAG setup failed - check your Model Manager permissions.'));
     }
   }
 
@@ -2863,6 +2869,23 @@ export async function buildRagBuilder(
     }
   }
 
+  /**
+   * Where a setup embeds: the SCR endpoint option of this object, and
+   * <SAS Viya host>/llm when that is blank.
+   *
+   * Resolved in ONE place and handed, as the same value, to everything a
+   * manifest generates - the ingestion job, the retrieval probe, the Embed
+   * step of the Studio flow and EMBED_ENDPOINT of the retrieval model. The
+   * model searches the collection with the vector of the question, so it has
+   * to embed where the documents were embedded. Left to each of them, the
+   * flow got a blank value whatever the option said (its step then embedded
+   * at the host of the compute session), and with a blank option the job
+   * derived the host from the compute session while the model was manifested
+   * with the host of this page.
+   */
+  const embeddingEndpoint = (setup: RagSetup): string =>
+    setup.embedding.scrEndpoint || String(config.SCREndpoint || '').trim() || `${viyaHost()}/llm`;
+
   /** The launch/parameter values of a setup, shared by the generated job
    *  definition's parameter defaults and the launch-time arguments. */
   const jobArguments = (setup: RagSetup): Record<string, string> => ({
@@ -2875,7 +2898,7 @@ export async function buildRagBuilder(
     storeDb: setup.store.database,
     storeSslmode: setup.store.sslmode,
     credentialDomain: setup.credentialDomain,
-    scrEndpoint: config.SCREndpoint || '',
+    scrEndpoint: embeddingEndpoint(setup),
     embedModel: setup.embedding.model,
     deploymentType: setup.embedding.deploymentType,
     inputTokenLimit: String(setup.chunking.inputTokenLimit),
@@ -3268,7 +3291,7 @@ export async function buildRagBuilder(
       const flow = buildFlow(
         specs,
         stepIds,
-        ingestionChain(setup, corePath),
+        ingestionChain(setup, corePath, embeddingEndpoint(setup)),
         flowName,
         // Who generated it: the signed-in user where the page knows one.
         String(getAppState().userName || config.userName || 'RAG Builder'),
@@ -3343,12 +3366,11 @@ export async function buildRagBuilder(
       const template = await (
         await getFileContent(String(templateFile.uri), 'text/plain')
       ).text();
-      // The endpoint the ingestion job embeds at (see jobArguments): the
-      // shared SCR endpoint of this object, and <host>/llm only when that is
-      // blank. A retrieval model that embedded its question somewhere else
-      // would search the collection with vectors of another container.
-      const endpoint =
-        setup.embedding.scrEndpoint || String(config.SCREndpoint || '').trim() || `${viyaHost()}/llm`;
+      // The endpoint the ingestion job and the Studio flow embed at (see
+      // embeddingEndpoint). A retrieval model that embedded its question
+      // somewhere else would search the collection with vectors of another
+      // container.
+      const endpoint = embeddingEndpoint(setup);
       // TLS verification: the option is written as SSL_VERIFY where the
       // template has that constant. A content root deployed before the option
       // existed holds a template without it - and without the code that reads
@@ -3356,7 +3378,19 @@ export async function buildRagBuilder(
       // and the outcome line says that the option did not take effect.
       const templateHasTlsSetting = manifestBlockHas(template, 'SSL_VERIFY');
       const code = renderRetrievalModel(template, manifestSettings(setup, endpoint, '', tlsVerificationOn));
-      await createModelContent(selectedSetupID, code, 'retrieve_context.py', 'score', 'text/x-python');
+      // The upload answers with a status instead of throwing. A score code
+      // that was not stored is a stage that failed: going on would set or
+      // remove TLS-Verification-Off for code the model does not hold, and
+      // report the setup as manifested.
+      const stored = await createModelContent(selectedSetupID, code, 'retrieve_context.py', 'score', 'text/x-python');
+      if (stored.status_code >= 300) {
+        throw new Error(
+          str('ragBuilderScoreCodeNotStored', 'SAS Model Manager did not store retrieve_context.py (HTTP {status}). The setup keeps the score code and the tags it had.').replace(
+            '{status}',
+            String(stored.status_code)
+          )
+        );
+      }
       tlsOutcome = tlsVerificationOn ? 'on' : templateHasTlsSetting ? 'off' : 'templatePredatesOption';
       // The tag says what this score code does, so it is set when verification
       // is off in it and taken away otherwise (a setup manifested again with
@@ -3395,7 +3429,13 @@ export async function buildRagBuilder(
     }
   }
 
-  /** The sentences a manifest adds to its outcome line about TLS verification; none when it is on. */
+  /**
+   * The sentences a manifest adds to its outcome line about TLS verification;
+   * none when it is on and the tag is as it should be. A tag update that did
+   * not go through is said in both directions: the tag could not be written
+   * to a model that does not verify, or could not be taken away from one that
+   * does.
+   */
   function tlsOutcomeNotes(): string[] {
     const notes: string[] = [];
     if (tlsOutcome === 'off') {
@@ -3403,13 +3443,18 @@ export async function buildRagBuilder(
       if (!tlsTagWritten) {
         notes.push(str('ragBuilderTlsTagFailed', 'The tag TLS-Verification-Off could not be written to the model - add it in SAS Model Manager.'));
       }
-    } else if (tlsOutcome === 'templatePredatesOption') {
+      return notes;
+    }
+    if (tlsOutcome === 'templatePredatesOption') {
       notes.push(
         str('ragBuilderTlsTemplateOld', 'TLS verification is still ON in this retrieval model, although the option "Verify TLS certificates in manifested models" is unticked: retrieve_context.py under {folder} predates the option and has no SSL_VERIFY setting. Run the deploy-rag-content script again and manifest once more for the option to take effect.').replace(
           '{folder}',
           `${config.contentRoot}/models`
         )
       );
+    }
+    if (!tlsTagWritten) {
+      notes.push(str('ragBuilderTlsTagNotRemoved', 'The tag TLS-Verification-Off could not be removed from the model. This retrieval model verifies TLS: if the model still carries the tag, remove it in SAS Model Manager.'));
     }
     return notes;
   }
@@ -3504,7 +3549,7 @@ export async function buildRagBuilder(
     storeDb: setup.store.database,
     storeSslmode: setup.store.sslmode,
     credentialDomain: setup.credentialDomain,
-    scrEndpoint: config.SCREndpoint || '',
+    scrEndpoint: embeddingEndpoint(setup),
     embedModel: setup.embedding.model,
     deploymentType: setup.embedding.deploymentType,
     ragCorePath: `${config.contentRoot}/rag_core`,

@@ -80,7 +80,7 @@ import { createAccordionItem } from '../ui/accordion';
 import { attachCombobox } from '../ui/combobox';
 import { createListFilter, renderFilteredOptions } from '../ui/list-filter';
 import { createDocSection, createInfoLabel } from '../ui/doc-section';
-import { createCreateModal } from '../ui/create-modal';
+import { createCreateModal, type CreateModalDialog } from '../ui/create-modal';
 import { openExternalLink } from '../ui/external-link';
 import { showConfirmModal } from '../ui/confirm-modal';
 import { showToast } from '../ui/toast';
@@ -752,6 +752,10 @@ export async function buildPromptBuilder(
      */
     function switchPromptKind(kind: PromptKind): void {
       resetExperimentTrackerState();
+      // Nothing of the kind that is left may arrive late: neither the
+      // prompt-tests of its project nor a prompt-test that was being opened.
+      projectLoadToken += 1;
+      dropPromptSelection();
       promptBuilderProjectPrompts = [];
       promptBuilderDecisionPromptIds = new Set();
       promptBuilderProjectSelectorDropdown.value = `${promptBuilderInterfaceText?.projectSelect}`;
@@ -806,10 +810,34 @@ export async function buildPromptBuilder(
     const promptBuilderProjectSelectorDropdown = document.createElement('select');
     promptBuilderProjectSelectorDropdown.setAttribute('class', 'form-select');
     promptBuilderProjectSelectorDropdown.setAttribute('id', `${promptBuilderObject?.id}-project-dropdown`);
+    // Each choice in one of the two pickers starts a loading of its own, and
+    // an earlier one may still be waiting for SAS Model Manager. Its answer
+    // belongs to an entry that is no longer the selected one - drawn all the
+    // same, the page showed the runs, the link and the Delete button of one
+    // prompt-test under the name of another, and Save wrote those runs to the
+    // one the picker named. So every loading takes a number and, after each
+    // wait, goes on only while that number is still the latest.
+    let projectLoadToken = 0;
+    let promptLoadToken = 0;
+    let promptDocLoadToken = 0;
+    /**
+     * No prompt-test is selected any more (another project or kind was
+     * chosen, the prompt-test or its project was deleted): a prompt-test that
+     * is still loading is not drawn, and the documentation section stops
+     * belonging to the one that was open - its fields are emptied and Save
+     * documentation is switched off, where it would have written what is
+     * typed now to that earlier prompt-test.
+     */
+    function dropPromptSelection(): void {
+      promptLoadToken += 1;
+      void loadPromptDocumentation('');
+    }
     promptBuilderProjectSelectorDropdown.onchange = async function () {
       const self = this as unknown as HTMLSelectElement;
+      const loadToken = ++projectLoadToken;
       // Reset the in-memory experiment state of the previously selected prompt
       resetExperimentTrackerState();
+      dropPromptSelection();
       // Reset the prompt list and its filters
       promptBuilderProjectPrompts = [];
       promptFilter.nameInput.value = '';
@@ -825,20 +853,22 @@ export async function buildPromptBuilder(
         promptFilter.setUsers(promptBuilderProjectPrompts);
         return;
       }
+      let allPrompts: Awaited<ReturnType<typeof getModelProjectModels>> = [];
       try {
         // One listing answers both questions - which prompt-tests there are
         // and which of them are decision templates - because every item
         // carries its algorithm and its tags.
-        const allPrompts = await getModelProjectModels(currentProject, PROMPT_FUNCTION_FILTER);
-        promptBuilderProjectPrompts = allPrompts;
-        promptBuilderDecisionPromptIds = new Set(
-          allPrompts.filter((prompt) => isDecisionTemplate(prompt)).map((prompt) => prompt.value)
-        );
+        allPrompts = await getModelProjectModels(currentProject, PROMPT_FUNCTION_FILTER);
       } catch (error) {
         console.error('Failed to load prompts for the selected project.', error);
-        promptBuilderProjectPrompts = [];
-        promptBuilderDecisionPromptIds = new Set();
       }
+      // Another project, the placeholder or the other kind was chosen while
+      // the listing was out: these prompt-tests are not the ones to list.
+      if (loadToken !== projectLoadToken) return;
+      promptBuilderProjectPrompts = allPrompts;
+      promptBuilderDecisionPromptIds = new Set(
+        allPrompts.filter((prompt) => isDecisionTemplate(prompt)).map((prompt) => prompt.value)
+      );
       promptFilter.setUsers(promptBuilderProjectPrompts);
       renderPromptOptions();
     };
@@ -916,6 +946,7 @@ export async function buildPromptBuilder(
     // legacy `function` value to the current one, for the user). Best-effort:
     // a fetch failure just leaves the section empty and disabled.
     async function loadPromptDocumentation(promptId: string): Promise<Record<string, unknown> | null> {
+      const loadToken = ++promptDocLoadToken;
       currentDocPromptId = '';
       promptDoc.clear();
       promptDocSaveButton.disabled = true;
@@ -927,6 +958,10 @@ export async function buildPromptBuilder(
         console.error('Failed to load prompt documentation.', error);
         return null;
       }
+      // A later call has emptied the section, or is filling it for another
+      // prompt-test: this answer must not arm Save documentation for the one
+      // that was left.
+      if (loadToken !== promptDocLoadToken) return null;
       if (!details) return null;
       promptDoc.setValues(details);
       currentDocPromptId = promptId;
@@ -956,12 +991,17 @@ export async function buildPromptBuilder(
 
     promptBuilderPromptSelectorDropdown.onchange = async function () {
       const self = this as unknown as HTMLSelectElement;
+      // Whether this is still the latest choice (see promptLoadToken): asked
+      // after every wait, before anything of this prompt-test is drawn.
+      const loadToken = ++promptLoadToken;
+      const superseded = (): boolean => loadToken !== promptLoadToken;
       // Reset the in-memory experiment state of the previously selected prompt
       resetExperimentTrackerState();
       const promptBuilderPromptSelectedModelID = self.options[self.selectedIndex].value;
       // Load the prompt's documentation (and migrate a legacy function value);
       // the same registration says which kind of template this is.
       const promptDetails = await loadPromptDocumentation(promptBuilderPromptSelectedModelID);
+      if (superseded()) return;
       // The placeholder entry is no prompt-test: its text must not be sent to
       // SAS Model Manager as a model id, nor become a link. The reset above
       // has emptied the tracker and switched the link and Delete off.
@@ -974,6 +1014,7 @@ export async function buildPromptBuilder(
         self.value = `${promptBuilderInterfaceText?.promptSelect}`;
         renderPromptOptions();
         await loadPromptDocumentation(self.value);
+        if (superseded()) return;
         resetExperimentTrackerState();
         return;
       }
@@ -987,6 +1028,7 @@ export async function buildPromptBuilder(
       } catch (error) {
         console.error('Failed to load model contents for the selected prompt.', error);
       }
+      if (superseded()) return;
       for (const promptBuilderAvailablepte in promptBuilderAvailablePTE) {
         if (promptBuilderAvailablePTE[promptBuilderAvailablepte]?.name === 'Prompt-Experiment-Tracker.json') {
           // A tracker that cannot be parsed must not abort the handler — the
@@ -995,7 +1037,9 @@ export async function buildPromptBuilder(
             // Reset the prompt tracker to nothing
             promptExperimentTrackerRunID = 0;
             const promptBuilderCurrentPTE = await getFileContent(promptBuilderAvailablePTE[promptBuilderAvailablepte].fileUri!);
+            if (superseded()) return;
             const promptBuilderCurrentPTEContent: PETRow[] = await promptBuilderCurrentPTE.json();
+            if (superseded()) return;
             const promptBuilderPreviousExperiment: ExperimentTrackerEntry[] = [];
             let promptBuilderPreviousRunID = 0;
             promptBuilderCurrentPTEContent.forEach((value) => {
@@ -1200,13 +1244,9 @@ export async function buildPromptBuilder(
     promptBuilderModalButtonContainer.setAttribute('id', `${promptBuilderObject?.id}-modal-button-container`);
     promptBuilderModalButtonContainer.classList.add('d-flex', 'flex-wrap', 'align-items-center', 'row-gap-2');
 
-    // Function to call when creating a new project
-    async function promptBuilderCreateProject(): Promise<void> {
-      const modal = document.getElementById('promptBuilderCreateProjectModal');
-      if (modal) {
-        const btn = (modal.lastChild as HTMLElement)?.lastChild?.lastChild?.lastChild as HTMLButtonElement | null;
-        if (btn) btn.disabled = true;
-      }
+    // Function to call when creating a new project. The dialog keeps its
+    // button disabled until this has ended (see createCreateModal).
+    async function promptBuilderCreateProject(dialog: CreateModalDialog): Promise<void> {
       const promptBuilderRepositoryInformation = await getModelRepositoryInformation(promptBuilderObject?.modelRepositoryID as string);
       const promptBuilderNewProjectDefinition = {
         name: (document.getElementById('promptBuilderCreateProjectName') as HTMLInputElement).value,
@@ -1236,10 +1276,7 @@ export async function buildPromptBuilder(
       } catch (error) {
         console.error('Creating the project failed.', error);
         showToast(`${promptBuilderInterfaceText?.promptBuilderCreateProjectFailed}`);
-        if (modal) {
-          const btn = (modal.lastChild as HTMLElement)?.lastChild?.lastChild?.lastChild as HTMLButtonElement | null;
-          if (btn) btn.disabled = false;
-        }
+        dialog.showError(`${promptBuilderInterfaceText?.promptBuilderCreateProjectFailed}`);
         return;
       }
       if (promptMode === 'decision') promptBuilderDecisionProjectIds.add(`${promptBuilderNewProjectObject?.id}`);
@@ -1257,21 +1294,12 @@ export async function buildPromptBuilder(
       // Set the newly created project as the currently selected project
       promptBuilderProjectSelectorDropdown.value = `${promptBuilderNewProjectObject?.id}`;
       promptBuilderProjectSelectorDropdown.dispatchEvent(new Event('change'));
-      if (modal) {
-        const btn = (modal.lastChild as HTMLElement)?.lastChild?.lastChild?.lastChild as HTMLButtonElement | null;
-        if (btn) btn.disabled = false;
-      }
       const modalInstance = Modal.getInstance(document.getElementById('promptBuilderCreateProjectModal')!);
       if (modalInstance) modalInstance.hide();
     }
 
     // Function to call when creating a new prompt
-    async function promptBuilderCreatePrompt(): Promise<void> {
-      const modal = document.getElementById('promptBuilderCreatePromptModal');
-      if (modal) {
-        const btn = (modal.lastChild as HTMLElement)?.lastChild?.lastChild?.lastChild as HTMLButtonElement | null;
-        if (btn) btn.disabled = true;
-      }
+    async function promptBuilderCreatePrompt(dialog: CreateModalDialog): Promise<void> {
       const newPromptIsDecision = promptMode === 'decision';
       const newPromptTags = newPromptIsDecision ? ['Decision', 'Prompt-Template', DECISION_TEMPLATE_TAG] : ['LLM', 'Prompt-Template'];
       const promptBuilderNewPromptDefinition = {
@@ -1303,10 +1331,7 @@ export async function buildPromptBuilder(
       } catch (error) {
         console.error('Creating the prompt-test failed.', error);
         showToast(`${promptBuilderInterfaceText?.promptBuilderCreatePromptFailed}`);
-        if (modal) {
-          const btn = (modal.lastChild as HTMLElement)?.lastChild?.lastChild?.lastChild as HTMLButtonElement | null;
-          if (btn) btn.disabled = false;
-        }
+        dialog.showError(`${promptBuilderInterfaceText?.promptBuilderCreatePromptFailed}`);
         return;
       }
       const newPromptID = `${newPrompt.id}`;
@@ -1340,10 +1365,6 @@ export async function buildPromptBuilder(
       // Set the newly created project as the currently selected project
       promptBuilderPromptSelectorDropdown.value = newPromptID;
       promptBuilderPromptSelectorDropdown.dispatchEvent(new Event('change'));
-      if (modal) {
-        const btn = (modal.lastChild as HTMLElement)?.lastChild?.lastChild?.lastChild as HTMLButtonElement | null;
-        if (btn) btn.disabled = false;
-      }
       const modalInstance = Modal.getInstance(document.getElementById('promptBuilderCreatePromptModal')!);
       if (modalInstance) modalInstance.hide();
     }
@@ -1436,6 +1457,7 @@ export async function buildPromptBuilder(
           promptBuilderPromptSelectorDropdown.value = `${promptBuilderInterfaceText?.promptSelect}`;
           renderPromptOptions();
           resetExperimentTrackerState();
+          dropPromptSelection();
         } else {
           showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
         }
@@ -1507,6 +1529,8 @@ export async function buildPromptBuilder(
           promptBuilderPromptSelectorDropdown.value = `${promptBuilderInterfaceText?.promptSelect}`;
           renderPromptOptions();
           resetExperimentTrackerState();
+          projectLoadToken += 1;
+          dropPromptSelection();
         } else {
           showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
         }
@@ -2280,6 +2304,7 @@ export async function buildPromptBuilder(
     // The runs a judgment is out for. Their Judge button shows a spinner and
     // stays disabled until the judgment is back, whatever else redraws it.
     const judgingRuns = new Set<ExperimentTrackerEntry>();
+    const JUDGE_BUTTON_SPINNER = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
     function updateRunExperimentsButtonState(): void {
       // A run in flight keeps the button as the run left it - disabled, with
       // its spinner - whatever is selected or opened meanwhile. The run puts
@@ -2785,6 +2810,7 @@ export async function buildPromptBuilder(
         // saved empty, so it is taken back and nothing is rendered or judged.
         promptExperimentTracker.splice(promptExperimentTracker.indexOf(runEntry), 1);
         restoreRunButton();
+        eraseWithdrawnRun();
         return;
       }
       // Load the (cached) cost attributes of just the models that answered, so
@@ -2930,6 +2956,7 @@ export async function buildPromptBuilder(
         // being rendered, and saved, empty.
         promptExperimentTracker.splice(promptExperimentTracker.indexOf(runEntry), 1);
         restore();
+        eraseWithdrawnRun();
         return;
       }
       await Promise.all(answered.map((result) => ensureLLMCostAttributes(result.modelName)));
@@ -3301,6 +3328,10 @@ export async function buildPromptBuilder(
         experimentRunning || judgingRuns.has(trackerEntry) || judgeableResponses < 2,
         judgeableResponses < 2 ? `${promptBuilderInterfaceText?.promptBuilderJudgeNeedsTwoResponses}` : ''
       );
+      // A button drawn anew while the judgment of its run is out (another
+      // judgment came back, a run was deleted) shows that it is: disabled
+      // alone, with its icon and no hint, it looked dead.
+      if (judgingRuns.has(trackerEntry)) button.innerHTML = JUDGE_BUTTON_SPINNER;
     }
 
     /**
@@ -3330,6 +3361,17 @@ export async function buildPromptBuilder(
     function drawFinishedRun(runEntry: ExperimentTrackerEntry, first: string, second: string): void {
       if (promptExperimentTracker.indexOf(runEntry) < promptExperimentTrackerRunID) renderAllExperimentRuns(true);
       else createPromptExperimentTracker(promptExperimentTracker, first, second);
+    }
+
+    /**
+     * Take a run that was withdrawn (no model answered) off the page. Like a
+     * run that ended with answers, it was drawn - empty - and counted when the
+     * whole tracker was drawn again while its calls were out. The tracker no
+     * longer holds it, so more runs are drawn than there are: draw them again.
+     * Called after the run has ended, so the Judge buttons are drawn usable.
+     */
+    function eraseWithdrawnRun(): void {
+      if (promptExperimentTrackerRunID > promptExperimentTracker.length) renderAllExperimentRuns(true);
     }
 
     // Add a prompt experiment tracker to the UI
@@ -3830,7 +3872,7 @@ export async function buildPromptBuilder(
       judgingRuns.add(trackerEntry);
       if (judgeButton) {
         judgeButton.disabled = true;
-        judgeButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>`;
+        judgeButton.innerHTML = JUDGE_BUTTON_SPINNER;
       }
 
       const runVariables = Array.isArray(trackerEntry.variables) ? trackerEntry.variables : [];
@@ -4316,14 +4358,41 @@ export async function buildPromptBuilder(
     }
     /**
      * The other tags of a manifest are a convenience; this one is how a model
-     * that does not verify TLS is found. When it could not be written, the
-     * manifest box says so and asks for it to be added by hand.
+     * that does not verify TLS is found, so it has to say what the stored
+     * score code does. When the tags could not be updated the manifest box
+     * says so, in both directions: the tag was to be written (`removal`
+     * false) and has to be added by hand, or it was to be taken away and a
+     * model that verifies may still carry it.
      */
-    function reportTlsTagFailure(): void {
+    function reportTlsTagFailure(removal: boolean): void {
       const line = document.createElement('p');
       line.classList.add('text-danger', 'pet-manifest-tls-tag-failed');
-      line.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestTlsTagFailed}`;
+      line.innerText = removal
+        ? `${promptBuilderInterfaceText?.promptBuilderManifestTlsTagNotRemoved}`
+        : `${promptBuilderInterfaceText?.promptBuilderManifestTlsTagFailed}`;
       promptExperimentResultContainer.appendChild(line);
+    }
+    /**
+     * Store the score code of a manifest; false when SAS Model Manager did
+     * not take it. The upload answers with a status instead of throwing, and
+     * a manifest that went on regardless set or removed TLS-Verification-Off
+     * for a score code the model does not hold, under a toast that said
+     * "manifested". A manifest whose score code was not stored has failed:
+     * the box says so, and the caller stops before the tags and the toast.
+     */
+    async function storeManifestScoreCode(modelID: string, scoreCode: Blob, fileName: string): Promise<boolean> {
+      try {
+        const stored = await createModelContent(modelID, scoreCode, fileName, 'score', 'text/x-python');
+        if (stored.status_code < 300) return true;
+        console.error(`The score code of the manifest was not stored (status ${stored.status_code}).`, stored.response);
+      } catch (error) {
+        console.error('The score code of the manifest was not stored.', error);
+      }
+      const line = document.createElement('p');
+      line.classList.add('text-danger', 'pet-manifest-failed');
+      line.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestScoreCodeFailed}`;
+      promptExperimentResultContainer.appendChild(line);
+      return false;
     }
     const manifestOutputsLabel = document.createElement('p');
     manifestOutputsLabel.classList.add('fw-bold', 'mb-1');
@@ -5057,13 +5126,17 @@ ${scoreCodeReturn}`;
         const validatedModelName = validateAndCorrectPackageName(promptExperimentRunModelName);
         await createModelContent(promptExperimentRunModel, promptInputs, 'inputVar.json', 'inputVariables');
         await createModelContent(promptExperimentRunModel, outputVars, 'outputVar.json', 'outputVariables');
-        await createModelContent(
-          promptExperimentRunModel,
-          mainfestPromptScoreCodeBlob,
-          `${validatedModelName.correctedName}.py`,
-          'score',
-          'text/x-python'
-        );
+        if (
+          !(await storeManifestScoreCode(
+            promptExperimentRunModel,
+            mainfestPromptScoreCodeBlob,
+            `${validatedModelName.correctedName}.py`
+          ))
+        ) {
+          promptExperimentCreateModelTargetButton.disabled = false;
+          promptExperimentCreateModelTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
+          return;
+        }
         // The integrated call imports the requests package at score time: ship
         // a requirements.json (same format and role as the LLM definitions) so
         // publishing destinations that build a Python environment install it.
@@ -5112,7 +5185,7 @@ ${scoreCodeReturn}`;
         } catch (error) {
           console.error('Failed to update the tags of the manifested model.', error);
         }
-        if (!manifestTagsWritten && manifestTags.includes(TLS_VERIFICATION_OFF_TAG)) reportTlsTagFailure();
+        if (!manifestTagsWritten) reportTlsTagFailure(!manifestTags.includes(TLS_VERIFICATION_OFF_TAG));
         // Copy the winning LLM's governance/cost attributes onto the manifested
         // prompt model (so a prompt carries the same metadata the mdb-registered
         // LLMs do) and (re)assert the current function value. Best-effort.
@@ -5257,13 +5330,16 @@ ${scoreCodeReturn}`;
       const validatedModelName = validateAndCorrectPackageName(promptExperimentRunModelName);
       await createModelContent(promptExperimentRunModel, manifest.inputs, 'inputVar.json', 'inputVariables');
       await createModelContent(promptExperimentRunModel, manifest.outputs, 'outputVar.json', 'outputVariables');
-      await createModelContent(
-        promptExperimentRunModel,
-        new Blob([manifest.scoreCode], { type: 'text/x-python' }),
-        `${validatedModelName.correctedName}.py`,
-        'score',
-        'text/x-python'
-      );
+      if (
+        !(await storeManifestScoreCode(
+          promptExperimentRunModel,
+          new Blob([manifest.scoreCode], { type: 'text/x-python' }),
+          `${validatedModelName.correctedName}.py`
+        ))
+      ) {
+        restore();
+        return;
+      }
       await createModelContent(
         promptExperimentRunModel,
         [{ step: 'install requests', command: 'pip3 -q install requests' }],
@@ -5291,7 +5367,7 @@ ${scoreCodeReturn}`;
       } catch (error) {
         console.error('Failed to update the tags of the manifested model.', error);
       }
-      if (!manifestTagsWritten && !tlsVerificationOn) reportTlsTagFailure();
+      if (!manifestTagsWritten) reportTlsTagFailure(tlsVerificationOn);
       await ensureLLMCostAttributes(chosen.model);
       const decisionModel = llmAttributesByName.get(chosen.model);
       const manifestAttributes: Record<string, unknown> = { function: PROMPT_FUNCTION };

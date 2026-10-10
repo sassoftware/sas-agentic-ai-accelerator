@@ -25,7 +25,10 @@
  *   ragonly   a page without the prompt side shows the RAG flow alone
  *   manifest  what a manifest says beside its button: a stage that fails; TLS
  *             verification switched off; a retrieval template from before
- *             that option; the create dialogs and the link to the saved setup
+ *             that option; a score code or a tag SAS Model Manager did not
+ *             take; the create dialogs (what they say inside, a double
+ *             click) and the link to the saved setup; the one embedding
+ *             endpoint of job, flow and model on a page without SCR endpoint
  * VERIFY_RAG_SECTIONS (comma separated) runs a subset; the summary names the
  * sections that ran, so a partial run cannot pass for a full one.
  */
@@ -110,6 +113,36 @@ async function assertLinkCopies(target, selector, label) {
   await target.evaluate(() => {
     window.open = window.__verifyRealOpen;
   });
+}
+// The same link where a tab CAN open - the job URL in a browser tab, or a
+// report whose sandbox allows popups. `window.open` is made to answer the way
+// a browser does there: with a window, and with null when the features hold
+// "noopener" (the specification asks for null then, although the tab opens).
+// The link has to open its tab and do nothing else.
+async function assertLinkOpensTab(target, selector, label) {
+  await target.evaluate(() => {
+    window.__verifyOpened = [];
+    window.__verifyTab = { opener: window };
+    window.__verifyRealOpen = window.__verifyRealOpen || window.open;
+    window.open = (url, name, features) => {
+      window.__verifyOpened.push({ url: String(url), features: features === undefined ? '' : String(features) });
+      return /noopener/i.test(String(features || '')) ? null : window.__verifyTab;
+    };
+  });
+  const href = await target.$eval(selector, (link) => link.href);
+  const shown = (await target.textContent(selector)).trim();
+  await target.click(selector);
+  await sleep(500);
+  const seen = await target.evaluate(() => ({ opened: window.__verifyOpened, cutOff: window.__verifyTab.opener === null }));
+  const text = (await target.textContent(selector)).trim();
+  await target.evaluate(() => {
+    window.open = window.__verifyRealOpen;
+  });
+  assert(
+    seen.opened.length === 1 && seen.opened[0].url === href && !/noopener/i.test(seen.opened[0].features) && seen.cutOff,
+    `${label}: asks for a new tab once, without the "noopener" feature that makes window.open answer null where the tab did open, and clears the opener of that tab (features: ${seen.opened.map((call) => call.features || 'none').join(' | ') || 'not asked'}; opener cleared: ${seen.cutOff})`
+  );
+  assert(text === shown, `${label}: where the tab opens, the link keeps its text and does not claim that popups are blocked (text: ${text})`);
 }
 // A create dialog that is open: each field is its label above an input as
 // wide as the dialog body.
@@ -576,6 +609,13 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       'the List step gets the document folder and the pipeline tables'
     );
     assert(argumentsOf('RAG - Embed Chunks')._rgem_embedModel === 'bge_small_en_v15', 'the Embed step gets the embedding model');
+    // A flow whose Embed step got no endpoint embeds at <host of the compute
+    // session>/llm, whatever the SCR endpoint option says - somewhere else
+    // than the job and than the retrieval model.
+    assert(
+      argumentsOf('RAG - Embed Chunks')._rgem_scrEndpoint === parameter('scrEndpoint') && parameter('scrEndpoint') === `${BASE}/scr`,
+      `the Embed step of the Studio flow embeds at the endpoint the ingestion job embeds at (flow: ${argumentsOf('RAG - Embed Chunks')._rgem_scrEndpoint || 'blank'}, job: ${parameter('scrEndpoint')})`
+    );
     const load = argumentsOf('RAG - Load Vector Store');
     assert(
       load._rgld_backend === 'pgvector' && load._rgld_collection === 'zz_verify_v1' && load._rgld_storeHost === 'pg.mock.local' && load._rgld_storeDb === 'ragdb',
@@ -1058,7 +1098,10 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     await page.click(`${rgb('create-setupModal')} .btn-primary`);
     await waitUntil(async () => (await getLog()).some((e) => e.method === 'POST' && e.url === '/modelRepository/models' && e.status === 409), 'the creation of a second setup of that name is refused by the service');
     const statusAlert = async (kind = 'danger') => ((await page.textContent(`${rgb('status')} .alert-${kind}`, { timeout: 500 }).catch(() => '')) || '').trim();
-    await waitUntil(async () => (await statusAlert()).includes('Creating the RAG setup failed'), 'a refused setup is reported as not created');
+    // Said inside the dialog: the banner at the top of the page lies behind it.
+    const dialogError = async (dialog) => ((await page.isVisible(`${rgb(`${dialog}Modal`)}.show ${rgb(`${dialog}Error`)}`)) ? (await page.textContent(rgb(`${dialog}Error`))).trim() : '');
+    await waitUntil(async () => (await dialogError('create-setup')).includes('Creating the RAG setup failed'), 'a refused setup is reported as not created, inside the dialog');
+    assert(!(await statusAlert()).includes('Creating the RAG setup failed'), `and not in the banner behind it (banner: ${(await statusAlert()) || 'empty'})`);
     const createdToasts = (await page.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).filter((text) => text.includes('RAG setup created'));
     assert(createdToasts.length === 0 && (await value(page, 'setup')) === 'rag-setup-2', 'nothing says "created", and the selection is what it was');
     assert((await ragState()).models.filter((model) => model.name === 'Policy Handbook').length === 1, 'there is still one setup of that name');
@@ -1282,25 +1325,80 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     await serveTemplate({});
     await openRag(page);
     await waitUntil(async () => (await optionValues(page, 'project')).includes('rag-proj'), 'the RAG projects are listed');
+    // What a create dialog has to say, it says inside itself: the banner at
+    // the top of the page is behind the dialog, and out of view when the page
+    // is scrolled down to the buttons.
+    const dialogError = async (dialog) => ((await page.isVisible(`${rgb(`${dialog}Modal`)}.show ${rgb(`${dialog}Error`)}`)) ? (await page.textContent(rgb(`${dialog}Error`))).trim() : '');
+    const bannerDanger = async () => ((await page.textContent(`${rgb('status')} .alert-danger`, { timeout: 300 }).catch(() => '')) || '').trim();
+    await page.click(`[data-bs-target="${rgb('create-setupModal')}"]`);
+    await page.waitForSelector(`${rgb('create-setupModal')}.show`);
+    await page.fill(rgb('create-setupName'), 'ZZ No Project Yet');
+    await page.click(`${rgb('create-setupModal')} .btn-primary`);
+    await waitUntil(async () => (await dialogError('create-setup')) !== '', 'Create setup without a project: the dialog says something');
+    assert(
+      (await dialogError('create-setup')) === 'Select a RAG project before creating a setup.' && !(await bannerDanger()).includes('Select a RAG project'),
+      `Create setup without a project: the dialog says inside it that a project is needed, and the banner behind it stays empty (dialog: ${await dialogError('create-setup')}; banner: ${(await bannerDanger()) || 'empty'})`
+    );
+    await page.click(`${rgb('create-setupModal')} .btn-secondary`);
+    await page.waitForSelector('.modal.show', { state: 'detached' });
     await page.click(`[data-bs-target="${rgb('create-projectModal')}"]`);
     await page.waitForSelector(`${rgb('create-projectModal')}.show`);
     await assertCreateDialogLayout(page, rgb('create-projectModal'), 'Create project');
-    await page.fill(rgb('create-projectName'), 'ZZ Manifest RAG');
+    await resetLog();
     await page.click(`${rgb('create-projectModal')} .btn-primary`);
+    await waitUntil(async () => (await dialogError('create-project')) !== '', 'Create project without a name: the dialog says something');
+    assert(
+      (await dialogError('create-project')) === 'A project name is required.' && !(await bannerDanger()).includes('required') && (await page.isVisible(`${rgb('create-projectModal')}.show`)),
+      `Create project without a name: the dialog stays open and says inside it that a name is required (dialog: ${await dialogError('create-project')}; banner: ${(await bannerDanger()) || 'empty'})`
+    );
+    assert(!(await getLog()).some((e) => e.method === 'POST' && e.url === '/modelRepository/projects'), 'and nothing is sent to SAS Model Manager');
+    // A double click on Create while SAS Model Manager takes its time: one
+    // project, not two of the same name.
+    const slowCreation = '**/modelRepository/projects';
+    await page.route(slowCreation, async (route) => {
+      if (route.request().method() === 'POST') await sleep(800);
+      await route.continue().catch(() => {});
+    });
+    await page.fill(rgb('create-projectName'), 'ZZ Manifest RAG');
+    await page.dblclick(`${rgb('create-projectModal')} .btn-primary`);
+    assert(
+      (await page.isDisabled(`${rgb('create-projectModal')} .btn-primary`)) && !(await dialogError('create-project')),
+      'while the project is being created the Create button is disabled, and the message of the attempt before is gone'
+    );
     await waitUntil(async () => (await value(page, 'project')).startsWith('rag-proj-new-'), 'the project of this section is selected');
     const projectId = await value(page, 'project');
     await page.waitForSelector('.modal.show', { state: 'detached' });
+    await sleep(1000);
+    await page.unroute(slowCreation);
+    const projectPosts = (await getLog()).filter((e) => e.method === 'POST' && e.url === '/modelRepository/projects').length;
+    const projectsOfThatName = (await ragState()).projects.filter((project) => project.name === 'ZZ Manifest RAG').length;
+    assert(
+      projectPosts === 1 && projectsOfThatName === 1,
+      `a double click on Create creates one project (requests: ${projectPosts}, projects of that name: ${projectsOfThatName})`
+    );
     await page.click(`[data-bs-target="${rgb('create-setupModal')}"]`);
     await page.waitForSelector(`${rgb('create-setupModal')}.show`);
+    assert(!(await dialogError('create-setup')), 'the setup dialog, opened again, shows no message of the attempt before');
     await assertCreateDialogLayout(page, rgb('create-setupModal'), 'Create setup');
-    await page.fill(rgb('create-setupName'), 'ZZ Manifest Setup');
+    // The fields keep what was typed at the attempt before.
+    await page.fill(rgb('create-setupName'), '');
     await page.click(`${rgb('create-setupModal')} .btn-primary`);
+    await waitUntil(async () => (await dialogError('create-setup')) !== '', 'Create setup without a name: the dialog says something');
+    assert((await dialogError('create-setup')) === 'A setup name is required.', `Create setup without a name: the dialog says so inside it (got: ${await dialogError('create-setup')})`);
+    await resetLog();
+    await page.fill(rgb('create-setupName'), 'ZZ Manifest Setup');
+    await page.dblclick(`${rgb('create-setupModal')} .btn-primary`);
     const createdSetup = async () => (await ragState()).models.find((model) => model.name === 'ZZ Manifest Setup');
     await waitUntil(async () => Boolean(await createdSetup()), 'the setup of this section is created');
     const setupId = (await createdSetup()).id;
     await waitUntil(async () => (await value(page, 'setup')) === setupId, 'and selected');
     await page.waitForSelector('.modal.show', { state: 'detached' });
     await page.waitForSelector(EDITOR, { state: 'visible' });
+    const setupPosts = (await getLog()).filter((e) => e.method === 'POST' && e.url === '/modelRepository/models');
+    assert(
+      setupPosts.length === 1 && setupPosts[0].status === 201,
+      `a double click on Create creates one setup, and no second request is refused for its name (requests: ${setupPosts.map((e) => e.status).join(', ')})`
+    );
     await goRagStep(page, 'documents');
     await page.fill(rgb('source-path'), '/mnt/data/zz manifest');
     await page.selectOption(rgb('embed-model'), 'bge_small_en_v15');
@@ -1349,6 +1447,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       `option ticked: RAGEMBED_SSLVERIFY=false still switches that one call off (got: ${sslVerifyOf(ticked.code, { RAGEMBED_SSLVERIFY: 'false' })})`
     );
     await assertLinkCopies(page, `${rgb('save-result')} a`, 'the link to the saved setup beside Manifest setup');
+    await assertLinkOpensTab(page, `${rgb('save-result')} a`, 'the link to the saved setup beside Manifest setup');
 
     // -- the option unticked --------------------------------------------------------
     await openRag(page, `${APP_URL}&sslVerify=false`);
@@ -1406,16 +1505,113 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     assert(!older.tags.includes(TLS_TAG), `a model that still verifies does not carry ${TLS_TAG}: the tag of the manifest before is taken away (got: ${older.tags.join(', ')})`);
     await serveTemplate({});
 
+    // -- a score code or a tag update SAS Model Manager does not take ---------------
+    // The tag is what an administrator filters on, so it follows what the
+    // model HOLDS. `fault` refuses one request of the next manifest: the
+    // upload of retrieve_context.py, or the first write of the model after it
+    // (the tag update).
+    const tagsOfSetup = async () => ((await ragState()).models.find((model) => model.id === setupId) || {}).tags || [];
+    const storedTlsLine = async () => {
+      const contents = await (await fetch(`${BASE}/modelRepository/models/${setupId}/contents`)).json();
+      const score = contents.items.find((item) => item.name === 'retrieve_context.py');
+      return tlsLines(await (await fetch(`${BASE}${score.fileUri}/content`)).text()).join(' ; ');
+    };
+    const faultyManifest = async (fault) => {
+      let scoreCodeSeen = false;
+      let injected = 0;
+      const uploads = `**/modelRepository/models/${setupId}/contents?*`;
+      const model = `**/modelRepository/models/${setupId}`;
+      await page.route(uploads, (route) => {
+        const request = route.request();
+        if (request.method() === 'POST' && (request.postData() || '').includes('filename="retrieve_context.py"')) {
+          scoreCodeSeen = true;
+          if (fault === 'score code') {
+            injected += 1;
+            return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ errorCode: 0, message: 'the files service does not answer', httpStatusCode: 500 }) });
+          }
+        }
+        return route.continue();
+      });
+      await page.route(model, (route) => {
+        if (route.request().method() === 'PUT' && scoreCodeSeen && fault === 'tags' && injected === 0) {
+          injected += 1;
+          return route.fulfill({ status: 412, contentType: 'application/json', body: JSON.stringify({ errorCode: 0, message: 'the model changed since it was read', httpStatusCode: 412 }) });
+        }
+        return route.continue();
+      });
+      const done = await manifest(setupId, { through: fault === 'tags' });
+      await page.unroute(uploads);
+      await page.unroute(model);
+      assert(injected === 1, `the ${fault} request of this manifest was refused once (${injected})`);
+      return done;
+    };
+    // Unticked, and the tag cannot be written: said as before.
+    assert(!(await tagsOfSetup()).includes(TLS_TAG), 'the setup does not carry the tag at this point');
+    await faultyManifest('tags');
+    outcome = await resultText();
+    assert(
+      Boolean(await saveResult(page, 'warning')) && outcome.includes('TLS verification is OFF') && outcome.includes(`The tag ${TLS_TAG} could not be written to the model`) && !(await tagsOfSetup()).includes(TLS_TAG),
+      `option unticked: a tag that could not be written is reported, and asked to be added by hand (got: ${outcome})`
+    );
+
     // -- ticked again: the tag goes --------------------------------------------------
     const again = await manifest(setupId);
     assert(again.tags.includes(TLS_TAG), 'with the current template the unticked option takes effect again');
     await openRag(page);
     await selectRagProject(page, projectId);
     await openSetup(page, setupId, async () => (await value(page, 'collection')) === 'zz_manifest_v1', 'the setup opens on a page with the option ticked');
+    // The model holds a score code that does not verify, and the tag. Ticked,
+    // the upload of the new score code fails: the model still does not
+    // verify, so it keeps the tag, and the setup is not reported as manifested.
+    assert((await storedTlsLine()) === 'SSL_VERIFY = False' && (await tagsOfSetup()).includes(TLS_TAG), 'before the next manifest the stored score code does not verify and the setup carries the tag');
+    const notStored = await faultyManifest('score code');
+    outcome = await resultText();
+    assert(
+      (await storedTlsLine()) === 'SSL_VERIFY = False' && (await tagsOfSetup()).includes(TLS_TAG),
+      `a score code SAS Model Manager did not store changes no tag: the model still holds ${await storedTlsLine()} and keeps ${TLS_TAG} (tags: ${(await tagsOfSetup()).join(', ')})`
+    );
+    assert(
+      Boolean(await saveResult(page, 'danger')) && !(await saveResult(page, 'success')) && outcome.includes('The manifest stopped while registering the retrieval model') && outcome.includes('did not store retrieve_context.py (HTTP 500)'),
+      `and the manifest says beside its button that it stopped there, and why (got: ${outcome})`
+    );
+    assert(!notStored.log.some((e) => e.url === `/modelRepository/models/${setupId}/modelVersions`), 'no model version is recorded for a manifest that stopped');
+    // Ticked, the score code is stored, the tag cannot be taken away: the
+    // model verifies and is still listed as one that does not.
+    await faultyManifest('tags');
+    outcome = await resultText();
+    assert(
+      (await storedTlsLine()) === 'SSL_VERIFY = True' && (await tagsOfSetup()).includes(TLS_TAG),
+      'the next manifest stores a score code that verifies, and its tag update is refused: the tag is still there'
+    );
+    assert(
+      Boolean(await saveResult(page, 'warning')) && !(await saveResult(page, 'success')) && outcome.includes('Setup manifested') && outcome.includes(`The tag ${TLS_TAG} could not be removed from the model`) && outcome.includes('remove it in SAS Model Manager'),
+      `option ticked: a tag that could not be removed is reported, as a warning beside the button (got: ${outcome})`
+    );
     const reticked = await manifest(setupId);
     assert(
       JSON.stringify(tlsLines(reticked.code)) === '["SSL_VERIFY = True"]' && !reticked.tags.includes(TLS_TAG) && Boolean(await saveResult(page, 'success')),
       `manifested with the option ticked again, the model verifies and loses the tag (line: ${JSON.stringify(tlsLines(reticked.code))}, tags: ${reticked.tags.join(', ')})`
+    );
+
+    // -- one embedding endpoint, also where the SCR endpoint option is blank ---------
+    // A page that only builds RAG setups can leave that option blank; RAG
+    // then reads <SAS Viya host>/llm. The retrieval model has to embed its
+    // question where the documents were embedded, so the job, the Embed step
+    // of the Studio flow and the model are given the SAME resolved endpoint -
+    // not a blank for two of them (which each resolve in the compute session)
+    // and the host of this page for the third.
+    await openRag(page, `${BASE}/?modelRepositoryID=repo-1&${RAG}&${RAG_CONTEXT}`);
+    await selectRagProject(page, projectId);
+    await openSetup(page, setupId, async () => (await value(page, 'collection')) === 'zz_manifest_v1', 'the setup opens on a page without the SCR endpoint option');
+    const blank = await manifest(setupId);
+    const endpointOf = {
+      model: (/^EMBED_ENDPOINT = "([^"]*)"$/m.exec(blank.code) || [])[1],
+      job: ((JSON.parse((blank.log.filter((e) => (e.method === 'POST' || e.method === 'PUT') && e.url.startsWith('/jobDefinitions/definitions')).pop() || { body: '{}' }).body).parameters || []).find((entry) => entry.name === 'scrEndpoint') || {}).defaultValue,
+      flow: (Object.values(JSON.parse(multipartFile((lastUpload(blank.log, setupId, 'RAG Ingest - ZZ Manifest Setup.flw') || { body: '' }).body) || '{"nodes":{}}').nodes).find((node) => node.name === 'RAG - Embed Chunks') || { arguments: {} }).arguments._rgem_scrEndpoint,
+    };
+    assert(
+      endpointOf.model === `${BASE}/llm` && endpointOf.job === endpointOf.model && endpointOf.flow === endpointOf.model,
+      `without the SCR endpoint option the job, the Studio flow and the retrieval model are all given <SAS Viya host>/llm (model: ${endpointOf.model}, job: ${endpointOf.job || 'blank'}, flow: ${endpointOf.flow || 'blank'})`
     );
   });
 

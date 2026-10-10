@@ -30,17 +30,33 @@ export interface CreateModalText {
   saveButtonText?: string;
 }
 
+/** What the dialog hands to `onSave`. */
+export interface CreateModalDialog {
+  /**
+   * Say inside the dialog why nothing was created (a name that is missing, a
+   * refusal of the service). The dialog is open over the page, so a message
+   * anywhere else on the page lies behind its backdrop or out of view.
+   */
+  showError(message: string): void;
+}
+
 /**
  * Append a trigger button and its modal to `container`.
  *
  * `prefix` names the DOM ids the caller reads back: `<prefix>Modal`,
- * `<prefix>Name`, `<prefix>Description`.
+ * `<prefix>Name`, `<prefix>Description`; a message of `showError` is in
+ * `<prefix>Error`.
+ *
+ * `onSave` runs on a click on the dialog's button. While the promise it
+ * returns is pending the button is disabled and further clicks are ignored: a
+ * double click must not create the thing twice. A message of the click before
+ * is taken away when the next one starts and when the dialog is opened again.
  */
 export function createCreateModal(
   container: HTMLElement,
   prefix: string,
   text: CreateModalText,
-  onSave: () => void
+  onSave: (dialog: CreateModalDialog) => void | Promise<void>
 ): void {
   const toggle = document.createElement('button');
   toggle.type = 'button';
@@ -100,7 +116,24 @@ export function createCreateModal(
   };
   field(`${prefix}Name`, text.nameLabel, false);
   field(`${prefix}Description`, text.descriptionLabel, true);
+  const error = document.createElement('div');
+  error.id = `${prefix}Error`;
+  error.classList.add('alert', 'alert-danger', 'pb-create-error', 'py-2', 'mt-3', 'mb-0');
+  error.setAttribute('role', 'alert');
+  error.hidden = true;
+  body.appendChild(error);
   content.appendChild(body);
+  const clearError = (): void => {
+    error.textContent = '';
+    error.hidden = true;
+  };
+  const dialogHandle: CreateModalDialog = {
+    showError: (message) => {
+      error.textContent = message;
+      error.hidden = false;
+    },
+  };
+  wrapper.addEventListener('show.bs.modal', clearError);
 
   const footer = document.createElement('div');
   footer.classList.add('modal-footer');
@@ -113,7 +146,19 @@ export function createCreateModal(
   save.type = 'button';
   save.classList.add('btn', 'btn-primary');
   save.innerHTML = text.saveButtonText ?? '';
-  save.onclick = () => onSave();
+  let saving = false;
+  save.onclick = async () => {
+    if (saving) return;
+    saving = true;
+    save.disabled = true;
+    clearError();
+    try {
+      await onSave(dialogHandle);
+    } finally {
+      saving = false;
+      save.disabled = false;
+    }
+  };
   footer.appendChild(cancel);
   footer.appendChild(save);
   content.appendChild(footer);
