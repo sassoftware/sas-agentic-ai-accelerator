@@ -173,10 +173,11 @@ SWITCHES = """<SASReport>
 """
 
 
-def test_a_json_boolean_is_written_as_the_dropdown_key():
-    """The switches are dropdowns with the keys `true` / `false`. `str(True)`
-    is "True", which is no key of that dropdown - and which differs from the
-    stored value, so every restore would report a change that is none."""
+def test_a_json_boolean_is_written_as_the_word_a_checkbox_stores():
+    """The switches are checkboxes, stored as the words `true` / `false` in a
+    string parameter. `str(True)` is "True", which is not the stored word -
+    and which differs from the stored value, so every restore would report a
+    change that is none."""
     assert option_text(True) == "true" and option_text(False) == "false"
     assert option_text("True") == "True" and option_text(30) == "30" and option_text(None) == ""
     updated, result = write_options(SWITCHES, {"enableRag": True, "enableDecision": True})
@@ -187,6 +188,89 @@ def test_a_json_boolean_is_written_as_the_dropdown_key():
     # and back off again, from the boolean a hand-edited file would hold
     updated, result = write_options(updated, {"enableRag": False})
     assert result.applied == {"enableRag": "false"} and updated == SWITCHES
+
+
+# How Visual Analytics stores the options of the Prompt Builder object, as a
+# report saved on 2026-10-10 holds them (read there in the JSON form of the
+# content, written here in the XML form this module works on):
+# `enableOptimization` was set while it was a dropdown with the keys true /
+# false, `recordHistory` is a checkbox. Both are string parameters holding
+# the word.
+STORED_BY_VA = """<SASReport>
+  <PromptDefinition label="enableOptimization" hidden="true" isParameter="true" dataType="string" multiValued="false" name="pr183">
+    <DefaultValue>
+      <String behavior="fixed">true</String>
+    </DefaultValue>
+  </PromptDefinition>
+  <PromptDefinition label="recordHistory" hidden="true" isParameter="true" dataType="string" multiValued="false" name="pr633">
+    <DefaultValue>
+      <String behavior="fixed">true</String>
+    </DefaultValue>
+  </PromptDefinition>
+</SASReport>
+"""
+
+# The same two typed as booleans. No report seen so far holds this shape; it
+# is covered so that such a report is not read as empty and not rewritten.
+TYPED_BOOLEANS = """<SASReport>
+  <PromptDefinition label="enableOptimization" hidden="true" isParameter="true" dataType="boolean" multiValued="false" name="pr183">
+    <DefaultValue>
+      <Boolean behavior="fixed">true</Boolean>
+    </DefaultValue>
+  </PromptDefinition>
+  <PromptDefinition label="recordHistory" hidden="true" isParameter="true" dataType="boolean" multiValued="false" name="pr633">
+    <DefaultValue>
+      <Boolean behavior="fixed">false</Boolean>
+    </DefaultValue>
+  </PromptDefinition>
+  <PromptDefinition label="contentRoot" hidden="true" isParameter="true" dataType="string" multiValued="false" name="pr627">
+    <DefaultValue>
+      <String behavior="fixed">/Team/RAG</String>
+    </DefaultValue>
+  </PromptDefinition>
+</SASReport>
+"""
+
+
+def test_a_switch_reads_the_same_from_a_string_and_from_a_boolean_parameter():
+    assert read_options(STORED_BY_VA) == {"enableOptimization": "true", "recordHistory": "true"}
+    assert read_options(TYPED_BOOLEANS) == {
+        "enableOptimization": "true", "recordHistory": "false", "contentRoot": "/Team/RAG"}
+    # Whatever case such a report writes the word in, the options file holds one spelling.
+    assert read_options(TYPED_BOOLEANS.replace(">true<", ">TRUE<"))["enableOptimization"] == "true"
+
+
+def test_a_restore_keeps_the_element_a_parameter_has():
+    """A string parameter stays a string, a boolean one a boolean: only the
+    text between the tags changes, in the spelling its element takes."""
+    updated, result = write_options(STORED_BY_VA, {"enableOptimization": False, "recordHistory": "true"})
+    assert result.applied == {"enableOptimization": "false"} and result.unchanged == {"recordHistory": "true"}
+    assert updated == STORED_BY_VA.replace(">true<", ">false<", 1)
+    assert "<Boolean" not in updated and 'dataType="boolean"' not in updated
+
+    # A boolean parameter takes true / false only: the JSON boolean, the word
+    # in any case and the `1` a 2.2.x report stored all become that word.
+    for given in (False, "false", "False", "0", "off"):
+        updated, result = write_options(TYPED_BOOLEANS, {"enableOptimization": given})
+        assert result.applied == {"enableOptimization": "false"}, given
+        assert updated == TYPED_BOOLEANS.replace(">true<", ">false<"), given
+    updated, result = write_options(TYPED_BOOLEANS, {"enableOptimization": "1", "recordHistory": "1",
+                                                     "contentRoot": "1"})
+    assert result.unchanged == {"enableOptimization": "true"}
+    assert result.applied == {"recordHistory": "true", "contentRoot": "1"}
+    assert updated.count("<Boolean") == 2 and updated.count('dataType="boolean"') == 2 and "<String" in updated
+    assert read_options(updated) == {"enableOptimization": "true", "recordHistory": "true", "contentRoot": "1"}
+
+    # A string parameter gets the value as given - `1` stays `1`.
+    updated, result = write_options(STORED_BY_VA, {"recordHistory": "1"})
+    assert result.applied == {"recordHistory": "1"} and read_options(updated)["recordHistory"] == "1"
+
+
+def test_a_boolean_parameter_is_not_given_a_value_that_says_neither_on_nor_off():
+    updated, result = write_options(TYPED_BOOLEANS, {"enableOptimization": "maybe", "recordHistory": ""})
+    assert updated == TYPED_BOOLEANS and not result.changed
+    assert result.rejected == {"enableOptimization": "maybe", "recordHistory": ""}
+    assert result.missing == [] and result.unchanged == {}
 
 
 def test_a_boolean_survives_the_options_file_and_the_seed_merge():

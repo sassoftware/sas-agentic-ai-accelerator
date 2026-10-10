@@ -23,6 +23,14 @@ hidden parameter:
 id that is NOT stable across report versions - which is exactly why this module
 matches on the label and never on `name`.
 
+A CHECKBOX of the Options pane (the three feature switches, the run history,
+one per vector store) has the same shape: Visual Analytics stores it as a
+string parameter holding the word `true` or `false`, which is also what a
+report holds that was saved while a switch was a dropdown with those two
+words as keys. So a switch reads the same from both. A parameter typed as a
+boolean (`<Boolean>` in place of `<String>`) has not been seen in a report;
+it is read and written all the same, and its element is kept as it is.
+
 WHAT IS SAVED. Only labels the file names. Restoring writes values back over
 whatever the import brought and leaves every other part of the report alone,
 so a new report version keeps its new layout, its new data items and its new
@@ -134,9 +142,19 @@ _PROMPT = re.compile(
     r'(</PromptDefinition>)',
     re.DOTALL,
 )
-_DEFAULT_STRING = re.compile(
-    r'(<String\b[^>]*>)(?P<value>.*?)(</String>)', re.DOTALL
+# The value element of a parameter's default, whichever of the two it is. The
+# tag is captured so that a write puts the same element back.
+_DEFAULT_VALUE = re.compile(
+    r'(<(?P<tag>String|Boolean)\b[^>]*>)(?P<value>.*?)(</(?P=tag)>)', re.DOTALL
 )
+_BOOLEAN_TYPE = re.compile(r'\bdataType="boolean"', re.IGNORECASE)
+
+#: What a boolean parameter can be told, by the word it becomes. The same
+#: words the Prompt Builder reads for a switch in a URL.
+_BOOLEAN_WORDS = {
+    "true": "true", "1": "true", "yes": "true", "on": "true",
+    "false": "false", "0": "false", "no": "false", "off": "false",
+}
 
 
 def _unescape(text: str) -> str:
@@ -154,10 +172,10 @@ def _escape(text: str) -> str:
 def option_text(value) -> str:
     """An option value as the report stores it: always a string.
 
-    A switch is stored as `true` / `false` - the keys of its dropdown in the
-    Options pane - while a hand-edited options file may well say JSON `true`.
-    `str(True)` is "True", which matches no dropdown key and differs from the
-    stored value on every comparison, so a boolean gets its stored spelling.
+    A switch is stored as `true` / `false` - the words a checkbox of the
+    Options pane stores - while a hand-edited options file may well say JSON
+    `true`. `str(True)` is "True", which is not the stored word and differs
+    from it on every comparison, so a boolean gets its stored spelling.
     """
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -171,13 +189,32 @@ def _is_set(value) -> bool:
     return option_text(value).strip() != ""
 
 
+def _boolean_word(text: str) -> Optional[str]:
+    """`true` / `false` for a text that plainly says on or off, else None."""
+    return _BOOLEAN_WORDS.get(text.strip().lower())
+
+
+def _typed_boolean(opening: str, value: re.Match) -> bool:
+    """Whether a parameter is typed as a boolean: by its value element, or by
+    the dataType of its definition."""
+    return value.group("tag") == "Boolean" or bool(_BOOLEAN_TYPE.search(opening))
+
+
 def read_options(content: str) -> dict:
-    """Every hidden parameter of a report, as {label: value}."""
+    """Every hidden parameter of a report, as {label: value}.
+
+    Every value is text. A parameter typed as a boolean gives the word `true`
+    or `false`, the same a string parameter holds for a checkbox, so a saved
+    options file does not depend on which of the two a report uses.
+    """
     found: dict = {}
     for match in _PROMPT.finditer(content):
         label = match.group("label")
-        value = _DEFAULT_STRING.search(match.group("body"))
-        found[label] = _unescape(value.group("value")) if value else ""
+        value = _DEFAULT_VALUE.search(match.group("body"))
+        text = _unescape(value.group("value")) if value else ""
+        if value and _typed_boolean(match.group(1), value):
+            text = _boolean_word(text) or text.strip()
+        found[label] = text
     return found
 
 
@@ -186,6 +223,9 @@ class RestoreResult:
     applied: dict = field(default_factory=dict)
     unchanged: dict = field(default_factory=dict)
     missing: list = field(default_factory=list)
+    #: {label: value} not written because the report types the parameter as a
+    #: boolean and the value says neither on nor off.
+    rejected: dict = field(default_factory=dict)
 
     @property
     def changed(self) -> bool:
@@ -204,6 +244,13 @@ def write_options(content: str, values: dict) -> tuple:
     Values are compared and written in their stored spelling (`option_text`),
     so a switch given as a JSON boolean is `true` / `false` in the report and
     counts as unchanged when the report already says so.
+
+    Only the text of the value element changes; the element stays what the
+    report made it, so a string parameter is never turned into a boolean one
+    or the reverse. A parameter the report types as a boolean gets the word
+    `true` or `false` for any value that plainly says on or off (`1`, `yes`,
+    `True`); a value that says neither is not written and listed in
+    `rejected`. A string parameter gets the value as it is given.
     """
     result = RestoreResult()
     present = read_options(content)
@@ -214,18 +261,25 @@ def write_options(content: str, values: dict) -> tuple:
         if label in NON_PORTABLE or label not in values:
             return match.group(0)
         wanted = option_text(values[label])
+        value = _DEFAULT_VALUE.search(match.group("body"))
+        if value is not None and _typed_boolean(match.group(1), value):
+            word = _boolean_word(wanted)
+            if word is None:
+                result.rejected[label] = wanted
+                return match.group(0)
+            wanted = word
         current = present.get(label, "")
         if current == wanted:
             result.unchanged[label] = wanted
             return match.group(0)
-        body, count = _DEFAULT_STRING.subn(
-            lambda m: m.group(1) + _escape(wanted) + m.group(3),
-            match.group("body"), count=1)
-        if count == 0:
+        if value is None:
             # A parameter with no DefaultValue element: leave it be rather
             # than synthesise one, and say so.
             result.missing.append(label)
             return match.group(0)
+        body = match.group("body")
+        body = (body[:value.start()] + value.group(1) + _escape(wanted) + value.group(4)
+                + body[value.end():])
         result.applied[label] = wanted
         return match.group(1) + body + match.group(4)
 
