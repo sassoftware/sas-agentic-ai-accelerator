@@ -4,12 +4,17 @@
  * viyaHost to window.location.origin). Every request is recorded and exposed
  * at GET /__log for assertions; POST /__reset clears the log.
  *
+ * The RAG kind of the Builder reads the deployed RAG runtime from SAS Content.
+ * The mock serves those files from the repository, which it finds from the
+ * served bundle or the working directory, or is told through MOCK_REPO_ROOT.
+ *
  * The port is MOCK_PORT (default 4173), so several instances can serve
  * several suites at the same time; a suite finds its instance through
  * VERIFY_BASE.
  */
 const http = require('http');
 const fs = require('fs');
+const path = require('path');
 
 const DIST_HTML = process.argv[2];
 const PORT = Number(process.env.MOCK_PORT) || 4173;
@@ -225,12 +230,307 @@ function json(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
 }
+function text(res, status, body, type = 'text/plain; charset=utf-8') {
+  res.writeHead(status, { 'Content-Type': type });
+  res.end(body);
+}
+
+// --- RAG Builder -------------------------------------------------------------
+// The RAG kind of the Builder authors RAG setups: Model Manager models of the
+// function RAG in projects tagged RAG-Engineering. Manifesting one reads the
+// deployed runtime from the content root (the ingestion job, the retrieval
+// probe, the retrieval model template and the custom steps), writes a job
+// definition and a Studio flow into SAS Content and launches Job Execution
+// jobs. Everything below keeps state, so a setup that was saved, manifested
+// and run answers like one afterwards. GET /__ragstate returns that state.
+//
+// The runtime files are served from the REPOSITORY, so a manifest runs
+// against the templates that ship. The mock usually runs as a copy in a
+// scratch folder: the repository is looked for from MOCK_REPO_ROOT, from this
+// file, from the served bundle and from the working directory.
+const RAG_REPO_MARKER = path.join('SAS-Viya-Integrations', 'RAG', 'retrieve_context.py');
+let ragRepoRoot;
+function repoRoot() {
+  if (ragRepoRoot !== undefined) return ragRepoRoot;
+  ragRepoRoot = '';
+  const starts = [process.env.MOCK_REPO_ROOT, __dirname, DIST_HTML && path.dirname(path.resolve(DIST_HTML)), process.cwd()];
+  for (const start of starts.filter(Boolean)) {
+    for (let folder = path.resolve(start); ; folder = path.dirname(folder)) {
+      if (fs.existsSync(path.join(folder, RAG_REPO_MARKER))) { ragRepoRoot = folder; break; }
+      if (path.dirname(folder) === folder) break;
+    }
+    if (ragRepoRoot) break;
+  }
+  if (!ragRepoRoot) console.log('RAG runtime files not found - set MOCK_REPO_ROOT to the repository root');
+  return ragRepoRoot;
+}
+// The files of the content root that a manifest and a retrieval test read.
+const RAG_SOURCES = {
+  'rag-src-ingest': { folder: 'jobs', name: 'Ingest-Documents.sas', file: 'SAS-Viya-Integrations/RAG-Ingestion/Ingest-Documents.sas' },
+  'rag-src-test': { folder: 'jobs', name: 'Test-Retrieval.sas', file: 'SAS-Viya-Integrations/RAG-Ingestion/Test-Retrieval.sas' },
+  'rag-src-retrieve': { folder: 'models', name: 'retrieve_context.py', file: 'SAS-Viya-Integrations/RAG/retrieve_context.py' },
+};
+// The registered custom steps: every "RAG - *.step" of the repository, under
+// an id derived from its name (ragstep-list-documents, ...).
+function ragSteps() {
+  const folder = repoRoot() && path.join(repoRoot(), 'SAS-Viya-Integrations', 'Custom-Steps');
+  if (!folder || !fs.existsSync(folder)) return [];
+  return fs
+    .readdirSync(folder)
+    .filter((name) => /^RAG - .+\.step$/.test(name))
+    .sort()
+    .map((name) => ({
+      name,
+      id: 'ragstep-' + name.replace(/^RAG - |\.step$/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      file: path.join(folder, name),
+    }));
+}
+
+// POST /__norag hides the fixture project (a deployment before its first RAG
+// project), POST /__rag brings it back and clears the failures below.
+let ragFixtures = true;
+// POST /__ragfail arms failures, an empty body clears them all:
+//   { projects: 500 }    the RAG project listing answers that status
+//   { run: 'reason' }    the next ingestion job reports "Ingestion failed: reason"
+//   { retrieval: 'reason' } the next retrieval probe reports "FAILED reason"
+const ragFailures = {};
+const ragProjects = [{ id: 'rag-proj', name: 'RAG Demo Project', createdBy: 'anna', modifiedBy: 'anna' }];
+let ragProjectCount = 0;
+const RAG_SETUP = {
+  version: 1,
+  documentation: {
+    modelPurpose: 'Answer questions about the HR policy handbook.',
+    intendedUse: 'Internal HR assistant; retrieval context for the policy prompt.',
+    expectedBenefit: 'Fewer tickets to HR for questions the handbook already answers.',
+    outOfScopeUseCases: 'Legal advice, individual contract questions.',
+    limitations: 'English documents only; scanned images are skipped.',
+  },
+  artifactsFolder: '/SAS Agentic AI Accelerator/RAG/generated',
+  source: { path: 'sasserver:/mnt/data/policies', includeCode: false },
+  extraction: { extractor: '' },
+  chunking: { chunker: 'recursive', inputTokenLimit: 256, overlapTokens: 30 },
+  embedding: { model: 'bge_small_en_v15', dims: 384, deploymentType: 'k8s', scrEndpoint: '' },
+  store: { backend: 'pgvector', host: 'pg.mock.local', port: 5432, database: 'ragdb', sslmode: 'prefer', collection: 'policy_handbook' },
+  tables: { prefix: 'RAGDEMO', caslib: 'Public' },
+  pipelineVersion: 'v1',
+  credentialDomain: 'agentic-ai-keys',
+  policies: { deletedPolicy: 'retire', retainDays: 0, recordHistory: true, embedReplicas: 1, persistElements: true, persistChunks: true },
+  job: { definitionUri: '/jobDefinitions/definitions/ragjob-1' },
+};
+// A corpus built on SingleStore, for a deployment that has since withheld that
+// store (enable_singlestore=0): the setup must keep naming it.
+const RAG_SETUP_SINGLESTORE = {
+  ...RAG_SETUP,
+  documentation: { ...RAG_SETUP.documentation, modelPurpose: 'Answer questions about the legacy product manuals.' },
+  source: { path: 'sascontent:/Public/Legacy Manuals', includeCode: false },
+  store: { backend: 'singlestore', host: 's2.mock.local', port: 3306, database: 'ragdb_legacy', sslmode: 'prefer', collection: 'legacy_manuals' },
+  tables: { prefix: 'RAGLEGACY', caslib: 'Public' },
+  job: { definitionUri: '/jobDefinitions/definitions/ragjob-2' },
+};
+const ragSetupModel = (id, name, createdBy, modifiedBy, extra) => ({
+  id, name, projectId: 'rag-proj', function: 'RAG', algorithm: 'RAG',
+  tool: 'SAS Agentic AI Accelerator RAG Builder', modeler: createdBy, createdBy, modifiedBy, ...extra,
+});
+// The fixture setups. rag-setup-2 was created and never saved: it carries no
+// rag-setup.json, only documentation written onto the model.
+const ragModels = {
+  'rag-setup-1': ragSetupModel('rag-setup-1', 'Policy Handbook', 'anna', 'ben', {
+    tags: ['LLM', 'RAG', 'bge_small_en_v15', 'pgvector'],
+    modelPurpose: RAG_SETUP.documentation.modelPurpose,
+  }),
+  'rag-setup-2': ragSetupModel('rag-setup-2', 'Empty Setup', 'ben', 'ben', {
+    tags: ['LLM', 'RAG'],
+    modelPurpose: 'Documented before anything else was decided.',
+  }),
+  'rag-setup-ss': ragSetupModel('rag-setup-ss', 'Legacy Manuals', 'carla', 'carla', {
+    tags: ['LLM', 'RAG', 'bge_small_en_v15', 'singlestore'],
+    modelPurpose: RAG_SETUP_SINGLESTORE.documentation.modelPurpose,
+  }),
+};
+const ragModelRevisions = {};
+const ragModelEtag = (id) => `"rag-${id}-${ragModelRevisions[id] || 1}"`;
+// A RAG setup is a fixture above or a model created with the function RAG.
+const findRagModel = (id) =>
+  ragModels[id] || createdModels.find((model) => model.id === id && model.function === 'RAG');
+// The files on each setup model: modelId -> [{ id, name, role, type, body }].
+const ragContents = {};
+let ragContentCount = 0;
+function putRagContent(modelId, name, body, role, type) {
+  const items = ragContents[modelId] || (ragContents[modelId] = []);
+  let item = items.find((candidate) => candidate.name === name);
+  if (!item) {
+    item = { id: `ragc-${++ragContentCount}`, name };
+    items.push(item);
+  }
+  Object.assign(item, { body, role, type });
+  return item;
+}
+const ragContentView = (item) => ({ id: item.id, name: item.name, role: item.role, fileUri: `/files/files/${item.id}` });
+putRagContent('rag-setup-1', 'rag-setup.json', JSON.stringify(RAG_SETUP), 'documentation', 'application/json');
+putRagContent('rag-setup-1', 'pipeline.yaml', 'version: 1\n', 'documentation', 'text/plain');
+putRagContent('rag-setup-ss', 'rag-setup.json', JSON.stringify(RAG_SETUP_SINGLESTORE), 'documentation', 'application/json');
+// One uploaded file out of a multipart body, cut at the boundary so a file
+// that itself holds a line starting with two dashes stays whole.
+function multipartFile(rawBody) {
+  const boundary = (/^(--[^\r\n]+)\r\n/.exec(rawBody) || [])[1];
+  const head = /Content-Disposition: form-data; name="[^"]*"; filename="([^"]*)"\r\n(?:Content-Type: ([^\r\n]*)\r\n)?\r\n/.exec(rawBody);
+  if (!boundary || !head) return null;
+  const start = head.index + head[0].length;
+  const end = rawBody.indexOf('\r\n' + boundary, start);
+  return { name: head[1], type: head[2] || '', body: rawBody.slice(start, end < 0 ? undefined : end) };
+}
+
+// SAS Content below the content root. jobs, models and steps list the runtime
+// files; every other folder lists what was created in it. The folder that
+// receives the generated artifacts (<content root>/generated by default) does
+// not exist until a manifest creates it.
+const RAG_CONTENT_ROOT = '/SAS Agentic AI Accelerator/RAG';
+const ragFolders = {};
+let ragFolderCount = 0;
+function addRagFolder(folderPath, id) {
+  const folder = { id: id || `rag-folder-new-${++ragFolderCount}`, name: folderPath.split('/').pop(), path: folderPath, members: [] };
+  ragFolders[folderPath] = folder;
+  return folder;
+}
+addRagFolder('/SAS Agentic AI Accelerator', 'rag-folder-root');
+addRagFolder(RAG_CONTENT_ROOT, 'rag-folder-content');
+['jobs', 'models', 'steps', 'rag_core'].forEach((name) => addRagFolder(`${RAG_CONTENT_ROOT}/${name}`, `rag-folder-${name}`));
+addRagFolder('/Public', 'folder-public');
+const ragFolderById = (id) => Object.values(ragFolders).find((folder) => folder.id === id);
+function ragFolderMembers(folder) {
+  const kind = folder.path.startsWith(RAG_CONTENT_ROOT + '/') ? folder.path.slice(RAG_CONTENT_ROOT.length + 1) : '';
+  if (kind === 'steps') {
+    return ragSteps().map((step) => ({ name: step.name, uri: `/dataFlows/steps/${step.id}`, contentType: 'dataFlowStep' }));
+  }
+  if (kind === 'jobs' || kind === 'models') {
+    return Object.entries(RAG_SOURCES)
+      .filter(([, source]) => source.folder === kind)
+      .map(([id, source]) => ({ name: source.name, uri: `/files/files/${id}`, contentType: 'file' }));
+  }
+  return folder.members;
+}
+const dropRagMember = (uri) =>
+  Object.values(ragFolders).forEach((folder) => {
+    folder.members = folder.members.filter((member) => member.uri !== uri);
+  });
+
+// Job definitions (the generated ingestion job, the transient retrieval probe)
+// and Studio flows. The two fixture definitions belong to the fixture setups.
+const ragJobDefinitions = {};
+let ragJobDefinitionCount = 0;
+['ragjob-1', 'ragjob-2'].forEach((id, index) => {
+  ragJobDefinitions[id] = {
+    revision: 1,
+    folderId: null,
+    body: {
+      id, name: `RAG Ingest - ${index === 0 ? 'Policy Handbook' : 'Legacy Manuals'}`, type: 'Compute',
+      code: '/* generated by an earlier manifest */',
+      parameters: [{ version: 1, name: 'sourcePath', defaultValue: '', type: 'character', required: false }],
+    },
+  };
+});
+const ragJobDefinitionEtag = (id) => `"ragjobdef-${id}-${ragJobDefinitions[id].revision}"`;
+const ragFlows = {};
+let ragFlowCount = 0;
+
+// Jobs. An ingestion run and a retrieval probe both report "running" on the
+// first poll and "completed" from the second on - like the real jobs, which
+// always complete and say in the log how it went. While a job runs its log is
+// read from the compute session; afterwards from the log file.
+const ragJobs = {};
+let ragJobCount = 0;
+const RAG_HITS = [
+  { rank: 1, score: 0.8731, distance: 0.1269, source: '/mnt/data/policies/leave.pdf', heading: 'Leave > Annual leave', header: '', page: 3,
+    content: 'Employees accrue 2.5 days of annual leave per month & may carry over up to 50% of the unused days into the next year, provided the request is filed before the end of December and approved by the line manager. Days that are carried over have to be taken by the end of March.' },
+  { rank: 2, score: 0.8112, distance: 0.1888, source: '/mnt/data/policies/leave.pdf', heading: 'Leave > Sick leave', header: '', page: 5,
+    content: 'A medical certificate is required from the third day of absence.' },
+  { rank: 3, score: 0.7405, distance: 0.2595, source: '/mnt/data/policies/travel.docx', heading: 'Travel > Booking', header: '', page: null,
+    content: 'Trips are booked through the travel portal at least fourteen days ahead.' },
+  { rank: 4, score: 0.6933, distance: 0.3067, source: '/mnt/data/policies/travel.docx', heading: 'Travel > Expenses', header: '', page: null,
+    content: 'Receipts are submitted within thirty days of the return date.' },
+];
+// The milestones a job has logged so far (SAS.logMessage lines, without the
+// NOTE prefix). They echo the launch arguments, so a suite can tell that the
+// values of the setup reached the job.
+function ragJobMessages(job) {
+  const args = job.args;
+  if (job.kind === 'retrieval') {
+    const lines = ['RAGRETRIEVE rag_core bootstrapped (31 files)'];
+    if (job.polls < 2) return lines;
+    if (job.failure) return [...lines, `RAGRETRIEVE FAILED ${job.failure}`];
+    const hits = RAG_HITS.slice(0, Math.max(0, Number(args.topK) || 5));
+    return [
+      ...lines,
+      // Like the probe, each hit is one JSON document in which % and & travel
+      // as their JSON escapes, so no log line carries a SAS macro trigger.
+      ...hits.map((hit) => 'RAGRETRIEVE ROW ' + JSON.stringify(hit).replace(/%/g, '\\u0025').replace(/&/g, '\\u0026')),
+      `RAGRETRIEVE rag cost: 1 call to ${args.embedModel}, 12 tokens, about 0.0000002 USD`,
+      `RAGRETRIEVE DONE ${hits.length} row(s) for '${args.question}' from collection ${args.collection}`,
+    ];
+  }
+  const lines = [
+    'RAGINGEST rag_core bootstrapped (31 files)',
+    `RAGINGEST run ${job.id}: ledger has 0 documents, config 5f2c9a1e`,
+    `RAGINGEST connected: ${args.backend} + ${args.embedModel} (384 dims)`,
+  ];
+  if (job.polls < 2) return lines;
+  if (job.failure) return [...lines, `RAGINGEST Ingestion failed: ${job.failure}`];
+  // The last line is the job's summary: the chunk total and one count per
+  // ledger status, for the ledger rows this run publishes (see ragLedgerRows).
+  return [
+    ...lines,
+    `RAGINGEST source: ${args.sourcePath} (3 files)`,
+    `RAGINGEST collection ${args.collection}: 23 chunks; documents ingested=2, skipped=1`,
+  ];
+}
+// A SAS log wraps at its line size: a long milestone continues on unprefixed
+// lines, broken after a blank. The echo of the %put that wrote it comes first.
+function ragLogLines(messages) {
+  const lines = [{ type: 'note', line: 'NOTE: PROC PYTHON started.' }];
+  messages.forEach((message, index) => {
+    lines.push({ type: 'source', line: `${200 + index}  %put NOTE: Python-Subprocess - ${message.slice(0, 60)};` });
+    let rest = `NOTE: Python-Subprocess - ${message}`;
+    while (rest.length > 132) {
+      const cut = rest.lastIndexOf(' ', 131) + 1 || 132;
+      lines.push({ type: 'note', line: rest.slice(0, cut) });
+      rest = rest.slice(cut);
+    }
+    lines.push({ type: 'note', line: rest });
+  });
+  return lines;
+}
+// The promoted ledger tables: the fixture's, and that of every setup whose
+// ingestion has completed since. The fixture's third document FAILED in its
+// run; a run of the mock skips it instead, because the Builder reads a
+// summary that counts a failed document as a run that did not succeed.
+const RAG_LEDGER_COLUMNS = ['doc_id', 'source_uri', 'status', 'chunk_count', 'error_text', 'run_id', 'updated_at'];
+const ragLedgerRows = (runId, thirdStatus) => [
+  { cells: ['d-001', '/mnt/data/policies/leave.pdf', 'ingested', 14, '', runId, '2026-10-01T08:00:00Z'] },
+  { cells: ['d-002', '/mnt/data/policies/travel.docx', 'ingested', 9, '', runId, '2026-10-01T08:00:04Z'] },
+  { cells: ['d-003', '/mnt/data/policies/scan.tiff', thirdStatus, 0, 'No extractor for .tiff', runId, '2026-10-01T08:00:05Z'] },
+];
+const ragLedgers = { 'Public/RAGDEMO_LEDGER': ragLedgerRows('run-3', 'failed') };
+// A manifested prompt with output parsing, as the enrichment stage reads it:
+// the signature names its inputs, the docstring its outputs.
+const RAG_ENRICH_SCORE_CODE = [
+  'import requests',
+  '',
+  'def scoreModel(chunk, document):',
+  '    "Output: context_header, topic, run_time"',
+  '    llm = "demo_llm"',
+  '    return "", "", 0.0',
+  '',
+].join('\n');
 
 http
   .createServer((req, res) => {
-    let raw = '';
-    req.on('data', (c) => (raw += c));
+    // Decoded once, from the whole body: decoding chunk by chunk would break a
+    // character whose bytes arrive in two chunks, and the uploads a suite
+    // compares byte for byte (job sources, score code) are not pure ASCII.
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
     req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
       const u = new URL(req.url, 'http://localhost');
       const p = u.pathname;
       if (p !== '/__log' && p !== '/__reset') {
@@ -251,6 +551,290 @@ http
       // The decision fixtures live in a second project that only exists once a
       // suite asks for it, so the regression suite's project counts stay put.
       if (p === '/__decision') { decisionProject = true; return json(res, 200, {}); }
+
+      // ===== RAG Builder =======================================================
+      // These routes come first: the RAG project listing is the projects route
+      // with another tag filter, a RAG setup is a model like a prompt-test,
+      // and its jobs share /jobExecution with the optimization job.
+      if (p === '/__norag') { ragFixtures = false; return json(res, 200, {}); }
+      if (p === '/__rag') {
+        ragFixtures = true;
+        Object.keys(ragFailures).forEach((name) => delete ragFailures[name]);
+        return json(res, 200, {});
+      }
+      if (p === '/__ragfail') {
+        let body = {};
+        try { body = JSON.parse(raw); } catch {}
+        if (!Object.keys(body).length) Object.keys(ragFailures).forEach((name) => delete ragFailures[name]);
+        Object.entries(body).forEach(([name, value]) => {
+          if (value) ragFailures[name] = value;
+          else delete ragFailures[name];
+        });
+        return json(res, 200, ragFailures);
+      }
+      if (p === '/__ragstate') {
+        return json(res, 200, {
+          projects: ragProjects,
+          models: [...Object.values(ragModels), ...createdModels.filter((model) => model.function === 'RAG')],
+          contents: Object.fromEntries(Object.entries(ragContents).map(([id, items]) => [id, items.map((item) => item.name)])),
+          folders: Object.values(ragFolders).map((folder) => ({ id: folder.id, path: folder.path, members: ragFolderMembers(folder) })),
+          jobDefinitions: Object.values(ragJobDefinitions).map((definition) => ({ ...definition.body, folderId: definition.folderId })),
+          flows: Object.values(ragFlows),
+          jobs: Object.values(ragJobs),
+          ledgers: Object.keys(ragLedgers),
+        });
+      }
+      if (p === '/favicon.ico') { res.writeHead(204); return res.end(); }
+
+      // -- SAS Model Manager: projects, setups and what a setup lists -----------
+      if (p === '/modelRepository/projects' && req.method === 'GET' &&
+          (u.searchParams.get('filter') || '').includes('RAG-Engineering')) {
+        if (ragFailures.projects) return json(res, Number(ragFailures.projects), { message: 'the model repository does not answer' });
+        return json(res, 200, { items: ragProjects.filter((project) => ragFixtures || project.id !== 'rag-proj') });
+      }
+      if (p === '/modelRepository/projects' && req.method === 'POST') {
+        let body = {};
+        try { body = JSON.parse(raw); } catch {}
+        if ((body.tags || []).includes('RAG-Engineering')) {
+          const project = {
+            id: `rag-proj-new-${++ragProjectCount}`, name: body.name || 'New RAG Project', description: body.description || '',
+            function: body.function, tags: body.tags, createdBy: 'tester', modifiedBy: 'tester',
+          };
+          ragProjects.push(project);
+          return json(res, 201, project);
+        }
+      }
+      const ragProjectRoute = /^\/modelRepository\/projects\/([^/]+)(\/models)?$/.exec(p);
+      const ragProject = ragProjectRoute && ragProjects.find((project) => project.id === ragProjectRoute[1]);
+      if (ragProject && ragProjectRoute[2] && req.method === 'GET') {
+        return json(res, 200, {
+          items: [
+            ...Object.values(ragModels).filter((model) => model.projectId === ragProject.id),
+            ...createdModelsFor(ragProject.id, u.searchParams.get('filter') || ''),
+          ],
+        });
+      }
+      if (ragProject && !ragProjectRoute[2] && req.method === 'DELETE') {
+        ragProjects.splice(ragProjects.indexOf(ragProject), 1);
+        res.writeHead(204);
+        return res.end();
+      }
+      // The registered embedding models (embeddingProjectID=emb-proj). One name
+      // is outside the shipped fact sheet, so its dimension stays editable.
+      if (p === '/modelRepository/projects/emb-proj/models') {
+        return json(res, 200, { items: [
+          { id: 'emb-1', name: 'bge_small_en_v15' },
+          { id: 'emb-2', name: 'text_embedding_3_small' },
+          { id: 'emb-3', name: 'custom_embedder' },
+        ] });
+      }
+      // The enrichment stage lists the prompts manifested with output parsing
+      // across ALL projects in one request; each item carries its project.
+      if (p === '/modelRepository/models' && req.method === 'GET') {
+        const filter = u.searchParams.get('filter') || '';
+        return json(res, 200, { items: filter.includes('Output-Parsing')
+          ? [{ id: 'model-parse', name: 'Summarise Chunk', projectId: 'proj-1', projectName: 'Demo Project' }]
+          : [] });
+      }
+      if (p === '/modelRepository/models/model-parse/modelVersions' && req.method === 'GET') {
+        return json(res, 200, { items: [
+          { id: 'ver-1', modelVersionName: '1.0', creationTimeStamp: '2026-08-01T10:00:00Z' },
+          { id: 'ver-2', modelVersionName: '1.1', creationTimeStamp: '2026-08-05T10:00:00Z' },
+        ] });
+      }
+      if (p === '/modelRepository/models/model-parse/contents' && req.method === 'GET') {
+        return json(res, 200, { items: [{ id: 'c-parse', name: 'Summarise_Chunk.py', role: 'score', fileUri: '/files/files/parse-score' }] });
+      }
+      if (p === '/files/files/parse-score/content') return text(res, 200, RAG_ENRICH_SCORE_CODE);
+
+      // A setup's files are kept as uploaded, so a saved setup reopens with
+      // what was saved. A fixture setup also keeps its own attributes and tags
+      // (ETag-guarded); a created one does that through the routes for created
+      // models further down.
+      const ragModelRoute = /^\/modelRepository\/models\/([^/]+)(?:\/(contents)(?:\/([^/]+))?)?$/.exec(p);
+      const ragModel = ragModelRoute && findRagModel(ragModelRoute[1]);
+      if (ragModel) {
+        const [, modelId, contents, contentId] = ragModelRoute;
+        const items = ragContents[modelId] || [];
+        if (contents && !contentId && req.method === 'GET') return json(res, 200, { items: items.map(ragContentView) });
+        if (contents && !contentId && req.method === 'POST') {
+          const file = multipartFile(raw);
+          if (!file) return json(res, 400, { message: 'no file in the request' });
+          const item = putRagContent(modelId, file.name, file.body, u.searchParams.get('role') || '', file.type);
+          return json(res, 201, { items: [ragContentView(item)] });
+        }
+        if (contents && contentId && req.method === 'DELETE') {
+          ragContents[modelId] = items.filter((item) => item.id !== contentId);
+          res.writeHead(204);
+          return res.end();
+        }
+        if (!contents && ragModels[modelId]) {
+          if (req.method === 'GET') {
+            res.writeHead(200, { 'Content-Type': 'application/json', ETag: ragModelEtag(modelId) });
+            return res.end(JSON.stringify(ragModel));
+          }
+          if (req.method === 'PUT') {
+            if (req.headers['if-match'] !== ragModelEtag(modelId)) return json(res, 412, { message: 'the model changed since it was read' });
+            try { Object.assign(ragModel, JSON.parse(raw), { id: modelId }); } catch {}
+            ragModelRevisions[modelId] = (ragModelRevisions[modelId] || 1) + 1;
+            res.writeHead(200, { 'Content-Type': 'application/json', ETag: ragModelEtag(modelId) });
+            return res.end(JSON.stringify(ragModel));
+          }
+          if (req.method === 'DELETE') {
+            delete ragModels[modelId];
+            res.writeHead(204);
+            return res.end();
+          }
+        }
+      }
+      const ragFile = /^\/files\/files\/(ragc-\d+)\/content$/.exec(p);
+      if (ragFile) {
+        const item = Object.values(ragContents).flat().find((candidate) => candidate.id === ragFile[1]);
+        if (!item) return json(res, 404, { message: 'no such file' });
+        return text(res, 200, item.body, item.type || 'application/octet-stream');
+      }
+
+      // -- SAS Content: the deployed runtime and the generated artifacts ---------
+      const ragSource = /^\/files\/files\/(rag-src-[a-z]+)\/content$/.exec(p);
+      if (ragSource && RAG_SOURCES[ragSource[1]]) {
+        if (!repoRoot()) return json(res, 404, { message: 'the repository was not found - set MOCK_REPO_ROOT' });
+        return text(res, 200, fs.readFileSync(path.join(repoRoot(), RAG_SOURCES[ragSource[1]].file)));
+      }
+      if (p === '/folders/folders/@item') {
+        const folder = ragFolders[(u.searchParams.get('path') || '').replace(/\/+$/, '')];
+        if (folder) return json(res, 200, { id: folder.id, name: folder.name, uri: `/folders/folders/${folder.id}` });
+      }
+      const ragMembersRoute = /^\/folders\/folders\/([^/]+)\/members$/.exec(p);
+      if (ragMembersRoute && ragFolderById(ragMembersRoute[1])) {
+        return json(res, 200, { items: ragFolderMembers(ragFolderById(ragMembersRoute[1])) });
+      }
+      if (p === '/folders/folders' && req.method === 'POST') {
+        const parent = ragFolderById((u.searchParams.get('parentFolderUri') || '').split('/').pop());
+        let body = {};
+        try { body = JSON.parse(raw); } catch {}
+        if (!parent || !body.name) return json(res, 404, { message: 'no such parent folder' });
+        const folder = addRagFolder(`${parent.path}/${body.name}`);
+        parent.members.push({ name: folder.name, uri: `/folders/folders/${folder.id}`, contentType: 'folder' });
+        return json(res, 201, { id: folder.id, name: folder.name, uri: `/folders/folders/${folder.id}` });
+      }
+      const ragStepRoute = /^\/dataFlows\/steps\/([^/]+)$/.exec(p);
+      if (ragStepRoute) {
+        const step = ragSteps().find((candidate) => candidate.id === ragStepRoute[1]);
+        if (!step) return json(res, 404, { message: 'no such step' });
+        return json(res, 200, { ...JSON.parse(fs.readFileSync(step.file, 'utf8')), id: step.id });
+      }
+      if (p === '/dataFlows/dataFlows' && req.method === 'POST') {
+        const parent = ragFolderById((u.searchParams.get('parentFolderUri') || '').split('/').pop());
+        let body = null;
+        try { body = JSON.parse(raw); } catch {}
+        if (!parent || !body) return json(res, 400, { message: 'a flow needs a parent folder and a body' });
+        const flow = { ...body, id: `ragflow-${++ragFlowCount}`, folderId: parent.id };
+        ragFlows[flow.id] = flow;
+        parent.members.push({ name: flow.name, uri: `/dataFlows/dataFlows/${flow.id}`, contentType: 'dataFlow' });
+        return json(res, 201, { id: flow.id, name: flow.name });
+      }
+      const ragFlowRoute = /^\/dataFlows\/dataFlows\/([^/]+)$/.exec(p);
+      if (ragFlowRoute && ragFlows[ragFlowRoute[1]]) {
+        if (req.method === 'GET') return json(res, 200, ragFlows[ragFlowRoute[1]]);
+        if (req.method === 'DELETE') {
+          delete ragFlows[ragFlowRoute[1]];
+          dropRagMember(p);
+          res.writeHead(204);
+          return res.end();
+        }
+      }
+      // Without a parent folder a definition is unfiled: it exists and can be
+      // launched, and no folder lists it (the transient retrieval probe).
+      if (p === '/jobDefinitions/definitions' && req.method === 'POST') {
+        let body = null;
+        try { body = JSON.parse(raw); } catch {}
+        const parentUri = u.searchParams.get('parentFolderUri');
+        const parent = parentUri ? ragFolderById(parentUri.split('/').pop()) : null;
+        if (!body || (parentUri && !parent)) return json(res, 400, { message: 'a definition needs a body and, when filed, an existing folder' });
+        const id = `ragjobdef-${++ragJobDefinitionCount}`;
+        ragJobDefinitions[id] = { revision: 1, folderId: parent ? parent.id : null, body: { ...body, id } };
+        if (parent) parent.members.push({ name: body.name, uri: `/jobDefinitions/definitions/${id}`, contentType: 'jobDefinition' });
+        res.writeHead(201, { 'Content-Type': 'application/vnd.sas.job.definition+json', ETag: ragJobDefinitionEtag(id) });
+        return res.end(JSON.stringify(ragJobDefinitions[id].body));
+      }
+      const ragDefinitionRoute = /^\/jobDefinitions\/definitions\/([^/]+)$/.exec(p);
+      if (ragDefinitionRoute) {
+        const id = ragDefinitionRoute[1];
+        const definition = ragJobDefinitions[id];
+        if (!definition) return json(res, 404, { message: 'no such job definition' });
+        if (req.method === 'PUT') {
+          if (req.headers['if-match'] !== ragJobDefinitionEtag(id)) return json(res, 412, { message: 'the definition changed since it was read' });
+          try { definition.body = { ...JSON.parse(raw), id }; } catch {}
+          definition.revision += 1;
+        }
+        if (req.method === 'DELETE') {
+          delete ragJobDefinitions[id];
+          dropRagMember(p);
+          res.writeHead(204);
+          return res.end();
+        }
+        res.writeHead(200, { 'Content-Type': 'application/vnd.sas.job.definition+json', ETag: ragJobDefinitionEtag(id) });
+        return res.end(JSON.stringify(definition.body));
+      }
+
+      // -- Job Execution: the ingestion run and the retrieval probe --------------
+      if (p === '/jobExecution/jobs' && req.method === 'POST') {
+        let request = {};
+        try { request = JSON.parse(raw); } catch {}
+        const definition = ragJobDefinitions[String(request.jobDefinitionUri || '').split('/').pop()];
+        if (definition) {
+          // A probe is the definition that takes a question.
+          const kind = (definition.body.parameters || []).some((parameter) => parameter.name === 'question') ? 'retrieval' : 'ingestion';
+          const id = `${kind === 'retrieval' ? 'ragtest' : 'ragrun'}-${++ragJobCount}`;
+          const armed = kind === 'retrieval' ? 'retrieval' : 'run';
+          ragJobs[id] = { id, kind, name: request.name, definitionId: definition.body.id, args: request.arguments || {}, polls: 0, failure: ragFailures[armed] || '' };
+          delete ragFailures[armed];
+          return json(res, 201, { id, state: 'pending' });
+        }
+      }
+      const ragJobRoute = /^\/jobExecution\/jobs\/(rag(?:run|test)-\d+)$/.exec(p);
+      if (ragJobRoute && ragJobs[ragJobRoute[1]] && req.method === 'GET') {
+        const job = ragJobs[ragJobRoute[1]];
+        job.polls += 1;
+        if (job.polls < 2) {
+          return json(res, 200, { id: job.id, state: 'running', results: { COMPUTE_SESSION: `rag-cs-${job.id} (${job.args._contextName || ''})`, COMPUTE_JOB: `rag-cj-${job.id}` } });
+        }
+        if (job.kind === 'ingestion' && !job.failure) {
+          ragLedgers[`${job.args.ledgerCaslib}/${job.args.ledgerTable}`] = ragLedgerRows(job.id, 'skipped');
+        }
+        return json(res, 200, { id: job.id, state: 'completed', logLocation: `/files/files/raglog-${job.id}` });
+      }
+      // The live log: plain text, as a compute server returns it; gone with
+      // the session once the job has ended.
+      const ragLiveLog = /^\/compute\/sessions\/rag-cs-(rag(?:run|test)-\d+)\/jobs\/[^/]+\/log\/content$/.exec(p);
+      if (ragLiveLog) {
+        const job = ragJobs[ragLiveLog[1]];
+        if (!job || job.polls >= 2) return json(res, 404, { message: 'session not found' });
+        return text(res, 200, ragLogLines(ragJobMessages(job)).map((entry) => entry.line).join('\r\n'));
+      }
+      const ragLogFile = /^\/files\/files\/raglog-(rag(?:run|test)-\d+)\/content$/.exec(p);
+      if (ragLogFile && ragJobs[ragLogFile[1]]) {
+        return json(res, 200, {
+          version: 2,
+          name: 'items',
+          accept: 'application/vnd.sas.compute.log.line',
+          items: [...ragLogLines(ragJobMessages(ragJobs[ragLogFile[1]])), { type: 'note', line: 'NOTE: PROC PYTHON ended.' }]
+            .map((entry) => ({ version: 1, ...entry })),
+        });
+      }
+      if (p === '/compute/contexts') return json(res, 200, { items: [] });
+
+      // -- CAS: the promoted ledger (columns and rows are two services) ----------
+      const ragLedgerRoute = /^\/(casManagement|casRowSets)\/servers\/cas-shared-default\/caslibs\/([^/]+)\/tables\/([^/]+_LEDGER)\/(columns|rows)$/.exec(p);
+      if (ragLedgerRoute) {
+        const rows = ragLedgers[`${decodeURIComponent(ragLedgerRoute[2])}/${decodeURIComponent(ragLedgerRoute[3])}`];
+        if (!rows) return json(res, 404, { message: 'table not found' });
+        if (ragLedgerRoute[1] === 'casManagement' && ragLedgerRoute[4] === 'columns') {
+          return json(res, 200, { items: RAG_LEDGER_COLUMNS.map((name) => ({ name })) });
+        }
+        if (ragLedgerRoute[1] === 'casRowSets' && ragLedgerRoute[4] === 'rows') return json(res, 200, { items: rows });
+      }
+      // ===== end of the RAG Builder routes =======================================
 
       if (p === '/' || p === '/index.html') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -323,7 +907,12 @@ http
       if (p === '/modelRepository/projects/proj-2/models') {
         return json(res, 200, {
           items: [
-            { id: 'model-dec', name: 'Ticket Routing', createdBy: 'anna', modifiedBy: 'anna' },
+            // A listing item carries the model's algorithm and tags, which is
+            // how the Builder tells a decision template from an LLM prompt.
+            {
+              id: 'model-dec', name: 'Ticket Routing', createdBy: 'anna', modifiedBy: 'anna',
+              algorithm: 'Decision-Template', tags: ['Decision', 'Prompt-Template', 'Decision-Template'],
+            },
             ...createdModelsFor('proj-2', u.searchParams.get('filter') || ''),
           ],
         });
@@ -400,26 +989,37 @@ http
       // The single credential domain: one secrets map, entries named per
       // provider. OpenAI has a key; Anthropic deliberately has none, so with
       // credentialDomain configured the model needing it renders disabled.
+      // The same domain says who may reach a vector store (<BACKEND>_RAG_USER
+      // and _RAG_PW) and where it lives (<BACKEND>_HOST, _PORT, _DB): pgvector
+      // is complete here, SingleStore is absent - so the RAG Builder offers it
+      // disabled, as a store this user holds no credential for.
+      const encoded = (entries) =>
+        Object.fromEntries(Object.entries(entries).map(([name, value]) => [name, Buffer.from(value).toString('base64')]));
+      const pgvectorEntries = {
+        PGVECTOR_RAG_USER: 'rag_ingest', PGVECTOR_RAG_PW: 'mock-db-pw',
+        PGVECTOR_HOST: 'pg.mock.local', PGVECTOR_PORT: '5432', PGVECTOR_DB: 'ragdb',
+      };
       if (p === '/credentials/domains/agentic-ai-keys/secrets') {
         return json(res, 200, {
           domainId: 'agentic-ai-keys',
-          secrets: {
-            OpenAI: Buffer.from('sk-mock-openai-key').toString('base64'),
-            PGVECTOR_RAG_USER: Buffer.from('rag_ingest').toString('base64'),
-            PGVECTOR_RAG_PW: Buffer.from('mock-db-pw').toString('base64'),
-          },
+          secrets: encoded({ OpenAI: 'sk-mock-openai-key', ...pgvectorEntries }),
         });
       }
-      // A second domain with a key for every provider of the fixtures, so a
-      // suite that needs all three LLMs selectable opens the app with
-      // credentialDomain=all-keys.
+      // A second domain with a key for every provider of the fixtures and the
+      // entries of both vector stores, so a suite that needs all three LLMs
+      // selectable, or SingleStore reachable, opens the app with
+      // credentialDomain=all-keys. SingleStore carries no port: the store's
+      // default applies.
       if (p === '/credentials/domains/all-keys/secrets') {
         return json(res, 200, {
           domainId: 'all-keys',
-          secrets: {
-            OpenAI: Buffer.from('sk-mock-openai-key').toString('base64'),
-            Anthropic: Buffer.from('sk-mock-anthropic-key').toString('base64'),
-          },
+          secrets: encoded({
+            OpenAI: 'sk-mock-openai-key',
+            Anthropic: 'sk-mock-anthropic-key',
+            ...pgvectorEntries,
+            SINGLESTORE_RAG_USER: 'rag_ingest', SINGLESTORE_RAG_PW: 'mock-s2-pw',
+            SINGLESTORE_HOST: 's2.mock.local', SINGLESTORE_DB: 'ragdb_legacy',
+          }),
         });
       }
       if (p.startsWith('/credentials/domains/') && p.endsWith('/secrets')) {
