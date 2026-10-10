@@ -386,8 +386,15 @@ LEGACY_OBJECTS = tuple(
     + [("jobDefinition", "RAG-Builder-UI")])
 
 #: What a shipped Prompt Builder report must hold in every copy: no ids of the
-#: exporting environment, the optional parts off, the default part on, and the
-#: vector-store TLS mode the documentation names.
+#: exporting environment, the optional parts off, the default part on, the
+#: vector-store TLS mode the documentation names, and for every other option
+#: an exporting site is likely to have tuned the default the UI and the
+#: documentation name. `modelCardReportURI` is a report id of the exporting
+#: site written as a relative URI, which the host check cannot see.
+#:
+#: Not listed: `viyaHost` and `SCREndpoint` (the host check owns them), and
+#: `computeContext` / `ragComputeContext`, whose shipped value is decided when
+#: the report is saved with the merged UI.
 NEUTRAL_DEFAULTS = {
     "modelRepositoryID": "",
     "llmProjectID": "",
@@ -396,6 +403,13 @@ NEUTRAL_DEFAULTS = {
     "enableOptimization": "false",
     "enableRag": "false",
     "storeSslmode": "prefer",
+    "judgeModel": "",
+    "modelCardReportURI": "",
+    "minOptimizeSamples": "30",
+    "deploymentType": "k8s",
+    "credentialDomain": "agentic-ai-keys",
+    "contentRoot": "/SAS Agentic AI Accelerator/RAG",
+    "casServer": "cas-shared-default",
 }
 
 #: Where the runtime package's content lives in the repository, by the folder

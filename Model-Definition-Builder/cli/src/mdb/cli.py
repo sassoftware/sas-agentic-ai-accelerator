@@ -1250,7 +1250,9 @@ def options_restore(
     keeps its new layout, data items and objects, and gets this deployment's
     configuration back. An option the report does not have is reported rather
     than inserted - that usually means it was renamed or dropped between
-    versions, which is worth knowing.
+    versions, which is worth knowing. When the report lacks an option this
+    release's report has, the report is an older one: everything else is
+    still written, and the command ends with exit code 1.
 
     A file saved with 2.2.x holds a second section, "RAG Builder", for the
     report of that name that is retired. It is folded into the Prompt Builder
@@ -1279,6 +1281,8 @@ def options_restore(
     with _viya_session() as session:
         failures = _restore_options(session, saved, dry_run, _site_host())
     if failures:
+        console.print(f"[red]Not every option {'would be' if dry_run else 'was'} restored.[/red] {file} "
+                      "still holds all of them: fix what is reported above and run the command again.")
         raise typer.Exit(1)
 
 
@@ -1326,7 +1330,15 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
                      arriving: Optional[dict] = None) -> int:
     """Write the saved option values back into the named reports and point
     every remaining placeholder host at `host`; returns the number of reports
-    that could not be written. Shared by options-restore and builders-import.
+    that could not be written, or not in full. Shared by options-restore and
+    builders-import.
+
+    A label the report lacks is named and not written. When it is an option
+    of the merged report (MERGED_REPORT_LABELS) the report is an older one
+    than the values were saved for, and it counts as not written in full:
+    the command must not end with exit code 0 while a setting did not reach
+    the site. What can be written is still written. A label no version of
+    the report holds any more keeps its line and is no failure.
 
     `arriving` maps a report name to the option labels of the report a
     pending import brings ({name: set of labels}); builders-import passes it
@@ -1334,21 +1346,23 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
     import and lacks every option the new version adds. Those are summed up
     in one line instead of being reported as unknown one by one.
     """
-    from .core.options import rehost_content, write_options
+    from .core.options import MERGED_REPORT_LABELS, rehost_content, write_options
     from .viya.reports import find_report, get_content, put_content
     failures = 0
     arriving = arriving or {}
     for report_name, values in _fold_saved(saved).items():
+        values = values or {}
         report = find_report(session, report_name)
         if not report:
             if report_name in arriving:
-                console.print(f"[cyan]{report_name}: not on this site yet - it arrives with the import, "
-                              f"and the {len(values or {})} saved option(s) are written then.[/cyan]")
+                then = f", and the {len(values)} saved option(s) are written then" if values else ""
+                console.print(f"[cyan]{report_name}: not on this site yet - it arrives with the import"
+                              f"{then}.[/cyan]")
             else:
                 console.print(f"[yellow]{report_name}: no such report here - skipped.[/yellow]")
             continue
         content, etag = get_content(session, report["id"])
-        updated, result = write_options(content, values or {})
+        updated, result = write_options(content, values)
         updated, rehosted = rehost_content(updated, host) if host else (updated, 0)
         with_import = [label for label in result.missing if label in arriving.get(report_name, ())]
         if with_import:
@@ -1359,9 +1373,23 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
                 continue
             console.print(f"[yellow]  {report_name}: '{label}' is not an option of "
                           "this report version - not written.[/yellow]")
+        unwritten = [label for label in result.missing
+                     if label not in with_import and label in MERGED_REPORT_LABELS]
+        if unwritten:
+            console.print(f"[red]{report_name}: {len(unwritten)} option(s) the Prompt Builder reads cannot "
+                          f"be written ({', '.join(unwritten)}) - the report "
+                          + ("the import brings" if report_name in arriving else "on this site")
+                          + " is from before 2.3.0, or was not saved with the merged UI. Import the "
+                          "Prompt Builder package of this release, then restore again.[/red]")
+        for label, value in result.rejected.items():
+            console.print(f"[red]  {report_name}: '{label}' is a checkbox in this report and '{value}' says "
+                          "neither on nor off - not written. Use true or false.[/red]")
+        if unwritten or result.rejected:
+            failures += 1
         if not result.changed and not rehosted:
-            console.print(f"[green]{report_name}: already matches "
-                          f"({len(result.unchanged)} options, no placeholder host).[/green]")
+            if values:
+                console.print(f"[green]{report_name}: already matches "
+                              f"({len(result.unchanged)} options, no placeholder host).[/green]")
             continue
         what = []
         if result.applied:
@@ -1466,10 +1494,19 @@ def package_export(
     package. Re-export after every change to the Prompt Builder's report, job
     definition or options, and the RAG runtime after every change to a RAG
     step, job or rag_core.
+
+    Without --out the file must be one of the two `mdb builders-import`
+    reads, so the RAG content root needs --name "RAG Runtime"; any other
+    name is refused before anything is exported. The command ends with exit
+    code 1, the file written, when the package still carries the retired
+    standalone RAG UI, or when its Prompt Builder report lacks an option of
+    the merged UI or holds a default of the exporting site.
     """
     import re as _re
-    from .core.packages import (ALLOWED_HOSTS, check_package, describe_findings,
-                                sanitise_package, strip_report_states)
+    from .core.options import MERGED_REPORT, MERGED_REPORT_LABELS
+    from .core.packages import (ALLOWED_HOSTS, PROMPT_BUILDER_PACKAGE, RAG_RUNTIME_PACKAGE, check_package,
+                                describe_findings, legacy_objects, missing_option_labels,
+                                non_neutral_defaults, report_labels, sanitise_package, strip_report_states)
     from .viya.transfer import (delete_package, download_package, folder_by_path, job_messages,
                                 start_export, wait_for_job)
     ctx = Context()
@@ -1477,6 +1514,13 @@ def package_export(
     package_name = name or folder.rstrip("/").rsplit("/", 1)[-1]
     target = out or (ctx.repo / "SAS-Viya-Integrations" /
                      f"SAS-Agentic-AI-Accelerator-{_re.sub(r'[^A-Za-z0-9]+', '-', package_name).strip('-')}.json")
+    if out is None and target.name not in (PROMPT_BUILDER_PACKAGE, RAG_RUNTIME_PACKAGE):
+        # The RAG content root without --name gives ...-RAG.json: a file
+        # nothing imports, next to a runtime package that then stays stale.
+        console.print(f"[red]`mdb builders-import` does not read {target.name}: it reads {PROMPT_BUILDER_PACKAGE} "
+                      f"and {RAG_RUNTIME_PACKAGE}. Pass --name \"RAG Runtime\" for the RAG content root, or "
+                      "--out to write the package somewhere else. Nothing was exported.[/red]")
+        raise typer.Exit(2)
     with _viya_session() as session:
         try:
             folder_obj = folder_by_path(session, folder)
@@ -1527,11 +1571,25 @@ def package_export(
     package = json.loads(target.read_text(encoding="utf-8"))
     kinds = ", ".join(f"{kind} {name}" for kind, name in _package_objects(package))
     console.print(f"[green]Wrote {target} ({package.get('transferObjectCount', '?')} objects: {kinds}).[/green]")
-    from .core.packages import legacy_objects
+    # What only the exporting site can put right. The file is written, as on
+    # the host path above, so that it can be looked at; it must not ship.
+    unfit = False
     retired = legacy_objects(package)
     if retired:
-        console.print(f"[yellow]The package carries {', '.join(retired)} - the standalone RAG UI that is retired. "
-                      "Delete them from the folder and export again, or leave them out with --exclude.[/yellow]")
+        console.print(f"[red]The package carries {', '.join(retired)} - the standalone RAG UI that is retired. "
+                      "Delete them from the folder and export again, or leave them out with --exclude.[/red]")
+        unfit = True
+    if MERGED_REPORT in report_labels(package):
+        problems = missing_option_labels(package, MERGED_REPORT_LABELS) + non_neutral_defaults(package)
+        for problem in problems:
+            console.print(f"[red]  report '{MERGED_REPORT}' - {problem}[/red]")
+        if problems:
+            console.print("[red]Open the report in SAS Visual Analytics with the current UI, set these options "
+                          "to their defaults in the Options pane, save the report and export again.[/red]")
+            unfit = True
+    if unfit:
+        console.print(f"[red]{target.name} was written, and must not be committed as it is.[/red]")
+        raise typer.Exit(1)
     console.print("Review the diff, then commit it with the CHANGELOG entry that explains the change.")
 
 
@@ -1566,6 +1624,10 @@ def builders_import(
     endpoint, deployment type) are, and either way every remaining
     placeholder host in the report - the DDC URL and the option defaults -
     becomes this deployment's host. A first install needs no hand edits.
+    Without --options only a report this run imported is configured: naming
+    the runtime package alone leaves the Prompt Builder report as it is. A
+    dry run without --options discovers nothing, because discovery creates a
+    missing repository or project.
 
     The Prompt Builder package carries the UI (its RAG part included), the
     optimization job and the report; the RAG runtime package carries the RAG
@@ -1667,17 +1729,32 @@ def builders_import(
                 failed_reports.update(carried)
                 continue
             console.print(f"  [green]imported {len(objects)} object(s).[/green]")
+        # The Builder reports this run brings (in a dry run: would bring).
+        # Discovery configures those and no other: a report that was not
+        # imported is the site's own, with values an admin may have tuned,
+        # and importing the runtime package alone must not rewrite it.
+        targets = [name for name in BUILDER_REPORTS if name in arriving and name not in failed_reports]
         if saved is not None:
             console.print(f"\nRestoring builder options from {options}:")
             values = _fold_saved(saved)
-        elif not dry_run and all(name in failed_reports for name in BUILDER_REPORTS):
+        elif not targets:
             # Nothing arrived that discovery could configure, so nothing is
             # discovered either: discovery creates a missing project.
             values = {}
+            console.print(f"\nNo Builder report {'would be' if dry_run else 'was'} imported - the options of "
+                          "a report on this site are left as they are.")
+        elif dry_run:
+            # Discovery writes: it creates a missing repository or project.
+            # A dry run says what would be configured and looks nothing up.
+            console.print("\nWould configure the imported report from this deployment (repository, projects, "
+                          "SCR endpoint, deployment type) and the site host.")
+            values = {name: {} for name in targets}
         else:
             console.print("\nConfiguring the imported report from this deployment (repository, projects, "
                           "SCR endpoint, deployment type) and the site host:")
-            values = _discovered_options(session, ctx)
+            # A report nothing was discovered for still gets the site host.
+            discovered = _discovered_options(session, ctx)
+            values = {name: discovered.get(name, {}) for name in targets}
         if dry_run:
             console.print("  [cyan](dry run: nothing is imported, so this compares with the reports as they "
                           "are on the site now)[/cyan]")
@@ -1704,7 +1781,7 @@ def builders_import(
         return
     console.print("\n[green]Done.[/green] Next: the Content Security Policy settings are described in the "
                   "administration guide, 'Deploying the Builder UIs', step 4."
-                  + ("" if saved is not None else
+                  + ("" if saved is not None or not targets else
                      " Optional settings (credential domain, judge model, the decision, optimization and RAG "
                      "switches and what they reveal) keep the package's defaults, so RAG is off until it is "
                      "enabled - set them in the Options pane, or run `mdb options-restore` with a file saved "

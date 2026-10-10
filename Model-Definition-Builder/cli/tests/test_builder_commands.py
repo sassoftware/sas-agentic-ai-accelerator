@@ -248,11 +248,50 @@ def test_restore_into_a_report_from_before_the_merge_names_what_it_cannot_write(
     RAG labels, and each one is worth a line - outside a dry run of an import,
     a missing label is the signal."""
     fake = site(Site(**{"Prompt Builder": OLD_PROMPT}))
-    cli._restore_options(None, json.loads(json.dumps(SAVED_2_2)), False)
+    # ... and the report counts as not written: RAG is off on the site and no
+    # RAG setting reached it, which must not look like a restore that worked
+    assert cli._restore_options(None, json.loads(json.dumps(SAVED_2_2)), False) == 1
     text = out.getvalue()
     for label in ("contentRoot", "ragComputeContext", "enableRag", "embeddingProjectID"):
         assert f"Prompt Builder: '{label}' is not an option of this report version - not written." in text
+    assert "Prompt Builder: 7 option(s) the Prompt Builder reads cannot be written" in text
+    assert "the report on this site is from before 2.3.0, or was not saved with the merged UI" in text
     assert fake.options("Prompt Builder")["computeContext"] == "SAS Job Execution compute context"
+
+
+def test_a_label_no_report_version_holds_is_named_and_is_no_failure(site, out):
+    """A 2.2.x file names options that are gone for good (the key table of the
+    optimization job). The report is not behind for lacking them, and what
+    the report does hold is written."""
+    fake = site(Site(**{"Prompt Builder": NEW_DEFAULTS}))
+    saved = {"Prompt Builder": {"llmProjectID": "llm-live", "optimizeKeyTable": "LLM_API_KEYS"}}
+    assert cli._restore_options(None, saved, False) == 0
+    text = out.getvalue()
+    assert "'optimizeKeyTable' is not an option of this report version - not written." in text
+    assert "cannot be written" not in text
+    assert fake.options("Prompt Builder")["llmProjectID"] == "llm-live"
+
+
+def test_a_value_a_checkbox_cannot_take_is_named_and_counts(site, out):
+    """A report that types a switch as a boolean takes on or off and nothing
+    else. A value it was not given must not pass for a restore that worked."""
+    fake = site(Site(**{"Prompt Builder": NEW_DEFAULTS}))
+    fake.reports["Prompt Builder"] = fake.reports["Prompt Builder"].replace(
+        '<PromptDefinition label="enableRag" hidden="true" isParameter="true" dataType="string"',
+        '<PromptDefinition label="enableRag" hidden="true" isParameter="true" dataType="boolean"')
+    saved = {"Prompt Builder": {"enableRag": "maybe", "llmProjectID": "llm-live"}}
+    assert cli._restore_options(None, saved, False) == 1
+    assert "Prompt Builder: 'enableRag' is a checkbox in this report and 'maybe' says neither on nor off" \
+        in out.getvalue()
+    restored = fake.options("Prompt Builder")
+    assert restored["enableRag"] == "false" and restored["llmProjectID"] == "llm-live"
+
+
+def test_a_report_behind_the_file_still_gets_what_it_can_hold(site, out):
+    fake = site(Site(**{"Prompt Builder": {**OLD_PROMPT, "llmProjectID": ""}}))
+    assert cli._restore_options(None, json.loads(json.dumps(SAVED_2_2)), False) == 1
+    assert fake.written == ["Prompt Builder"]
+    assert fake.options("Prompt Builder")["llmProjectID"] == "llm-live"
 
 
 def test_a_dry_run_before_an_import_sums_up_what_arrives_with_it(site, out):
@@ -415,14 +454,114 @@ def test_a_failed_prompt_builder_import_leaves_the_old_report_alone(importing, t
     assert f"then run: mdb options-restore --file {options}" in text
 
 
-def test_a_failed_first_install_discovers_nothing_and_says_how_to_go_on(importing, monkeypatch):
-    def never(*_args, **_kwargs):
-        raise AssertionError("discovery creates a missing project - it must not run for nothing")
-    monkeypatch.setattr(registry, "ensure_repository_and_project", never)
+@pytest.fixture
+def no_discovery(monkeypatch):
+    """Discovery creates a missing repository or project, so where it must
+    not run, it must not be called at all. Returns the kinds it was asked
+    for - the command catches what a discovery raises, so raising alone
+    would not show."""
+    asked: list = []
+
+    def never(session, kind, *_args, **_kwargs):
+        asked.append(kind)
+        raise AssertionError("discovery creates a missing project - it must not run here")
+
+    def install() -> list:
+        monkeypatch.setattr(registry, "ensure_repository_and_project", never)
+        return asked
+    return install
+
+
+def test_a_failed_first_install_discovers_nothing_and_says_how_to_go_on(importing, no_discovery):
+    asked = no_discovery()
     result, fake, text = importing(Site(), prompt_fails=True)
-    assert result.exit_code == 1 and not isinstance(result.exception, AssertionError)
+    assert result.exit_code == 1 and asked == []
     assert fake.written == [] and "Prompt Builder" not in fake.reports
+    assert "No Builder report was imported" in text
     assert "then run: mdb builders-import (it imports again and configures the report" in text
+
+
+TUNED = {**NEW_DEFAULTS, "viyaHost": "https://site.example", "SCREndpoint": "https://scr.site.example/llm",
+         "modelRepositoryID": "repo-tuned", "llmProjectID": "llm-tuned", "embeddingProjectID": "emb-tuned",
+         "enableRag": "true"}
+
+
+def test_importing_the_runtime_package_alone_leaves_the_report_alone(importing, no_discovery, tmp_path):
+    """`mdb builders-import <runtime package>` is the step after a rag_core
+    fix. The package carries no report, so the Prompt Builder report on the
+    site is not this run's to configure: discovery would put the derived
+    project ids and SCR endpoint over the ones an admin chose."""
+    asked = no_discovery()
+    runtime = tmp_path / "SAS-Viya-Integrations" / RAG_RUNTIME_PACKAGE
+    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), str(runtime))
+    assert result.exit_code == 0, text
+    assert PROMPT_BUILDER_PACKAGE not in text and "imported 2 object(s)" in text
+    assert asked == [] and fake.read == [] and fake.written == []
+    assert fake.options("Prompt Builder") == TUNED
+    assert "No Builder report was imported - the options of a report on this site are left as they are." in text
+    # and nothing about package defaults of a report that was not imported
+    assert "Done." in text and "keep the package's defaults" not in text
+
+
+def test_the_runtime_package_alone_still_names_a_retired_report(importing, no_discovery, tmp_path):
+    no_discovery()
+    runtime = tmp_path / "SAS-Viya-Integrations" / RAG_RUNTIME_PACKAGE
+    result, fake, text = importing(Site(**{"Prompt Builder": TUNED, "RAG Builder": OLD_RAG}), str(runtime))
+    assert result.exit_code == 0, text
+    assert text.count("A report named 'RAG Builder' still exists on this site.") == 1
+    assert fake.written == []
+
+
+def test_options_named_with_the_runtime_package_alone_are_restored_all_the_same(importing, tmp_path):
+    """--options is an instruction, whatever was imported."""
+    options = tmp_path / "builder-options.json"
+    options.write_text(json.dumps({"version": 1, "reports": {"Prompt Builder": {"llmProjectID": "llm-file"}}}),
+                       encoding="utf-8")
+    runtime = tmp_path / "SAS-Viya-Integrations" / RAG_RUNTIME_PACKAGE
+    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), str(runtime), "--options", str(options))
+    assert result.exit_code == 0, text
+    assert fake.options("Prompt Builder")["llmProjectID"] == "llm-file"
+    assert fake.options("Prompt Builder")["embeddingProjectID"] == "emb-tuned"
+
+
+def test_a_restore_that_cannot_reach_the_report_does_not_end_with_done(importing, tmp_path):
+    """The runtime package alone with a 2.2.x options file, on a site whose
+    Prompt Builder report is still the 2.2.x one: nothing of the RAG part can
+    be written. The exit code has to say so - the next step of the upgrade is
+    deleting the retired report."""
+    options = tmp_path / "builder-options.json"
+    options.write_text(json.dumps({"version": 1, "reports": SAVED_2_2}), encoding="utf-8")
+    runtime = tmp_path / "SAS-Viya-Integrations" / RAG_RUNTIME_PACKAGE
+    result, fake, text = importing(Site(**{"Prompt Builder": OLD_PROMPT, "RAG Builder": OLD_RAG}),
+                                   str(runtime), "--options", str(options))
+    assert result.exit_code == 1
+    assert "enableRag" not in fake.options("Prompt Builder")
+    assert "Prompt Builder: 7 option(s) the Prompt Builder reads cannot be written" in text
+    assert "Not everything was imported and configured." in text and "Done." not in text
+    assert f"then run: mdb options-restore --file {options}" in text
+
+
+def test_a_dry_run_without_options_discovers_nothing(importing, no_discovery):
+    """`--dry-run` is documented as "import nothing". Discovery creates the
+    repository and the projects when they are missing, so on a first install
+    a dry run that discovers is a dry run that writes."""
+    asked = no_discovery()
+    result, fake, text = importing(Site(), "--dry-run")
+    assert result.exit_code == 0, text
+    assert asked == [] and fake.written == [] and "Prompt Builder" not in fake.reports
+    assert "Would configure the imported report from this deployment" in text
+    assert "Prompt Builder: not on this site yet - it arrives with the import." in text
+    assert text.count("dry run - nothing imported.") == 2 and "Done." not in text
+
+
+def test_a_dry_run_without_options_on_a_site_with_the_report_claims_no_match(importing, no_discovery):
+    """Nothing was discovered, so nothing was compared: the line that says a
+    report already matches would be about no option at all."""
+    asked = no_discovery()
+    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), "--dry-run")
+    assert result.exit_code == 0, text
+    assert asked == [] and fake.written == [] and fake.options("Prompt Builder") == TUNED
+    assert "Would configure the imported report" in text and "already matches" not in text
 
 
 def test_a_package_from_before_the_merge_is_named_as_such(importing):
