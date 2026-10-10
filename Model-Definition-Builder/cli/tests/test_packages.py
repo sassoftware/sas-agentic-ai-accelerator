@@ -223,7 +223,9 @@ def test_a_failed_check_is_described_host_by_host(tmp_path):
 def test_package_export_reports_a_remaining_host_instead_of_crashing(tmp_path, monkeypatch):
     """The whole failure path of the command, with the service faked: an
     export whose report names a host the rewrite does not touch. The command
-    must end with the finding, not with an AttributeError."""
+    must end with the finding, not with an AttributeError - and with the file
+    it was to write as it was: a package that names a host is not put where
+    the next commit or the next import picks it up."""
     import io
     from types import SimpleNamespace
 
@@ -243,7 +245,7 @@ def test_package_export_reports_a_remaining_host_instead_of_crashing(tmp_path, m
     monkeypatch.setattr(transfer, "download_package", lambda session, uri: exported)
     monkeypatch.setattr(transfer, "delete_package", lambda session, uri: None)
     # a rewrite that fixes nothing: what is left is what the check must report
-    monkeypatch.setattr(packages, "sanitise_package", lambda path, allowed=None: ("", {}))
+    monkeypatch.setattr(packages, "sanitise_text", lambda text, name, allowed=None: (text, {}))
 
     class _Session:
         def __enter__(self):
@@ -258,11 +260,26 @@ def test_package_export_reports_a_remaining_host_instead_of_crashing(tmp_path, m
     monkeypatch.setattr(cli, "console", Console(file=out, width=400, force_terminal=False))
 
     target = tmp_path / "exported.json"
+    target.write_text("the export before this one", encoding="utf-8")
     outcome = CliRunner().invoke(cli.app, ["package-export", "--out", str(target)])
     assert outcome.exit_code == 1, outcome.output
     assert not isinstance(outcome.exception, AttributeError)
-    assert (f"exported.json still names a host: Test Builder: {INTERNAL} x2 "
+    assert (f"The export still names a host after the rewrite: Test Builder: {INTERNAL} x2 "
             "in compressed report content") in out.getvalue()
+    assert target.read_text(encoding="utf-8") == "the export before this one"
+    assert "Nothing was written: exported.json is as it was before the export." in out.getvalue()
+
+
+def test_the_checks_of_a_file_and_of_a_text_are_the_same_check(tmp_path):
+    """`mdb package-export` judges an export before there is a file."""
+    from mdb.core.packages import check_text, sanitise_text
+    package = _package(deflate(_bird(INTERNAL)), {"VisualElement:ve8": f"https://{INTERNAL}/SASJobExecution/"})
+    path = _write(tmp_path, package)
+    text = path.read_text(encoding="utf-8")
+    assert check_text(text, path.name) == check_package(path) and not check_package(path).ok
+    assert sanitise_text(text, path.name) == sanitise_package(path)
+    assert check_text(sanitise_text(text, path.name)[0], path.name).ok
+    assert path.read_text(encoding="utf-8") == text                # neither writes
 
 
 # ---- per-user report states ------------------------------------------------

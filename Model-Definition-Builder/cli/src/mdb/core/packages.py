@@ -185,8 +185,15 @@ def _reports(package: dict):
 def check_package(path, allowed=ALLOWED_HOSTS) -> Result:
     """Every host the reports in one package name, minus the allowed ones."""
     path = Path(path)
+    return check_text(path.read_text(encoding="utf-8"), path.name, allowed)
+
+
+def check_text(text: str, package_name: str, allowed=ALLOWED_HOSTS) -> Result:
+    """`check_package` for a package that is not a file: `mdb package-export`
+    asks this of an export before it writes it. `package_name` is the file
+    name the findings carry."""
     result = Result(packages_checked=1)
-    package = json.loads(path.read_text(encoding="utf-8"))
+    package = json.loads(text)
     for obj, summary in _reports(package):
         result.reports_checked += 1
         name = summary.get("name") or "(unnamed report)"
@@ -196,7 +203,7 @@ def check_package(path, allowed=ALLOWED_HOSTS) -> Result:
         for host, n in hosts_in(plain).items():
             if host not in allowed:
                 result.findings.append(
-                    Finding(path.name, name, host, n, compressed=False))
+                    Finding(package_name, name, host, n, compressed=False))
 
         # and the report itself, which is where the rest of them hide
         inner = inflate(obj.get("content") or "")
@@ -205,11 +212,11 @@ def check_package(path, allowed=ALLOWED_HOSTS) -> Result:
         for host, n in hosts_in(inner).items():
             if host not in allowed:
                 result.findings.append(
-                    Finding(path.name, name, host, n, compressed=True))
+                    Finding(package_name, name, host, n, compressed=True))
 
         states = len(report_copies(obj)) - 1
         if states > 0:
-            result.states.append(StateFinding(path.name, name, states))
+            result.states.append(StateFinding(package_name, name, states))
     return result
 
 
@@ -290,7 +297,12 @@ def sanitise_package(path, allowed=ALLOWED_HOSTS) -> tuple:
     the package and bury the one change that matters.
     """
     path = Path(path)
-    text = path.read_text(encoding="utf-8")
+    return sanitise_text(path.read_text(encoding="utf-8"), path.name, allowed)
+
+
+def sanitise_text(text: str, package_name: str, allowed=ALLOWED_HOSTS) -> tuple:
+    """`sanitise_package` for a package that is not a file. `package_name` is
+    the file name an error carries."""
     package = json.loads(text)
     fixed: dict = {}
 
@@ -311,7 +323,7 @@ def sanitise_package(path, allowed=ALLOWED_HOSTS) -> tuple:
             # exact; assert that rather than trust it
             if text.count(content) != 1:
                 raise ValueError(
-                    f"{path.name}: report content is not unique in the file, "
+                    f"{package_name}: report content is not unique in the file, "
                     "refusing to edit it blind")
             text = text.replace(content, token)
 

@@ -475,7 +475,7 @@ def test_both_builder_packages_are_shipped():
         assert not (folder / LEGACY_RAG_PACKAGE).exists()
 
 
-# ---- package-export: what it refuses, and what it writes but fails ----------
+# ---- package-export: what it refuses, and what it does not write ------------
 @pytest.fixture
 def exporting(monkeypatch, tmp_path):
     """`mdb package-export` against a fake transfer service. Returns a
@@ -546,18 +546,18 @@ def test_export_of_the_rag_folder_under_its_own_name_is_refused_before_it_starts
     assert exported == ["RAG"] and elsewhere.is_file()
 
 
-def test_export_with_the_retired_ui_inside_is_written_and_fails(exporting):
+def test_export_with_the_retired_ui_inside_is_not_written(exporting):
     """The RAG folder as a 2.2.x site has it: the standalone report and its
-    job definition still in it. The file is written so it can be looked at,
-    and the command does not end with exit code 0."""
+    job definition still in it. The command says what it found, writes
+    nothing and does not end with exit code 0."""
     retired = _runtime(report=_report("RAG Builder", {"viyaHost": "x"}),
                        ui=_job_definition("RAG-Builder-UI", "<html>"))
     result, text, folder, _ = exporting(retired, *RAG_FOLDER, "--name", "RAG Runtime")
     assert result.exit_code == 1
-    assert (folder / RAG_RUNTIME_PACKAGE).is_file()
+    assert not folder.exists()
     assert "The package carries report RAG Builder, jobDefinition RAG-Builder-UI" in text
-    assert f"{RAG_RUNTIME_PACKAGE} was written, and must not be committed as it is." in text
-    assert "Review the diff" not in text
+    assert f"Nothing was written: there is no {RAG_RUNTIME_PACKAGE}." in text
+    assert "Review the diff" not in text and "Wrote" not in text
     # left out by name, the same export is a runtime package
     result, text, folder, _ = exporting(retired, *RAG_FOLDER, "--name", "RAG Runtime",
                                         "--exclude", "RAG Builder", "--exclude", "RAG-Builder-UI")
@@ -571,15 +571,75 @@ def test_export_of_a_report_the_exporter_did_not_reset_or_save_fails(exporting):
     and a report that was not saved with the merged UI."""
     tuned = {**ALL_NEUTRAL, "judgeModel": "gpt_5_mini", "minOptimizeSamples": "10"}
     result, text, folder, _ = exporting(_package(_report("Prompt Builder", tuned)))
-    assert result.exit_code == 1 and (folder / PROMPT_BUILDER_PACKAGE).is_file()
+    assert result.exit_code == 1 and not folder.exists()
     assert "report 'Prompt Builder' - the report: judgeModel is 'gpt_5_mini', expected ''" in text
     assert "report 'Prompt Builder' - the report: minOptimizeSamples is '10', expected '30'" in text
-    assert "must not be committed as it is" in text
+    assert f"Nothing was written: there is no {PROMPT_BUILDER_PACKAGE}." in text
     unsaved = {k: v for k, v in ALL_NEUTRAL.items() if not k.startswith(("enableRag", "enable_", "rag"))}
     result, text, _, _ = exporting(_package(_report("Prompt Builder", unsaved)))
-    assert result.exit_code == 1
+    assert result.exit_code == 1 and not folder.exists()
     assert "report 'Prompt Builder' - the report lacks 4 option label(s): enableRag, ragComputeContext, " \
            "enable_pgvector, enable_singlestore" in text
+
+
+#: An export that is fit to ship, and the file `mdb builders-import` reads by
+#: default as it sits in a checkout before the export.
+def _fit(options: dict, states=()) -> dict:
+    return {**_package(_folder("Prompt Builder"), _report("Prompt Builder", options, states),
+                       _job_definition(UI_JOB_DEFINITION, "<html>")), "id": "new-1"}
+
+
+SHIPPED_BEFORE = '{"id": "the package of the last release"}\n'
+
+
+@pytest.mark.parametrize("label, value", [
+    ("sslVerify", "false"), ("sslVerify", "False"), ("sslVerify", "0"), ("sslVerify", ""),
+    *[(label, f"{neutral}-of-the-site") for label, neutral in NEUTRAL_DEFAULTS.items() if label != "sslVerify"]])
+def test_an_export_with_a_default_of_the_site_leaves_the_shipped_package_alone(exporting, tmp_path, label, value):
+    """The target is the file `mdb builders-import` reads when no package is
+    named. Written first and judged afterwards, a report that switches TLS
+    verification off - or RAG on, or names the site's judge model - is in
+    the checkout with exit code 1 behind it, and the next import from that
+    checkout brings it to a site without a line about it."""
+    shipped = tmp_path / "SAS-Viya-Integrations" / PROMPT_BUILDER_PACKAGE
+    shipped.parent.mkdir()
+    shipped.write_text(SHIPPED_BEFORE, encoding="utf-8", newline="\n")
+    result, text, _, _ = exporting(_fit({**ALL_NEUTRAL, label: value}))
+    assert result.exit_code == 1
+    assert shipped.read_bytes() == SHIPPED_BEFORE.encode("utf-8")
+    assert sorted(p.name for p in shipped.parent.iterdir()) == [PROMPT_BUILDER_PACKAGE]
+    # the option, the value, and the copy of the report it was found in
+    assert (f"report 'Prompt Builder' - the report: {label} is '{value}', "
+            f"expected '{NEUTRAL_DEFAULTS[label]}'") in text
+    assert f"Nothing was written: {PROMPT_BUILDER_PACKAGE} is as it was before the export." in text
+    assert "Wrote" not in text and "Review the diff" not in text
+
+
+def test_an_export_to_a_named_file_is_not_written_either(exporting, tmp_path):
+    """--out may name the shipped file, or one that is copied over it."""
+    elsewhere = tmp_path / "scratch" / "prompt-builder.json"
+    result, text, _, _ = exporting(_fit({**ALL_NEUTRAL, "sslVerify": "false"}), "--out", str(elsewhere))
+    assert result.exit_code == 1 and not elsewhere.exists() and not elsewhere.parent.exists()
+    assert "the report: sslVerify is 'false', expected 'true'" in text
+    assert "Nothing was written: there is no prompt-builder.json." in text
+
+
+def test_a_default_of_the_site_in_a_user_state_goes_with_the_state(exporting):
+    """A state is removed from the export before it is judged, so what one
+    user saved - verification off, in a view of their own - neither reaches
+    the file nor stops the export: nobody but that user can reset it."""
+    off = {**ALL_NEUTRAL, "sslVerify": "false", "enableRag": "true"}
+    result, text, folder, _ = exporting(_fit(ALL_NEUTRAL, states=[off, off]))
+    assert result.exit_code == 0, text
+    assert "removed 2 per-user report state(s) from report 'Prompt Builder'" in text
+    written = json.loads((folder / PROMPT_BUILDER_PACKAGE).read_text(encoding="utf-8"))
+    assert report_option_copies(written) == [ALL_NEUTRAL]
+    # and with the report itself off, the states do not hide it
+    result, text, folder, _ = exporting(_fit(off, states=[ALL_NEUTRAL]))
+    assert result.exit_code == 1
+    assert "report 'Prompt Builder' - the report: sslVerify is 'false', expected 'true'" in text
+    assert report_option_copies(json.loads((folder / PROMPT_BUILDER_PACKAGE).read_text(encoding="utf-8"))) == \
+        [ALL_NEUTRAL]
 
 
 # ---- the guards' own inputs --------------------------------------------------

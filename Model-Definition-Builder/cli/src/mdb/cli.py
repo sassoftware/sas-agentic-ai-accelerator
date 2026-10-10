@@ -1500,15 +1500,19 @@ def package_export(
     Without --out the file must be one of the two `mdb builders-import`
     reads, so the RAG content root needs --name "RAG Runtime"; any other
     name is refused before anything is exported. The command ends with exit
-    code 1, the file written, when the package still carries the retired
-    standalone RAG UI, or when its Prompt Builder report lacks an option of
-    the merged UI or holds a default of the exporting site.
+    code 1 and writes nothing - the file from before stays as it is - when
+    the package still names a host after the rewrite, when it still carries
+    the retired standalone RAG UI, or when its Prompt Builder report lacks an
+    option of the merged UI or holds a default of the exporting site: a judge
+    model, RAG switched on, TLS verification for manifested models switched
+    off. Each is named with the option and the value found. A default in a
+    per-user state is not judged: the state is removed.
     """
     import re as _re
     from .core.options import MERGED_REPORT, MERGED_REPORT_LABELS
-    from .core.packages import (ALLOWED_HOSTS, PROMPT_BUILDER_PACKAGE, RAG_RUNTIME_PACKAGE, check_package,
+    from .core.packages import (ALLOWED_HOSTS, PROMPT_BUILDER_PACKAGE, RAG_RUNTIME_PACKAGE, check_text,
                                 describe_findings, legacy_objects, missing_option_labels,
-                                non_neutral_defaults, report_labels, sanitise_package, strip_report_states)
+                                non_neutral_defaults, report_labels, sanitise_text, strip_report_states)
     from .viya.transfer import (delete_package, download_package, folder_by_path, job_messages,
                                 start_export, wait_for_job)
     ctx = Context()
@@ -1554,28 +1558,26 @@ def package_export(
         text = json.dumps(parsed, indent=2, ensure_ascii=False) + chr(10)
     try:
         text, states = strip_report_states(text)
+        text, fixed = sanitise_text(text, target.name, ALLOWED_HOSTS)
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
     for report_name, n in states.items():
         console.print(f"  removed {n} per-user report state(s) from report '{report_name}'")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(text, encoding="utf-8", newline="\n")
-    sanitised, fixed = sanitise_package(target, ALLOWED_HOSTS)
-    if fixed:
-        target.write_text(sanitised, encoding="utf-8", newline="\n")
-        for host, n in fixed.items():
-            console.print(f"  replaced {host} with the placeholder ({n} occurrence(s))")
-    result = check_package(target, ALLOWED_HOSTS)
-    if not result.ok:
-        console.print(f"[red]{target.name} still names a host: {describe_findings(result)}[/red]")
-        raise typer.Exit(1)
-    package = json.loads(target.read_text(encoding="utf-8"))
-    kinds = ", ".join(f"{kind} {name}" for kind, name in _package_objects(package))
-    console.print(f"[green]Wrote {target} ({package.get('transferObjectCount', '?')} objects: {kinds}).[/green]")
-    # What only the exporting site can put right. The file is written, as on
-    # the host path above, so that it can be looked at; it must not ship.
+    for host, n in fixed.items():
+        console.print(f"  replaced {host} with the placeholder ({n} occurrence(s))")
+    # Everything below is asked of the text, before there is a file: the
+    # target is the package `mdb builders-import` reads when none is named,
+    # and a package that is written and then found unfit is imported by the
+    # next run from this checkout, whatever the exit code said. What is
+    # judged is what would be written - the per-user states are gone by now.
+    package = json.loads(text)
     unfit = False
+    result = check_text(text, target.name, ALLOWED_HOSTS)
+    if not result.ok:
+        console.print(f"[red]The export still names a host after the rewrite: {describe_findings(result)}[/red]")
+        unfit = True
+    # What only the exporting site can put right.
     retired = legacy_objects(package)
     if retired:
         console.print(f"[red]The package carries {', '.join(retired)} - the standalone RAG UI that is retired. "
@@ -1590,8 +1592,14 @@ def package_export(
                           "to their defaults in the Options pane, save the report and export again.[/red]")
             unfit = True
     if unfit:
-        console.print(f"[red]{target.name} was written, and must not be committed as it is.[/red]")
+        console.print("[red]Nothing was written: " + (
+            f"{target.name} is as it was before the export." if target.exists() else
+            f"there is no {target.name}.") + "[/red]")
         raise typer.Exit(1)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8", newline="\n")
+    kinds = ", ".join(f"{kind} {name}" for kind, name in _package_objects(package))
+    console.print(f"[green]Wrote {target} ({package.get('transferObjectCount', '?')} objects: {kinds}).[/green]")
     console.print("Review the diff, then commit it with the CHANGELOG entry that explains the change.")
 
 
