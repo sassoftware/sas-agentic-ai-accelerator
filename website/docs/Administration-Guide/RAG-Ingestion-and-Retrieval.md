@@ -285,10 +285,17 @@ setup** before the click, and the model it registers carries the tag
 [Deployment of Decisions](./Deployment-of-Decisions.md#finding-the-models-that-do-not-verify)
 shows how to list such models. Manifesting the setup again with the option
 ticked writes `SSL_VERIFY = True` and removes the tag. The tag follows the
-score code the model holds: when SAS Model Manager does not store
+score code the model holds: when SAS Model Manager refuses
 `retrieve_context.py`, the manifest stops at that stage with the HTTP status
 and leaves the score code and the tags as they were, and a tag that could
-not be written or removed is named in the outcome beside the button.
+not be written or removed is named in the outcome beside the button. One
+case the page cannot decide: when the upload of `retrieve_context.py` gets
+no answer at all — the connection drops, or an ingress answers with its
+error page — SAS Model Manager may have stored the file all the same. The
+manifest stops at that stage too, says that *it is not known whether SAS
+Model Manager stored retrieve_context.py*, and leaves the tag as it was;
+until **Manifest setup** has run through again, the tag may not match the
+`SSL_VERIFY` line the model holds.
 
 What the option does not touch:
 
