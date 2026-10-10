@@ -98,18 +98,23 @@ LEGACY_RENAMES = {"computeContext": "ragComputeContext"}
 LEGACY_DROPPED = frozenset({"enabledBackends"})
 
 #: The switch that offers the RAG part, and the legacy options that prove a
-#: site really had it configured. An options file saved WITHOUT a live legacy
-#: report still holds a legacy section - discovery alone wrote repository,
-#: embedding project, SCR endpoint and deployment type - and switching RAG on
-#: for that would switch it on at sites that never used it. Discovery never
-#: writes the labels below; only a report someone configured holds them.
+#: site really had the legacy report. An options file saved WITHOUT a live
+#: legacy report still holds a legacy section - discovery alone wrote
+#: repository, embedding project, SCR endpoint and deployment type - and
+#: switching RAG on for that would switch it on at sites that never had the
+#: RAG Builder. Discovery never writes the labels below; only a report holds
+#: them. The 2.2.x package shipped both as defaults, so they prove that the
+#: site had the report, not that anyone used it: nothing in the options tells
+#: those two apart.
 RAG_SWITCH = "enableRag"
 RAG_PROOF_LABELS = ("contentRoot", "casServer")
 
 #: Every option of the merged report, in the order the Options pane lists
 #: them: shared fields, then each switch followed by what it reveals. A
 #: shipped report must already hold all of them, because `write_options`
-#: reports a label the report lacks and never inserts it.
+#: reports a label the report lacks and never inserts it. The list is the
+#: field names LLM-Prompt-Builder/src/va/ddc.ts posts with every switch on;
+#: tests/test_package_guards.py reads that file and fails when the two differ.
 MERGED_REPORT_LABELS = (
     "viyaHost", "modelRepositoryID", "llmProjectID", "SCREndpoint", "deploymentType",
     "judgeModel", "modelCardReportURI", "credentialDomain",
@@ -192,6 +197,16 @@ def _is_set(value) -> bool:
 def _boolean_word(text: str) -> Optional[str]:
     """`true` / `false` for a text that plainly says on or off, else None."""
     return _BOOLEAN_WORDS.get(text.strip().lower())
+
+
+def _same_setting(one: str, other: str) -> bool:
+    """Whether two stored values say the same: equal text, or the same on /
+    off in two spellings - a checkbox the retired report stored as `1` is
+    `true` once it was ticked in the merged one."""
+    if one == other:
+        return True
+    word = _boolean_word(one)
+    return word is not None and word == _boolean_word(other)
 
 
 def _typed_boolean(opening: str, value: re.Match) -> bool:
@@ -361,9 +376,12 @@ def fold_legacy(reports: dict) -> tuple:
       the retired report still exists would put its stale values over ones
       tuned since.
     * SHARED_LABELS keep the merged value; a legacy value that differs is
-      reported.
+      reported, one message per label.
     * LEGACY_RENAMES are carried under their new name, LEGACY_DROPPED not at
-      all, everything else under its own name.
+      all, everything else under its own name. Where the merged section
+      already holds another value, the legacy one is dropped and named in ONE
+      message per legacy report - a site tuned after the upgrade gets a line,
+      not a line per option.
     * RAG_SWITCH becomes "true" only when the legacy section holds one of
       RAG_PROOF_LABELS, and an existing RAG_SWITCH is never overwritten: an
       admin who switched RAG off meant it.
@@ -380,6 +398,7 @@ def fold_legacy(reports: dict) -> tuple:
     for legacy_name in legacy_names:
         section = reports.get(legacy_name) or {}
         carried: list = []
+        dropped: list = []
         for label, value in section.items():
             if label in NON_PORTABLE or label in LEGACY_DROPPED or not _is_set(value):
                 continue
@@ -389,29 +408,46 @@ def fold_legacy(reports: dict) -> tuple:
                 if kept != other:
                     note = (f"{label}: the {MERGED_REPORT} value '{kept}' is kept; "
                             f"'{legacy_name}' held '{other}'.")
-                    if label == "credentialDomain":
+                    if label == "credentialDomain" and kept.lower() == "none":
+                        # `none` is no domain but "no credential lookup", and
+                        # the value stays: changing it would switch key
+                        # lookups on for prompts and decisions.
+                        note += (f" RAG cannot be used with 'none' (no credential lookup): set the "
+                                 f"credential domain to '{other}' in the Options pane, or RAG setups "
+                                 "stay disabled.")
+                    elif label == "credentialDomain":
                         note += (" The RAG part reads its secrets from the kept domain - "
                                  "add the vector store credentials to it.")
                     messages.append(note)
                 continue
             target = LEGACY_RENAMES.get(label, label)
             if _is_set(merged.get(target)):
+                kept = option_text(merged[target]).strip()
+                other = option_text(value).strip()
+                if not _same_setting(kept, other):
+                    dropped.append(f"{target} '{kept}' (was '{other}')")
                 continue
             merged[target] = value
             carried.append(target if target == label else f"{label} -> {target}")
         if carried:
             messages.append(f"'{legacy_name}': {len(carried)} option(s) carried into "
                             f"{MERGED_REPORT}: {', '.join(carried)}.")
-        configured = any(_is_set(section.get(label)) for label in RAG_PROOF_LABELS)
+        if dropped:
+            messages.append(f"'{legacy_name}': {len(dropped)} value(s) differ and the {MERGED_REPORT} "
+                            f"ones are kept: {', '.join(dropped)}.")
+        had_report = any(_is_set(section.get(label)) for label in RAG_PROOF_LABELS)
         if RAG_SWITCH in merged:
             current = option_text(merged[RAG_SWITCH]).strip()
-            if configured and current.lower() != "true":
-                messages.append(f"{RAG_SWITCH} is '{current}' in {MERGED_REPORT} and is kept: "
-                                "enable RAG in the Options pane to use the carried settings.")
+            if had_report and current.lower() != "true":
+                messages.append(
+                    f"{RAG_SWITCH} is '{current}' in {MERGED_REPORT} and is kept: "
+                    + ("enable RAG in the Options pane to use the carried settings." if carried else
+                       f"nothing was carried from '{legacy_name}' - when RAG is enabled in the Options "
+                       "pane, its RAG options are the ones the report holds now."))
             continue
-        if configured:
+        if had_report:
             merged[RAG_SWITCH] = "true"
-            messages.append(f"{RAG_SWITCH} set to true: '{legacy_name}' was a configured report "
+            messages.append(f"{RAG_SWITCH} set to true: the site had the report '{legacy_name}' "
                             f"({' / '.join(RAG_PROOF_LABELS)}).")
         else:
             messages.append(f"{RAG_SWITCH} not set: '{legacy_name}' holds discovered values only, so "

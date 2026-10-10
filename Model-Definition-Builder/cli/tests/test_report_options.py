@@ -429,8 +429,68 @@ def test_conflicting_shared_labels_keep_the_prompt_builder_value_and_say_so():
     assert "'agentic-ai-keys' is kept" in domain and "'rag-keys'" in domain
     # the three that agree are not mentioned
     assert not [m for m in messages if m.startswith(("viyaHost:", "modelRepositoryID:", "deploymentType:"))]
+    assert "add the vector store credentials to it" in domain
     assert set(SHARED_LABELS) == {"viyaHost", "modelRepositoryID", "SCREndpoint", "deploymentType",
                                   "credentialDomain"}
+
+
+def test_a_kept_credential_domain_none_is_not_called_a_domain_to_add_credentials_to():
+    """`none` was a documented value of the 2.2.x Prompt Builder: no credential
+    lookup. It is kept - changing it would switch key lookups on for prompts -
+    but nobody can add vector store credentials to it, and RAG stays disabled
+    until the domain is set. The message has to say that, and name the domain
+    the RAG Builder used."""
+    prompt = {**PROMPT_SECTION, "credentialDomain": "None"}
+    folded, messages = fold_legacy({"Prompt Builder": prompt, "RAG Builder": dict(RAG_SECTION)})
+    merged = folded["Prompt Builder"]
+    assert merged["credentialDomain"] == "None" and merged["enableRag"] == "true"
+    domain = next(m for m in messages if m.startswith("credentialDomain:"))
+    assert "'None' is kept" in domain and "RAG cannot be used with 'none'" in domain
+    assert "set the credential domain to 'agentic-ai-keys' in the Options pane" in domain
+    assert "add the vector store credentials" not in domain
+
+
+def test_a_save_after_an_import_without_options_says_what_was_not_taken_over():
+    """The upgrade done in the wrong order: the import first, without
+    --options, so the merged report holds the package defaults, and the save
+    afterwards. The rule stands - the merged report wins, the fold cannot tell
+    a default from a value tuned since - so the text has to carry it: no
+    "carried settings" that were not carried, and one line naming every RAG
+    value of the retired report that is not the one kept."""
+    defaults = {**PROMPT_SECTION, "enableRag": "false", "embeddingProjectID": "emb-discovered",
+                "contentRoot": "/SAS Agentic AI Accelerator/RAG", "casServer": "cas-shared-default",
+                "ragComputeContext": "SAS Studio compute context", "storeSslmode": "prefer",
+                "deletedPolicy": "retire", "retainDays": "0", "recordHistory": "true", "embedReplicas": "1",
+                "persistElements": "1", "persistChunks": "1", "enable_pgvector": "true",
+                "enable_singlestore": "true"}
+    tuned = {**RAG_SECTION, "contentRoot": "/Team/RAG", "storeSslmode": "disable"}
+    folded, messages = fold_legacy({"Prompt Builder": defaults, "RAG Builder": tuned})
+    merged = folded["Prompt Builder"]
+    assert merged == defaults                       # nothing of the retired report was taken
+    assert not [m for m in messages if "carried" in m and "nothing was carried" not in m]
+    switch = next(m for m in messages if m.startswith("enableRag is 'false' in Prompt Builder and is kept"))
+    assert "nothing was carried from 'RAG Builder'" in switch and "carried settings" not in switch
+    differ = [m for m in messages if "differ" in m]
+    assert differ == [
+        "'RAG Builder': 4 value(s) differ and the Prompt Builder ones are kept: "
+        "contentRoot '/SAS Agentic AI Accelerator/RAG' (was '/Team/RAG'), storeSslmode 'prefer' (was 'disable'), "
+        "enable_singlestore 'true' (was '0'), embeddingProjectID 'emb-discovered' (was 'emb-1')."]
+    # a checkbox the retired report stored as 1 and the merged one as true is
+    # the same setting, and so are equal values: neither is in that line
+    assert "recordHistory" not in differ[0] and "enable_pgvector" not in differ[0]
+    assert "casServer" not in differ[0]
+
+
+def test_a_dropped_legacy_value_is_named_under_the_name_it_would_have_been_carried_as():
+    """computeContext of the retired report is ragComputeContext here."""
+    prompt = {**PROMPT_SECTION, "ragComputeContext": "Tuned context"}
+    _, messages = fold_legacy({"Prompt Builder": prompt, "RAG Builder": dict(RAG_SECTION)})
+    differ = next(m for m in messages if "differ" in m)
+    assert "1 value(s) differ" in differ
+    assert "ragComputeContext 'Tuned context' (was 'SAS Studio compute context')" in differ
+    # the rest was carried, so the switch is set and nothing else is said about it
+    assert any("enableRag set to true: the site had the report 'RAG Builder' (contentRoot / casServer)." == m
+               for m in messages)
 
 
 def test_what_the_merged_report_holds_wins_over_the_retired_one():
