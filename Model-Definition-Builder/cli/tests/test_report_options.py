@@ -3,10 +3,20 @@
 """The report client behind options-save / options-restore, and the option
 rewrite it feeds. Report content is BIRD XML on both legs: the read must ask
 for it and the write must declare it - declaring +json for XML bytes was a 400
-on every restore, and nothing here was tested."""
+on every restore, and nothing here was tested.
+
+The second half is the fold: the RAG Builder is a part of the Prompt Builder
+and has no report of its own, but sites still hold the report it had and
+options files saved from it. `fold_legacy` is what keeps an upgrade from
+losing every RAG setting, so each rule it follows has a test."""
 import pytest
 
-from mdb.core.options import read_options, write_options
+from mdb.core.options import (
+    BUILDER_REPORTS, LEGACY_DROPPED, LEGACY_RENAMES, LEGACY_REPORTS, MERGED_REPORT_LABELS,
+    NON_PORTABLE, RAG_ONLY_LABELS, RAG_PROOF_LABELS, RAG_SWITCH, SHARED_LABELS, fold_legacy,
+    merge_seed, option_text, options_file, read_options, write_options,
+)
+from mdb.viya.registry import builder_seed
 from mdb.viya.reports import CONTENT_MEDIA, find_report, get_content, put_content
 
 
@@ -108,11 +118,11 @@ def test_read_failure_carries_the_service_message():
 
 
 def test_find_report_matches_the_exact_name_only():
-    items = [{"id": "old", "name": "RAG Builder (old)"}, {"id": "cur", "name": "RAG Builder"}]
+    items = [{"id": "old", "name": "Prompt Builder (old)"}, {"id": "cur", "name": "Prompt Builder"}]
     session = _Session(get=_Response(200, payload={"items": items}))
-    assert find_report(session, "RAG Builder")["id"] == "cur"
-    assert find_report(_Session(get=_Response(200, payload={"items": items[:1]})), "RAG Builder") is None
-    assert find_report(_Session(get=_Response(403)), "RAG Builder") is None
+    assert find_report(session, "Prompt Builder")["id"] == "cur"
+    assert find_report(_Session(get=_Response(200, payload={"items": items[:1]})), "Prompt Builder") is None
+    assert find_report(_Session(get=_Response(403)), "Prompt Builder") is None
 
 
 # -- the rewrite: what options-restore does to the XML -------------------------
@@ -148,3 +158,235 @@ def test_restore_rewrites_only_the_named_values_and_reports_the_rest():
 def test_restore_with_nothing_to_change_is_a_no_op():
     updated, result = write_options(BIRD, {"contentRoot": "/SAS Agentic AI Accelerator"})
     assert updated == BIRD and not result.changed and result.missing == []
+
+
+# -- switches: a JSON boolean is written the way the report stores one ----------
+
+SWITCHES = """<SASReport>
+  <PromptDefinition label="enableRag" hidden="true" isParameter="true" dataType="string" name="pr40">
+    <DefaultValue><String behavior="fixed">false</String></DefaultValue>
+  </PromptDefinition>
+  <PromptDefinition label="enableDecision" hidden="true" isParameter="true" dataType="string" name="pr41">
+    <DefaultValue><String behavior="fixed">true</String></DefaultValue>
+  </PromptDefinition>
+</SASReport>
+"""
+
+
+def test_a_json_boolean_is_written_as_the_dropdown_key():
+    """The switches are dropdowns with the keys `true` / `false`. `str(True)`
+    is "True", which is no key of that dropdown - and which differs from the
+    stored value, so every restore would report a change that is none."""
+    assert option_text(True) == "true" and option_text(False) == "false"
+    assert option_text("True") == "True" and option_text(30) == "30" and option_text(None) == ""
+    updated, result = write_options(SWITCHES, {"enableRag": True, "enableDecision": True})
+    assert result.applied == {"enableRag": "true"}
+    assert result.unchanged == {"enableDecision": "true"}
+    assert read_options(updated) == {"enableRag": "true", "enableDecision": "true"}
+    assert "True" not in updated
+    # and back off again, from the boolean a hand-edited file would hold
+    updated, result = write_options(updated, {"enableRag": False})
+    assert result.applied == {"enableRag": "false"} and updated == SWITCHES
+
+
+def test_a_boolean_survives_the_options_file_and_the_seed_merge():
+    """False is a value someone chose, not an option nobody set."""
+    assert merge_seed({}, {"enableRag": False, "judgeModel": ""}) == {"enableRag": False}
+    assert options_file("https://site", {"Prompt Builder": {"enableRag": False}})["reports"] == {
+        "Prompt Builder": {"enableRag": False}}
+
+
+# -- one report, and the one it replaced ----------------------------------------
+
+def test_one_report_carries_both_seed_kinds():
+    assert BUILDER_REPORTS == {"Prompt Builder": ("llm", "embedding")}
+    assert LEGACY_REPORTS == {"RAG Builder"}
+    assert not set(BUILDER_REPORTS) & LEGACY_REPORTS
+    # every label a fold can produce is an option of the merged report
+    assert set(SHARED_LABELS) | set(RAG_ONLY_LABELS) | set(LEGACY_RENAMES.values()) | {RAG_SWITCH} \
+        <= set(MERGED_REPORT_LABELS)
+    assert len(MERGED_REPORT_LABELS) == len(set(MERGED_REPORT_LABELS)) == 27
+    assert not LEGACY_DROPPED & set(MERGED_REPORT_LABELS)
+
+
+def test_the_seed_names_a_project_per_kind_it_was_given():
+    seed = builder_seed("repo-1", {"llm": "llm-1", "embedding": "emb-1"}, "https://site/llm", "k8s")
+    assert seed == {"modelRepositoryID": "repo-1", "llmProjectID": "llm-1", "embeddingProjectID": "emb-1",
+                    "SCREndpoint": "https://site/llm", "deploymentType": "k8s"}
+    # nothing the app does not read, and nowhere a key could be put
+    assert not set(seed) & NON_PORTABLE
+    # a kind that was not discovered gets no key - so it cannot blank a value
+    # the live report holds
+    partial = builder_seed("repo-1", {"llm": "llm-1"}, "https://site/llm", "k8s")
+    assert "embeddingProjectID" not in partial and partial["llmProjectID"] == "llm-1"
+    assert merge_seed(partial, {"embeddingProjectID": "tuned"})["embeddingProjectID"] == "tuned"
+
+
+# What a 2.2.x `mdb options-save` wrote on a site that used both builders: two
+# sections, `computeContext` in both with different meanings, and the stale
+# `enabledBackends`.
+PROMPT_SECTION = {
+    "viyaHost": "https://site.example",
+    "modelRepositoryID": "repo-1",
+    "llmProjectID": "llm-1",
+    "SCREndpoint": "https://site.example/llm",
+    "deploymentType": "k8s",
+    "judgeModel": "gpt_5_mini",
+    "enableOptimization": "true",
+    "computeContext": "SAS Job Execution compute context",
+    "optimizeJobProgram": "/SAS Agentic AI Accelerator/Prompt Builder/Optimize-Prompt-DSPy",
+    "minOptimizeSamples": "10",
+    "credentialDomain": "agentic-ai-keys",
+}
+RAG_SECTION = {
+    "viyaHost": "https://site.example",
+    "modelRepositoryID": "repo-1",
+    "SCREndpoint": "https://site.example/llm",
+    "deploymentType": "k8s",
+    "credentialDomain": "agentic-ai-keys",
+    "contentRoot": "/SAS Agentic AI Accelerator/RAG",
+    "casServer": "cas-shared-default",
+    "computeContext": "SAS Studio compute context",
+    "storeSslmode": "disable",
+    "deletedPolicy": "retire",
+    "retainDays": "0",
+    "recordHistory": "1",
+    "embedReplicas": "1",
+    "persistElements": "1",
+    "persistChunks": "1",
+    "enabledBackends": "pgvector",
+    "enable_pgvector": "1",
+    "enable_singlestore": "0",
+    "embeddingProjectID": "emb-1",
+}
+
+
+def test_a_2_2_file_with_both_sections_folds_into_one():
+    saved = {"Prompt Builder": dict(PROMPT_SECTION), "RAG Builder": dict(RAG_SECTION)}
+    folded, messages = fold_legacy(saved)
+    assert list(folded) == ["Prompt Builder"]
+    merged = folded["Prompt Builder"]
+    # every Prompt Builder value is what it was
+    assert {label: merged[label] for label in PROMPT_SECTION} == PROMPT_SECTION
+    # every RAG-only option arrives under its own name, in the form it had
+    for label in RAG_ONLY_LABELS:
+        assert merged[label] == RAG_SECTION[label], label
+    assert merged["storeSslmode"] == "disable" and merged["enable_singlestore"] == "0"
+    # the RAG compute context under its new name, the switch on, the dead label gone
+    assert merged["ragComputeContext"] == "SAS Studio compute context"
+    assert merged["enableRag"] == "true"
+    assert "enabledBackends" not in merged
+    assert set(merged) == set(PROMPT_SECTION) | set(RAG_ONLY_LABELS) | {"ragComputeContext", "enableRag"}
+    # the input is left alone, and the fold says what it did
+    assert saved == {"Prompt Builder": PROMPT_SECTION, "RAG Builder": RAG_SECTION}
+    text = " ".join(messages)
+    assert "computeContext -> ragComputeContext" in text and "enableRag set to true" in text
+    assert "is kept" not in text          # the two reports agreed on every shared label
+
+
+def test_the_rename_never_touches_the_optimization_context():
+    """Both reports called an option `computeContext`: the job context for
+    optimization in one, the ingestion context in the other. Writing the
+    second over the first would send every optimization run to SAS Studio's
+    context - on a site that had configured both correctly."""
+    folded, _ = fold_legacy({"Prompt Builder": dict(PROMPT_SECTION), "RAG Builder": dict(RAG_SECTION)})
+    assert folded["Prompt Builder"]["computeContext"] == "SAS Job Execution compute context"
+    assert folded["Prompt Builder"]["ragComputeContext"] == "SAS Studio compute context"
+    # also when the Prompt Builder never had an optimization context: the
+    # RAG one still does not become it
+    prompt = {k: v for k, v in PROMPT_SECTION.items() if k != "computeContext"}
+    folded, _ = fold_legacy({"Prompt Builder": prompt, "RAG Builder": dict(RAG_SECTION)})
+    assert "computeContext" not in folded["Prompt Builder"]
+    assert folded["Prompt Builder"]["ragComputeContext"] == "SAS Studio compute context"
+    assert LEGACY_RENAMES == {"computeContext": "ragComputeContext"}
+
+
+def test_a_discovery_only_section_does_not_switch_rag_on():
+    """2.2.x wrote a RAG Builder section from discovery alone on a site with no
+    such report: repository, embedding project, SCR endpoint, deployment type.
+    That is not a site that uses RAG."""
+    discovered = {"modelRepositoryID": "repo-1", "embeddingProjectID": "emb-1",
+                  "SCREndpoint": "https://site.example/llm", "deploymentType": "k8s"}
+    folded, messages = fold_legacy({"Prompt Builder": dict(PROMPT_SECTION), "RAG Builder": discovered})
+    merged = folded["Prompt Builder"]
+    assert "enableRag" not in merged
+    assert merged["embeddingProjectID"] == "emb-1"       # still worth carrying
+    assert set(merged) == set(PROMPT_SECTION) | {"embeddingProjectID"}
+    assert any("enableRag not set" in m and "Options pane" in m for m in messages)
+    # either proof label alone is enough
+    for proof in RAG_PROOF_LABELS:
+        folded, _ = fold_legacy({"Prompt Builder": {}, "RAG Builder": {**discovered, proof: "x"}})
+        assert folded["Prompt Builder"]["enableRag"] == "true", proof
+
+
+def test_a_file_saved_by_the_new_cli_is_left_as_it_is():
+    saved = {"Prompt Builder": {**PROMPT_SECTION, "enableRag": "true", "ragComputeContext": "ctx",
+                                "contentRoot": "/RAG"}}
+    folded, messages = fold_legacy(saved)
+    assert folded == saved and messages == []
+    assert folded is not saved
+
+
+def test_folding_twice_changes_nothing():
+    once, _ = fold_legacy({"Prompt Builder": dict(PROMPT_SECTION), "RAG Builder": dict(RAG_SECTION)})
+    twice, messages = fold_legacy(once)
+    assert twice == once and messages == []
+
+
+def test_conflicting_shared_labels_keep_the_prompt_builder_value_and_say_so():
+    rag = {**RAG_SECTION, "SCREndpoint": "https://other.example/llm", "credentialDomain": "rag-keys"}
+    folded, messages = fold_legacy({"Prompt Builder": dict(PROMPT_SECTION), "RAG Builder": rag})
+    merged = folded["Prompt Builder"]
+    assert merged["SCREndpoint"] == "https://site.example/llm"
+    assert merged["credentialDomain"] == "agentic-ai-keys"
+    endpoint = next(m for m in messages if m.startswith("SCREndpoint:"))
+    assert "'https://site.example/llm' is kept" in endpoint and "'https://other.example/llm'" in endpoint
+    domain = next(m for m in messages if m.startswith("credentialDomain:"))
+    assert "'agentic-ai-keys' is kept" in domain and "'rag-keys'" in domain
+    # the three that agree are not mentioned
+    assert not [m for m in messages if m.startswith(("viyaHost:", "modelRepositoryID:", "deploymentType:"))]
+    assert set(SHARED_LABELS) == {"viyaHost", "modelRepositoryID", "SCREndpoint", "deploymentType",
+                                  "credentialDomain"}
+
+
+def test_what_the_merged_report_holds_wins_over_the_retired_one():
+    """A save taken after the upgrade, while the retired report still exists:
+    its values are stale, and the merged report's are the tuned ones."""
+    tuned = {**PROMPT_SECTION, "enableRag": "false", "storeSslmode": "require",
+             "ragComputeContext": "Tuned context", "embeddingProjectID": "emb-2",
+             "contentRoot": ""}
+    folded, messages = fold_legacy({"Prompt Builder": tuned, "RAG Builder": dict(RAG_SECTION)})
+    merged = folded["Prompt Builder"]
+    assert merged["storeSslmode"] == "require"
+    assert merged["ragComputeContext"] == "Tuned context"
+    assert merged["embeddingProjectID"] == "emb-2"
+    # an existing switch is never overwritten - an admin who turned RAG off
+    # meant it - but the fold says the carried settings are waiting
+    assert merged["enableRag"] == "false"
+    assert any("enableRag is 'false'" in m and "is kept" in m for m in messages)
+    # a label the merged report holds EMPTY counts as not set, and is filled
+    assert merged["contentRoot"] == "/SAS Agentic AI Accelerator/RAG"
+    # a label it lacks is filled
+    assert merged["casServer"] == "cas-shared-default"
+    # a JSON boolean is an existing switch too
+    folded, _ = fold_legacy({"Prompt Builder": {"enableRag": False}, "RAG Builder": dict(RAG_SECTION)})
+    assert folded["Prompt Builder"]["enableRag"] is False
+
+
+def test_a_file_with_only_the_retired_section_still_yields_the_merged_report():
+    """A RAG-only site: no Prompt Builder report was ever there to be saved."""
+    folded, _ = fold_legacy({"RAG Builder": dict(RAG_SECTION)})
+    assert list(folded) == ["Prompt Builder"]
+    merged = folded["Prompt Builder"]
+    assert merged["SCREndpoint"] == "https://site.example/llm" and merged["enableRag"] == "true"
+    assert "computeContext" not in merged and "enabledBackends" not in merged
+    # values that describe the old report itself, or a key, never travel
+    folded, _ = fold_legacy({"RAG Builder": {"id": "RBO", "name": "RAG Builder", "API_KEYS": "k",
+                                             "casServer": "cas"}})
+    assert folded["Prompt Builder"] == {"casServer": "cas", "enableRag": "true"}
+
+
+def test_other_reports_in_a_file_pass_through_untouched():
+    other = {"something": "else"}
+    folded, _ = fold_legacy({"My Own Report": other, "RAG Builder": dict(RAG_SECTION)})
+    assert folded["My Own Report"] == other and "RAG Builder" not in folded

@@ -182,16 +182,139 @@ def test_shipped_packages_name_no_environment(package):
 
 
 def test_objects_that_do_not_belong_in_a_package_can_be_left_out():
+    """By name, whatever the type: the demo report someone parked in the
+    folder, a scratch job definition, a stray file."""
     from mdb.core.packages import drop_objects
     package = {
-        "transferObjectCount": 3,
+        "transferObjectCount": 5,
         "transferDetails": [
             {"transferObject": {"summary": {"type": "folder", "name": "RAG"}}},
-            {"transferObject": {"summary": {"type": "report", "name": "RAG Builder"}}},
+            {"transferObject": {"summary": {"type": "flowStep", "name": "RAG - Embed Chunks.step"}}},
             {"transferObject": {"summary": {"type": "report", "name": "LIVE_DEMO"}}},
+            {"transferObject": {"summary": {"type": "jobDefinition", "name": "Scratch-Job"}}},
+            {"transferObject": {"summary": {"type": "application/vnd.sas.file+json", "name": "notes.txt"}}},
         ],
     }
     assert drop_objects(package, ["live_demo"]) == ["report LIVE_DEMO"]
-    assert [d["transferObject"]["summary"]["name"] for d in package["transferDetails"]] == ["RAG", "RAG Builder"]
+    assert drop_objects(package, ["Scratch-Job", "notes.txt"]) == [
+        "jobDefinition Scratch-Job", "application/vnd.sas.file+json notes.txt"]
+    assert [d["transferObject"]["summary"]["name"] for d in package["transferDetails"]] == [
+        "RAG", "RAG - Embed Chunks.step"]
     assert package["transferObjectCount"] == 2
     assert drop_objects(package, ["nothing here", ""]) == [] and package["transferObjectCount"] == 2
+
+
+# ---- what package-export says when a host is still there ------------------
+def test_a_failed_check_is_described_host_by_host(tmp_path):
+    """package-export ends with this text when the rewrite left a host behind.
+    It has to say which report and where, or the message is "something is
+    wrong" about a file nobody can read."""
+    from mdb.core.packages import describe_findings
+    path = _write(tmp_path, _package(
+        deflate(_bird(INTERNAL)),
+        {"VisualElement:ve8": f"https://{INTERNAL}/SASJobExecution/"}))
+    result = check_package(path)
+    assert describe_findings(result) == (
+        f"Test Builder: {INTERNAL} x1 in plain text; "
+        f"Test Builder: {INTERNAL} x2 in compressed report content")
+    assert describe_findings(check_package(_write(tmp_path, _package(deflate(_bird(PLACEHOLDER_HOST)))))) == ""
+
+
+def test_package_export_reports_a_remaining_host_instead_of_crashing(tmp_path, monkeypatch):
+    """The whole failure path of the command, with the service faked: an
+    export whose report names a host the rewrite does not touch. The command
+    must end with the finding, not with an AttributeError."""
+    import io
+    from types import SimpleNamespace
+
+    from rich.console import Console
+    from typer.testing import CliRunner
+
+    from mdb import cli
+    from mdb.core import packages
+    from mdb.viya import transfer
+
+    exported = json.dumps(_package(deflate(_bird(INTERNAL))))
+    job = {"state": "completed", "packageUri": "/transfer/packages/p1",
+           "links": [{"rel": "self", "href": "/transfer/exportJobs/j1"}]}
+    monkeypatch.setattr(transfer, "folder_by_path", lambda session, path: {"id": "f1"})
+    monkeypatch.setattr(transfer, "start_export", lambda session, name, items: job)
+    monkeypatch.setattr(transfer, "wait_for_job", lambda session, href, timeout=600: job)
+    monkeypatch.setattr(transfer, "download_package", lambda session, uri: exported)
+    monkeypatch.setattr(transfer, "delete_package", lambda session, uri: None)
+    # a rewrite that fixes nothing: what is left is what the check must report
+    monkeypatch.setattr(packages, "sanitise_package", lambda path, allowed=None: ("", {}))
+
+    class _Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    monkeypatch.setattr(cli, "_viya_session", lambda: _Session())
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=tmp_path))
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=out, width=400, force_terminal=False))
+
+    target = tmp_path / "exported.json"
+    outcome = CliRunner().invoke(cli.app, ["package-export", "--out", str(target)])
+    assert outcome.exit_code == 1, outcome.output
+    assert not isinstance(outcome.exception, AttributeError)
+    assert (f"exported.json still names a host: Test Builder: {INTERNAL} x2 "
+            "in compressed report content") in out.getvalue()
+
+
+# ---- per-user report states ------------------------------------------------
+def _wrapped(report_xml: str, states=()) -> str:
+    """Report content the way the transfer service stores it: a JSON wrapper
+    around the XML, with one full copy of the report per saved user state."""
+    return deflate(json.dumps({
+        "object": {"id": "r1", "name": "Test Builder"},
+        "transferableContent": {
+            "content": report_xml, "contentVersion": 7,
+            "reportStates": [{"content": xml, "contentVersion": 7,
+                              "reportState": {"id": f"s{i}", "userId": f"user{i}"}}
+                             for i, xml in enumerate(states)] or None,
+        },
+    }, separators=(",", ":"), ensure_ascii=False))
+
+
+def test_report_states_are_counted_and_removed(tmp_path):
+    from mdb.core.packages import report_copies, strip_report_states
+    clean = _bird(PLACEHOLDER_HOST)
+    package = _package(_wrapped(clean, states=[clean, _bird(INTERNAL)]))
+    package["description"] = "  spacing   preserved  "
+    path = _write(tmp_path, package)
+
+    result = check_package(path)
+    assert [(s.package, s.report, s.states) for s in result.states] == [("pkg.json", "Test Builder", 2)]
+    # a host that only a user's state names is still a host the package names
+    assert [(f.host, f.compressed) for f in result.findings] == [(INTERNAL, True)]
+
+    text, removed = strip_report_states(path.read_text(encoding="utf-8"))
+    assert removed == {"Test Builder": 2}
+    path.write_text(text, encoding="utf-8")
+    after = check_package(path)
+    assert after.ok and after.states == []
+    stripped = json.loads(text)
+    obj = stripped["transferDetails"][0]["transferObject"]
+    assert report_copies(obj) == [clean]
+    wrapper = json.loads(inflate(obj["content"]))
+    assert wrapper["transferableContent"]["reportStates"] is None
+    assert "user0" not in inflate(obj["content"])
+    # everything outside the report content is as it was
+    assert stripped["description"] == package["description"]
+    assert obj["summary"] == package["transferDetails"][0]["transferObject"]["summary"]
+    # a package without states comes back byte for byte
+    assert strip_report_states(text) == (text, {})
+
+
+def test_a_report_without_the_wrapper_has_one_copy_and_no_states(tmp_path):
+    from mdb.core.packages import report_copies, strip_report_states
+    package = _package(deflate(_bird(PLACEHOLDER_HOST)))
+    assert report_copies(package["transferDetails"][0]["transferObject"]) == [_bird(PLACEHOLDER_HOST)]
+    path = _write(tmp_path, package)
+    assert check_package(path).states == []
+    text = path.read_text(encoding="utf-8")
+    assert strip_report_states(text) == (text, {})

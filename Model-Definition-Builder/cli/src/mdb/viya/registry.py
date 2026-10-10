@@ -20,6 +20,7 @@ from typing import Optional
 
 from ..core.generator import effective_score_file
 from ..core.manifest import MANIFEST_FILENAME, ModelManifest
+from ..core.options import SEED_PROJECT_LABELS
 
 KIND_PROJECT = {
     "llm": "LLM Model Project",
@@ -145,7 +146,7 @@ def ensure_repository_and_project(session, kind: str, core, responsible_party: s
     and project ids for the bootstrap-file generation in mdb setup.
 
     Creates the repository and project if absent; the authorization-group rules
-    and builder seed files are produced separately by
+    and the builder seed file are produced separately by
     mdb setup (see authorization_rules_text / builder_seed)."""
     from sasctl.services import model_repository as mr
 
@@ -236,23 +237,24 @@ def authorization_rules_text(repository_id: Optional[str], repository_folder_id:
     )
 
 
-def builder_seed(kind: str, repository_id: Optional[str], project_id: Optional[str],
+def builder_seed(repository_id: Optional[str], project_ids: dict,
                  scr_endpoint: str, deployment_type: str) -> dict:
-    """The Prompt Builder / RAG Builder quick-start seed JSON
-    (llm-prompt-builder.json for llm, rag-builder.json for embedding)."""
-    if kind == "llm":
-        return {
-            "name": "LLM Prompt Builder", "id": "LPB", "width": 0, "type": "promptBuilder",
-            "modelRepositoryID": repository_id or "", "llmProjectID": project_id or "",
-            "SCREndpoint": scr_endpoint,
-            "API_KEYS": {"Anthropic": "key-value", "OpenAI": "key-value", "Google": "key-value"},
-            "deploymentType": deployment_type,
-        }
-    return {
-        "name": "RAG Builder", "id": "RBO", "width": 0, "type": "ragBuilder",
-        "modelRepositoryID": repository_id or "", "embeddingProjectID": project_id or "",
-        "SCREndpoint": scr_endpoint, "deploymentType": deployment_type,
-    }
+    """The Prompt Builder quick-start seed (llm-prompt-builder.json): the
+    environment-specific options a fresh report needs, under the names the
+    Options pane and the URL parameters use.
+
+    `project_ids` maps a seed kind ("llm", "embedding") to its Model Manager
+    project id. A kind that is not in the mapping gets no key at all, so a
+    project that could not be discovered never overwrites a value a report
+    already holds with an empty one.
+    """
+    seed = {"modelRepositoryID": repository_id or ""}
+    for kind, label in SEED_PROJECT_LABELS.items():
+        if kind in project_ids:
+            seed[label] = project_ids[kind] or ""
+    seed["SCREndpoint"] = scr_endpoint
+    seed["deploymentType"] = deployment_type
+    return seed
 
 
 @dataclass

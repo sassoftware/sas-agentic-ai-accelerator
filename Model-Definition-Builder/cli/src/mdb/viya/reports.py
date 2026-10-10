@@ -23,7 +23,7 @@ def find_report(session, name: str) -> Optional[dict]:
     """The report with this exact name, or None.
 
     Filtered server-side and matched exactly here: `contains` would also
-    return "RAG Builder (old)" and picking the first hit would silently
+    return "Prompt Builder (old)" and picking the first hit would silently
     configure the wrong report.
     """
     response = session.get(

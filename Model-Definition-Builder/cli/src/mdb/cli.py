@@ -881,11 +881,11 @@ def load_releases(
 
     One row per release and one per change, with the release, the section
     (Added / Changed / Fixed / Removed), the component it concerns (Prompt
-    Builder, RAG Builder, Model Definition Builder, ...) and the change as a
+    Builder, RAG runtime, Model Definition Builder, ...) and the change as a
     headline plus detail. It is the table a report author assigns to the
-    Prompt Builder and RAG Builder objects in SAS Visual Analytics - a
-    Data-Driven Content object needs a data assignment before it renders - and
-    it says which release an environment runs. `mdb setup` loads it too.
+    Prompt Builder object in SAS Visual Analytics - a Data-Driven Content
+    object needs a data assignment before it renders - and it says which
+    release an environment runs. `mdb setup` loads it too.
     """
     from .core.releases import build_release_table
     from .viya.cas import resolve_server
@@ -917,7 +917,7 @@ def load_releases(
                   f"promoted (global) and saved to disk{suffix}")
     _print_component_counts(summary)
     console.print(f"[green]Done. Current release: {summary['current'] or 'none dated'}. Assign "
-                  f"{caslib}.{table_name} to the Prompt Builder and RAG Builder objects in SAS Visual Analytics.[/green]")
+                  f"{caslib}.{table_name} to the Prompt Builder object in SAS Visual Analytics.[/green]")
 
 
 # ---------------------------------------------------------------------------
@@ -1066,22 +1066,24 @@ def _viya_session():
 
 @app.command()
 def setup(
-    out: str = typer.Option(".", "--out", help="Directory for the authorization-rules and builder seed files"),
-    no_files: bool = typer.Option(False, "--no-files", help="Only create the repository/projects; skip the seed files"),
+    out: str = typer.Option(".", "--out", help="Directory for the authorization-rules file and the builder seed file"),
+    no_files: bool = typer.Option(False, "--no-files", help="Only create the repository/projects; skip the two files"),
     no_releases: bool = typer.Option(
         False, "--no-releases",
         help="Skip loading the ACCELERATOR_RELEASES table into CAS (see 'mdb load-releases')"),
 ):
     """Create the SAS Model Manager repository and the LLM/Embedding Model Projects if missing,
     load the release table into CAS, and write the authorization-group rules and
-    Prompt/RAG Builder seed files.
+    the Prompt Builder seed file.
 
     Idempotent: existing objects are left untouched. `mdb register` runs the
     repository/project check automatically for the kind it registers, so calling
     setup is optional - use it to bootstrap a fresh environment up front. It also
     writes sas-viya-cli-commands.txt (the LLM Consumers / Prompt Engineers groups
-    and folder/repository authorization rules) and the llm-prompt-builder.json /
-    rag-builder.json builder seeds."""
+    and folder/repository authorization rules) and llm-prompt-builder.json, the
+    Prompt Builder seed: the repository id, the LLM and embedding project ids,
+    the SCR endpoint and the deployment type, under their option names."""
+    from .core.options import BUILDER_REPORTS
     from .viya.registry import (
         authorization_rules_text, builder_seed, ensure_repository_and_project,
     )
@@ -1106,7 +1108,7 @@ def setup(
             repo_folder = repo_folder or ensured.repository_folder_id
             project_ids[kind] = ensured.project_id
         if not no_releases:
-            # The table the Builder objects are assigned in SAS Visual Analytics;
+            # The table the Prompt Builder object is assigned in SAS Visual Analytics;
             # loading it here means a report import never lacks a data source.
             from .viya.cas import resolve_server
             caslib = os.environ.get("SAS_CAS_LIBRARY") or "Public"
@@ -1115,7 +1117,7 @@ def setup(
                 server_name = resolve_server(session, os.environ.get("SAS_CAS_SERVER"))
                 summary = _load_releases(session, ctx, caslib, server_name, table_name)
                 console.print(f"[green]loaded {caslib}.{table_name} ({summary['rows']} rows, current release "
-                              f"{summary['current'] or 'none dated'}) - assign it to the Builder objects in "
+                              f"{summary['current'] or 'none dated'}) - assign it to the Prompt Builder object in "
                               f"SAS Visual Analytics.[/green]")
             except (RuntimeError, ValueError) as exc:
                 console.print(f"[yellow]release table not loaded: {exc} - run 'mdb load-releases' later.[/yellow]")
@@ -1127,14 +1129,14 @@ def setup(
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "sas-viya-cli-commands.txt").write_text(
         authorization_rules_text(repo_id, repo_folder), encoding="utf-8")
+    # One seed for the one report: both of its seed kinds' project ids.
+    seed_kinds = [kind for kinds in BUILDER_REPORTS.values() for kind in kinds]
     (out_dir / "llm-prompt-builder.json").write_text(
-        json.dumps(builder_seed("llm", repo_id, project_ids.get("llm"), scr_endpoint, deployment_type), indent=4),
+        json.dumps(builder_seed(repo_id, {kind: project_ids.get(kind) for kind in seed_kinds},
+                                scr_endpoint, deployment_type), indent=4),
         encoding="utf-8")
-    (out_dir / "rag-builder.json").write_text(
-        json.dumps(builder_seed("embedding", repo_id, project_ids.get("embedding"), scr_endpoint, deployment_type), indent=4),
-        encoding="utf-8")
-    console.print(f"[green]Wrote sas-viya-cli-commands.txt (authorization rules), llm-prompt-builder.json "
-                  f"and rag-builder.json to {out_dir}/.[/green]")
+    console.print(f"[green]Wrote sas-viya-cli-commands.txt (authorization rules) and llm-prompt-builder.json "
+                  f"(the Prompt Builder seed, with the LLM and the embedding project id) to {out_dir}/.[/green]")
     console.print("Review sas-viya-cli-commands.txt before running it - it creates access groups and rules.")
 
 
@@ -1146,64 +1148,37 @@ def options_save(
         False, "--reports-only",
         help="Capture only what the live reports hold; skip repository/project discovery"),
 ):
-    """Save this deployment's Prompt Builder / RAG Builder option values to a file.
+    """Save this deployment's Prompt Builder option values to a file.
 
-    Every option an admin sets on a builder object - repository and project
-    ids, the SCR endpoint, the credential domain, the content root, which
-    vector stores are offered - lives INSIDE the VA report. Importing a newer
-    report from a transfer package therefore replaces a site's configuration
-    with whatever the package was built against, and the report keeps working
-    while pointing at somebody else's environment.
+    Every option an admin sets on the Prompt Builder object - repository and
+    project ids, the SCR endpoint, the credential domain, the feature
+    switches, and for its RAG part the content root and which vector stores
+    are offered - lives INSIDE the VA report. Importing a newer report from a
+    transfer package therefore replaces a site's configuration with whatever
+    the package was built against, and the report keeps working while
+    pointing at somebody else's environment.
 
     Run this BEFORE importing a report package, and `mdb options-restore`
     after.
 
-    The file supersedes the llm-prompt-builder.json / rag-builder.json seeds
-    that `mdb setup` writes: it starts from the same discovered values
-    (repository, projects, SCR endpoint) and overlays whatever the live
-    reports already hold, so a tuned deployment is captured as tuned.
+    A site upgrading from 2.2.x still has the retired report named "RAG
+    Builder". Its options are read too and folded into the Prompt Builder
+    section: the RAG settings keep their names, its `computeContext` becomes
+    `ragComputeContext`, and `enableRag` is set. Whatever the Prompt Builder
+    report already holds wins. Save BEFORE deleting that report.
+
+    The file supersedes the llm-prompt-builder.json seed that `mdb setup`
+    writes: it starts from the same discovered values (repository, projects,
+    SCR endpoint) and overlays whatever the live reports already hold, so a
+    tuned deployment is captured as tuned.
     """
     import json as _json
-    from .core.options import BUILDER_REPORTS, merge_seed, options_file, read_options
-    from .viya.registry import builder_seed, ensure_repository_and_project
-    from .viya.reports import find_report, get_content
+    from .core.options import options_file
 
     ctx = Context()
-    responsible_party = os.environ.get("SAS_RESPONSIBLE_PARTY", "")
-    deployment_type = os.environ.get("SAS_DEPLOYMENT_TYPE", "k8s")
-    scr_endpoint = _scr_endpoint()
-    captured: dict = {}
     with _viya_session() as session:
-        seeds: dict = {}
-        if not reports_only:
-            for report_name, kind in BUILDER_REPORTS.items():
-                try:
-                    ensured = ensure_repository_and_project(
-                        session, kind, ctx.core, responsible_party)
-                    seeds[report_name] = builder_seed(
-                        kind, ensured.repository_id, ensured.project_id,
-                        scr_endpoint, deployment_type)
-                except Exception as exc:
-                    console.print(f"[yellow]{report_name}: could not discover "
-                                  f"repository/project ({exc}); capturing the report only.[/yellow]")
-        for report_name in BUILDER_REPORTS:
-            live = None
-            report = find_report(session, report_name)
-            if report:
-                try:
-                    content, _ = get_content(session, report["id"])
-                    live = read_options(content)
-                except Exception as exc:
-                    console.print(f"[yellow]{report_name}: content unreadable ({exc}).[/yellow]")
-            if live is None and report_name not in seeds:
-                console.print(f"[yellow]{report_name}: no live report and nothing "
-                              "discovered - skipped.[/yellow]")
-                continue
-            merged = merge_seed(seeds.get(report_name, {}), live)
-            captured[report_name] = merged
-            source = ("report + discovery" if (live and report_name in seeds)
-                      else ("report" if live else "discovery"))
-            console.print(f"[green]{report_name}: {len(merged)} options ({source}).[/green]")
+        seeds = {} if reports_only else _discovered_seeds(session, ctx, "capturing the report only")
+        captured = _capture_options(session, seeds)
     if not captured:
         console.print("[red]Nothing captured.[/red]")
         raise typer.Exit(1)
@@ -1217,6 +1192,51 @@ def options_save(
                   "`mdb options-restore` after importing a report package.[/green]")
 
 
+def _capture_options(session, seeds: dict) -> dict:
+    """{report name: {option: value}} for the Builder report, as options-save
+    writes it: what `seeds` discovered, overlaid with what the live reports
+    hold.
+
+    A retired report that still exists is read as well and folded into the
+    merged one BEFORE the seed is applied, so the order of precedence is: the
+    merged report's own values, then the retired report's, then discovery. A
+    project id an admin once chose in the retired report beats the one this
+    run would derive.
+    """
+    from .core.options import (BUILDER_REPORTS, LEGACY_REPORTS, fold_legacy, merge_seed,
+                               read_options)
+    from .viya.reports import find_report, get_content
+    live: dict = {}
+    for report_name in (*BUILDER_REPORTS, *sorted(LEGACY_REPORTS)):
+        report = find_report(session, report_name)
+        if not report:
+            continue
+        try:
+            content, _ = get_content(session, report["id"])
+        except Exception as exc:
+            console.print(f"[yellow]{report_name}: content unreadable ({exc}).[/yellow]")
+            continue
+        live[report_name] = read_options(content)
+        if report_name in LEGACY_REPORTS:
+            console.print(f"[yellow]'{report_name}': read from the retired report of that name "
+                          f"and folded into the {', '.join(BUILDER_REPORTS)} section.[/yellow]")
+    folded, messages = fold_legacy(live)
+    for message in messages:
+        console.print(f"[yellow]  {message}[/yellow]")
+    captured: dict = {}
+    for report_name in BUILDER_REPORTS:
+        if report_name not in folded and report_name not in seeds:
+            console.print(f"[yellow]{report_name}: no live report and nothing "
+                          "discovered - skipped.[/yellow]")
+            continue
+        merged = merge_seed(seeds.get(report_name, {}), folded.get(report_name))
+        captured[report_name] = merged
+        source = ("report + discovery" if (report_name in folded and report_name in seeds)
+                  else ("report" if report_name in folded else "discovery"))
+        console.print(f"[green]{report_name}: {len(merged)} options ({source}).[/green]")
+    return captured
+
+
 @app.command("options-restore")
 def options_restore(
     file: str = typer.Option("builder-options.json", "--file", "-f",
@@ -1224,13 +1244,19 @@ def options_restore(
     dry_run: bool = typer.Option(False, "--dry-run",
                                  help="Report what would change without writing"),
 ):
-    """Write saved option values back into the builder reports after an import.
+    """Write saved option values back into the Prompt Builder report after an import.
 
     Only the options named in the file are touched: a newly imported report
     keeps its new layout, data items and objects, and gets this deployment's
     configuration back. An option the report does not have is reported rather
     than inserted - that usually means it was renamed or dropped between
     versions, which is worth knowing.
+
+    A file saved with 2.2.x holds a second section, "RAG Builder", for the
+    report of that name that is retired. It is folded into the Prompt Builder
+    section first, exactly as `mdb options-save` does it now, so its values
+    reach the report that replaced it. The retired report is not written to
+    and not deleted; when it still exists the command says so.
     """
     import json as _json
 
@@ -1268,22 +1294,69 @@ def _site_host() -> str:
     return url.split("://", 1)[-1].strip().rstrip("/")
 
 
-def _restore_options(session, saved: dict, dry_run: bool, host: str = "") -> int:
+def _fold_saved(saved: dict) -> dict:
+    """Saved options with any retired report's section folded into the merged
+    one, saying what the fold did. Every path that restores goes through
+    this, so a retired report's name never becomes a restore target."""
+    from .core.options import fold_legacy
+    folded, messages = fold_legacy(saved)
+    for message in messages:
+        console.print(f"[yellow]  {message}[/yellow]")
+    return folded
+
+
+def _warn_retired_reports(session) -> list[str]:
+    """Say so when a retired report still exists on the site; returns the
+    names found. Nothing is deleted: the report may be the only place a
+    setting was ever written down, and removing content is an admin's call."""
+    from .core.options import LEGACY_REPORTS, MERGED_REPORT
+    from .viya.reports import find_report
+    found = [name for name in sorted(LEGACY_REPORTS) if find_report(session, name)]
+    for name in found:
+        console.print(
+            f"[yellow]A report named '{name}' still exists on this site. It is retired: the RAG Builder "
+            f"is part of the {MERGED_REPORT} report since 2.3.0, and the old report keeps serving the old "
+            f"standalone UI with its own options. Once the {MERGED_REPORT} report shows your RAG setups, "
+            f"delete the report '{name}' and the job definition 'RAG-Builder-UI' next to it "
+            "(SAS Environment Manager > Content, or SAS Drive). Nothing was deleted.[/yellow]")
+    return found
+
+
+def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
+                     arriving: Optional[dict] = None) -> int:
     """Write the saved option values back into the named reports and point
     every remaining placeholder host at `host`; returns the number of reports
-    that could not be written. Shared by options-restore and builders-import."""
+    that could not be written. Shared by options-restore and builders-import.
+
+    `arriving` maps a report name to the option labels of the report a
+    pending import brings ({name: set of labels}); builders-import passes it
+    in a dry run, where the live report is still the one from before the
+    import and lacks every option the new version adds. Those are summed up
+    in one line instead of being reported as unknown one by one.
+    """
     from .core.options import rehost_content, write_options
     from .viya.reports import find_report, get_content, put_content
     failures = 0
-    for report_name, values in saved.items():
+    arriving = arriving or {}
+    for report_name, values in _fold_saved(saved).items():
         report = find_report(session, report_name)
         if not report:
-            console.print(f"[yellow]{report_name}: no such report here - skipped.[/yellow]")
+            if report_name in arriving:
+                console.print(f"[cyan]{report_name}: not on this site yet - it arrives with the import, "
+                              f"and the {len(values or {})} saved option(s) are written then.[/cyan]")
+            else:
+                console.print(f"[yellow]{report_name}: no such report here - skipped.[/yellow]")
             continue
         content, etag = get_content(session, report["id"])
         updated, result = write_options(content, values or {})
         updated, rehosted = rehost_content(updated, host) if host else (updated, 0)
+        with_import = [label for label in result.missing if label in arriving.get(report_name, ())]
+        if with_import:
+            console.print(f"[cyan]  {report_name}: {len(with_import)} option(s) arrive with the imported "
+                          f"report and are written then: {', '.join(with_import)}[/cyan]")
         for label in result.missing:
+            if label in with_import:
+                continue
             console.print(f"[yellow]  {report_name}: '{label}' is not an option of "
                           "this report version - not written.[/yellow]")
         if not result.changed and not rehosted:
@@ -1305,52 +1378,70 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "") -> int
             failures += 1
             continue
         console.print(f"[green]{report_name}: restored " + "; ".join(what) + "[/green]")
+    _warn_retired_reports(session)
     return failures
 
 
-def _discovered_options(session, ctx: "Context") -> dict:
-    """What `mdb options-save` would record on an environment with no tuned
-    report: repository and project ids, the SCR endpoint and deployment type,
-    per Builder report. The first-install values."""
-    from .core.options import BUILDER_REPORTS, merge_seed
+def _discovered_seeds(session, ctx: "Context", otherwise: str = "") -> dict:
+    """{report name: seed} from this environment: the repository id, the
+    project id of every seed kind the report needs, the SCR endpoint and the
+    deployment type.
+
+    The kinds are discovered one by one, and one that fails is left out of
+    the seed and named - with `otherwise` saying what happens instead: a
+    missing embedding project must not cost the report its LLM project.
+    A report for which no kind could be discovered gets no seed.
+    """
+    from .core.options import BUILDER_REPORTS
     from .viya.registry import builder_seed, ensure_repository_and_project
     responsible_party = os.environ.get("SAS_RESPONSIBLE_PARTY", "")
     deployment_type = os.environ.get("SAS_DEPLOYMENT_TYPE", "k8s")
     scr_endpoint = _scr_endpoint()
     seeds: dict = {}
-    for report_name, kind in BUILDER_REPORTS.items():
-        try:
-            ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
-        except Exception as exc:
-            console.print(f"[yellow]{report_name}: could not discover repository/project ({exc}).[/yellow]")
-            continue
-        seeds[report_name] = merge_seed(
-            builder_seed(kind, ensured.repository_id, ensured.project_id, scr_endpoint, deployment_type), None)
+    for report_name, kinds in BUILDER_REPORTS.items():
+        repository_id = None
+        project_ids: dict = {}
+        for kind in kinds:
+            try:
+                ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
+            except Exception as exc:
+                console.print(f"[yellow]{report_name}: could not discover the {kind} project ({exc})"
+                              + (f"; {otherwise}" if otherwise else "") + ".[/yellow]")
+                continue
+            repository_id = repository_id or ensured.repository_id
+            project_ids[kind] = ensured.project_id
+        if project_ids:
+            seeds[report_name] = builder_seed(repository_id, project_ids, scr_endpoint, deployment_type)
     return seeds
 
 
+def _discovered_options(session, ctx: "Context") -> dict:
+    """What `mdb options-save` would record on an environment with no tuned
+    report: repository and project ids, the SCR endpoint and deployment type
+    for the Builder report. The first-install values."""
+    from .core.options import merge_seed
+    return {name: merge_seed(seed, None) for name, seed in _discovered_seeds(session, ctx).items()}
+
+
 def _shipped_builder_packages(ctx: "Context") -> list[Path]:
-    folder = ctx.repo / "SAS-Viya-Integrations"
-    return sorted(folder.glob("SAS-Agentic-AI-Accelerator-*Builder.json"))
+    """The packages builders-import imports when none is named: the Prompt
+    Builder, then the RAG runtime."""
+    from .core.packages import shipped_builder_packages
+    return shipped_builder_packages(ctx.repo)
 
 
 def _package_objects(package: dict) -> list[tuple[str, str]]:
     """(type, name) of every object a package carries."""
-    objects = []
-    for detail in package.get("transferDetails") or []:
-        summary = (detail.get("transferObject") or {}).get("summary") or {}
-        kind = summary.get("type") or "?"
-        if "/" in kind:  # content files carry their media type, e.g. application/vnd.sas.file+json
-            kind = kind.rsplit(".", 1)[-1].replace("+json", "")
-        objects.append((kind, summary.get("name") or "?"))
-    return objects
+    from .core.packages import package_objects
+    return package_objects(package)
 
 
 @app.command("package-export")
 def package_export(
     folder: str = typer.Option(
         "/SAS Agentic AI Accelerator/Prompt Builder", "--folder",
-        help="SAS Content folder to export (the Prompt Builder or RAG Builder folder)."),
+        help="SAS Content folder to export: the Prompt Builder folder, or the RAG content root "
+             "(/SAS Agentic AI Accelerator/RAG) with --name \"RAG Runtime\"."),
     name: Optional[str] = typer.Option(None, "--name", help="Package name (default: the folder's name)."),
     out: Optional[Path] = typer.Option(
         None, "--out", "-o",
@@ -1358,7 +1449,8 @@ def package_export(
     keep: bool = typer.Option(False, "--keep", help="Leave the exported package on the server too."),
     exclude: Optional[list[str]] = typer.Option(
         None, "--exclude", "-x",
-        help="Object name to leave out of the package (repeatable) - a demo report or scratch job that lives in the folder but must not ship."),
+        help="Object name to leave out of the package (repeatable), whatever its type - a demo report, a scratch "
+             "job definition or a file that lives in the folder but must not ship."),
     timeout: int = typer.Option(600, "--timeout", help="Seconds to wait for the export job."),
 ):
     """Export a SAS Content folder to a transfer package and write it into the
@@ -1369,11 +1461,15 @@ def package_export(
     `mdb package-check --fix`. The export includes dependencies and
     authorization rules, as the shipped packages do; the hostname rewrite
     reaches into the compressed report content, and the result is checked
-    before it is written. Re-export after every change to a Builder's report,
-    job definition or options.
+    before it is written. A report's saved per-user states are removed: each
+    is a full copy of the report with a user id, and none belongs in a shipped
+    package. Re-export after every change to the Prompt Builder's report, job
+    definition or options, and the RAG runtime after every change to a RAG
+    step, job or rag_core.
     """
     import re as _re
-    from .core.packages import ALLOWED_HOSTS, check_package, sanitise_package
+    from .core.packages import (ALLOWED_HOSTS, check_package, describe_findings,
+                                sanitise_package, strip_report_states)
     from .viya.transfer import (delete_package, download_package, folder_by_path, job_messages,
                                 start_export, wait_for_job)
     ctx = Context()
@@ -1410,6 +1506,13 @@ def package_export(
             console.print(f"[red]--exclude names nothing in the export: {', '.join(missing)}[/red]")
             raise typer.Exit(1)
         text = json.dumps(parsed, indent=2, ensure_ascii=False) + chr(10)
+    try:
+        text, states = strip_report_states(text)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    for report_name, n in states.items():
+        console.print(f"  removed {n} per-user report state(s) from report '{report_name}'")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8", newline="\n")
     sanitised, fixed = sanitise_package(target, ALLOWED_HOSTS)
@@ -1419,18 +1522,24 @@ def package_export(
             console.print(f"  replaced {host} with the placeholder ({n} occurrence(s))")
     result = check_package(target, ALLOWED_HOSTS)
     if not result.ok:
-        console.print(f"[red]{target.name} still names a host: {result.where()}[/red]")
+        console.print(f"[red]{target.name} still names a host: {describe_findings(result)}[/red]")
         raise typer.Exit(1)
     package = json.loads(target.read_text(encoding="utf-8"))
     kinds = ", ".join(f"{kind} {name}" for kind, name in _package_objects(package))
     console.print(f"[green]Wrote {target} ({package.get('transferObjectCount', '?')} objects: {kinds}).[/green]")
+    from .core.packages import legacy_objects
+    retired = legacy_objects(package)
+    if retired:
+        console.print(f"[yellow]The package carries {', '.join(retired)} - the standalone RAG UI that is retired. "
+                      "Delete them from the folder and export again, or leave them out with --exclude.[/yellow]")
     console.print("Review the diff, then commit it with the CHANGELOG entry that explains the change.")
 
 
 @app.command("builders-import")
 def builders_import(
     packages: Optional[list[Path]] = typer.Argument(
-        None, help="Transfer package files (default: the two Builder packages this repository ships)."),
+        None, help="Transfer package files (default: the two packages this repository ships - "
+                   "the Prompt Builder and the RAG runtime)."),
     options: Optional[Path] = typer.Option(
         None, "--options",
         help="A builder-options.json from `mdb options-save` to write back after the import."),
@@ -1441,7 +1550,7 @@ def builders_import(
     dry_run: bool = typer.Option(False, "--dry-run", help="Show the objects and the import mapping; import nothing."),
     timeout: int = typer.Option(600, "--timeout", help="Seconds to wait for each import job."),
 ):
-    """Import the Prompt Builder / RAG Builder transfer packages into this
+    """Import the Prompt Builder and RAG runtime transfer packages into this
     deployment: load the release table, import each package with its report
     bound to that table and its Data-Driven Content URL pointing at this
     server, then write back saved builder options.
@@ -1451,13 +1560,24 @@ def builders_import(
     retargeted at SAS_CAS_LIBRARY.SAS_RELEASES_TABLE (the shipped packages
     bind Public.ACCELERATOR_RELEASES) and the placeholder host in the DDC URL
     becomes SAS_VIYA_URL - both through the transfer service's import mapping,
-    so nothing is edited after the fact. Afterwards the reports are
-    configured: with --options the site's saved values are written back;
+    so nothing is edited after the fact. Afterwards the Prompt Builder report
+    is configured: with --options the site's saved values are written back;
     without it the values `mdb setup` discovers (repository, projects, SCR
     endpoint, deployment type) are, and either way every remaining
-    placeholder host in a report - the DDC URL and the option defaults -
+    placeholder host in the report - the DDC URL and the option defaults -
     becomes this deployment's host. A first install needs no hand edits.
+
+    The Prompt Builder package carries the UI (its RAG part included), the
+    optimization job and the report; the RAG runtime package carries the RAG
+    custom steps, rag_core, the jobs and the retrieval model, and no UI. The
+    options are restored whenever the package that carries the report
+    imported, even if the other one failed. A package exported before 2.3.0
+    still holds the standalone RAG UI (a report named "RAG Builder" and the
+    job definition RAG-Builder-UI): the command says so, and says so when
+    such a report is still on the site. It deletes nothing.
     """
+    from .core.options import BUILDER_REPORTS
+    from .core.packages import legacy_objects, report_labels
     from .core.releases import DEFAULT_TABLE
     from .viya.cas import resolve_server
     from .viya.transfer import (delete_package, get_mapping, host_of, job_messages, job_uri,
@@ -1481,6 +1601,10 @@ def builders_import(
     caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
     table_name = table or _releases_table()
     failures = 0
+    # What each package's reports hold, and which reports sat in a package
+    # that did not import: the restore below is decided per report, not per run.
+    arriving: dict = {}
+    failed_reports: set = set()
     with _viya_session() as session:
         host = host_of(os.environ.get("SAS_VIYA_URL") or getattr(session, "hostname", "") or "")
         server_name = resolve_server(session, server or os.environ.get("SAS_CAS_SERVER"))
@@ -1502,12 +1626,21 @@ def builders_import(
             objects = _package_objects(package)
             console.print(f"\n[bold]{path.name}[/bold] - {package.get('name')}: "
                           + ", ".join(f"{kind} '{name}'" for kind, name in objects))
+            retired = legacy_objects(package)
+            if retired:
+                console.print(f"  [yellow]This package predates 2.3.0: it carries {', '.join(retired)} - the "
+                              "standalone RAG UI, which is part of the Prompt Builder now. Importing it brings "
+                              "that UI back, and mdb does not configure its report. Use the packages of a "
+                              "2.3.0 checkout.[/yellow]")
+            carried = report_labels(package)
+            arriving.update(carried)
             try:
                 uploaded = upload_package(session, path)
                 mapping = get_mapping(session, uploaded["id"])
             except RuntimeError as exc:
                 console.print(f"  [red]{exc}[/red]")
                 failures += 1
+                failed_reports.update(carried)
                 continue
             mapping, changes = rehost_mapping(mapping, host, DEFAULT_TABLE, releases_to)
             for change in changes:
@@ -1523,6 +1656,7 @@ def builders_import(
             except RuntimeError as exc:
                 console.print(f"  [red]{exc}[/red]")
                 failures += 1
+                failed_reports.update(carried)
                 continue
             state = str(job.get("state", "")).lower()
             if state != "completed" or job.get("errorCount"):
@@ -1530,30 +1664,51 @@ def builders_import(
                 for line in job_messages(session, job):
                     console.print(f"    {line}")
                 failures += 1
+                failed_reports.update(carried)
                 continue
             console.print(f"  [green]imported {len(objects)} object(s).[/green]")
-        if not failures:
-            if saved is None:
-                console.print("\nConfiguring the imported reports from this deployment (repository, projects, "
-                              "SCR endpoint, deployment type) and the site host:")
-                values = _discovered_options(session, ctx)
-            else:
-                console.print(f"\nRestoring builder options from {options}:")
-                values = saved
-            if dry_run:
-                console.print("  [cyan](dry run: the reports are not imported, so this shows the live "
-                              "reports' state)[/cyan]")
-            failures += _restore_options(session, values, dry_run, host)
+        if saved is not None:
+            console.print(f"\nRestoring builder options from {options}:")
+            values = _fold_saved(saved)
+        elif not dry_run and all(name in failed_reports for name in BUILDER_REPORTS):
+            # Nothing arrived that discovery could configure, so nothing is
+            # discovered either: discovery creates a missing project.
+            values = {}
+        else:
+            console.print("\nConfiguring the imported report from this deployment (repository, projects, "
+                          "SCR endpoint, deployment type) and the site host:")
+            values = _discovered_options(session, ctx)
+        if dry_run:
+            console.print("  [cyan](dry run: nothing is imported, so this compares with the reports as they "
+                          "are on the site now)[/cyan]")
+            failures += _restore_options(session, values, dry_run, host, arriving)
+        else:
+            # A report whose package did not import is left alone: what is on
+            # the site is the report from before, and it has its values.
+            for report_name in values:
+                if report_name in failed_reports:
+                    console.print(f"[yellow]{report_name}: its package did not import - options not "
+                                  "restored.[/yellow]")
+            failures += _restore_options(
+                session, {name: v for name, v in values.items() if name not in failed_reports}, dry_run, host)
     if failures:
+        if not dry_run:
+            again = (f"mdb options-restore --file {options}" if saved is not None
+                     else "mdb builders-import")
+            console.print(f"\n[red]Not everything was imported and configured.[/red] Fix what is reported "
+                          f"above, then run: [bold]{again}[/bold]"
+                          + ("" if saved is not None else
+                             " (it imports again and configures the report from this deployment)"))
         raise typer.Exit(1)
     if dry_run:
         return
     console.print("\n[green]Done.[/green] Next: the Content Security Policy settings are described in the "
                   "administration guide, 'Deploying the Builder UIs', step 4."
                   + ("" if saved is not None else
-                     " Optional settings (credential domain, judge model, content root, vector stores) keep "
-                     "the package's defaults - set them in the Properties panel, or run `mdb options-restore` "
-                     "with a file saved from a tuned deployment."))
+                     " Optional settings (credential domain, judge model, the decision, optimization and RAG "
+                     "switches and what they reveal) keep the package's defaults, so RAG is off until it is "
+                     "enabled - set them in the Options pane, or run `mdb options-restore` with a file saved "
+                     "from a tuned deployment."))
 
 
 @app.command("package-check")
@@ -1583,9 +1738,14 @@ def package_check(
     has no .env and no idea which deployment produced the file.
 
     Run it before committing a re-exported package; `--fix` does the rewrite.
+
+    A report is also exported with every user's saved view of it: a full copy
+    of the report per user, with that user's id and every option default
+    again. `mdb package-export` removes them; a package that still has some
+    is reported here, and `--fix` removes them.
     """
     from .core.packages import (ALLOWED_HOSTS, PLACEHOLDER_HOST, check_package,
-                                default_packages, sanitise_package)
+                                default_packages, sanitise_package, strip_report_states)
 
     targets = [Path(f) for f in files] if files else default_packages(find_repo_root())
     if not targets:
@@ -1593,6 +1753,7 @@ def package_check(
         raise typer.Exit(0)
 
     findings: list = []
+    states: list = []
     checked = reports = 0
     for path in targets:
         if not path.is_file():
@@ -1602,6 +1763,21 @@ def package_check(
         checked += result.packages_checked
         reports += result.reports_checked
         findings.extend(result.findings)
+        states.extend(result.states)
+
+    if states and fix:
+        for path in targets:
+            text, removed = strip_report_states(path.read_text(encoding="utf-8"))
+            if not removed:
+                continue
+            path.write_text(text, encoding="utf-8", newline="")
+            for report_name, n in sorted(removed.items()):
+                console.print(f"  {path.name}: removed {n} per-user report state(s) from report '{report_name}'")
+    else:
+        for found in states:
+            console.print(f"[yellow]{found.package}: report '{found.report}' carries {found.states} per-user "
+                          "report state(s) - a full copy of the report and a user id each. `mdb package-export` "
+                          "removes them; so does --fix.[/yellow]")
 
     if not findings:
         console.print(f"[green]{checked} package(s), {reports} report(s): "
