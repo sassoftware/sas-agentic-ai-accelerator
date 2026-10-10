@@ -39,7 +39,7 @@ The RAG steps are described in the [RAG user guide](https://sassoftware.github.i
 
 ### RAG and RAG-Ingestion
 
-`RAG/rag_core/` is the Python runtime the RAG steps, the ingestion job and the jobs the RAG Builder (the RAG part of the Prompt Builder) launches import at run time; `RAG/retrieve_context.py` is the retrieval model template that *RAG - Register Setup* manifests per setup; `RAG/tests/` is its test suite (`python -m pytest SAS-Viya-Integrations/RAG/tests`). `RAG-Ingestion/` holds the standalone schedulable `Ingest-Documents.sas` job and `Test-Retrieval.sas`. Everything under `RAG/` is deployed to SAS Content with `Other/deploy-rag-content.ps1` / `.sh` - SAS Content is the distribution channel, nothing is fetched from GitHub at run time.
+`RAG/rag_core/` is the Python runtime the RAG steps, the ingestion job and the jobs the RAG Builder (the RAG part of the Prompt Builder) launches import at run time; `RAG/retrieve_context.py` is the retrieval model template that *RAG - Register Setup* and the RAG Builder's **Manifest setup** manifest per setup - its MANIFEST block holds, among the setup's values, `SSL_VERIFY`, the default for TLS verification that the Builder writes from the option **Verify TLS certificates in manifested models** and that `RAGEMBED_SSLVERIFY` / `RAGSTORE_SSLVERIFY` overrule on a destination; `RAG/tests/` is its test suite (`python -m pytest SAS-Viya-Integrations/RAG/tests`). `RAG-Ingestion/` holds the standalone schedulable `Ingest-Documents.sas` job and `Test-Retrieval.sas`. Everything under `RAG/` is deployed to SAS Content with `Other/deploy-rag-content.ps1` / `.sh` - SAS Content is the distribution channel, nothing is fetched from GitHub at run time.
 
 ### Other
 

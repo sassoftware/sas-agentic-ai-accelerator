@@ -37,7 +37,12 @@ The pipeline is the same either way; what differs is where you configure it.
   setup, and let it generate the ingestion job and the SAS Studio flow for
   you. It also launches the ingestion, browses the ledger and tests the
   retrieval. See [RAG setups](./Prompt-Builder.md#rag-setups) in the Prompt
-  Builder guide.
+  Builder guide. If the step shows a warning about TLS verification at
+  **Manifest setup**, your administrator has switched certificate
+  verification off for manifested models: the retrieval model you manifest
+  then does not check the certificate of the embedding container and is
+  tagged `TLS-Verification-Off` in SAS Model Manager. Ask before you
+  manifest a setup that is going to production.
 - **In SAS Studio, step by step.** Chain the custom steps yourself, as the
   rest of this page describes. This is also the page to read for what each
   stage does — a setup made in the RAG Builder runs the same stages, and the

@@ -203,6 +203,63 @@ through `rag_core` exactly as the ingestion does, so a broken
 `retrieve_context.py` would still pass. Verifying that needs the published
 model.
 
+### TLS verification in the retrieval model
+
+The retrieval model that **Manifest setup** registers makes two HTTPS calls
+itself: to the embedding container, to embed the question, and — only in a
+compute session, where a session token exists — to the credentials service.
+It verifies both against the CA bundle of the deployment, and two environment
+variables per call decide how:
+
+| Call | CA bundle | Verification on or off |
+| --- | --- | --- |
+| Embedding container | `RAGEMBED_CABUNDLE` | `RAGEMBED_SSLVERIFY` |
+| Credentials service | `RAGSTORE_CABUNDLE` | `RAGSTORE_SSLVERIFY` |
+
+- `<prefix>_CABUNDLE` names the bundle and defaults to
+  `/security/trustedcerts.pem`. When that file does not exist where the model
+  runs, the model verifies against the certificates Python trusts by default,
+  and a certificate signed by the deployment's own CA is refused.
+- `<prefix>_SSLVERIFY` set to `false`, `no` or `0` switches verification off
+  on that destination; set to `true`, `yes` or `1` it switches verification
+  on. The variable wins in both directions.
+- When the variable is not set, or holds any other word, the constant
+  `SSL_VERIFY` in the MANIFEST block of the model decides. The Builder writes
+  it from the option **Verify TLS certificates in manifested models**
+  (`sslVerify`) of the Prompt Builder object: `True` while the option is
+  ticked, which is the default, and `False` while it is not.
+
+So the option is a default written when the setup is manifested. A retrieval
+model that is already registered keeps its constant until **Manifest setup**
+runs again, and `RAGEMBED_SSLVERIFY=true` and `RAGSTORE_SSLVERIFY=true` on a
+destination turn verification back on for a model manifested without it.
+While the option is not ticked, the step shows a warning at **Manifest
+setup** before the click, and the model it registers carries the tag
+`TLS-Verification-Off` in SAS Model Manager —
+[Deployment of Decisions](./Deployment-of-Decisions.md#finding-the-models-that-do-not-verify)
+shows how to list such models.
+
+What the option does not touch:
+
+- **The ingestion job**, the generated flow and *Test retrieval*. They run in
+  a compute session, where the bundle is mounted, and verify as before.
+- **The connection to the vector store.** Its TLS is the option
+  **RAG: vector store TLS** (`storeSslmode`) and the `sslmode` of the store.
+- **A model registered with the custom step *RAG - Register Setup*.** The
+  step does not read the options of the Prompt Builder object; a model it
+  registers verifies, unless the environment variables say otherwise.
+- **A template deployed before release 2.3.0.** It has no `SSL_VERIFY`
+  constant. **Manifest setup** works with it as before, and the model
+  verifies whatever the option says — run `deploy-rag-content` to publish the
+  current `retrieve_context.py`, then manifest again.
+
+Switching verification off is for a destination that runs Python where the
+bundle is not mounted — the case found with SAS Micro Analytic Service, which
+[Deployment of Decisions](./Deployment-of-Decisions.md#mas-certificate-bundle)
+describes together with the mount that keeps verification on. That mount is
+the fix for production; verification off is for a test system on a closed
+cluster network.
+
 Both *Launch ingestion* and *Test retrieval* need the **ingestion compute
 context** option (`ragComputeContext`) to be set — SAS Job Execution rejects a
 job that does not name one, and the rejection carries no log. The Builder
@@ -619,5 +676,6 @@ PostgreSQL, on/off for SingleStore) and defaults to enabled.
 | *Launch ingestion* or *Test retrieval* names a missing compute context | `ragComputeContext` is blank. The optimization `computeContext` is a different option |
 | A setup shows its vector database as *not offered for new setups* | The deployment withholds that database in the Options pane. The setup keeps it and can still be saved, launched and tested |
 | The Builder is switched off, or points at the wrong environment, after an upgrade | A report import replaced its Options — restore them with `mdb options-restore` |
+| A published retrieval model returns `CERTIFICATE_VERIFY_FAILED ... self-signed certificate in certificate chain` in `retrieval_status` | The model runs where the CA bundle is not mounted — see [TLS verification in the retrieval model](#tls-verification-in-the-retrieval-model) |
 | A report named **RAG Builder** still exists and shows an older page | It is the retired standalone UI of release 2.2 or earlier — see [the retired RAG Builder report](./Setup-Additional-UIs.md#the-retired-rag-builder-report) |
 | Browsing the ledger shows nothing after a run | The ledger is written by the run's final step; a large corpus takes minutes. The run panel's clock shows whether it is still going |
