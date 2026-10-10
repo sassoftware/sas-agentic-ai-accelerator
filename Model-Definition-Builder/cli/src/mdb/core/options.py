@@ -23,13 +23,14 @@ hidden parameter:
 id that is NOT stable across report versions - which is exactly why this module
 matches on the label and never on `name`.
 
-A CHECKBOX of the Options pane (the three feature switches, the run history,
-one per vector store) has the same shape: Visual Analytics stores it as a
-string parameter holding the word `true` or `false`, which is also what a
-report holds that was saved while a switch was a dropdown with those two
-words as keys. So a switch reads the same from both. A parameter typed as a
-boolean (`<Boolean>` in place of `<String>`) has not been seen in a report;
-it is read and written all the same, and its element is kept as it is.
+A CHECKBOX of the Options pane (the three feature switches, TLS verification
+in manifested models, the run history, one per vector store) has the same
+shape: Visual Analytics stores it as a string parameter holding the word
+`true` or `false`, which is also what a report holds that was saved while a
+switch was a dropdown with those two words as keys. So a switch reads the
+same from both. A parameter typed as a boolean (`<Boolean>` in place of
+`<String>`) has not been seen in a report; it is read and written all the
+same, and its element is kept as it is.
 
 WHAT IS SAVED. Only labels the file names. Restoring writes values back over
 whatever the import brought and leaves every other part of the report alone,
@@ -115,9 +116,14 @@ RAG_PROOF_LABELS = ("contentRoot", "casServer")
 #: reports a label the report lacks and never inserts it. The list is the
 #: field names LLM-Prompt-Builder/src/va/ddc.ts posts with every switch on;
 #: tests/test_package_guards.py reads that file and fails when the two differ.
+#:
+#: `sslVerify` (2.3.0) is the checkbox "Verify TLS certificates in manifested
+#: models". No 2.2.x report and no 2.2.x options file holds it, and nothing
+#: here supplies a value for it: a restore writes it only when the file names
+#: it, so a site that never set it keeps the default of the imported report.
 MERGED_REPORT_LABELS = (
     "viyaHost", "modelRepositoryID", "llmProjectID", "SCREndpoint", "deploymentType",
-    "judgeModel", "modelCardReportURI", "credentialDomain",
+    "judgeModel", "modelCardReportURI", "credentialDomain", "sslVerify",
     "enableDecision",
     "enableOptimization", "computeContext", "optimizeJobProgram", "minOptimizeSamples",
     RAG_SWITCH, "embeddingProjectID", "contentRoot", "casServer", "ragComputeContext",

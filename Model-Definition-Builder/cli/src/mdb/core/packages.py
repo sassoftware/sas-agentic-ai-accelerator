@@ -391,6 +391,9 @@ LEGACY_OBJECTS = tuple(
 #: an exporting site is likely to have tuned the default the UI and the
 #: documentation name. `modelCardReportURI` is a report id of the exporting
 #: site written as a relative URI, which the host check cannot see.
+#: `sslVerify` is on: a package exported from a site that switched TLS
+#: verification off for its manifested models must not switch it off for
+#: every site that imports the package.
 #:
 #: Not listed: `viyaHost` and `SCREndpoint` (the host check owns them), and
 #: `computeContext` / `ragComputeContext`, whose shipped value is decided when
@@ -408,6 +411,7 @@ NEUTRAL_DEFAULTS = {
     "minOptimizeSamples": "30",
     "deploymentType": "k8s",
     "credentialDomain": "agentic-ai-keys",
+    "sslVerify": "true",
     "contentRoot": "/SAS Agentic AI Accelerator/RAG",
     "casServer": "cas-shared-default",
 }

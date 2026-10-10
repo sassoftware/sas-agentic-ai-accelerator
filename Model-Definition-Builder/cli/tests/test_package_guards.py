@@ -135,7 +135,9 @@ def test_neutral_defaults_pass():
         # what an exporting site tunes, and an export does not reset
         "judgeModel": "", "modelCardReportURI": "", "minOptimizeSamples": "30",
         "deploymentType": "k8s", "credentialDomain": "agentic-ai-keys",
-        "contentRoot": "/SAS Agentic AI Accelerator/RAG", "casServer": "cas-shared-default"}
+        "contentRoot": "/SAS Agentic AI Accelerator/RAG", "casServer": "cas-shared-default",
+        # TLS verification in manifested models: on, whatever the exporting site chose
+        "sslVerify": "true"}
     assert set(NEUTRAL_DEFAULTS) <= set(MERGED_REPORT_LABELS)
 
 
@@ -153,6 +155,8 @@ def test_neutral_defaults_pass():
     ("minOptimizeSamples", "10"),
     ("deploymentType", "aca"),
     ("credentialDomain", "team-keys"),
+    # the exporting site switched TLS verification off for its own models
+    ("sslVerify", "false"),
     ("contentRoot", "/Team/RAG"),
     ("casServer", "cas-team"),
 ])
@@ -378,7 +382,7 @@ def test_only_the_two_exports_from_before_the_merge_are_excused():
     path = Path(PROMPT_BUILDER_PACKAGE)
     problems = missing_option_labels(package, MERGED_REPORT_LABELS)
     assert problems and "enableRag" in problems[0]
-    with pytest.raises(pytest.fail.Exception, match="lacks 24 option label"):
+    with pytest.raises(pytest.fail.Exception, match="lacks 25 option label"):
         _settle({**package, "id": "0b0d0f6e-a-re-export-without-the-va-save"}, path, problems)
     with pytest.raises(pytest.fail.Exception):
         _settle(package, path, problems)                        # no id at all

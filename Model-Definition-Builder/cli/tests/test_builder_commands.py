@@ -13,7 +13,7 @@ is one way an upgrade from 2.2.x could lose something:
     instead of the Prompt Builder;
   * one Model Manager project that cannot be discovered costing the other;
   * one package that fails to import leaving the other one's report on
-    package defaults;
+    package defaults, or the command naming a way on that imports nothing;
   * a dry run burying its answer under a line per option the new report adds.
 """
 import io
@@ -56,7 +56,7 @@ NEW_DEFAULTS = {"viyaHost": "https://your-sas-viya-host", "modelRepositoryID": "
                 "enableDecision": "true", "enableRag": "false", "embeddingProjectID": "",
                 "contentRoot": "/SAS Agentic AI Accelerator/RAG", "casServer": "cas-shared-default",
                 "ragComputeContext": "SAS Studio compute context", "storeSslmode": "prefer",
-                "enable_pgvector": "1"}
+                "enable_pgvector": "1", "sslVerify": "true"}
 
 
 class Site:
@@ -198,6 +198,22 @@ def test_save_on_a_site_without_the_retired_report_is_what_it_was(site, discover
     assert "enableRag" not in saved and "retired" not in out.getvalue()
 
 
+def test_save_carries_tls_verification_only_from_a_report_that_holds_it(site, discovery, out):
+    """sslVerify is an option of the report and nothing else: discovery does
+    not know it, a 2.2.x report does not hold it, and the save invents no
+    value for it. A site that switched verification off is saved as that."""
+    discovery({"llm": "llm-disc", "embedding": "emb-disc"})
+    seeds = cli._discovered_seeds(None, CTX)
+    assert "sslVerify" not in seeds["Prompt Builder"]
+    site(Site(**{"Prompt Builder": OLD_PROMPT, "RAG Builder": OLD_RAG}))
+    assert "sslVerify" not in cli._capture_options(None, seeds)["Prompt Builder"]
+    site(Site(**{"Prompt Builder": {**NEW_DEFAULTS, "sslVerify": "false"}, "RAG Builder": OLD_RAG}))
+    assert cli._capture_options(None, seeds)["Prompt Builder"]["sslVerify"] == "false"
+    site(Site(**{"Prompt Builder": NEW_DEFAULTS}))
+    assert cli._capture_options(None, seeds)["Prompt Builder"]["sslVerify"] == "true"
+    assert "sslVerify" not in out.getvalue()
+
+
 def test_save_with_no_report_and_no_discovery_captures_nothing(site, out):
     site(Site())
     assert cli._capture_options(None, {}) == {}
@@ -223,8 +239,9 @@ def test_restore_of_a_2_2_file_writes_the_merged_report_only(site, out):
     assert restored["ragComputeContext"] == "SAS Studio compute context"
     assert restored["computeContext"] == "SAS Job Execution compute context"
     assert restored["enableRag"] == "true" and restored["enableOptimization"] == "true"
-    # what the file does not name keeps the package default
-    assert restored["enableDecision"] == "true"
+    # what the file does not name keeps the package default - a 2.2.x file
+    # knows nothing of TLS verification, so that stays on
+    assert restored["enableDecision"] == "true" and restored["sslVerify"] == "true"
     assert fake.options("RAG Builder") == OLD_RAG
     text = out.getvalue()
     assert "A report named 'RAG Builder' still exists on this site. It is retired" in text
@@ -259,6 +276,35 @@ def test_restore_into_a_report_from_before_the_merge_names_what_it_cannot_write(
     assert fake.options("Prompt Builder")["computeContext"] == "SAS Job Execution compute context"
 
 
+def test_tls_verification_is_restored_as_the_file_says(site, out):
+    """A site that switched verification off gets that back after an import,
+    whichever way the file spells it; a file that says on leaves it on."""
+    fake = site(Site(**{"Prompt Builder": NEW_DEFAULTS}))
+    for given in (False, "false"):
+        fake.reports["Prompt Builder"] = _xml(NEW_DEFAULTS)
+        assert cli._restore_options(None, {"Prompt Builder": {"sslVerify": given}}, False) == 0
+        assert fake.options("Prompt Builder")["sslVerify"] == "false", given
+    assert "Prompt Builder: restored 1 option(s): sslVerify" in out.getvalue()
+    for given in (True, "true"):
+        fake.reports["Prompt Builder"] = _xml(NEW_DEFAULTS)
+        assert cli._restore_options(None, {"Prompt Builder": {"sslVerify": given}}, False) == 0
+        assert fake.options("Prompt Builder")["sslVerify"] == "true", given
+
+
+def test_tls_verification_that_cannot_be_written_is_a_failure(site, out):
+    """A report saved before the option existed cannot hold it. The file said
+    verification is off for this site, the report will manifest with it on:
+    that is an option of this release that was not written."""
+    older = {label: value for label, value in NEW_DEFAULTS.items() if label != "sslVerify"}
+    fake = site(Site(**{"Prompt Builder": older}))
+    assert cli._restore_options(None, {"Prompt Builder": {"sslVerify": "false", "llmProjectID": "llm-live"}},
+                                False) == 1
+    text = out.getvalue()
+    assert "Prompt Builder: 'sslVerify' is not an option of this report version - not written." in text
+    assert "Prompt Builder: 1 option(s) the Prompt Builder reads cannot be written (sslVerify)" in text
+    assert fake.options("Prompt Builder")["llmProjectID"] == "llm-live"
+
+
 def test_a_label_no_report_version_holds_is_named_and_is_no_failure(site, out):
     """A 2.2.x file names options that are gone for good (the key table of the
     optimization job). The report is not behind for lacking them, and what
@@ -285,6 +331,29 @@ def test_a_value_a_checkbox_cannot_take_is_named_and_counts(site, out):
         in out.getvalue()
     restored = fake.options("Prompt Builder")
     assert restored["enableRag"] == "false" and restored["llmProjectID"] == "llm-live"
+
+
+def test_every_rejected_value_gets_a_line_and_the_report_does_not_match(site, out):
+    """One line per label, each with the value it was given - and when
+    nothing else was left to write, no "already matches" under them."""
+    fake = site(Site(**{"Prompt Builder": NEW_DEFAULTS}))
+    for label in ("enableRag", "sslVerify"):
+        fake.reports["Prompt Builder"] = fake.reports["Prompt Builder"].replace(
+            f'<PromptDefinition label="{label}" hidden="true" isParameter="true" dataType="string"',
+            f'<PromptDefinition label="{label}" hidden="true" isParameter="true" dataType="boolean"')
+    before = fake.reports["Prompt Builder"]
+    saved = {"Prompt Builder": {"enableRag": "maybe", "sslVerify": ""}}
+    for dry_run in (True, False):
+        out.seek(0)
+        out.truncate()
+        assert cli._restore_options(None, saved, dry_run) == 1
+        text = out.getvalue()
+        assert text.count("is a checkbox in this report and") == 2
+        assert "'enableRag' is a checkbox in this report and 'maybe' says neither on nor off - not written." in text
+        assert "'sslVerify' is a checkbox in this report and '' says neither on nor off - not written." in text
+        assert "already matches" not in text
+    # nothing was written: TLS verification is still on
+    assert fake.written == [] and fake.reports["Prompt Builder"] == before
 
 
 def test_a_report_behind_the_file_still_gets_what_it_can_hold(site, out):
@@ -438,7 +507,10 @@ def test_a_failed_runtime_import_still_restores_the_report(importing, tmp_path):
     assert fake.options("Prompt Builder")["llmProjectID"] == "llm-live"
     assert fake.options("Prompt Builder")["enableRag"] == "true"
     assert "Not everything was imported and configured." in text
-    assert f"then run: mdb options-restore --file {options}" in text
+    # options-restore would leave the runtime package unimported for good
+    assert f"then run: mdb builders-import --options {options} --no-releases" in text
+    assert f"({RAG_RUNTIME_PACKAGE} did not import - this imports again and writes the options back" in text
+    assert "then run: mdb options-restore" not in text
     assert "Done." not in text
 
 
@@ -451,7 +523,10 @@ def test_a_failed_prompt_builder_import_leaves_the_old_report_alone(importing, t
     assert fake.written == [] and fake.options("Prompt Builder") == OLD_PROMPT
     assert "Prompt Builder: its package did not import - options not restored." in text
     assert "not an option of this report version" not in text
-    assert f"then run: mdb options-restore --file {options}" in text
+    # the report on the site is the 2.2.x one: a restore alone cannot reach it
+    assert f"then run: mdb builders-import --options {options} --no-releases" in text
+    assert f"({PROMPT_BUILDER_PACKAGE} did not import" in text
+    assert "then run: mdb options-restore" not in text
 
 
 @pytest.fixture
@@ -478,7 +553,7 @@ def test_a_failed_first_install_discovers_nothing_and_says_how_to_go_on(importin
     assert result.exit_code == 1 and asked == []
     assert fake.written == [] and "Prompt Builder" not in fake.reports
     assert "No Builder report was imported" in text
-    assert "then run: mdb builders-import (it imports again and configures the report" in text
+    assert "then run: mdb builders-import --no-releases (it imports again and configures the report" in text
 
 
 TUNED = {**NEW_DEFAULTS, "viyaHost": "https://site.example", "SCREndpoint": "https://scr.site.example/llm",
@@ -538,7 +613,32 @@ def test_a_restore_that_cannot_reach_the_report_does_not_end_with_done(importing
     assert "enableRag" not in fake.options("Prompt Builder")
     assert "Prompt Builder: 7 option(s) the Prompt Builder reads cannot be written" in text
     assert "Not everything was imported and configured." in text and "Done." not in text
-    assert f"then run: mdb options-restore --file {options}" in text
+    # the package that was named imported: what is left is the options
+    assert (f"then run: mdb options-restore --file {options} (every package imported - only the options "
+            "are left to write)") in text
+    assert "then run: mdb builders-import" not in text
+
+
+def test_the_command_to_repeat_is_the_one_that_was_run(importing, tmp_path):
+    """Packages that were named and flags that were given are in the line: a
+    repeat without them would import other packages, or bind the report to
+    another release table."""
+    options = tmp_path / "builder-options.json"
+    options.write_text(json.dumps({"version": 1, "reports": SAVED_2_2}), encoding="utf-8")
+    runtime = tmp_path / "SAS-Viya-Integrations" / RAG_RUNTIME_PACKAGE
+    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), str(runtime), "--options", str(options),
+                                   "--caslib", "Team", "--table", "RELEASES", "--timeout", "30",
+                                   runtime_fails=True)
+    assert result.exit_code == 1
+    assert (f"then run: mdb builders-import {runtime} --options {options} --caslib Team --table RELEASES "
+            "--no-releases --timeout 30 (") in text
+
+
+def test_the_command_to_repeat_quotes_a_path_with_a_space():
+    assert cli._import_command(None, None, None, None, None, False, cli.IMPORT_TIMEOUT) == "mdb builders-import"
+    packages, options = Path("my packages") / "p.json", Path("my files") / "o.json"
+    assert cli._import_command([packages], options, None, None, "cas a", True, cli.IMPORT_TIMEOUT) == (
+        f'mdb builders-import "{packages}" --options "{options}" --server "cas a" --no-releases')
 
 
 def test_a_dry_run_without_options_discovers_nothing(importing, no_discovery):

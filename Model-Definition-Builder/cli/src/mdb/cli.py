@@ -1387,7 +1387,8 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
         if unwritten or result.rejected:
             failures += 1
         if not result.changed and not rehosted:
-            if values:
+            # "already matches" is only true of a report that took every value.
+            if values and not unwritten and not result.rejected:
                 console.print(f"[green]{report_name}: already matches "
                               f"({len(result.unchanged)} options, no placeholder host).[/green]")
             continue
@@ -1593,6 +1594,31 @@ def package_export(
     console.print("Review the diff, then commit it with the CHANGELOG entry that explains the change.")
 
 
+#: Seconds `mdb builders-import` waits for one import job unless told otherwise.
+IMPORT_TIMEOUT = 600
+
+
+def _shell_word(value) -> str:
+    """A command-line argument as it has to be typed: quoted when it holds a space."""
+    text = str(value)
+    return f'"{text}"' if " " in text else text
+
+
+def _import_command(packages, options, caslib, table, server, no_releases: bool, timeout: int) -> str:
+    """`mdb builders-import` with the arguments a run was given, for the line
+    that tells an admin to run it again. An argument that was not given is
+    left out, so the repeat reads the same environment the first run did."""
+    words = ["mdb", "builders-import", *(_shell_word(path) for path in packages or [])]
+    for flag, value in (("--options", options), ("--caslib", caslib), ("--table", table), ("--server", server)):
+        if value is not None:
+            words += [flag, _shell_word(value)]
+    if no_releases:
+        words.append("--no-releases")
+    if timeout != IMPORT_TIMEOUT:
+        words += ["--timeout", str(timeout)]
+    return " ".join(words)
+
+
 @app.command("builders-import")
 def builders_import(
     packages: Optional[list[Path]] = typer.Argument(
@@ -1606,7 +1632,7 @@ def builders_import(
     server: Optional[str] = typer.Option(None, "--server", help="CAS server (env: SAS_CAS_SERVER)."),
     no_releases: bool = typer.Option(False, "--no-releases", help="Do not (re)load the release table first."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show the objects and the import mapping; import nothing."),
-    timeout: int = typer.Option(600, "--timeout", help="Seconds to wait for each import job."),
+    timeout: int = typer.Option(IMPORT_TIMEOUT, "--timeout", help="Seconds to wait for each import job."),
 ):
     """Import the Prompt Builder and RAG runtime transfer packages into this
     deployment: load the release table, import each package with its report
@@ -1633,10 +1659,13 @@ def builders_import(
     optimization job and the report; the RAG runtime package carries the RAG
     custom steps, rag_core, the jobs and the retrieval model, and no UI. The
     options are restored whenever the package that carries the report
-    imported, even if the other one failed. A package exported before 2.3.0
-    still holds the standalone RAG UI (a report named "RAG Builder" and the
-    job definition RAG-Builder-UI): the command says so, and says so when
-    such a report is still on the site. It deletes nothing.
+    imported, even if the other one failed. A run that did not do everything
+    ends with exit code 1 and the command to repeat: this one, with the same
+    arguments, when a package did not import; `mdb options-restore` when every
+    package imported and only the options could not all be written. A package
+    exported before 2.3.0 still holds the standalone RAG UI (a report named
+    "RAG Builder" and the job definition RAG-Builder-UI): the command says so,
+    and says so when such a report is still on the site. It deletes nothing.
     """
     from .core.options import BUILDER_REPORTS
     from .core.packages import legacy_objects, report_labels
@@ -1660,6 +1689,9 @@ def builders_import(
             console.print(f"[red]{options} not found - run `mdb options-save` first.[/red]")
             raise typer.Exit(2)
         saved = json.loads(options.read_text(encoding="utf-8")).get("reports") or {}
+    # The command line as it was given, for the line that says how to go on -
+    # taken before `caslib` is replaced by its default.
+    given = _import_command(packages, options, caslib, table, server, no_releases, timeout)
     caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
     table_name = table or _releases_table()
     failures = 0
@@ -1667,6 +1699,7 @@ def builders_import(
     # that did not import: the restore below is decided per report, not per run.
     arriving: dict = {}
     failed_reports: set = set()
+    not_imported: list = []
     with _viya_session() as session:
         host = host_of(os.environ.get("SAS_VIYA_URL") or getattr(session, "hostname", "") or "")
         server_name = resolve_server(session, server or os.environ.get("SAS_CAS_SERVER"))
@@ -1703,6 +1736,7 @@ def builders_import(
                 console.print(f"  [red]{exc}[/red]")
                 failures += 1
                 failed_reports.update(carried)
+                not_imported.append(path.name)
                 continue
             mapping, changes = rehost_mapping(mapping, host, DEFAULT_TABLE, releases_to)
             for change in changes:
@@ -1719,6 +1753,7 @@ def builders_import(
                 console.print(f"  [red]{exc}[/red]")
                 failures += 1
                 failed_reports.update(carried)
+                not_imported.append(path.name)
                 continue
             state = str(job.get("state", "")).lower()
             if state != "completed" or job.get("errorCount"):
@@ -1727,6 +1762,7 @@ def builders_import(
                     console.print(f"    {line}")
                 failures += 1
                 failed_reports.update(carried)
+                not_imported.append(path.name)
                 continue
             console.print(f"  [green]imported {len(objects)} object(s).[/green]")
         # The Builder reports this run brings (in a dry run: would bring).
@@ -1770,12 +1806,20 @@ def builders_import(
                 session, {name: v for name, v in values.items() if name not in failed_reports}, dry_run, host)
     if failures:
         if not dry_run:
-            again = (f"mdb options-restore --file {options}" if saved is not None
-                     else "mdb builders-import")
+            # The command that finishes the job. `mdb options-restore` writes
+            # options and imports nothing, so it is only the answer when every
+            # package imported and the options were not all written.
+            if saved is None:
+                again, does = given, "it imports again and configures the report from this deployment"
+            elif not_imported:
+                again = given
+                does = (f"{', '.join(not_imported)} did not import - this imports again and writes the "
+                        "options back; `mdb options-restore` imports nothing")
+            else:
+                again = f"mdb options-restore --file {_shell_word(options)}"
+                does = "every package imported - only the options are left to write"
             console.print(f"\n[red]Not everything was imported and configured.[/red] Fix what is reported "
-                          f"above, then run: [bold]{again}[/bold]"
-                          + ("" if saved is not None else
-                             " (it imports again and configures the report from this deployment)"))
+                          f"above, then run: [bold]{again}[/bold] ({does})")
         raise typer.Exit(1)
     if dry_run:
         return

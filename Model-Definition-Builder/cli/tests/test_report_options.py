@@ -289,7 +289,7 @@ def test_one_report_carries_both_seed_kinds():
     # every label a fold can produce is an option of the merged report
     assert set(SHARED_LABELS) | set(RAG_ONLY_LABELS) | set(LEGACY_RENAMES.values()) | {RAG_SWITCH} \
         <= set(MERGED_REPORT_LABELS)
-    assert len(MERGED_REPORT_LABELS) == len(set(MERGED_REPORT_LABELS)) == 27
+    assert len(MERGED_REPORT_LABELS) == len(set(MERGED_REPORT_LABELS)) == 28
     assert not LEGACY_DROPPED & set(MERGED_REPORT_LABELS)
 
 
@@ -304,6 +304,45 @@ def test_the_seed_names_a_project_per_kind_it_was_given():
     partial = builder_seed("repo-1", {"llm": "llm-1"}, "https://site/llm", "k8s")
     assert "embeddingProjectID" not in partial and partial["llmProjectID"] == "llm-1"
     assert merge_seed(partial, {"embeddingProjectID": "tuned"})["embeddingProjectID"] == "tuned"
+
+
+def test_tls_verification_is_an_option_of_the_merged_report_and_of_nothing_older():
+    """sslVerify (2.3.0): listed where the Options pane has it, after the
+    credential domain. The retired report never held it and discovery does
+    not know it, so no seed carries it and no rule of the fold names it."""
+    labels = list(MERGED_REPORT_LABELS)
+    assert labels.index("sslVerify") == labels.index("credentialDomain") + 1
+    assert "sslVerify" not in SHARED_LABELS + RAG_ONLY_LABELS
+    assert "sslVerify" not in LEGACY_RENAMES and "sslVerify" not in NON_PORTABLE
+    seed = builder_seed("repo-1", {"llm": "llm-1", "embedding": "emb-1"}, "https://site/llm", "k8s")
+    assert "sslVerify" not in seed and "sslVerify" not in merge_seed(seed, {"viyaHost": "https://site"})
+    # a site that set it keeps it through a save, off included
+    assert merge_seed(seed, {"sslVerify": "false"})["sslVerify"] == "false"
+    assert merge_seed(seed, {"sslVerify": False})["sslVerify"] is False
+
+
+SSL_REPORT = (
+    '<SASReport><PromptDefinition label="credentialDomain" hidden="true" isParameter="true" dataType="string" '
+    'name="pr8"><DefaultValue><String behavior="fixed">agentic-ai-keys</String></DefaultValue></PromptDefinition>'
+    '<PromptDefinition label="sslVerify" hidden="true" isParameter="true" dataType="string" name="pr9">'
+    '<DefaultValue><String behavior="fixed">true</String></DefaultValue></PromptDefinition></SASReport>')
+
+
+def test_a_restore_leaves_tls_verification_alone_unless_the_file_names_it():
+    """A 2.2.x file has no such value: the default of the imported report
+    stays. A file that names it is written, on or off."""
+    updated, result = write_options(SSL_REPORT, {"credentialDomain": "team-keys"})
+    assert result.applied == {"credentialDomain": "team-keys"} and result.missing == []
+    assert read_options(updated)["sslVerify"] == "true"
+    for given in (False, "false"):
+        updated, result = write_options(SSL_REPORT, {"sslVerify": given})
+        assert result.applied == {"sslVerify": "false"} and read_options(updated)["sslVerify"] == "false"
+    updated, result = write_options(SSL_REPORT, {"sslVerify": True})
+    assert updated == SSL_REPORT and result.unchanged == {"sslVerify": "true"}
+    # a report from before the option existed: named, not inserted
+    older = SSL_REPORT[:SSL_REPORT.index('<PromptDefinition label="sslVerify"')] + "</SASReport>"
+    updated, result = write_options(older, {"sslVerify": "false"})
+    assert updated == older and result.missing == ["sslVerify"]
 
 
 # What a 2.2.x `mdb options-save` wrote on a site that used both builders: two
@@ -366,6 +405,19 @@ def test_a_2_2_file_with_both_sections_folds_into_one():
     text = " ".join(messages)
     assert "computeContext -> ragComputeContext" in text and "enableRag set to true" in text
     assert "is kept" not in text          # the two reports agreed on every shared label
+
+
+def test_the_fold_neither_invents_nor_drops_tls_verification():
+    """Folding a 2.2.x file gives no sslVerify, so a restore leaves the
+    report's default. A value the Prompt Builder section holds is kept as it
+    is, and the fold has nothing to say about it."""
+    folded, messages = fold_legacy({"Prompt Builder": dict(PROMPT_SECTION), "RAG Builder": dict(RAG_SECTION)})
+    assert "sslVerify" not in folded["Prompt Builder"] and "sslVerify" not in " ".join(messages)
+    for held in ("false", False, "true"):
+        folded, messages = fold_legacy({"Prompt Builder": {**PROMPT_SECTION, "sslVerify": held},
+                                        "RAG Builder": dict(RAG_SECTION)})
+        assert folded["Prompt Builder"]["sslVerify"] is held
+        assert "sslVerify" not in " ".join(messages)
 
 
 def test_the_rename_never_touches_the_optimization_context():
