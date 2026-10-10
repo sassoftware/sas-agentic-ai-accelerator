@@ -18,8 +18,9 @@
  *
  * There is ONE options group for the whole page - the prompt side, the RAG
  * side and the three switches between them - and it is flat: the shared
- * options first, then each switch directly followed by the options that only
- * matter while it is on.
+ * options first (the last of them the checkbox for TLS verification in
+ * manifested models), then each switch directly followed by the options that
+ * only matter while it is on.
  *
  * No secret is part of this contract: provider API keys and vector-store
  * credentials resolve from the configured SAS Viya credential domain (see
@@ -193,6 +194,16 @@ function buildOptionsConfig(config: RuntimeConfig): Record<string, unknown> {
         // save would store a blank, which reads as "use the default domain".
         pb.credentialDomain || 'none',
         'SAS Viya credential domain used by every kind. Provider API keys are resolved from it under the signed-in user; models without a key entry are disabled with a note. For RAG, the ingestion job and the retrieval take the vector-store credentials and location from it (<BACKEND>_RAG_USER / <BACKEND>_RAG_PW entries). Defaults to agentic-ai-keys (the default of the create-credential-domain scripts and mdb credentials-apply); a domain that does not exist resolves to no keys. Enter none to disable credential lookups for prompt and decision templates - RAG needs a domain and cannot be used with none. See the Managing Credentials administration guide.'
+      ),
+      // A checkbox like the switches below, and the last shared option. It is
+      // not a switch: no part of the page and no request depends on it. It is
+      // the default written into the score code of models manifested from now
+      // on, so its place is with the settings every kind shares.
+      switchField(
+        'sslVerify',
+        'Verify TLS certificates in manifested models',
+        pb.sslVerify !== false,
+        'Ticked (the default): a manifested model that calls a model container over HTTPS itself - a prompt template manifested with the LLM call included, a decision template, a RAG retrieval model - verifies the certificate of that call. Unticked: models manifested from then on do not verify it and carry the tag TLS-Verification-Off in SAS Model Manager. Meant for a publishing destination that runs Python where the SAS Viya CA bundle is not mounted. A model that is already manifested keeps what it was manifested with. On the destination the environment variable LLMCONTAINERSSLVERIFY (for a retrieval model RAGEMBED_SSLVERIFY and RAGSTORE_SSLVERIFY) set to true or false overrides what was manifested. Does not change what this page does in the browser, the RAG ingestion job, or a prompt template manifested for the Call LLM node.'
       ),
 
       // --- the switches, each followed by what it brings ---------------------
@@ -376,7 +387,8 @@ function textField(
 }
 
 /**
- * One of the three feature switches: a checkbox.
+ * A checkbox: one of the three feature switches, or the TLS verification
+ * default of manifested models.
  *
  * Not a dropdown with the keys 'true' and 'false', which is what these were:
  * VA does not restore such a dropdown. After every reload of the object the

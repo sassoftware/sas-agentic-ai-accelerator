@@ -75,6 +75,18 @@ export interface PromptBuilderConfig {
    * that word.
    */
   credentialDomain?: string;
+  /**
+   * Whether a model manifested from this page verifies the TLS certificate of
+   * the HTTPS call it makes to a model container itself (option `sslVerify`,
+   * a checkbox, ticked by default). A manifest-time default only: it is
+   * written into the score code of a prompt template manifested with the LLM
+   * call included and of a decision template, where the environment variable
+   * LLMCONTAINERSSLVERIFY of the publishing destination still overrides it.
+   * Nothing the page does in the browser depends on it. Only the literal
+   * `false` switches verification off - `src/config.ts` reads the option so
+   * that an unreadable value stays on.
+   */
+  sslVerify?: boolean;
   [key: string]: unknown;
 }
 

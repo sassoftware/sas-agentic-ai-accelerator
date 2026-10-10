@@ -8,8 +8,9 @@
  * real Python interpreter (see python-check.cjs, which has to sit next to
  * this file).
  */
+const crypto = require('crypto');
 const { chromium } = require('playwright');
-const { resolvePython, compilePython, callScoreModel } = require('./python-check.cjs');
+const { resolvePython, compilePython, callScoreModel, withoutTlsDefault, expectedTlsVerify, tlsVerifyOf } = require('./python-check.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const results = [];
@@ -49,6 +50,15 @@ function assertCompiles(code, label) {
   const compiled = compilePython(code, 'llm_manifest.py');
   assert(compiled.ok, `${label} compiles without a warning (${compiled.python}${compiled.ok ? '' : ': ' + lastLine(compiled.error)})`);
 }
+// A score code names the SCR endpoint of the page, and so the port of the
+// mock; with that replaced its hash is the same on every port.
+const sha256 = (text) => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+const portless = (code) => code.split(BASE).join('http://mock');
+// The integrated score code of the run this suite manifests (variables
+// customer and amount, demo_llm), as the bundle of commit ccae261 wrote it -
+// the last one before the option "Verify TLS certificates in manifested
+// models". Recorded by running this suite against that bundle.
+const INTEGRATED_CODE_BEFORE_THE_TLS_OPTION = '009acb271cff755ba2cdeb39e1e8bf67a400c070fc652592c0ec478e39d27a11';
 // What a link that leaves the page does when no tab can be opened: it shows
 // for a moment that the link was copied. `window.open` is made to answer the
 // way the sandboxed iframe of a report does.
@@ -430,7 +440,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
       reason: row.querySelector('.pb-var-name').nextElementSibling.textContent,
     }));
   };
-  for (const name of ['options', 'class', 'llm', 'json', 'API_KEY']) {
+  for (const name of ['options', 'class', 'llm', 'json', 'API_KEY', 'sslVerifyDefault']) {
     const state = await variableNameState(name);
     assert(state.invalid && state.reason.includes('score code'), `a variable named ${name} is refused with the reason (got: ${JSON.stringify(state)})`);
   }
@@ -524,6 +534,10 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     'user prompt manifested as f-string; unknown tokens stay literal'
   );
   assert(pyBody.includes('return llmBody, llmURL'), 'default manifest returns llmBody/llmURL for the Call LLM node');
+  assert(
+    !/sslVerify|LLMCONTAINERSSLVERIFY|requests/.test(scoreCodeOf(pyBody)),
+    'the Call-LLM-node score code makes no call and holds nothing about TLS verification'
+  );
   assertCompiles(scoreCodeOf(pyBody), 'the Call-LLM-node score code');
   const tagPut = aLog.find((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-used');
   assert(tagPut, 'manifest PUTs the model to update its tags');
@@ -531,7 +545,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   const putTags = JSON.parse(tagPut.body).tags;
   assert(
     JSON.stringify(putTags) === JSON.stringify(['LLM', 'Prompt-Template', 'Custom-Tag', 'demo_llm']),
-    `LLM tag added, stale manifest tags (other_llm, LLM-Call-Included) removed, custom tags kept (got: ${putTags})`
+    `LLM tag added, stale manifest tags (other_llm, LLM-Call-Included, TLS-Verification-Off) removed, custom tags kept (got: ${putTags})`
   );
   const outputVarsDefault = multipartJson(findPart('outputVar.json').body);
   assert(
@@ -623,6 +637,123 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     'integrated prompts are not run through the legacy escape chain'
   );
   assertCompiles(scoreCodeOf(pyIntegrated), 'the integrated score code');
+
+  // ---- TLS verification in the manifested model: the option ticked ------------
+  // This page says nothing about the option, so it is ticked. The score code
+  // is then what it was before the option existed plus six lines, and it
+  // behaves as before for every value of LLMCONTAINERSSLVERIFY.
+  const TLS_WARNING = '#app-obj-LPB-pet-manifest-tls-warning';
+  const TLS_TAG = 'TLS-Verification-Off';
+  const LLM_ANSWER = { data: { response: 'fine', run_time: 1, prompt_length: 2, output_length: 3 } };
+  const describeVerify = (values) => values.map((value) => JSON.stringify(value)).join(', ');
+  const assertTlsBehaviour = (code, args, verifyByDefault, label) => {
+    for (const bundleExists of [false, true]) {
+      const got = tlsVerifyOf(code, args, LLM_ANSWER, bundleExists);
+      const expected = expectedTlsVerify(verifyByDefault, bundleExists);
+      assert(
+        JSON.stringify(got) === JSON.stringify(expected),
+        `${label}, ${bundleExists ? 'with' : 'without'} a CA bundle: requests.post gets verify = ${describeVerify(expected)} for LLMCONTAINERSSLVERIFY unset, "false", "true" and "garbage" (got: ${describeVerify(got)})`
+      );
+    }
+  };
+  const integratedCode = scoreCodeOf(pyIntegrated);
+  const integratedBefore = withoutTlsDefault(integratedCode, true);
+  assert(
+    integratedBefore.problem === '',
+    `option ticked: the integrated score code holds the six lines of the TLS default, with sslVerifyDefault = True (${integratedBefore.problem || 'as documented'})`
+  );
+  assert(
+    sha256(portless(integratedBefore.code)) === INTEGRATED_CODE_BEFORE_THE_TLS_OPTION,
+    `option ticked: without those six lines the integrated score code is byte for byte what it was before the option (sha256 ${sha256(portless(integratedBefore.code))})`
+  );
+  assertTlsBehaviour(integratedCode, ['ACME Corp', 42], true, 'option ticked');
+  const integratedTags = JSON.parse(aLog.find((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-used').body).tags;
+  assert(
+    integratedTags.includes('LLM-Call-Included') && !integratedTags.includes(TLS_TAG),
+    `option ticked: the model is tagged LLM-Call-Included and not ${TLS_TAG}, which an earlier manifest left on it (got: ${integratedTags})`
+  );
+  assert(!(await page.isVisible(TLS_WARNING)), 'option ticked: the Finalize step shows no TLS warning');
+
+  // ---- TLS verification in the manifested model: the option unticked ----------
+  // A page of its own with sslVerify=false, on the saved runs of the fixture.
+  const tlsPage = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
+  const tlsPageErrors = [];
+  tlsPage.on('pageerror', (e) => tlsPageErrors.push(e.message));
+  await tlsPage.goto(`${APP_URL}&sslVerify=false`);
+  await tlsPage.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+  await tlsPage.selectOption('#LPB-project-dropdown', 'proj-1');
+  await waitUntil(async () => (await tlsPage.$$('#LPB-prompt-dropdown option')).length === 4, 'prompts listed on the page with the option unticked');
+  await tlsPage.selectOption('#LPB-prompt-dropdown', 'model-used');
+  await waitUntil(async () => (await tlsPage.$$('.pet-run-delete')).length === 3, 'the saved runs are loaded on the page with the option unticked');
+  await tlsPage.click('#app-obj-LPB-step-finalize');
+  await tlsPage.waitForSelector('#app-obj-LPB-pane-finalize:not([hidden])');
+  const manifestOn = async (target, wanted) => {
+    await resetLog();
+    await target.click('#app-obj-LPB-pet-create-model-button');
+    await waitUntil(async () => (await getLog()).some((e) => e.method === 'POST' && e.body.includes('def scoreModel(')), `${wanted}: score code uploaded`);
+    await waitUntil(async () => (await getLog()).some((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-used'), `${wanted}: tags written`);
+    await waitUntil(async () => !(await target.isDisabled('#app-obj-LPB-pet-create-model-button')), `${wanted}: the manifest has ended`);
+    const entries = await getLog();
+    return {
+      code: scoreCodeOf(entries.find((e) => e.method === 'POST' && e.body.includes('def scoreModel(')).body),
+      // The tags are written first, the attributes of the LLM after them.
+      tags: JSON.parse(entries.find((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-used').body).tags,
+    };
+  };
+  // The Call LLM node variant makes no call: the option changes nothing there.
+  await tlsPage.uncheck('#app-obj-LPB-pet-manifest-integrated');
+  assert(!(await tlsPage.isVisible(TLS_WARNING)), 'option unticked, Call LLM node variant: no TLS warning, because the model makes no call');
+  const nodeOff = await manifestOn(tlsPage, 'option unticked, Call LLM node variant');
+  assert(
+    !/sslVerify|LLMCONTAINERSSLVERIFY/.test(nodeOff.code) && !nodeOff.tags.includes(TLS_TAG),
+    `option unticked, Call LLM node variant: nothing about TLS in the score code and no ${TLS_TAG} tag (tags: ${nodeOff.tags})`
+  );
+  // With the LLM call included the warning is there before the click.
+  await tlsPage.check('#app-obj-LPB-pet-manifest-integrated');
+  assert(await tlsPage.isVisible(TLS_WARNING), 'option unticked, LLM call included: the Finalize step shows a TLS warning before the click');
+  const tlsWarningText = (await tlsPage.textContent(TLS_WARNING)).trim();
+  assert(
+    tlsWarningText.includes('Verify TLS certificates in manifested models') && tlsWarningText.includes('LLMCONTAINERSSLVERIFY=true') && tlsWarningText.includes(TLS_TAG),
+    `the warning names the option, the tag and the environment variable that turns verification back on (got: ${tlsWarningText})`
+  );
+  const warningAboveButton = await tlsPage.evaluate(
+    ([warning, button]) => document.querySelector(warning).getBoundingClientRect().bottom <= document.querySelector(button).getBoundingClientRect().top,
+    [TLS_WARNING, '#app-obj-LPB-pet-create-model-button']
+  );
+  assert(warningAboveButton, 'the warning stands above the Manifest button');
+  const integratedOff = await manifestOn(tlsPage, 'option unticked, LLM call included');
+  const offBefore = withoutTlsDefault(integratedOff.code, false);
+  assert(
+    offBefore.problem === '',
+    `option unticked: the integrated score code holds the same six lines with sslVerifyDefault = False (${offBefore.problem || 'as documented'})`
+  );
+  const tlsLinesOf = (code) => code.slice(code.indexOf('    # TLS verification'), code.indexOf('    # Call the LLM container'));
+  assert(
+    tlsLinesOf(integratedOff.code).length > 400 && tlsLinesOf(integratedOff.code) === tlsLinesOf(integratedCode).replace('sslVerifyDefault = True', 'sslVerifyDefault = False'),
+    'option unticked: the TLS lines differ from those of a ticked manifest in the value of sslVerifyDefault and in nothing else'
+  );
+  assertCompiles(integratedOff.code, 'the integrated score code manifested with the option unticked');
+  const offArguments = /def scoreModel\(([^)]*)\)/.exec(integratedOff.code)[1].split(',').map((name) => name.trim()).filter(Boolean).map(() => 'x');
+  assertTlsBehaviour(integratedOff.code, offArguments, false, 'option unticked');
+  assert(
+    integratedOff.tags.includes(TLS_TAG) && integratedOff.tags.includes('LLM-Call-Included'),
+    `option unticked: the manifested model carries the tag ${TLS_TAG} (got: ${integratedOff.tags})`
+  );
+  assert(!(await tlsPage.$('.pet-manifest-tls-tag-failed')), 'the tag was written, so the manifest box does not ask for it');
+  // The page itself does what it does with the option ticked: an LLM run
+  // calls the container the same way.
+  await tlsPage.click('#app-obj-LPB-step-build');
+  await tlsPage.waitForSelector('#app-obj-LPB-pane-build:not([hidden])');
+  await resetLog();
+  await tlsPage.click('#app-obj-LPB-run-experiment');
+  await waitUntil(async () => (await tlsPage.$$('.pet-run-delete')).length === 4, 'a run on the page with the option unticked');
+  const offRunCalls = (await getLog()).filter((e) => e.method === 'POST' && e.url.startsWith('/scr/'));
+  assert(
+    offRunCalls.length >= 1 && offRunCalls.every((e) => e.status === 200 && !/sslVerify|verify/i.test(e.url + e.body)),
+    `option unticked: a run in the browser calls the model container as before, and nothing of the option travels with it (${offRunCalls.length} call(s))`
+  );
+  assert(tlsPageErrors.length === 0, `no uncaught error on the page with the option unticked (got: ${tlsPageErrors.join(' | ')})`);
+  await tlsPage.close();
 
   // ---- parse the LLM response into output variables --------------------------
   await page.uncheck('#app-obj-LPB-pet-out-run_time');

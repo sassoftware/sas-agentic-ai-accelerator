@@ -36,6 +36,14 @@ export interface RagBuilderConfig {
   deploymentType: string;
   /** Credential domain holding <BACKEND>_RAG_USER/_RAG_PW entries. */
   credentialDomain: string;
+  /**
+   * Whether a retrieval model manifested from this page verifies the TLS
+   * certificates of its two HTTPS calls (option `sslVerify`, shared with the
+   * prompt side; see `PromptBuilderConfig.sslVerify`). Written as SSL_VERIFY
+   * into the MANIFEST block of retrieve_context.py. The ingestion job and the
+   * retrieval test of this page are not affected.
+   */
+  sslVerify: boolean;
   /** SAS Content root of the deployed RAG runtime (rag_core, jobs, models). */
   contentRoot: string;
   /** CAS server name used when building table references. */

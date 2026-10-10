@@ -103,6 +103,7 @@ in the URL or report definition**:
 | `judgeModel` | Default judge model | Optional default LLM (by name, from `llmProjectID`) used by the LLM-as-a-Judge. Not a secret; the in-app judge selector always overrides it. |
 | `modelCardReportURI` | Model card report URI | Optional report (`/reports/reports/<uuid>`) embedded on the model card of a manifested prompt. |
 | `credentialDomain` | Credential domain | SAS Viya credential domain (default `agentic-ai-keys`). `none` disables the lookup for prompt and decision templates; RAG cannot be used with `none`. See below. |
+| `sslVerify` | Verify TLS certificates in manifested models | Checkbox, ticked by default. See "TLS verification in manifested models" below. |
 
 **The three switches** (always shown; checkboxes, stored and mirrored into the
 URL as `true` / `false`):
@@ -125,6 +126,47 @@ entry (*Disabled*) whatever the report stored, while the URL carried the stored
 value. A checkbox shows the stored state, and a `true` that the old dropdown
 stored shows as ticked. No dropdown of the options group may use the words
 `true` / `false` as keys; `verify-options.js` checks that.
+
+**TLS verification in manifested models** (the checkbox `sslVerify`). A
+manifested model that calls a model container over HTTPS itself verifies the
+certificate of that call: a prompt template manifested with the LLM call
+included, a decision template, and the retrieval model of a RAG setup. It
+trusts the CA bundle SAS Viya mounts into its pods
+(`/security/trustedcerts.pem`), or the certificates Python trusts when that
+file is not there. A publishing destination that runs Python where the bundle
+is not mounted cannot verify a certificate of the SAS Viya CA; the call then
+fails with `CERTIFICATE_VERIFY_FAILED`.
+
+The checkbox **Verify TLS certificates in manifested models** (`sslVerify`,
+ticked by default) is what an administrator unticks for such a destination. It
+is a default written at manifest time:
+
+- It applies to models manifested from then on. A model that is already
+  manifested keeps what it was manifested with.
+- A model manifested with the option unticked carries the tag
+  `TLS-Verification-Off` in SAS Model Manager, and the step that manifests
+  shows a warning above its button.
+- The environment of the destination still decides when it says something:
+  `LLMCONTAINERSSLVERIFY` set to `false`, `no` or `0` switches verification
+  off, set to `true`, `yes` or `1` switches it on, whatever was manifested.
+  The retrieval model reads `RAGEMBED_SSLVERIFY` (the embedding container) and
+  `RAGSTORE_SSLVERIFY` (the credentials service) the same way. Unset, or set
+  to another word, the manifested default applies.
+- In the score code of a prompt or decision template the default is the line
+  `sslVerifyDefault = True` (or `False`); in `retrieve_context.py` it is
+  `SSL_VERIFY` in the MANIFEST block. With the option ticked the score code
+  behaves as it did before the option existed.
+- It changes nothing the page does in the browser, nothing in the RAG
+  ingestion job, and nothing in a prompt template manifested for the Call LLM
+  node (there the DS2 node makes the call).
+- A content root that was deployed before the option existed holds a
+  `retrieve_context.py` without `SSL_VERIFY`. Such a template is manifested as
+  it is and keeps verifying; the outcome line of the manifest says that the
+  template has to be deployed again for the option to take effect.
+
+The option is read like a switch, with "on" as the fallback: only `false`,
+`0`, `no` or `off` unticks it. A report saved before the option existed, a
+blank value and a typo all leave verification on.
 
 The options of a switch join the panel only while it is on, directly below it,
 their labels prefixed with its name:
@@ -335,7 +377,7 @@ src/
 `.claude/skills/verify/` holds a mock of the SAS Viya services the page calls
 and Playwright suites that drive the built bundle in the system Edge browser:
 the Prompt Builder (`verify.js`), decision templates (`verify-decision.js`), the
-RAG kind (`verify-rag.js`), the options group and the three switches
+RAG kind (`verify-rag.js`), the options group with its checkboxes
 (`verify-options.js`), the locale files (`verify-locales.js`) and the built
 page itself (`verify-tokens.js`: no text SAS Job Execution would substitute as
 a `$token$` - the build removes the one marker comment of the bundler that

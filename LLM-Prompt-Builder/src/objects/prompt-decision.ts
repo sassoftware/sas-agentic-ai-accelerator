@@ -67,6 +67,13 @@ export const DECISION_TEMPLATE_TAG = 'Decision-Template';
 export const DECISION_PROJECT_TAG = 'Decision-Engineering';
 /** The Model Manager project mdb registers decision models in (see registry.py). */
 export const DECISION_PROJECT_NAME = 'Decision Model Project';
+/**
+ * The tag of a model that was manifested with TLS verification off (the
+ * option "Verify TLS certificates in manifested models" unticked): a prompt
+ * template with the LLM call included, a decision template, a RAG retrieval
+ * model. It makes such models findable in SAS Model Manager.
+ */
+export const TLS_VERIFICATION_OFF_TAG = 'TLS-Verification-Off';
 /** The outputs a manifested decision model returns beside the per-question pair. */
 export const DEFAULT_DECISION_OUTPUTS = ['answers', 'answer', 'confidence', 'run_time', 'prompt_length'];
 
@@ -158,12 +165,15 @@ const PYTHON_KEYWORDS = [
  *
  * Compared as written: Python tells `options` from `Options`. A name the code
  * only assigns after it has read its inputs (response, state, answers ...) is
- * not listed - such an input works.
+ * not listed - such an input works. The one exception is sslVerifyDefault:
+ * it is the line of the score code that says whether TLS verification is on
+ * by default, the line an administrator reads and may edit, so nothing else
+ * in the function is allowed to carry that name.
  */
 const SCORE_INPUT_NAMES = new Set([
   ...PYTHON_KEYWORDS,
   'os', 'requests', 'json', 'str', 'float', 'isinstance', 'all', 'dict', 'Exception', 'ValueError',
-  'llm', 'endpoint', 'llmURL', 'options', 'systemPrompt', 'API_KEY', '_headline',
+  'llm', 'endpoint', 'llmURL', 'options', 'systemPrompt', 'API_KEY', '_headline', 'sslVerifyDefault',
 ]);
 
 /** Whether a prompt variable of this name would break the manifested model (see SCORE_INPUT_NAMES). */
@@ -202,8 +212,8 @@ const SCORE_CODE_NAMES = new Set(
     ...PYTHON_KEYWORDS,
     // The modules, functions and locals of the generated score code
     'os', 'requests', 'json', '_headline', 'scoreModel', 'llm', 'endpoint', 'llmURL', 'options', 'state', 'questions',
-    'llmBody', 'answers', 'answer', 'confidence', 'run_time', 'prompt_length', 'sslVerify', 'llmCall', 'llmJson',
-    'llmData', 'parsedAnswers', 'error', 'API_KEY',
+    'llmBody', 'answers', 'answer', 'confidence', 'run_time', 'prompt_length', 'sslVerifyDefault', 'sslVerify',
+    'llmCall', 'llmJson', 'llmData', 'parsedAnswers', 'error', 'API_KEY',
     // The builtins the score function calls
     'str', 'float', 'isinstance', 'dict', 'Exception',
   ].map((name) => name.toLowerCase())
@@ -1784,6 +1794,8 @@ export interface DecisionManifestParams {
   requiresAPIKey: boolean;
   /** Which of DEFAULT_DECISION_OUTPUTS to return. */
   selectedOutputs: string[];
+  /** Whether the model verifies TLS by default (the option of the same name; see scoreCodeTlsDefaultComment). */
+  sslVerify: boolean;
 }
 
 /**
@@ -1818,6 +1830,29 @@ export function pythonFStringBody(template: string, variableNames: string[]): st
   });
   return body;
 }
+
+/**
+ * The lines of a score code that follow its TLS comment and say how the
+ * environment variable and the manifest-time default decide together. Both
+ * score codes (the prompt template's and the decision template's) use these
+ * lines, at the indentation of the function body.
+ *
+ * `verifyByDefault` is the option "Verify TLS certificates in manifested
+ * models" at the time of the manifest; it becomes the one line
+ * `sslVerifyDefault = True|False`. LLMCONTAINERSSLVERIFY wins in both
+ * directions when it holds a recognised word; unset or unrecognised, the
+ * default decides. With the default True the code behaves as it did before
+ * the option existed, for every value of the variable.
+ */
+export function scoreCodeTlsDefaultComment(verifyByDefault: boolean): string {
+  return `    # Setting it to true, yes or 1 enables it. When the variable is unset or
+    # holds another word, sslVerifyDefault decides: the Options pane setting
+    # "Verify TLS certificates in manifested models" when this was manifested.
+    sslVerifyDefault = ${verifyByDefault ? 'True' : 'False'}`;
+}
+/** The two lines after the environment check that apply a default of False (see scoreCodeTlsDefaultComment). */
+export const SCORE_CODE_TLS_DEFAULT_BRANCH = `    elif not sslVerifyDefault and os.getenv("LLMCONTAINERSSLVERIFY", "").strip().lower() not in ("true", "yes", "1"):
+        sslVerify = False`;
 
 /**
  * The score code, inputs and outputs of a manifested decision template: the
@@ -1945,11 +1980,13 @@ ${questionDefaults}
     # TLS verification of the container call: trust the CA bundle SAS Viya
     # mounts into every pod, or the one LLMCONTAINERCABUNDLE points to. Setting
     # LLMCONTAINERSSLVERIFY=false disables the verification entirely.
+${scoreCodeTlsDefaultComment(params.sslVerify)}
     sslVerify = os.getenv("LLMCONTAINERCABUNDLE", "/security/trustedcerts.pem")
     if not os.path.isfile(sslVerify):
         sslVerify = True
     if os.getenv("LLMCONTAINERSSLVERIFY", "").strip().lower() in ("false", "no", "0"):
         sslVerify = False
+${SCORE_CODE_TLS_DEFAULT_BRANCH}
     # Call the decision model container and unwrap the SCR response envelope.
     # Failures are reported through the answer output instead of raising, so a
     # failed call cannot abort a whole scoring or SAS Intelligent Decisioning run.

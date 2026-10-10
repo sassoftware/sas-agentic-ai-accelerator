@@ -20,7 +20,8 @@
  *      &enableRag=true&embeddingProjectID=<uuid>
  *
  * Both sides read the SAME URL. The options they share (repository, SCR
- * endpoint, deployment type, credential domain) are copied to both objects;
+ * endpoint, deployment type, credential domain, TLS verification in
+ * manifested models) are copied to both objects;
  * the one name that meant two things is split: `computeContext` is the
  * context of the prompt optimization job, `ragComputeContext` the context of
  * the RAG ingestion job (it lands in `ragBuilder.computeContext`).
@@ -130,6 +131,8 @@ const PROMPT_DEFAULTS: PromptBuilderConfig = {
   // without an entry are disabled with a note. The option value 'none'
   // disables credential lookups; getConfig() hands that on as a blank.
   credentialDomain: DEFAULT_CREDENTIAL_DOMAIN,
+  // TLS verification in manifested models: on unless the option says off.
+  sslVerify: true,
 };
 
 /** Build-time defaults of the RAG side. */
@@ -147,6 +150,8 @@ const RAG_DEFAULTS: RagBuilderConfig = {
   SCREndpoint: '',
   deploymentType: 'k8s',
   credentialDomain: DEFAULT_CREDENTIAL_DOMAIN,
+  // TLS verification in the manifested retrieval model (shared option).
+  sslVerify: true,
   // Where deploy-rag-content.ps1/.sh put the runtime.
   contentRoot: '/SAS Agentic AI Accelerator/RAG',
   casServer: 'cas-shared-default',
@@ -212,6 +217,14 @@ const RAG_URL_PARAMETERS: ReadonlyArray<readonly [parameter: string, key: string
 ];
 
 /**
+ * URL parameter of the checkbox "Verify TLS certificates in manifested
+ * models". It is read by itself and not through the two lists above: those
+ * copy the text of a parameter, and this one must become a boolean that is
+ * only false when the URL plainly says so.
+ */
+const SSL_VERIFY_PARAMETER = 'sslVerify';
+
+/**
  * Resolve the effective configuration by layering URL query parameters over
  * the build-time defaults.
  */
@@ -247,6 +260,14 @@ export function getConfig(): RuntimeConfig {
   const credentialLookupOff = credentialDomain.toLowerCase() === 'none';
   promptBuilder.credentialDomain = credentialLookupOff ? '' : credentialDomain;
   ragBuilder.credentialDomain = credentialLookupOff ? DEFAULT_CREDENTIAL_DOMAIN : credentialDomain;
+
+  // TLS verification in manifested models, one option for both sides. Read as
+  // strictly as a switch, with "on" as the fallback: a report saved before the
+  // option existed, a blank and a word nobody can read all keep verification
+  // on. Switching a security check off has to be said plainly.
+  const sslVerify = featureFlag(params.get(SSL_VERIFY_PARAMETER), true);
+  promptBuilder.sslVerify = sslVerify;
+  ragBuilder.sslVerify = sslVerify;
 
   // The switches are read straight from the URL: an absent or unreadable
   // value is the switch's default, which is what a report saved before the

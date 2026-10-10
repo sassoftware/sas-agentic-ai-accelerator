@@ -11,8 +11,9 @@
  * score code a manifest uploads is compiled and run with a real Python
  * interpreter (see python-check.cjs, which has to sit next to this file).
  */
+const crypto = require('crypto');
 const { chromium } = require('playwright');
-const { resolvePython, compilePython, callScoreModel } = require('./python-check.cjs');
+const { resolvePython, compilePython, callScoreModel, withoutTlsDefault, expectedTlsVerify, tlsVerifyOf } = require('./python-check.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const results = [];
@@ -49,6 +50,15 @@ function multipartText(body) {
 }
 // The last line of an interpreter message is the one that names the error.
 const lastLine = (message) => String(message || '').trim().split('\n').pop();
+// A score code names the SCR endpoint of the page, and so the port of the
+// mock; with that replaced its hash is the same on every port.
+const sha256 = (text) => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+const portless = (code) => code.split(BASE).join('http://mock');
+// The score code of the decision template this suite manifests (questions
+// team, escalate and tone, jev_mock), as the bundle of commit ccae261 wrote
+// it - the last one before the option "Verify TLS certificates in manifested
+// models". Recorded by running this suite against that bundle.
+const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843842f3c656dc65ed617ed3a18e0f08';
 
 (async () => {
   // Without an interpreter the generated score code would go unchecked: a failure, not a skip.
@@ -377,6 +387,89 @@ const lastLine = (message) => String(message || '').trim().split('\n').pop();
   const tagPut = log.find((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-dec');
   assert(tagPut && JSON.parse(tagPut.body).tags.includes('Decision-Call-Included'), 'the manifested model is tagged');
 
+  // ---- TLS verification in the manifested model: the option ticked -----------------------
+  // This page says nothing about the option, so it is ticked. The score code
+  // is then what it was before the option existed plus six lines, and it
+  // behaves as before for every value of LLMCONTAINERSSLVERIFY.
+  const TLS_WARNING = '#app-obj-LPB-pet-manifest-tls-warning';
+  const TLS_TAG = 'TLS-Verification-Off';
+  const describeVerify = (values) => values.map((value) => JSON.stringify(value)).join(', ');
+  const assertTlsBehaviour = (code, args, verifyByDefault, label) => {
+    for (const bundleExists of [false, true]) {
+      const got = tlsVerifyOf(code, args, answersOf({ team: { type: 'choice', choice: 'billing', confidence: 0.9 } }), bundleExists);
+      const expected = expectedTlsVerify(verifyByDefault, bundleExists);
+      assert(
+        JSON.stringify(got) === JSON.stringify(expected),
+        `${label}, ${bundleExists ? 'with' : 'without'} a CA bundle: requests.post gets verify = ${describeVerify(expected)} for LLMCONTAINERSSLVERIFY unset, "false", "true" and "garbage" (got: ${describeVerify(got)})`
+      );
+    }
+  };
+  const decisionBefore = withoutTlsDefault(scoreCode, true);
+  assert(
+    decisionBefore.problem === '',
+    `option ticked: the decision score code holds the six lines of the TLS default, with sslVerifyDefault = True (${decisionBefore.problem || 'as documented'})`
+  );
+  assert(
+    sha256(portless(decisionBefore.code)) === DECISION_CODE_BEFORE_THE_TLS_OPTION,
+    `option ticked: without those six lines the decision score code is byte for byte what it was before the option (sha256 ${sha256(portless(decisionBefore.code))})`
+  );
+  assertTlsBehaviour(scoreCode, ['Charged twice', 'Please refund one payment.', 'sk-test'], true, 'option ticked');
+  assert(
+    !JSON.parse(tagPut.body).tags.includes(TLS_TAG),
+    `option ticked: the model does not carry ${TLS_TAG}, which an earlier manifest left on it (got: ${JSON.parse(tagPut.body).tags})`
+  );
+  assert(!(await page.isVisible(TLS_WARNING)), 'option ticked: the Finalize step shows no TLS warning');
+
+  // ---- TLS verification in the manifested model: the option unticked ---------------------
+  // A page of its own with sslVerify=false, on the saved run of the fixture.
+  const tlsPage = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
+  const tlsPageErrors = [];
+  tlsPage.on('pageerror', (e) => tlsPageErrors.push(e.message));
+  await tlsPage.goto(`${APP_URL}&sslVerify=false`);
+  await tlsPage.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+  await tlsPage.click('#LPB-kind-decision');
+  await waitUntil(async () => (await tlsPage.$$eval('#LPB-project-dropdown option', (els) => els.map((e) => e.value))).includes('proj-2'), 'the decision project is listed on the page with the option unticked');
+  await tlsPage.selectOption('#LPB-project-dropdown', 'proj-2');
+  await waitUntil(async () => (await tlsPage.$$('#LPB-prompt-dropdown option')).length === 2, 'the decision template is listed on the page with the option unticked');
+  await tlsPage.selectOption('#LPB-prompt-dropdown', 'model-dec');
+  await waitUntil(async () => (await tlsPage.$$('.pet-run-delete')).length >= 1, 'the saved run is loaded on the page with the option unticked');
+  await tlsPage.click('#app-obj-LPB-step-finalize');
+  await tlsPage.waitForSelector('#app-obj-LPB-pane-finalize:not([hidden])');
+  assert(await tlsPage.isVisible(TLS_WARNING), 'option unticked: the Finalize step of a decision template shows a TLS warning before the click');
+  const tlsWarningText = (await tlsPage.textContent(TLS_WARNING)).trim();
+  assert(
+    tlsWarningText.includes('Verify TLS certificates in manifested models') && tlsWarningText.includes('LLMCONTAINERSSLVERIFY=true') && tlsWarningText.includes(TLS_TAG),
+    `the warning names the option, the tag and the environment variable that turns verification back on (got: ${tlsWarningText})`
+  );
+  await resetLog();
+  await tlsPage.click('#app-obj-LPB-pet-create-model-button');
+  await waitUntil(async () => Boolean(findPart(await getLog(), 'requirements.json')), 'the manifest with the option unticked was written', 20000);
+  await waitUntil(async () => (await getLog()).some((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-dec'), 'its tags were written');
+  await waitUntil(async () => !(await tlsPage.isDisabled('#app-obj-LPB-pet-create-model-button')), 'the manifest with the option unticked has ended', 20000);
+  const offLog = await getLog();
+  const offCode = multipartText(findPartMatching(offLog, /filename="[a-z_]+\.py"/).body);
+  const offBefore = withoutTlsDefault(offCode, false);
+  assert(
+    offBefore.problem === '',
+    `option unticked: the decision score code holds the same six lines with sslVerifyDefault = False (${offBefore.problem || 'as documented'})`
+  );
+  const tlsLinesOf = (code) => code.slice(code.indexOf('    # TLS verification'), code.indexOf('    # Call the decision model container'));
+  assert(
+    tlsLinesOf(offCode).length > 400 && tlsLinesOf(offCode) === tlsLinesOf(scoreCode).replace('sslVerifyDefault = True', 'sslVerifyDefault = False'),
+    'option unticked: the TLS lines differ from those of a ticked manifest in the value of sslVerifyDefault and in nothing else'
+  );
+  const compiledOff = compilePython(offCode, 'decision_tls_off.py');
+  assert(compiledOff.ok, `the score code manifested with the option unticked compiles (${compiledOff.python}${compiledOff.ok ? '' : ': ' + lastLine(compiledOff.error)})`);
+  const offArguments = /def scoreModel\(([^)]*)\)/.exec(offCode)[1].split(',').map((name) => name.trim()).filter(Boolean).map(() => 'x');
+  assertTlsBehaviour(offCode, offArguments, false, 'option unticked');
+  const offTags = JSON.parse(offLog.find((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-dec').body).tags;
+  assert(
+    offTags.includes(TLS_TAG) && offTags.includes('Decision-Call-Included'),
+    `option unticked: the manifested model carries the tag ${TLS_TAG} (got: ${offTags})`
+  );
+  assert(tlsPageErrors.length === 0, `no uncaught error on the page with the option unticked (got: ${tlsPageErrors.join(' | ')})`);
+  await tlsPage.close();
+
   // ---- a template to start from ---------------------------------------------------------
   await goStep('build');
   await page.selectOption('#app-obj-LPB-decision-template', 'guardrail');
@@ -408,6 +501,7 @@ const lastLine = (message) => String(message || '').trim().split('\n').pop();
     ['json', 'a module of the score code'],
     ['answers', 'a local of the score code'],
     ['Str', 'a builtin the score code calls, in another case'],
+    ['sslVerifyDefault', 'the line of the score code that holds the TLS default'],
     ['subject', 'a variable of the state'],
     ['risk_confidence', "another question's confidence output"],
   ]) {

@@ -2,7 +2,10 @@
  * Regression harness for the Options contract of the Prompt Builder: the one
  * flat options group it posts to SAS Visual Analytics, and the three switches
  * in it (enableDecision, enableOptimization, enableRag) that decide which
- * parts of the page exist and which requests are sent.
+ * parts of the page exist and which requests are sent. A fourth checkbox,
+ * sslVerify, is the last shared option: it decides nothing on the page and
+ * no request, only what a manifest writes (the three manifest suites check
+ * that); here it is checked as an option - posted, mirrored, read strictly.
  *
  * WHAT THIS PROVES, AND WHAT IT DOES NOT
  *   The suite plays Visual Analytics itself: a stand-in host page embeds the
@@ -76,7 +79,7 @@
  *     `app-obj-LPB-pet-decout-answers`; toasts in `pb-toast-container`.
  *   - Step keys: setup, build, optimize, evaluate, finalize for the prompt
  *     flow and setup, documents, store, run for the RAG flow.
- *   - Option names: the eight shared ones, the three switches, the three
+ *   - Option names: the nine shared ones, the three switches, the three
  *     optimization settings and the RAG settings listed below, with
  *     `ragComputeContext` for the RAG compute context.
  *   - Mock fixtures: repository `repo-1`, LLM project `llm-proj`, prompt
@@ -137,7 +140,14 @@ const SHARED_OPTIONS = [
   'judgeModel',
   'modelCardReportURI',
   'credentialDomain',
+  'sslVerify',
 ];
+/**
+ * The checkbox for TLS verification in manifested models: its label, and how
+ * its URL value has to be read - only a clear "off" unticks it, everything
+ * else (absent, blank, a typo) leaves verification on.
+ */
+const SSL_VERIFY = { name: 'sslVerify', label: 'Verify TLS certificates in manifested models', fallback: true };
 const OPTIMIZATION_OPTIONS = ['computeContext', 'optimizeJobProgram', 'minOptimizeSamples'];
 const RAG_OPTIONS = [
   'embeddingProjectID',
@@ -233,6 +243,7 @@ function storedReport(switches, overrides = {}) {
     judgeModel: '',
     modelCardReportURI: '',
     credentialDomain: 'agentic-ai-keys',
+    sslVerify: 'true',
     ...switches,
     ...OPTIMIZATION_SETTINGS,
     ...RAG_SETTINGS,
@@ -623,6 +634,7 @@ function mirrorProblems(fields, stored) {
     let expected = mirrored(raw);
     // A checkbox reads the word; a switch that cannot read it shows its default.
     if (SWITCH_NAMES.includes(field.name)) expected = expectedFlag(raw, SWITCHES[field.name].fallback);
+    else if (field.name === SSL_VERIFY.name) expected = expectedFlag(raw, SSL_VERIFY.fallback);
     else if (field.type === 'Boolean') expected = expectedFlag(raw, null);
     if (expected !== null && field.value !== expected) {
       problems.push(`${field.name}: the URL says ${JSON.stringify(String(raw))}, the group says ${JSON.stringify(field.value)}`);
@@ -1145,6 +1157,8 @@ async function checkRagRoundTrip({ check, need }, app, stored, flags) {
       judgeModel: 'demo_llm',
       modelCardReportURI: '/reports/reports/zz-verify-options',
       credentialDomain: 'all-keys',
+      // Unticked, so that it differs from its default like the others.
+      sslVerify: 'false',
       enableDecision: 'true',
       enableOptimization: 'true',
       enableRag: 'true',
@@ -1177,6 +1191,11 @@ async function checkRagRoundTrip({ check, need }, app, stored, flags) {
       SWITCH_NAMES.every((name) => checkboxes.some((field) => field.name === name)) && notPlain.length === 0,
       `the three switches are among the ${checkboxes.length} checkboxes, and every checkbox has a boolean value and no dataProvider${notPlain.length ? ` (not so: ${notPlain.join(', ')})` : ''}`
     );
+    const tls = fieldNamed(fields, SSL_VERIFY.name);
+    check(
+      tls && tls.type === 'Boolean' && tls.value === false && !('dataProvider' in tls),
+      `sslVerify=false in the URL shows the checkbox unticked (got ${JSON.stringify(tls && { type: tls.type, value: tls.value })})`
+    );
     const expectedCount = SHARED_OPTIONS.length + SWITCH_NAMES.length + OPTIMIZATION_OPTIONS.length + RAG_OPTIONS.length;
     const backendSwitches = names.filter((name) => BACKEND_SWITCH_PATTERN.test(name));
     check(
@@ -1207,6 +1226,73 @@ async function checkRagRoundTrip({ check, need }, app, stored, flags) {
       leakedIntoOptimization && leakedIntoOptimization.value !== 'ONLY-RAG' && (fieldNamed(onlyRag.fields, 'ragComputeContext') || {}).value === 'ONLY-RAG',
       `ragComputeContext alone in the URL does not set the optimization compute context (computeContext shows ${JSON.stringify(leakedIntoOptimization && leakedIntoOptimization.value)})`
     );
+  });
+
+  // ---- the checkbox for TLS verification in manifested models -------------------
+  await run('sslVerify', async ({ session, check, need }) => {
+    // A page that was never told: the option is posted, ticked.
+    const bare = await session.load(promptSide());
+    need(bare.fields, 'the options message is answered');
+    const names = bare.fields.map((field) => field.name);
+    const field = fieldNamed(bare.fields, SSL_VERIFY.name);
+    need(field, 'sslVerify is in the options group');
+    check(
+      field.type === 'Boolean' && field.value === true && !('dataProvider' in field),
+      `it is posted as a 'Boolean' option - a checkbox - and ticked by default (got ${JSON.stringify({ type: field.type, value: field.value, dataProvider: 'dataProvider' in field })})`
+    );
+    check(field.label === SSL_VERIFY.label, `its label is "${SSL_VERIFY.label}" (got "${field.label}")`);
+    check(typeof field.tooltip === 'string' && field.tooltip.includes('LLMCONTAINERSSLVERIFY') && field.tooltip.includes('TLS-Verification-Off'), 'its tooltip names the tag and the environment variable that overrides it');
+    check(
+      names.indexOf(SSL_VERIFY.name) === names.indexOf('credentialDomain') + 1 && names.indexOf(SSL_VERIFY.name) < Math.min(...SWITCH_NAMES.map((name) => names.indexOf(name))),
+      `it stands directly after credentialDomain, ahead of the switches (order: ${names.join(', ')})`
+    );
+    const bareRequests = signatures(await appRequests());
+    const bareGroup = JSON.stringify(bare.fields.filter((entry) => entry.name !== SSL_VERIFY.name));
+
+    // What Visual Analytics mirrors for a checkbox: the word true or false.
+    const unticked = await session.load({ ...promptSide(), sslVerify: false });
+    const untickedField = fieldNamed(unticked.fields, SSL_VERIFY.name);
+    check(untickedField && untickedField.value === false && untickedField.type === 'Boolean', `sslVerify=false: the checkbox is unticked after the reload (got ${JSON.stringify(untickedField && untickedField.value)})`);
+    check(unticked.url.includes('sslVerify=false'), 'an unticked checkbox is in the URL as the word false, not left out');
+    // No leak: the option is a manifest-time default. It changes no other
+    // option, no request of the page and nothing that is built.
+    check(
+      JSON.stringify((unticked.fields || []).filter((entry) => entry.name !== SSL_VERIFY.name)) === bareGroup,
+      'unticked, every other option of the group is what it is when ticked'
+    );
+    const untickedRequests = signatures(await appRequests());
+    check(
+      sameList(untickedRequests, bareRequests),
+      `unticked, the page asks SAS Viya for exactly what it asks when ticked (${untickedRequests.length} requests against ${bareRequests.length})`
+    );
+    check(!untickedRequests.some((request) => /sslVerify/i.test(request)), 'and the option is in none of its requests');
+    const untickedSnap = await snapshot(unticked.app);
+    checkPromptFlow(check, untickedSnap, { decision: true, optimization: false, rag: false });
+    const ticked = await session.load({ ...promptSide(), sslVerify: true });
+    check((fieldNamed(ticked.fields, SSL_VERIFY.name) || {}).value === true && ticked.url.includes('sslVerify=true'), 'sslVerify=true: the checkbox is ticked after the reload');
+
+    // Read strictly, and the failure direction is the safe one: only a clear
+    // "off" unticks it.
+    for (const [raw, expected] of [
+      ['FALSE', false], [' false ', false], ['0', false], ['no', false], ['off', false],
+      ['TRUE', true], ['1', true], ['yes', true],
+      ['', true], ['undefined', true], ['null', true], ['disabled', true], ['fals', true], ['2', true],
+    ]) {
+      const view = await session.load({ ...promptSide(), sslVerify: raw }, { settle: false });
+      const value = (fieldNamed(view.fields, SSL_VERIFY.name) || {}).value;
+      check(value === expected, `sslVerify=${JSON.stringify(raw)} in the URL: verification is ${expected ? 'ON' : 'off'} (the checkbox shows ${JSON.stringify(value)})`);
+    }
+
+    // With RAG on it is still one shared option, once in the group (what it
+    // does to a retrieval model is checked by verify-rag.js).
+    const withRag = await session.load(storedReport({ enableDecision: true, enableOptimization: true, enableRag: true }, { sslVerify: false }), { settle: false });
+    const ragNames = (withRag.fields || []).map((entry) => entry.name);
+    check(
+      ragNames.filter((name) => name === SSL_VERIFY.name).length === 1 && ragNames.indexOf(SSL_VERIFY.name) === ragNames.indexOf('credentialDomain') + 1,
+      'with every switch on the option is in the group once, still directly after credentialDomain'
+    );
+    check(!ragNames.some((name) => /ssl/i.test(name) && name !== SSL_VERIFY.name && name !== 'storeSslmode'), 'and no second option about TLS verification is posted for RAG');
+    check(session.pageErrors.length === 0, `no uncaught error on the way (uncaught: ${session.pageErrors.join(' | ') || 'none'})`);
   });
 
   // ---- the eight combinations of the three switches -----------------------------

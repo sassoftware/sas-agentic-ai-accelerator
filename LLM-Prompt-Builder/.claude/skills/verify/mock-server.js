@@ -318,6 +318,24 @@ function ragSteps() {
     }));
 }
 
+// The retrieval model template comes in two variants. By default it is the
+// one that ships now: its MANIFEST block holds SSL_VERIFY = True (the line is
+// added when the file of the repository does not have it). POST
+// /__ragtemplate { tls: false } serves the template of a content root that
+// was deployed before the option "Verify TLS certificates in manifested
+// models" existed: the same file without that line. An empty body, or
+// { tls: true }, serves the current one again.
+let ragTemplateHasTls = true;
+function ragRetrievalTemplate() {
+  const lines = fs.readFileSync(path.join(repoRoot(), RAG_SOURCES['rag-src-retrieve'].file), 'utf8').split('\n');
+  const start = lines.findIndex((line) => line.startsWith('# ---- MANIFEST'));
+  const end = lines.findIndex((line, index) => index > start && line.startsWith('# ----------------------------------------'));
+  if (start < 0 || end < 0) return lines.join('\n');
+  const block = lines.slice(start + 1, end).filter((line) => !/^SSL_VERIFY\s*=/.test(line));
+  if (ragTemplateHasTls) block.push('SSL_VERIFY = True');
+  return [...lines.slice(0, start + 1), ...block, ...lines.slice(end)].join('\n');
+}
+
 // POST /__norag hides the fixture project (a deployment before its first RAG
 // project), POST /__rag brings it back and clears the failures below.
 let ragFixtures = true;
@@ -636,6 +654,12 @@ http
         Object.keys(ragFailures).forEach((name) => delete ragFailures[name]);
         return json(res, 200, {});
       }
+      if (p === '/__ragtemplate') {
+        let body = {};
+        try { body = JSON.parse(raw); } catch {}
+        ragTemplateHasTls = body.tls !== false;
+        return json(res, 200, { tls: ragTemplateHasTls });
+      }
       if (p === '/__ragfail') {
         let body = {};
         try { body = JSON.parse(raw); } catch {}
@@ -788,6 +812,7 @@ http
       const ragSource = /^\/files\/files\/(rag-src-[a-z]+)\/content$/.exec(p);
       if (ragSource && RAG_SOURCES[ragSource[1]]) {
         if (!repoRoot()) return json(res, 404, { message: 'the repository was not found - set MOCK_REPO_ROOT' });
+        if (ragSource[1] === 'rag-src-retrieve') return text(res, 200, ragRetrievalTemplate());
         return text(res, 200, fs.readFileSync(path.join(repoRoot(), RAG_SOURCES[ragSource[1]].file)));
       }
       if (p === '/folders/folders/@item') {
@@ -1550,8 +1575,10 @@ http
         const modelId = p.split('/').pop();
         res.writeHead(200, { 'Content-Type': 'application/json', ETag: '"abc123"' });
         if (modelId === 'model-dec') {
+          // TLS-Verification-Off: left by an earlier manifest with the option
+          // off; a manifest with verification on has to take it away.
           return res.end(JSON.stringify({ id: modelId, name: 'Ticket Routing', algorithm: 'Decision-Template',
-            tags: ['Decision', 'Prompt-Template', 'Decision-Template'] }));
+            tags: ['Decision', 'Prompt-Template', 'Decision-Template', 'TLS-Verification-Off'] }));
         }
         if (modelId === 'dec-1') {
           return res.end(JSON.stringify({ id: modelId, name: 'jev_mock', provider: 'OpenRouter', inputTokenCount: 0.000000042,
@@ -1575,7 +1602,7 @@ http
           JSON.stringify({
             id: modelId,
             name: 'Used Prompt',
-            tags: ['LLM', 'Prompt-Template', 'Custom-Tag', 'other_llm', 'LLM-Call-Included'],
+            tags: ['LLM', 'Prompt-Template', 'Custom-Tag', 'other_llm', 'LLM-Call-Included', 'TLS-Verification-Off'],
           })
         );
       }

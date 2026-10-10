@@ -34,10 +34,10 @@ The committed `dist/index.html` must equal a fresh build, or the
 
 | Suite | What it drives | Needs |
 |---|---|---|
-| `verify.js` | The Prompt Builder with LLM prompts: steps, variables and the names they cannot have, runs, failing models, a run in flight while another prompt-test is opened, judging, optimization, manifest (both variants run in Python; saved runs the manifest refuses), the deletion flows with the decision usage note, a first request answered with 449, a prompt-test created, refused and found again; the page with decision templates off and with RAG on; the Judge button after a run and a judgment that comes back during one; the create dialogs, the links that leave the page, the placeholder entries of the two pickers | mock, Python |
-| `verify-decision.js` | Decision templates: designer, lint, model cards, runs, evaluation (and the kind change it blocks), manifest (saved runs it refuses), the kinds' own project lists, both delete dialogs; the page with decision templates off | mock, Python |
-| `verify-rag.js` | The RAG kind: offered only when switched on, the two flows side by side (keyboard included), a setup created, saved, manifested, ingested, asked a question and deleted; what the delete dialogs say about decisions; what a delete acts on; a withheld vector database; failures; the gates; a RAG-only page; what a manifest says beside its button when a stage fails | mock, Python |
-| `verify-options.js` | The Options contract: a stand-in for Visual Analytics embeds the app in an iframe, checks the one options group and loads every combination of the three switches, asserting what is built and what is requested | mock |
+| `verify.js` | The Prompt Builder with LLM prompts: steps, variables and the names they cannot have, runs, failing models, a run in flight while another prompt-test is opened, judging, optimization, manifest (both variants run in Python; saved runs the manifest refuses), the deletion flows with the decision usage note, a first request answered with 449, a prompt-test created, refused and found again; the page with decision templates off and with RAG on; TLS verification in the manifested model with the option ticked and unticked; the Judge button after a run and a judgment that comes back during one; the create dialogs, the links that leave the page, the placeholder entries of the two pickers | mock, Python |
+| `verify-decision.js` | Decision templates: designer, lint, model cards, runs, evaluation (and the kind change it blocks), manifest (saved runs it refuses; TLS verification with the option ticked and unticked), the kinds' own project lists, both delete dialogs; the page with decision templates off | mock, Python |
+| `verify-rag.js` | The RAG kind: offered only when switched on, the two flows side by side (keyboard included), a setup created, saved, manifested, ingested, asked a question and deleted; what the delete dialogs say about decisions; what a delete acts on; a withheld vector database; failures; the gates; a RAG-only page; what a manifest says beside its button (a stage that fails, TLS verification off, a retrieval template from before that option) | mock, Python |
+| `verify-options.js` | The Options contract: a stand-in for Visual Analytics embeds the app in an iframe, checks the one options group (the checkbox `sslVerify` included: posted, mirrored, read strictly, without effect on the page) and loads every combination of the three switches, asserting what is built and what is requested | mock |
 | `verify-locales.js` | `en.json` against `de.json` and both against the sources (keys, placeholders, unused keys, formal address in German) | nothing |
 | `verify-tokens.js` | The built `dist/index.html` (or `VERIFY_DIST`): every inline script is stored base64-encoded, and no text outside a comment has the shape `$name$`, which SAS Job Execution substitutes as a token before it serves the page | nothing |
 
@@ -115,6 +115,12 @@ Example for a second instance: `MOCK_PORT=4174 node mock-server.cjs <dist>` and
   of both vector stores; `credentialDomain=none` switches the lookup off for
   the prompt side and leaves the RAG card disabled with its reason.
 - `enable_pgvector=0` / `enable_singlestore=0` withhold a vector database.
+- `sslVerify=false` unticks "Verify TLS certificates in manifested models":
+  the page behaves as before, and what it manifests from then on (a prompt
+  template with the LLM call included, a decision template, a retrieval
+  model) does not verify TLS by default, carries the tag
+  `TLS-Verification-Off` and shows a warning above its Manifest button. Read
+  like a switch, with ON as the fallback: only `false/0/no/off` unticks it.
 - With neither side configured the page is one info alert ("Configuration
   required") and makes no SAS Viya request.
 
@@ -131,6 +137,7 @@ Example for a second instance: `MOCK_PORT=4174 node mock-server.cjs <dist>` and
 | `POST /__norag`, `POST /__rag` | Hide the fixture project `rag-proj`; restore it and clear the RAG failures |
 | `POST /__ragfail` `{ projects, run, documents, retrieval, jobDefinition }` | `projects: <status>` makes the RAG project listing answer that status; `run: '<reason>'` makes the next ingestion log `Ingestion failed: <reason>`; `documents: <n>` makes the next ingestion do its work and count that many failed documents in its summary and its ledger; `retrieval: '<reason>'` makes the next probe log `FAILED <reason>`; `jobDefinition: <status>` makes the next request that writes a job definition (POST or PUT) answer that status, once - a manifest that stops half way; an empty body clears all |
 | `GET /__ragstate` | What the RAG side created: `projects, models, contents, folders, jobDefinitions, flows, jobs, ledgers` |
+| `POST /__ragtemplate` `{ tls }` | Which `retrieve_context.py` the content root holds. By default the current one, whose MANIFEST block has `SSL_VERIFY = True` (the line is added when the file of the repository lacks it); `tls: false` serves the template of a content root deployed before the option for TLS verification existed, without that line; an empty body serves the current one again |
 | `GET /__direct` | The requests a browser made to a SAS Viya service without `X-Requested-With: XMLHttpRequest`, i.e. around the app's HTTP client. Not listed: the page itself, `/scr/...`, and the plain `GET /<service>/` that establishes a session. `POST /__reset` does not clear it |
 
 The mock must not define `/__vahost` or `/__vatop`: `verify-options.js` serves
@@ -147,16 +154,39 @@ also run, by `python-check.cjs`:
   FAIL, never a skip.
 - `compilePython(code, name)` compiles from a temporary file with
   `-I -W error`, so an invalid escape sequence fails like a syntax error.
-- `callScoreModel(code, args, response)` runs `scoreModel(*args)` with
-  `requests` replaced by a stand-in that records the request and answers 200
-  with `response`; it returns `{ ok, error, returned, request }`. Use it to
-  assert that a manifested model sends the text the experiment sent and
-  returns one value per output variable.
+- `callScoreModel(code, args, response, name, env, files)` runs
+  `scoreModel(*args)` with `requests` replaced by a stand-in that records the
+  request and answers 200 with `response`; it returns
+  `{ ok, error, returned, request }`, the request as `{ url, body, verify }`.
+  Use it to assert that a manifested model sends the text the experiment sent
+  and returns one value per output variable.
+- `evaluateInModule(code, expressions, name, env, files)` loads a module and
+  evaluates expressions in it - `_ssl_verify("RAGEMBED")` of a manifested
+  `retrieve_context.py`, for example.
+- `env` are the environment variables of the call. The variables a manifested
+  model reads on its destination (`LLMCONTAINER*`, `RAGEMBED_*`, `RAGSTORE_*`)
+  are taken out of the inherited environment first, so the shell that starts
+  a suite cannot change a result. In a value `{folder}` is the temporary
+  folder of the call; `files` puts further files there (a CA bundle), and the
+  same word comes back in the result.
+- `withoutTlsDefault`, `expectedTlsVerify` and `tlsVerifyOf` are the checks of
+  TLS verification in a manifested score code: the six lines the option
+  "Verify TLS certificates in manifested models" added, and the `verify`
+  argument `requests.post` gets for `LLMCONTAINERSSLVERIFY` unset, `false`,
+  `true` and a word that is neither, with and without a CA bundle.
 
 A new manifest check needs a hostile fixture, not only a friendly one: text
 with a backslash, a tab, braces, three double quotes in a row and a double
 quote as the last character. `verify-rag.js` compiles the manifested
 `retrieve_context.py` the same way.
+
+With the option ticked a score code has to be what it was before the option
+existed, plus those six lines. `verify.js` and `verify-decision.js` check that
+byte for byte: they take the six lines out and compare the SHA-256 of the
+rest (the origin of the mock replaced by a fixed word) with a hash recorded
+from the bundle of commit ccae261, the last one before the option. A
+deliberate change of a score code changes that hash: the failing line prints
+the new one - read the diff of the code before putting it into the suite.
 
 A manifest is generated from the SAVED run, so what an earlier release stored
 is an input of its own: `verify.js` and `verify-decision.js` serve a tracker

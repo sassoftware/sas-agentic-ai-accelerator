@@ -23,13 +23,14 @@
  *   failure   a RAG project listing that fails stays inside the RAG area
  *   gates     credentialDomain=none; the ingestion compute context
  *   ragonly   a page without the prompt side shows the RAG flow alone
- *   manifest  what a manifest says beside its button when a stage fails; the
- *             create dialogs and the link to the saved setup
+ *   manifest  what a manifest says beside its button: a stage that fails; TLS
+ *             verification switched off; a retrieval template from before
+ *             that option; the create dialogs and the link to the saved setup
  * VERIFY_RAG_SECTIONS (comma separated) runs a subset; the summary names the
  * sections that ran, so a partial run cannot pass for a full one.
  */
 const { chromium } = require('playwright');
-const { resolvePython, compilePython } = require('./python-check.cjs');
+const { resolvePython, compilePython, evaluateInModule } = require('./python-check.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const WANTED = (process.env.VERIFY_RAG_SECTIONS || '').split(',').map((name) => name.trim()).filter(Boolean);
@@ -50,6 +51,10 @@ const resetLog = async () => fetch(BASE + '/__reset', { method: 'POST' });
 const ragState = async () => (await fetch(BASE + '/__ragstate')).json();
 const armFailure = (failures) =>
   fetch(BASE + '/__ragfail', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(failures) });
+// Which retrieval template the content root holds: the current one, or the
+// one from before the option for TLS verification (see the mock).
+const serveTemplate = (variant) =>
+  fetch(BASE + '/__ragtemplate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(variant) });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitUntil(fn, label, timeout = 8000) {
   const start = Date.now();
@@ -581,7 +586,9 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     const scoreUpload = lastUpload(log, setupId, 'retrieve_context.py');
     assert(scoreUpload && scoreUpload.url.includes('role=score'), 'retrieve_context.py is uploaded as the score code of the setup');
     const scoreCode = multipartFile(scoreUpload.body);
-    const manifestLines = ['BACKEND = "pgvector"', 'COLLECTION = "zz_verify_v1"', 'EMBED_MODEL = "bge_small_en_v15"', 'STORE_HOST = "pg.mock.local"', 'STORE_PORT = "5432"', 'STORE_DB = "ragdb"', 'CREDENTIAL_DOMAIN = "agentic-ai-keys"'];
+    // SSL_VERIFY = True: this page says nothing about the option for TLS
+    // verification, so it is ticked (the section "manifest" unticks it).
+    const manifestLines = ['BACKEND = "pgvector"', 'COLLECTION = "zz_verify_v1"', 'EMBED_MODEL = "bge_small_en_v15"', 'STORE_HOST = "pg.mock.local"', 'STORE_PORT = "5432"', 'STORE_DB = "ragdb"', 'CREDENTIAL_DOMAIN = "agentic-ai-keys"', 'SSL_VERIFY = True'];
     const missingLines = manifestLines.filter((line) => !scoreCode.split(/\r?\n/).includes(line));
     assert(missingLines.length === 0, `its MANIFEST block carries the setup (missing: ${missingLines.join(' ; ') || 'none'})`);
     // The retrieval model embeds the question where the ingestion job embedded
@@ -1236,7 +1243,18 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
 
   // ---- manifest: what a manifest says beside its button ---------------------------
   await section('manifest', async (page) => {
+    const TLS_WARNING = rgb('manifest-tls-warning');
+    const TLS_TAG = 'TLS-Verification-Off';
+    const OPTION = 'Verify TLS certificates in manifested models';
     const resultText = async () => ((await page.textContent(rgb('save-result'))) || '').replace(/\s+/g, ' ').trim();
+    // The MANIFEST block of an uploaded retrieve_context.py, as its lines.
+    const blockOf = (code) => {
+      const lines = code.split(/\r?\n/);
+      const start = lines.findIndex((line) => line.startsWith('# ---- MANIFEST'));
+      const end = lines.findIndex((line, index) => index > start && /^# -{20,}$/.test(line));
+      return lines.slice(start + 1, end);
+    };
+    const tlsLines = (code) => blockOf(code).filter((line) => /^SSL_VERIFY\b/.test(line));
     // Manifest and wait for the end: the model version when it goes through.
     const manifest = async (setupId, { through = true } = {}) => {
       await goRagStep(page, 'store');
@@ -1248,10 +1266,20 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       await waitUntil(async () => !(await page.isDisabled(rgb('manifest'))) && (await page.textContent(rgb('manifest'))).trim() === 'Manifest setup' && Boolean(await page.$(`${rgb('save-result')} .alert`)), 'the manifest has ended and says how', 30000);
       const log = await getLog();
       const score = lastUpload(log, setupId, 'retrieve_context.py');
-      return { log, code: score ? multipartFile(score.body) : '' };
+      const puts = log.filter((e) => e.method === 'PUT' && e.url === `/modelRepository/models/${setupId}`).map((e) => JSON.parse(e.body));
+      return { log, code: score ? multipartFile(score.body) : '', tags: (puts[puts.length - 1] || {}).tags || [] };
+    };
+    // What _ssl_verify of a manifested retrieve_context.py answers for the
+    // embedding container and for the credentials service.
+    const sslVerifyOf = (code, env = {}) => {
+      const evaluated = evaluateInModule(code, ['_ssl_verify("RAGEMBED")', '_ssl_verify("RAGSTORE")'], 'retrieve_context.py', {
+        RAGEMBED_CABUNDLE: '{folder}/no-such-bundle.pem', RAGSTORE_CABUNDLE: '{folder}/no-such-bundle.pem', ...env,
+      }, { 'ca-bundle.pem': 'a stand-in for a CA bundle\n' });
+      return evaluated.ok ? JSON.stringify(evaluated.values) : `error: ${lastLine(evaluated.error)}`;
     };
 
     // -- a project and a setup of this section, through the two create dialogs ----
+    await serveTemplate({});
     await openRag(page);
     await waitUntil(async () => (await optionValues(page, 'project')).includes('rag-proj'), 'the RAG projects are listed');
     await page.click(`[data-bs-target="${rgb('create-projectModal')}"]`);
@@ -1260,6 +1288,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     await page.fill(rgb('create-projectName'), 'ZZ Manifest RAG');
     await page.click(`${rgb('create-projectModal')} .btn-primary`);
     await waitUntil(async () => (await value(page, 'project')).startsWith('rag-proj-new-'), 'the project of this section is selected');
+    const projectId = await value(page, 'project');
     await page.waitForSelector('.modal.show', { state: 'detached' });
     await page.click(`[data-bs-target="${rgb('create-setupModal')}"]`);
     await page.waitForSelector(`${rgb('create-setupModal')}.show`);
@@ -1280,6 +1309,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     await page.fill(rgb('collection'), 'zz_manifest_v1');
     await page.fill(rgb('tables-prefix'), 'zzm');
     await page.selectOption(rgb('tables-caslib'), 'Public');
+    assert(!(await page.$(TLS_WARNING)), 'option ticked: no TLS warning stands beside Manifest setup');
 
     // -- a stage that fails: the outcome is said where the button is ---------------
     // The setup is saved, then the request that writes the job definition
@@ -1309,9 +1339,84 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     assert(await page.isDisabled(rgb('launch')), 'Launch ingestion stays disabled: the setup is not manifested');
 
     // -- the same manifest once more: it goes through ------------------------------
-    await manifest(setupId);
+    const ticked = await manifest(setupId);
     assert(Boolean(await saveResult(page, 'success')) && !(await saveResult(page, 'danger')) && !(await saveResult(page, 'warning')), 'the next manifest goes through and says so in the success style');
+    assert(JSON.stringify(tlsLines(ticked.code)) === '["SSL_VERIFY = True"]', `option ticked: the retrieval model holds SSL_VERIFY = True, once (got: ${JSON.stringify(tlsLines(ticked.code))})`);
+    assert(!ticked.tags.includes(TLS_TAG) && !/TLS/.test(await resultText()), `option ticked: no ${TLS_TAG} tag and nothing about TLS in the outcome (tags: ${ticked.tags.join(', ')})`);
+    assert(sslVerifyOf(ticked.code) === '[true,true]', `option ticked: both calls of the retrieval model verify (got: ${sslVerifyOf(ticked.code)})`);
+    assert(
+      sslVerifyOf(ticked.code, { RAGEMBED_SSLVERIFY: 'false' }) === '[false,true]',
+      `option ticked: RAGEMBED_SSLVERIFY=false still switches that one call off (got: ${sslVerifyOf(ticked.code, { RAGEMBED_SSLVERIFY: 'false' })})`
+    );
     await assertLinkCopies(page, `${rgb('save-result')} a`, 'the link to the saved setup beside Manifest setup');
+
+    // -- the option unticked --------------------------------------------------------
+    await openRag(page, `${APP_URL}&sslVerify=false`);
+    await selectRagProject(page, projectId);
+    await openSetup(page, setupId, async () => (await value(page, 'collection')) === 'zz_manifest_v1', 'the setup opens on the page with the option unticked');
+    await goRagStep(page, 'store');
+    assert(await page.isVisible(TLS_WARNING), 'option unticked: a TLS warning stands beside Manifest setup before the click');
+    const warningText = (await page.textContent(TLS_WARNING)).trim();
+    assert(
+      warningText.includes(OPTION) && warningText.includes('RAGEMBED_SSLVERIFY=true') && warningText.includes('RAGSTORE_SSLVERIFY=true') && warningText.includes(TLS_TAG),
+      `the warning names the option, the tag and the two environment variables that turn verification back on (got: ${warningText})`
+    );
+    const warningAboveButton = await page.evaluate(
+      ([warning, button]) => document.querySelector(warning).getBoundingClientRect().bottom <= document.querySelector(button).getBoundingClientRect().top,
+      [TLS_WARNING, rgb('manifest')]
+    );
+    assert(warningAboveButton, 'the warning stands above the button');
+    const unticked = await manifest(setupId);
+    assert(JSON.stringify(tlsLines(unticked.code)) === '["SSL_VERIFY = False"]', `option unticked: the retrieval model holds SSL_VERIFY = False, once (got: ${JSON.stringify(tlsLines(unticked.code))})`);
+    assert(
+      unticked.code.replace('SSL_VERIFY = False', 'SSL_VERIFY = True') === ticked.code,
+      'option unticked: the retrieval model differs from a ticked one in that line and in nothing else'
+    );
+    const compiledOff = compilePython(unticked.code, 'retrieve_context.py');
+    assert(compiledOff.ok, `the retrieval model manifested with the option unticked is valid Python (${compiledOff.python}${compiledOff.ok ? '' : ': ' + lastLine(compiledOff.error)})`);
+    assert(sslVerifyOf(unticked.code) === '[false,false]', `option unticked: neither call of the retrieval model verifies (got: ${sslVerifyOf(unticked.code)})`);
+    assert(
+      sslVerifyOf(unticked.code, { RAGEMBED_SSLVERIFY: 'true', RAGSTORE_SSLVERIFY: 'true', RAGSTORE_CABUNDLE: '{folder}/ca-bundle.pem' }) === '[true,"{folder}/ca-bundle.pem"]',
+      `option unticked: RAGEMBED_SSLVERIFY=true and RAGSTORE_SSLVERIFY=true turn verification back on, with the CA bundle where one exists (got: ${sslVerifyOf(unticked.code, { RAGEMBED_SSLVERIFY: 'true', RAGSTORE_SSLVERIFY: 'true', RAGSTORE_CABUNDLE: '{folder}/ca-bundle.pem' })})`
+    );
+    assert(
+      sslVerifyOf(unticked.code, { RAGEMBED_SSLVERIFY: 'garbage' }) === '[false,false]',
+      'option unticked: a word that is neither on nor off leaves the manifested default'
+    );
+    assert(unticked.tags.includes(TLS_TAG), `option unticked: the setup carries the tag ${TLS_TAG} (got: ${unticked.tags.join(', ')})`);
+    let outcome = await resultText();
+    assert(
+      Boolean(await saveResult(page, 'warning')) && !(await saveResult(page, 'danger')) && outcome.includes('Setup manifested') && outcome.includes('TLS verification is OFF') && outcome.includes('RAGEMBED_SSLVERIFY=true'),
+      `option unticked: the outcome line says that the setup is manifested and that verification is off, as a warning (got: ${outcome})`
+    );
+    await goRagStep(page, 'run');
+    assert(!(await page.isDisabled(rgb('launch'))), 'the setup is manifested: Launch ingestion is available');
+
+    // -- the option unticked, the content root still holds the older template ------
+    await serveTemplate({ tls: false });
+    const older = await manifest(setupId);
+    assert(tlsLines(older.code).length === 0 && older.code.includes('COLLECTION = "zz_manifest_v1"'), 'a template without SSL_VERIFY is manifested all the same, and no such line is added to it');
+    const compiledOlder = compilePython(older.code, 'retrieve_context.py');
+    assert(compiledOlder.ok, `the retrieval model from the older template is valid Python (${compiledOlder.python}${compiledOlder.ok ? '' : ': ' + lastLine(compiledOlder.error)})`);
+    outcome = await resultText();
+    assert(
+      Boolean(await saveResult(page, 'warning')) && outcome.includes('Setup manifested') && outcome.includes('still ON') && outcome.includes('predates the option') && outcome.includes(`${CONTENT_ROOT}/models`) && outcome.includes('deploy-rag-content'),
+      `the outcome line says that the template under the content root predates the option and has to be deployed again (got: ${outcome})`
+    );
+    assert(!older.tags.includes(TLS_TAG), `a model that still verifies does not carry ${TLS_TAG}: the tag of the manifest before is taken away (got: ${older.tags.join(', ')})`);
+    await serveTemplate({});
+
+    // -- ticked again: the tag goes --------------------------------------------------
+    const again = await manifest(setupId);
+    assert(again.tags.includes(TLS_TAG), 'with the current template the unticked option takes effect again');
+    await openRag(page);
+    await selectRagProject(page, projectId);
+    await openSetup(page, setupId, async () => (await value(page, 'collection')) === 'zz_manifest_v1', 'the setup opens on a page with the option ticked');
+    const reticked = await manifest(setupId);
+    assert(
+      JSON.stringify(tlsLines(reticked.code)) === '["SSL_VERIFY = True"]' && !reticked.tags.includes(TLS_TAG) && Boolean(await saveResult(page, 'success')),
+      `manifested with the option ticked again, the model verifies and loses the tag (line: ${JSON.stringify(tlsLines(reticked.code))}, tags: ${reticked.tags.join(', ')})`
+    );
   });
 
   // ---- every request to SAS Viya went through the HTTP client of the app -------

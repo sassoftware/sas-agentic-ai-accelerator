@@ -37,6 +37,8 @@ import {
   DECISION_TEMPLATE_TAG,
   DEFAULT_DECISION_OUTPUTS,
   MAX_QUESTION_ID_LENGTH,
+  SCORE_CODE_TLS_DEFAULT_BRANCH,
+  TLS_VERIFICATION_OFF_TAG,
   allExpectedMatch,
   buildDecisionManifest,
   createQuestionDesigner,
@@ -56,6 +58,7 @@ import {
   renderComparison,
   renderEvaluation,
   renderQuestionList,
+  scoreCodeTlsDefaultComment,
   type DecisionAnswers,
   type DecisionModelCapabilities,
   type DecisionQuestion,
@@ -642,6 +645,11 @@ export async function buildPromptBuilder(
     // listed; with optimization off, the Optimize step does not exist.
     const decisionEnabled = hooks?.features.decision ?? true;
     const optimizationEnabled = hooks?.features.optimization ?? false;
+    // Whether a model manifested here verifies the TLS certificate of the
+    // container call it makes itself (option "Verify TLS certificates in
+    // manifested models"). Only the literal false switches it off. It is
+    // written into the score code and decides nothing the page does itself.
+    const tlsVerificationOn = promptBuilderObject?.sslVerify !== false;
 
     // Experiment-tracker rows for THIS object instance. Kept in the closure
     // (not on window) so two prompt-builder panes don't clobber each other.
@@ -4287,7 +4295,36 @@ export async function buildPromptBuilder(
     promptExperimentManifestOptions.style.display = 'none';
     promptExperimentIntegratedCallCheckbox.addEventListener('change', () => {
       promptExperimentManifestOptions.style.display = promptExperimentIntegratedCallCheckbox.checked ? '' : 'none';
+      updateTlsWarning();
     });
+    // With the option "Verify TLS certificates in manifested models" unticked
+    // the manifested model calls its container without verifying the
+    // certificate. That is said above the button, before the click, and only
+    // for a manifest whose score code makes the call: a decision template
+    // always does, a prompt template when the LLM call is included (the Call
+    // LLM node variant leaves the call to the DS2 node).
+    const promptExperimentTlsWarning = document.createElement('div');
+    promptExperimentTlsWarning.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-manifest-tls-warning`;
+    promptExperimentTlsWarning.classList.add('alert', 'alert-warning', 'py-2', 'px-3', 'mt-3', 'mb-0', 'd-none');
+    promptExperimentTlsWarning.setAttribute('role', 'note');
+    promptExperimentTlsWarning.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestTlsOffWarning}`;
+    function manifestMakesContainerCall(): boolean {
+      return promptMode === 'decision' || promptExperimentIntegratedCallCheckbox.checked;
+    }
+    function updateTlsWarning(): void {
+      promptExperimentTlsWarning.classList.toggle('d-none', tlsVerificationOn || !manifestMakesContainerCall());
+    }
+    /**
+     * The other tags of a manifest are a convenience; this one is how a model
+     * that does not verify TLS is found. When it could not be written, the
+     * manifest box says so and asks for it to be added by hand.
+     */
+    function reportTlsTagFailure(): void {
+      const line = document.createElement('p');
+      line.classList.add('text-danger', 'pet-manifest-tls-tag-failed');
+      line.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestTlsTagFailed}`;
+      promptExperimentResultContainer.appendChild(line);
+    }
     const manifestOutputsLabel = document.createElement('p');
     manifestOutputsLabel.classList.add('fw-bold', 'mb-1');
     manifestOutputsLabel.innerText = `${promptBuilderInterfaceText?.promptBuilderManifestOutputsLabel}`;
@@ -4951,11 +4988,13 @@ ${outputVariables.map((variable) => `    ${variable.name} = ${pythonDefaultLiter
     # TLS verification of the LLM container call: trust the CA bundle SAS Viya
     # mounts into every pod, or the one LLMCONTAINERCABUNDLE points to. Setting
     # LLMCONTAINERSSLVERIFY=false disables the verification entirely.
+${scoreCodeTlsDefaultComment(tlsVerificationOn)}
     sslVerify = os.getenv("LLMCONTAINERCABUNDLE", "/security/trustedcerts.pem")
     if not os.path.isfile(sslVerify):
         sslVerify = True
     if os.getenv("LLMCONTAINERSSLVERIFY", "").strip().lower() in ("false", "no", "0"):
         sslVerify = False
+${SCORE_CODE_TLS_DEFAULT_BRANCH}
     # Call the LLM container and unwrap the SCR response envelope. Failures are
     # reported through the response output instead of raising, so a failed call
     # cannot abort a whole scoring or SAS Intelligent Decisioning run.
@@ -5049,24 +5088,31 @@ ${scoreCodeReturn}`;
         // Tag the model with the manifested LLM and the chosen manifest mode.
         // Tags from an earlier manifest (other LLM names, mode flags) are
         // removed first so re-manifesting does not leave stale tags behind.
+        // A model whose score code calls the container without verifying the
+        // certificate says so with a tag; the Call LLM node variant makes no
+        // call and never carries it.
         const manifestTags = [
           (bestPromptItem as PETRow).model,
           ...(integratedLLMCall ? ['LLM-Call-Included'] : []),
           ...(parseOutputs ? ['Output-Parsing'] : []),
+          ...(integratedLLMCall && !tlsVerificationOn ? [TLS_VERIFICATION_OFF_TAG] : []),
         ];
         const staleManifestTags = [
           'LLM-Call-Included',
           'Output-Parsing',
+          TLS_VERIFICATION_OFF_TAG,
           ...promptBuilderAvailableLLMs.map((availableLLM) => availableLLM.name),
           ...promptExperimentTracker.flatMap((trackerEntry) =>
             Object.keys(trackerEntry).filter((key) => !TRACKER_META_KEYS.includes(key))
           ),
         ];
+        let manifestTagsWritten = false;
         try {
-          await updateModelTags(promptExperimentRunModel, staleManifestTags, manifestTags);
+          manifestTagsWritten = (await updateModelTags(promptExperimentRunModel, staleManifestTags, manifestTags)) < 300;
         } catch (error) {
           console.error('Failed to update the tags of the manifested model.', error);
         }
+        if (!manifestTagsWritten && manifestTags.includes(TLS_VERIFICATION_OFF_TAG)) reportTlsTagFailure();
         // Copy the winning LLM's governance/cost attributes onto the manifested
         // prompt model (so a prompt carries the same metadata the mdb-registered
         // LLMs do) and (re)assert the current function value. Best-effort.
@@ -5202,6 +5248,7 @@ ${scoreCodeReturn}`;
         options: optionParts.join(','),
         requiresAPIKey,
         selectedOutputs,
+        sslVerify: tlsVerificationOn,
       });
       const modelVariables = await getModelVariables(promptExperimentRunModel);
       for (const variable of modelVariables) {
@@ -5227,16 +5274,24 @@ ${scoreCodeReturn}`;
         'LLM-Call-Included',
         'Output-Parsing',
         'Decision-Call-Included',
+        TLS_VERIFICATION_OFF_TAG,
         ...promptBuilderAvailableDecisionModels.map((model) => model.name),
         ...promptExperimentTracker.flatMap((trackerEntry) =>
           Object.keys(trackerEntry).filter((key) => !TRACKER_META_KEYS.includes(key))
         ),
       ];
+      let manifestTagsWritten = false;
       try {
-        await updateModelTags(promptExperimentRunModel, staleManifestTags, [chosen.model, 'Decision-Call-Included']);
+        manifestTagsWritten =
+          (await updateModelTags(promptExperimentRunModel, staleManifestTags, [
+            chosen.model,
+            'Decision-Call-Included',
+            ...(tlsVerificationOn ? [] : [TLS_VERIFICATION_OFF_TAG]),
+          ])) < 300;
       } catch (error) {
         console.error('Failed to update the tags of the manifested model.', error);
       }
+      if (!manifestTagsWritten && !tlsVerificationOn) reportTlsTagFailure();
       await ensureLLMCostAttributes(chosen.model);
       const decisionModel = llmAttributesByName.get(chosen.model);
       const manifestAttributes: Record<string, unknown> = { function: PROMPT_FUNCTION };
@@ -7228,6 +7283,7 @@ ${scoreCodeReturn}`;
     manifestCard.controls.appendChild(promptExperimentIntegratedCallDiv);
     manifestCard.controls.appendChild(promptExperimentManifestOptions);
     if (decisionEnabled) manifestCard.controls.appendChild(promptExperimentDecisionManifestOptions);
+    manifestCard.controls.appendChild(promptExperimentTlsWarning);
     promptExperimentCreateModelButtonWrapper.classList.add('mt-3');
     manifestCard.controls.appendChild(promptExperimentCreateModelButtonWrapper);
     promptExperimentResultContainer.classList.add('mt-2');
@@ -7549,6 +7605,7 @@ ${scoreCodeReturn}`;
       promptExperimentIntegratedCallDiv.classList.toggle('d-none', decision);
       promptExperimentManifestOptions.style.display = decision || !promptExperimentIntegratedCallCheckbox.checked ? 'none' : '';
       promptExperimentDecisionManifestOptions.classList.toggle('d-none', !decision);
+      updateTlsWarning();
       promptExperimentManifestDescription.innerText = `${decision ? promptBuilderInterfaceText?.promptBuilderManifestDecisionDescription : promptBuilderInterfaceText?.promptBuilderManifestDescription}`;
       renderTrackerLegend();
       updateRunExperimentsButtonState();

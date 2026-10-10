@@ -75,7 +75,8 @@ import { showToast } from '../ui/toast';
 import { attachCombobox } from '../ui/combobox';
 import { createListFilter, renderFilteredOptions } from '../ui/list-filter';
 import { MODEL_CARD_FIELDS, createDocSection, createInfoIcon } from '../ui/doc-section';
-import { manifestSettings, renderRetrievalModel } from './rag-manifest';
+import { manifestBlockHas, manifestSettings, renderRetrievalModel } from './rag-manifest';
+import { TLS_VERIFICATION_OFF_TAG } from './prompt-decision';
 import { macroSafeQuestion, parseRetrievalLog, type RetrievalTestLog } from './rag-retrieval-log';
 import { buildFlow, enrichSteps, enrichValues, ingestionChain, ingestionSteps } from './rag-flow';
 import {
@@ -382,6 +383,14 @@ export async function buildRagBuilder(
   let selectedSetupName = '';
   /** Tags of the loaded setup that this builder manages (removed on re-save). */
   let managedTags: string[] = [];
+  /**
+   * What the last registration of the retrieval model did about TLS
+   * verification: written on, written off, or the option was off and the
+   * template under the content root had no SSL_VERIFY to write it to.
+   */
+  let tlsOutcome: 'on' | 'off' | 'templatePredatesOption' = 'on';
+  /** Whether the tag of that registration could be set or removed. */
+  let tlsTagWritten = true;
   /** URI of the setup's generated ingestion job definition ('' = none yet). */
   let currentJobUri = '';
   // the operational policy of the setup currently open. Authored centrally in
@@ -1923,6 +1932,22 @@ export async function buildRagBuilder(
   const testButton = actionButton(operateActions, 'test', str('ragBuilderTestButton', 'Test retrieval'));
   testButton.disabled = true;
   testButton.title = str('ragBuilderTestNeedsManifest', 'Manifest the setup first.');
+  // With the option "Verify TLS certificates in manifested models" unticked a
+  // retrieval model manifested here does not verify the certificates of its
+  // two HTTPS calls. That is said above the button, before the click, with
+  // the way back named.
+  const tlsVerificationOn = config.sslVerify !== false;
+  if (!tlsVerificationOn) {
+    const tlsWarning = document.createElement('div');
+    tlsWarning.id = idOf('manifest-tls-warning');
+    tlsWarning.className = 'alert alert-warning py-2 px-3 mb-3';
+    tlsWarning.setAttribute('role', 'note');
+    tlsWarning.textContent = str(
+      'ragBuilderTlsOffWarning',
+      'TLS verification is off for the retrieval model. The option "Verify TLS certificates in manifested models" of this report is not ticked, so a retrieval model manifested now calls the embedding container and the credentials service without verifying their certificates, and is tagged TLS-Verification-Off in SAS Model Manager. To turn verification back on where the model runs, set RAGEMBED_SSLVERIFY=true and RAGSTORE_SSLVERIFY=true on the publishing destination. The ingestion job and Test retrieval on this page are not affected.'
+    );
+    saveBody.appendChild(tlsWarning);
+  }
   saveBody.appendChild(saveActions);
   operateBody.appendChild(operateActions);
   storeEditor.appendChild(saveCard);
@@ -3046,14 +3071,21 @@ export async function buildRagBuilder(
         console.error('Creating the model version failed.', error);
         const message = str('ragBuilderVersionFailed', 'Everything was generated and registered, but recording a new model version failed - check your permissions on the setup model.');
         showStatus('info', message);
-        showSaveSuccess(message, 'warning');
+        showSaveSuccess([message, ...tlsOutcomeNotes()].join(' '), 'warning');
         return;
       }
+      // What the manifest did about TLS verification follows the outcome in
+      // the same line; either note makes it a warning.
+      const tlsNotes = tlsOutcomeNotes();
       showSaveSuccess(
-        str('ragBuilderManifested', 'Setup manifested: saved, ingestion job and Studio flow generated in {folder}, retrieval model registered, and a new model version recorded.').replace(
-          '{folder}',
-          artifactsFolder()
-        )
+        [
+          str('ragBuilderManifested', 'Setup manifested: saved, ingestion job and Studio flow generated in {folder}, retrieval model registered, and a new model version recorded.').replace(
+            '{folder}',
+            artifactsFolder()
+          ),
+          ...tlsNotes,
+        ].join(' '),
+        tlsNotes.length > 0 ? 'warning' : 'success'
       );
     } finally {
       manifestButton.textContent = str('ragBuilderManifestButton', 'Manifest setup');
@@ -3317,8 +3349,30 @@ export async function buildRagBuilder(
       // would search the collection with vectors of another container.
       const endpoint =
         setup.embedding.scrEndpoint || String(config.SCREndpoint || '').trim() || `${viyaHost()}/llm`;
-      const code = renderRetrievalModel(template, manifestSettings(setup, endpoint));
+      // TLS verification: the option is written as SSL_VERIFY where the
+      // template has that constant. A content root deployed before the option
+      // existed holds a template without it - and without the code that reads
+      // it. That template is manifested as it is, the model keeps verifying,
+      // and the outcome line says that the option did not take effect.
+      const templateHasTlsSetting = manifestBlockHas(template, 'SSL_VERIFY');
+      const code = renderRetrievalModel(template, manifestSettings(setup, endpoint, '', tlsVerificationOn));
       await createModelContent(selectedSetupID, code, 'retrieve_context.py', 'score', 'text/x-python');
+      tlsOutcome = tlsVerificationOn ? 'on' : templateHasTlsSetting ? 'off' : 'templatePredatesOption';
+      // The tag says what this score code does, so it is set when verification
+      // is off in it and taken away otherwise (a setup manifested again with
+      // the option ticked). Saving the setup leaves the tag alone.
+      tlsTagWritten = true;
+      try {
+        const tagStatus = await updateModelTags(
+          selectedSetupID,
+          [TLS_VERIFICATION_OFF_TAG],
+          tlsOutcome === 'off' ? [TLS_VERIFICATION_OFF_TAG] : []
+        );
+        tlsTagWritten = tagStatus < 300;
+      } catch (error) {
+        console.error('Updating the TLS tag of the setup failed.', error);
+        tlsTagWritten = false;
+      }
       showSaveSuccess(
         str('ragBuilderRegistered', 'Retrieval model registered: retrieve_context.py written as the score code of this setup, with its collection, backend and embedding model baked in.')
       );
@@ -3339,6 +3393,25 @@ export async function buildRagBuilder(
     } finally {
       manifestButton.disabled = false;
     }
+  }
+
+  /** The sentences a manifest adds to its outcome line about TLS verification; none when it is on. */
+  function tlsOutcomeNotes(): string[] {
+    const notes: string[] = [];
+    if (tlsOutcome === 'off') {
+      notes.push(str('ragBuilderManifestedTlsOff', 'TLS verification is OFF in this retrieval model (option "Verify TLS certificates in manifested models"); RAGEMBED_SSLVERIFY=true and RAGSTORE_SSLVERIFY=true on the publishing destination turn it back on.'));
+      if (!tlsTagWritten) {
+        notes.push(str('ragBuilderTlsTagFailed', 'The tag TLS-Verification-Off could not be written to the model - add it in SAS Model Manager.'));
+      }
+    } else if (tlsOutcome === 'templatePredatesOption') {
+      notes.push(
+        str('ragBuilderTlsTemplateOld', 'TLS verification is still ON in this retrieval model, although the option "Verify TLS certificates in manifested models" is unticked: retrieve_context.py under {folder} predates the option and has no SSL_VERIFY setting. Run the deploy-rag-content script again and manifest once more for the option to take effect.').replace(
+          '{folder}',
+          `${config.contentRoot}/models`
+        )
+      );
+    }
+    return notes;
   }
 
   /** What the ledger means while a run is still in flight. */
