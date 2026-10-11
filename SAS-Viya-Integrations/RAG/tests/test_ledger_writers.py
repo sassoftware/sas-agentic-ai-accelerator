@@ -342,7 +342,7 @@ def test_every_do_has_its_end_in_the_job():
     assert _balance(sas, "%do", "%end")[0] == _balance(sas, "%do", "%end")[1]
     assert _balance(sas, "%macro", "%mend")[0] == _balance(sas, "%macro", "%mend")[1]
     for name in ("_rag_ledger_types", "_rag_ledger_length", "_rag_export_ledger",
-                 "_rag_store_ledger"):
+                 "_rag_store_ledger", "_rag_release"):
         body = _macro(sas, name)
         assert _balance(body, "%do", "%end")[0] == _balance(body, "%do", "%end")[1], name
 
@@ -657,15 +657,69 @@ def test_the_run_id_of_a_step_does_not_end_in_the_process_id(name):
 
 
 def _job_run_id():
-    """The expression the job gives its run id, evaluated."""
+    """The expression the job's Python gives its run id where SAS handed
+    none over, evaluated."""
     import os
     import time
 
     python = _job_python()
-    expression = python.split("        run_id = ", 1)[1].split(
+    expression = python.split("        if not run_id:\n            run_id = ", 1)[1].split(
         "\n        M(f\"run {run_id}:", 1)[0]
     assert "getpid" not in expression
     return eval(expression, {"os": os, "time": time, "int": int})
+
+
+def test_the_run_id_of_the_job_is_made_in_sas_the_way_a_step_makes_it():
+    """The lock row has to carry the id, and SAS appends the row before the
+    Python program starts. The lines are the ones of RAG - List Documents,
+    with the prefix of the job."""
+    lock = _without_comments(_macro(_around_python("RAG - List Documents"), "_rgls_lock"))
+    start = lock.index("%let _rgls_now = ")
+    end = lock.index("%if &_rgls_state. NE run %then %return;")
+    lines = [line.strip() for line in lock[start:end].split("\n") if line.strip()]
+    assert len(lines) == 6 and lines[-1].startswith("%let _rgls_runId = run-")
+    export = _without_comments(_macro(_job_around_python(), "_rag_export_ledger"))
+    made = [line.strip() for line in export.split("\n") if line.strip()]
+    wanted = [line.replace("_rgls_", "_rag_") for line in lines]
+    first = made.index(wanted[0])
+    assert made[first:first + len(wanted)] == wanted
+    # before the session, the reload and the lock - whatever the run meets
+    assert first < made.index("cas _ragcas;")
+    assert "%local _rag_now _rag_uuid _rag_digits;" in made[:first]
+    # the id is the global one: assigned in open code before the macro runs
+    job = _job_around_python()
+    assert job.index("%let _rag_runId = ;") < job.index("%macro _rag_export_ledger;")
+    assert "_rag_runId" not in re.findall(r"%local ([^;]*);", export)[0]
+
+
+class _RunIdSas:
+    def __init__(self, handed_over):
+        self.handed_over = handed_over
+
+    def symget(self, name):
+        assert name == "_rag_runId"
+        return self.handed_over
+
+
+def _job_takes(handed_over):
+    """The lines that give the run its id, run with what SAS handed over."""
+    import os
+    import time
+
+    python = _job_python()
+    start = python.index('        run_id = str(SAS.symget("_rag_runId") or "").strip()')
+    end = python.index('        M(f"run {run_id}:')
+    scope = {"os": os, "time": time, "SAS": _RunIdSas(handed_over)}
+    exec(textwrap.dedent(python[start:end]), scope)
+    return scope["run_id"]
+
+
+def test_the_python_of_the_job_takes_the_run_id_sas_made():
+    assert _job_takes("run-1791722515-0000000344") == "run-1791722515-0000000344"
+    assert _job_takes(" run-1791722515-4294967295 ") == "run-1791722515-4294967295"
+    # none handed over: the program makes one, in the same form
+    for nothing in ("", "   ", None):
+        assert RUN_ID.fullmatch(_job_takes(nothing))
 
 
 def test_the_run_id_of_the_job_ends_in_ten_digits_that_differ():

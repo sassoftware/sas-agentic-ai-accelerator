@@ -136,6 +136,12 @@
 /* run until something before the Python program says otherwise: fail makes
    the program return at once, and _rag_error then holds the reason */
 %let _rag_state = run;
+/* the run lock: the id of this run, which its lock row carries; the newest
+   lock row another run left in the ledger; and whether this run appended a
+   row of its own, which is what it has to hand back when it fails */
+%let _rag_runId = ;
+%let _rag_lockHeld = ;
+%let _rag_lockTaken = 0;
 
 /* A pipeline table that was saved but is not in memory - which is how a CAS
    server restart leaves every one of them - is loaded back before anything
@@ -287,20 +293,46 @@
 /* ---- Export the existing ledger to WORK, then take the run lock ----------
    The export happens BEFORE the lock append, so this run's own lock never
    appears in its snapshot - the Python side aborts only on a fresh lock left
-   by ANOTHER run (stale locks past 30 minutes are ignored; a failed run
-   leaves its lock behind and times out the same way). The final ledger store
-   rewrites the table without a lock row, which releases it.
+   by ANOTHER run (stale locks past 30 minutes are ignored). The final ledger
+   store rewrites the table without a lock row, which releases it, and a run
+   that failed hands its lock back itself (_rag_release, behind the Python
+   program).
+   The lock row carries the id of the run, as the lock rows of the RAG steps
+   do: that is what tells the row of this run from the row of any other. The
+   id is made here, the way RAG - List Documents makes it, and the Python
+   program takes it over as the id of the run. A lock row of the job as it
+   was before has an empty run_id and is a row of another run to every
+   reader.
+   A run that finds the fresh lock of another run takes none. The job used to
+   append its row first and left it to the Python program to look for the
+   other lock: a run that was refused then left a lock of its own behind, and
+   so did every run that failed later, because nothing took the row out
+   again. The next run was answered that another ingestion run appears
+   active, for 30 minutes, with nothing running. The newest lock row decides,
+   because a ledger can hold the row of a run that crashed beside the row of
+   a run that is at work.
    A lock that failed to write is not a lock. After the append the ledger is
    exported a second time, the same way as the first, and the Python side
    looks in that export for a lock row the first one does not hold. Without
    one it refuses to ingest unguarded, as RAG - List Documents does when it
    cannot read its own lock back: CAS refuses a row whose column types
    differ from the table, and SAS goes on after that ERROR.
-   The order is: load a saved ledger back, export it, read its column types,
-   append the lock, export again. The reload stands first because everything
-   after it asks the in-memory table - a ledger that is only on disk would
-   be exported as none, typed as none and get no lock. */
+   The order is: load a saved ledger back, export it, look for the lock of
+   another run, read its column types, append the lock, export again. The
+   reload stands first because everything after it asks the in-memory table
+   - a ledger that is only on disk would be exported as none, typed as none
+   and get no lock. */
 %macro _rag_export_ledger;
+    %local _rag_now _rag_uuid _rag_digits;
+    /* run-<epoch>-<ten digits>: the first eight hexadecimal digits of a
+       UUID, written as a number, and &sysjobid where UUIDGEN returns none -
+       the lines RAG - List Documents makes the id of a flow run with */
+    %let _rag_now = %sysevalf(%sysfunc(datetime()) - 315619200);
+    %let _rag_digits = &sysjobid.;
+    %let _rag_uuid = %sysfunc(uuidgen());
+    %if %length(&_rag_uuid.) GE 8 %then
+        %let _rag_digits = %sysfunc(inputn(%substr(&_rag_uuid., 1, 8), hex8.), z10.);
+    %let _rag_runId = run-%sysfunc(compress(%sysfunc(putn(&_rag_now., 12.))))-&_rag_digits.;
     cas _ragcas;
     libname _ragcl cas caslib="&ledgerCaslib." sessref=_ragcas;
     %_rag_reload_saved(_ragcas, &ledgerCaslib., &ledgerTable., _rag_state, _rag_error);
@@ -311,6 +343,24 @@
         run; quit;
         filename _ragled clear;
 
+        /* the newest lock row in the ledger, whoever wrote it */
+        data _null_;
+            set _ragcl.&ledgerTable.(where=(doc_id = "__run_lock__"));
+            retain newest;
+            taken = input(mtime, ?? best32.);
+            if taken > newest then do;
+                newest = taken;
+                call symputx("_rag_lockHeld", newest, "G");
+            end;
+        run;
+        %if %length(&_rag_lockHeld.) GT 0 %then %if %sysevalf(&_rag_now. - &_rag_lockHeld. < 1800) %then %do;
+            %let _rag_state = fail;
+            /* one line: the Python program writes it as the milestone of a
+               failed run, and the last line of the log holds it as well */
+            %let _rag_error = another ingestion run appears active for this ledger (run lock held) - retry later;
+        %end;
+    %end;
+    %if &_rag_state. EQ run %then %if %sysfunc(exist(_ragcl.&ledgerTable.)) %then %do;
         %_rag_ledger_types(_ragcas, &ledgerCaslib., &ledgerTable., char);
         data _ragcl.&ledgerTable.(append=yes);
             %_rag_ledger_length
@@ -325,9 +375,10 @@
             pipeline_version = '';
             config_hash = '';
             chunk_count = 0;
-            run_id = '';
+            run_id = "&_rag_runId.";
             updated_at = '';
         run;
+        %let _rag_lockTaken = 1;
         filename _raglck "%sysfunc(pathname(work))/rag_ledger_lock.json";
         proc json out=_raglck noSASTags;
             export _ragcl.&ledgerTable.;
@@ -547,10 +598,18 @@ def main():
                 "ledger's last ingestion (config hash mismatch). Re-register "
                 "the setup or bump pipelineVersion for a full re-embed.")
         if lock_rows:
-            try:
-                held_for = time.time() - float(lock_rows[0].get("mtime") or 0)
-            except Exception:
-                held_for = 1e9
+            # The newest lock decides: the row of a run that crashed can
+            # stand beside the row of a run that is at work, and the first
+            # row of the export is whichever CAS returned first. SAS has
+            # looked the same way before it appended the lock of this run,
+            # and a run it refused never gets here.
+            held_for = 1e9
+            for held in lock_rows:
+                try:
+                    held_for = min(held_for,
+                                   time.time() - float(held.get("mtime") or 0))
+                except Exception:
+                    pass
             if held_for < 1800:
                 raise RuntimeError("another ingestion run appears active for "
                                    "this ledger (run lock held) - retry later")
@@ -590,9 +649,17 @@ def main():
         # sharing a database started in the same second. The digits were the
         # process id, and that is nearly the same number in every compute
         # server (400 to 408 in the runs measured live), so they are 32
-        # random bits now, written as ten digits like the run id of a flow.
-        run_id = (f"run-{int(time.time())}-"
-                  f"{int.from_bytes(os.urandom(4), 'big'):010d}")
+        # bits that differ from run to run, written as ten digits like the
+        # run id of a flow.
+        # The id is the one SAS made before it appended the run lock, from
+        # a UUID, so that the lock row carries it: the ledger then says
+        # whose lock it holds, and a run that fails takes out its own row
+        # and no other. Only where SAS handed none over is the id made
+        # here, from 32 random bits.
+        run_id = str(SAS.symget("_rag_runId") or "").strip()
+        if not run_id:
+            run_id = (f"run-{int(time.time())}-"
+                      f"{int.from_bytes(os.urandom(4), 'big'):010d}")
         M(f"run {run_id}: ledger has {len(real_rows)} documents, config {cfg_hash}")
 
         # ---- connections ----------------------------------------------------
@@ -784,6 +851,55 @@ run; quit;
     %end;
 %mend _rag_store_ledger;
 %_rag_store_ledger;
+
+/* ---- A run that failed hands its lock back ---------------------------------
+   A run that went through has stored a ledger without lock rows. A run that
+   failed stores nothing, and the lock row it appended stayed in the ledger:
+   every run of the next 30 minutes was answered that another ingestion run
+   appears active, with nothing running - and since a failed run is shown as
+   failed, the retry is what follows it.
+   The run takes out its own row and no other, the way the RAG steps do: the
+   ledger is copied without the lock row that carries the id of this run,
+   dropped, and the copy promoted and saved. The copy declares nothing, so
+   the ledger keeps the column types it had.
+   Nothing is looked for when this run appended no row - a saved ledger that
+   could not be loaded, the fresh lock of another run, a first run without a
+   ledger - and nothing is rewritten when the row is not there: the append
+   was refused, or another writer has replaced the table since. The lock of
+   another run, and a lock row of the job as it was before (its run_id is
+   empty), are never the row asked for. */
+%macro _rag_release;
+    %local held;
+    %if &_rag_rc. EQ 0 %then %return;
+    %if &_rag_lockTaken. NE 1 %then %return;
+    %if %length(%superq(_rag_runId)) EQ 0 %then %return;
+    cas _ragcas3;
+    libname _ragcl cas caslib="&ledgerCaslib." sessref=_ragcas3;
+    %if %sysfunc(exist(_ragcl.&ledgerTable.)) %then %do;
+        %let held = ;
+        data _null_;
+            set _ragcl.&ledgerTable.(where=(doc_id = "__run_lock__" and run_id = "&_rag_runId."));
+            call symputx("held", run_id, "L");
+        run;
+        %if %length(&held.) GT 0 %then %do;
+            data _ragcl.&ledgerTable._R(replace=yes);
+                set _ragcl.&ledgerTable.(where=(not (doc_id = "__run_lock__"
+                                         and run_id = "&_rag_runId.")));
+            run;
+            proc casutil sessref=_ragcas3 incaslib="&ledgerCaslib." outcaslib="&ledgerCaslib.";
+                droptable casdata="&ledgerTable." quiet;
+                promote casdata="&ledgerTable._R" casout="&ledgerTable.";
+                save casdata="&ledgerTable." casout="&ledgerTable." replace;
+            quit;
+            data _null_;
+                putLog "NOTE: RAG ingestion: the run lock was released so the run can be retried";
+            run;
+        %end;
+    %end;
+    libname _ragcl clear;
+    cas _ragcas3 terminate;
+%mend _rag_release;
+%_rag_release;
 
 /* ---- Propagate the outcome without ever raising a SAS error ---------------
    The message and the summary are read with symget and the line is put
