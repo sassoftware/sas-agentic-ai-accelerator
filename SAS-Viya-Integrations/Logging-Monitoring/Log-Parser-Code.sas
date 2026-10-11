@@ -64,6 +64,10 @@ quit;
 * What append mode finds in CAS. The output macro sets both: the table the rows are appended to (0 there is none, 1 a table of this session, 2 a promoted table) and whether a saved table could not be loaded;
 %let _log_target_scope = 0;
 %let _log_target_unloaded = 0;
+* What the DATA step of append mode is given for the text columns that the existing table holds as CHAR. The output macro sets the three, and they stay empty where there is no such column;
+%let _log_fixed_rename = ;
+%let _log_fixed_assign = ;
+%let _log_fixed_drop = ;
 
 proc python restart;
 submit;
@@ -854,6 +858,43 @@ run; quit;
             run; quit;
 
             %if &_log_target_scope. GE 1 %then %do;
+                /* A column can not be CHAR in one table of a SET statement and VARCHAR in the other. The rows
+                   of the log hold their text as VARCHAR, so the existing table is asked for its columns, and
+                   each text column of the parser that it holds as CHAR is read under another name and handed
+                   over to the VARCHAR column in the DATA step below */
+                %if %sysfunc(exist(work._log_target_columns)) %then %do;
+                    proc delete data=work._log_target_columns;
+                    run;
+                %end;
+                proc cas;
+                    table.columnInfo result=targetColumns /
+                        table = {casLib = "&_log_target_table_lib.", name = "&_log_target_table_name."};
+                    saveresult targetColumns dataout=work._log_target_columns;
+                quit;
+                %if %sysfunc(exist(work._log_target_columns)) %then %do;
+                    data _null_;
+                        set work._log_target_columns end=lastColumn;
+                        length fixedRename fixedAssign fixedDrop $ 4000;
+                        retain fixedRename fixedAssign fixedDrop '';
+                        if lowcase(strip(Type)) EQ 'char' and lowcase(strip(Column)) in (
+                            'model' 'system_prompt' 'user_prompt' 'response' 'kind' 'error_text' 'transaction_id' 'request_id' 'user_agent'
+                            'embedding_mode' 'project' 'input_hash' 'answer' 'options' 'rag_collection' 'rag_query_hash'
+                            'model_id' 'caller_model_id' 'caller_project_id' 'caller_kind' 'caller_name' 'experiment_run_id' 'rag_model_id' 'match_method'
+                        ) then do;
+                            fixedRename = catx(' ', fixedRename, cats(Column, '=_fx_', Column));
+                            fixedAssign = catx(' ', fixedAssign, cats(Column, '=trimn(_fx_', Column, ');'));
+                            fixedDrop = catx(' ', fixedDrop, cats('_fx_', Column));
+                        end;
+                        if lastColumn and fixedRename NE '' then do;
+                            call symputx('_log_fixed_rename', cats('rename=(', fixedRename, ')'));
+                            call symputx('_log_fixed_assign', catx(' ', 'if _log_existing_row then do;', fixedAssign, 'end;'));
+                            call symputx('_log_fixed_drop', catx(' ', 'drop', fixedDrop, ';'));
+                        end;
+                    run;
+                    proc delete data=work._log_target_columns;
+                    run;
+                %end;
+
                 /* The existing rows and the new ones become one table beside the existing one. The LENGTH
                    statement names the columns of the parser in their order and with their types, so they
                    stand in front, a text column is a VARCHAR whatever length it has in the existing table,
@@ -869,7 +910,9 @@ run; quit;
                            rag_collection varchar(*) rag_query_hash varchar(*)
                            model_id varchar(*) caller_model_id varchar(*) caller_project_id varchar(*) caller_kind varchar(*) caller_name varchar(*)
                            experiment_run_id varchar(*) rag_model_id varchar(*) match_method varchar(*) match_candidates 8;
-                    set _llmtgt."&_log_target_table_name."n _llmsrc._TEMP_LLM_LOGS;
+                    set _llmtgt."&_log_target_table_name."n(&_log_fixed_rename. in=_log_existing_row) _llmsrc._TEMP_LLM_LOGS;
+                    &_log_fixed_assign.
+                    &_log_fixed_drop.
                 run;
                 libname _llmtgt clear;
                 libname _llmsrc clear;
@@ -962,5 +1005,5 @@ run; quit;
     cas llmLogMySess terminate;
 %end;
 %sysmacdelete _log_handle_output_table;
-%symdel _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded;
+%symdel _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded _log_fixed_rename _log_fixed_assign _log_fixed_drop;
 %symdel _log_path _log_target_table_engine _log_target_table_lib _log_target_table_name _log_append_table _log_promote_table _log_save_table;

@@ -287,8 +287,10 @@ def test_what_appending_found_is_handed_on_in_two_macro_variables(program):
     # Both start at 0 in every run - the step can run twice in one SAS session - and are deleted at the end
     before_the_macro = program[:program.index("%macro _log_handle_output_table;")]
     assert "%let _log_target_scope = 0;\n%let _log_target_unloaded = 0;\n" in before_the_macro
+    assert "%let _log_fixed_rename = ;\n%let _log_fixed_assign = ;\n%let _log_fixed_drop = ;\n" in before_the_macro
     clean_up = program[program.index("* Clean up;"):]
-    assert "%symdel _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded;" in clean_up
+    assert ("%symdel _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded"
+            " _log_fixed_rename _log_fixed_assign _log_fixed_drop;") in clean_up
     # Replace mode never asks: the lookup runs in append mode only
     macro = _output_macro(program)
     assert macro.index("%if &_log_append_table. %then %do;") < macro.index("call symputx('_log_target_scope'")
@@ -330,9 +332,11 @@ def test_existing_rows_and_new_rows_become_one_table_beside_the_existing_one(pro
     assert "libname _llmsrc cas caslib='CASUSER';" in statements
     assert "data _llmtgt._TEMP_LLM_LOGS_ALL;" in statements
     # The existing table is read first, the rows of the log behind it
-    assert 'set _llmtgt."&_log_target_table_name."n _llmsrc._TEMP_LLM_LOGS;' in statements
-    assert statements.index("data _llmtgt._TEMP_LLM_LOGS_ALL;") < statements.index('set _llmtgt."&_log_target_table_name."n _llmsrc._TEMP_LLM_LOGS;') < statements.index("run;")
-    assert statements[-2:] == ["libname _llmtgt clear;", "libname _llmsrc clear;"]
+    read = 'set _llmtgt."&_log_target_table_name."n(&_log_fixed_rename. in=_log_existing_row) _llmsrc._TEMP_LLM_LOGS;'
+    built = statements.index("data _llmtgt._TEMP_LLM_LOGS_ALL;")
+    assert statements[built + 1].startswith("length timestamp 8 model varchar(*) ")
+    assert statements[statements.index(read):] == [read, "&_log_fixed_assign.", "&_log_fixed_drop.", "run;", "libname _llmtgt clear;", "libname _llmsrc clear;"]
+    assert built < statements.index(read)
 
     # The swap takes that table where there was a table to append to, and the rows of the log otherwise
     staged = " ".join(swap[swap.index("%else %do;"):swap.index("table.tableExists result=staged")].split())
@@ -361,26 +365,51 @@ def test_a_table_that_was_promoted_is_promoted_again(program):
 def _length_statement(program):
     """The LENGTH statement of the DATA step that appends, as (column, length) pairs."""
     step = _append_step(program)
+    step = step[step.index("data _llmtgt._TEMP_LLM_LOGS_ALL;"):]
     statement = step[step.index("    length ") + len("    length "):]
     words = statement[:statement.index(";")].split()
     assert len(words) % 2 == 0
     return list(zip(words[0::2], words[1::2]))
 
 
-def _data_step_columns(length_statement, *tables):
-    """The columns of the table that 'data ...; length ...; set <tables>; run;' writes, by
-    the rules SAS documents for the DATA step: a variable is created where the step
-    names it first - in the LENGTH statement, then in the tables of the SET statement in
-    their order - and has the type and the length it has there, and a variable that is
-    character in one place and numeric in another stops the step.
+def _handed_over_columns(program):
+    """The columns the program hands over when the existing table holds them as CHAR: the list its DATA _NULL_ step compares the column names with."""
+    step = _append_step(program)
+    listed = step[step.index("lowcase(strip(Column)) in ("):]
+    return re.findall(r"'(\w+)'", listed[:listed.index(") then do;")])
 
-    A table is given as (column, type) pairs with the types double, varchar and char(n)."""
-    columns = {name: "double" if length == "8" else length.replace("(*)", "") for name, length in length_statement}
-    for table in tables:
+
+def _type_family(kind):
+    return {"double": "numeric", "varchar": "varchar"}.get(kind, "character")
+
+
+def _appended_columns(program, existing, uploaded):
+    """The columns of the table append mode writes for an existing table and the uploaded
+    rows, by the statements of the program and the rules of the DATA step.
+
+    The program: a column that the existing table holds as CHAR and that the list of its
+    DATA _NULL_ step names is read as _fx_<column>, assigned to <column> for the rows
+    of the existing table, and dropped.
+    The DATA step: a variable is created where the step names it first - in the LENGTH
+    statement, then in the tables of the SET statement in their order - and has the type
+    and the length it has there. A variable that is character in one place and numeric
+    in another stops the step, and so does one that is CHAR in one place and VARCHAR in
+    another (the RAG steps of this repository met that on SAS Viya, see Ingest-Documents.sas).
+
+    A table is given as (column, type) pairs with the types double, varchar and char(n).
+    Upper and lower case make no two names in SAS, so the names are compared in lower case."""
+    existing = [(name.lower(), kind) for name, kind in existing]
+    handed_over = [name for name, kind in existing if _type_family(kind) == "character" and name in _handed_over_columns(program)]
+    read = [("_fx_" + name if name in handed_over else name, kind) for name, kind in existing]
+    columns = {name: "double" if length == "8" else length.replace("(*)", "") for name, length in _length_statement(program)}
+    for table in (read, uploaded):
         for name, kind in table:
             first = columns.setdefault(name, kind)
-            if (first == "double") != (kind == "double"):
-                raise ValueError(f"Variable {name} has been defined as both character and numeric.")
+            if _type_family(first) != _type_family(kind):
+                raise ValueError(f"Variable {name} has been defined as both {_type_family(first)} and {_type_family(kind)}.")
+    for name in handed_over:
+        assert name in columns, name
+        del columns["_fx_" + name]
     return columns
 
 
@@ -404,7 +433,7 @@ def test_appending_to_a_table_of_twelve_columns_adds_the_others(monkeypatch, tmp
     twelve = uploaded[:12]
     assert [name for name, _ in twelve] == LLM_LOGS_COLUMNS
 
-    appended = _data_step_columns(_length_statement(code_file_program()), twelve, uploaded)
+    appended = _appended_columns(code_file_program(), twelve, uploaded)
 
     assert list(appended) == ALL_COLUMNS
     assert appended == dict(uploaded)
@@ -422,7 +451,7 @@ def test_appending_to_a_table_with_some_of_the_added_columns_adds_the_rest(monke
     uploaded = _uploaded_columns(monkeypatch, tmp_path)
     existing = uploaded[:12] + [column for name in extra for column in uploaded if column[0] == name]
 
-    appended = _data_step_columns(_length_statement(code_file_program()), existing, uploaded)
+    appended = _appended_columns(code_file_program(), existing, uploaded)
 
     assert list(appended) == ALL_COLUMNS
 
@@ -431,25 +460,58 @@ def test_appending_keeps_a_column_the_parser_does_not_know(monkeypatch, tmp_path
     uploaded = _uploaded_columns(monkeypatch, tmp_path)
     existing = uploaded[:5] + [("team", "char(20)")] + uploaded[5:12] + [("cost_center", "double")]
 
-    appended = _data_step_columns(_length_statement(code_file_program()), existing, uploaded)
+    appended = _appended_columns(code_file_program(), existing, uploaded)
 
-    # Behind the columns of the parser, in the order the table had them, with their type and length
+    # Behind the columns of the parser, in the order the table had them, with their type and length:
+    # a CHAR column the parser does not know is not handed over to anything
     assert list(appended) == ALL_COLUMNS + ["team", "cost_center"]
     assert (appended["team"], appended["cost_center"]) == ("char(20)", "double")
 
 
 def test_appending_to_a_table_with_shorter_text_columns_cuts_nothing(monkeypatch, tmp_path):
     """A table whose text columns have a fixed length, as a DATA step or an import writes
-    them. The LENGTH statement names every text column of the parser as VARCHAR before
-    the SET statement reads the table, so the column is not as short as the table had it."""
+    them. Read as they are, they would stop the DATA step beside the VARCHAR columns of
+    the uploaded rows. The program reads each of them under another name and hands its
+    values to the VARCHAR column, so the new rows are not cut to the length the table had."""
     uploaded = _uploaded_columns(monkeypatch, tmp_path)
-    short = {"model": "char(10)", "system_prompt": "char(200)", "user_prompt": "char(200)", "response": "char(100)"}
-    existing = [(name, short.get(name, kind)) for name, kind in uploaded[:12]]
+    short = {"model": "char(10)", "system_prompt": "char(200)", "user_prompt": "char(200)", "response": "char(100)", "kind": "char(9)", "Options": "char(50)"}
+    existing = [(name, short.get(name, kind)) for name, kind in uploaded[:12]] + [("kind", "char(9)"), ("Options", "char(50)")]
 
-    appended = _data_step_columns(_length_statement(code_file_program()), existing, uploaded)
+    appended = _appended_columns(code_file_program(), existing, uploaded)
 
-    assert {name: appended[name] for name in short} == dict.fromkeys(short, "varchar")
     assert list(appended) == ALL_COLUMNS
+    assert {name: appended[name] for name in TEXT_COLUMNS} == dict.fromkeys(TEXT_COLUMNS, "varchar")
+    # Read as it is, the first of these columns would have ended the step
+    with pytest.raises(ValueError, match="Variable model has been defined as both varchar and character"):
+        _appended_columns(code_file_program().replace("'model' 'system_prompt'", "'system_prompt'"), existing, uploaded)
+
+
+@BOTH_PROGRAMS
+def test_every_text_column_of_the_parser_is_handed_over_from_a_char_column(program):
+    """The existing table is asked for its columns, and the statements the DATA step is
+    given are put together from the answer: a rename for the SET statement, the
+    assignments for the rows of the existing table and a drop."""
+    program = program()
+    step = _append_step(program)
+
+    assert _handed_over_columns(program) == TEXT_COLUMNS
+    asked, saved, put_together, built = (step.index(text) for text in (
+        "table.columnInfo result=targetColumns", "saveresult targetColumns dataout=work._log_target_columns;",
+        "set work._log_target_columns end=lastColumn;", "data _llmtgt._TEMP_LLM_LOGS_ALL;"))
+    assert asked < saved < put_together < built
+    assert "if lowcase(strip(Type)) EQ 'char' and lowcase(strip(Column)) in (" in step
+    for statement in ("fixedRename = catx(' ', fixedRename, cats(Column, '=_fx_', Column));",
+                      "fixedAssign = catx(' ', fixedAssign, cats(Column, '=trimn(_fx_', Column, ');'));",
+                      "fixedDrop = catx(' ', fixedDrop, cats('_fx_', Column));",
+                      "call symputx('_log_fixed_rename', cats('rename=(', fixedRename, ')'));",
+                      "call symputx('_log_fixed_assign', catx(' ', 'if _log_existing_row then do;', fixedAssign, 'end;'));",
+                      "call symputx('_log_fixed_drop', catx(' ', 'drop', fixedDrop, ';'));"):
+        assert statement in step, statement
+    # Nothing is handed over where the table holds no such column: the three stay empty and the DATA step reads the table as it is
+    assert "if lastColumn and fixedRename NE '' then do;" in step
+    # The table of column names is a table of the SAS session and is deleted again, also the one of a run that did not get this far
+    assert step.count("proc delete data=work._log_target_columns;") == 2
+    assert step.index("proc delete data=work._log_target_columns;") < asked
 
 
 def test_appending_to_a_table_whose_column_has_the_other_type_stops(monkeypatch, tmp_path):
@@ -457,8 +519,8 @@ def test_appending_to_a_table_whose_column_has_the_other_type_stops(monkeypatch,
     uploaded = _uploaded_columns(monkeypatch, tmp_path)
     existing = [(name, "char(8)" if name == "temperature" else kind) for name, kind in uploaded[:12]]
 
-    with pytest.raises(ValueError, match="temperature"):
-        _data_step_columns(_length_statement(code_file_program()), existing, uploaded)
+    with pytest.raises(ValueError, match="Variable temperature has been defined as both numeric and character"):
+        _appended_columns(code_file_program(), existing, uploaded)
     swap = _swap(code_file_program())
     assert swap.index("if staged.exists GE 1 then do;") < swap.index("table.dropTable")
 
@@ -647,9 +709,10 @@ def test_about_tab_names_the_librefs_the_step_assigns_to_append():
     step = _append_step(step_program())
 
     assert "Two librefs of its own when it appends to a table that exists" in prerequisites
-    for name in ("_llmtgt", "_llmsrc", "_TEMP_LLM_LOGS_ALL"):
+    for name in ("_llmtgt", "_llmsrc", "_TEMP_LLM_LOGS_ALL", "work._log_target_columns"):
         assert name in prerequisites, name
         assert name in step, name
+    assert "asks CAS for the columns of the existing table" in prerequisites and "deletes that table" in prerequisites
     assert "clears both librefs" in prerequisites
     # The table is read through the libref, which is where the limit of its name comes from
     assert '_llmtgt."&_log_target_table_name."n' in step
@@ -682,6 +745,9 @@ def test_about_tab_names_every_column_and_what_the_program_does_with_it(monkeypa
     assert "llm, embedding or decision" in columns
     assert "replaced by REDACTED" in columns and run.namespace["REDACTED"] == "REDACTED"
     assert "text columns as VARCHAR" in columns
+    # A fixed length is handed over with TRIMN, which is what takes the trailing blanks
+    assert "holds with a fixed length (CHAR) is read under another name" in columns and "without their trailing blanks" in columns
+    assert "'=trimn(_fx_'" in step_program()
     assert "is promoted again" in columns
 
 
