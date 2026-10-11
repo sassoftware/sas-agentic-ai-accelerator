@@ -1178,10 +1178,20 @@ run; quit;
    is deleted (all verified live). The OUTCOME therefore lives in the
    Prompt-Optimization-Tracker entry (status succeeded/failed + error), which
    the Prompt Builder reads when the job completes; the log keeps a plain
-   ERROR line for administrators. */
+   ERROR line for administrators.
+   The message is read with symget and the line is put together in a
+   variable. Written into the program as a quoted string, a message that
+   took the line beyond 262 bytes made SAS write the NOTE that suspects
+   unbalanced quotation marks above the ERROR line (seen in the RAG steps,
+   which wrote their ERROR line the same way). 2000 bytes hold the 500
+   characters the Python program hands over at most. */
 data _null_;
-    if "&_opt_rc." ne "0" then
-        putLog "ERROR: Prompt optimization failed: %superq(_opt_error)";
+    length text $ 2000 line $ 2100;
+    if "&_opt_rc." ne "0" then do;
+        text = symget("_opt_error");
+        line = "ERROR: Prompt optimization failed: " || text;
+        putLog line;
+    end;
     else
         putLog "NOTE: Prompt optimization succeeded.";
 run;

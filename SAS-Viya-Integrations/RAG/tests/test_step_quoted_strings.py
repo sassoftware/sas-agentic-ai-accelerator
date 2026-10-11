@@ -362,6 +362,69 @@ def test_the_message_of_a_lock_that_was_not_read_back_is_why():
     assert len(line) > LIMIT
 
 
+# ---------------------------------------------------------------------------
+# the prompt optimization job: its ERROR line, written the same way
+#
+# Optimize-Prompt-DSPy.sas is no RAG program and has no tests of its own. It
+# stands here because it is the program the RAG job took its last lines from,
+# and it kept the form they had: `putLog "ERROR: Prompt optimization failed:
+# %superq(_opt_error)"`, with a message of up to 500 characters.
+# ---------------------------------------------------------------------------
+OPTIMIZE = RAG.parent / "Prompt-Optimization" / "Optimize-Prompt-DSPy.sas"
+
+
+def _optimize():
+    return OPTIMIZE.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def _optimize_around_python():
+    head, rest = _optimize().split("\n    submit;\n", 1)
+    return head + "\n" + rest.split("\nendsubmit;", 1)[1]
+
+
+def _optimize_python():
+    return _optimize().split("\n    submit;\n", 1)[1].split("\nendsubmit;", 1)[0]
+
+
+def test_the_error_line_of_the_optimization_job_is_read_with_symget():
+    block = re.search(
+        r"data _null_;\n"
+        r"    length text \$ (\d+) line \$ (\d+);\n"
+        r'    if "&_opt_rc\." ne "0" then do;\n'
+        r'        text = symget\("_opt_error"\);\n'
+        r'        line = "(ERROR: Prompt optimization failed: )" \|\| text;\n'
+        r"        putLog line;\n"
+        r"    end;\n"
+        r"    else\n"
+        r'        putLog "NOTE: Prompt optimization succeeded\.";\n'
+        r"run;\n?$", _optimize_around_python())
+    assert block, "the last lines of the job are no longer written the pinned way"
+    # the Python program cuts the message at 500 characters where its text is
+    # open; in UTF-8 that is at most 2000 bytes, and the line holds its prefix
+    python = _optimize_python()
+    handed_over = re.findall(r'SAS\.symput\("_opt_error", (.*)\)\n', python)
+    assert handed_over == ["sas_safe(message)[:500]",
+                           'sas_safe(tracker_entry["error"])',
+                           "sas_safe(error_text)[:500]"]
+    # the one that is not cut is a sentence of the program itself
+    assert ('tracker_entry["error"] = "No target could be scored - every '
+            'candidate was unreachable."') in python
+    assert int(block.group(1)) >= 500 * 4
+    assert int(block.group(2)) >= int(block.group(1)) + len(block.group(3))
+
+
+def test_no_quoted_string_of_the_optimization_job_takes_a_text_of_open_length():
+    strings = _quoted_strings(_optimize_around_python())
+    assert [text for text in strings if text.startswith("ERROR:")] == [
+        "ERROR: Prompt optimization failed: "]
+    _takes_no_open_text(strings, "_opt_error")
+    assert max(len(text.encode("utf-8")) for text in strings) <= LIMIT
+    # what is still resolved inside a string is a name or the WORK path
+    resolved = sorted({variable for text in strings
+                       for variable in re.findall(r"&+(\w+)", text)})
+    assert resolved == ["_opt_rc", "casLibrary", "casTable"]
+
+
 @pytest.mark.parametrize("name", sorted(RAG_STEPS))
 def test_a_macro_variable_in_a_string_is_a_name_or_a_state_not_a_text(name):
     """What else is resolved inside a string is short by what it is: a
