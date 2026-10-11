@@ -55,6 +55,18 @@ Re-run it after every change. **Nothing is ever fetched from the internet at
 run time**, so the same script works in an air-gapped deployment: the SAS
 Content folder is the distribution channel, not GitHub.
 
+If the script stops with an error, run it again before anything else. It
+replaces a file by deleting it and uploading the new copy, so the file it
+stopped at can be missing from the folder until a run has completed.
+Measured on 2026-10-11 on SAS Viya 2026.09 with `deploy-rag-content.ps1`,
+against a content folder that held the runtime of release 2.0: the first
+run stopped after four files with `(409) Conflict` on the upload of a file
+(`POST /files/files`) whose old copy it had just deleted, and left that
+file missing. The same upload was answered 201 a minute later, and a
+second run of the script completed with *Deployed 35 files*. All nine
+steps had kept their ids, and every file equalled the checkout afterwards.
+A third run later the same day went through at the first attempt.
+
 :::note Why the script and not a manual upload
 A `.step` file uploaded as a plain Content file renders as an empty step
 editor — steps are dataFlows *service* resources. The script also **updates**
@@ -296,16 +308,18 @@ generates for them and not clicked in SAS Studio, on ledgers in `CASUSER`:
   that existed showed two `PROC JSON` steps before the Python program and
   completed.
 
-Not measured: a lock that CAS refuses, which is what the read-back of the
-job is there for; a first run of the flow without a ledger with these
-steps (a flow on a ledger of its own ran green earlier the same day,
-before the change); the fallback for a table whose column types cannot be
-read; two runs at the same time, and with them a run that the lock of
-another run refuses; and a lock older than 30 minutes. What the job does
-with its lock when its run fails was not measured either. By the code of
-that day it left its lock row in the ledger; it now takes its own row out
-again — see *The job hands its lock back* below, which was written after
-these measurements and not run in SAS.
+Not measured in those runs: a lock that CAS refuses, which is what the
+read-back of the job is there for; a first run of the flow without a
+ledger with these steps (a flow on a ledger of its own ran green earlier
+the same day, before the change); the fallback for a table whose column
+types cannot be read; two runs at the same time, and with them a run that
+the lock of another run refuses; and a lock older than 30 minutes. What
+the job does with its lock when its run fails was not measured either. By
+the code of that day it left its lock row in the ledger; it now takes its
+own row out again. All of these but the first and the third were measured
+later the same day, with the job and the steps as release 2.3.0 ships
+them — see *Measured with the runtime of release 2.3.0* at the end of
+this section.
 
 **The job reads its lock back.** *RAG - List Documents* reads the lock it
 appended and refuses to go on without one. The job did not: by its code a
@@ -324,9 +338,11 @@ complete as before, and its log then shows two `PROC JSON` steps before
 the Python program where it showed one.
 
 What follows in this section was written after those measurements. It
-is in the steps and in the job of release 2.3.0 and was **not run in
-SAS**; the test suite of `rag_core` holds the text of the macros and runs
-the Python of the job.
+is in the steps and in the job of release 2.3.0 and was run on the same
+system later that day: *Measured with the runtime of release 2.3.0*, at
+the end of this section, says what was seen and what was not run. The
+test suite of `rag_core` holds the text of the macros and runs the Python
+of the job.
 
 **Who hands a lock back.** A step that fails hands the run lock back by
 rewriting the ledger without that row — copy, drop, promote, save — and
@@ -367,7 +383,16 @@ column types. A lock row with an empty run id — written by a job
 definition that was not manifested again — is the lock of another run to
 the job and to the steps: it refuses while it is less than 30 minutes
 old, is ignored afterwards, and stays in the ledger until a run that
-goes through writes it. Not run in SAS.
+goes through writes it.
+
+One limit, read from the code and not measured. A lock row carries the
+time of the SAS clock, and the Python programs of the job and of the
+steps compare it with their own clock, which is UTC. In a compute
+session whose SAS clock is not UTC — the option `TIMEZONE` — the two
+differ by the offset. East of UTC the Python program of the job then
+still takes for fresh a lock row that SAS took for stale: such a run has
+appended its own lock, hands it back, and its message does carry
+*RuntimeError:*. The sessions of the test system run in UTC.
 
 **More than one lock row.** A run that crashes leaves its lock row
 behind; 30 minutes later the next run ignores it and appends its own
@@ -376,8 +401,8 @@ the ledger. The job and the steps *RAG - List Documents*, *RAG - Load
 Vector Store* and *RAG - Purge Documents* take the newest lock row to
 decide whether another run holds the lock. They took one row, whichever
 CAS returned first or last, so a stale row could hide the lock of a run
-that was at work. Not run in SAS; no such ledger was seen on the test
-system.
+that was at work. No such ledger had come about on the test system by
+itself; the measurement below made one.
 
 **The job ends as failed when the run failed.** `Ingest-Documents.sas`
 never raises a SAS error, so up to release 2.2 SAS Job Execution reported
@@ -386,8 +411,9 @@ program now sets `SYSCC` as its last statement when the run failed, and
 SAS Job Execution then reports the job as failed. It still runs to its
 last statement; nothing aborts. That statement was measured for the job
 *RAG - Register Setup* generates from a flow, which ended as `failed`
-([the job generated from a flow](#tls-register-setup-step)), and not for
-`Ingest-Documents.sas`. Two ways out of the program used to leave no
+([the job generated from a flow](#tls-register-setup-step)), and later
+the same day for `Ingest-Documents.sas` (below). Two ways out of the
+program used to leave no
 milestone for the Prompt Builder either: a saved ledger that cannot be
 loaded, and a compute context without the `requests` package. Both now
 write the milestone *Ingestion failed: …* that every other failure
@@ -407,7 +433,10 @@ ledger as its own, and its lock as the lock that was written. The job
 now deletes both before it exports anything and says so (*NOTE: RAG
 ingestion: rag_ledger_in.json of an earlier run of this SAS session was
 deleted from WORK*); a file that is there and cannot be deleted stops
-the run. Not run in SAS.
+the run. The line is written for each of the two files that is there:
+for both after a run that took a lock, for `rag_ledger_in.json` alone
+after a run that was refused, and for none after a run that had no
+ledger.
 
 **The run id.** A run is named `run-<epoch>-<ten digits>`, and `rag_runs`
 is keyed on that name and shared by every project in the database. The
@@ -421,7 +450,115 @@ job now take the ten digits from a UUID, in SAS (`&sysjobid` only where
 `UUIDGEN` returns nothing); the lock row of the job carries the id. The
 Python program of the job makes an id with ten random digits only where
 SAS hands it none. Ids written before keep their form and are read as
-before.
+before. The epoch in the id is the time of the SAS clock — in the steps
+as before, and now in the job, whose Python program made the id from its
+own clock up to release 2.2. What that means for `started_at` is said
+under [run history](#run-history).
+
+**Measured with the runtime of release 2.3.0**, on 2026-10-11 on SAS Viya
+2026.09 with pgvector, in the *SAS Studio compute context*. The job ran
+in SAS Job Execution and, where one SAS session had to hold several
+runs, as a program in a compute session. The flows ran as the code SAS
+Studio generates for them and were not clicked in SAS Studio. The lock
+of another run was that of a flow that really ran; the old and the stale
+lock rows were appended by hand.
+
+- **A job run that fails after it took the lock**, on a `CHAR` and on a
+  `VARCHAR` ledger, with one parameter of the configuration changed. The
+  log held, in this order: *NOTE: the ledger … holds its text columns as
+  char - the run lock is written the same way* (or *as varchar*); the
+  append of one row; *NOTE: Python-Subprocess - RAGINGEST Ingestion
+  failed: RuntimeError: configuration drift: …*; a table `<ledger>_R`
+  with the 4 rows the ledger had before the run, its promote and its
+  save; *NOTE: RAG ingestion: the run lock was released so the run can be
+  retried*; and *ERROR: RAG ingestion failed: RuntimeError: configuration
+  drift: …*. The ledger then held the same 4 document rows, no lock row
+  and the column type it had. The job run again five seconds later was
+  not refused and completed.
+- **A job launched while the flow of the same ledger runs.** No append
+  and one `PROC JSON` step; the milestone *Ingestion failed: another
+  ingestion run appears active for this ledger (run lock held) - retry
+  later* and the same text behind *ERROR: RAG ingestion failed:*, without
+  *RuntimeError:*; no `<ledger>_R` and no line about a released lock. The
+  ledger held one lock row, the flow's, and its saved file kept its size
+  and time. The flow completed, and the job run again five seconds after
+  it was not refused.
+- **A flow started while another flow of the same ledger runs** ended in
+  *RAG - List Documents* with *ERROR: RAG - List Documents failed: another
+  ingestion run holds the lock on this ledger - wait for it to finish, or
+  retry in 30 minutes if it crashed*. Its log held no rewrite of the
+  ledger and no line about a released lock, the ledger kept the lock row
+  of the first flow, and that flow completed.
+- **The lock row carries the run id.** Read from another session while a
+  job ran, the ledger held one row `__run_lock__` with the status `lock`
+  and the `run_id` of the milestone *RAGINGEST run run-…: ledger has 4
+  documents, config …*, which is also the id of the run in `rag_runs`.
+- **A lock row with an empty run id**, as a job definition from before
+  release 2.3.0 writes it. 60 seconds old, it refused the job and the
+  flow, and it was still the only lock row afterwards. Older than 30
+  minutes, it was ignored: the job logged *RAGINGEST stale run lock
+  ignored (held > 30 minutes)*, the steps *NOTE: RAG - List Documents: a
+  stale run lock (held longer than 30 minutes) is ignored* and *RAGLIST
+  stale run lock ignored (held longer than 30 minutes)*. A job run that
+  failed kept it — `<ledger>_R` held 5 rows, the 4 documents and that
+  row — and a run that went through left a ledger without lock rows. A
+  job run that fails at the configuration drift does not write the line
+  about the stale lock: the drift is looked at first.
+- **Two lock rows**, a stale one and a fresh one with the id of another
+  run, appended in either order: the job and *RAG - List Documents* were
+  refused both ways and left both rows. With a flow that ran beside a
+  stale row, the job and a second flow launched while it ran were
+  refused. CAS does not fix the order of the rows of a table; what was
+  varied is the order of the two appends.
+- **A step hands a lock back only when it holds one.** A failing *RAG -
+  List Documents* took its own row out and wrote the NOTE, on both column
+  types, and the run after it was not refused. A *RAG - Register Setup*
+  that failed after *RAG - Load Vector Store* and a purge that went
+  through did not rewrite the ledger a second time and wrote no such
+  NOTE.
+- **The job ends as failed.** The nine job runs that failed ended as
+  `failed` in SAS Job Execution after 16.5 to 20 seconds, the eight that
+  went through as `completed`. The record of a failed job holds the error
+  code 5713 of SAS Job Execution, *A procedure in the SAS program provided
+  for the job completed execution with at least one error.*, and inside
+  it an error with the code 1012 and the text of the program's ERROR
+  line. That line is the last message of the program, not the last line
+  of the log: the timing lines of its DATA step and the echoed source of
+  the last statement follow it.
+- **The job stores no ledger after a run that was refused**, in a SAS
+  session that had run it to success before: behind the Python program
+  the log held no promote and no save, and the ledger, its saved file and
+  the lock row of the running flow were as before.
+- **The exports of an earlier run.** In one SAS session, a run for a
+  second setup that had no ledger wrote the two NOTE lines, ran no `PROC
+  JSON` step, logged *ledger has 0 documents* and found its documents
+  new. No job started by SAS Job Execution wrote the lines. With
+  `rag_ledger_in.json` replaced by a directory that held a file, the run
+  ended with *… could not be deleted from WORK - stopped, because the run
+  would read the ledger of that run as its own*. Above the milestone of
+  that run stood three ERROR lines of `PROC JSON`: the export still runs
+  after the delete failed (see [troubleshooting](#troubleshooting)).
+- **The run id.** Every id ended in ten digits — 28 ids in the logs of
+  the flows, the purges and the job of one pass, 15 of the job in
+  another — and no two endings were alike. The ledger held the 25
+  characters of the id, and `rag_runs.started_at` was the time the id
+  names.
+- **Launched from the Prompt Builder page of this release.** **Launch
+  ingestion** of a setup on this runtime ended as completed, with run ids
+  of the form `run-<epoch>-<ten digits>` and the run history recorded.
+  Three runs of one setup showed 6 documents new, then 6 changed, then 6
+  unchanged and 1 new.
+
+**Not run**, and as the code and the tests have it: a job run that fails
+because a saved ledger cannot be loaded, with its milestone (see the
+next section); the lock that CAS refuses, which the read-back of the job
+is there for; the fallback for a table whose column types cannot be
+read; the texts the Prompt Builder shows for a run that failed — the
+page was not opened on one; a run that slips in between the steps of a
+flow that is running; a lock row left by a job definition of an earlier
+release that really failed; an export of an earlier run that cannot be
+deleted for another reason than being a directory; and a compute session
+whose SAS clock is not UTC.
 
 ### A saved ledger is loaded back {#a-saved-ledger-is-loaded-back}
 
@@ -474,8 +611,11 @@ PROC CAS ended before it said whether the table is in memory or saved
 (messages above). The run continues with what is in memory.* Up to this
 change both cases wrote one NOTE, *could not look for a saved copy of …*,
 which no longer exists. The two WARNING lines, the milestone of the job
-and the failed state of the job were written after the measurements
-below and were **not run in SAS**.
+and the failed state of the job were written after the first
+measurements below. The wording of the two WARNING lines and the failed
+state of the job were measured later that day; a saved file that cannot
+be loaded, with the milestone of the job for it, was **not run in SAS**
+— see the end of this section.
 
 **Measured on 2026-10-11 on SAS Viya 2026.09, with pgvector**, with the
 saved tables dropped from memory while their `.sashdat` files stayed —
@@ -490,10 +630,36 @@ the CAS server was not restarted:
   documents as unchanged; *RAG - Embed Chunks* loaded
   `<project>_EMBEDDED` back and found nothing to embed.
 
+**Measured again later that day, with the runtime of release 2.3.0**
+(pgvector, the saved ledger dropped from memory): the job and *RAG - List
+Documents* wrote the NOTE, loaded the ledger and found every document
+unchanged. And for the last row of the table, in *RAG - List Documents*
+with the ledger in a caslib of the CAS session whose files CAS could not
+list: the log held the two WARNING lines above, word for word, below
+the CAS errors. That run did not reach its end. The step went on to its
+run lock, and a caslib of a session cannot hold the promoted table the
+lock is appended to, so it stopped with *the run lock could not be
+written to … - refusing to ingest unguarded*. Whether a run in a global
+caslib whose files cannot be listed ends, and what it saves, is not
+measured: the user of the test may add no path caslib.
+
+**Not run: a saved file that cannot be loaded.** No file that CAS cannot
+load could be put into a caslib of the test. The compute server does not
+see the directory of the caslib, CAS refuses to save another format under
+a `.sashdat` name (`ERROR: Save exportoptions file type and name
+extension do not match.`), and the caslibs whose directories the compute
+server does see belong to other people. So the CAS errors of such a
+load, the ERROR of the step, the milestone *Ingestion failed: the saved
+table …* of the job and the untouched file are as the code and the tests
+have them. What a run of the job leaves behind that stops before it
+takes a lock was measured for a run that another lock refused: no lock
+row, no store, the saved file untouched
+([one ledger for the job and the flow](#one-ledger-for-the-job-and-the-flow)).
+
 Not measured: a restart of the CAS server; a saved file that cannot be
-loaded; a caslib whose files cannot be listed; the reload in *RAG - Purge
-Documents*, *RAG - Register Setup* and *RAG - Enrich Chunks*, which did
-not run in that state (*RAG - Enrich Chunks* did not run at all); the
+loaded; a global caslib whose files cannot be listed; the reload in *RAG -
+Purge Documents*, *RAG - Register Setup* and *RAG - Enrich Chunks*, which
+did not run in that state (*RAG - Enrich Chunks* did not run at all); the
 reload of *RAG - Load Vector Store* itself, because both tables were in
 memory again by the time it ran; and SingleStore. The *About* tabs of
 those four steps name the reload and claim no measurement for it. The
@@ -820,8 +986,13 @@ Studio compute context* and not clicked in SAS Studio:
 
 Not run in SAS: the WARNING lines of an upload without a usable answer,
 of a tag that could not be written or removed, and of a tag written to a
-model that could not be read. The test suite of `rag_core` runs the
-Python of the step for these cases and pins the SAS text.
+model that could not be read. Each needs a fault of SAS Model Manager —
+a model it does not return while its listing shows no tags, an upload it
+does not answer — and not a state a model of the test can be put in. The
+runs of 2026-10-11 with the steps of release 2.3.0 could not stage them
+either, and the logs of the two runs of the step made that day hold none
+of these lines. The test suite of `rag_core` runs the Python of the step
+for these cases and pins the SAS text.
 
 Two more things came out of those runs. Both are changed in this release,
 and both were measured afterwards on the same system:
@@ -869,14 +1040,25 @@ and both were measured afterwards on the same system:
   `Ingest-Documents.sas` was written the same way, and its message for a
   run lock that was not read back is longer than 262 bytes with any
   table name. The nine steps and the job now put that line together in a
-  variable, its text read with `symget`, as the summary is. Not run in
-  SAS: whether the NOTE is gone above the ERROR line, and that the line
-  is still shown as an error when it is written from a variable.
+  variable, its text read with `symget`, as the summary is. Measured on
+  2026-10-11 with a *RAG - List Documents* whose documents folder does
+  not exist, run as a job and in a compute session: the line above the
+  ERROR line was not the NOTE, and no log of that day's runs of the
+  steps and of the job held the NOTE. The ERROR line had 311 characters.
+  The log of that system is 132 characters wide and breaks a longer line
+  there, inside a word and with no prefix on what follows:
+  `… { version :2, httpSta`, then `tusCode :404, …`. All three log lines
+  of the message were of the type error, and so were the four of a
+  413-character ERROR line of the job. SAS Studio was not opened: that
+  it shows such a line as an error is read from the type of the lines.
 - **A part of the summary longer than the log line.** *RAG - Register
   Setup* printed the list of the artifacts it wrote as an empty `NOTE:`
   line followed by the text without the prefix (seen on 2026-10-11). A
   part of a summary is now written as one value with its `NOTE:` prefix,
-  in all nine steps. Not run in SAS.
+  in all nine steps. Measured on 2026-10-11 for *RAG - Register Setup*
+  without a flow: the line began `NOTE:   artifacts in …` and went on in
+  the next log line — the break stood inside a word, `ingestio` and
+  `n-manifest.json` — with no empty `NOTE:` line before it.
 
 ### The retrieval model in a decision {#the-retrieval-model-in-a-decision}
 
@@ -1102,14 +1284,13 @@ Builder of this release, which the upgrade asks for anyway; a published
 decision keeps the declaration it was published with until it is
 published again, and by the measurement above it runs the same with either.
 
-Measured on 2026-10-11 with the Prompt Builder of this release as it was
-before eleven of its German texts were reworded — the page that ships
-differs from the measured one in those texts only, the code that writes
-the lengths is the same, and the shipped page itself was not run for
-this: **Manifest setup** wrote `question` 32000, `k` 8, `filter_json` 4000,
-`retrieval_mode` 32, `options` 4000, `context_dg` 32000,
-`context_envelope` 32000, `retrieval_status` 512 and `run_time` 8, and the
-code SAS Intelligent Decisioning then generated for a decision declared
+Measured on 2026-10-11 with the Prompt Builder page of this release, the
+bundle that ships: **Manifest setup** wrote `question` 32000, `k` 8,
+`filter_json` 4000, `retrieval_mode` 32, `options` 4000, `context_dg`
+32000, `context_envelope` 32000, `retrieval_status` 512 and `run_time` 8.
+Measured earlier that day with the page as it was before eleven of its
+German texts were reworded: the same nine lengths, and the code SAS
+Intelligent Decisioning then generated for a decision declared
 `varchar(32000)` for both context outputs. Measured the same day for the
 step: a model that *RAG - Register Setup* registered held the same nine
 lengths in SAS Model Manager. The verify suite of the page
@@ -1447,7 +1628,21 @@ It is still refused while another run holds a lock that is less than 30
 minutes old, and an ingestion can start while a preview reads. A preview
 of a project that has no ledger fails with *no ledger table for this RAG
 project - check the project name and caslib* and no longer leaves a
-ledger behind. The change was not run in SAS.
+ledger behind. Measured on 2026-10-11 on SAS Viya 2026.09 with pgvector
+and the step of release 2.3.0, run as the code SAS Studio generates for
+a flow: a preview ended with *PREVIEW - nothing was changed* and *1
+documents named, 1 chunk rows would be removed (live and retired)*,
+appended no lock, promoted and saved nothing, and the saved file of the
+ledger kept its size and time. Under the lock of a flow that was
+running, and under a fresh lock row appended by hand, it ended with
+*ERROR: RAG - Purge Documents failed: another ingestion run holds the
+lock on this ledger - wait for it to finish, or retry in 30 minutes if it
+crashed*. On a project without a ledger it ended with *ERROR: RAG - Purge
+Documents failed: RuntimeError: no ledger table for this RAG project -
+check the project name and caslib*, and no ledger was in memory or saved
+afterwards. A purge in the mode purge promoted and saved the ledger
+once and wrote no line about a released lock. Not measured: an ingestion
+that starts while a preview reads.
 
 **A purge is not in the run history.** *RAG - Purge Documents* writes no
 row to `rag_runs` or `rag_doc_events`. Measured on 2026-10-11 with
@@ -1483,6 +1678,17 @@ job run on pgvector, and on SingleStore the store held four runs of a
 collection while the CAS copy held three. *RAG - Purge Documents* writes
 no row to either table ([retention and erasure](#retention-and-erasure)).
 
+`started_at` of a run is the epoch in its run id, read as UTC, and the
+steps and the job take that epoch from the SAS clock of the compute
+session. On the test system, whose sessions run in UTC, `started_at`
+was the start of each run (measured on 2026-10-11, for 20 runs of one
+collection). In a compute session whose SAS clock is not UTC — the
+option `TIMEZONE` — it is off by the offset to UTC, while `finished_at`,
+which Python writes from its own clock, is not. For a run of the job
+that is new with release 2.3.0: up to release 2.2 the Python program of
+the job made the id from its own clock. Read from the code, not
+measured.
+
 History never fails a load. If the store refuses the write, the ingestion still
 stands and the log says so.
 
@@ -1504,7 +1710,17 @@ It is now counted as skipped, with the reason in the line
 `rag skipped: 1 - <extractor> found no text (empty or scanned-only document)`
 above the summary: three unchanged documents and one empty file give
 `0 documents extracted, 0 failed, 3 skipped as unchanged, 1 skipped` and no
-line *extractors used*. Not run in SAS.
+line *extractors used*. Measured on 2026-10-11 on SAS Viya 2026.09 with an
+empty `.txt` file: the step logged `rag extract: 0 extracted, 1 skipped, 0
+failed` and `rag skipped: 1 - plaintext found no text (empty or
+scanned-only document)` with the path of the file, and no line
+*extractors used*. The summary of that run read `0 documents extracted, 0
+failed, 3 skipped as unchanged, 1 deleted, 1 skipped`, because a file had
+been taken out of the folder before it. With one more new document it
+read `1 documents extracted, 0 failed, 3 skipped as unchanged, 1 skipped`,
+followed by `extractors used: plaintext=1`. Measured the same day for an
+excluded code file beside three unchanged documents: `0 documents
+extracted, 0 failed, 3 skipped as unchanged, 1 excluded`.
 
 `docs_skipped` is added to an existing `rag_runs` table by an additive
 migration on the next run, and so are `docs_excluded` — the documents the
@@ -1570,7 +1786,14 @@ host as it is set for the step — an IP address on the test system (seen on
 <host>/SASModel`). The line after it names the credential domain and the
 name of the entry the user was read from (`<BACKEND>_RAG_USER`), not its
 value: user and password come from the credential domain, and the summary
-holds neither. The summary is part of the log of every run that reaches
+holds neither. Seen on 2026-10-11 with pgvector, as two lines that follow
+each other:
+`NOTE:   pgvector collection zz_verify_r12s_v1 on <host>/postgres` and
+`NOTE:   credentials resolved from domain agentic-ai-keys (PGVECTOR_RAG_USER)`.
+A search of that flow log for the words password, user name, credential,
+secret and API key found that one line outside the echoed program; such
+a search does not show that the name of the account stands nowhere as a
+bare value. The summary is part of the log of every run that reaches
 the step, so the address of the store is in the job log of every run of a
 flow that is scheduled as a job, for everyone who may read that log.
 
@@ -1618,19 +1841,20 @@ PostgreSQL, on/off for SingleStore) and defaults to enabled.
 | The run refuses to start | Another run holds the ledger lock; it expires after 30 minutes |
 | *RAG - List Documents* fails with *the run lock could not be written to … - refusing to ingest unguarded*, below `ERROR: The variable doc_id has been specified with incompatible data types` | The flow runs on a ledger the ingestion job wrote, with steps from before release 2.3.0 (or the job on a ledger a flow wrote) — see [one ledger for the job and the flow](#one-ledger-for-the-job-and-the-flow) |
 | *RAG - Register Setup* fails with `POST /modelRepository/projects returned 400` and *You must specify a value for the "folderId" parameter* | The SAS Model Manager project named in the step does not exist, and the `rag_core` on the site is from before release 2.3.0. Run `deploy-rag-content`, or create the project in SAS Model Manager first — see [the checkbox of the custom step](#tls-register-setup-step) |
-| A RAG step writes *NOTE: The quoted string currently being processed has become more than 262 bytes long* above its summary or above its ERROR line | Steps from before release 2.3.0; nothing is wrong with the run. The steps of release 2.3.0 write neither the summary nor the ERROR line as a quoted string. Above the summary the NOTE was gone in *RAG - Register Setup* and in a flow of List, Extract, Chunk, Embed and Load; above the ERROR line the change was not run in SAS — see [the checkbox of the custom step](#tls-register-setup-step) |
+| A RAG step writes *NOTE: The quoted string currently being processed has become more than 262 bytes long* above its summary or above its ERROR line | Steps from before release 2.3.0; nothing is wrong with the run. The steps of release 2.3.0 write neither the summary nor the ERROR line as a quoted string. Above the summary the NOTE was gone in *RAG - Register Setup* and in a flow of List, Extract, Chunk, Embed and Load; above the ERROR line it was gone in a failing *RAG - List Documents* (measured on 2026-10-11) — see [the checkbox of the custom step](#tls-register-setup-step) |
 | A publishing validation on a SAS Micro Analytic Service destination returns HTTP status 201, an empty error column and **empty outputs** in some or all rows, for a decision that uses a retrieval model | SAS Micro Analytic Service ended those executions after 30 seconds. The validation sends its rows at the same time, and the models behind the nodes took longer when they were called together; a direct call of the module answers `"executionState": "timedOut"`. The lengths of the model's variables are not the cause — see [several rows at once](#several-rows-at-once) and the [Troubleshooting Guide](./Troubleshooting-Guide.md#empty-outputs-published-decision) |
 | *RAG - Register Setup* fails, and its log holds *WARNING: … the step failed after the score code of the retrieval model was stored* | A request after the upload failed (a flow that does not exist, an artifact that could not be attached). The model holds the new score code; the WARNING lines below say whether it verifies TLS certificates and whether it is tagged — see [the checkbox of the custom step](#tls-register-setup-step) |
 | *RAG - Register Setup* fails, and its log holds *WARNING: … it is not known whether SAS Model Manager stored the score code* | The upload of the score code got no usable answer. The tag `TLS-Verification-Off` was not updated; run the step again |
-| The ingestion job ends with *the run lock could not be written to the ledger … - refusing to ingest unguarded* | The lock row of the job was not in the ledger when the job read it back. Look in the SAS log above the message: CAS refused the append (its ERROR is there), or the second export of the ledger failed. The refusal was not provoked on the test system, and the job of release 2.3.0 that writes the lock row with its run id was not run in SAS. See [one ledger for the job and the flow](#one-ledger-for-the-job-and-the-flow) |
-| The ingestion job ends with *another ingestion run appears active for this ledger (run lock held) - retry later* | The ledger holds a lock row of another run that is less than 30 minutes old: a flow or a job is ingesting, or a run crashed, or a job definition from before release 2.3.0 failed and left its row. The run took no lock and did not touch the ledger. Wait for the other run, or 30 minutes. A run of the job of release 2.3.0 that fails takes its own lock out and writes *the run lock was released so the run can be retried* — see [one ledger for the job and the flow](#one-ledger-for-the-job-and-the-flow). Not run in SAS |
-| A step fails with *the saved table … could not be loaded into memory (CAS messages above) - stopped, because an empty table would re-embed the corpus and overwrite the saved file* | The ledger or the embedded chunks of the project are saved in the caslib but not in memory, and CAS could not load the file. The CAS messages above the ERROR say why. The step stops before it takes a lock or starts a ledger, and the job stores no ledger after a run that failed, so the saved file is not touched — also in a SAS session that ran the job before, where up to this release the job stored the ledger of the earlier run over it. A saved file that cannot be loaded was not provoked on the test system, and that the job stores no ledger after a failed run was not run in SAS. See [a saved ledger is loaded back](#a-saved-ledger-is-loaded-back) |
-| A run writes *WARNING: RAG: … is not in memory, and the files of the caslib … could not be listed (CAS messages above) - a saved copy could not be looked for.* and *WARNING: RAG: the run continues without the table and saves over a copy that may be there.* | The table is not in memory and CAS could not list the files of the caslib, so the run could not look for a saved copy and goes on without the table. For a ledger that means that every document counts as new and is embedded again, and that a saved ledger is overwritten. Stop the run if a saved copy should exist, and look at the CAS messages above the WARNING and at the caslib. The two WARNING lines were not run in SAS. See [a saved ledger is loaded back](#a-saved-ledger-is-loaded-back) |
-| **Launch ingestion** shows *The ingestion run did not succeed* with the milestone *Ingestion failed: the saved table … could not be loaded into memory* | The ledger of the setup is saved in the caslib but not in memory, and CAS could not load the file. Nothing was ingested and the saved file is not touched; the CAS messages in the log of the job say why. The milestone was not run in SAS. See [a saved ledger is loaded back](#a-saved-ledger-is-loaded-back) |
-| The ingestion job of a setup ends as `failed` in SAS Job Execution | The run failed: the last line of its log, *ERROR: RAG ingestion failed: …*, says why. Up to release 2.2, and with a job definition that was not manifested again, the job ends as `completed` with the same last line — see [one ledger for the job and the flow](#one-ledger-for-the-job-and-the-flow). The failed state was measured for the job *RAG - Register Setup* generates from a flow and not run in SAS for `Ingest-Documents.sas` |
-| The log of the ingestion job holds *NOTE: RAG ingestion: rag_ledger_in.json of an earlier run of this SAS session was deleted from WORK* | The program ran before in the same SAS session. The file is the export of that run and is removed so that this run cannot read it; nothing is wrong. A job started by SAS Job Execution has a WORK of its own and does not write the line. Not run in SAS |
-| The ingestion job ends with *… of an earlier run of this SAS session could not be deleted from WORK - stopped, because the run would read the ledger of that run as its own* | The export of an earlier run is still in WORK and SAS could not delete it. Start a new SAS session and run the job there. Not run in SAS |
-| **Test retrieval** says *The probe failed: the Python environment of this compute context lacks the requests package* | The Python of the compute context named in `ragComputeContext` has no `requests` — see [Python packages](#python-packages). Up to release 2.2 the page showed a probe that returned no chunks in that case. Not run in SAS |
+| The ingestion job ends with *the run lock could not be written to the ledger … - refusing to ingest unguarded* | The lock row of the job was not in the ledger when the job read it back. Look in the SAS log above the message: CAS refused the append (its ERROR is there), or the second export of the ledger failed. The refusal of the job was not provoked on the test system: in every measured run of the job of release 2.3.0 the lock row, with its run id, was there. *RAG - List Documents* wrote the same refusal there once, for a ledger in a caslib of the CAS session, below `ERROR: The caslib '…' is a session caslib. You cannot promote tables to global scope in session caslibs.` See [one ledger for the job and the flow](#one-ledger-for-the-job-and-the-flow) |
+| The ingestion job ends with *another ingestion run appears active for this ledger (run lock held) - retry later* | The ledger holds a lock row of another run that is less than 30 minutes old: a flow or a job is ingesting, or a run crashed, or a job definition from before release 2.3.0 failed and left its row. The run took no lock and did not touch the ledger. Wait for the other run, or 30 minutes. A run of the job of release 2.3.0 that fails takes its own lock out and writes *the run lock was released so the run can be retried* — see [one ledger for the job and the flow](#one-ledger-for-the-job-and-the-flow). Measured on 2026-10-11: a job refused this way ended as `failed`, left no lock row of its own, and was not refused when it was run again after the other run had ended |
+| A step fails with *the saved table … could not be loaded into memory (CAS messages above) - stopped, because an empty table would re-embed the corpus and overwrite the saved file* | The ledger or the embedded chunks of the project are saved in the caslib but not in memory, and CAS could not load the file. The CAS messages above the ERROR say why. The step stops before it takes a lock or starts a ledger, and the job stores no ledger after a run that failed, so the saved file is not touched — also in a SAS session that ran the job before, where up to this release the job stored the ledger of the earlier run over it. A saved file that cannot be loaded could not be staged on the test system and was not run in SAS; that the job stores no ledger after a run that failed was measured for a run that the lock of another run refused. See [a saved ledger is loaded back](#a-saved-ledger-is-loaded-back) |
+| A run writes *WARNING: RAG: … is not in memory, and the files of the caslib … could not be listed (CAS messages above) - a saved copy could not be looked for.* and *WARNING: RAG: the run continues without the table and saves over a copy that may be there.* | The table is not in memory and CAS could not list the files of the caslib, so the run could not look for a saved copy and goes on without the table. For a ledger that means that every document counts as new and is embedded again, and that a saved ledger is overwritten. Stop the run if a saved copy should exist, and look at the CAS messages above the WARNING and at the caslib. The wording of the two lines was measured on 2026-10-11 in *RAG - List Documents*, for a ledger in a caslib of the CAS session; a run that goes on to its end behind them was not. See [a saved ledger is loaded back](#a-saved-ledger-is-loaded-back) |
+| **Launch ingestion** shows *The ingestion run did not succeed* with the milestone *Ingestion failed: the saved table … could not be loaded into memory* | The ledger of the setup is saved in the caslib but not in memory, and CAS could not load the file. Nothing was ingested and the saved file is not touched; the CAS messages in the log of the job say why. The milestone was not run in SAS: no file that CAS cannot load could be staged on the test system. See [a saved ledger is loaded back](#a-saved-ledger-is-loaded-back) |
+| The ingestion job of a setup ends as `failed` in SAS Job Execution | The run failed: the last ERROR line of its log, *ERROR: RAG ingestion failed: …*, says why, and the record of the job holds the same text. SAS Job Execution reports its own error code there, 5713 (*A procedure in the SAS program provided for the job completed execution with at least one error.*), and inside it an error with the code 1012 and the text of that line. Up to release 2.2, and with a job definition that was not manifested again, the job ends as `completed` with the same ERROR line — see [one ledger for the job and the flow](#one-ledger-for-the-job-and-the-flow). The failed state was measured for the job *RAG - Register Setup* generates from a flow and, on 2026-10-11, for `Ingest-Documents.sas`, with these two codes in the record of the job |
+| The log of the ingestion job holds *NOTE: RAG ingestion: rag_ledger_in.json of an earlier run of this SAS session was deleted from WORK* | The program ran before in the same SAS session. The file is the export of that run and is removed so that this run cannot read it; nothing is wrong. A job started by SAS Job Execution has a WORK of its own and does not write the line. The line comes once for each of the two files that is there, `rag_ledger_in.json` and `rag_ledger_lock.json` (measured on 2026-10-11) |
+| The ingestion job ends with *… of an earlier run of this SAS session could not be deleted from WORK - stopped, because the run would read the ledger of that run as its own* | The export of an earlier run is still in WORK and SAS could not delete it. Start a new SAS session and run the job there. The log of such a run also holds three ERROR lines of `PROC JSON` above its milestone - *ERROR: Invalid file, …/rag_ledger_in.json.*, *ERROR: Due to the previous error, the JSON output file is incomplete and invalid, …* and *ERROR: The JSON writer is in an error state at this point and no more items may be inserted.* They have the same cause: the export still runs after the delete failed, and writes to the file that is in the way. Measured on 2026-10-11 with a directory of that name in WORK; by the code, the last line names the lock instead of the file where another run holds a fresh lock at that moment |
+| **Test retrieval** says *The probe failed: the Python environment of this compute context lacks the requests package* | The Python of the compute context named in `ragComputeContext` has no `requests` — see [Python packages](#python-packages). Up to release 2.2 the page showed a probe that returned no chunks in that case. The line the page reads - *RAGRETRIEVE FAILED the Python environment of this compute context lacks the requests package - see the RAG administration guide* - was measured on 2026-10-11 in a session in which the import of `requests` was made to fail; the text of the page was not run in SAS, because the test system has no compute context without the package |
+| `deploy-rag-content` stops with *(409) Conflict* on the upload of a file | Seen on 2026-10-11 with `deploy-rag-content.ps1`, on a content folder that held an earlier runtime: the Files service refused the upload of a file whose old copy the script had just deleted, and answered the same upload with 201 a minute later. Run the script again - the second run completed. Until a run has completed, the file the script stopped at is missing from the folder — see [what gets deployed](#what-gets-deployed) |
 | The Load step logs *rag history: not recorded (… must be owner of table rag_runs* | The store user of the ingestion may not alter `rag_runs`, which release 2.3.0 widens by the column `docs_excluded`. The ingestion itself is not affected. Let the owner of the table run an ingestion, or run `ALTER TABLE rag_runs ADD COLUMN docs_excluded integer DEFAULT 0` once — see [run history](#run-history) |
 | A job generated by *RAG - Register Setup* ends with *ERROR: RAG ingestion failed - a step of this run reported an error (its ERROR line is above) and the steps after it were skipped.* | A step of the flow failed. The line is written by the job, not by a step: the ERROR of the step that failed is above it — see *The job generated from a flow* under [the checkbox of the custom step](#tls-register-setup-step) |
 | `retrieval_status` of a retrieval model in a decision says *no vector-store credentials resolved* | The runtime the decision runs in has no `<BACKEND>_RAG_USER` and `<BACKEND>_RAG_PW` — see [the retrieval model in a decision](#the-retrieval-model-in-a-decision) |
