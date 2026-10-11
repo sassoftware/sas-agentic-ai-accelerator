@@ -642,6 +642,20 @@ def test_about_tab_names_what_the_step_takes_from_the_session():
     assert "the name of the libref is handed to CAS as the name of the caslib" in prerequisites
 
 
+def test_about_tab_names_the_librefs_the_step_assigns_to_append():
+    prerequisites = _about_tab()["textPrereqs"]
+    step = _append_step(step_program())
+
+    assert "Two librefs of its own when it appends to a table that exists" in prerequisites
+    for name in ("_llmtgt", "_llmsrc", "_TEMP_LLM_LOGS_ALL"):
+        assert name in prerequisites, name
+        assert name in step, name
+    assert "clears both librefs" in prerequisites
+    # The table is read through the libref, which is where the limit of its name comes from
+    assert '_llmtgt."&_log_target_table_name."n' in step
+    assert "32 characters at most" in prerequisites
+
+
 def test_about_tab_says_that_the_log_file_is_read_on_the_sas_server():
     about = _about_tab()["textAbout"]
 
@@ -651,6 +665,34 @@ def test_about_tab_says_that_the_log_file_is_read_on_the_sas_server():
     refused = step_program()[:step_program().index("* Ensure that the output table is in CAS;")]
     assert "if lowCase(locationType) ne 'sasserver' then do;" in refused
     assert "abort 10;" in refused
+
+
+def test_about_tab_names_every_column_and_what_the_program_does_with_it(monkeypatch, tmp_path):
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(llm_block())))
+    columns = _about_tab()["textColumns"]
+
+    for column in ALL_COLUMNS:
+        assert re.search(rf"\b{column}\b", columns), column
+    assert f"The {len(ALL_COLUMNS)} columns of the step stand in front" in columns
+    # The numbers and names the text gives are the ones of the program
+    assert run.namespace["ERROR_TEXT_LENGTH"] == 500 and "cut after 500 characters" in columns
+    assert run.namespace["MAX_TOKENS_ALIASES"] == ["max_completion_tokens", "max_length"]
+    assert "read from the option max_completion_tokens and then from max_length when the request has no max_tokens" in columns
+    assert "python-requests, browser, SAS or other" in columns
+    assert "llm, embedding or decision" in columns
+    assert "replaced by REDACTED" in columns and run.namespace["REDACTED"] == "REDACTED"
+    assert "text columns as VARCHAR" in columns
+    assert "is promoted again" in columns
+
+
+def test_about_tab_is_about_the_program_and_the_changelog_starts_with_this_version():
+    texts = _about_tab()
+
+    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.2 (")
+    assert texts["textChangelog"].index("Version: 2.2") < texts["textChangelog"].index("Version: 2.1") < texts["textChangelog"].index("Version: 2.0")
+    # What a release has not run yet is said in the changelog of the release, not in the step
+    for name, text in texts.items():
+        assert "not run in sas" not in text.lower(), name
 
 
 # ---------------------------------------------------------------------------
