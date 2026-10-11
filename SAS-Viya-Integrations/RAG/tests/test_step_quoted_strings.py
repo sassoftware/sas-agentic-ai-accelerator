@@ -266,6 +266,52 @@ def test_the_scan_meets_an_error_line_that_resolves_a_macro_variable():
             _takes_no_open_text(_quoted_strings(line), "_rgls_error")
 
 
+def _newest_changelog(name):
+    """The newest entry of the changelog on a step's About tab."""
+    def find(node):
+        if isinstance(node, dict):
+            if node.get("id") == "textChangelog":
+                return node["text"]
+            node = list(node.values())
+        if isinstance(node, list):
+            for value in node:
+                found = find(value)
+                if found:
+                    return found
+        return None
+    step = json.loads((STEPS / (name + ".step")).read_text(encoding="utf-8"))
+    return find(json.loads(step["ui"])).split("\n* Version: ")[0]
+
+
+@pytest.mark.parametrize("name", sorted(RAG_STEPS))
+def test_the_about_tab_no_longer_says_a_failing_step_can_write_the_note(name):
+    """It said so while the ERROR line was a quoted string, and it was
+    true: seen live in a failing RAG - List Documents."""
+    lines = _newest_changelog(name).split("\n      - ")
+    assert not any("can still write the NOTE" in line for line in lines)
+    error = [line for line in lines if line.startswith(
+        "The ERROR line of a run that fails is put together from a message "
+        "read with symget as well")]
+    assert len(error) == 1
+    assert ("seen on SAS Viya 2026.09 in a failing run of this step" in error[0]) \
+        == (name == "RAG - List Documents")
+    part = [line for line in lines if line.startswith(
+        "A part of the summary that is longer than the log line is written "
+        "with its NOTE prefix")]
+    assert len(part) == 1
+    # what was measured of the NOTE of a run that succeeds, and where
+    summary = [line for line in lines
+               if line.startswith("The run summary is read with symget")]
+    assert len(summary) == 1
+    flow = ("Measured on SAS Viya 2026.09: the log of a flow of RAG - List "
+            "Documents, Extract Text, Chunk Documents, Embed Chunks and Load "
+            "Vector Store holds no such NOTE")
+    in_the_flow = name in ("RAG - List Documents", "RAG - Extract Text",
+                           "RAG - Chunk Documents", "RAG - Embed Chunks",
+                           "RAG - Load Vector Store")
+    assert summary[0].endswith(flow) == in_the_flow
+
+
 # ---------------------------------------------------------------------------
 # the single-program job: its last line, written the same way
 # ---------------------------------------------------------------------------

@@ -305,6 +305,17 @@ def test_the_job_does_not_ingest_when_its_saved_ledger_could_not_be_loaded():
 # ---------------------------------------------------------------------------
 LOCKING_STEPS = {"RAG - List Documents": "rgls", "RAG - Purge Documents": "rgpu"}
 
+# what the About tab says was measured of the reload, by the step it was
+# measured in (SAS Viya 2026.09, pgvector, the saved table dropped from
+# memory)
+MEASURED_RELOAD = {
+    "RAG - List Documents": ("the step loaded a CHAR and a VARCHAR ledger back, "
+                             "took its run lock and listed every document as "
+                             "unchanged"),
+    "RAG - Embed Chunks": ("the step loaded the table back and found nothing "
+                           "left to embed"),
+}
+
 
 def _in_order(text, *markers):
     positions = [text.index(marker) for marker in markers]
@@ -452,8 +463,8 @@ def test_the_about_tab_names_the_tables_a_step_loads_back(path):
     step says that it loads its saved tables back, and names them."""
     newest = newest_changelog(path)
     assert "(11OCT2026)" in newest.split("\n")[0]
-    reloading = [line for line in newest.split("\n      - ")
-                 if "saved but" in line]
+    lines = newest.split("\n      - ")
+    reloading = [line for line in lines if "saved but" in line]
     tables = set(RELOADING_STEPS.get(path.stem, ("", []))[1])
     assert len(reloading) == (1 if tables else 0)
     for line in reloading:
@@ -462,5 +473,39 @@ def test_the_about_tab_names_the_tables_a_step_loads_back(path):
         assert "A saved file that cannot be loaded fails the step" in line
         assert ("before the run lock asks for its column types" in line) \
             == (path.stem in LOCKING_STEPS)
-        # nothing of it has run in SAS yet, and the text says so
-        assert line.endswith("Not run in SAS with this version of the step")
+        # What ran in SAS is said by the step it ran in, with what it ran
+        # on. Two steps loaded a table back in a measured run: the ledger in
+        # RAG - List Documents, the embedded chunks in RAG - Embed Chunks.
+        # The table was dropped from memory - the CAS server was not
+        # restarted - and the line says that too. The other four steps
+        # found their tables in memory, or did not run, and claim nothing.
+        measured = MEASURED_RELOAD.get(path.stem)
+        assert ("Measured" in line) == (measured is not None)
+        if measured:
+            assert line.endswith(measured)
+            assert ("Measured on SAS Viya 2026.09 with pgvector, with the "
+                    "saved %s dropped from memory and not with a restarted "
+                    "CAS server: " % ("ledger" if "_LEDGER" in tables else "table")
+                    ) in line
+        else:
+            assert line.endswith("A saved file that cannot be loaded fails the step")
+    # the look that failed has a line of its own, in the same six steps
+    unlisted = [line for line in lines
+                if line.startswith("Where the files of the caslib cannot be listed")]
+    assert len(unlisted) == (1 if tables else 0)
+    for line in unlisted:
+        assert "the run goes on and says so in a WARNING" in line
+        assert "every document counts as new" in line
+
+
+@pytest.mark.parametrize("path", sorted(STEPS.glob("RAG - *.step")),
+                         ids=lambda path: path.stem)
+def test_no_line_of_the_about_tab_says_that_it_did_not_run(path):
+    """A line says what the step does, and what was measured where
+    something was. What has not run in SAS is said in the changelog and in
+    the guide, which are corrected after a live pass; a step file is not."""
+    newest = newest_changelog(path)
+    assert "ot run in SAS" not in newest
+    for line in newest.split("\n      - "):
+        # a line of the About tab ends without a full stop
+        assert not line.endswith("."), line[-80:]

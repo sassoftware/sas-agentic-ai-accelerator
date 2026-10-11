@@ -410,6 +410,13 @@ def test_the_about_page_of_a_step_says_what_changed(name, version):
             "columns" in newest) == (name in LOCKERS)
     assert ("A ledger with CHAR columns is read without the blanks" in newest) \
         == (name in READERS)
+    # the run id, and who hands a lock back
+    assert ("The run id ends in ten digits taken from a UUID" in newest) \
+        == (name in LOCKERS)
+    assert ("hands the run lock back only when the lock row of its own run "
+            "stands in the ledger" in newest) == (name != "RAG - Retrieve Context")
+    assert ("A preview takes no run lock and neither promotes nor saves the "
+            "ledger" in newest) == (name == "RAG - Purge Documents")
     versions = [float(v) for v in
                 re.findall(r"^\* Version: (\d+\.\d+) ", changelog, re.MULTILINE)]
     assert versions == sorted(versions, reverse=True)

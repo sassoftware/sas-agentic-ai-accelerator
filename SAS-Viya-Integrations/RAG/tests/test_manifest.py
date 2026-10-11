@@ -511,9 +511,27 @@ def test_the_about_tab_of_a_step_names_the_job_flag(path):
     for line in job:
         assert "RAG_ABORT_ON_ERROR = 0" in line and "sets SYSCC" in line
         assert "not part of the flow" in line
-    # nothing of it has run in SAS yet, and the text says so
+        # measured with two jobs the step generated
+        assert line.endswith(
+            "Measured in SAS Job Execution on SAS Viya 2026.09 with two jobs "
+            "this step generated: the one in which RAG - List Documents "
+            "failed ended as failed after 31 seconds, with both ERROR lines "
+            "in its log and the steps after it skipped; the other ended as "
+            "completed")
+    # The step that failed in those jobs was RAG - List Documents, so that
+    # is the one step whose line says what was measured. No other step
+    # failed in a job that reads the flag, and their lines claim nothing.
+    measured = ("Measured on SAS Viya 2026.09 with pgvector: a job that RAG - "
+                "Register Setup generated, in which this step failed, ended "
+                "as failed in SAS Job Execution, with the ERROR line of that "
+                "check in its log")
+    if path.stem == "RAG - List Documents":
+        assert flag[0].endswith(measured)
+    else:
+        assert "Measured" not in flag[0]
+        assert flag[0].endswith("of the same flow")
     for line in flag + job:
-        assert "Not run in SAS" in line
+        assert "ot run in SAS" not in line
 
 
 def test_regenerating_updates_the_existing_job_definition():
