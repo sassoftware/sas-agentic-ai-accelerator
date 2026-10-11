@@ -274,6 +274,29 @@ def test_a_preview_takes_no_lock_and_starts_no_ledger():
               "(promote=yes);")
 
 
+def test_the_about_tab_does_not_say_a_preview_keeps_an_ingestion_out():
+    """It said that neither a purge nor a preview runs while a flow or the
+    job is writing the ledger. A preview is refused by a fresh lock and takes
+    none (the test above), so an ingestion can start after that look - which
+    is what the description says now, as the guide does."""
+    ui = json.loads(json.loads((STEPS / "RAG - Purge Documents.step").read_text(
+        encoding="utf-8"))["ui"])
+    about = json.dumps(ui, ensure_ascii=False)
+    assert "neither runs while" not in about
+    assert ("A preview only reads: it takes no run lock and does not write the "
+            "ledger. It is still refused while another run holds a lock that is "
+            "less than 30 minutes old, and an ingestion can start while a "
+            "preview reads.") in about
+    # what is said of a purge is what the lock macro does: refused by a
+    # fresh lock, and a lock of its own behind that
+    assert ("A purge takes the same run lock as an ingestion: it is refused "
+            "while a flow or the scheduled job holds a fresh lock on the same "
+            "ledger, and they are refused while it holds its own.") in about
+    lock = _macro("RAG - Purge Documents", "_rgpu_lock")
+    _in_order(lock, "another ingestion run holds the lock on this ledger",
+              "%if %superq(_rgpu_mode) NE purge %then %return;", "(append=yes);")
+
+
 def test_the_step_and_its_python_agree_on_what_a_preview_is():
     """Everything but the value purge. A run the SAS took for a purge and the
     Python for a preview would keep its lock: the ledger is then not
