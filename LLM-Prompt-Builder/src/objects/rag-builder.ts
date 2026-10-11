@@ -209,20 +209,36 @@ function offeredBackends(config: RagBuilderConfig): ReadonlyArray<RagBackend> {
   return offered.length ? offered : RAG_BACKENDS;
 }
 
-/** The retrieval model's fixed in/out contract (owner requirement: the model
- * page must show clear variable definitions like manifested prompts do). */
+/**
+ * The retrieval model's fixed in/out contract (owner requirement: the model
+ * page must show clear variable definitions like manifested prompts do).
+ *
+ * EVERY variable carries a length, the outputs as much as the inputs. SAS
+ * Model Manager stores 99 for a string variable that comes without one, and
+ * SAS Intelligent Decisioning declares the model in its wrapper with what is
+ * stored: `in_out varchar(100) "context_envelope"`. A test in SAS Intelligent
+ * Decisioning tolerates the longer value; the same decision published to SAS
+ * Micro Analytic Service fails the execution as soon as chunks come back
+ * (found live: HTTP 201, an empty error column, every output of every node
+ * empty). The variables are written by every save, so a manifest of a setup
+ * from before this repairs its model.
+ *
+ * The same list is in rag_core/registration.py (RETRIEVAL_INPUTS and
+ * RETRIEVAL_OUTPUTS), which registers the model from SAS Studio.
+ * test_manifest_parity.py compares the two, entry by entry.
+ */
 const INPUT_VARIABLES = [
   { name: 'question', role: 'input', type: 'string', length: 32000, description: 'The user question to retrieve context for' },
-  { name: 'k', role: 'input', type: 'decimal', description: 'Number of chunks to return (0 = manifested default)' },
+  { name: 'k', role: 'input', type: 'decimal', length: 8, description: 'Number of chunks to return (0 = the manifested default)' },
   { name: 'filter_json', role: 'input', type: 'string', length: 4000, description: 'Optional JSON object of allow-listed column equality filters' },
   { name: 'retrieval_mode', role: 'input', type: 'string', length: 32, description: 'vector (hybrid arrives with a later release)' },
-  { name: 'options', role: 'input', type: 'string', length: 4000, description: 'Optional JSON connection overrides for callers managing their own secrets' },
+  { name: 'options', role: 'input', type: 'string', length: 4000, description: 'Optional JSON overrides: connection settings, and API_KEY for an API-backed embedding model (a decision has no session to resolve one)' },
 ];
 const OUTPUT_VARIABLES = [
-  { name: 'context_dg', role: 'output', type: 'string', description: 'Context datagrid as JSON: document_id, chunk_id, filename, ingestion_timestamp, distance, document' },
-  { name: 'context_envelope', role: 'output', type: 'string', description: 'JSON envelope: query, hits[], graph_context, retrieval_mode, collection, ingestion_run_id' },
+  { name: 'context_dg', role: 'output', type: 'string', length: 32000, description: 'Retrieved context as a datagrid (JSON string)' },
+  { name: 'context_envelope', role: 'output', type: 'string', length: 32000, description: 'JSON envelope: query, hits[], graph_context, retrieval_mode, collection, ingestion_run_id' },
   { name: 'retrieval_status', role: 'output', type: 'string', length: 512, description: 'ok or the failure message - retrieval never raises' },
-  { name: 'run_time', role: 'output', type: 'decimal', description: 'Total seconds spent' },
+  { name: 'run_time', role: 'output', type: 'decimal', length: 8, description: 'Total seconds spent' },
 ];
 
 function defaultSetup(config: RagBuilderConfig): RagSetup {

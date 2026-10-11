@@ -87,6 +87,17 @@ const lastUpload = (log, modelId, name) => uploads(log, modelId, name).pop();
 // embedding models and the prompts the enrichment stage can call.
 const isRagRequest = (e) => e.url.startsWith('/modelRepository/') && /RAG-Engineering|emb-proj|Output-Parsing/.test(decodeURIComponent(e.url));
 const lastLine = (message) => String(message || '').trim().split('\n').pop();
+// The length a model body holds for one of its variables (undefined when the
+// variable, or its length, is not there).
+const lengthOf = (model, role, name) => (((model || {})[role] || []).find((variable) => variable.name === name) || {}).length;
+// The lengths of the retrieval model's variables, in the order they are
+// written. The same numbers stand in rag_core/registration.py, for the model
+// RAG - Register Setup registers; test_manifest_parity.py compares the two
+// source lists.
+const VARIABLE_LENGTHS = {
+  question: 32000, k: 8, filter_json: 4000, retrieval_mode: 32, options: 4000,
+  context_dg: 32000, context_envelope: 32000, retrieval_status: 512, run_time: 8,
+};
 // What a link that leaves the page does when no tab can be opened: it shows
 // for a moment that the link was copied. `window.open` is made to answer the
 // way the sandboxed iframe of a report does.
@@ -539,6 +550,20 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       registration && registration.trainTable === 'cas-shared-default/Public/ZZV_LEDGER' && registration.inputVariables.length === 5 && registration.outputVariables.length === 4,
       'the model gets the ledger reference and the retrieval variables'
     );
+    // Every variable goes out with a length. SAS Model Manager stores 99 for a
+    // string variable that comes without one, SAS Intelligent Decisioning then
+    // declares it varchar(100) in the wrapper of the model, and a decision
+    // published to SAS Micro Analytic Service fails as soon as chunks come back
+    // (found live: HTTP 201, an empty error column, every output empty).
+    assert(
+      lengthOf(registration, 'outputVariables', 'context_dg') === 32000 && lengthOf(registration, 'outputVariables', 'context_envelope') === 32000,
+      `Save writes the two context outputs with the length 32000 (got: context_dg ${lengthOf(registration, 'outputVariables', 'context_dg')}, context_envelope ${lengthOf(registration, 'outputVariables', 'context_envelope')})`
+    );
+    const writtenLengths = Object.fromEntries([...registration.inputVariables, ...registration.outputVariables].map((variable) => [variable.name, variable.length]));
+    assert(
+      JSON.stringify(writtenLengths) === JSON.stringify(VARIABLE_LENGTHS),
+      `every variable of the retrieval model is written with its length, as RAG - Register Setup registers it (got: ${JSON.stringify(writtenLengths)})`
+    );
     const tags = (modelPuts[modelPuts.length - 1] || {}).tags || [];
     assert(['LLM', 'RAG', 'bge_small_en_v15', 'pgvector'].every((tag) => tags.includes(tag)), `and tags for the embedding model and the vector database (got: ${tags.join(', ')})`);
     step(true, 'the setup is saved');
@@ -552,12 +577,37 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
 
     // -- manifest ----------------------------------------------------------------
     await goRagStep(page, 'store');
+    // The setup as a Builder from before the lengths left it in SAS Model
+    // Manager: 99 for the two context outputs. A manifest has to put that right,
+    // because it is what a site does with the setups it already has.
+    const modelUrl = `${BASE}/modelRepository/models/${setupId}`;
+    const heldBefore = await fetch(modelUrl);
+    const modelBefore = await heldBefore.json();
+    modelBefore.outputVariables = modelBefore.outputVariables.map((variable) => (/^context_/.test(variable.name) ? { ...variable, length: 99 } : variable));
+    const putBack = await fetch(modelUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'If-Match': heldBefore.headers.get('ETag') }, body: JSON.stringify(modelBefore) });
+    const modelStale = await (await fetch(modelUrl)).json();
+    assert(
+      putBack.status === 200 && lengthOf(modelStale, 'outputVariables', 'context_dg') === 99 && lengthOf(modelStale, 'outputVariables', 'context_envelope') === 99,
+      'before the manifest the mock holds the setup the way an earlier Builder left it: 99 for the two context outputs'
+    );
     await resetLog();
     await page.click(rgb('manifest'));
     await waitUntil(async () => (await getLog()).some((e) => e.method === 'POST' && e.url === `/modelRepository/models/${setupId}/modelVersions`), 'the manifest records a model version', 30000);
     await waitUntil(async () => !(await page.isDisabled(rgb('manifest'))) && (await saveResult(page, 'success')), 'the manifest reports success');
     assert(!(await saveResult(page, 'danger')), 'the manifest reports no problem');
     log = await getLog();
+
+    const manifestPuts = log.filter((e) => e.method === 'PUT' && e.url === `/modelRepository/models/${setupId}`).map((e) => JSON.parse(e.body));
+    const contextLengths = (model) => `context_dg ${lengthOf(model, 'outputVariables', 'context_dg')}, context_envelope ${lengthOf(model, 'outputVariables', 'context_envelope')}`;
+    assert(
+      manifestPuts.length > 0 && manifestPuts.every((body) => lengthOf(body, 'outputVariables', 'context_dg') === 32000 && lengthOf(body, 'outputVariables', 'context_envelope') === 32000),
+      `the manifest writes the two context outputs with the length 32000, in every update of the model it sends (got: ${manifestPuts.map(contextLengths).join(' | ') || 'no update'})`
+    );
+    const modelAfter = await (await fetch(modelUrl)).json();
+    assert(
+      lengthOf(modelAfter, 'outputVariables', 'context_dg') === 32000 && lengthOf(modelAfter, 'outputVariables', 'context_envelope') === 32000,
+      `after the manifest the setup holds 32000 for both: a manifest repairs a setup from before the lengths (got: ${contextLengths(modelAfter)})`
+    );
 
     const folderPosts = log.filter((e) => e.method === 'POST' && e.url.startsWith('/folders/folders?'));
     assert(
