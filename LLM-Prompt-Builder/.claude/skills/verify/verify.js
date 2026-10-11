@@ -2418,6 +2418,232 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   };
   await assertCreatesWhatWasChecked('promptBuilderCreateProject', '**/modelRepository/projects', '**/modelRepository/repositories/**', 'Create a new Project');
   await assertCreatesWhatWasChecked('promptBuilderCreatePrompt', '**/modelRepository/models', null, 'Create a new Prompt');
+  // ---- the create dialogs: what only looks like a name, a request that fails
+  // on the way to a creation, and the keyboard -----------------------------------
+  const createDialogState = (dialog) =>
+    page.evaluate((id) => {
+      const modal = document.getElementById(`${id}Modal`);
+      const error = document.getElementById(`${id}Error`);
+      const name = document.getElementById(`${id}Name`);
+      const create = modal.querySelector('.btn-primary');
+      const active = document.activeElement;
+      return {
+        open: modal.classList.contains('show'),
+        error: error && !error.hidden ? error.textContent.trim() : '',
+        focus: active === create ? 'Create' : active === modal ? 'dialog' : active === name ? 'name' : active === document.body ? 'body' : active ? active.id || active.tagName : 'nowhere',
+        marked: name.getAttribute('aria-invalid') === 'true' && name.classList.contains('is-invalid'),
+        createOff: create.disabled,
+        fieldsOff: name.disabled || document.getElementById(`${id}Description`).disabled,
+        closersOff: modal.querySelector('.btn-secondary').disabled && modal.querySelector('.btn-close').disabled,
+      };
+    }, dialog);
+  const openCreateDialog = async (dialog) => {
+    if (!(await page.isVisible(`#${dialog}Modal.show`))) {
+      await page.click(`#LPB-modal-button-container button[data-bs-target="#${dialog}Modal"]`);
+      await page.waitForSelector(`#${dialog}Modal.show`);
+    }
+    // Faded in: Bootstrap has put the focus on the dialog.
+    await sleep(500);
+  };
+  const closeCreateDialog = async (dialog) => {
+    if (await page.isVisible(`#${dialog}Modal.show`)) await page.click(`#${dialog}Modal .btn-secondary`);
+    await page.waitForSelector('.modal.show', { state: 'detached' });
+  };
+  const refusal = (status, message) => ({ status, contentType: 'application/json', body: JSON.stringify({ errorCode: 0, message, httpStatusCode: status }) });
+  // A name is a name by what it shows. White space and the characters of
+  // Default_Ignorable_Code_Point were refused already; the braille pattern
+  // blank, a control character and two characters defined as an empty shape
+  // are drawn as nothing as well and were sent on. The last entry is the
+  // reverse check: fillers and marks that the property does cover.
+  const BLANK_LOOKING = [
+    ['\u2800', 'the braille pattern blank (U+2800) as its name'],
+    ['\u2800 \u200B\u3164\u2800', 'a name of braille blanks, a blank, a zero-width space and a Hangul filler'],
+    ['\u0001\u007F\u0085', 'a name of control characters (U+0001, U+007F, U+0085)'],
+    ['\u{1D159}\u{16FE4}', 'the musical null notehead (U+1D159) and the Khitan filler (U+16FE4) as its name'],
+    [
+      '\u3164\uFFA0\u115F\u1160\u00AD\u034F\u180E\u061C\u{E0020}\u{E0041}\uFE0F\u{E0100}',
+      'a name of Hangul fillers, the soft hyphen, the grapheme joiner, the Mongolian vowel separator, the Arabic letter mark, tag characters and variation selectors',
+    ],
+  ];
+  // One visible character makes a name, whatever stands beside it, and the
+  // name is sent as it was typed.
+  const VISIBLE_NAMES = [
+    ['\u2800x\u200B', 'a letter between a braille blank and a zero-width space'],
+    ['7', 'a digit'],
+    ['-', 'a hyphen'],
+    ['\u4E2D', 'a CJK letter'],
+    ['\u0639', 'an Arabic letter'],
+    ['\u2764\uFE0F', 'a heart with its variation selector'],
+    ['\u{1F468}\u200D\u{1F469}\u200D\u{1F467}', 'an emoji joined by zero-width joiners'],
+    ['\u2801', 'a braille pattern with one dot'],
+  ];
+  const assertNamesByWhatShows = async (dialog, creation, message, label) => {
+    const sent = [];
+    await page.route(creation, (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      sent.push(JSON.parse(route.request().postData() || '{}').name);
+      return route.fulfill(refusal(400, 'The name must not be empty.'));
+    });
+    await openCreateDialog(dialog);
+    for (const [name, what] of BLANK_LOOKING) {
+      sent.length = 0;
+      await page.fill(`#${dialog}Name`, name);
+      await page.click(`#${dialog}Modal .btn-primary`);
+      await sleep(600);
+      const seen = await createDialogState(dialog);
+      assert(
+        sent.length === 0 && seen.error === message && seen.focus === 'name' && seen.marked && !seen.createOff,
+        `${label} with ${what}: nothing is sent to SAS Model Manager, the dialog says that a name is required, and the name field is marked and has the cursor (sent: ${sent.length}; dialog: ${seen.error || 'nothing'}; focus: ${seen.focus}; marked: ${seen.marked})`
+      );
+    }
+    const notAsTyped = [];
+    for (const [name, what] of VISIBLE_NAMES) {
+      sent.length = 0;
+      await page.fill(`#${dialog}Name`, name);
+      await page.click(`#${dialog}Modal .btn-primary`);
+      for (let attempt = 0; attempt < 40 && (sent.length === 0 || (await page.isDisabled(`#${dialog}Modal .btn-primary`))); attempt++) await sleep(100);
+      if (sent.length !== 1 || sent[0] !== name) notAsTyped.push(`${what} (requests: ${sent.length})`);
+    }
+    assert(
+      notAsTyped.length === 0,
+      `${label}: a name with one visible character is sent, as it was typed - ${VISIBLE_NAMES.map((entry) => entry[1]).join('; ')} (not so: ${notAsTyped.join(', ') || 'none'})`
+    );
+    await page.unroute(creation);
+    await page.fill(`#${dialog}Name`, '');
+    await closeCreateDialog(dialog);
+  };
+  await assertNamesByWhatShows('promptBuilderCreateProject', '**/modelRepository/projects', 'A project name is required.', 'Create a new Project');
+  await assertNamesByWhatShows('promptBuilderCreatePrompt', '**/modelRepository/models', 'A prompt name is required.', 'Create a new Prompt');
+  // Create a new Project asks for the repository before it creates. When
+  // that request threw or was refused the click ended without a word and
+  // with an error on the page. It ends in the dialog now: nothing was
+  // created, the button and the fields are usable, the focus is back on the
+  // button, and nothing says "created".
+  const repositoryRequest = '**/modelRepository/repositories/**';
+  for (const [what, answer] of [
+    ['is cut off', (route) => route.abort('failed')],
+    ['is answered with an error page', (route) => route.fulfill({ status: 502, contentType: 'text/html', body: '<html><body>Bad Gateway</body></html>' })],
+    ['is answered with a page where JSON was expected', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<html><body>Sign in</body></html>' })],
+    ['is refused', (route) => route.fulfill(refusal(403, 'Forbidden'))],
+  ]) {
+    let creations = 0;
+    await page.route(projectCreation, (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      creations += 1;
+      return route.fulfill(refusal(403, 'Forbidden'));
+    });
+    await page.route(repositoryRequest, answer);
+    await openCreateDialog('promptBuilderCreateProject');
+    await markToastsSeen();
+    const errorsBefore = pageErrors.length;
+    await page.fill('#promptBuilderCreateProjectName', 'ZZ No Repository');
+    await page.click('#promptBuilderCreateProjectModal .btn-primary');
+    await sleep(1200);
+    const seen = await createDialogState('promptBuilderCreateProject');
+    const newToasts = (await page.$$('.toast-body:not([data-verify-seen])')).length;
+    await page.unroute(repositoryRequest);
+    await page.unroute(projectCreation);
+    assert(
+      creations === 0 && seen.open && seen.error.includes('the model repository could not be read') && pageErrors.length === errorsBefore,
+      `Create a new Project while the request for the repository ${what}: the dialog stays open and says that nothing was created because the repository could not be read, and no error reaches the page (creation requests: ${creations}; open: ${seen.open}; dialog: ${seen.error || 'nothing'}; page errors: ${pageErrors.slice(errorsBefore).join(' | ') || 'none'})`
+    );
+    assert(
+      !seen.createOff && !seen.fieldsOff && seen.focus === 'Create' && newToasts === 0,
+      `Create a new Project while the request for the repository ${what}: its button and its fields are usable again, the focus is back on the button, and no toast says anything (button disabled: ${seen.createOff}; fields disabled: ${seen.fieldsOff}; focus: ${seen.focus}; toasts: ${newToasts})`
+    );
+  }
+  await page.fill('#promptBuilderCreateProjectName', '');
+  await closeCreateDialog('promptBuilderCreateProject');
+  // An error nobody expected ends in the dialog as well. The project picker
+  // is left without a selected entry here, which Create a new Prompt reads
+  // without asking; the dialog catches the error and says what to do.
+  {
+    let creations = 0;
+    await page.route('**/modelRepository/models', (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      creations += 1;
+      return route.fulfill(refusal(403, 'Forbidden'));
+    });
+    await openCreateDialog('promptBuilderCreatePrompt');
+    const errorsBefore = pageErrors.length;
+    await page.evaluate(() => {
+      document.getElementById('LPB-project-dropdown').selectedIndex = -1;
+    });
+    await page.fill('#promptBuilderCreatePromptName', 'ZZ Unexpected');
+    await page.click('#promptBuilderCreatePromptModal .btn-primary');
+    await sleep(800);
+    const seen = await createDialogState('promptBuilderCreatePrompt');
+    await page.evaluate(() => {
+      document.getElementById('LPB-project-dropdown').value = 'proj-1';
+    });
+    await page.unroute('**/modelRepository/models');
+    assert(
+      creations === 0 && seen.open && seen.error.includes('The creation did not finish') && !seen.createOff && !seen.fieldsOff && pageErrors.length === errorsBefore,
+      `Create a new Prompt that ends with an error nobody expected: the dialog stays open and says that the creation did not finish, its button and its fields are usable, and no error reaches the page (dialog: ${seen.error || 'nothing'}; button disabled: ${seen.createOff}; page errors: ${pageErrors.slice(errorsBefore).join(' | ') || 'none'})`
+    );
+    await page.fill('#promptBuilderCreatePromptName', '');
+    await closeCreateDialog('promptBuilderCreatePrompt');
+  }
+  // Create by keyboard. Disabling the button that has the focus dropped the
+  // focus to <body>, where it stayed after a refusal; Escape then closed
+  // nothing. The focus waits on the dialog while the creation is out and is
+  // back on the button afterwards. While the creation is out the dialog
+  // cannot be closed - by Escape, by its two closing buttons, by a click
+  // beside it - and it can whenever none is, wherever the focus is.
+  const assertCreateByKeyboard = async (dialog, creation, label) => {
+    await page.route(creation, async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      await sleep(1500);
+      return route.fulfill(refusal(409, 'exists'));
+    });
+    for (const [key, keyName] of [['Enter', 'Enter'], ['Space', 'the space bar']]) {
+      await openCreateDialog(dialog);
+      await page.fill(`#${dialog}Name`, 'ZZ By Keyboard');
+      await page.focus(`#${dialog}Modal .btn-primary`);
+      await page.keyboard.press(key);
+      await sleep(250);
+      const pending = await createDialogState(dialog);
+      await page.keyboard.press('Escape');
+      await sleep(150);
+      await page.mouse.click(5, 5);
+      await sleep(150);
+      const openWhilePending = (await createDialogState(dialog)).open;
+      let after = await createDialogState(dialog);
+      for (let attempt = 0; attempt < 40 && (after.createOff || !after.error); attempt++) {
+        await sleep(100);
+        after = await createDialogState(dialog);
+      }
+      await page.keyboard.press('Escape');
+      await sleep(700);
+      const openAfterEscape = (await createDialogState(dialog)).open;
+      assert(
+        pending.createOff && pending.fieldsOff && pending.closersOff && pending.focus === 'dialog' && openWhilePending,
+        `${label}, ${keyName} on its button: while the creation is out the focus waits on the dialog, Cancel and the X are disabled, and neither Escape nor a click beside the dialog closes it (focus: ${pending.focus}; closing buttons disabled: ${pending.closersOff}; open: ${openWhilePending})`
+      );
+      assert(
+        after.open && after.error !== '' && !after.createOff && after.focus === 'Create' && !openAfterEscape,
+        `${label}, ${keyName} on its button: after the refusal the focus is back on the button, and Escape closes the dialog (open: ${after.open}; dialog: ${after.error ? 'a message' : 'nothing'}; focus: ${after.focus}; open after Escape: ${openAfterEscape})`
+      );
+    }
+    await openCreateDialog(dialog);
+    await page.evaluate(() => {
+      if (document.activeElement) document.activeElement.blur();
+    });
+    const where = (await createDialogState(dialog)).focus;
+    await page.keyboard.press('Escape');
+    await sleep(700);
+    const openAfterEscape = (await createDialogState(dialog)).open;
+    assert(
+      where === 'body' && !openAfterEscape,
+      `${label}: Escape closes the dialog also when the focus is on the page behind it (focus: ${where}; open after Escape: ${openAfterEscape})`
+    );
+    await page.unroute(creation);
+    await openCreateDialog(dialog);
+    await page.fill(`#${dialog}Name`, '');
+    await closeCreateDialog(dialog);
+  };
+  await assertCreateByKeyboard('promptBuilderCreateProject', '**/modelRepository/projects', 'Create a new Project');
+  await assertCreateByKeyboard('promptBuilderCreatePrompt', '**/modelRepository/models', 'Create a new Prompt');
   // After a reload the listing of the project is what brings it back.
   await page.goto(APP_URL);
   await page.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });

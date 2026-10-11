@@ -1139,6 +1139,61 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     await waitUntil(async () => (await page.$$(`${rgb('status')} .alert`)).length === 0, 'trying again lists the projects and the alert goes');
     assert((await value(page, 'project')) === late.id, 'the new project is still the selected one');
     assert((await ragState()).projects.filter((project) => project.name === 'ZZ Listed Late').length === 1, 'the project was created once');
+
+    // -- a setup that was created although a request after it failed ---------------
+    // After the creation the setups of the project are listed and the new one
+    // is read. A failure there was said in the dialog as "Creating the RAG
+    // setup failed": the person created the setup a second time, and the new
+    // setup was the selected one under the editor of the setup before, or
+    // under none.
+    for (const [setupName, what, pattern] of [
+      ['ZZ Listed Late Setup', 'the listing of the setups', '**/modelRepository/projects/*/models?*'],
+      ['ZZ Read Late Setup', 'the reading of the new setup', '**/modelRepository/models/*/contents?*'],
+    ]) {
+      const setupCreation = '**/modelRepository/models';
+      let created = false;
+      await page.route(setupCreation, (route) => {
+        if (route.request().method() === 'POST') created = true;
+        return route.continue();
+      });
+      await page.route(pattern, (route) =>
+        created && route.request().method() === 'GET'
+          ? route.fulfill({ status: 503, contentType: 'application/json', body: '{"message":"the model repository does not answer"}' })
+          : route.continue()
+      );
+      const errorsBefore = pageErrors.length;
+      await page.click(`[data-bs-target="${rgb('create-setupModal')}"]`);
+      await page.waitForSelector(`${rgb('create-setupModal')}.show`);
+      await page.fill(rgb('create-setupName'), setupName);
+      await page.click(`${rgb('create-setupModal')} .btn-primary`);
+      await waitUntil(async () => (await ragState()).models.some((model) => model.name === setupName), `${what} fails: the setup is created in Model Manager all the same`);
+      await waitUntil(async () => !(await page.isDisabled(`${rgb('create-setupModal')} .btn-primary`)), `${what} fails: the creation has ended`);
+      await sleep(400);
+      const setupNote = await statusAlert('warning');
+      const stillOpen = await page.isVisible(`${rgb('create-setupModal')}.show`);
+      const saidInDialog = stillOpen ? await dialogError('create-setup') : '';
+      await page.unroute(pattern);
+      await page.unroute(setupCreation);
+      const made = (await ragState()).models.find((model) => model.name === setupName);
+      assert(
+        !stillOpen && setupNote.includes(`"${setupName}" was created`) && setupNote.includes('could not be read back') && !(await page.$(`${rgb('status')} .alert-danger`)) && pageErrors.length === errorsBefore,
+        `${what} fails after the creation: the dialog closes and the page says that the setup exists and could not be read back, not that creating failed (dialog: ${stillOpen ? saidInDialog || 'open' : 'closed'}; page: ${setupNote || 'nothing'})`
+      );
+      assert(
+        (await value(page, 'setup')) === made.id && (await page.isVisible(EDITOR)),
+        `${what} fails after the creation: the new setup is the selected one and its editor is open (selected: ${await value(page, 'setup')}; new: ${made.id})`
+      );
+      if (stillOpen) {
+        await page.click(`${rgb('create-setupModal')} .btn-secondary`);
+        await page.waitForSelector('.modal.show', { state: 'detached' });
+      }
+      if (await page.$(rgb('retry-projects'))) await page.click(rgb('retry-projects'));
+      await waitUntil(async () => (await page.$$(`${rgb('status')} .alert`)).length === 0, `${what} failed: trying again lists the setups and the alert goes`);
+      assert(
+        (await optionValues(page, 'setup')).includes(made.id) && (await value(page, 'setup')) === made.id && (await ragState()).models.filter((model) => model.name === setupName).length === 1,
+        `${what} failed: after trying again the new setup is listed and still the selected one, and it was created once (listed: ${(await optionValues(page, 'setup')).includes(made.id)}; selected: ${await value(page, 'setup')})`
+      );
+    }
   });
 
   // ---- withheld: a setup on a vector database the deployment no longer offers ---
@@ -1385,15 +1440,28 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       // The creation is answered here as the service answers an empty name,
       // so that a page that does send it creates nothing.
       let invisibleSent = 0;
+      const sentNames = [];
       const creationRoute = `**${creation}`;
       await page.route(creationRoute, (route) => {
         if (route.request().method() !== 'POST') return route.continue();
         invisibleSent += 1;
+        sentNames.push(JSON.parse(route.request().postData() || '{}').name);
         return route.fulfill({ status: 400, contentType: 'application/json', body: '{"errorCode":0,"message":"The name must not be empty.","httpStatusCode":400}' });
       });
       for (const [name, what] of [
         ['\u200B', 'a zero-width space as its name'],
         [' \u200B\u200C\u200D\u2060\uFEFF\t\u00AD', 'a name of white space and characters that are not displayed'],
+        // Drawn as nothing without being white space or set apart by Unicode:
+        // these were sent on. The last entry is the reverse check - fillers
+        // and marks that the property Default_Ignorable_Code_Point covers.
+        ['\u2800', 'the braille pattern blank (U+2800) as its name'],
+        ['\u2800 \u200B\u3164\u2800', 'a name of braille blanks, a blank, a zero-width space and a Hangul filler'],
+        ['\u0001\u007F\u0085', 'a name of control characters (U+0001, U+007F, U+0085)'],
+        ['\u{1D159}\u{16FE4}', 'the musical null notehead (U+1D159) and the Khitan filler (U+16FE4) as its name'],
+        [
+          '\u3164\uFFA0\u115F\u1160\u00AD\u034F\u180E\u061C\u{E0020}\u{E0041}\uFE0F\u{E0100}',
+          'a name of Hangul fillers, the soft hyphen, the grapheme joiner, the Mongolian vowel separator, the Arabic letter mark, tag characters and variation selectors',
+        ],
       ]) {
         // Each name is judged by what it sends itself.
         invisibleSent = 0;
@@ -1406,6 +1474,31 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
           `${label} with ${what}: nothing is sent to SAS Model Manager, the dialog says that a name is required, and the name field is marked and has the cursor (dialog: ${(await dialogError(dialog)) || 'nothing'}; requests: ${invisibleSent}; focus: ${invisible.focus || 'nowhere'}; marked: ${invisible.marked})`
         );
       }
+      // One visible character makes a name, whatever stands beside it; the
+      // name is sent as it was typed, without the blanks at its ends.
+      const visibleNames = [
+        ['\u2800x\u200B', 'a letter between a braille blank and a zero-width space'],
+        ['7', 'a digit'],
+        ['-', 'a hyphen'],
+        ['\u4E2D', 'a CJK letter'],
+        ['\u0639', 'an Arabic letter'],
+        ['\u2764\uFE0F', 'a heart with its variation selector'],
+        ['\u{1F468}\u200D\u{1F469}\u200D\u{1F467}', 'an emoji joined by zero-width joiners'],
+        ['\u2801', 'a braille pattern with one dot'],
+        ['  Named  ', 'a name with blanks at both ends'],
+      ];
+      const notAsTyped = [];
+      for (const [name, what] of visibleNames) {
+        sentNames.length = 0;
+        await page.fill(rgb(`${dialog}Name`), name);
+        await page.click(`${rgb(`${dialog}Modal`)} .btn-primary`);
+        for (let attempt = 0; attempt < 40 && (sentNames.length === 0 || (await page.isDisabled(`${rgb(`${dialog}Modal`)} .btn-primary`))); attempt++) await sleep(100);
+        if (sentNames.length !== 1 || sentNames[0] !== name.trim()) notAsTyped.push(`${what} (requests: ${sentNames.length})`);
+      }
+      assert(
+        notAsTyped.length === 0,
+        `${label}: a name with one visible character is sent, as it was typed - ${visibleNames.map((entry) => entry[1]).join('; ')} (not so: ${notAsTyped.join(', ') || 'none'})`
+      );
       await page.unroute(creationRoute);
       await page.fill(rgb(`${dialog}Name`), '');
     };
@@ -1418,7 +1511,121 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
         },
         [rgb(`${dialog}Name`), rgb(`${dialog}Description`)]
       );
+    // Create by keyboard. Disabling the button that has the focus dropped the
+    // focus to <body>, where it stayed after a refusal; Escape then closed
+    // nothing. The focus waits on the dialog while the creation is out and is
+    // back on the button afterwards. While the creation is out the dialog
+    // cannot be closed - by Escape, by its two closing buttons, by a click
+    // beside it - and it can whenever none is, wherever the focus is.
+    const createDialog = (dialog) =>
+      page.evaluate(
+        ([modalSelector, nameSelector, descriptionSelector, errorSelector]) => {
+          const modal = document.querySelector(modalSelector);
+          const error = document.querySelector(errorSelector);
+          const name = document.querySelector(nameSelector);
+          const create = modal.querySelector('.btn-primary');
+          const active = document.activeElement;
+          return {
+            open: modal.classList.contains('show'),
+            error: error && !error.hidden ? error.textContent.trim() : '',
+            focus: active === create ? 'Create' : active === modal ? 'dialog' : active === name ? 'name' : active === document.body ? 'body' : active ? active.id || active.tagName : 'nowhere',
+            createOff: create.disabled,
+            fieldsOff: name.disabled || document.querySelector(descriptionSelector).disabled,
+            closersOff: modal.querySelector('.btn-secondary').disabled && modal.querySelector('.btn-close').disabled,
+          };
+        },
+        [rgb(`${dialog}Modal`), rgb(`${dialog}Name`), rgb(`${dialog}Description`), rgb(`${dialog}Error`)]
+      );
+    const openAgain = async (dialog) => {
+      if (!(await page.isVisible(`${rgb(`${dialog}Modal`)}.show`))) {
+        await page.click(`[data-bs-target="${rgb(`${dialog}Modal`)}"]`);
+        await page.waitForSelector(`${rgb(`${dialog}Modal`)}.show`);
+      }
+      // Faded in: Bootstrap has put the focus on the dialog.
+      await sleep(500);
+    };
+    const assertCreateByKeyboard = async (dialog, creation, label) => {
+      const creationRoute = `**${creation}`;
+      await page.route(creationRoute, async (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        await sleep(1500);
+        return route.fulfill({ status: 409, contentType: 'application/json', body: '{"errorCode":0,"message":"exists","httpStatusCode":409}' });
+      });
+      for (const [key, keyName] of [['Enter', 'Enter'], ['Space', 'the space bar']]) {
+        await openAgain(dialog);
+        await page.fill(rgb(`${dialog}Name`), 'ZZ By Keyboard');
+        await page.focus(`${rgb(`${dialog}Modal`)} .btn-primary`);
+        await page.keyboard.press(key);
+        await sleep(250);
+        const pending = await createDialog(dialog);
+        await page.keyboard.press('Escape');
+        await sleep(150);
+        await page.mouse.click(5, 5);
+        await sleep(150);
+        const openWhilePending = (await createDialog(dialog)).open;
+        let ended = await createDialog(dialog);
+        for (let attempt = 0; attempt < 40 && (ended.createOff || !ended.error); attempt++) {
+          await sleep(100);
+          ended = await createDialog(dialog);
+        }
+        await page.keyboard.press('Escape');
+        await sleep(700);
+        const openAfterEscape = (await createDialog(dialog)).open;
+        assert(
+          pending.createOff && pending.fieldsOff && pending.closersOff && pending.focus === 'dialog' && openWhilePending,
+          `${label}, ${keyName} on its button: while the creation is out the focus waits on the dialog, Cancel and the X are disabled, and neither Escape nor a click beside the dialog closes it (focus: ${pending.focus}; closing buttons disabled: ${pending.closersOff}; open: ${openWhilePending})`
+        );
+        assert(
+          ended.open && ended.error !== '' && !ended.createOff && ended.focus === 'Create' && !openAfterEscape,
+          `${label}, ${keyName} on its button: after the refusal the focus is back on the button, and Escape closes the dialog (open: ${ended.open}; dialog: ${ended.error ? 'a message' : 'nothing'}; focus: ${ended.focus}; open after Escape: ${openAfterEscape})`
+        );
+      }
+      await openAgain(dialog);
+      await page.evaluate(() => {
+        if (document.activeElement) document.activeElement.blur();
+      });
+      const where = (await createDialog(dialog)).focus;
+      await page.keyboard.press('Escape');
+      await sleep(700);
+      const openAfterEscape = (await createDialog(dialog)).open;
+      assert(
+        where === 'body' && !openAfterEscape,
+        `${label}: Escape closes the dialog also when the focus is on the page behind it (focus: ${where}; open after Escape: ${openAfterEscape})`
+      );
+      await page.unroute(creationRoute);
+      // Open again, and empty, for what follows.
+      await openAgain(dialog);
+      await page.fill(rgb(`${dialog}Name`), '');
+    };
     await assertNameIsNeeded('create-project', '/modelRepository/projects', 'A project name is required.', 'Create project');
+    await assertCreateByKeyboard('create-project', '/modelRepository/projects', 'Create project');
+    // Create project asks for the repository before it creates. Cut off, that
+    // request is said in the dialog with nothing created - and the focus is
+    // back on the button the creation was started from.
+    {
+      const repositoryRequest = '**/modelRepository/repositories/**';
+      const creationRoute = '**/modelRepository/projects';
+      let creations = 0;
+      await page.route(creationRoute, (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        creations += 1;
+        return route.fulfill({ status: 403, contentType: 'application/json', body: '{"errorCode":1003,"message":"Forbidden","httpStatusCode":403}' });
+      });
+      await page.route(repositoryRequest, (route) => route.abort('failed'));
+      const errorsBefore = pageErrors.length;
+      await page.fill(rgb('create-projectName'), 'ZZ No Repository');
+      await page.focus(`${rgb('create-projectModal')} .btn-primary`);
+      await page.keyboard.press('Enter');
+      await sleep(1200);
+      const seen = await createDialog('create-project');
+      await page.unroute(repositoryRequest);
+      await page.unroute(creationRoute);
+      assert(
+        creations === 0 && seen.open && seen.error === 'Creating the RAG project failed - check your Model Manager permissions.' && !seen.createOff && !seen.fieldsOff && seen.focus === 'Create' && pageErrors.length === errorsBefore,
+        `Create project while the request for the repository is cut off: nothing is created, the dialog stays open and says so, its button and its fields are usable, the focus is back on the button, and no error reaches the page (creation requests: ${creations}; dialog: ${seen.error || 'nothing'}; focus: ${seen.focus}; page errors: ${pageErrors.slice(errorsBefore).join(' | ') || 'none'})`
+      );
+      await page.fill(rgb('create-projectName'), '');
+    }
     // A double click on Create while SAS Model Manager takes its time: one
     // project, not two of the same name.
     const slowCreation = '**/modelRepository/projects';
@@ -1469,6 +1676,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     await waitUntil(async () => (await dialogError('create-setup')) !== '', 'Create setup without a name: the dialog says something');
     assert((await dialogError('create-setup')) === 'A setup name is required.', `Create setup without a name: the dialog says so inside it (got: ${await dialogError('create-setup')})`);
     await assertNameIsNeeded('create-setup', '/modelRepository/models', 'A setup name is required.', 'Create setup');
+    await assertCreateByKeyboard('create-setup', '/modelRepository/models', 'Create setup');
     await resetLog();
     // The creation of the setup takes its time, so the dialog is seen while it is out.
     const slowSetup = '**/modelRepository/models';

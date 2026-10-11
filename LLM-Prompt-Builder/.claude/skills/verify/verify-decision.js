@@ -958,6 +958,97 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
     unnamedProjects === 0 && invisibleError === 'A project name is required.',
     `a decision project whose name is made of characters that are not displayed: no creation request is sent, and the dialog says that a name is needed (sent: ${unnamedProjects}; dialog: ${invisibleError || 'nothing'})`
   );
+  // Nor is a name of characters that are drawn as nothing without being white
+  // space or set apart by Unicode: the braille pattern blank, alone and with
+  // a control character beside it.
+  const createProjectDialog = () =>
+    page.evaluate(() => {
+      const modal = document.getElementById('promptBuilderCreateProjectModal');
+      const error = document.getElementById('promptBuilderCreateProjectError');
+      const create = modal.querySelector('.btn-primary');
+      const active = document.activeElement;
+      return {
+        open: modal.classList.contains('show'),
+        error: error && !error.hidden ? error.textContent.trim() : '',
+        focus: active === create ? 'Create' : active === modal ? 'dialog' : active === document.body ? 'body' : active ? active.id || active.tagName : 'nowhere',
+        createOff: create.disabled,
+        nameOff: document.getElementById('promptBuilderCreateProjectName').disabled,
+        closersOff: modal.querySelector('.btn-secondary').disabled && modal.querySelector('.btn-close').disabled,
+      };
+    });
+  let blankLookingProjects = 0;
+  await page.route(projectCreation, (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    blankLookingProjects += 1;
+    return route.fulfill({ status: 400, contentType: 'application/json', body: '{"errorCode":0,"message":"The name must not be empty.","httpStatusCode":400}' });
+  });
+  for (const [name, what] of [
+    ['\u2800', 'the braille pattern blank (U+2800)'],
+    ['\u2800\u007F \u2800', 'braille blanks, a control character and a blank'],
+  ]) {
+    await page.fill('#promptBuilderCreateProjectName', name);
+    await page.click('#promptBuilderCreateProjectModal .btn-primary');
+    await sleep(800);
+    const blankLooking = await createProjectDialog();
+    assert(
+      blankLookingProjects === 0 && blankLooking.error === 'A project name is required.' && blankLooking.focus === 'promptBuilderCreateProjectName',
+      `a decision project whose name is ${what}: no creation request is sent, and the dialog says that a name is needed (sent: ${blankLookingProjects}; dialog: ${blankLooking.error || 'nothing'}; focus: ${blankLooking.focus})`
+    );
+    blankLookingProjects = 0;
+  }
+  // The repository is asked before the project is created. Refused, that
+  // request ended the click without a word and with an error on the page; it
+  // ends in the dialog, with nothing created.
+  const repositoryRefused = '**/modelRepository/repositories/**';
+  await page.route(repositoryRefused, (route) => route.fulfill({ status: 403, contentType: 'application/json', body: '{"errorCode":1003,"message":"Forbidden","httpStatusCode":403}' }));
+  const errorsBeforeLookup = pageErrors.length;
+  await page.fill('#promptBuilderCreateProjectName', 'Routing Decisions');
+  await page.click('#promptBuilderCreateProjectModal .btn-primary');
+  await sleep(1200);
+  const afterLookup = await createProjectDialog();
+  await page.unroute(repositoryRefused);
+  await page.unroute(projectCreation);
+  assert(
+    blankLookingProjects === 0 && afterLookup.open && afterLookup.error.includes('the model repository could not be read') && !afterLookup.createOff && !afterLookup.nameOff && pageErrors.length === errorsBeforeLookup,
+    `a decision project while the repository cannot be read: nothing is created, the dialog stays open and says so, its button and its name field are usable, and no error reaches the page (creation requests: ${blankLookingProjects}; dialog: ${afterLookup.error || 'nothing'}; button disabled: ${afterLookup.createOff}; page errors: ${pageErrors.slice(errorsBeforeLookup).join(' | ') || 'none'})`
+  );
+  // Created by keyboard and refused: the focus waits on the dialog while the
+  // creation is out - where Escape closes nothing - and is back on the
+  // button afterwards, where Escape closes the dialog.
+  await page.route(projectCreation, async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    await sleep(1500);
+    return route.fulfill({ status: 409, contentType: 'application/json', body: '{"errorCode":0,"message":"exists","httpStatusCode":409}' });
+  });
+  await page.focus('#promptBuilderCreateProjectModal .btn-primary');
+  await page.keyboard.press('Enter');
+  await sleep(250);
+  const whileOut = await createProjectDialog();
+  await page.keyboard.press('Escape');
+  await sleep(250);
+  const openWhileOut = (await createProjectDialog()).open;
+  let afterRefusal = await createProjectDialog();
+  for (let attempt = 0; attempt < 40 && (afterRefusal.createOff || !afterRefusal.error); attempt++) {
+    await sleep(100);
+    afterRefusal = await createProjectDialog();
+  }
+  await page.keyboard.press('Escape');
+  await sleep(700);
+  const openAfterEscape = (await createProjectDialog()).open;
+  await page.unroute(projectCreation);
+  assert(
+    whileOut.focus === 'dialog' && whileOut.closersOff && openWhileOut,
+    `a decision project created by Enter on the button: while the creation is out the focus waits on the dialog, Cancel and the X are disabled, and Escape does not close it (focus: ${whileOut.focus}; closing buttons disabled: ${whileOut.closersOff}; open: ${openWhileOut})`
+  );
+  assert(
+    afterRefusal.open && afterRefusal.error !== '' && afterRefusal.focus === 'Create' && !openAfterEscape,
+    `a decision project created by Enter on the button: after the refusal the focus is back on the button, and Escape closes the dialog (focus: ${afterRefusal.focus}; open after Escape: ${openAfterEscape})`
+  );
+  // Open again for the creation below.
+  if (!(await page.isVisible('#promptBuilderCreateProjectModal.show'))) {
+    await page.click('[data-bs-target="#promptBuilderCreateProjectModal"]');
+    await page.waitForSelector('#promptBuilderCreateProjectModal.show');
+  }
   // The project is created under the name of the click. The repository is
   // asked first and takes its time here; the fields are emptied meanwhile.
   const repositoryLookup = '**/modelRepository/repositories/**';

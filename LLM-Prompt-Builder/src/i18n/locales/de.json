@@ -212,7 +212,8 @@
       "descriptionLabel": "Gebe einen Projekt Beschreibung ein",
       "closeButtonText": "Schließen",
       "saveButtonText": "Speichern",
-      "nameRequiredText": "Ein Projektname ist erforderlich."
+      "nameRequiredText": "Ein Projektname ist erforderlich.",
+      "failedText": "Das Anlegen wurde nicht abgeschlossen: Es ist ein unerwarteter Fehler aufgetreten. Prüfen Sie im SAS Model Manager, ob das Projekt angelegt wurde, bevor Sie es erneut versuchen."
     },
     "promptBuilderCreatePrompt": {
       "modalTitle": "Erstelle einen neuen Prompt",
@@ -221,7 +222,8 @@
       "descriptionLabel": "Gebe ein Prompt Beschreibung ein",
       "closeButtonText": "Schließen",
       "saveButtonText": "Speichern",
-      "nameRequiredText": "Ein Name für den Prompt ist erforderlich."
+      "nameRequiredText": "Ein Name für den Prompt ist erforderlich.",
+      "failedText": "Das Anlegen wurde nicht abgeschlossen: Es ist ein unerwarteter Fehler aufgetreten. Prüfen Sie im SAS Model Manager, ob der Prompt-Test angelegt wurde, bevor Sie es erneut versuchen."
     },
     "promptBuilderModelSelectorHeading": "Wähle die LLMs zum Testen der Prompts",
     "promptBuilderPromptingHeader": "Beginne deine Prompts zu schreiben und zu testen",
@@ -334,6 +336,7 @@
     "promptBuilderDeleteFailedResponse": "Das Löschen ist fehlgeschlagen. Bitte stelle sicher, dass du die erforderlichen Berechtigungen im SAS Model Manager hast.",
     "promptBuilderCreatePromptFailed": "Der Prompt-Test wurde nicht angelegt. Möglicherweise gibt es in diesem Projekt bereits einen Prompt-Test mit diesem Namen, oder Sie dürfen dort nicht schreiben: Ändern Sie den Namen oder prüfen Sie Ihre Berechtigungen im SAS Model Manager.",
     "promptBuilderCreateProjectFailed": "Das Projekt wurde nicht angelegt. Möglicherweise gibt es im Repository bereits ein Projekt mit diesem Namen, oder Sie dürfen dort nicht schreiben: Ändern Sie den Namen oder prüfen Sie Ihre Berechtigungen im SAS Model Manager.",
+    "promptBuilderCreateProjectLookupFailed": "Das Projekt wurde nicht angelegt: Das Modell-Repository konnte nicht aus SAS Model Manager gelesen werden, daher wurde nichts zum Anlegen des Projekts gesendet. Prüfen Sie, ob Sie bei SAS Viya angemeldet sind und das Repository lesen dürfen, und versuchen Sie es dann erneut.",
     "promptBuilderConfigNeededHeading": "Konfiguration erforderlich",
     "promptBuilderConfigNeededMessage": "Solange dieses Objekt nicht konfiguriert ist, wird nichts von SAS Viya abgerufen. Legen Sie die fehlenden Optionen im Optionsbereich dieses Objekts fest (oder hängen Sie sie als URL-Parameter an); es genügt, eine der beiden folgenden Zeilen zu erfüllen, damit die Seite geladen wird.",
     "promptBuilderConfigNeededPrompt": "Prompt- und Entscheidungsvorlagen brauchen: {missing}.",
@@ -621,6 +624,8 @@
     "ragBuilderProjectDeleted": "RAG-Projekt gelöscht.",
     "ragBuilderProjectNameRequired": "Ein Projektname ist erforderlich.",
     "ragBuilderSetupCreateFailed": "Das Anlegen der RAG-Konfiguration ist fehlgeschlagen — prüfen Sie Ihre Berechtigungen im Model Manager.",
+    "ragBuilderSetupCreatedReadFailed": "Die RAG-Konfiguration „{name}“ wurde angelegt, konnte aber nicht aus SAS Model Manager zurückgelesen werden (die Liste der Konfigurationen oder die Konfiguration selbst). Die Konfiguration existiert - legen Sie sie nicht noch einmal an.",
+    "ragBuilderCreateUnexpected": "Das Anlegen wurde nicht abgeschlossen: Es ist ein unerwarteter Fehler aufgetreten. Prüfen Sie im SAS Model Manager, ob es angelegt wurde, bevor Sie es erneut versuchen.",
     "ragBuilderSetupCreated": "RAG-Konfiguration angelegt. Bearbeiten Sie sie unten und speichern Sie.",
     "ragBuilderSetupDeleted": "RAG-Konfiguration gelöscht.",
     "ragBuilderSetupNameRequired": "Ein Name für die Konfiguration ist erforderlich.",

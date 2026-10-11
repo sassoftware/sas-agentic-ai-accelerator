@@ -91,7 +91,6 @@ import { createInstructionCard } from '../ui/instruction-card';
 import { createKindSelector, type KindSelector, type PromptKind } from '../ui/kind-selector';
 import { isValidDS2VariableName, validateAndCorrectPackageName } from '../util/validation';
 import { createTypedOptionControl, optionDisplayLabel, syncSegmentedControl } from '../ui/option-controls';
-import Modal from 'bootstrap/js/dist/modal';
 import Tooltip from 'bootstrap/js/dist/tooltip';
 
 interface ModelOption {
@@ -551,6 +550,7 @@ interface ModalText {
   closeButtonText?: string;
   saveButtonText?: string;
   nameRequiredText?: string;
+  failedText?: string;
 }
 
 /**
@@ -1252,7 +1252,18 @@ export async function buildPromptBuilder(
     // the repository is asked first, and the name field read after that
     // answer could be another one than the dialog had checked - an empty one.
     async function promptBuilderCreateProject(dialog: CreateModalDialog, entry: CreateModalEntry): Promise<void> {
-      const promptBuilderRepositoryInformation = await getModelRepositoryInformation(promptBuilderObject?.modelRepositoryID as string);
+      // The repository names the folder the project goes into. When it cannot
+      // be read - no connection, an error page where JSON was expected, a
+      // refusal - nothing has been created, and the dialog says so. Left to
+      // itself the error ended the click without a word.
+      let promptBuilderRepositoryInformation: Awaited<ReturnType<typeof getModelRepositoryInformation>>;
+      try {
+        promptBuilderRepositoryInformation = await getModelRepositoryInformation(promptBuilderObject?.modelRepositoryID as string);
+      } catch (error) {
+        console.error('Reading the model repository failed; no project was created.', error);
+        dialog.showError(`${promptBuilderInterfaceText?.promptBuilderCreateProjectLookupFailed}`);
+        return;
+      }
       const promptBuilderNewProjectDefinition = {
         name: entry.name,
         description: entry.description,
@@ -1299,8 +1310,7 @@ export async function buildPromptBuilder(
       // Set the newly created project as the currently selected project
       promptBuilderProjectSelectorDropdown.value = `${promptBuilderNewProjectObject?.id}`;
       promptBuilderProjectSelectorDropdown.dispatchEvent(new Event('change'));
-      const modalInstance = Modal.getInstance(document.getElementById('promptBuilderCreateProjectModal')!);
-      if (modalInstance) modalInstance.hide();
+      dialog.close();
     }
 
     // Function to call when creating a new prompt
@@ -1370,8 +1380,7 @@ export async function buildPromptBuilder(
       // Set the newly created project as the currently selected project
       promptBuilderPromptSelectorDropdown.value = newPromptID;
       promptBuilderPromptSelectorDropdown.dispatchEvent(new Event('change'));
-      const modalInstance = Modal.getInstance(document.getElementById('promptBuilderCreatePromptModal')!);
-      if (modalInstance) modalInstance.hide();
+      dialog.close();
     }
 
     // Clear all in-memory experiment state and deactivate the prompt-bound

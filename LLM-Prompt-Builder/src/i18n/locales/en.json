@@ -212,7 +212,8 @@
       "descriptionLabel": "Enter the Project Description",
       "closeButtonText": "Close",
       "saveButtonText": "Save",
-      "nameRequiredText": "A project name is required."
+      "nameRequiredText": "A project name is required.",
+      "failedText": "The creation did not finish: an unexpected error occurred. Check in SAS Model Manager whether the project was created before you try again."
     },
     "promptBuilderCreatePrompt": {
       "modalTitle": "Create a new Prompt",
@@ -221,7 +222,8 @@
       "descriptionLabel": "Enter the Prompt Description",
       "closeButtonText": "Close",
       "saveButtonText": "Save",
-      "nameRequiredText": "A prompt name is required."
+      "nameRequiredText": "A prompt name is required.",
+      "failedText": "The creation did not finish: an unexpected error occurred. Check in SAS Model Manager whether the prompt-test was created before you try again."
     },
     "promptBuilderModelSelectorHeading": "Select the LLMs to test Prompts with",
     "promptBuilderPromptingHeader": "Start building and testing your prompt",
@@ -334,6 +336,7 @@
     "promptBuilderDeleteFailedResponse": "The deletion failed. Please ensure you have the required permissions in SAS Model Manager.",
     "promptBuilderCreatePromptFailed": "The prompt-test was not created. A prompt-test of this name may already exist in the project, or you may not be allowed to write there: change the name or check your permissions in SAS Model Manager.",
     "promptBuilderCreateProjectFailed": "The project was not created. A project of this name may already exist in the repository, or you may not be allowed to write there: change the name or check your permissions in SAS Model Manager.",
+    "promptBuilderCreateProjectLookupFailed": "The project was not created: the model repository could not be read from SAS Model Manager, so nothing was sent to create the project. Check that you are signed in to SAS Viya and may read the repository, then try again.",
     "promptBuilderConfigNeededHeading": "Configuration required",
     "promptBuilderConfigNeededMessage": "Nothing is requested from SAS Viya until this object is configured. Set the missing options in this object's Options pane (or append them as URL parameters); completing one of the two lines below is enough for the page to load.",
     "promptBuilderConfigNeededPrompt": "Prompt and decision templates need: {missing}.",
@@ -624,6 +627,8 @@
     "ragBuilderProjectDeleted": "RAG project deleted.",
     "ragBuilderProjectNameRequired": "A project name is required.",
     "ragBuilderSetupCreateFailed": "Creating the RAG setup failed - check your Model Manager permissions.",
+    "ragBuilderSetupCreatedReadFailed": "The RAG setup \"{name}\" was created, but it could not be read back from SAS Model Manager (the setup list, or the setup itself). The setup exists - do not create it again.",
+    "ragBuilderCreateUnexpected": "The creation did not finish: an unexpected error occurred. Check in SAS Model Manager whether it was created before you try again.",
     "ragBuilderSetupCreated": "RAG setup created. Author it below and save.",
     "ragBuilderSetupDeleted": "RAG setup deleted.",
     "ragBuilderSetupNameRequired": "A setup name is required.",

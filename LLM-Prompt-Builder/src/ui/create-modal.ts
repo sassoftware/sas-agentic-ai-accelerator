@@ -14,6 +14,8 @@
  * (projects, setups).
  */
 
+import Modal from 'bootstrap/js/dist/modal';
+
 /**
  * Every field is optional because the callers read them out of a loaded i18n
  * bundle, where a missing key is a real possibility rather than a type error.
@@ -30,6 +32,12 @@ export interface CreateModalText {
   saveButtonText?: string;
   /** Said in the dialog when its button is clicked with no name entered. */
   nameRequiredText?: string;
+  /**
+   * Said in the dialog when `onSave` ends with an error it did not report
+   * itself. Whether the thing was created is not known then, so the text
+   * says to look before trying again.
+   */
+  failedText?: string;
 }
 
 /** What the dialog hands to `onSave`. */
@@ -40,6 +48,12 @@ export interface CreateModalDialog {
    * anywhere else on the page lies behind its backdrop or out of view.
    */
   showError(message: string): void;
+  /**
+   * Close the dialog: the thing was created. While `onSave` is pending this
+   * is the only way the dialog closes - Escape, Cancel, the X and a click
+   * beside the dialog are ignored until the creation has ended.
+   */
+  close(): void;
 }
 
 /**
@@ -53,20 +67,44 @@ export interface CreateModalEntry {
 }
 
 /**
- * White space and the characters Unicode sets apart as not displayed
- * (Default_Ignorable_Code_Point: the zero-width space U+200B, the zero-width
- * non-joiner and joiner U+200C and U+200D, the word joiner U+2060, the byte
- * order mark U+FEFF, the soft hyphen, the direction marks and their like).
+ * What does not make a name, because nobody can see it. A character is not
+ * visible when it is
+ *
+ * - white space: `\s` of JavaScript and the Unicode property `White_Space`
+ *   (blank, tab, no-break space, the spaces U+2000 to U+200A, the ideographic
+ *   space U+3000, the next-line control U+0085, ...);
+ * - one of the characters Unicode sets apart as not displayed, the property
+ *   `Default_Ignorable_Code_Point`: the zero-width space U+200B, the
+ *   zero-width non-joiner and joiner U+200C and U+200D, the word joiner
+ *   U+2060, the byte order mark U+FEFF, the soft hyphen U+00AD, the combining
+ *   grapheme joiner U+034F, the direction marks (U+061C, U+200E, U+200F,
+ *   U+202A to U+202E, U+2066 to U+2069), the Mongolian vowel separator
+ *   U+180E, the Hangul fillers U+115F, U+1160, U+3164 and U+FFA0, the
+ *   variation selectors and the tag characters;
+ * - a control character (general category `Cc`: U+0000 to U+001F, U+007F to
+ *   U+009F), which has no shape of its own - a browser draws nothing for it
+ *   or a box that stands for "no glyph";
+ * - one of three characters whose shape is defined as empty and which are in
+ *   none of the classes above: the braille pattern blank U+2800 (a braille
+ *   cell with no dot raised), the musical null notehead U+1D159 and the
+ *   Khitan small script filler U+16FE4.
+ *
+ * Every other character counts as visible: letters of any script, digits,
+ * punctuation, symbols, emoji, a combining mark on its own. The list is only
+ * ever used to ask whether a name has a visible character at all; no name is
+ * rewritten with it.
  */
-const NOT_DISPLAYED = /[\s\p{Default_Ignorable_Code_Point}]/gu;
+const NOT_VISIBLE = /[\s\p{White_Space}\p{Default_Ignorable_Code_Point}\p{Cc}\u2800\u{1D159}\u{16FE4}]/gu;
 
 /**
- * Whether a name shows nothing: it is empty, or made of white space and
- * characters that are not displayed. `trim()` alone lets a zero-width space
- * through, and the thing was then created under a name nobody can see.
+ * Whether a name shows nothing: it is empty, or no character of it is visible
+ * (see `NOT_VISIBLE`). `trim()` alone lets a zero-width space through, white
+ * space and the not-displayed characters together let a braille blank
+ * through, and the thing was then created under a name nobody can see. A name
+ * with one visible character is a name, whatever else stands beside it.
  */
 export function isBlankName(name: string): boolean {
-  return name.replace(NOT_DISPLAYED, '') === '';
+  return name.replace(NOT_VISIBLE, '') === '';
 }
 
 /**
@@ -84,9 +122,28 @@ export function isBlankName(name: string): boolean {
  * is being created cannot be typed over. A message of the click before is
  * taken away when the next one starts and when the dialog is opened again.
  *
- * A name that shows nothing (see `isBlankName`: empty, white space, characters
- * that are not displayed) never reaches `onSave`: the dialog says that a name
- * is needed (`nameRequiredText`), marks the field and puts the cursor into it,
+ * While `onSave` is pending the dialog cannot be closed either: Cancel and the
+ * X are disabled, and Escape and a click beside the dialog are ignored. A
+ * creation that is out cannot be called back, and a dialog closed over it
+ * left its answer - a refusal above all - in a place nobody looks at. The
+ * caller closes the dialog itself with `dialog.close()` once the thing exists.
+ *
+ * `onSave` reports what went wrong with `dialog.showError`. Should it end with
+ * an error instead (a request that throws where no one expected it), the
+ * dialog catches it, writes it to the console and says `failedText`: a click
+ * never ends without a word, and no error reaches the page.
+ *
+ * The focus stays in the dialog. Disabling the element that has it - the
+ * Create button after Enter, the space bar or a click - lets the browser drop
+ * the focus to <body>, outside the dialog, and Bootstrap hears Escape on the
+ * dialog only. So the focus waits on the dialog itself while the creation is
+ * out, and goes back to the element that had it when the creation has ended
+ * and the dialog is still open. Escape closes an open dialog with no creation
+ * pending wherever the focus is, <body> included.
+ *
+ * A name that shows nothing (see `isBlankName`: empty, or no visible
+ * character in it) never reaches `onSave`: the dialog says that a name is
+ * needed (`nameRequiredText`), marks the field and puts the cursor into it,
  * and its button stays usable. Sent on, the empty name was refused by SAS
  * Model Manager, and the person read that a thing of this name may already
  * exist. Every other rule about a name is the caller's.
@@ -176,13 +233,36 @@ export function createCreateModal(
     nameInput.classList.remove('is-invalid');
     nameInput.removeAttribute('aria-invalid');
   });
+  // `saving`: a creation is out. `closed`: the caller has closed the dialog
+  // over it (the thing exists), which is the one closing a creation lets by.
+  let saving = false;
+  let closed = false;
   const dialogHandle: CreateModalDialog = {
     showError: (message) => {
       error.textContent = message;
       error.hidden = false;
     },
+    close: () => {
+      closed = true;
+      Modal.getInstance(wrapper)?.hide();
+    },
   };
   wrapper.addEventListener('show.bs.modal', clearError);
+  // Escape, Cancel, the X and a click beside the dialog all end in this
+  // event; while a creation is out it is refused.
+  wrapper.addEventListener('hide.bs.modal', (event) => {
+    if (saving && !closed) event.preventDefault();
+  });
+  // Bootstrap listens for Escape on the dialog, so a key pressed while the
+  // focus is outside it (on <body>) closed nothing. While the dialog is open
+  // the document is listened to as well, for the keys the dialog did not get.
+  const closeOnEscape = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    if (event.target instanceof Node && wrapper.contains(event.target)) return;
+    Modal.getInstance(wrapper)?.hide();
+  };
+  wrapper.addEventListener('show.bs.modal', () => document.addEventListener('keydown', closeOnEscape));
+  wrapper.addEventListener('hidden.bs.modal', () => document.removeEventListener('keydown', closeOnEscape));
 
   const footer = document.createElement('div');
   footer.classList.add('modal-footer');
@@ -195,7 +275,10 @@ export function createCreateModal(
   save.type = 'button';
   save.classList.add('btn', 'btn-primary');
   save.innerHTML = text.saveButtonText ?? '';
-  let saving = false;
+  const setPending = (pending: boolean): void => {
+    saving = pending;
+    for (const control of [save, cancel, close, nameInput, descriptionInput]) control.disabled = pending;
+  };
   save.onclick = async () => {
     if (saving) return;
     clearError();
@@ -209,17 +292,28 @@ export function createCreateModal(
       nameInput.focus();
       return;
     }
-    saving = true;
-    save.disabled = true;
-    nameInput.disabled = true;
-    descriptionInput.disabled = true;
+    // Where the focus is now is where it belongs afterwards. Every control of
+    // the dialog is about to be disabled, so it waits on the dialog itself.
+    const active = document.activeElement;
+    const hadFocus = active instanceof HTMLElement && active !== wrapper && wrapper.contains(active) ? active : null;
+    closed = false;
+    setPending(true);
+    wrapper.focus({ preventScroll: true });
     try {
       await onSave(dialogHandle, entry);
+    } catch (failure) {
+      console.error('A create dialog ended with an error.', failure);
+      dialogHandle.showError(text.failedText ?? 'The creation did not finish. Check in SAS Model Manager whether it was created before you try again.');
     } finally {
-      saving = false;
-      save.disabled = false;
-      nameInput.disabled = false;
-      descriptionInput.disabled = false;
+      setPending(false);
+      // Still open (a refusal, a failure): the focus goes back to the element
+      // that had it, unless it has been put on a control of the dialog
+      // meanwhile; in any case it is inside the dialog.
+      if (!closed && wrapper.classList.contains('show')) {
+        const now = document.activeElement;
+        if (hadFocus && (now === wrapper || !wrapper.contains(now))) hadFocus.focus();
+        else if (!wrapper.contains(now)) wrapper.focus({ preventScroll: true });
+      }
     }
   };
   footer.appendChild(cancel);

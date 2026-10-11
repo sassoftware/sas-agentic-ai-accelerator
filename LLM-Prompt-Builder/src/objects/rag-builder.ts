@@ -69,7 +69,6 @@ import {
   launchJob,
 } from '../api/jobexec-api';
 import { getCasTableRows, getCaslibs } from '../api/cas-api';
-import Modal from 'bootstrap/js/dist/modal';
 import { getAppState } from '../state/app-state';
 import { showToast } from '../ui/toast';
 import { attachCombobox } from '../ui/combobox';
@@ -686,6 +685,7 @@ export async function buildRagBuilder(
       closeButtonText: str('ragBuilderModalClose', 'Cancel'),
       saveButtonText: str('ragBuilderModalSave', 'Create'),
       nameRequiredText: str('ragBuilderProjectNameRequired', 'A project name is required.'),
+      failedText: str('ragBuilderCreateUnexpected', 'The creation did not finish: an unexpected error occurred. Check in SAS Model Manager whether it was created before you try again.'),
     },
     createProjectFromModal
   );
@@ -703,6 +703,7 @@ export async function buildRagBuilder(
       closeButtonText: str('ragBuilderModalClose', 'Cancel'),
       saveButtonText: str('ragBuilderModalSave', 'Create'),
       nameRequiredText: str('ragBuilderSetupNameRequired', 'A setup name is required.'),
+      failedText: str('ragBuilderCreateUnexpected', 'The creation did not finish: an unexpected error occurred. Check in SAS Model Manager whether it was created before you try again.'),
     },
     createSetupFromModal
   );
@@ -2614,12 +2615,6 @@ export async function buildRagBuilder(
     ];
   }
 
-  /** Dismiss a Bootstrap modal we opened declaratively. */
-  const hideModal = (id: string): void => {
-    const element = document.getElementById(id);
-    if (element) Modal.getInstance(element)?.hide();
-  };
-
   /** Reflect the current selection on the buttons that act on it. */
   function updateSelectionActions(): void {
     deleteProjectButton.disabled = !selectedProjectID;
@@ -2645,6 +2640,14 @@ export async function buildRagBuilder(
   // (see createCreateModal); the checks below stay for a name that is missing
   // for any other reason. The name and the description are the ones the
   // dialog read at the click, not the fields as they stand now.
+  //
+  // Both functions keep two outcomes apart. Until SAS Model Manager has
+  // answered the creation with an id nothing exists: whatever fails up to
+  // there - the repository that cannot be read, the creation that throws or
+  // is refused - is said in the dialog, which stays open. From the id on the
+  // thing exists: the dialog is closed (`dialog.close()`, the only closing a
+  // pending creation lets by), and a request that fails after it is reported
+  // on the page as "created, but ...", never as a creation that failed.
   async function createProjectFromModal(dialog: CreateModalDialog, entry: CreateModalEntry): Promise<void> {
     const name = entry.name.trim();
     const description = entry.description.trim();
@@ -2677,9 +2680,9 @@ export async function buildRagBuilder(
     selectedProjectID = projectID;
     selectedSetupID = '';
     selectedSetupName = '';
-    hideModal(`${idOf('create-project')}Modal`);
-    await loadSetup();
+    dialog.close();
     try {
+      await loadSetup();
       await refreshProjects();
       await refreshSetups();
       showStatus('success', str('ragBuilderProjectCreated', 'RAG project created.'));
@@ -2730,6 +2733,7 @@ export async function buildRagBuilder(
       dialog.showError(str('ragBuilderSetupNameRequired', 'A setup name is required.'));
       return;
     }
+    let createdID = '';
     try {
       const created = (await createModel({
         name,
@@ -2746,18 +2750,64 @@ export async function buildRagBuilder(
       // createModel answers with either the model or a collection holding it,
       // depending on the SAS Viya release - taking only `.id` silently yields
       // an empty selection on the releases that wrap it.
-      const createdID = created?.items?.[0]?.id ?? created?.id ?? '';
+      createdID = created?.items?.[0]?.id ?? created?.id ?? '';
       if (!createdID) throw new Error('the service answered without a model id');
-      selectedSetupID = createdID;
-      selectedSetupName = name;
-      await refreshSetups();
-      await loadSetup();
-      hideModal(`${idOf('create-setup')}Modal`);
-      showStatus('success', str('ragBuilderSetupCreated', 'RAG setup created. Author it below and save.'));
     } catch (error) {
       console.error('Creating the RAG setup failed.', error);
       dialog.showError(str('ragBuilderSetupCreateFailed', 'Creating the RAG setup failed - check your Model Manager permissions.'));
+      return;
     }
+    // From here on the setup exists. A listing or a reading that fails now is
+    // a setup that could not be read back, not one that was not created.
+    // Reported as "Creating the RAG setup failed", it had the person create
+    // the setup a second time; and when it was the listing that failed, the
+    // new setup was the selected one while the picker and the editor still
+    // showed what had been there before.
+    selectedSetupID = createdID;
+    selectedSetupName = name;
+    let readBack = true;
+    try {
+      await refreshSetups();
+    } catch (error) {
+      console.error('Listing the RAG setups after creating one failed.', error);
+      readBack = false;
+      // The new setup is put into the list as it was created, so it is the
+      // selected one in the picker as well.
+      const user = getAppState().userName ?? undefined;
+      if (!allSetups.some((setup) => setup.value === createdID)) {
+        allSetups = [...allSetups, { value: createdID, innerHTML: name, createdBy: user, modifiedBy: user }];
+      }
+      setupFilter.setUsers(allSetups);
+      renderSetupOptions();
+      setupSelect.value = createdID;
+      updateSelectionActions();
+    }
+    try {
+      // Opens the editor on the new setup, with the defaults; what it then
+      // asks SAS Model Manager for is what a new setup does not have yet.
+      await loadSetup();
+    } catch (error) {
+      console.error('Reading the new RAG setup failed.', error);
+      readBack = false;
+    }
+    dialog.close();
+    if (readBack) {
+      showStatus('success', str('ragBuilderSetupCreated', 'RAG setup created. Author it below and save.'));
+      return;
+    }
+    // A warning, not a failure: what was asked for has happened.
+    showStatus(
+      'warning',
+      str(
+        'ragBuilderSetupCreatedReadFailed',
+        'The RAG setup "{name}" was created, but it could not be read back from SAS Model Manager (the setup list, or the setup itself). The setup exists - do not create it again.'
+      ).replace('{name}', name),
+      {
+        id: idOf('retry-projects'),
+        label: str('ragBuilderProjectsRetry', 'Try again'),
+        run: () => void loadSelectionLists(),
+      }
+    );
   }
 
   async function refreshProjects(): Promise<void> {
