@@ -203,6 +203,59 @@ through `rag_core` exactly as the ingestion does, so a broken
 `retrieve_context.py` would still pass. Verifying that needs the published
 model.
 
+### One ledger for the job and the flow {#one-ledger-for-the-job-and-the-flow}
+
+**Manifest setup** generates two things that ingest the same setup: the
+ingestion job, which is the one program `Ingest-Documents.sas`, and the SAS
+Studio flow, which is made of the RAG custom steps. Both keep the same
+ledger, `<prefix>_LEDGER`, and both take the same run lock on it: a row
+that the start of a run appends to the table. They do not store the ledger
+alike:
+
+| The ledger was last written by | Its text columns are |
+| --- | --- |
+| the ingestion job | `CHAR`, with fixed lengths |
+| the flow (*RAG - Load Vector Store*), or *RAG - Purge Documents* | `VARCHAR` |
+
+CAS does not append a row whose column is `VARCHAR` where the table has
+`CHAR`, or the other way round. Up to release 2.2 each of the two declared
+its lock row the one way it stores the ledger itself, so only one of them
+could be used for a setup. Seen on 2026-10-11 on SAS Viya 2026.09: a setup
+ingested with **Launch ingestion**, then its generated flow run in SAS
+Studio, stopped in the first step with
+
+```
+ERROR: The variable doc_id has been specified with incompatible data types.
+ERROR: The action stopped due to errors.
+ERROR: RAG - List Documents failed: the run lock could not be written to <caslib>.<prefix>_LEDGER - refusing to ingest unguarded
+```
+
+and left the ledger as it was. The append the other way round — a `CHAR`
+row to a `VARCHAR` table, which is the job on a ledger a flow wrote — was
+refused with the same text in a scratch caslib.
+
+From release 2.3.0 the job, *RAG - List Documents* and *RAG - Purge
+Documents* ask the table for its column types (`table.columnInfo`) before
+they take the lock, and declare the lock row the way the table holds its
+text. The log of the run says which it found: *NOTE: the ledger … holds its
+text columns as char - the run lock is written the same way*, or *as
+varchar*. The steps that read the ledger compare its values without the
+blanks a `CHAR` column is padded with. Nothing has to be migrated: a ledger
+of either type is used as it is, and it still changes its type with the
+writer that last completed a run. The two were not made to store the ledger
+alike; that would have changed how the last step of a flow, or the job,
+writes the table, and neither change could be measured.
+
+The new lock is in the steps and in the job, which reach a site with
+`deploy-rag-content`. The job definition of a setup holds a copy of
+`Ingest-Documents.sas` as it was when the setup was manifested, so manifest
+the setup again afterwards; whether a flow generated earlier runs the
+redeployed steps without that was not checked. The change was checked with
+the test suite of `rag_core`, which pins the SAS text of the three places.
+**It has not been run against CAS yet**: a flow after the job, the job
+after a flow, a first run without a ledger and a failing first step that
+hands the lock back are still to be measured.
+
 ### Where a setup embeds {#where-a-setup-embeds}
 
 The documents of a collection and the question asked of it have to be
@@ -324,8 +377,13 @@ bundle is not mounted — the case found with SAS Micro Analytic Service, which
 [Deployment of Decisions](./Deployment-of-Decisions.md#mas-certificate-bundle)
 describes together with the mount that keeps verification on. That mount is
 the fix for production; verification off is for a test system on a closed
-cluster network. The mount was measured there with a decision template; a
-retrieval model in SAS Micro Analytic Service after the mount was not.
+cluster network. The mount was measured there with a decision template,
+and with a prompt template with the included LLM call. A retrieval model
+was published there after the mount as well, but it stopped at the
+credentials of the vector store before either of its HTTPS calls — see
+[the retrieval model in a decision](#the-retrieval-model-in-a-decision) —
+so its certificate verification in SAS Micro Analytic Service is still not
+measured.
 
 Both *Launch ingestion* and *Test retrieval* need the **ingestion compute
 context** option (`ragComputeContext`) to be set — SAS Job Execution rejects a
@@ -384,12 +442,137 @@ connection to the vector store is a database connection: its TLS is the
 *SSL mode* (PostgreSQL) or *TLS* (SingleStore) control of the steps that
 connect to it, and for the registered model the *SSL mode* of this step.
 
-The step and `rag_core` reach a site with `deploy-rag-content`. This
-behaviour was checked with the test suite of `rag_core`, which runs the
-Python of the step against a stand-in for SAS Viya; the step has not been
-run in SAS Studio for this description, and that SAS Studio hands a
-checkbox over as `1` or `0` is taken from the other custom steps of the
-accelerator that carry one.
+The step and `rag_core` reach a site with `deploy-rag-content`. The step
+was run in SAS Studio on 2026-10-11, on SAS Viya 2026.09, as the last of a
+flow of six steps — List, Extract, Chunk, Embed, Load, Register Setup. The
+flow was created without a value for the checkbox, which is what a flow
+saved before the control existed hands the step:
+
+- The checkbox shows in the *Runtime* section, ticked.
+- Run that way, the step ended green and its log said *retrieval model: TLS
+  certificate verification on*. The score code of the model held
+  `SSL_VERIFY = True`, and the model carried the tags `LLM`, `RAG`,
+  `all_minilm_l6_v2` and `pgvector`.
+- With the box not ticked, the node of the step showed a warning badge in
+  the flow. The log said *retrieval model: TLS certificate verification OFF
+  (tag TLS-Verification-Off)* and held the WARNING lines, the score code
+  held `SSL_VERIFY = False`, and the model carried `TLS-Verification-Off`
+  beside the four tags.
+- With the box ticked again, the score code held `SSL_VERIFY = True`, the
+  tag was gone and the four tags were kept.
+- With a `retrieve_context.py` without the `SSL_VERIFY` line under
+  `<content root>/models` and the box not ticked, the log held three
+  WARNING lines (verification still ON, the content predates the setting,
+  deploy the RAG content again), the *Detail* of the report said *TLS
+  certificate verification still ON - the retrieval model template predates
+  the setting …*, the model was not tagged, and the score code held no
+  `SSL_VERIFY` line.
+
+Not measured: a job generated from a flow that contains the step, and a
+retrieval model registered by the step running inside a decision or in SAS
+Micro Analytic Service.
+
+Two more things came out of those runs, and both are changed in this
+release without having been run again:
+
+- **A SAS Model Manager project that does not exist yet.** The step names
+  the project the model is registered in (*RAG Engineering* unless
+  changed) and creates it when it is missing. With a new name it stopped
+  with *POST /modelRepository/projects returned 400 … You must specify a
+  value for the "folderId" parameter*: the service places a project in a
+  folder, and the request named the repository only. `rag_core` now
+  creates the project in the **default repository** of SAS Model Manager —
+  the one marked as default among the first 100 it lists, else the first
+  of them — and sends the folder of that repository with the request; the
+  same request with the folder added was answered 201 on that system. A
+  repository that names no folder ends in a message that says so. To have
+  the project in another repository, create it there in SAS Model Manager
+  first: a project that exists is used as it is.
+- **A NOTE above the summary.** Every run wrote *NOTE: The quoted string
+  currently being processed has become more than 262 bytes long. You might
+  have unbalanced quotation marks.* twice, above the summary of its log.
+  The cause, read from the code and not measured: the summary was written
+  into the program inside two quoted strings, and SAS writes that NOTE for
+  a quoted string of more than 262 bytes. The same two strings stood in
+  all nine RAG steps since release 2.0.0, so any step with a summary that
+  long wrote it. The steps now read the summary with `symget`. The file of
+  the step held one more pair of strings of that length, two docstrings of
+  its Python program; nothing in the code suggests that SAS counts those,
+  and they were shortened as well. A step that **fails** still writes its
+  message, up to 500 characters, into one quoted string, and can write the
+  NOTE beside its ERROR line.
+
+### The retrieval model in a decision {#the-retrieval-model-in-a-decision}
+
+A decision calls the retrieval model like any other Python model: inputs
+`question`, `k`, `filter_json`, `retrieval_mode` and `options`, outputs
+`context_dg`, `context_envelope`, `retrieval_status` and `run_time`. The
+model never raises. When it cannot retrieve, `retrieval_status` says why
+and the datagrid is empty — so a decision that uses the context should
+look at `retrieval_status`.
+
+Where a decision runs — the test of SAS Intelligent Decisioning, SAS Micro
+Analytic Service, a SAS Container Runtime container — there is no SAS Viya
+session, so the credential domain that serves the ingestion cannot be read
+there ([Managing Credentials](./Managing-Credentials.md#where-the-domain-applies--and-where-it-cannot)
+has the boundary). The model then needs the user and the password of the
+vector store from one of two places:
+
+| From | Names |
+| --- | --- |
+| Environment variables of the runtime the Python runs in | `<BACKEND>_RAG_USER` and `<BACKEND>_RAG_PW` — `PGVECTOR_RAG_USER` and `PGVECTOR_RAG_PW` for pgvector, `SINGLESTORE_RAG_USER` and `SINGLESTORE_RAG_PW` for SingleStore |
+| The `options` input of the call, a JSON object | `user` and `password` — for a caller that manages its own secrets; a decision should not store them |
+
+Host, port, database and SSL mode of the store, the embedding endpoint and
+the embedding model are in the model already, as they were manifested. A
+destination can override them with `<BACKEND>_HOST`, `_PORT`, `_DB` and
+`_SSLMODE` (or `RAGSTORE_HOST`, `RAGSTORE_PORT`, `RAGSTORE_DB`,
+`RAGSTORE_SSLMODE` for any backend), `RAGEMBED_ENDPOINT` and
+`RAGEMBED_MODEL`. An embedding model that calls a hosted API also needs its
+key: `RAGEMBED_API_KEY`, or `API_KEY` in `options`. The variables that
+decide TLS verification are in
+[TLS verification in the retrieval model](#tls-verification-in-the-retrieval-model).
+
+Where the variables are set depends on the destination. For SAS Container
+Runtime they are part of the `env` of the container. For SAS Micro
+Analytic Service they belong to the container that runs the Python, which
+can be a separate runner —
+[the variable and the Python runner](./Deployment-of-Decisions.md#the-variable-and-the-python-runner)
+shows the patch, with *LLMCONTAINERPATH* as its example. For the test of
+SAS Intelligent Decisioning it was not established where they have to be
+set. The Python packages the model imports have to be there too:
+`requests`, and `psycopg2` or `singlestoredb` for the store.
+
+**What was measured, on 2026-10-11 on SAS Viya 2026.09.** One decision with
+three model nodes, all manifested in the Prompt Builder — the retrieval
+model of a RAG setup, a prompt template with the included LLM call, and a
+decision template — was tested in SAS Intelligent Decisioning and published
+to the SAS Micro Analytic Service destination `maslocal`. All three nodes
+ran in both places; the publishing validation ended on three rows with HTTP
+status 201 and an empty error column. The prompt and the decision template
+answered. The retrieval model answered, in both places and with no chunk:
+
+```
+retrieval failed: RuntimeError: no vector-store credentials resolved: pass user/password in options, grant a agentic-ai-keys credential holding PGVECTOR_RAG_USER/PGVECTOR_RAG_PW, or set those environment variables on the destination
+```
+
+Neither runtime had the two variables, so this is the boundary above and
+the degradation the model is built for. **A retrieval model that returns
+chunks inside a decision has not been measured on that system**, and
+neither have its two HTTPS calls there: the model stops at the credentials
+before it embeds the question.
+
+One more thing showed in that test. A decision hands a character input to
+a model padded with blanks to the length the variable is declared with: a
+question declared with 1000 characters arrived with about 900 trailing
+blanks in the test of SAS Intelligent Decisioning, and with one in SAS
+Micro Analytic Service. Up to release 2.2 the model returned the padded
+text as `query` in `context_envelope` — 1134 characters for a short
+question — and sent it to the embedding model as it was. From release
+2.3.0 the model drops the blanks around the question before it embeds it
+and before it returns it, and reads a `filter_json` of blanks only as no
+filter. A question of blanks only is still answered with *question is
+empty*. Checked with the test suite; not run in a decision again.
 
 ## Enrichment: an LLM call per chunk
 
@@ -792,6 +975,10 @@ PostgreSQL, on/off for SingleStore) and defaults to enabled.
 | Code generation returns HTTP 500 | The `.flw` was uploaded as a file, or a node declares an input port nothing is wired into |
 | Retrieval returns fewer chunks than exist | A SingleStore ANN index is enabled — see the warning above |
 | The run refuses to start | Another run holds the ledger lock; it expires after 30 minutes |
+| *RAG - List Documents* fails with *the run lock could not be written to … - refusing to ingest unguarded*, below `ERROR: The variable doc_id has been specified with incompatible data types` | The flow runs on a ledger the ingestion job wrote, with steps from before release 2.3.0 (or the job on a ledger a flow wrote) — see [one ledger for the job and the flow](#one-ledger-for-the-job-and-the-flow) |
+| *RAG - Register Setup* fails with `POST /modelRepository/projects returned 400` and *You must specify a value for the "folderId" parameter* | The SAS Model Manager project named in the step does not exist, and the `rag_core` on the site is from before release 2.3.0. Run `deploy-rag-content`, or create the project in SAS Model Manager first — see [the checkbox of the custom step](#tls-register-setup-step) |
+| A RAG step writes *NOTE: The quoted string currently being processed has become more than 262 bytes long* above its summary | Steps from before release 2.3.0; nothing is wrong with the run — see [the checkbox of the custom step](#tls-register-setup-step) |
+| `retrieval_status` of a retrieval model in a decision says *no vector-store credentials resolved* | The runtime the decision runs in has no `<BACKEND>_RAG_USER` and `<BACKEND>_RAG_PW` — see [the retrieval model in a decision](#the-retrieval-model-in-a-decision) |
 | The Builder says the store is unresolved | The domain has no `<BACKEND>_HOST` / `_DB` — rerun `create-credential-domain` after adding them to your `.env` |
 | No embedding model can be chosen, and no setup can be saved | No **embedding model project** is configured (`embeddingProjectID`), it holds no registered embedding model, or the user cannot read it |
 | Documents are missing from the collection | Read the run log's `rag skipped:` lines — they name every document and why. Code files are skipped unless the setup opts in |

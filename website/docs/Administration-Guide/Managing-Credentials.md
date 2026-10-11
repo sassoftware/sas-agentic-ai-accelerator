@@ -219,6 +219,18 @@ same artifact runs on every destination. The LLM containers themselves are
 unaffected either way: they receive the API key per call via the options
 payload, resolved by the caller.
 
+Without the two variables of the vector store the retrieval model does not
+fail the decision: it answers `retrieval failed: RuntimeError: no
+vector-store credentials resolved: …` in `retrieval_status` and returns no
+chunk. That is what it answered on 2026-10-11 in a test of SAS Intelligent
+Decisioning and in the publishing validation on a SAS Micro Analytic
+Service destination, where neither runtime had them. With the variables
+set, a retrieval model that returns chunks inside a decision has not been
+measured on that system.
+[The retrieval model in a decision](./RAG-Ingestion-and-Retrieval.md#the-retrieval-model-in-a-decision)
+lists every variable the model reads and where each destination takes
+them.
+
 **Service-account compute contexts.** A compute context can be configured to
 run its servers under a **shared service account** instead of the requesting
 user (the stock *SAS Job Execution compute context* often is). A job running

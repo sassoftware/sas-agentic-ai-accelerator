@@ -122,7 +122,10 @@ It manifests the retrieval model for *your* collection, registers it in SAS
 Model Manager as a scoreable Python model, and writes the governance artifacts
 next to it: `pipeline.yaml`, the ingestion manifest (which documents, at which
 content hash, from which run), the collection manifest and the store DDL a DBA
-can review.
+can review. The model goes into the SAS Model Manager project the step
+names. A project of that name that does not exist yet is created, in the
+default repository of SAS Model Manager; to have it in another repository,
+create the project there first.
 
 Point it at your flow as well and it generates the **scheduled ingestion job**
 from that flow, so the visual pipeline and the scheduled one cannot drift
@@ -190,7 +193,11 @@ failing, or what last month's ingestion cost.
 **Two runs cannot collide.** The first step takes a lock on the ledger. A
 second run refuses to start while the first holds it, and a failed run hands
 its lock back so you can retry immediately. A stale lock expires after 30
-minutes.
+minutes. The ingestion job the Prompt Builder launches for a setup and the
+flow it generates for the same setup keep one ledger and take the same
+lock. Up to release 2.2 a flow could not take it on a ledger the job had
+written; the administration guide has
+[what was seen and what was changed](../Administration-Guide/RAG-Ingestion-and-Retrieval.md#one-ledger-for-the-job-and-the-flow).
 
 **A bad document does not fail the run.** Extraction and embedding failures are
 recorded against that document's ledger row; everything else proceeds. Failed
