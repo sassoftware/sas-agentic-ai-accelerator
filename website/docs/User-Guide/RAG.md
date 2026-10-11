@@ -169,8 +169,11 @@ a full path, or a doc id — and resolves them against the ledger. It runs in
 does. A preview only reads: it takes no run lock and does not write the
 ledger, so an ingestion can start while it runs. It is refused while another
 run holds the lock, and on a project that has no ledger yet it fails with *no
-ledger table for this RAG project*. A purge is not a run in the tables under
-*Seeing what happened*: it writes no row to them.
+ledger table for this RAG project*. That is the preview as release 2.3.0
+changed it, which was not run in SAS; the administration guide has
+[what was measured before the change](../Administration-Guide/RAG-Ingestion-and-Retrieval.md#retention-and-erasure).
+A purge is not a run in the tables under *Seeing what happened*: it writes
+no row to them.
 
 :::danger Purging cannot be undone
 It removes retired generations too, so an as-of read can no longer reach the
@@ -208,7 +211,9 @@ minutes. The ingestion job the Prompt Builder launches for a setup and the
 flow it generates for the same setup keep one ledger and take the same
 lock. Up to release 2.2 a flow could not take it on a ledger the job had
 written; from release 2.3.0 the job and the flow of one setup ran one
-after the other in both orders. The administration guide has
+after the other in both orders. From release 2.3.0 the ingestion job hands
+its lock back after a run that failed, as the steps do; that was not run in
+SAS. The administration guide has
 [what was seen, what was changed and what was measured](../Administration-Guide/RAG-Ingestion-and-Retrieval.md#one-ledger-for-the-job-and-the-flow).
 
 **A bad document does not fail the run.** Extraction and embedding failures are
