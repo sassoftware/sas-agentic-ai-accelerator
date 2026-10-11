@@ -106,7 +106,7 @@ What was measured about the 30 seconds:
 - **The same validation gave two results.** The same module with the same table, run twice without any change: the first run returned all three rows empty, the second returned one row complete — its three nodes had taken 29.65 seconds in total — and two empty.
 - **Three direct calls at once** all answered `timedOut`, after 30.8, 31.7 and 36.5 seconds.
 
-A row is lost by the time its models take when they are called at the same time, not by what the decision or one of its models holds. In particular, **the lengths of the variables of a model are not the cause**: with the two context outputs of the retrieval model declared with 100 characters, single calls returned the envelope complete, with its 1969 characters ([the lengths of the variables](./RAG-Ingestion-and-Retrieval.md#the-lengths-of-the-variables)). A publishing validation that returned every row after a change to the decision or to a model had finished within the 30 seconds that time; run it more than once before reading a change as the remedy.
+In the measured decision a row was lost by the time its models took when they were called at the same time: the same rows came back complete in single calls, with nothing in the decision or in a model changed. That is one decision on one system, with two self-hosted models on one CPU node; another decision can be slow for another reason. What was ruled out for the measured one: **the lengths of the variables of a model are not the cause**: with the two context outputs of the retrieval model declared with 100 characters, single calls returned the envelope complete, with its 1969 characters ([the lengths of the variables](./RAG-Ingestion-and-Retrieval.md#the-lengths-of-the-variables)). A publishing validation that returned every row after a change to the decision or to a model had finished within the 30 seconds that time; run it more than once before reading a change as the remedy.
 
 What a site can do follows from the durations above; none of it was measured as a remedy:
 
@@ -115,6 +115,26 @@ What a site can do follows from the durations above; none of it was measured as 
 3.   **A shorter prompt.** With the retrieved context the prompt of the LLM was about 900 characters instead of about 50. A smaller `k` of the retrieval model, or smaller chunks, shorten it.
 
 No setting for the time limit is named here because none was found: the configuration definition *sas.microanalyticservice.system* of that system holds no timeout property (it holds *core.numthreads* 4 and, under *asynchronousexecution*, *corepoolsize* 5 and *maxpoolsize* 10), and no way to change the 30 seconds was tried.
+
+## SAS Job Execution
+
+This part of the troubleshooting guide describes what can be found in the log of a job that runs a program of the accelerator - the RAG ingestion job, a job generated from a RAG flow or the log parser.
+
+### Two ERROR lines about Cloud Analytic Services before the first line of the program {#cas-connect-errors-before-the-program}
+
+On the test system (SAS Viya 2026.09, 2026-10-11) every job log of the *SAS Studio compute context* began with two ERROR lines, before the first source line of the program:
+
+```text
+ERROR: Failed to connect to host '<SAS Viya host>', port 5570.
+ERROR: Unable to connect to Cloud Analytic Services ... on port 5570 ...
+```
+
+They stood in the logs of the RAG ingestion job, of the jobs generated from a RAG flow and of the log parser, and equally in a job that held none of the accelerator's code. The jobs ended as `completed` when nothing else failed, `SYSCC` was 0 after the log parser had run, and the CAS session the ingestion job starts itself connected on the same port. Why that system writes the two lines was not established: this is an observation of one system, and another system may not show it.
+
+What follows from it where a log shows these lines:
+
+1.   A check that counts the ERROR lines of a job log never finds 0 there. Start at the first source line of the program, or read the state of the job.
+2.   The lines of the accelerator name their program: `ERROR: RAG ingestion failed`, `ERROR: RAG - <step> failed`, `ERROR: The log could not be parsed`. An ERROR line before source line 1 is none of them.
 
 ## SAS Container Runtime
 
