@@ -166,7 +166,11 @@ unpredictably.
 **RAG - Purge Documents** takes documents the way you know them — a file name,
 a full path, or a doc id — and resolves them against the ledger. It runs in
 **Preview** mode by default and reports exactly what would go before anything
-does.
+does. A preview only reads: it takes no run lock and does not write the
+ledger, so an ingestion can start while it runs. It is refused while another
+run holds the lock, and on a project that has no ledger yet it fails with *no
+ledger table for this RAG project*. A purge is not a run in the tables under
+*Seeing what happened*: it writes no row to them.
 
 :::danger Purging cannot be undone
 It removes retired generations too, so an as-of read can no longer reach the
@@ -187,6 +191,13 @@ Every run is recorded. Two CAS tables appear next to your pipeline tables:
 
 Point Visual Analytics at them for corpus size over time, which documents keep
 failing, or what last month's ingestion cost.
+
+The two tables are written by **RAG - Load Vector Store**, the last ingestion
+step of the flow. A run that the Prompt Builder starts with **Launch
+ingestion**, and a run of the ingestion job of a setup, is recorded in the
+database of the vector store and reaches the two CAS tables with the next run
+of the flow. The administration guide has
+[where the history is kept](../Administration-Guide/RAG-Ingestion-and-Retrieval.md#run-history).
 
 ## Things worth knowing
 
@@ -216,8 +227,17 @@ failure that costs the most to find. They re-enter the pipeline on the next
 run too, so installing an extractor or turning code files on is enough to pick
 them up.
 
-**A step that fails does not abort the session.** The rest of the flow skips
-and forwards, which is what makes the same flow safe to schedule as a job.
+**A step that fails ends the flow run.** In SAS Studio the step writes its
+ERROR line and stops the run with an `abort`, and the steps after it do not
+run. A job is another matter, because an `abort` ends the session of a job
+before SAS Job Execution learns how it ended. The job that **RAG - Register
+Setup** generates from your flow therefore switches the `abort` off: the step
+that failed writes its ERROR line, the steps after it are skipped, and the job
+ends as failed with a line that says a step of the run reported an error. A
+job that SAS Studio itself deploys from the flow does not have that — to
+schedule the flow, use the job the step generates. The administration guide
+has
+[what the generated job begins and ends with, and what was measured](../Administration-Guide/RAG-Ingestion-and-Retrieval.md#tls-register-setup-step).
 
 **Citations may lack a location.** A chunk whose position in its document
 cannot be established carries no span rather than a guessed one — a wrong
