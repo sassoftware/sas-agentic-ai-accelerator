@@ -27,8 +27,8 @@ SAS Studio custom steps (a SAS Studio Analyst license is required). Import them 
 | LLM - Get Options | The options an LLM accepts, with their defaults |
 | LLM - Create LLM Call | Generates the SAS code that calls one LLM |
 | LLM - Get Prompt Experiments | The experiment runs of one prompt-test |
-| LLM - Get All Prompts | One table of all prompting projects, prompts and experiments, for reporting |
-| LLM - Log Parser | Parses the collected SCR container logs into the `LLM_LOGS` table |
+| LLM - Get All Prompts | Five tables of what the Prompt Builder keeps in SAS Model Manager - experiments, optimizations, RAG setups, their ingestion runs and a catalog of models - for reporting |
+| LLM - Log Parser | Parses the collected SCR container logs into the `LLM_LOGS` table: one row per request to an LLM, a decision model or an embedding model |
 | RAG - List Documents, Extract Text, Chunk Documents, Enrich Chunks, Embed Chunks, Load Vector Store | The ingestion pipeline, in that order (Enrich is optional) |
 | RAG - Retrieve Context | Asks a collection a question - the same retrieval a deployed decision performs |
 | RAG - Register Setup | Manifests and registers the retrieval model and writes the governance artifacts |
@@ -51,7 +51,7 @@ The RAG steps are described in the [RAG user guide](https://sassoftware.github.i
 
 ### Logging-Monitoring
 
-Everything for monitoring: `README.md` (the `LLM_LOGS` table and where it is used), `Log-Parser-Code.sas` (the log parser as a code file - the *LLM - Log Parser* step carries the same code), `Get-All-Prompts.sas` (the `PROMPT_EXPERIMENTS` table), `Load-Fact-Sheets.sas` (or `mdb load-facts`), `Build-RAG-Cost-View.sas` and the *LLM Usage Report* package.
+Everything for monitoring: `README.md` (the `LLM_LOGS` table and where it is used), `Log-Parser-Code.sas` (the log parser as a code file - the *LLM - Log Parser* step carries the same code), `Get-All-Prompts.sas` (the `PROMPT_EXPERIMENTS`, `PROMPT_OPTIMIZATIONS`, `RAG_SETUPS`, `RAG_RUNS` and `MODEL_CATALOG` tables - the *LLM - Get All Prompts* step carries the same code), `Link-Logs-To-Models.sas` (fills the columns of `LLM_LOGS` that name the SAS Model Manager model that answered a request and the prompt, decision template or RAG setup that sent it), `Load-Fact-Sheets.sas` (or `mdb load-facts`), `Build-RAG-Cost-View.sas` and the *LLM Usage Report* package.
 
 A note on prices: the report's *Average Price* / *Total Price* calculated items multiply token counts with the per-token prices from the fact sheets. Providers quote prices per million tokens and distinguish input from output tokens; the report works in individual tokens. Locally served models are priced at $0 by default - the calculated item has a comment at the top that explains how to add a per-second price.
 
