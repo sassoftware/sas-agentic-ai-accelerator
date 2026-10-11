@@ -135,6 +135,9 @@ class ViyaClient:
         self.verify = verify
         self.session = session or requests.Session()
         self.session.headers.update({"Authorization": "Bearer " + str(token or "")})
+        #: Set by `register_model`: True when it wrote the tag
+        #: TLS-Verification-Off without knowing whether the model carried it.
+        self.tls_tag_assumed = False
 
     def request(self, method: str, endpoint: str, expect=(200, 201, 204), **kwargs):
         kwargs.setdefault("timeout", TIMEOUT)
@@ -377,6 +380,10 @@ class ViyaClient:
         # also when nothing said whether the model carries it - a tag too
         # many is put right by the next registration that goes through, a
         # model that does not verify and is not tagged is found by nobody.
+        # In that last case the tag is WRITTEN here, not kept: the caller is
+        # told (tls_tag_assumed), because a registration that fails at the
+        # upload then leaves a tag that this run put there.
+        self.tls_tag_assumed = tagged is None
         if tagged is not False:
             merged["tags"] = list(body["tags"]) + [TLS_VERIFICATION_OFF_TAG]
         merged["id"] = model_id
@@ -600,13 +607,21 @@ def register_setup(client: ViyaClient, settings: dict, template: str,
       flow of the scheduled job does not exist, say), so the caller has to
       be able to say so in the failing run;
     * "not stored" - SAS Model Manager refused the upload with an answer of
-      its own: the model keeps the score code and the tag it had;
+      its own: the model keeps the score code it had, and the tag it had
+      unless `tls_tag_assumed` says otherwise;
     * "unknown" - the upload got no usable answer (the connection dropped, a
       time-out, the page of an ingress in place of the service). The service
       may have stored the file all the same. Nothing is read back and the
       tag is left as it is - it may not say what the stored score code does
       until the registration is run again. The Prompt Builder words the same
       case the same way (ragBuilderScoreCodeUnknown).
+
+    `tls_tag_assumed` is in the dict as well: True when the model could not
+    be read before it was updated and its entry in the listing did not show
+    its tags, so that the update WROTE the tag TLS-Verification-Off without
+    knowing whether the model carried it. Once the score code is stored the
+    tag is settled after it and this no longer matters; for "not stored" and
+    "unknown" it means the model may carry a tag this run put there.
     """
     from .manifest import (collection_manifest, ingestion_manifest,
                            manifest_block_has, manifested_ssl_verify,
@@ -651,10 +666,11 @@ def register_setup(client: ViyaClient, settings: dict, template: str,
     # can say in the failing run what the model holds. The upload of the
     # score code is the next request, and until it has an answer nothing is
     # known about it.
+    assumed = getattr(client, "tls_tag_assumed", False) is True
     reached = {"model_id": model_id, "model_name": model_name,
                "score_code": SCORE_CODE_UNKNOWN, "ssl_verify": ssl_verify,
                "ssl_verify_in_template": ssl_verify_in_template,
-               "tls_tag_error": ""}
+               "tls_tag_error": "", "tls_tag_assumed": assumed}
     try:
         try:
             client.put_model_content(model_id, "retrieve_context.py",
@@ -667,17 +683,29 @@ def register_setup(client: ViyaClient, settings: dict, template: str,
             reached["score_code"] = (SCORE_CODE_NOT_STORED if refused
                                      else SCORE_CODE_UNKNOWN)
             reason = f"{type(error).__name__}: {error}"[:300]
-            if refused:
+            if refused and not assumed:
                 log("SAS Model Manager did not store retrieve_context.py - "
                     "the model keeps the score code and the tag "
                     f"{TLS_VERIFICATION_OFF_TAG} as it had them: {reason}")
+            elif refused:
+                log("SAS Model Manager did not store retrieve_context.py - "
+                    f"the model keeps the score code it had: {reason}")
             else:
                 log("it is not known whether SAS Model Manager stored "
                     "retrieve_context.py: the upload failed or got no usable "
                     f"answer ({reason}), and the service may have stored the "
                     f"file all the same. The tag {TLS_VERIFICATION_OFF_TAG} "
-                    "was not updated and may not say what the stored score "
+                    + ("was not updated" if not assumed else
+                       "was not updated after the upload")
+                    + " and may not say what the stored score "
                     "code does - run the registration again")
+            if assumed:
+                # the tag is not as the model had it: this run wrote it
+                log("the model could not be read before it was updated, and "
+                    "its entry in the listing did not show its tags: the tag "
+                    f"{TLS_VERIFICATION_OFF_TAG} was written to it without "
+                    "knowing whether it carried it, and may not say what the "
+                    "model does - run the registration again")
             raise
         reached["score_code"] = SCORE_CODE_STORED
         # The score code is stored: from here on the tag has to say what it

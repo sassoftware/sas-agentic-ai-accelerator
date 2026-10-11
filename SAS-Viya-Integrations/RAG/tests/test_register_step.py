@@ -254,7 +254,8 @@ class _Viya:
     test.
     """
 
-    def __init__(self, template, tags=None, refuse_tag_update=False, upload=""):
+    def __init__(self, template, tags=None, refuse_tag_update=False, upload="",
+                 unreadable=False, listing="tags"):
         self.template = template
         self.headers = {}
         self.model = None
@@ -268,6 +269,10 @@ class _Viya:
         # the upload of the score code: "" (stored), "lost" (stored, and the
         # answer never arrives) or "refused" (the service says 409)
         self.upload = upload
+        # a model that cannot be read: every GET of it is answered 500
+        self.unreadable = unreadable
+        # "absent": the entry of the model in the listing has no `tags` key
+        self.listing = listing
         self.model_puts = 0
 
     # -- requests.get -------------------------------------------------------
@@ -310,6 +315,8 @@ class _Viya:
             return _Reply(201, {})
         if endpoint == MODEL:
             if method == "GET":
+                if self.unreadable:
+                    return _Reply(500, text="stub refused")
                 return _Reply(200, dict(self.model, tags=list(self.model["tags"])))
             self.model_puts += 1
             if self.refuse_tag_update and self.model_puts > 1:
@@ -318,7 +325,10 @@ class _Viya:
             return _Reply(200, dict(self.model))
         if endpoint == "/modelRepository/models":
             if method == "GET":
-                return _Reply(200, {"items": [self.model] if self.model else []})
+                listed = dict(self.model) if self.model else None
+                if listed and self.listing == "absent":
+                    listed.pop("tags")
+                return _Reply(200, {"items": [listed] if listed else []})
             # like the service: a create drops the tags
             self.model = dict(body, id="model-1", tags=[])
             return _Reply(201, {"count": 1, "items": [{"id": "model-1"}]})
@@ -663,6 +673,44 @@ def test_an_upload_the_service_refused_leaves_the_state_unknown(
     assert run.service.model["tags"] == STACK_TAGS + [TLS_TAG]
 
 
+@pytest.mark.parametrize("upload,state", [("refused", "unknown"),
+                                          ("lost", "unsure")])
+def test_a_tag_written_to_a_model_nothing_was_known_about_is_said(
+        monkeypatch, tmp_path, upload, state):
+    """The model cannot be read and its entry in the listing shows no tags:
+    rag_core writes the tag before the upload. When the score code is then
+    not stored, or not known to be, the model carries a tag this run put
+    there - over code that verifies, in the refused case - and the step says
+    so instead of nothing."""
+    run = _run_step(monkeypatch, tmp_path, checkbox="1", tags=STACK_TAGS,
+                    upload=upload, unreadable=True, listing="absent")
+    assert run.sas.macros.get("_rgrg_rc") != "0"
+    assert run.service.model["tags"] == STACK_TAGS + [TLS_TAG]
+    assert run.sas.macros["_rgrg_tlsState"] == state
+    assert run.sas.macros["_rgrg_tlsTag"] == "assumed"
+    assert any("was written to it unseen" in line for line in run.sas.log)
+
+
+def test_a_tag_the_listing_showed_is_not_an_assumed_one(monkeypatch, tmp_path):
+    run = _run_step(monkeypatch, tmp_path, checkbox="1", tags=STACK_TAGS,
+                    upload="refused", unreadable=True)
+    assert run.sas.macros.get("_rgrg_rc") != "0"
+    assert run.service.model["tags"] == STACK_TAGS
+    assert run.sas.macros["_rgrg_tlsTag"] == "ok"
+    assert not any("unseen" in line for line in run.sas.log)
+
+
+def test_a_stored_score_code_settles_what_was_assumed(monkeypatch, tmp_path):
+    """The upload goes through and a later request fails: the tag was to be
+    settled after the score code, so the step reports that (here: it could
+    not be, the model cannot be read) and not the assumption before it."""
+    run = _run_step(monkeypatch, tmp_path, checkbox="1", tags=STACK_TAGS,
+                    unreadable=True, listing="absent", flow=MISSING_FLOW)
+    assert run.sas.macros.get("_rgrg_rc") != "0"
+    assert run.sas.macros["_rgrg_tlsState"] == "on"
+    assert run.sas.macros["_rgrg_tlsTag"] == "failed"
+
+
 def test_a_rag_core_older_than_the_step_leaves_a_failing_run_unknown(
         monkeypatch, tmp_path):
     """An older rag_core puts nothing on the exception. The step then knows
@@ -766,9 +814,10 @@ def test_every_warning_is_a_line_sas_prints_as_a_warning_without_complaining():
     literals = re.findall(r'putLog "([^"]*)";', _tls_macro())
     warnings = [text for text in literals if text.startswith("WARNING")]
     # off: three lines, then the tag written or not; stale: three lines; not
-    # known whether the score code was stored: two lines; and the tag that
-    # could not be removed
-    assert len(warnings) == 11
+    # known whether the score code was stored: two lines; the tag written to
+    # a model that could not be read: three lines; and the tag that could
+    # not be removed
+    assert len(warnings) == 14
     # and one in the status macro, for the run that failed after the upload
     literals = re.findall(r'putLog "([^"]*)";', _status_macro())
     failed = [text for text in literals if text.startswith("WARNING")]
@@ -788,6 +837,29 @@ def test_an_upload_without_an_answer_is_a_warning_that_says_run_again():
     assert ("the tag TLS-Verification-Off was not updated and may not say what "
             "the stored score code does") in text
     assert "Run this step again" in text
+
+
+def test_a_tag_written_unseen_is_a_warning_of_its_own():
+    """Not in the branch of a model that does not verify: that state is set
+    only once the score code is stored, and the tag is settled after it."""
+    macro = _tls_macro()
+    condition = "%if &_rgrg_tlsTag. EQ assumed %then %do;"
+    assert macro.count(condition) == 1
+    assert macro.index(condition) > macro.index(
+        "%if &_rgrg_tlsState. EQ unsure %then %do;")
+    lines = _warnings(condition)
+    text = " ".join(lines)
+    assert len(lines) == 3
+    assert "the model could not be read before this run updated it" in text
+    assert "the listing of the models did not show its tags" in text
+    assert ("wrote the tag TLS-Verification-Off to the model, without knowing "
+            "whether the model carried it") in text
+    assert "the tag may not say what the model does. Run this step again" in text
+    # set by the Python only for a run that did not store its score code
+    python = _python()
+    assert python.count("SAS.symput('_rgrg_tlsTag', 'assumed')") == 1
+    assert ('if stored != "stored" and reached.get("tls_tag_assumed") is True:'
+            in python)
 
 
 def test_a_failed_run_writes_the_warnings_before_it_aborts():

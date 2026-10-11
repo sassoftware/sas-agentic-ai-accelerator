@@ -371,7 +371,8 @@ def test_a_failure_after_the_score_code_says_what_the_model_holds(verify, tagged
     assert reached == {"model_id": "model-1",
                        "model_name": "RAG Retrieval - HR",
                        "score_code": "stored", "ssl_verify": verify,
-                       "ssl_verify_in_template": True, "tls_tag_error": ""}
+                       "ssl_verify_in_template": True, "tls_tag_error": "",
+                       "tls_tag_assumed": False}
     # and the model is what the exception says it is
     assert ("SSL_VERIFY = " + str(verify)) in service.score.splitlines()
     assert (TLS_TAG in service.model["tags"]) is tagged
@@ -499,6 +500,55 @@ def test_a_model_nothing_is_known_about_keeps_the_tag():
     with pytest.raises(RuntimeError, match="contents returned 409"):
         _register(service, verify=True)
     assert TLS_TAG in service.model["tags"]
+
+
+@pytest.mark.parametrize("upload,score_code", [("refused", "not stored"),
+                                               ("dropped", "unknown")])
+def test_a_tag_written_to_a_model_nothing_is_known_about_is_reported(
+        upload, score_code):
+    """The model verifies and is not tagged, it cannot be read, and its entry
+    in the listing shows no tags: the update WRITES the tag - a tag too many
+    rather than one too few. When the upload then fails, the model carries a
+    tag this registration put there, over code that verifies. The log must
+    not say that the model keeps the tag as it had it, and the caller is
+    told."""
+    service = _ModelManager(tags=STACK_TAGS, unreadable=True, upload=upload,
+                            listing="absent")
+    logged = []
+    with pytest.raises((RuntimeError, ConnectionError)) as caught:
+        _register(service, verify=True, log=logged.append)
+    assert service.score is None
+    assert service.model["tags"] == STACK_TAGS + [TLS_TAG]
+    assert caught.value.registration["score_code"] == score_code
+    assert caught.value.registration["tls_tag_assumed"] is True
+    assert not any("as it had them" in line for line in logged)
+    assert not any("was not updated and may not say" in line for line in logged)
+    said = [line for line in logged
+            if "without knowing whether it carried it" in line]
+    assert len(said) == 1
+    assert "run the registration again" in said[0]
+
+
+@pytest.mark.parametrize("options", [{}, {"unreadable": True}])
+def test_a_tag_the_model_or_the_listing_showed_is_not_an_assumed_one(options):
+    service = _ModelManager(tags=STACK_TAGS + [TLS_TAG], upload="refused",
+                            **options)
+    logged = []
+    with pytest.raises(RuntimeError, match="contents returned 409") as caught:
+        _register(service, verify=True, log=logged.append)
+    assert caught.value.registration["tls_tag_assumed"] is False
+    assert any("as it had them" in line for line in logged)
+    assert not any("without knowing" in line for line in logged)
+
+
+def test_a_registration_that_goes_through_reports_no_assumed_tag():
+    """Once the score code is stored the tag is settled after it: what the
+    update before the upload wrote no longer matters, and the result of a
+    registration that goes through does not carry the key."""
+    service = _ModelManager(tags=STACK_TAGS)
+    result = _register(service, verify=True)
+    assert "tls_tag_assumed" not in result
+    assert service.model["tags"] == STACK_TAGS
 
 
 def test_a_new_model_that_cannot_be_read_is_not_tagged_before_its_upload():

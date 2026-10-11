@@ -241,11 +241,13 @@ def test_register_setup_keeps_its_warning_lines_word_for_word():
     """The lines that say a model does not verify TLS certificates were the
     first suspects. Each is a literal of its own, none longer than 200 bytes.
     Three lines came later (a run that failed after the score code was
-    stored; an upload without a usable answer), under the same limit."""
+    stored; an upload without a usable answer), and three more for a tag
+    that was written to a model the run could not read, under the same
+    limit."""
     strings = [text for text in _quoted_strings(_around_python("RAG - Register Setup"))
                if text.startswith("WARNING: RAG - Register Setup: ")]
-    assert len(strings) == 12
-    assert len(set(strings)) == 12
+    assert len(strings) == 15
+    assert len(set(strings)) == 15
     assert max(len(text.encode("utf-8")) for text in strings) == 200
     assert ("WARNING: RAG - Register Setup: this retrieval model does NOT verify "
             "TLS certificates. Its two HTTPS calls - to the embedding container "
