@@ -8,6 +8,8 @@ For this two options are available:
 
 By default the parser writes the CAS table **`LLM_LOGS`** to the **`Public`** caslib and both promotes it (global scope) and saves it to disk. Change the `_log_target_table_lib` / `_log_target_table_name` macro variables at the top of *Log-Parser-Code.sas* (or the custom step's options) to target a different library or table name.
 
+The parser reads the log from the file system of the SAS compute server: `_log_path` has to start with `sasserver:`, and a file in SAS Content is not read. The default, `sasserver:/export/pvs/sasdata/data/llm/llms.log`, is an example path. The [Logging & Monitoring administration guide](../../website/docs/Administration-Guide/Logging-&-Monitoring.md) says what that path assumes and how the file reaches the compute server where the host that collects the logs shares no mount with it.
+
 The resulting table has the following columns, in this order:
 
 | Column Name   | Column Label                                                 |
@@ -65,6 +67,15 @@ Two limits follow from what the containers log:
 
 The collection script in the [Logging & Monitoring administration guide](../../website/docs/Administration-Guide/Logging-&-Monitoring.md) replaces provider keys and cookies in the log with `REDACTED` before the file is written. The parser reads a redacted log like an unredacted one, and it never copies a key or a request header into the table.
 
+## What the custom step takes from the SAS session
+
+*Log-Parser-Code.sas* starts a CAS session and assigns the librefs `public` and `casuser` in its first lines. The custom step is the program without them:
+
+- It runs in the CAS session that is active. When the macro variable `_CASNAME_` does not exist it starts a session of its own (`llmLogMySess`) and ends it as its last action, so of such a run only a table that was promoted or saved is left.
+- It reads the caslib of the output table from its libref. When the libref is not assigned in the session, the name of the libref is handed to CAS as the name of the caslib.
+
+The code file and the step both need the caslib `CASUSER` of the user who runs them for the staging table `_TEMP_LLM_LOGS`, and PROC PYTHON with the pandas and swat packages. The guide lists what the step takes from the session in full, what was run on a SAS Viya system and what was not.
+
 ## Tests
 
 `tests/` runs the parser's Python outside of SAS on made-up logs and checks that *Log-Parser-Code.sas* and the custom step still hold the same program:
@@ -72,6 +83,8 @@ The collection script in the [Logging & Monitoring administration guide](../../w
 ```bash
 python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests
 ```
+
+The SAS code around that Python - the CAS actions that replace, append, load, promote and save the table - does not run in these tests: they hold its text and the order of its actions, and the text of the step's About tab and of the guide where those describe the program. What a run on SAS Viya showed is in the guide under *What Was Measured*.
 
 The program lives in both files. Change *Log-Parser-Code.sas*, then carry the same code into the `templates.SAS` entry of *LLM - Log Parser.step* (the step is one line of JSON - load it, replace the entry and write it back compactly rather than editing it by hand); the tests fail while the two differ.
 
