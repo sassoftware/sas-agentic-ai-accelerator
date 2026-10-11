@@ -229,8 +229,21 @@ chunk. That is what it answered on 2026-10-11 in a test of SAS Intelligent
 Decisioning and in the publishing validation on a SAS Micro Analytic
 Service destination, where neither runtime had them. With the user and the
 password passed per call instead, in the `options` input of the model, the
-retrieval model returned chunks in both places the same day. With the two
-variables set on the destination it has not been measured.
+retrieval model returned chunks in both places the same day.
+
+The two variables as environment variables were measured for SAS Micro
+Analytic Service, also on 2026-10-11: `PGVECTOR_RAG_USER` and
+`PGVECTOR_RAG_PW` were put into a Kubernetes secret and set on the
+containers of the deployment from it,
+
+```bash
+kubectl -n <namespace> set env deployment/sas-microanalytic-score --containers=* --from=secret/<name>
+```
+
+the pod restarted, and a call with `{}` as the `options` of the retrieval
+model returned `retrieval_status` *ok* and three hits. Not measured: the same
+variables for the test of SAS Intelligent Decisioning, which runs in CAS, and
+for a SAS Container Runtime container.
 [The retrieval model in a decision](./RAG-Ingestion-and-Retrieval.md#the-retrieval-model-in-a-decision)
 lists every variable the model reads and where each destination takes
 them.
