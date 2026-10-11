@@ -132,6 +132,10 @@ Points worth knowing:
 - **The file records which deployment it came from.** Restoring it against a different SAS Viya URL still works — moving configuration between environments is a legitimate thing to do — but the command says so first, because doing it by accident is exactly the failure this guards against.
 - **Concurrent edits fail loudly.** The write is conditional on the report being unchanged since it was read, so a colleague editing the report in Visual Analytics at that moment causes an error rather than silently losing their work.
 
+- **A `401 Client Error` at the sign-in can pass.** Seen on 2026-10-11: one call of `mdb` ended with `401 Client Error` at the sign-in and went through when it was repeated; the sign-in service of that system refused password grants that overlapped that day. Repeat the command before looking for another cause.
+
+Measured on 2026-10-11 on SAS Viya 2026.09 with the Prompt Builder report of this release, after the report had been saved once in SAS Visual Analytics with **Enable RAG setups** ticked: in a round of `mdb options-save` and `mdb options-restore`, the dry run of the restore named six options to write and none that the report lacks, and the restore wrote them.
+
 On a brand-new environment with no live report to capture from, run `mdb options-save` anyway: with nothing to overlay it writes the discovered values alone, which is the same content the seed file carries.
 
 ### The retired RAG Builder report
