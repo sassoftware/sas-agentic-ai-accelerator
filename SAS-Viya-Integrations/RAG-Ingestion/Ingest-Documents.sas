@@ -196,10 +196,21 @@
         %let &errorvar. = the saved table &caslib..&table. could not be loaded into memory (CAS messages above) - stopped, because an empty table would re-embed the corpus and overwrite the saved file;
         %return;
     %end;
+    /* The run goes on in the two cases that are left, and says what that
+       means. unlisted: the table is not in memory and the files of the caslib
+       could not be listed, so no saved copy was looked for - the case the
+       reload is there for, without the reload. Anything else: PROC CAS ended
+       before it handed back an outcome, and not even that much is known. */
     %if &_rag_reload_outcome. EQ loaded %then
         %put NOTE: RAG: &caslib..&table. was saved but not in memory and has been loaded from its saved file.;
-    %else %if &_rag_reload_outcome. NE memory and &_rag_reload_outcome. NE absent %then
-        %put NOTE: RAG: could not look for a saved copy of &caslib..&table. - the run continues with what is in memory.;
+    %else %if &_rag_reload_outcome. EQ unlisted %then %do;
+        %put WARNING: RAG: &caslib..&table. is not in memory, and the files of the caslib &caslib. could not be listed (CAS messages above) - a saved copy could not be looked for.;
+        %put WARNING: RAG: the run continues without the table and saves over a copy that may be there. A ledger that is not in memory means that every document counts as new and is embedded again.;
+    %end;
+    %else %if &_rag_reload_outcome. NE memory and &_rag_reload_outcome. NE absent %then %do;
+        %put WARNING: RAG: could not look for &caslib..&table. - PROC CAS ended before it said whether the table is in memory or saved (messages above). The run continues with what is in memory.;
+        %put WARNING: RAG: if the table is not in memory, the run saves over a copy that may be there. A ledger that is not in memory means that every document counts as new and is embedded again.;
+    %end;
 %mend _rag_reload_saved;
 
 /* ---- One ledger, two writers ----------------------------------------------

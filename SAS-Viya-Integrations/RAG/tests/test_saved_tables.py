@@ -137,6 +137,72 @@ def test_the_reload_reads_its_outcome_from_the_right_symbol_table():
     assert 'call symputx("_rag_reload_outcome", outcome, "L");' in macro
 
 
+def _said_for(macro, condition):
+    """The lines the macro writes to the log under one %if or %else %if."""
+    after = macro[macro.index("%if &_rag_reload_outcome. EQ loaded %then"):]
+    return re.findall(r"%put ((?:NOTE|WARNING): [^;]*);",
+                      after.split(condition, 1)[1].split("%end;", 1)[0])
+
+
+def test_a_look_that_failed_is_a_warning_that_says_what_the_run_then_does():
+    """The run goes on when the caslib cannot be listed - with no table in
+    memory, which is the case the reload is there for: no previous run, the
+    corpus embedded again, the saved file overwritten. That was a NOTE that
+    said the run continues with what is in memory."""
+    macro = macro_of(job_code())
+    assert 'else outcome = "unlisted";' in macro
+    unlisted = _said_for(
+        macro, "%else %if &_rag_reload_outcome. EQ unlisted %then %do;")
+    assert len(unlisted) == 2
+    assert all(line.startswith("WARNING: RAG: ") for line in unlisted)
+    said = " ".join(unlisted)
+    # unlisted is set only where the table is NOT in memory
+    assert "&caslib..&table. is not in memory" in said
+    assert "the files of the caslib &caslib. could not be listed" in said
+    assert "a saved copy could not be looked for" in said
+    assert "the run continues without the table" in said
+    assert "saves over a copy that may be there" in said
+    assert ("A ledger that is not in memory means that every document counts "
+            "as new and is embedded again") in said
+    # nothing else fails the run: only the outcome failed sets the state
+    assert macro.count("%let &statevar. = fail;") == 1
+
+
+def test_a_look_that_did_not_finish_is_a_warning_too():
+    """PROC CAS ended before it handed back an outcome: whether the table is
+    in memory is then not known, and the lines do not claim it."""
+    macro = macro_of(job_code())
+    assert "%let _rag_reload_outcome = unknown;" in macro
+    unknown = _said_for(
+        macro, "%else %if &_rag_reload_outcome. NE memory and "
+               "&_rag_reload_outcome. NE absent %then %do;")
+    assert len(unknown) == 2
+    assert all(line.startswith("WARNING: RAG: ") for line in unknown)
+    said = " ".join(unknown)
+    assert "PROC CAS ended before it said whether the table is in memory or saved" in said
+    assert "The run continues with what is in memory" in said
+    assert "if the table is not in memory, the run saves over a copy" in said
+    assert "every document counts as new" in said
+    assert "is not in memory, and" not in said
+
+
+def test_the_lines_of_the_reload_are_text_the_macro_processor_leaves_alone():
+    """They are %put statements inside a macro: a % or a quotation mark in
+    them would be read, and a semicolon would end them early."""
+    macro = macro_of(job_code())
+    lines = re.findall(r"%put ([^;]*);", macro)
+    assert len(lines) == 5
+    for line in lines:
+        assert not set(line) & set("%'\""), line
+        # every & starts one of the three names the macro is given
+        assert set(re.findall(r"&(\w+)", line)) <= {"caslib", "table"}, line
+        assert line.count("(") == line.count(")"), line
+    # the only NOTE left is the one for a table that was loaded back
+    assert [line for line in lines if line.startswith("NOTE: ")] == [
+        "NOTE: RAG: &caslib..&table. was saved but not in memory and has "
+        "been loaded from its saved file."]
+
+
 # ---------------------------------------------------------------------------
 # the steps: every saved table is reloaded before its first use
 # ---------------------------------------------------------------------------
