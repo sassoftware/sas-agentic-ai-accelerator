@@ -120,21 +120,41 @@ No setting for the time limit is named here because none was found: the configur
 
 This part of the troubleshooting guide describes what can be found in the log of a job that runs a program of the accelerator - the RAG ingestion job, a job generated from a RAG flow or the log parser.
 
-### Two ERROR lines about Cloud Analytic Services before the first line of the program {#cas-connect-errors-before-the-program}
+### Two ERROR messages about Cloud Analytic Services before the first line of the program {#cas-connect-errors-before-the-program}
 
-On the test system (SAS Viya 2026.09, 2026-10-11) every job log of the *SAS Studio compute context* began with two ERROR lines, before the first source line of the program:
+On the test system (SAS Viya 2026.09, 2026-10-11) every job log of the *SAS Studio compute context* began with two ERROR messages, before the first source line of the program. They stand on three log lines, because the second is longer than the line:
 
 ```text
 ERROR: Failed to connect to host '<SAS Viya host>', port 5570.
-ERROR: Unable to connect to Cloud Analytic Services ... on port 5570 ...
+ERROR: Unable to connect to Cloud Analytic Services <SAS Viya host> on port 5570. Verify connection 
+       parameters and retry.
 ```
 
-They stood in the logs of the RAG ingestion job, of the jobs generated from a RAG flow and of the log parser, and equally in a job that held none of the accelerator's code. The jobs ended as `completed` when nothing else failed, `SYSCC` was 0 after the log parser had run, and the CAS session the ingestion job starts itself connected on the same port. Why that system writes the two lines was not established: this is an observation of one system, and another system may not show it.
+They stood in the logs of the RAG ingestion job, of the jobs generated from a RAG flow and of the log parser, and equally in a job that held none of the accelerator's code. The jobs ended as `completed` when nothing else failed, `SYSCC` was 0 after the log parser had run, and the CAS session the ingestion job starts itself connected on the same port. Why that system writes the two messages was not established: this is an observation of one system, and another system may not show it.
 
 What follows from it where a log shows these lines:
 
-1.   A check that counts the ERROR lines of a job log never finds 0 there. Start at the first source line of the program, or read the state of the job.
-2.   The lines of the accelerator name their program: `ERROR: RAG ingestion failed`, `ERROR: RAG - <step> failed`, `ERROR: The log could not be parsed`. An ERROR line before source line 1 is none of them.
+1.   A check that counts the ERROR lines of a job log never finds 0 there: it finds three when it counts the lines of the type error, the continuation included, and two when it counts the lines that start with `ERROR`. Start at the first source line of the program, or read the state of the job.
+2.   The lines of the accelerator name their program: `ERROR: RAG ingestion failed`, `ERROR: RAG - <step> failed`, `ERROR: The log could not be parsed`. An ERROR line before source line 1 is none of them. Since release 2.3.0 the RAG lines are written from a variable and not as a quoted string; they are still of the type error (measured on 2026-10-11).
+
+### A long ERROR or NOTE line goes on in the next line {#long-log-lines}
+
+The job logs of the test system are 132 characters wide, and SAS breaks a longer line there - inside a word, and with no prefix on what follows. Measured on 2026-10-11 with the RAG steps and the ingestion job of release 2.3.0:
+
+```text
+ERROR: RAG - List Documents failed: another ingestion run holds the lock on this ledger - wait for it to finish, or retry in 30 minu
+tes if it crashed
+```
+
+Every log line of such a message has the type of its first one: the three lines of a 311-character ERROR line of *RAG - List Documents* and the four of a 413-character ERROR line of the ingestion job were all of the type error. A search for the text of a message therefore has to expect a break anywhere in it, and a check that counts lines counts a long message more than once.
+
+### A job of the accelerator that failed reports the error code 5713 {#failed-job-5713}
+
+A run of the RAG ingestion job that failed ends as `failed` in SAS Job Execution from release 2.3.0 on. The record of the job does not hold the reason at its top level: measured on 2026-10-11, it held the error code 5713 with the message *A procedure in the SAS program provided for the job completed execution with at least one error.*, and inside it, under `errors`, an error with the code 1012 - the `SYSCC` the program sets - and the text of the program's last ERROR line, for example *RAG ingestion failed: another ingestion run appears active for this ledger (run lock held) - retry later*. A monitor that wants the reason reads that inner message or the log. In the log the ERROR line is the last message of the program and not the last line: the timing lines of its DATA step and the echoed source of the last statement follow it. A job of the log parser that failed carried the same code 5713, with `SYSCC` 1012 in its log.
+
+### The *LLM - Log Parser* step fails in its second run of one SAS session {#log-parser-second-run}
+
+`ERROR: There is no server connection to execute the action 'session.sessionId'.`, followed by `ERROR: Unhandled Python exception.` and `ERROR: The log could not be parsed, the table <caslib>.<table> was left as it is.`, in a run of the step that follows an earlier run in the same SAS session: the earlier run had started a CAS session of its own and ended it, and the step of release 2.2 and earlier takes the macro variable `_CASNAME_`, which the ended session leaves behind, for a session. Nothing is written by such a run. Measured on 2026-10-11 with two runs of the step in one SAS Job Execution job whose session had no CAS session. The step of release 2.3.0 asks the `SESSFOUND` function instead - import it again with a `PUT`, which keeps its id; that check is not run in SAS ([Logging & Monitoring](./Logging-&-Monitoring.md#what-was-measured)). With the older step, put a `cas` statement in front of the flow code: a step that finds a CAS session uses it and ends none.
 
 ## SAS Container Runtime
 
