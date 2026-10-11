@@ -318,11 +318,46 @@ def test_experiment_run_is_a_request_of_a_browser(program, agent, method, run_id
     assert (row["match_method"], row["caller_model_id"], row["experiment_run_id"]) == (method.replace("template", "questions and state"), uuid(20), run_id)
 
 
-def test_run_without_resolved_prompts_is_its_templates_when_they_hold_no_variable(program):
-    fixed = experiment_run(uuid(10), "Health check", "1", "demo_llm", "You are a health check of the platform.", "Reply with OK.", "", "")
-    with_variable = experiment_run(uuid(11), "Leave desk", "1", "demo_llm", LEAVE_SYSTEM, LEAVE_USER, "", "")
+@pytest.mark.parametrize("hashes", [True, False])
+def test_run_without_resolved_prompts_is_its_templates_when_they_hold_no_variable(program, hashes):
+    """With its hash columns filled such a run holds the hash of an empty text, which names no request."""
+    fixed = experiment_run(uuid(10), "Health check", "1", "demo_llm", "You are a health check of the platform.", "Reply with OK.", "", "", hashes=hashes)
+    with_variable = experiment_run(uuid(11), "Leave desk", "1", "demo_llm", LEAVE_SYSTEM, LEAVE_USER, "", "", hashes=hashes)
     rows = [llm_row("You are a health check of the platform.", "Reply with OK."), llm_row(LEAVE_SYSTEM, "Question: Why? Passages: none Answer:")]
     assert [row["match_method"] for row in link(program, rows, [LLM, fixed, with_variable], agent="browser")] == ["experiment run", "template"]
+
+
+def test_hash_of_a_text_is_the_one_the_other_programs_compute(program):
+    """The digests the tests of the log parser and of Get-All-Prompts.sas write out for the same texts."""
+    hash_of = program["text_hash"]
+    assert hash_of("How long does a travel refund take?") == "e422a7ae4d49d80be7ae1d8c9b32f06398796c0f498f0e5f3c0e342edf7a9032"
+    assert hash_of("  How long\tdoes a travel\r\nrefund   take?\n") == hash_of("How long does a travel refund take?")
+    assert hash_of(None) == hash_of("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    # A character that is no UTF-8 is hashed as a question mark, as in the two other programs
+    assert hash_of("caf\udce9") == hash_of("caf?")
+
+
+def test_experiment_run_whose_prompt_is_longer_than_a_column_is_found_by_its_hash(program):
+    """The catalog takes the hash of the whole prompt and cuts the text to the length of a SAS column.
+    The request holds the whole prompt: its hash is the one of the catalog, its text is not."""
+    resolved_user = "Question: Why?\n\nPassages:\n" + "A made-up passage about leave. " * 40 + "\n\nAnswer:"
+    cut = experiment_run(uuid(10), "Leave desk", "3", "demo_llm", LEAVE_SYSTEM, LEAVE_USER, LEAVE_SYSTEM, resolved_user, column_length=200)
+    assert len(cut["resolved_user_prompt"]) == 200 < len(resolved_user)
+    row = link(program, [llm_row(LEAVE_SYSTEM, resolved_user)], [LLM, cut], agent="browser")[0]
+    assert (row["match_method"], row["caller_model_id"], row["experiment_run_id"]) == ("experiment run", uuid(10), "3")
+    # Without the hash only the text can be compared, and the cut text is not the request: the templates of the run still link the prompt
+    cut_without_hash = experiment_run(uuid(10), "Leave desk", "3", "demo_llm", LEAVE_SYSTEM, LEAVE_USER, LEAVE_SYSTEM, resolved_user, column_length=200, hashes=False)
+    row = link(program, [llm_row(LEAVE_SYSTEM, resolved_user)], [LLM, cut_without_hash], agent="browser")[0]
+    assert (row["match_method"], row["caller_model_id"], row["experiment_run_id"]) == ("template", uuid(10), "")
+
+
+def test_catalog_without_hash_columns_compares_the_prompts_of_a_run_as_text(program):
+    resolved_user = "Question: Why?\n\nPassages:\nnone\n\nAnswer:"
+    run = experiment_run(uuid(10), "Leave desk", "3", "demo_llm", LEAVE_SYSTEM, LEAVE_USER, LEAVE_SYSTEM, resolved_user, hashes=False)
+    catalog = lower_case(catalog_table(LLM, run)).drop(columns=["resolved_system_hash", "resolved_user_hash", "template_source"])
+    rows = lower_case(log_table(llm_row(LEAVE_SYSTEM.replace("\n", " "), "Question: Why? Passages: none Answer:", user_agent="browser")))
+    links, _ = program["link_rows"](rows, catalog)
+    assert links.loc[0, ["match_method", "experiment_run_id"]].tolist() == ["experiment run", "3"]
 
 
 def test_template_links_a_prompt_with_a_retrieval_to_its_prompt_and_to_the_setup_of_its_collection(program):
@@ -345,6 +380,30 @@ def test_collection_of_two_setups_is_decided_by_the_ingestion_run_of_the_retriev
     # The envelope names run-1767604500, and RAG_RUNS has that run for one of the two setups
     runs = [ingestion_run("run-1767604500", "handbook_v1", "2026-01-05 09:15:00", "2026-01-05 09:20:00", model_id=uuid(31))]
     assert link(program, [leave_request()], [LLM, LEAVE_PROMPT] + setups, runs)[0]["rag_model_id"] == uuid(31)
+
+
+def test_setup_the_builder_saved_is_ahead_of_the_model_the_step_registered(program):
+    """A setup that was saved in the Prompt Builder and registered with the step RAG - Register Setup is two
+    models with one collection, and Get-All-Prompts.sas stacks the runs of their run table once for each.
+    The catalog says which of the two the Builder saved: that one holds the setup."""
+    saved = rag_setup(uuid(30), "Staff handbook", "handbook_v1", source="builder")
+    registered = rag_setup(uuid(31), "RAG Retrieval - Staff handbook", "handbook_v1", source="step")
+    runs = [ingestion_run("run-1767604500", "handbook_v1", "2026-01-05 09:15:00", "2026-01-05 09:20:00", model_id=model_id) for model_id in (uuid(30), uuid(31))]
+    rows = [leave_request(timestamp="2026-01-05 11:30:00"), embedding_row(QUESTION, timestamp="2026-01-05 11:29:59"),
+            embedding_row("Chapter 7.", mode="document", timestamp="2026-01-05 09:17:00")]
+    for catalog in ([saved, registered], [registered, saved]):
+        prompt, query, document = link(program, rows, [LLM, EMBEDDER, LEAVE_PROMPT] + catalog, runs)
+        assert (prompt["match_method"], prompt["rag_model_id"]) == ("template", uuid(30))
+        assert (query["match_method"], query["caller_model_id"], query["caller_name"]) == ("retrieval query", uuid(30), "Staff handbook")
+        assert (document["match_method"], document["caller_model_id"]) == ("ingestion run", uuid(30))
+
+    # Two setups of the Builder, or two models of the step, with one collection: nothing says which one it was
+    for source in ("builder", "step"):
+        twins = [rag_setup(uuid(30), "Staff handbook", "handbook_v1", source=source), rag_setup(uuid(31), "Staff handbook copy", "handbook_v1", source=source)]
+        prompt, query, document = link(program, rows, [LLM, EMBEDDER, LEAVE_PROMPT] + twins, runs)
+        assert (prompt["match_method"], prompt["rag_model_id"]) == ("template", "")
+        assert (query["match_method"], query["match_candidates"]) == ("ambiguous", 2)
+        assert (document["match_method"], document["match_candidates"]) == ("ambiguous", 2)
 
 
 def test_most_specific_template_wins_and_the_candidates_are_counted(program):
@@ -498,6 +557,17 @@ def test_decision_experiment_run(program):
     links = link(program, [decision_row(), decision_row(state="Ticket: the lift is stuck.")], [DECIDER, run, other_state], agent="browser")
     assert [(row["match_method"], row["experiment_run_id"], row["caller_model_id"]) for row in links] == [
         ("experiment run", "7", uuid(20)), ("questions and state", "", uuid(20))]
+
+
+def test_decision_experiment_run_as_get_all_prompts_writes_it(program):
+    """The pull writes the questions of a decision run as they are stored into the resolved system prompt,
+    and the hash of both texts. A state that is longer than a column is found by its hash."""
+    state = "Ticket: I was charged twice for my plan this morning." + " And once more the month before." * 20
+    stored = json.dumps(QUESTIONS, indent=2)
+    run = experiment_run(uuid(20), "Ticket routing", "7", "demo_decider", stored, TICKET_STATE, stored, state, role="decision", column_length=500)
+    assert len(stored) < len(run["resolved_user_prompt"]) == 500 < len(state)
+    row = link(program, [decision_row(state=state)], [DECIDER, run], agent="browser")[0]
+    assert (row["match_method"], row["experiment_run_id"], row["caller_model_id"]) == ("experiment run", "7", uuid(20))
 
 
 def test_two_templates_with_the_same_questions(program):

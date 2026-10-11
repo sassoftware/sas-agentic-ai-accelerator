@@ -130,6 +130,7 @@ quit;
 
 proc python restart;
 submit;
+import hashlib
 import json
 import os
 import re
@@ -156,8 +157,9 @@ OPTIONAL_COLUMNS = ['user_agent']
 NOT_A_BROWSER = ('python-requests', 'sas')
 
 # The columns no row of the catalog can be read without. The others - projectid, runid,
-# target_model, system_template, user_template, resolved_system_prompt, resolved_user_prompt
-# and collection - read as missing values when the catalog does not have them.
+# target_model, system_template, user_template, resolved_system_prompt, resolved_user_prompt,
+# collection, template_source, resolved_system_hash and resolved_user_hash - read as missing
+# values when the catalog does not have them.
 CATALOG_KEY_COLUMNS = ['modelid', 'name', 'role']
 # The columns an ingestion run is read from. modelid, the setup that holds the run, is optional.
 RUN_COLUMNS = ['run_id', 'collection', 'embed_model', 'started_at', 'finished_at']
@@ -187,6 +189,10 @@ LABELS = {
 
 # A variable of a template: {{name}}. It stands for any text, also for none.
 VARIABLE = re.compile(r'\{\{[^{}]*\}\}')
+# The hash of a text as the catalog and the log table hold it
+TEXT_HASH = re.compile(r'[0-9a-f]{64}')
+# What the catalog writes into template_source for a RAG setup that the Prompt Builder saved
+BUILDER_SETUP = 'builder'
 INGESTION_RUN = re.compile(r'"ingestion_run_id"\s*:\s*"([^"]*)"')
 # A template with a variable in its system prompt is found through the first characters
 # of that system prompt or, when it starts with the variable, through its last ones.
@@ -231,6 +237,21 @@ def squeeze(value):
 def size(value):
     """The number of characters that are not whitespace."""
     return len(''.join(text(value).split()))
+
+
+def text_hash(value):
+    """The hash the log parser, Get-All-Prompts.sas and this program compare texts by: the
+    SHA-256 of the UTF-8 bytes of the text with every run of whitespace as one blank, in
+    lower-case hex."""
+    return hashlib.sha256(squeeze(value).encode('utf-8', errors='replace')).hexdigest()
+
+
+def hash_or(stored, value):
+    """The hash the catalog holds for a text, or the hash of the text where it holds none.
+    The catalog takes its hash of the whole text and cuts the text to the length of a SAS
+    column afterwards, so the hash still names a prompt that is longer than that."""
+    stored = squeeze(stored).lower()
+    return stored if TEXT_HASH.fullmatch(stored) else text_hash(value)
 
 
 def question_keys(value):
@@ -350,13 +371,14 @@ def build_index(catalog, runs=None, min_literal=20):
     index = {
         'models': {},        # container name -> [(role, modelID)]
         'callers': {},       # modelID -> what the link columns say of the caller
-        'runs': {},          # (space, system key, squeezed user prompt) -> [experiment run]
+        'runs': {},          # (space, system key, hash of the user prompt) -> [experiment run]
         'exact': {},         # squeezed system prompt without a variable -> [prompt pattern]
         'prefix': {},        # start of a system prompt with a variable -> [prompt pattern]
         'suffix': {},        # end of a system prompt that starts with a variable -> [prompt pattern]
         'open': [],          # prompt patterns whose system prompt starts and ends with a variable
         'questions': {},     # questions key -> [decision pattern]
         'collections': {},   # collection -> [modelID of a RAG setup]
+        'builder_setups': set(),  # modelIDs of the RAG setups the Prompt Builder saved
         'rag_targets': {},   # modelID of a RAG setup -> the embedding models it is known to call
         'ingestions': {},    # embedding model -> [ingestion run]
         'run_setups': {},    # ingestion run id -> modelIDs of the setups that hold the run
@@ -410,6 +432,8 @@ def build_index(catalog, runs=None, min_literal=20):
                     setups.append(model_id)
             if target:
                 index['rag_targets'].setdefault(model_id, set()).add(target)
+            if squeeze(cell('template_source')).lower() == BUILDER_SETUP:
+                index['builder_setups'].add(model_id)
             continue
 
         system_template = text(cell('system_template'))
@@ -417,6 +441,7 @@ def build_index(catalog, runs=None, min_literal=20):
         run_id = squeeze(cell('runid'))
         resolved_system = squeeze(cell('resolved_system_prompt'))
         resolved_user = squeeze(cell('resolved_user_prompt'))
+        system_hash, user_hash = cell('resolved_system_hash'), cell('resolved_user_hash')
         system_parts, system_size = template_parts(system_template)
         user_parts, user_size = template_parts(user_template)
 
@@ -440,8 +465,10 @@ def build_index(catalog, runs=None, min_literal=20):
                 # A run without resolved prompts is its templates when they hold no variable
                 if not resolved_system and not resolved_user and len(system_parts) == 1 and len(user_parts) == 1:
                     resolved_system, resolved_user = system_parts[0], user_parts[0]
+                    system_hash = user_hash = ''
                 if size(resolved_system) + size(resolved_user) >= min_literal:
-                    index['runs'].setdefault(('P', resolved_system, resolved_user), []).append({'caller': model_id, 'run': run_id, 'target': target})
+                    key = ('P', hash_or(system_hash, resolved_system), hash_or(user_hash, resolved_user))
+                    index['runs'].setdefault(key, []).append({'caller': model_id, 'run': run_id, 'target': target})
         else:
             # A decision: the system template is the questions JSON, the user template the state
             if size(system_template) >= min_literal:
@@ -457,9 +484,14 @@ def build_index(catalog, runs=None, min_literal=20):
                 resolved_questions = text(cell('resolved_system_prompt')) if resolved_system else system_template
                 if not resolved_user and len(user_parts) == 1:
                     resolved_user = user_parts[0]
+                    user_hash = ''
                 if resolved_user and size(resolved_questions) >= min_literal:
-                    for key in question_keys(resolved_questions):
-                        index['runs'].setdefault(('D', key, resolved_user), []).append({'caller': model_id, 'run': run_id, 'target': target})
+                    # The questions by their JSON and their text, and by the hash the catalog took of the whole text
+                    keys = question_keys(resolved_questions)
+                    stored = squeeze(system_hash).lower()
+                    keys.append('H:' + (stored if resolved_system and TEXT_HASH.fullmatch(stored) else text_hash(resolved_questions)))
+                    for key in keys:
+                        index['runs'].setdefault(('D', key, hash_or(user_hash, resolved_user)), []).append({'caller': model_id, 'run': run_id, 'target': target})
 
     if runs is not None and len(runs) > 0:
         seen = {}
@@ -492,6 +524,7 @@ def build_index(catalog, runs=None, min_literal=20):
             for ingestion in ingestions:
                 if not ingestion['setups']:
                     ingestion['setups'] = set(index['collections'].get(ingestion['collection'], []))
+                ingestion['setups'] = set(saved_setups(index, ingestion['setups']))
     return index
 
 
@@ -521,7 +554,9 @@ def tier(pattern, model):
 
 def match_run(index, space, system_keys, user, model):
     """Rule 'experiment run': the prompts of the row are the resolved prompts of a run
-    that was sent to the model of the row. Asked for the rows a browser can have sent."""
+    that was sent to the model of the row. Asked for the rows a browser can have sent.
+    The user prompt is compared by its hash, the system prompt by its hash or, for the
+    questions of a decision, by the keys of the questions."""
     found = set()
     for key in system_keys:
         for run in index['runs'].get((space, key, user), ()):
@@ -581,10 +616,21 @@ def match_questions(index, keys, state, model, cache):
     return {'caller': caller, 'match_method': 'questions and state' if top[1] == 0 else 'questions', 'match_candidates': callers}
 
 
+def saved_setups(index, setups):
+    """The setups among several that the Prompt Builder saved, when it saved exactly one of
+    them - otherwise the setups as they are. A setup that was saved in the Prompt Builder and
+    registered with the step RAG - Register Setup is two models with one collection and the
+    same ingestion runs: the model the Builder saved is the one that holds the setup."""
+    setups = list(setups)
+    saved = [setup for setup in setups if setup in index['builder_setups']]
+    return saved if len(setups) > 1 and len(saved) == 1 else setups
+
+
 def setup_of_collection(index, collection, user_prompt=''):
     """The RAG setup a collection belongs to: the one setup the catalog has for it. When
     several setups hold the collection, the ingestion run the retrieval names decides,
-    if exactly one of them holds that run. The empty text when nothing decides."""
+    if exactly one of them holds that run, and after that the one setup among them that
+    the Prompt Builder saved. The empty text when nothing decides."""
     setups = index['collections'].get(collection, ())
     if len(setups) == 1:
         return setups[0]
@@ -594,7 +640,8 @@ def setup_of_collection(index, collection, user_prompt=''):
             holding = [setup for setup in setups if setup in index['run_setups'].get(named.group(1), ())]
             if len(holding) == 1:
                 return holding[0]
-    return ''
+    setups = saved_setups(index, setups)
+    return setups[0] if len(setups) == 1 else ''
 
 
 def match_query(index, evidence, input_hash, model):
@@ -608,7 +655,7 @@ def match_query(index, evidence, input_hash, model):
     if len(seen['collections']) > 1:
         return {'match_method': 'ambiguous', 'match_candidates': len(seen['collections'])}
     collection = next(iter(seen['collections']))
-    setups = index['collections'].get(collection, ())
+    setups = saved_setups(index, index['collections'].get(collection, ()))
     if not setups:
         return None
     if len(seen['setups']) == 1 and not seen['open']:
@@ -719,15 +766,15 @@ def link_rows(rows, catalog, runs=None, redo_all=False, min_literal=20, utc_offs
         link['model_id'] = model_ids[position]
         # An experiment run is a request of the Builder page. A published model that sends the prompts
         # of a run again is the same caller, but its request is not that run
-        may_be_run = not squeeze(record.get('user_agent')).lower().startswith(NOT_A_BROWSER)
+        may_be_run = bool(index['runs']) and not squeeze(record.get('user_agent')).lower().startswith(NOT_A_BROWSER)
         match = None
         if kind == 'llm':
             link['rag_model_id'] = setups[position]
             system, user = squeeze(record.get('system_prompt')), squeeze(record.get('user_prompt'))
-            match = (may_be_run and match_run(index, 'P', [system], user, model)) or match_template(index, system, user, model, pattern_cache)
+            match = (may_be_run and match_run(index, 'P', [text_hash(system)], text_hash(user), model)) or match_template(index, system, user, model, pattern_cache)
         elif kind == 'decision':
             keys, state = question_keys(record.get('system_prompt')), squeeze(record.get('user_prompt'))
-            match = (may_be_run and match_run(index, 'D', keys, state, model)) or match_questions(index, keys, state, model, state_cache)
+            match = (may_be_run and match_run(index, 'D', keys + ['H:' + text_hash(record.get('system_prompt'))], text_hash(state), model)) or match_questions(index, keys, state, model, state_cache)
         elif kind == 'embedding':
             mode = squeeze(record.get('embedding_mode')).lower()
             if mode == 'query':

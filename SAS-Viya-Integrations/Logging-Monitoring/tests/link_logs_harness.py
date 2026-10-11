@@ -43,7 +43,7 @@ LOG_COLUMNS = OLD_COLUMNS + PARSER_COLUMNS + LINK_COLUMNS
 
 CATALOG_COLUMNS = [
     "modelID", "projectID", "projectName", "name", "role", "runID", "target_model", "system_template", "user_template",
-    "resolved_system_prompt", "resolved_user_prompt", "collection",
+    "resolved_system_prompt", "resolved_user_prompt", "collection", "template_source", "resolved_system_hash", "resolved_user_hash",
 ]
 RUNS_COLUMNS = ["run_id", "collection", "embed_model", "started_at", "finished_at", "modelID", "projectID"]
 
@@ -356,14 +356,24 @@ def prompt_template(model_id, name, system_template, user_template, target_model
     return catalog_row(model_id, role, name, system_template=system_template, user_template=user_template, target_model=target_model)
 
 
-def experiment_run(model_id, name, run_id, target_model, system_template, user_template, resolved_system_prompt, resolved_user_prompt, role="prompt"):
-    """One experiment run of a prompt against one model, with the prompts as they were sent."""
-    return catalog_row(model_id, role, name, runID=run_id, target_model=target_model, system_template=system_template, user_template=user_template,
-                       resolved_system_prompt=resolved_system_prompt, resolved_user_prompt=resolved_user_prompt)
+def experiment_run(model_id, name, run_id, target_model, system_template, user_template, resolved_system_prompt, resolved_user_prompt, role="prompt",
+                   hashes=True, column_length=None):
+    """One experiment run of a prompt against one model, with the prompts as they were sent.
+
+    hashes         Get-All-Prompts.sas writes the hash of both prompts beside them; False leaves the two columns empty
+    column_length  the characters the catalog keeps of a prompt: the hash is taken of the whole text, the text is cut afterwards
+    """
+    row = catalog_row(model_id, role, name, runID=run_id, target_model=target_model, system_template=system_template, user_template=user_template,
+                      resolved_system_prompt=resolved_system_prompt[:column_length], resolved_user_prompt=resolved_user_prompt[:column_length])
+    if hashes:
+        row.update(resolved_system_hash=text_hash(resolved_system_prompt), resolved_user_hash=text_hash(resolved_user_prompt))
+    return row
 
 
-def rag_setup(model_id, name, collection, target_model=""):
-    return catalog_row(model_id, "rag", name, collection=collection, target_model=target_model)
+def rag_setup(model_id, name, collection, target_model="", source=""):
+    """A RAG setup. source is what Get-All-Prompts.sas writes into template_source: builder for a setup the
+    Prompt Builder saved, step for a model the step RAG - Register Setup registered."""
+    return catalog_row(model_id, "rag", name, collection=collection, target_model=target_model, template_source=source)
 
 
 def catalog_table(*rows):
