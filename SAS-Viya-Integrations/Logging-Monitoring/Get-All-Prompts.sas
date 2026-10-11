@@ -107,6 +107,9 @@ STEP_MODEL_ALGORITHM = 'RAG'
 DECISION_TEMPLATE = 'Decision-Template'
 DECISION_PROJECT_TAG = 'Decision-Engineering'
 MODEL_MEDIA_TYPE = 'application/vnd.sas.models.model+json'
+# Any media type, for the content of a file. Put together from its characters: side by side
+# they are the end and the start of a comment in SAS code, which this Python is a part of.
+ANY_MEDIA_TYPE = '/'.join(['*', '*'])
 # What a manifested score code assigns in scoreModel before it calls its model
 MANIFESTED_NAMES = ('llm', 'systemPrompt', 'userPrompt', 'state', 'questions')
 MANIFESTED_ASSIGNMENT = re.compile(r'\s+(llm|systemPrompt|userPrompt|state|questions) = ')
@@ -896,8 +899,9 @@ def rag_run_sources(setups):
         rows.append({
             'modelID': setup['modelID'], 'projectID': setup['projectID'], 'tables_caslib': caslib,
             'runs_table': table,
-            # The run table of a store holds the runs of every collection in it: only the runs of the
-            # setup's own collection are taken, and a collection that can not stand in SAS code is no filter
+            # rag_runs is shared by every collection of a vector store, and a published run table can hold
+            # more than one of them: only the runs of the setup's own collection are taken. A collection
+            # that can not stand in SAS code is no filter
             'collection': collection if re.fullmatch(r'[A-Za-z0-9_.\-]+', collection) else '',
         })
     return rows, problems
@@ -932,7 +936,7 @@ def list_all(get_json, path, limit):
     seen = set()
     asked = 0
     while True:
-        page = get_json(path + ('&' if '?' in path else '?') + f'start={asked}&limit={limit}')
+        page = get_json(path + ('&' if '?' in path else '?') + '&'.join([f'start={asked}', f'limit={limit}']))
         page = page if isinstance(page, dict) else {}
         batch = page.get('items') if isinstance(page.get('items'), list) else []
         fresh = [item for item in batch if not isinstance(item, dict) or item.get('id') is None
@@ -1215,7 +1219,7 @@ def run_pull():
 
     def get_text(path):
         # Decoded here: a file that is served as text without a character set is UTF-8 all the same
-        return get_bytes(path, '*/*').decode('utf-8-sig', errors='replace')
+        return get_bytes(path, ANY_MEDIA_TYPE).decode('utf-8-sig', errors='replace')
 
     def get_json(path, accept='application/json'):
         return json.loads(get_bytes(path, accept).decode('utf-8-sig', errors='replace'))
@@ -1372,7 +1376,7 @@ run; quit;
                         %end;
                     %end;
                     %if %length(&_gap_rs_collection.) GT 0 %then %do;
-                        * The run table of a vector store holds the runs of every collection in it;
+                        * A run table can hold the runs of other collections of the same vector store;
                         if collection NE '' and collection NE "&_gap_rs_collection." then delete;
                     %end;
                     drop _gap_s:;

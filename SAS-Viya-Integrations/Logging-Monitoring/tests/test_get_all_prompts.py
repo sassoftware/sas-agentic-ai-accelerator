@@ -1096,6 +1096,13 @@ def test_a_run_table_is_only_read_when_it_is_in_memory():
     for action in ("loadTable", "table.save", "dropTable", "alterTable", "table.promote", "load casData", "casOut"):
         assert action not in stack
     assert 'modelID = "&_gap_rs_model.";' in stack and 'projectID = "&_gap_rs_project.";' in stack
+    # a run table can hold the runs of other collections of the same vector store: a setup gets the runs of its own
+    assert "if collection NE '' and collection NE \"&_gap_rs_collection.\" then delete;" in stack
+    assert "%if %length(&_gap_rs_collection.) GT 0 %then %do;" in stack
+    # a column is read as text or as a number whatever the release that published the table wrote it as
+    assert "&_gap_col. = cats(_gap_s&_gap_j.);" in stack
+    assert "&_gap_col. = input(cats(_gap_s&_gap_j.), ?? best32.);" in stack
+    assert "call missing(&_gap_col.);" in stack
     # the table exists before any setup is looked at, so it is written when no setup has runs
     assert stack.index("data work._gap_all_rag_runs;") < stack.index("%do _gap_i = 1 %to")
 
@@ -1118,6 +1125,9 @@ def test_the_python_holds_no_line_that_would_end_it():
     assert "endsubmit" not in block
     # the code file has no character outside ASCII in its Python
     assert block.isascii()
+    # nor what SAS code reads as a comment or as a macro variable, should the block ever be read as SAS code
+    assert "/*" not in block and "*/" not in block
+    assert re.findall(r"&\w+", block) == []
     compile(block, "Get-All-Prompts.sas (python)", "exec")
 
 
