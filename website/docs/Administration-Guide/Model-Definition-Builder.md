@@ -214,7 +214,7 @@ entry of the Prompt Builder, one per part of the Builder it concerns, with:
 | `is_current` | 1 for the newest dated release |
 | `release_rank`, `item_rank` | 1 = newest release; the entry's position within it, so a report can order without dates |
 | `section`, `change_type` | the heading as written and its normalised kind: Added, Changed, Fixed, Removed, Breaking, Upgrade, Release |
-| `component` | Prompt Builder, RAG runtime, Credentials, Model Definition Builder, Definitions, Documentation or General - from the section heading when it names one, else from the entry's wording. Entries about the RAG Builder are filed under Prompt Builder, which it is part of, and no entry of a release before 2.0.0 is filed under RAG runtime |
+| `component` | Prompt Builder, RAG runtime, Credentials, Model Definition Builder, Definitions, Documentation or General - from the section heading when it names one, else from the entry's wording. Entries about the RAG Builder are filed under Prompt Builder, which it is part of, and no entry of a release before 2.0.0 is filed under RAG runtime. An entry whose headline is about the release table itself is filed under Model Definition Builder, and an entry that adds definitions under Definitions when its headline names them and nothing of `mdb` |
 | `summary`, `detail` | the entry's bold lead (or its first sentence, of which only the beginning is kept when it is longer than 140 characters) and the rest, as plain text |
 | `builder_part` | the part of the Prompt Builder an entry concerns: `Prompt`, `Decision` or `RAG`; empty for the release intro and for every component other than Prompt Builder and RAG runtime. The last column |
 
@@ -226,16 +226,36 @@ writes the table without contacting SAS Viya, for a look at the rows.
 
 The component is read from the wording with keyword lists, in a fixed order:
 the first component an entry names is the one it is filed under, the Prompt
-Builder first. Two things decide before the wording of the entry. A **section
+Builder first. Three things decide before the wording of the entry. A **section
 heading** that names a component files every entry under it there - the
 entries of 2.0.0 under *RAG cost* are `RAG runtime` rows, those about the
 setup editor of the RAG Builder included. And the **release**: `rag_core`, the
 RAG steps and the vector stores came with 2.0.0, so an older entry that
 "retrieves" or "enriches" something is filed under the next component it
-names. What the Prompt Builder is recognised by includes its buttons and
+names. And a **headline about the release table** - one that names the
+release table, `ACCELERATOR_RELEASES` or `mdb load-releases`: `mdb` makes
+the table, and such an entry names the Prompt Builder, the RAG Builder or
+the RAG runtime as values of the column, not as what changed, so it is a
+`Model Definition Builder` row whatever it names. This holds for the
+headline only: an entry that names the table in its text, as what a report
+object is assigned, is filed by its wording (2.0.5 *The RAG Builder object
+in the shipped package has a data assignment* is a `Prompt Builder` row).
+What the Prompt Builder is recognised by includes its buttons and
 objects - a prompt-test, the experiment tracker, the judge, the best prompt -
 and an entry that says it holds for *both builders*, the Prompt Builder and
 the RAG Builder of 2.0.0 to 2.2.x.
+
+One thing decides after the wording. `mdb` is the tool and the definitions
+are what it makes, so an entry that adds definitions says what `mdb`
+generated or renders, and its wording files it under `Model Definition
+Builder`. It is filed under `Definitions` when its headline holds the word
+*definitions* and nothing `mdb` is recognised by: 2.2.0 *Shipped
+definitions*, and the open-source CPU embedding definitions of 1.1.0. A
+headline that names the tool as well - *`mdb sync --rebuild` regenerates
+the fact sheets from the definitions* - stays with the tool, and so does
+one that names a single definition or a definition kind. These two rules
+were checked on the CSV that `mdb load-releases --csv` writes from this
+changelog and by the tests of `mdb`; they were not run in SAS Viya.
 
 The line the command ends with counts the release headings of the changelog,
 which is not the number of versions: `CHANGELOG.md` has the heading `[0.1.29]`
@@ -325,7 +345,12 @@ are rows of the empty value. With `Prompt Builder` alone in the filter, the
 RAG button lacks the `RAG runtime` rows, and among those are entries about the
 interface of the RAG Builder: 2.0.0 lists some under its headings *RAG cost*
 and *Enrichment: making a chunk say where it came from*, and those headings
-file every entry under them as `RAG runtime`.
+file every entry under them as `RAG runtime`. The entries about the release
+table itself are `Model Definition Builder` rows with an empty
+`builder_part`: a page filtered on `Prompt Builder` does not list them, and
+with `Model Definition Builder` added to the filter no button of the bar
+shows them - read from the table as CSV, not measured in SAS Visual
+Analytics.
 
 `mdb load-releases` changes the table and not the report: the page with the
 button bar comes with the Prompt Builder package a maintainer exports after
