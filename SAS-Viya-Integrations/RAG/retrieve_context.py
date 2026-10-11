@@ -52,14 +52,15 @@ Signature (a decision maps these to terms):
 
 Connection resolution (design §4 destination boundary), per value:
   1. the per-call options input (external callers with their own secrets)
-  2. secrets from the SAS Viya credentials service when a session token is
-     present (compute sessions): entries {BACKEND}_RAG_USER and
-     {BACKEND}_RAG_PW in the credential domain (the backend prefix lets one
-     domain serve several vector stores)
-  3. environment variables (SCR/MAS deploy-time injection; local .env):
+  2. environment variables (SCR/MAS deploy-time injection; local .env):
      {BACKEND}_RAG_USER/{BACKEND}_RAG_PW for the secrets,
      {BACKEND}_HOST/PORT/DB/SSLMODE — or the shared RAGSTORE_* fallback — for
      connection config, RAGEMBED_* for the embedder
+  3. secrets from the SAS Viya credentials service when a session token is
+     present (compute sessions): entries {BACKEND}_RAG_USER and
+     {BACKEND}_RAG_PW in the credential domain (the backend prefix lets one
+     domain serve several vector stores). The service is asked only when
+     the user or the password is still missing after 1 and 2
   4. the manifested constants below
 A decision definition never stores a secret.
 
@@ -86,10 +87,10 @@ runs Python where the bundle is not mounted. RAGEMBED_SSLVERIFY=true and
 RAGSTORE_SSLVERIFY=true on the destination turn verification back on without
 manifesting again.
 
-The EMBEDDING provider key is different, and only step 1 or 3 can supply it:
+The EMBEDDING provider key is different, and only step 1 or 2 can supply it:
 an API-backed embedding container reads API_KEY out of the SCR options, and a
 decision running in SAS Intelligent Decisioning has no SAS Viya session token,
-so step 2 cannot resolve anything there. Pass it as API_KEY in the options
+so step 3 cannot resolve anything there. Pass it as API_KEY in the options
 input, or set RAGEMBED_API_KEY on the destination. A locally-served embedding
 model needs none.
 

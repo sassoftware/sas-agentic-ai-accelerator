@@ -213,9 +213,12 @@ deployment time**, using the same names as the `.env` and the domain (for a
 vector store: `<BACKEND>_RAG_USER` / `<BACKEND>_RAG_PW`, e.g.
 `PGVECTOR_RAG_USER`; connection config: the `RAGSTORE_*` variables; the
 embedding call: the `RAGEMBED_*` variables), exactly like the LLM containers
-receive their configuration today. The manifested retrieval code tries the
-credential domain first and falls back to the environment variables, so the
-same artifact runs on every destination. The LLM containers themselves are
+receive their configuration today. The manifested retrieval code takes the
+user and the password of the vector store from the `options` input of the
+call first, then from the environment variables, and asks the credential
+domain only for what is still missing after both, so the same artifact runs
+on every destination. Where the two variables are set, they are used and the
+domain is not asked. The LLM containers themselves are
 unaffected either way: they receive the API key per call via the options
 payload, resolved by the caller.
 
