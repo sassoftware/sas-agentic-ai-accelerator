@@ -195,6 +195,94 @@ def test_saved_table_that_can_not_be_loaded_is_not_overwritten(program):
 
 
 # ---------------------------------------------------------------------------
+# What the step takes from the SAS session
+#
+# The code file starts a CAS session and assigns its librefs in its first lines.
+# The step is the program without them, and its About tab says what it does in a
+# session that has neither. Held here is the text of both: whoever changes the
+# program changes the About tab with it.
+# ---------------------------------------------------------------------------
+
+def _about_tab():
+    """The texts of the step's About tab by the id of their control, each on one line."""
+    about = next(page for page in json.loads(step_definition()["ui"])["pages"] if page["id"] == "pageAbout")
+    controls = list(about["children"])
+    texts = {}
+    while controls:
+        control = controls.pop()
+        controls += control.get("children", [])
+        if control["type"] == "text":
+            texts[control["id"]] = " ".join(control["text"].split())
+    return texts
+
+
+def test_code_file_brings_the_cas_session_and_the_librefs_the_step_takes_from_its_session():
+    code_file = code_file_program()
+    step = step_program()
+
+    first_lines = code_file[:code_file.index(step)]
+    for statement in ("cas mysess;", "libname public cas caslib='Public';", "libname casuser cas caslib='casuser';"):
+        assert statement in first_lines, statement
+    statements = [line.strip() for line in step.split("\n")]
+    assert not [line for line in statements if line.startswith("libname ")]
+    # The only session the step ever starts is the one it also ends
+    assert [line for line in statements if line.startswith("cas ")] == ["cas llmLogMySess;", "cas llmLogMySess terminate;"]
+
+
+@pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
+def test_a_cas_session_is_started_only_where_there_is_none_and_ended_only_then(program):
+    program = program()
+
+    start = program.index("* Check if a CAS session exists;")
+    check = program[start:program.index("proc cas;", start)].split("\n")
+    assert check[1:4] == ["%if %symexist(_CASNAME_) EQ 0 %then %do;", "    %let _log_clean_cas_session = 1;", "    cas llmLogMySess;"]
+    assert check[5:7] == ["%else %do;", "    %let _log_clean_cas_session = 0;"]
+    clean_up = program[program.index("* Clean up;"):]
+    assert "%if &_log_clean_cas_session. %then %do;\n    cas llmLogMySess terminate;\n%end;" in clean_up
+
+
+@pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
+def test_the_caslib_is_read_from_the_libref_and_a_libref_that_is_not_assigned_stops_nothing(program):
+    """The select finds no row for a libref the session does not have, which leaves the
+    macro variable as it is: its value then reaches CAS as the name of the caslib."""
+    program = program()
+
+    lookup = program[program.index("* Get the caslib name of the libname;"):program.index("* Check if a CAS session exists;")]
+    assert "select sysvalue into :_log_target_table_lib trimmed" in lookup
+    assert "from dictionary.libnames" in lookup
+    assert "where libname = upcase(\"&_log_target_table_lib.\") and upcase(sysname) = 'CASLIB';" in lookup
+    assert "abort" not in lookup
+    assert 'casLib = "&_log_target_table_lib.",' in program[program.index("%macro _log_handle_output_table;"):]
+
+
+def test_about_tab_names_what_the_step_takes_from_the_session():
+    prerequisites = _about_tab()["textPrereqs"]
+    step = step_program()
+
+    # Named the way the program spells them
+    for name in ("_CASNAME_", "llmLogMySess", "dictionary.libnames", "_TEMP_LLM_LOGS", "SSLCALISTLOC", "SAS_SERVICES_TOKEN"):
+        assert name in prerequisites, name
+        assert name in step, name
+    for option in ("CASHOST", "CASPORT"):
+        assert option in prerequisites, option
+        assert f"SAS.sasfnc('getoption', '{option.lower()}')" in step, option
+    assert "caslib CASUSER" in prerequisites and "caslib='CASUSER'," in step
+    assert "starts a CAS session of its own (llmLogMySess) and ends it as its last action" in prerequisites
+    assert "the name of the libref is handed to CAS as the name of the caslib" in prerequisites
+
+
+def test_about_tab_says_that_the_log_file_is_read_on_the_sas_server():
+    about = _about_tab()["textAbout"]
+
+    assert "located on the SAS Server and NOT in SAS Content" in about
+    assert "has to be copied to the SAS Server before the step runs" in about
+    # Any other location ends the step before it reads a line
+    refused = step_program()[:step_program().index("* Ensure that the output table is in CAS;")]
+    assert "if lowCase(locationType) ne 'sasserver' then do;" in refused
+    assert "abort 10;" in refused
+
+
+# ---------------------------------------------------------------------------
 # One block per model kind
 # ---------------------------------------------------------------------------
 
