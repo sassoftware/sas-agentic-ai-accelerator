@@ -359,9 +359,10 @@ def _status_length():
 
 
 def test_a_status_with_both_notes_fits_its_declared_length():
-    """An output longer than the length it is registered with makes SAS
-    Micro Analytic Service fail the execution. The notes quote what the
-    caller sent, so each quotes at most 40 characters of it."""
+    """An output much longer than the length it is registered with made SAS
+    Micro Analytic Service fail an execution (measured for the context
+    outputs). The notes quote what the caller sent, so each quotes at most
+    40 characters of it and the status stays within its length."""
     module = _load()
     _wired(module, hits=[])
     _, _, status, _ = module.execute(QUESTION, "k" * 5000, "", "m" * 5000, "")

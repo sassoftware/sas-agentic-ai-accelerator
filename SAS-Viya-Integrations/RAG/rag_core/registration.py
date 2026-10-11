@@ -42,12 +42,13 @@ TLS_VERIFICATION_OFF_TAG = "TLS-Verification-Off"
 #: The retrieval model's variables: (name, type, length, description).
 #:
 #: EVERY variable carries a length. SAS Model Manager stores 99 for a string
-#: variable registered without one, SAS Intelligent Decisioning declares the
-#: model in its wrapper with what is stored (`in_out varchar(100)`), and SAS
-#: Micro Analytic Service then fails the execution as soon as a value is
-#: longer - found live with the two context outputs of a model the Prompt
-#: Builder had written without lengths: HTTP 201, an empty error column, every
-#: output of every node of the decision empty.
+#: variable registered without one, and SAS Intelligent Decisioning declares
+#: the model in its wrapper with what is stored (`in_out varchar(100)`). Found
+#: live with the two context outputs of a model the Prompt Builder had
+#: written without lengths: SAS Micro Analytic Service failed the execution
+#: when envelopes of about 2,000 characters came back - HTTP 201, an empty
+#: error column, every output of every node of the decision empty. By how
+#: much a value has to be longer for that was not measured.
 #:
 #: The Builder holds the same two lists (INPUT_VARIABLES and OUTPUT_VARIABLES
 #: in rag-builder.ts), and test_manifest_parity.py compares them entry by
