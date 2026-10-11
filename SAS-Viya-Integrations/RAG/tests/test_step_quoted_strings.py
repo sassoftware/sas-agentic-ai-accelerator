@@ -168,20 +168,29 @@ def test_the_summary_never_stands_inside_a_quoted_string(name):
 
 
 @pytest.mark.parametrize("name", sorted(RAG_STEPS))
-def test_the_summary_is_read_with_symget_and_printed_as_before(name):
+def test_the_summary_is_read_with_symget_and_printed_a_part_a_line(name):
+    """Each part is one value with its prefix. `putLog "NOTE:   " part;`
+    wrote two: a part that did not fit into the rest of the line then went
+    to the next line without the prefix, and the prefix stayed behind as an
+    empty NOTE line (seen in a live log of RAG - Register Setup, whose list
+    of artifacts is longer than a log line)."""
     prefix = RAG_STEPS[name]
     sas = _around_python(name)
     block = re.search(
         r"    data _null_;\n"
-        r"        length summary \$ 6000 part \$ 500;\n"
+        r"        length summary \$ 6000 part \$ (\d+) line \$ (\d+);\n"
         r'        summary = symget\("_%s_summary"\);\n'
         r'        putLog "NOTE: ----- %s -----";\n'
         r'        do i = 1 to countw\(summary, "\|"\);\n'
         r'            part = strip\(scan\(summary, i, "\|"\)\);\n'
-        r'            if part ne "" then putLog "NOTE:   " part;\n'
+        r'            line = "(NOTE:   )" \|\| part;\n'
+        r'            if part ne "" then putLog line;\n'
         r"        end;\n"
         r"    run;\n" % (prefix, re.escape(name)), sas)
     assert block, "the summary is no longer printed the pinned way"
+    # the line holds the prefix and all of the part
+    assert int(block.group(2)) >= int(block.group(1)) + len(block.group(3))
+    assert 'putLog "NOTE:   " part;' not in sas
     # the summary, and the message of a failed run
     assert sas.count("symget(") == 2
     assert "countw(\"%superq" not in sas and "scan(\"%superq" not in sas
@@ -198,7 +207,7 @@ def test_the_variable_holds_whatever_the_python_block_hands_over(name):
     assert len(handed_over) == 1, "the summary is no longer cut where it was"
     assert 'publish_summary("_%s_summary")' % prefix in python \
         or "publish_summary('_%s_summary')" % prefix in python
-    declared = re.findall(r"length summary \$ (\d+) part \$ \d+;",
+    declared = re.findall(r"length summary \$ (\d+) part \$ \d+ line \$ \d+;",
                           _around_python(name))
     assert len(declared) == 1
     # both numbers are read from the file: a longer cut, or a shorter
