@@ -689,6 +689,18 @@ def test_a_tag_written_to_a_model_nothing_was_known_about_is_said(
     assert run.sas.macros["_rgrg_tlsState"] == state
     assert run.sas.macros["_rgrg_tlsTag"] == "assumed"
     assert any("was written to it unseen" in line for line in run.sas.log)
+    # What the SAS behind the program then writes for this pair of states.
+    # The run WROTE the tag, so no line may say that the tag was not updated
+    # and leave it at that - which is what the two blocks said one after the
+    # other for an upload without an answer.
+    said = _tls_lines(run.sas.macros["_rgrg_tlsState"],
+                      run.sas.macros["_rgrg_tlsTag"])
+    text = " ".join(said)
+    assert ("before the upload the run therefore wrote the tag "
+            "TLS-Verification-Off to the model") in text
+    assert "was not updated and may not say" not in text
+    assert ("was not updated after the upload" in text) == (state == "unsure")
+    assert len(said) == (5 if state == "unsure" else 3)
 
 
 def test_a_tag_the_listing_showed_is_not_an_assumed_one(monkeypatch, tmp_path):
@@ -749,6 +761,36 @@ def _warnings(condition):
     after = _tls_macro().split(condition, 1)[1]
     group = after.split("run;", 1)[0]
     return re.findall(r'putLog "(WARNING: [^"]*)";', group)
+
+
+def _tls_lines(state, tag):
+    """The lines %_rgrg_tls_warnings writes for one pair of states.
+
+    No SAS runs here, and the macro does not need one to be followed: it
+    holds nothing but `%if &variable. EQ value %then %do;`, `%else %do;`,
+    `%end;` and DATA steps of putLog statements. A line of any other kind
+    stops the reading, so the macro cannot grow past what is followed here.
+    """
+    values = {"_rgrg_tlsState": state, "_rgrg_tlsTag": tag}
+    macro = re.sub(r"/\*.*?\*/", "", _tls_macro(), flags=re.DOTALL)
+    lines, open_groups, closed = [], [], False
+    for text in (line.strip() for line in macro.split("\n")):
+        test = re.fullmatch(r"%if &(\w+)\. EQ (\w+) %then %do;", text)
+        written = re.fullmatch(r'putLog "(.*)";', text)
+        if test:
+            open_groups.append(values[test.group(1)] == test.group(2))
+        elif text == "%else %do;":
+            # the group that closed just before is the %if this belongs to
+            open_groups.append(not closed)
+        elif text == "%end;":
+            closed = open_groups.pop()
+        elif written:
+            if all(open_groups):
+                lines.append(written.group(1))
+        else:
+            assert text in ("", "data _null_;", "run;"), text
+    assert not open_groups
+    return lines
 
 
 def test_the_states_the_python_sets_are_the_states_the_sas_reads():
@@ -814,10 +856,10 @@ def test_every_warning_is_a_line_sas_prints_as_a_warning_without_complaining():
     literals = re.findall(r'putLog "([^"]*)";', _tls_macro())
     warnings = [text for text in literals if text.startswith("WARNING")]
     # off: three lines, then the tag written or not; stale: three lines; not
-    # known whether the score code was stored: two lines; the tag written to
-    # a model that could not be read: three lines; and the tag that could
-    # not be removed
-    assert len(warnings) == 14
+    # known whether the score code was stored: one line, and one of two about
+    # the tag; the tag written to a model that could not be read: three
+    # lines; and the tag that could not be removed
+    assert len(warnings) == 15
     # and one in the status macro, for the run that failed after the upload
     literals = re.findall(r'putLog "([^"]*)";', _status_macro())
     failed = [text for text in literals if text.startswith("WARNING")]
@@ -829,7 +871,7 @@ def test_every_warning_is_a_line_sas_prints_as_a_warning_without_complaining():
 
 
 def test_an_upload_without_an_answer_is_a_warning_that_says_run_again():
-    lines = _warnings("%if &_rgrg_tlsState. EQ unsure %then %do;")
+    lines = _tls_lines("unsure", "ok")
     text = " ".join(lines)
     assert len(lines) == 2
     assert "it is not known whether SAS Model Manager stored the score code" in text
@@ -837,6 +879,52 @@ def test_an_upload_without_an_answer_is_a_warning_that_says_run_again():
     assert ("the tag TLS-Verification-Off was not updated and may not say what "
             "the stored score code does") in text
     assert "Run this step again" in text
+    # the first of the two is written whatever the tag
+    assert _warnings("%if &_rgrg_tlsState. EQ unsure %then %do;") == lines[:1]
+
+
+def test_an_upload_without_an_answer_does_not_deny_a_tag_the_run_wrote():
+    """The model could not be read and the listing showed no tags, so the
+    run wrote the tag before the upload; the upload then got no answer. The
+    step said `the tag TLS-Verification-Off was not updated` and, two lines
+    on, `the run therefore wrote the tag TLS-Verification-Off to the model`.
+    It now says what rag_core says in the same case: not updated AFTER the
+    upload."""
+    lines = _tls_lines("unsure", "assumed")
+    assert len(lines) == 5
+    assert lines[0].endswith("the file may have been stored all the same.")
+    assert lines[1] == (
+        "WARNING: RAG - Register Setup: the tag TLS-Verification-Off was not "
+        "updated after the upload and may not say what the stored score code "
+        "does. Run this step again.")
+    assert "before the upload the run therefore wrote the tag" in lines[3]
+    assert not any("was not updated and may not say" in line for line in lines)
+    # the wording of rag_core for the same pair, word for word
+    import inspect
+
+    import rag_core.registration
+    source = inspect.getsource(rag_core.registration.register_setup)
+    assert '("was not updated" if not assumed else' in source
+    assert '"was not updated after the upload")' in source
+
+
+def test_the_lines_of_every_pair_of_states_are_the_ones_meant_for_it():
+    """The macro followed for every state the Python can leave: how many
+    lines, and that the two wordings about the tag never stand together."""
+    counts = {(state, tag): len(_tls_lines(state, tag))
+              for state in ("unknown", "on", "off", "stale", "unsure")
+              for tag in ("ok", "failed", "assumed")}
+    assert counts == {
+        ("unknown", "ok"): 0, ("unknown", "failed"): 1, ("unknown", "assumed"): 3,
+        ("on", "ok"): 0, ("on", "failed"): 1, ("on", "assumed"): 3,
+        ("off", "ok"): 4, ("off", "failed"): 4, ("off", "assumed"): 4,
+        ("stale", "ok"): 3, ("stale", "failed"): 4, ("stale", "assumed"): 6,
+        ("unsure", "ok"): 2, ("unsure", "failed"): 3, ("unsure", "assumed"): 5}
+    for state in ("unknown", "on", "off", "stale", "unsure"):
+        for tag in ("ok", "failed", "assumed"):
+            text = " ".join(_tls_lines(state, tag))
+            assert not ("was not updated and may not say" in text
+                        and "the run therefore wrote the tag" in text), (state, tag)
 
 
 def test_a_tag_written_unseen_is_a_warning_of_its_own():
@@ -844,10 +932,12 @@ def test_a_tag_written_unseen_is_a_warning_of_its_own():
     only once the score code is stored, and the tag is settled after it."""
     macro = _tls_macro()
     condition = "%if &_rgrg_tlsTag. EQ assumed %then %do;"
-    assert macro.count(condition) == 1
+    # once for the block of its own, and once inside the block of an upload
+    # without an answer, where it chooses the wording of the line on the tag
+    assert macro.count(condition) == 2
     assert macro.index(condition) > macro.index(
         "%if &_rgrg_tlsState. EQ unsure %then %do;")
-    lines = _warnings(condition)
+    lines = _tls_lines("unknown", "assumed")
     text = " ".join(lines)
     assert len(lines) == 3
     assert "the model could not be read before this run updated it" in text
