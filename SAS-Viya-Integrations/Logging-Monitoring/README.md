@@ -71,7 +71,7 @@ The collection script in the [Logging & Monitoring administration guide](../../w
 
 *Log-Parser-Code.sas* starts a CAS session and assigns the librefs `public` and `casuser` in its first lines. The custom step is the program without them:
 
-- It runs in the CAS session that is active. When the macro variable `_CASNAME_` does not exist it starts a session of its own (`llmLogMySess`) and ends it as its last action, so of such a run only a table that was promoted or saved is left.
+- It asks the `SESSFOUND` function whether the session that the SAS option `SESSREF` names is connected - that is the session its CAS actions run in. When it is connected, the step runs in it and does not end it. When it is not, the step starts a session of its own (`llmLogMySess`) and ends it as its last action, so of such a run only a table that was promoted or saved is left. The option goes on naming a session that was ended, the step's own included, so the name is not taken for a session: `%sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1` is the whole test, and *Log-Parser-Code.sas* holds the same line behind its own `cas mysess;`.
 - It reads the caslib of the output table from its libref. When the libref is not assigned in the session, the name of the libref is handed to CAS as the name of the caslib.
 
 The code file and the step both need the caslib `CASUSER` of the user who runs them for the staging table `_TEMP_LLM_LOGS`, and PROC PYTHON with the pandas and swat packages. The guide lists what the step takes from the session in full, what was run on a SAS Viya system and what was not.
@@ -84,7 +84,7 @@ The code file and the step both need the caslib `CASUSER` of the user who runs t
 python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests
 ```
 
-The SAS code around that Python - the CAS actions that replace, append, load, promote and save the table - does not run in these tests: they hold its text and the order of its actions, and the text of the step's About tab and of the guide where those describe the program. What a run on SAS Viya showed is in the guide under *What Was Measured*.
+The SAS code around that Python - the CAS actions that replace, append, load, promote and save the table - does not run in these tests: they hold its text and the order of its actions, and the text of the step's About tab and of the guide where those describe the program. The condition of the session check is taken from the program and decided for three states of a SAS session - no CAS session, the step's own session ended with its name left in the option, a session of the user - with the results SAS documents for `SESSFOUND` and `GETOPTION`. What a run on SAS Viya showed is in the guide under *What Was Measured*.
 
 The program lives in both files. Change *Log-Parser-Code.sas*, then carry the same code into the `templates.SAS` entry of *LLM - Log Parser.step* (the step is one line of JSON - load it, replace the entry and write it back compactly rather than editing it by hand); the tests fail while the two differ.
 
