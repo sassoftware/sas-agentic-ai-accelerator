@@ -4,6 +4,9 @@ writes exactly like the unredacted log.
 
 The redaction is run for real: the sed expressions are taken from the guide and handed
 to sed. That needs GNU sed, as the script itself does; without it these tests are skipped.
+
+The guide also says where the parser reads the collected file. That part is held against
+the program it describes.
 """
 import re
 import shlex
@@ -17,6 +20,7 @@ from log_parser_harness import (
     DECISION_ANSWERS,
     DECISION_QUESTIONS,
     as_log,
+    code_file_program,
     decision_block,
     embedding_block,
     llm_block,
@@ -201,3 +205,52 @@ def test_the_parser_reads_a_redacted_log_like_the_unredacted_one(monkeypatch, tm
     assert redacted.loc[1, "system_prompt"] == "Don't guess."
     assert (redacted.loc[2, "system_prompt"], redacted.loc[2, "response"]) == (DECISION_QUESTIONS, DECISION_ANSWERS)
     assert redacted.loc[3, "prompt_length"] == 17
+
+
+# ---------------------------------------------------------------------------
+# Where the parser reads the file
+# ---------------------------------------------------------------------------
+
+def guide_section(heading, next_heading):
+    """A section of the guide on one line, from its heading to the next one named."""
+    guide = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    return guide[guide.index(heading):guide.index(next_heading)]
+
+
+def copy_from_sas_content():
+    """The SAS statements of the guide that bring the collected file from SAS Content to the compute server."""
+    guide = GUIDE.read_text(encoding="utf-8").replace("\r\n", "\n")
+    match = re.search(r"```SAS\n(/\* Copy the collected file from SAS Content to the SAS compute server \*/\n.*?)```", guide, re.DOTALL)
+    assert match, "the guide no longer holds the copy from SAS Content"
+    return match.group(1)
+
+
+def test_the_guide_calls_its_paths_examples_and_names_the_ones_in_use():
+    """The path the script writes to and the path the parser reads are the same file only
+    where both hosts mount the same storage. The guide says so about the two paths that
+    the script and the code file really hold."""
+    section = guide_section("## Getting the File to the SAS Compute Server", "### Without a Shared Mount")
+
+    assert "site specific" in section
+    script_path = re.search(r'^llm_log_path="([^"]+)"$', collection_script(), re.MULTILINE).group(1)
+    assert f"`{script_path}`" in section
+    default = re.search(r"^%let _log_path = sasserver:\S+;$", code_file_program(), re.MULTILINE).group(0)
+    assert f"`{default}`" in section
+
+
+def test_the_copy_from_sas_content_ends_where_the_parser_reads():
+    """The parser takes a file on the SAS server only, named with sasserver: in front."""
+    block = copy_from_sas_content()
+
+    assert re.search(r"^filename llmsrc filesrvc folderpath='[^']+' filename='[^']+' recfm=n lrecl=32767;$", block, re.MULTILINE)
+    target = re.search(r"^filename llmdst '([^']+)' recfm=n lrecl=32767;$", block, re.MULTILINE).group(1)
+    assert "rc = fcopy('llmsrc', 'llmdst');" in block
+    assert f"%let _log_path = sasserver:{target};" in block
+    assert "if lowCase(locationType) ne 'sasserver' then do;" in code_file_program()
+
+
+def test_the_copy_from_sas_content_names_no_system():
+    block = copy_from_sas_content()
+
+    assert "folderpath='/Users/<user>/My Folder/<folder>'" in block
+    assert "://" not in block and ".com" not in block

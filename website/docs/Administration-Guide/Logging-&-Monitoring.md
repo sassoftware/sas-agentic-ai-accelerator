@@ -31,7 +31,7 @@ Only use this script if you do not have a more robust process in place.
 
 Create a script—for example `collect_llm_logs.sh`—and ensure that it is executable.
 Use the code below and change both the namespace and the log path.
-The namespace should be the namespace into which you have deployed the models, and the path needs to be reachable from inside of SAS Studio.
+The namespace should be the namespace into which you have deployed the models, and the path needs to be reachable from inside of SAS Studio. The path below is an example and site specific - see [Getting the File to the SAS Compute Server](#getting-the-file-to-the-sas-compute-server) for what it assumes and for a way without it.
 You can also change the logging interval; note that any changes you make here will have to be reflected in the entry for the `crontab`.
 The default here also replaces the log file as the assumption is that you pick up the new entries using the parsing script and append (though a full replacement is also supported).
 
@@ -74,6 +74,48 @@ Next add the following entry to your crontab (`crontab -e`), adjusting your path
 ```
 
 This entry will run the log collection script at the top of every hour.
+
+## Getting the File to the SAS Compute Server
+
+The paths of this guide are examples, and both are site specific. The script writes to `/viya-share/pvs/sasdata/data/llm/llms.log` and the parser's default is `%let _log_path = sasserver:/export/pvs/sasdata/data/llm/llms.log;`. The two name the same file only on a system where the host that runs the script and the SAS compute server mount the same storage under these two paths. Set `llm_log_path` to the file as the collecting host sees it and `_log_path` to the same file as a compute session sees it, with `sasserver:` in front: the parser reads the file from the file system of the compute server, stops with an error for any other location and does not read from SAS Content.
+
+Whether a compute session sees a directory can be asked in that session, `exists=1` means it does:
+
+```SAS
+data _null_;
+    exists = fileexist('/export/pvs/sasdata/data/llm');
+    put exists=;
+run;
+```
+
+### Without a Shared Mount
+
+On the test system (SAS Viya 2026.09, measured on 2026-10-11) there is no such mount: in a compute session neither `/export` nor `/viya-share` existed, and the workstation that collected the logs shares no directory with the compute server. The file went through SAS Content there:
+
+1. The script of this guide wrote the redacted file to a local directory of the collecting host (`llm_log_path`).
+2. The file was uploaded to a folder in SAS Content with the Files service: `POST /files/files` with the folder as `parentFolderUri`, the file as the body and its name in the `Content-Disposition` header.
+3. The job that runs the parser first copied the file from SAS Content into the compute session, with a `FILESRVC` file reference and `fcopy`, and the parser then read the copy:
+
+```SAS
+/* Copy the collected file from SAS Content to the SAS compute server */
+filename llmsrc filesrvc folderpath='/Users/<user>/My Folder/<folder>' filename='llms.log' recfm=n lrecl=32767;
+filename llmdst '/tmp/llms.log' recfm=n lrecl=32767;
+data _null_;
+    length msg $300;
+    rc = fcopy('llmsrc', 'llmdst');
+    msg = sysmsg();
+    put 'Copy of llms.log: ' rc= msg=;
+run;
+filename llmsrc clear;
+filename llmdst clear;
+
+/* Log-Parser-Code.sas follows, with the copy as the log */
+%let _log_path = sasserver:/tmp/llms.log;
+```
+
+These are the statements that ran. The folder, the file name, the names of the two file references and the text of the `put` line are replaced here: the folder was one below the *My Folder* of the user who ran the job, and each collection had a file name of its own. `fcopy` returned 0. The copy of the first collection had the size and the MD5 digest of the collected file (558,176 bytes), and a file of 0 bytes arrived as a file of 0 bytes. `/tmp` is a directory that existed in the compute session of that system; take one your compute server can write to. The three steps were started one after the other, not from a crontab entry.
+
+The file in SAS Content holds the prompts and the responses like the log itself, so whoever may read that folder reads them (see the note at the top of this page).
 
 # The LLM Usage Report
 
