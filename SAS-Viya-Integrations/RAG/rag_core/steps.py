@@ -1018,6 +1018,15 @@ def record_history(adapter, inventory: list, previous_ledger: list,
         log(f"rag history: run {run_id} recorded, {written['events']} document "
             f"events")
     except Exception as exc:
+        # The connection is the adapter's and outlives this function: the
+        # caller reads history back over it to publish the CAS tables. A
+        # failed statement leaves a PostgreSQL transaction aborted, so it is
+        # rolled back here whatever raised - a store without transactions
+        # has nothing to undo and may not offer rollback at all.
+        try:
+            adapter.raw_connection().rollback()
+        except Exception:
+            pass
         log(f"rag history: not recorded ({type(exc).__name__}: "
             f"{str(exc)[:160]}) - the load itself is unaffected")
     return written

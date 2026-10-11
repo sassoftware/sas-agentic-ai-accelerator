@@ -37,8 +37,8 @@ RUN_COLUMNS = [
     "finished_at", "status", "pipeline_version", "config_id", "embed_model",
     "embed_dims", "chunker", "input_token_limit", "overlap_tokens",
     "docs_new", "docs_changed", "docs_unchanged", "docs_deleted",
-    "docs_skipped", "docs_failed", "docs_ingested", "chunks_written",
-    "chunks_retired",
+    "docs_skipped", "docs_excluded", "docs_failed", "docs_ingested",
+    "chunks_written", "chunks_retired",
     "collection_chunks", "embed_calls", "embed_tokens", "embed_seconds",
     "enrich_model", "enrich_calls", "enrich_input_tokens",
     "enrich_output_tokens", "enrich_seconds", "enrich_failed",
@@ -55,8 +55,8 @@ RUN_COLUMNS = [
 RUN_NUMERIC = [
     "embed_dims", "input_token_limit", "overlap_tokens",
     "docs_new", "docs_changed", "docs_unchanged", "docs_deleted",
-    "docs_skipped", "docs_failed", "docs_ingested", "chunks_written",
-    "chunks_retired",
+    "docs_skipped", "docs_excluded", "docs_failed", "docs_ingested",
+    "chunks_written", "chunks_retired",
     "collection_chunks", "embed_calls", "embed_tokens", "embed_seconds",
     "enrich_calls", "enrich_input_tokens", "enrich_output_tokens",
     "enrich_seconds", "enrich_failed",
@@ -70,7 +70,11 @@ EVENT_COLUMNS = [
 
 EVENT_NUMERIC = ["chunk_count_before", "chunk_count_after"]
 
-# what a run's document counts are keyed on
+# what a run's document counts are keyed on. close_run writes one
+# `docs_<name>` column per entry, so each name needs that column in
+# RUN_COLUMNS, in ddl() AND - for a store that already exists - in
+# additive_migrations(); a name without all three makes every rag_runs
+# write fail on an unknown column.
 _STATUS_COUNTS = ("new", "changed", "unchanged", "deleted", "skipped",
                   "excluded",
                   "failed", "ingested")
@@ -85,6 +89,7 @@ _DIALECTS = {
         "upsert": "ON CONFLICT ({key}) DO UPDATE SET {sets}",
         "excluded": "EXCLUDED.{column}",
         "shard": "",
+        "schema": "current_schema()",
     },
     "mysql": {
         "text": "LONGTEXT",
@@ -95,6 +100,7 @@ _DIALECTS = {
         "upsert": "ON DUPLICATE KEY UPDATE {sets}",
         "excluded": "VALUES({column})",
         "shard": ",\n    SHARD KEY ({shard})",
+        "schema": "DATABASE()",
     },
 }
 
@@ -164,6 +170,7 @@ class History:
     docs_unchanged    integer DEFAULT 0,
     docs_deleted      integer DEFAULT 0,
     docs_skipped      integer DEFAULT 0,
+    docs_excluded     integer DEFAULT 0,
     docs_failed       integer DEFAULT 0,
     docs_ingested     integer DEFAULT 0,
     chunks_written    integer DEFAULT 0,
@@ -205,14 +212,15 @@ class History:
         ]
 
     def additive_migrations(self) -> list:
-        """Columns added after the first release, as best-effort ALTERs.
+        """Columns added after the first release, one ALTER each.
 
         A history table created by an earlier version is already sitting in a
         customer's database with rows in it, and CREATE TABLE IF NOT EXISTS
-        will not widen it. These statements run every time and are EXPECTED to
-        fail once the column is there - Postgres supports ADD COLUMN IF NOT
-        EXISTS but the MySQL-protocol stores do not, so the portable form is
-        "try it and ignore the duplicate-column error".
+        will not widen it. Postgres supports ADD COLUMN IF NOT EXISTS but the
+        MySQL-protocol stores do not, so ensure_tables() decides which of
+        these to run: the ones whose column the table lacks, or - when the
+        store cannot say which columns it has - all of them, ignoring the
+        duplicate-column error.
         """
         short = "VARCHAR(128)" if self.dialect == "mysql" else self._d["text"]
         return [
@@ -225,30 +233,91 @@ class History:
             "ALTER TABLE rag_runs ADD COLUMN enrich_output_tokens integer DEFAULT 0",
             "ALTER TABLE rag_runs ADD COLUMN enrich_seconds double precision DEFAULT 0",
             "ALTER TABLE rag_runs ADD COLUMN enrich_failed integer DEFAULT 0",
+            # documents the deployment excludes (a source file with code
+            # ingestion off) are counted apart from the ones the pipeline
+            # could not read and skipped
+            "ALTER TABLE rag_runs ADD COLUMN docs_excluded integer DEFAULT 0",
         ]
+
+    def _existing_columns(self, table: str):
+        """The columns `table` has in the schema this connection writes to,
+        in lower case - or None when the store does not say.
+
+        None covers a role that may not read information_schema, a driver
+        that answers differently and an empty answer alike: the caller then
+        falls back to trying every ALTER.
+        """
+        try:
+            with self._conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = %s AND table_schema = "
+                    + self._d["schema"], [table])
+                names = {str(row[0]).lower() for row in cursor.fetchall()}
+        except Exception:
+            self._rollback()
+            return None
+        self._commit()
+        return names or None
 
     def ensure_tables(self) -> None:
         with self._conn.cursor() as cursor:
             for statement in self.ddl():
                 cursor.execute(statement)
         self._commit()
+        existing = self._existing_columns("rag_runs")
         for statement in self.additive_migrations():
+            # "ALTER TABLE rag_runs ADD COLUMN <name> <type> ..."
+            column = statement.split()[5].lower()
+            if existing is not None and column in existing:
+                continue
             try:
                 with self._conn.cursor() as cursor:
                     cursor.execute(statement)
                 self._commit()
             except Exception:
-                # already present - the only expected outcome after the first
-                # run. A genuinely broken ALTER surfaces at the INSERT, which
-                # names the column, rather than failing every run from here.
-                try:
-                    self._conn.rollback()     # Postgres poisons the txn
-                except Exception:
-                    pass
+                self._rollback()              # Postgres poisons the txn
+                if existing is None:
+                    # the columns are not known, so "already present" is the
+                    # expected outcome after the first run and is ignored
+                    continue
+                # The column was missing a moment ago. Either a concurrent
+                # run added it in between, which is as good - or the store
+                # refused the ALTER (on PostgreSQL only the owner of rag_runs
+                # may alter it). That one is raised: the caller then logs
+                # the refusal itself and writes nothing, instead of failing
+                # later on an INSERT that names a column nobody could add.
+                now = self._existing_columns("rag_runs")
+                if now is None or column not in now:
+                    raise
 
     def _commit(self):
         try:
             self._conn.commit()
+        except Exception:
+            pass
+
+    def _write(self, sql: str, params: list) -> None:
+        """One history statement, committed - or rolled back when it fails.
+
+        The connection is the vector-store adapter's own. On PostgreSQL a
+        statement that fails leaves the open transaction aborted, and every
+        later statement on that connection is refused until it is rolled
+        back - including the reads that publish history to CAS and whatever
+        the adapter does next. So a failed write is undone here, where it
+        happened, and the error still reaches the caller.
+        """
+        try:
+            with self._conn.cursor() as cursor:
+                cursor.execute(sql, params)
+        except Exception:
+            self._rollback()
+            raise
+        self._commit()
+
+    def _rollback(self):
+        try:
+            self._conn.rollback()
         except Exception:
             pass
 
@@ -281,11 +350,9 @@ class History:
             f"{c} = " + self._d["excluded"].format(column=c)
             for c in columns if c != key)
         clause = self._d["upsert"].format(key=key, sets=sets)
-        with self._conn.cursor() as cursor:
-            cursor.execute(
-                f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({marks}) "
-                + clause, [values[c] for c in columns])
-        self._commit()
+        self._write(
+            f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({marks}) "
+            + clause, [values[c] for c in columns])
 
     def record_events(self, run_id: str, events: list) -> int:
         """Append what happened to each document. Unchanged documents are NOT
@@ -307,11 +374,9 @@ class History:
                 for column in columns:
                     params.append(run_id if column == "run_id"
                                   else event.get(column))
-            with self._conn.cursor() as cursor:
-                cursor.execute(
-                    f"INSERT INTO rag_doc_events ({', '.join(columns)}) VALUES "
-                    + ", ".join([marks] * len(page)), params)
-            self._commit()
+            self._write(
+                f"INSERT INTO rag_doc_events ({', '.join(columns)}) VALUES "
+                + ", ".join([marks] * len(page)), params)
         return len(rows)
 
     def record_config(self, config_id: str, settings) -> None:
@@ -325,11 +390,9 @@ class History:
         clause = self._d["upsert"].format(
             key="config_id",
             sets="settings = " + self._d["excluded"].format(column="settings"))
-        with self._conn.cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO rag_configs (config_id, settings) VALUES (%s, %s) "
-                + clause, [config_id, payload])
-        self._commit()
+        self._write(
+            "INSERT INTO rag_configs (config_id, settings) VALUES (%s, %s) "
+            + clause, [config_id, payload])
 
     # -- reading (for the CAS publish) ---------------------------------------
     def _select(self, sql: str, params: list) -> list:
