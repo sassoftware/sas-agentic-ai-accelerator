@@ -146,6 +146,119 @@ def test_a_run_another_lock_refused_has_taken_none(name):
 
 
 # ---------------------------------------------------------------------------
+# a ledger that holds more than one lock row
+#
+# A run that crashes leaves its lock row behind, and it stays until a run that
+# goes through writes the ledger: after 30 minutes the next run ignores it and
+# appends its own beside it. Whoever looks at that ledger then finds two lock
+# rows - and took one. The lock macro kept the time of the row its DATA step
+# read last, the Python of the steps the first row CAS returned: with the
+# stale row in that place, the fresh lock of the run at work was not seen.
+# The rows can be of three writers: the job Ingest-Documents.sas as it was
+# before 2.3.0 (run_id empty), the job as it is and the steps (run_id set).
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("name", ["RAG - List Documents", "RAG - Purge Documents"])
+def test_the_lock_macro_keeps_the_newest_lock_row(name):
+    prefix = RELEASING[name]
+    lock = _macro(name, "_%s_lock" % prefix)
+    look = lock[lock.index('set %sout.&_%s_ragProject._LEDGER(where=(doc_id = '
+                           '"__run_lock__"));' % (prefix, prefix)):]
+    look = look[:look.index("run;")]
+    # the defect: the time of whichever row came last
+    assert 'call symputx("_%s_lockHeld", mtime, "G");' % prefix not in lock
+    _in_order(look, "retain newest;", "taken = input(mtime, ?? best32.);",
+              "if taken > newest then do;", "newest = taken;",
+              'call symputx("_%s_lockHeld", newest, "G");' % prefix, "end;")
+    # what the macro then does with it is what it did
+    _in_order(lock, "retain newest;",
+              "%%if %%length(&_%s_lockHeld.) GT 0 %%then %%do;" % prefix,
+              "%%if %%sysevalf(&_%s_now. - &_%s_lockHeld. < 1800) %%then %%do;"
+              % (prefix, prefix),
+              "another ingestion run holds the lock on this ledger",
+              "a stale run lock (held longer than 30 minutes) is ignored")
+
+
+READING = ["RAG - List Documents", "RAG - Load Vector Store", "RAG - Purge Documents"]
+OWN = "run-1791812345-0123456789"
+HELD = ("another ingestion run holds the lock on this ledger - wait for it to "
+        "finish, or retry in 30 minutes if it crashed")
+STALE = ["stale run lock ignored (held longer than 30 minutes)"]
+
+
+def _lock_row(age, run_id=""):
+    import time
+    return {"doc_id": "__run_lock__", "mtime": "%.3f" % (time.time() - age),
+            "status": "lock", "run_id": run_id}
+
+
+def _look(name, ledger):
+    """The lines of a step's Python that look for the lock of another run,
+    run on a ledger the step has read (its values already without the
+    blanks of a CHAR column). Returns (the refusal or "", the milestones)."""
+    import textwrap
+    import time
+
+    python = _python(name)
+    start = python.index('        real_rows = [r for r in ledger if r.get("doc_id")')
+    last = '            M("stale run lock ignored (held longer than 30 minutes)")\n'
+    block = textwrap.dedent(python[start:python.index(last) + len(last)])
+    said = []
+    scope = {"time": time, "ledger": ledger, "own_run_id": OWN, "M": said.append}
+    try:
+        exec(compile(block, name, "exec"), scope)
+    except RuntimeError as error:
+        return str(error), said
+    return "", said
+
+
+def test_the_steps_that_look_for_another_lock_are_these_three():
+    for name in sorted(RELEASING):
+        assert ("lock_rows" in _python(name)) == (name in READING), name
+    assert len({_python(name)[_python(name).index("        if lock_rows:"):]
+                .split("M(\"stale run lock ignored", 1)[0] for name in READING}) == 1
+
+
+@pytest.mark.parametrize("name", READING)
+def test_a_stale_lock_row_does_not_hide_a_fresh_one(name):
+    """The defect: lock_rows[0]. The row of the job as it was (no run_id),
+    left hours ago, in front of the row of a run that started a minute ago."""
+    crashed = _lock_row(7200)
+    at_work = _lock_row(60, "run-1791812000-0000000344")
+    for ledger in ([crashed, at_work], [at_work, crashed]):
+        assert _look(name, ledger) == (HELD, [])
+    # both stale: ignored, and said once
+    assert _look(name, [crashed, _lock_row(1900, "run-1791810000-0000000001")]) \
+        == ("", STALE)
+    # a time that cannot be read is stale, as before, and hides nothing
+    unreadable = dict(_lock_row(0), mtime="")
+    assert _look(name, [unreadable]) == ("", STALE)
+    assert _look(name, [dict(unreadable, mtime="x"), at_work]) == (HELD, [])
+
+
+@pytest.mark.parametrize("name", READING)
+@pytest.mark.parametrize("run_id", ["", "run-1791812000-0000000344"],
+                         ids=["the job as it was", "a run with an id"])
+def test_the_lock_row_of_the_job_is_the_lock_of_another_run(name, run_id):
+    """With or without an id: fresh it refuses the step, stale it is
+    ignored. The lock row of the step's own run is neither."""
+    assert _look(name, [_lock_row(60, run_id)]) == (HELD, [])
+    assert _look(name, [_lock_row(1801, run_id)]) == ("", STALE)
+    assert _look(name, [_lock_row(60, OWN)]) == ("", [])
+    assert _look(name, [_lock_row(60, OWN), _lock_row(5, run_id)]) == (HELD, [])
+
+
+def test_the_about_tab_of_the_three_steps_says_which_lock_row_decides():
+    for path in sorted(STEPS.glob("RAG - *.step")):
+        ui = json.loads(path.read_text(encoding="utf-8"))["ui"]
+        # the newest entry of the changelog: from the first version line of
+        # the day to the next version line
+        newest = ui.split("(11OCT2026)", 1)[1].split("* Version: ", 1)[0]
+        assert ("Where the ledger holds more than one lock row, the newest one "
+                "decides whether another run holds the lock" in newest) \
+            == (path.stem in READING), path.stem
+
+
+# ---------------------------------------------------------------------------
 # RAG - Purge Documents in preview mode
 # ---------------------------------------------------------------------------
 def test_a_preview_takes_no_lock_and_starts_no_ledger():
