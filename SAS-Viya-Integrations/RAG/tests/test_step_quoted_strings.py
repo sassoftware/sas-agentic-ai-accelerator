@@ -25,15 +25,25 @@ bytes as it stands in the file, and the only run-time text of open length that
 still reaches a quoted string is the message of a step that FAILED (at most
 500 characters, beside the ERROR line it is written in).
 
-The program between `submit;` and `endsubmit;` is not part of this: the NOTE
-was seen twice and above the summary, not at the Python block, where a scan
-for quoted strings would have found three spans over 262 bytes in RAG -
-Register Setup. Nothing here runs SAS; that the NOTE is gone is measured on a
-live system.
+That the summary was the cause is read from the text; SAS was not asked. The
+file of RAG - Register Setup as it was run held a second pair of strings of
+that length: two docstrings of the program between `submit;` and
+`endsubmit;`, of 362 and 438 bytes. What speaks against them: SAS does not
+read that program as SAS text. RAG - List Documents holds an odd number of
+apostrophes in the comments of its Python, so a scan that paired quotation
+marks across its lines would never find its `endsubmit;` - and the step runs.
+And no line of a Python block is longer than 95 bytes. The docstrings were
+cut to under 262 bytes all the same, in all nine steps, so that no step file
+holds a string of that length in either language; what they explained stands
+below them as comments.
+
+Nothing here runs SAS; that the NOTE is gone is measured on a live system.
 """
+import io
 import json
 import pathlib
 import re
+import tokenize
 
 import pytest
 
@@ -174,6 +184,35 @@ def test_a_macro_variable_in_a_string_is_a_name_or_a_state_not_a_text(name):
     for text in _quoted_strings(_around_python(name)):
         for variable in re.findall(r"&+(\w+)", text):
             assert variable in known, (variable, text[:80])
+
+
+@pytest.mark.parametrize("name", sorted(RAG_STEPS))
+def test_no_python_string_of_a_step_is_longer_than_262_bytes(name):
+    """The second candidate, removed as well: a docstring is a quoted string
+    too, should SAS ever count the ones of the program it hands to Python."""
+    strings = [token.string for token in
+               tokenize.generate_tokens(io.StringIO(_python(name)).readline)
+               if token.type == tokenize.STRING]
+    assert strings
+    longest = max(strings, key=lambda text: len(text.encode("utf-8")))
+    assert len(longest.encode("utf-8")) <= LIMIT, longest[:80]
+
+
+@pytest.mark.parametrize("name", sorted(RAG_STEPS))
+def test_no_line_of_the_python_block_could_hold_such_a_string(name):
+    assert max(len(line.encode("utf-8")) for line in _python(name).split("\n")) < LIMIT
+
+
+@pytest.mark.parametrize("name,function,first_comment", [
+    (name, "multiline", "# SAS Studio splits such a field for us")
+    for name in sorted(RAG_STEPS)
+] + [("RAG - Register Setup", "verify_requested",
+      "# SAS Studio hands a checkbox over as 1 (ticked) or 0 (unticked).")])
+def test_what_a_cut_docstring_explained_is_still_there(name, function, first_comment):
+    found = re.search(r"\n( +)def %s\(.*?\):\n +\"\"\"(.*?)\"\"\"\n +(#.*)\n" % function,
+                      _python(name), re.DOTALL)
+    assert found, function
+    assert found.group(3).startswith(first_comment)
 
 
 def test_register_setup_keeps_its_warning_lines_word_for_word():

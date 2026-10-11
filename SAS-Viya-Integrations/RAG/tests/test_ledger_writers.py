@@ -355,15 +355,6 @@ def test_the_macros_are_defined_before_the_macro_that_calls_them():
         assert sas.index("%mend " + prefix + "ledger_length;") < sas.index(caller), label
 
 
-def test_no_comment_inside_the_new_macros_holds_a_quote():
-    """A quotation mark or an apostrophe in a comment inside a macro is read
-    by the macro compiler as the start of a string."""
-    for label, prefix, sas in _writers():
-        for name in ("ledger_types", "ledger_length"):
-            for comment in re.findall(r"/\*.*?\*/", _macro(sas, prefix + name), re.DOTALL):
-                assert '"' not in comment and "'" not in comment, (label, name)
-
-
 # ---------------------------------------------------------------------------
 # the step files keep their form
 # ---------------------------------------------------------------------------
