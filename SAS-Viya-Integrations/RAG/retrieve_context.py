@@ -21,7 +21,9 @@ Signature (a decision maps these to terms):
   k              - number of chunks. 0, empty, blanks only or a missing
                    value means the manifested default. A value that is
                    no number falls back to the default as well and says
-                   so in retrieval_status
+                   so in retrieval_status. A missing number (NaN) and an
+                   infinity, also as the texts nan and inf, are the
+                   default without that note
   filter_json    - optional JSON object of column equality filters,
                    e.g. {"doc_id": "..."} (allow-listed columns only);
                    empty or blanks only means no filter

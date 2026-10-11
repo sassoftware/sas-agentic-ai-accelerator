@@ -567,8 +567,9 @@ _DOC = {"doc_id": "d1", "mtime": "1791800000", "status": "ok"}
 _STALE = {"doc_id": "__run_lock__", "mtime": "1791700000.5", "status": "lock"}
 _OURS = {"DOC_ID": "__run_lock__", "MTIME": "1791812345.25", "STATUS": "lock"}
 _REFUSED = ("the run lock could not be written to the ledger Public.HR_LEDGER "
-            "- refusing to ingest unguarded. The SAS log above holds the "
-            "ERROR of the append")
+            "- refusing to ingest unguarded. The lock row of this run was not "
+            "in the ledger when it was read back: look in the SAS log above "
+            "for an ERROR of the append, or of the export after it")
 
 
 def test_a_lock_that_was_written_lets_the_job_go_on(tmp_path):

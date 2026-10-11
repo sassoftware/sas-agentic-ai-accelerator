@@ -538,7 +538,10 @@ def main():
         # SAS appended the lock after the export read above and exported the
         # ledger a second time. A lock row the second export holds and the
         # first does not is the lock of this run. Where the ledger did not
-        # exist there is no first export, and no lock was taken.
+        # exist there is no first export, and no lock was taken. The check
+        # sees only that the row is not there: the append was refused, the
+        # second export failed, or another writer replaced the table between
+        # the two - the message names where to look, not one cause.
         if os.path.exists(ledger_path):
             written = []
             lock_path = WORKPATH + "rag_ledger_lock.json"
@@ -558,8 +561,10 @@ def main():
                     "the run lock could not be written to the ledger "
                     + str(SAS.symget("ledgerCaslib") or "").strip() + "."
                     + str(SAS.symget("ledgerTable") or "").strip()
-                    + " - refusing to ingest unguarded. The SAS log above "
-                      "holds the ERROR of the append")
+                    + " - refusing to ingest unguarded. The lock row of "
+                      "this run was not in the ledger when it was read "
+                      "back: look in the SAS log above for an ERROR of the "
+                      "append, or of the export after it")
         # run-<epoch>-<pid>: the epoch alone collided when two projects
         # sharing a database started in the same second
         run_id = f"run-{int(time.time())}-{os.getpid()}"
