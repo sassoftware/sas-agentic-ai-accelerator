@@ -299,3 +299,51 @@ def test_no_way_out_of_the_probe_is_silent():
                     "line %d returns without FAILED" % statement.lineno
     assert returns == 1
     assert 'M("FAILED " + sas_safe(' in _probe_python()
+
+
+# ---------------------------------------------------------------------------
+# the steps
+#
+# A guard, not the test of a defect: the steps were read for the same
+# silence and do not have it. Their Python returns early in three places -
+# a step that is not running, and the two imports - and writes nothing
+# there, but what a step says is said by the SAS behind it: a return code
+# the Python never set to 0 makes the status macro fail the step, with its
+# ERROR line and the two flags a flow and its job read.
+# ---------------------------------------------------------------------------
+STEPS = REPO / "SAS-Viya-Integrations" / "Custom-Steps"
+RAG_STEPS = {
+    "RAG - Chunk Documents": "rgch", "RAG - Embed Chunks": "rgem",
+    "RAG - Enrich Chunks": "rgen", "RAG - Extract Text": "rgex",
+    "RAG - List Documents": "rgls", "RAG - Load Vector Store": "rgld",
+    "RAG - Purge Documents": "rgpu", "RAG - Register Setup": "rgrg",
+    "RAG - Retrieve Context": "rgrt",
+}
+
+
+@pytest.mark.parametrize("name", sorted(RAG_STEPS))
+def test_an_early_return_of_a_step_is_a_failed_step_with_its_error_line(name):
+    import json
+
+    prefix = "_" + RAG_STEPS[name] + "_"
+    sas = json.loads((STEPS / (name + ".step")).read_text(
+        encoding="utf-8"))["templates"]["SAS"]
+    python = sas.split("\nsubmit;\n", 1)[1].split("\nendsubmit;", 1)[0]
+    # the return code starts as a failure and one statement makes it 0
+    assert sas.index("%%let %src = 1;" % prefix) < sas.index("proc python restart;")
+    assert len(re.findall(r"SAS\.symput\(['\"]%src['\"]" % prefix, python)) == 1
+    main = ast.parse(python).body[0]
+    returns = [statement for block in _blocks(main) for statement in block
+               if isinstance(statement, ast.Return)]
+    # none of them stands behind the statement that reports success
+    done = re.search(r"SAS\.symput\(['\"]%src['\"], ['\"]0['\"]\)" % prefix, python)
+    done_line = python[:done.start()].count("\n") + 1
+    assert returns and all(statement.lineno < done_line for statement in returns)
+    status = _macro(sas, prefix + "status")
+    failing = status.index("%%if &%sstate. EQ run %%then %%if &%src. NE 0 %%then"
+                           % (prefix, prefix))
+    fail = status[status.index("%%if &%sstate. EQ fail %%then %%do;" % prefix):]
+    assert failing < status.index("%%if &%sstate. EQ fail %%then %%do;" % prefix)
+    for said in ("%let RAG_PIPELINE_FAILED = 1;", "%let RAG_JOB_FAILED = 1;",
+                 'line = "ERROR: %s failed: " || message;' % name):
+        assert said in fail.split("%return;", 1)[0], said
