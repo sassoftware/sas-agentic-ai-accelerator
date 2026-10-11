@@ -49,6 +49,8 @@ The job program is [`SAS-Viya-Integrations/Prompt-Optimization/Optimize-Prompt-D
 2. Paste the program as the job's code.
 3. Note the job's **SAS Content path** (for example `/Public/Jobs/Optimize-Prompt-DSPy`) — that path is what the Prompt Builder's `optimizeJobProgram` Option points at.
 
+The job definition holds a copy of the program. After an upgrade, replace its code with `Optimize-Prompt-DSPy.sas` of the release - also where the job definition came with the Prompt Builder package, which holds the program it was exported with. From release 2.3.0 the program puts the ERROR line of a failed run together in a variable, where it wrote the message of the run into a quoted string; that change was not run in SAS.
+
 The Prompt Builder launches the job through the Job Execution REST API with `_contextName` set to the context from step 1, and passes everything else (prompt, target LLM, dataset source, metric, optimizer) as job parameters. No secrets travel in the request.
 
 Next to the job program ships [`Create-Optimization-Dataset.sas`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/Prompt-Optimization/Create-Optimization-Dataset.sas) — a **template, not a job**: prompt engineers run it (e.g. in SAS Studio) to build a governed **CAS dataset table** (one column per prompt variable plus a `response` column) they can pick as the dataset source in the Optimize panel instead of the prompt's own experiments. The panel validates the table's columns and row count before launching; the compute context from step 1 must be able to reach the caslib.
