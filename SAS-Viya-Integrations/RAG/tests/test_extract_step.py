@@ -10,6 +10,13 @@ folder - RAG - List Documents said `4 documents in scope (excluded=1,
 unchanged=3)` and `3 skipped as unchanged`, and RAG - Extract Text of the
 same run `0 documents extracted, 0 failed, 4 skipped as unchanged`.
 
+One document was still counted as what it is not: a new document in which
+the extractor found no text, an empty file or a PDF that holds only scans.
+rag_core hands it back as skipped and with the name of the extractor that
+ran, and the step took every row with an extractor that had not failed for
+an extracted one - `2 documents extracted` and `extractors used:
+plaintext=2` for one document with text and one empty file.
+
 The Python of the step is run here as PROC PYTHON would run it, against a
 stub of SAS, of CAS and of SAS Viya: the rag_core folder of the stub is
 empty, so the step imports the rag_core of this repository. No SAS runs.
@@ -84,16 +91,18 @@ def _row(name, status, folder):
             "tables_caslib": "casuser"}
 
 
-def _run_step(monkeypatch, tmp_path, statuses):
+def _run_step(monkeypatch, tmp_path, statuses, empty=()):
     """Run the step on an inventory with one row per entry of `statuses`
-    (file name -> status). Returns the parts of its summary."""
+    (file name -> status); the files named in `empty` hold no text. Returns
+    the parts of its summary."""
     import requests
 
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     for name in statuses:
-        (corpus / name).write_text("The last shuttle leaves at 19:10.\n",
-                                   encoding="utf-8")
+        (corpus / name).write_text(
+            "" if name in empty else "The last shuttle leaves at 19:10.\n",
+            encoding="utf-8")
     (tmp_path / "rgex_inventory_in.json").write_text(json.dumps(
         [_row(name, status, corpus) for name, status in statuses.items()]),
         encoding="utf-8")
@@ -147,6 +156,57 @@ def test_every_document_is_counted_once_under_what_it_is(monkeypatch, tmp_path):
     assert _counts(summary) == ("2 documents extracted, 0 failed, "
                                 "1 skipped as unchanged, 1 deleted, "
                                 "1 excluded, 1 skipped")
+
+
+def _extractors(summary):
+    return [part for part in summary if part.startswith("extractors used: ")]
+
+
+def test_a_document_without_text_is_skipped_not_extracted(monkeypatch, tmp_path):
+    """The extractor ran on the empty file and found nothing: rag_core calls
+    the document skipped, and so does the summary - in the count of the
+    documents and in the count of the extractors."""
+    summary = _run_step(monkeypatch, tmp_path, {
+        "empty.txt": "new", "good.txt": "new", "same.txt": "unchanged"},
+        empty=("empty.txt",))
+    assert _counts(summary) == ("1 documents extracted, 0 failed, "
+                                "1 skipped as unchanged, 1 skipped")
+    assert _extractors(summary) == ["extractors used: plaintext=1"]
+    assert "1 elements written to casuser.RAG_HR_ELEMENTS" in summary
+
+
+def test_a_run_that_extracted_nothing_names_no_extractor(monkeypatch, tmp_path):
+    """Only documents without text: none is extracted, and the line of the
+    extractors is left out as it is for a run of unchanged documents."""
+    summary = _run_step(monkeypatch, tmp_path, {
+        "empty.txt": "new", "blank.md": "changed"},
+        empty=("empty.txt", "blank.md"))
+    assert _counts(summary) == ("0 documents extracted, 0 failed, "
+                                "0 skipped as unchanged, 2 skipped")
+    assert _extractors(summary) == []
+
+
+def test_the_summary_counts_what_rag_core_counts(monkeypatch, tmp_path):
+    """The step's line and the milestone rag_core writes for the same run
+    agree on the documents extracted and on the ones skipped."""
+    import rag_core.steps
+
+    lines = []
+    real = rag_core.steps.run_extract
+
+    def listening(inventory, registry, **kwargs):
+        log = kwargs.pop("log")
+        return real(inventory, registry,
+                    log=lambda text: (lines.append(text), log(text))[1], **kwargs)
+
+    monkeypatch.setattr(rag_core.steps, "run_extract", listening)
+    summary = _run_step(monkeypatch, tmp_path, {
+        "empty.txt": "new", "good.txt": "new", "other.md": "changed",
+        "picture.zzimage": "new", "same.txt": "unchanged"},
+        empty=("empty.txt",))
+    assert "rag extract: 2 extracted, 2 skipped, 0 failed" in lines
+    assert _counts(summary) == ("2 documents extracted, 0 failed, "
+                                "1 skipped as unchanged, 2 skipped")
 
 
 def test_a_run_of_unchanged_documents_reads_as_before(monkeypatch, tmp_path):
