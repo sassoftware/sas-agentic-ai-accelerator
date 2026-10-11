@@ -251,7 +251,8 @@ setup has been manifested again.
 
 ### TLS verification in the retrieval model
 
-The retrieval model that **Manifest setup** registers makes two HTTPS calls
+The retrieval model — registered by **Manifest setup** of the Builder, or by
+the custom step *RAG - Register Setup* in SAS Studio — makes two HTTPS calls
 itself: to the embedding container, to embed the question, and — only in a
 compute session, where a session token exists — to the credentials service.
 It verifies both against the CA bundle of the deployment, and two environment
@@ -273,7 +274,9 @@ variables per call decide how:
   `SSL_VERIFY` in the MANIFEST block of the model decides. The Builder writes
   it from the option **Verify TLS certificates in manifested models**
   (`sslVerify`) of the Prompt Builder object: `True` while the option is
-  ticked, which is the default, and `False` while it is not.
+  ticked, which is the default, and `False` while it is not. The custom
+  step *RAG - Register Setup* writes it from a checkbox of its own, in the
+  same way — see [the checkbox of the custom step](#tls-register-setup-step).
 
 So the option is a default written when the setup is manifested. A retrieval
 model that is already registered keeps its constant until **Manifest setup**
@@ -304,8 +307,9 @@ What the option does not touch:
 - **The connection to the vector store.** Its TLS is the option
   **RAG: vector store TLS** (`storeSslmode`) and the `sslmode` of the store.
 - **A model registered with the custom step *RAG - Register Setup*.** The
-  step does not read the options of the Prompt Builder object; a model it
-  registers verifies, unless the environment variables say otherwise.
+  step does not read the options of the Prompt Builder object. It has a
+  checkbox of its own for the same setting — see
+  [the checkbox of the custom step](#tls-register-setup-step).
 - **A template deployed before release 2.3.0.** The `retrieve_context.py`
   under `<content root>/models` then has no `SSL_VERIFY` constant. **Manifest
   setup** succeeds with it, and the model verifies whatever the option says.
@@ -320,7 +324,8 @@ bundle is not mounted — the case found with SAS Micro Analytic Service, which
 [Deployment of Decisions](./Deployment-of-Decisions.md#mas-certificate-bundle)
 describes together with the mount that keeps verification on. That mount is
 the fix for production; verification off is for a test system on a closed
-cluster network.
+cluster network. The mount was measured there with a decision template; a
+retrieval model in SAS Micro Analytic Service after the mount was not.
 
 Both *Launch ingestion* and *Test retrieval* need the **ingestion compute
 context** option (`ragComputeContext`) to be set — SAS Job Execution rejects a
@@ -328,6 +333,63 @@ job that does not name one, and the rejection carries no log. The Builder
 checks first and names the missing setting. The optimization compute context
 of the same Options pane does not count: it is a different option, for a
 different job.
+
+### The checkbox of the custom step RAG - Register Setup {#tls-register-setup-step}
+
+The custom step *RAG - Register Setup* registers the same
+`retrieve_context.py` from SAS Studio. It does not read the options of the
+Prompt Builder object; its *Runtime* section has the checkbox
+**Verify TLS certificates in the registered retrieval model**
+(`_rgrg_sslVerify`), ticked by default:
+
+| The checkbox | The registered model holds | The tag `TLS-Verification-Off` | What the step says |
+| --- | --- | --- | --- |
+| ticked | `SSL_VERIFY = True` | not set, and removed from a model that carried it | *TLS certificate verification on* in the summary of its log and in the registration report |
+| not ticked | `SSL_VERIFY = False` | set | WARNING lines at the end of its log, and *TLS certificate verification OFF* in the registration report |
+
+- **The warning.** With the box not ticked, the log of the step ends with
+  WARNING lines: the retrieval model does not verify the certificates of
+  its two HTTPS calls — to the embedding container and to the credentials
+  service — and `RAGEMBED_SSLVERIFY=true` and `RAGSTORE_SSLVERIFY=true` on
+  the publishing destination turn verification back on. The registration
+  report, the output table of the step, shows the state in the *Detail*
+  column of the row of the model.
+- **The tag follows the score code that is stored.** It is set or removed
+  after `retrieve_context.py` has been stored on the model, so a
+  registration that fails at that upload leaves the tag as it was. When
+  the tag itself cannot be updated, the registration still goes through,
+  and a WARNING says which way the tag is wrong: it could not be written
+  to a model that does not verify, or could not be removed from one that
+  does.
+- **A template deployed before release 2.3.0.** `rag_core` writes the line
+  under the rule of the Builder: only where the MANIFEST block of the
+  template has `SSL_VERIFY`. With an older template and the box not
+  ticked, the step registers a model that still verifies, does not tag
+  it, and warns that *TLS certificate verification is still ON* and that
+  the RAG content has to be deployed again. Run `deploy-rag-content`, then
+  the step once more.
+- **A flow that hands the step no value for the checkbox** registers with
+  verification on: a missing or blank value is read as ticked, and only
+  `0`, `false` and `no` as not ticked.
+
+The checkbox changes the registered model and nothing else. The step
+itself, the other eight RAG steps and the ingestion job run in a compute
+session and verify the HTTPS calls they make themselves — to SAS Viya and
+to the embedding container — with the CA bundle of that session
+(`SSLCALISTLOC`, else `CAS_CLIENT_SSL_CA_LIST`, else the certificates
+Python trusts); none of them has a control or reads an environment
+variable that switches that off. A prompt that *RAG - Enrich Chunks* runs
+is a manifested model with the default it was manifested with. The
+connection to the vector store is a database connection: its TLS is the
+*SSL mode* (PostgreSQL) or *TLS* (SingleStore) control of the steps that
+connect to it, and for the registered model the *SSL mode* of this step.
+
+The step and `rag_core` reach a site with `deploy-rag-content`. This
+behaviour was checked with the test suite of `rag_core`, which runs the
+Python of the step against a stand-in for SAS Viya; the step has not been
+run in SAS Studio for this description, and that SAS Studio hands a
+checkbox over as `1` or `0` is taken from the other custom steps of the
+accelerator that carry one.
 
 ## Enrichment: an LLM call per chunk
 

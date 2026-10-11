@@ -129,6 +129,15 @@ from that flow, so the visual pipeline and the scheduled one cannot drift
 apart. Everything is idempotent — re-registering updates rather than
 duplicating.
 
+The model the step registers verifies the TLS certificates of the calls it
+makes when it is scored. The checkbox **Verify TLS certificates in the
+registered retrieval model** in the *Runtime* section switches that off for
+the registered model: leave it ticked unless your administrator tells you
+otherwise. Not ticked, the step ends its log with a warning, the
+registration report says *TLS certificate verification OFF*, and the model
+is tagged `TLS-Verification-Off` in SAS Model Manager. Ask before you
+register a setup that way for production.
+
 ## Keeping the corpus current
 
 Re-run the flow. Documents are fingerprinted, so unchanged ones are skipped

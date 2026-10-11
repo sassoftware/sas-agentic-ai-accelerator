@@ -193,6 +193,13 @@ is a default written at manifest time:
 - It changes nothing the page does in the browser, nothing in the RAG
   ingestion job, and nothing in a prompt template manifested for the Call LLM
   node (there the DS2 node makes the call).
+- The SAS Studio step *RAG - Register Setup* does not read the option. It has
+  a checkbox of its own, **Verify TLS certificates in the registered
+  retrieval model**, and `rag_core/manifest.py` writes `SSL_VERIFY` under the
+  rule of `src/objects/rag-manifest.ts`: the literal false writes `False`,
+  and only into a template that has the line.
+  `SAS-Viya-Integrations/RAG/tests/test_manifest_parity.py` compares the two,
+  so a change to the rule here has to be made there as well.
 - A content root that was deployed before the option existed holds a
   `retrieve_context.py` without `SSL_VERIFY`. Such a template is manifested as
   it is and keeps verifying; the outcome line of the manifest says that the
