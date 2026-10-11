@@ -617,10 +617,10 @@ def test_the_read_back_stands_where_the_job_can_still_stop():
 # run-<epoch>-<digits>. rag_runs is keyed on it and shared by every project in
 # the database, so the digits are there to tell apart two runs that start in
 # the same second. They were &sysjobid in the steps and the process id in the
-# job, and neither does that: on a live system twelve of fourteen flow runs,
-# each in a compute server of its own, ended in -344, and the job runs in
-# 400 to 408. Nothing here runs SAS; the steps are read, the job's
-# expression is run.
+# job, and neither does that: on a live system twelve flow runs, each in a
+# compute server of its own, ended in -344 (the four other runs in -343 or
+# -345), and the job runs in 400 to 408. Nothing here runs SAS; the steps
+# are read, the job's expression is run.
 # ---------------------------------------------------------------------------
 RUN_ID = re.compile(r"run-\d{10}-\d{10}")
 
