@@ -531,7 +531,7 @@ def _lock_check(tmp_path, before, after, ledger_exists=True):
     of a ledger. Returns the message it refuses with, or "" when it goes on."""
     python = _job_python()
     start = python.index("        # ---- the lock of THIS run, read back")
-    end = python.index("        # run-<epoch>-<pid>:")
+    end = python.index("        # run-<epoch>-<digits>:")
     block = textwrap.dedent(python[start:end])
     assert "if os.path.exists(ledger_path):" in block
     ledger_path = tmp_path / "rag_ledger_in.json"
@@ -603,10 +603,84 @@ def test_the_read_back_stands_where_the_job_can_still_stop():
     python = _job_python()
     another = python.index('"this ledger (run lock held) - retry later")')
     ours = python.index("# ---- the lock of THIS run, read back")
-    run_id = python.index('run_id = f"run-{int(time.time())}-{os.getpid()}"')
+    run_id = python.index('run_id = (f"run-{int(time.time())}-"')
     connections = python.index("# ---- connections")
     assert another < ours < run_id < connections
     # the message leaves the block the way every failure of the job does
     assert 'SAS.symput("_rag_error", sas_safe(error_text)[:500])' in python
     assert "refusing to ingest unguarded" in python
+
+
+# ---------------------------------------------------------------------------
+# the run id
+#
+# run-<epoch>-<digits>. rag_runs is keyed on it and shared by every project in
+# the database, so the digits are there to tell apart two runs that start in
+# the same second. They were &sysjobid in the steps and the process id in the
+# job, and neither does that: on a live system twelve of fourteen flow runs,
+# each in a compute server of its own, ended in -344, and the job runs in
+# 400 to 408. Nothing here runs SAS; the steps are read, the job's
+# expression is run.
+# ---------------------------------------------------------------------------
+RUN_ID = re.compile(r"run-\d{10}-\d{10}")
+
+
+@pytest.mark.parametrize("name", LOCKERS)
+def test_the_run_id_of_a_step_does_not_end_in_the_process_id(name):
+    prefix = "_" + RAG_STEPS[name] + "_"
+    lock = _without_comments(_macro(_around_python(name), prefix + "lock"))
+    assigned = re.findall(r"%let " + prefix + r"runId = (.*);", lock)
+    assert assigned == [
+        "run-%sysfunc(compress(%sysfunc(putn(&" + prefix + "now., 12.))))"
+        "-&" + prefix + "digits."]
+    # eight hexadecimal digits of a UUID, as a number of ten digits
+    assert ("%let " + prefix + "uuid = %sysfunc(uuidgen());") in lock
+    assert ("%let " + prefix + "digits = %sysfunc(inputn(%substr(&" + prefix
+            + "uuid., 1, 8), hex8.), z10.);") in lock
+    # the process id is what is left when UUIDGEN returns nothing, and only
+    # that: it is assigned first and replaced
+    fallback = lock.index("%let " + prefix + "digits = &sysjobid.;")
+    assert fallback < lock.index("%if %length(&" + prefix + "uuid.) GE 8 %then") \
+        < lock.index("%let " + prefix + "digits = %sysfunc(inputn(") \
+        < lock.index("%let " + prefix + "runId = ")
+    assert lock.count("&sysjobid") == 1
+    # both are local to the lock macro; the run id is the global one
+    assert re.search(r"%local [^;]*" + prefix + r"uuid\b[^;]*" + prefix
+                     + r"digits\b", lock)
+
+
+def _job_run_id():
+    """The expression the job gives its run id, evaluated."""
+    import os
+    import time
+
+    python = _job_python()
+    expression = python.split("        run_id = ", 1)[1].split(
+        "\n        M(f\"run {run_id}:", 1)[0]
+    assert "getpid" not in expression
+    return eval(expression, {"os": os, "time": time, "int": int})
+
+
+def test_the_run_id_of_the_job_ends_in_ten_digits_that_differ():
+    drawn = {_job_run_id() for _ in range(50)}
+    for run_id in drawn:
+        assert RUN_ID.fullmatch(run_id), run_id
+    # fifty ids of the same second or two: the epoch does not tell them apart
+    assert len({run_id.rsplit("-", 1)[1] for run_id in drawn}) == 50
+
+
+def test_every_reader_of_a_run_id_still_reads_the_new_one():
+    """What is read from a run id is its second part, the epoch; and the id
+    has to fit the 32 characters of the ledger column and of the inventory
+    (64 in the SingleStore history tables)."""
+    from rag_core.history import started_at_from_run_id
+
+    # the largest value eight hexadecimal digits hold, as the steps write it
+    longest = "run-1791722515-%010d" % 0xFFFFFFFF
+    assert RUN_ID.fullmatch(longest) and len(longest) == 25
+    assert len(longest) <= LENGTHS["run_id"]
+    assert started_at_from_run_id(longest) == "2026-10-11 12:41:55"
+    assert started_at_from_run_id(_job_run_id()) != ""
+    # the smallest is padded, so the id has one width
+    assert RUN_ID.fullmatch("run-1791722515-%010d" % 0x1)
 

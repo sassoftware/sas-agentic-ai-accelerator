@@ -565,9 +565,13 @@ def main():
                       "this run was not in the ledger when it was read "
                       "back: look in the SAS log above for an ERROR of the "
                       "append, or of the export after it")
-        # run-<epoch>-<pid>: the epoch alone collided when two projects
-        # sharing a database started in the same second
-        run_id = f"run-{int(time.time())}-{os.getpid()}"
+        # run-<epoch>-<digits>: the epoch alone collided when two projects
+        # sharing a database started in the same second. The digits were the
+        # process id, and that is nearly the same number in every compute
+        # server (400 to 408 in the runs measured live), so they are 32
+        # random bits now, written as ten digits like the run id of a flow.
+        run_id = (f"run-{int(time.time())}-"
+                  f"{int.from_bytes(os.urandom(4), 'big'):010d}")
         M(f"run {run_id}: ledger has {len(real_rows)} documents, config {cfg_hash}")
 
         # ---- connections ----------------------------------------------------
