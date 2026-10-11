@@ -139,6 +139,11 @@ PART_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: and saved as experiments. A headline about the flow names both parts.
 FLOW_KEYWORDS = ("prompt-test", "prompt test", "prompt flow", "experiment", "manifest best prompt")
 FLOW_PARTS = ("Prompt", "Decision")
+#: So does a template that a headline names without its kind - "a prompt, a
+#: template or a RAG setup" - since there are two kinds (NAMED_SINCE). In a
+#: headline only: in the text of an entry the word is as often the score
+#: template of a definition or the source of the retrieval model.
+_ANY_TEMPLATE = re.compile(r"(?<!prompt[ -])(?<!decision[ -])\btemplates?\b")
 #: An entry that says so itself concerns every part, whatever else it names.
 #: "Both builders" are the Prompt Builder and the RAG Builder of 2.0.0 to
 #: 2.2.x, which is every part those releases had.
@@ -193,16 +198,17 @@ def _plain(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _split(text: str) -> tuple[str, str]:
+def _split(text: str, capped: bool = True) -> tuple[str, str]:
     """(summary, detail): the bold lead when the entry has one, else the
-    first sentence, capped so a column stays a headline."""
+    first sentence, capped so a column stays a headline. `capped` off gives
+    the sentence whole: what is read from a headline is read from all of it."""
     m = _LEAD.match(text.strip())
     if m:
         return _plain(m.group("lead")).rstrip(".:"), _plain(m.group("rest"))
     plain = _plain(text)
     sentence = re.split(r"(?<=[.!?])\s+", plain, maxsplit=1)
     summary = sentence[0]
-    if len(summary) > 140:
+    if capped and len(summary) > 140:
         summary = summary[:137].rstrip() + "..."
     detail = plain if len(sentence) > 1 or summary != plain else ""
     return summary.rstrip("."), detail
@@ -258,14 +264,17 @@ def _names(keyword: str, text: str) -> bool:
     return re.search(rf"\b{re.escape(keyword)}{whole_word}", text) is not None
 
 
-def _named_parts(text: str, release: tuple, flow: bool = True) -> list[str]:
+def _named_parts(text: str, release: tuple, flow: bool = True, headline: bool = False) -> list[str]:
     """The parts the text names, in the order of PARTS; [] if it names none.
-    `flow` is off where only a part's own name may count."""
+    `flow` is off where only a part's own name may count, and `headline` is
+    on where a template without its kind is one of the Builder's."""
     lowered = _NOT_CONCERNED.sub(" ", text.lower())
     if release >= MERGED_SINCE:
         lowered = _BUILDER_NAME.sub("builder", lowered)
     named = {part for part, words in PART_KEYWORDS if any(_names(w, lowered) for w in words)}
     if flow and any(_names(w, lowered) for w in FLOW_KEYWORDS):
+        named.update(FLOW_PARTS)
+    if headline and release >= NAMED_SINCE["Decision"] and _ANY_TEMPLATE.search(lowered):
         named.update(FLOW_PARTS)
     return [part for part in PARTS if part in named and release >= NAMED_SINCE.get(part, (0,))]
 
@@ -276,11 +285,11 @@ def parts_for(version: str, section: str, change_type: str, text: str) -> list[s
 
     The section decides when its heading names a part, as it does for the
     component; the steps of an upgrade are everybody's, and so is an entry
-    that says it holds for every kind. Otherwise the headline decides: the
-    parts it names, or the whole Builder when it names that and no part. A
-    headline that settles nothing leaves it to the text, and an entry that
-    names no part anywhere concerns the Builder as a whole: every part its
-    release had.
+    that says it holds for every kind. Otherwise the headline decides - all
+    of it, also where the summary column shows it cut: the parts it names, or
+    the whole Builder when it names that and no part. A headline that settles
+    nothing leaves it to the text, and an entry that names no part anywhere
+    concerns the Builder as a whole: every part its release had.
     """
     release = _release_key(version)
     whole = [part for part in PARTS if release >= BUILDER_SINCE[part]]
@@ -290,10 +299,10 @@ def parts_for(version: str, section: str, change_type: str, text: str) -> list[s
             return by_section
     if change_type == "Upgrade":
         return whole
-    headline, detail = _split(text)
+    headline, detail = _split(text, capped=False)
     if any(phrase in _plain(text).lower() for phrase in EVERY_PART_PHRASES):
         return whole
-    named = _named_parts(headline, release)
+    named = _named_parts(headline, release, headline=True)
     if named == ["Prompt"] and "Decision" in _named_parts(detail, release, flow=False):
         # a headline about prompts alone, and a text that says the decision
         # templates behave the same

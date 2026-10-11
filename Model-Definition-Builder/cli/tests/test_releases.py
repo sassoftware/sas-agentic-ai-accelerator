@@ -385,6 +385,37 @@ def test_what_did_not_exist_yet_cannot_be_concerned():
                      "**The job and the flow were not the same pipeline.** The ledger re-ingests that document unprompted.") == ["RAG"]
 
 
+def test_a_template_without_its_kind_names_both_kinds_in_a_headline():
+    every = list(PARTS)
+    note = ("**The note about decisions that still use a prompt, a template or a RAG setup appears on the first "
+            "delete in the Prompt Builder.** Before Delete Prompt and Delete setup ask for confirmation.")
+    assert parts_for("2.3.0", "Fixed", "Fixed", note) == every
+    assert parts_for("2.3.0", "Fixed", "Fixed", "**Templates keep their names.** As typed.") == ["Prompt", "Decision"]
+    # with its kind it is that kind
+    assert parts_for("2.3.0", "Fixed", "Fixed", "**A prompt template keeps its name.** As typed.") == ["Prompt"]
+    assert parts_for("2.3.0", "Fixed", "Fixed", "**A decision-template keeps its name.** As typed.") == ["Decision"]
+    # in a headline only: in the text the word is as often what a retrieval
+    # model is manifested from, or a score template of a definition
+    text = "**A RAG setup is manifested again.** The retrieval model needs the template of this release."
+    assert parts_for("2.3.0", "Fixed", "Fixed", text) == ["RAG"]
+    assert parts_for("2.3.0", "Fixed", "Fixed", "**The page keeps its width.** A score template is not concerned.") == every
+    # there have been two kinds since the decision mode; before, the word in
+    # a headline names nothing and the entry is read as any other
+    plain = "**A template keeps its name.** As typed."
+    assert parts_for("2.1.0", "Fixed", "Fixed", plain) == ["Prompt", "RAG"]
+    assert parts_for("2.2.0", "Fixed", "Fixed", plain) == ["Prompt", "Decision"]
+
+
+def test_a_headline_is_read_whole_where_the_column_shows_it_cut():
+    # an entry without a bold lead: its first sentence is the headline, and
+    # the summary column holds 140 characters of it
+    entry = ("The Python samples outside SAS Viya set an HTTP timeout and lost their typos; the Prompt Builder README "
+             "describes the whole source tree, RAG Builder included.")
+    rows = rows_from(parse_changelog(f"# Changelog\n\n## [2.0.4] - 2026-09-13\n\n### Fixed\n\n- {entry}\n"))
+    assert len(rows[0]["summary"]) <= 140 and "RAG Builder" not in rows[0]["summary"]
+    assert [r["builder_part"] for r in rows] == ["Prompt", "RAG"]
+
+
 def test_a_component_that_did_not_exist_yet_cannot_be_concerned():
     # rag_core, the steps and the stores came with 2.0.0: what an older entry
     # "enriches" or "retrieves" is filed under the next component it names
@@ -455,6 +486,9 @@ def test_the_parts_of_the_real_changelog_follow_the_releases(tmp_path):
     assert parts[("2.1.0", "The Prompt Builder and the RAG Builder are step flows")] == ["Prompt", "RAG"]
     assert parts[("2.1.0", "The Builder packages no longer carry the exporting environment's configuration")] == ["Prompt", "RAG"]
     assert parts[("2.0.5", "The RAG Builder object in the shipped package has a data assignment")] == ["RAG"]
+    # a headline that names the RAG Builder beyond what the column shows of it
+    readme = next(k for k in parts if k[0] == "2.0.4" and k[1].startswith("The Python samples outside SAS Viya"))
+    assert "RAG Builder" not in readme[1] and parts[readme] == ["Prompt", "RAG"]
     assert parts[("2.0.0", "Save documentation")] == ["RAG"]
     assert parts[("2.0.0", "One button makes a setup real")] == ["RAG"]
     assert parts[("2.0.0", "Model Manager names were rendered as HTML in every picker")] == ["Prompt", "RAG"]
