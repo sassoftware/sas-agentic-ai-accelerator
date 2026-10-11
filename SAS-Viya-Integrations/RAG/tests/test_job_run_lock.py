@@ -324,6 +324,33 @@ def test_the_read_back_finds_a_lock_row_with_an_id_beside_one_without(tmp_path, 
     assert "refusing to ingest unguarded" in _read_back(tmp_path, [DOC, old], [DOC, old])
 
 
+@pytest.mark.parametrize("run_id", ["", OWN], ids=["the job as it was", "a run with an id"])
+def test_rag_core_passes_over_a_lock_row_whether_it_carries_an_id_or_not(run_id):
+    """rag_core knows the lock row by its doc_id alone: the run history, the
+    manifest of a collection and the drift guard read a ledger that holds
+    one as the ledger without it."""
+    from rag_core import history, manifest
+    from rag_core.steps import check_config_drift
+
+    def listed(rows):
+        said = json.loads(manifest.ingestion_manifest({"COLLECTION": "c"}, rows))
+        return said["document_counts"], said["documents"]
+
+    document = {"doc_id": "d1", "source_uri": "/docs/a.md", "source_kind": "path",
+                "status": "ingested", "content_hash": "h1", "chunk_count": 2,
+                "config_hash": "cfg-1", "pipeline_version": "v1",
+                "run_id": "run-1791700000-0000000001", "updated_at": ""}
+    lock = dict(_lock(10, run_id), source_uri="", source_kind="", content_hash="",
+                chunk_count=0, pipeline_version="", updated_at="")
+    assert history.events_from_inventory([document, lock]) \
+        == history.events_from_inventory([document])
+    assert history.status_counts([document, lock]) == history.status_counts([document])
+    assert listed([document, lock]) == listed([document])
+    assert listed([document])[0] == {"ingested": 1}
+    assert check_config_drift([document, lock], "cfg-1", "v1") \
+        == check_config_drift([document], "cfg-1", "v1") == ""
+
+
 # ---------------------------------------------------------------------------
 # a run that failed hands its lock back
 # ---------------------------------------------------------------------------
