@@ -12,9 +12,9 @@ import re
 import pytest
 
 from get_all_prompts_harness import (
-    ANSWERS, DEFAULT_SETTINGS, INTEGRATIONS, QUESTIONS, FakeViya, code_file_program,
+    ANSWERS, DEFAULT_SETTINGS, INTEGRATIONS, QUESTIONS, FakeViya, code_file_program, core,
     decision_header, decision_score_code, functions, header_row, model_row, optimization_entry, prompt_score_code,
-    python_block, rag_setup, run_pull, step_pipeline_yaml, variable)
+    python_block, rag_setup, run_pull, step_definition, step_pipeline_yaml, step_program, step_ui, variable)
 
 # The columns of PROMPT_EXPERIMENTS the report "LLM Usage Report" reads, with their type
 REPORT_TEXTS = ["createdBy", "description", "function", "input_type", "model", "modelLink", "modifiedBy", "name",
@@ -1119,3 +1119,97 @@ def test_the_python_holds_no_line_that_would_end_it():
     # the code file has no character outside ASCII in its Python
     assert block.isascii()
     compile(block, "Get-All-Prompts.sas (python)", "exec")
+
+
+# ---------------------------------------------------------------------------
+# The custom step
+# ---------------------------------------------------------------------------
+
+def test_the_step_runs_the_core_of_the_code_file():
+    assert core(step_program()) == core(code_file_program())
+    assert python_block(step_program()) == python_block(code_file_program())
+    # the core is everything between the settings and the clean-up
+    assert core(code_file_program()).count("\n") > 800
+
+
+def test_the_step_file_is_one_line_of_json():
+    from get_all_prompts_harness import STEP_FILE
+    raw = STEP_FILE.read_bytes()
+
+    assert not raw.startswith(b"\xef\xbb\xbf") and b"\r" not in raw and b"\n" not in raw
+    step = json.loads(raw.decode("utf-8"))
+    assert json.dumps(step, separators=(",", ":"), ensure_ascii=False).encode("utf-8") == raw
+    ui = json.loads(step["ui"])
+    assert step["ui"] == json.dumps(ui, indent="\t", ensure_ascii=False)
+    assert step["localUi"] == json.dumps(ui, separators=(",", ":"), sort_keys=True, ensure_ascii=False)
+    assert step["description"] == step["localDescription"]
+
+
+def controls(children):
+    found = {}
+    for child in children:
+        found[child["id"]] = child
+        found.update(controls(child.get("children", [])))
+    return found
+
+
+def test_the_step_keeps_its_controls_and_has_one_for_every_setting():
+    ui = step_ui()
+    by_id = controls(ui["pages"])
+
+    # the controls the step had, under their ids
+    for control_id in ("pageOptions", "text1", "_gap_output", "pageAbout", "textAbout", "sectionPrereqs", "textPrereqs",
+                       "sectionDocumentation", "textDocumentation", "sectionChangelog", "textChangelog"):
+        assert control_id in by_id
+    assert by_id["_gap_output"] == {"id": "_gap_output", "type": "outputtable", "label": "Prompt experiment CAS table:",
+                                    "required": True, "placeholder": "PROMPT_EXPERIMENTS", "visible": ""}
+    assert step_definition()["flowMetadata"]["outputPorts"][0]["name"] == "_gap_output"
+    # every setting of the code file but the two the output table gives
+    settings = {name: value for name, value in DEFAULT_SETTINGS.items()
+                if name not in ("_gap_out_caslib", "_gap_out_experiments")}
+    for name, default in settings.items():
+        assert by_id[name]["type"] == "textfield" and by_id[name]["placeholder"] == default
+        assert ui["values"][name] == default
+    assert ui["values"]["_gap_output"] == {"library": "", "table": ""}
+    assert len(by_id) == len(re.findall(r'"id": "', step_definition()["ui"]))
+
+
+def test_the_step_takes_its_settings_from_its_controls():
+    program = step_program()
+    head = program.split(core(program))[0]
+    code = sas_code(program)
+
+    # no setting of a control is overwritten: the step only fills in a field that was left empty
+    assert re.findall(r"^%let (_gap_\w+)", head, flags=re.MULTILINE) == ["_gap_out_caslib", "_gap_out_experiments"]
+    assert "%let _gap_out_experiments = &_gap_output_name.;" in head
+    assert "%let _gap_out_caslib=%sysfunc(getlcaslib(&_gap_output_lib));" in head
+    defaults = dict(re.findall(r"^%_gap_setting\((_gap_\w+),\s*(.*?)\);$", head, flags=re.MULTILINE))
+    assert defaults == {
+        "_gap_tag": "Prompt-Engineering", "_gap_rag_tag": "RAG-Engineering", "_gap_llm_project": "",
+        "_gap_embedding_project": "", "_gap_decision_project": "", "_gap_out_optimizations": "PROMPT_OPTIMIZATIONS",
+        "_gap_out_rag_setups": "RAG_SETUPS", "_gap_out_rag_runs": "RAG_RUNS", "_gap_out_catalog": "MODEL_CATALOG"}
+    # an output table that is no CAS table: the step says so and leaves the library empty, so nothing is read or written
+    assert head.index("%let _gap_out_caslib =;") < head.index('%if "%upcase(&_gap_output_engine)"="CAS" %then %do;')
+    assert 'putlog "ERROR: The selected output library does not point to a CASlib";' in head
+    assert "%if %length(&_gap_out_caslib.) EQ 0 %then %return;" in code
+    # the step starts a CAS session only when there is none, and ends the one it started
+    assert "%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;" in head
+    assert "cas mySess" not in program and program.count("cas gapMySess;") == 1
+    tail = program.split(core(program))[1]
+    assert "%if &_gap_clean_cas_session. %then %do;\n    cas gapMySess terminate;\n%end;" in tail
+    assert "delete _gap_all_data _gap_all_optimizations _gap_all_rag_setups _gap_all_rag_runs _gap_all_catalog;" in tail
+
+
+def test_the_about_tab_names_the_five_tables():
+    by_id = controls(step_ui()["pages"])
+    about = by_id["textAbout"]["text"]
+
+    for words in ("Prompt experiments", "Prompt optimizations", "RAG setups", "RAG runs", "Model catalog",
+                  "modelID, runID, model", "modelID, optimizationId", "modelID, run_id"):
+        assert words in about
+    assert by_id["textChangelog"]["text"].startswith("* Version: 2.0 (11OCT2026)")
+    assert by_id["textChangelog"]["text"].endswith("* Version: 1.0 (09AUG2025)\n      - Initial version")
+    # an About tab says what the step does, not what was or was not run
+    texts = " ".join(control.get("text", "") for control in by_id.values())
+    assert "not run in SAS" not in texts and "not been run" not in texts
+
