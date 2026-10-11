@@ -242,6 +242,54 @@ def test_a_run_that_failed_stores_no_ledger():
     assert after.index("%_rag_store_ledger;") < after.index("%macro _rag_job_state;")
 
 
+def test_no_export_of_an_earlier_run_is_left_for_this_one():
+    """rag_ledger_in.json and rag_ledger_lock.json stay in WORK as well. A
+    run that finds no ledger in memory exports none, and in a SAS session
+    that ran the job before, the Python program then read the two files of
+    the EARLIER run: that ledger as the ledger of this run, and its lock as
+    the lock that was written. Both are deleted before anything is exported."""
+    job = _job()
+    head = re.sub(r"/\*.*?\*/", "", job.split("\nsubmit;\n", 1)[0], flags=re.DOTALL)
+    step = head[head.index('    do file = "rag_ledger_in.json", "rag_ledger_lock.json";'):]
+    step = step[:step.index("\nrun;")]
+    order = ['ref = "_ragold";',
+             'if filename(ref, cats("%sysfunc(pathname(work))/", file)) = 0 then do;',
+             "if fexist(ref) then do;", "if fdelete(ref) = 0 then do;",
+             "was deleted from WORK", "else do;",
+             'call symputx("_rag_state", "fail", "G");',
+             'call symputx("_rag_error", strip(file) || ',
+             "rc = filename(ref);"]
+    positions = [step.index(text) for text in order]
+    assert positions == sorted(positions)
+    # the files are named here and where they are written and read, nowhere
+    # else - and here first, in open code, before the macro that exports
+    for name in ("rag_ledger_in.json", "rag_ledger_lock.json"):
+        assert head.count(name) == 2
+        assert head.index(name) < head.index("%macro _rag_export_ledger;")
+    assert head.index("%let _rag_state = run;") < head.index("    do file = ") \
+        < head.index("%macro _rag_export_ledger;") < head.index("%_rag_export_ledger;")
+    assert len("_ragold") <= 8                    # a fileref
+    # rag_ledger_out.json is not among them: only a run that reports success
+    # stores it, and that run has written it (the test above)
+    assert "rag_ledger_out.json" not in step
+
+
+def test_an_export_that_cannot_be_deleted_stops_the_run():
+    """The file would be read as the ledger of this run. The run fails the
+    way it fails for a saved ledger that could not be loaded: the Python
+    program says why, as a milestone, and returns before it reads a file."""
+    said = re.search(r'call symputx\("_rag_error", strip\(file\) \|\| "([^"]*)", "G"\);',
+                     _job())
+    assert said
+    message = "rag_ledger_in.json" + said.group(1)
+    assert message.endswith("could not be deleted from WORK - stopped, because the "
+                            "run would read the ledger of that run as its own")
+    sas = _run({"_rag_state": "fail", "_rag_error": message, "_rag_rc": "1"})
+    assert sas.log == ["RAGINGEST Ingestion failed: " + message]
+    assert _builder_says_failed("completed", sas.log)
+    assert sas.macros["_rag_rc"] == "1"
+
+
 def test_the_reload_still_keeps_its_own_condition_code_out_of_the_run():
     """The job fails through _rag_rc at its end, not through what PROC CAS
     left behind: a load another session won is no failure of the run."""

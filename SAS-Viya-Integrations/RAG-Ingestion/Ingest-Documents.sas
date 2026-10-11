@@ -290,6 +290,36 @@
     %end;
 %mend _rag_ledger_length;
 
+/* ---- No export of an earlier run -------------------------------------------
+   The two files the Python program reads the ledger and its lock from stay
+   in WORK. A job started by SAS Job Execution has a WORK of its own; in a SAS
+   session that ran this program before, they are the files of that run. A
+   run that finds no ledger in memory exports none, and the Python program
+   then read the ledger of the EARLIER run as the ledger of this one: its
+   documents as unchanged, and its lock as the lock that was written.
+   Both files are deleted before anything is exported, so a file that is
+   there afterwards is one this run wrote. A file that is there and cannot be
+   deleted stops the run, the way a saved ledger that cannot be loaded does. */
+data _null_;
+    length file $ 32 ref $ 8 line $ 200;
+    do file = "rag_ledger_in.json", "rag_ledger_lock.json";
+        ref = "_ragold";
+        if filename(ref, cats("%sysfunc(pathname(work))/", file)) = 0 then do;
+            if fexist(ref) then do;
+                if fdelete(ref) = 0 then do;
+                    line = "NOTE: RAG ingestion: " || strip(file) || " of an earlier run of this SAS session was deleted from WORK";
+                    putLog line;
+                end;
+                else do;
+                    call symputx("_rag_state", "fail", "G");
+                    call symputx("_rag_error", strip(file) || " of an earlier run of this SAS session could not be deleted from WORK - stopped, because the run would read the ledger of that run as its own", "G");
+                end;
+            end;
+            rc = filename(ref);
+        end;
+    end;
+run;
+
 /* ---- Export the existing ledger to WORK, then take the run lock ----------
    The export happens BEFORE the lock append, so this run's own lock never
    appears in its snapshot - the Python side aborts only on a fresh lock left
