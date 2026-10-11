@@ -21,9 +21,17 @@ run; the same two literals stood in all nine steps.
 
 The summary is now read with `symget` into a variable. These tests pin that,
 and they pin what is left: no literal in the SAS of a step is longer than 262
-bytes as it stands in the file, and the only run-time text of open length that
-still reaches a quoted string is the message of a step that FAILED (at most
-500 characters, beside the ERROR line it is written in).
+bytes as it stands in the file, and no run-time text of open length reaches a
+quoted string.
+
+The message of a step that FAILED was the last one that did. The ERROR line
+was written as `putLog "ERROR: <step> failed: %superq(_rgls_error)"` with a
+message of up to 500 characters, and a failing RAG - List Documents wrote the
+NOTE directly above its ERROR line (found on a live system). The line is now
+put together in a variable, its message read with `symget`, in all nine
+steps. The single-program job Ingest-Documents.sas wrote its last line the
+same way, and its message for a run lock that was not read back is longer
+than 262 bytes with any table name; it holds the same change.
 
 That the summary was the cause is read from the text; SAS was not asked. The
 file of RAG - Register Setup as it was run held a second pair of strings of
@@ -37,10 +45,13 @@ cut to under 262 bytes all the same, in all nine steps, so that no step file
 holds a string of that length in either language; what they explained stands
 below them as comments.
 
-Nothing here runs SAS. That the NOTE is gone was measured on a live system
-for RAG - Register Setup: its log goes from `%_rgrg_status;` straight to the
-summary. The logs of the other eight steps were not read for the NOTE; they
-hold the same change.
+Nothing here runs SAS. That the NOTE is gone from a run that succeeds was
+measured on a live system: for RAG - Register Setup in SAS Studio, whose log
+goes from `%_rgrg_status;` straight to the summary, and for a flow of RAG -
+List Documents, Extract Text, Chunk Documents, Embed Chunks and Load Vector
+Store on SAS Viya 2026.09, whose log holds no such NOTE. The logs of RAG -
+Enrich Chunks, RAG - Purge Documents and RAG - Retrieve Context were not read
+for it; they hold the same change.
 
 Two kinds of test stand here, and they are not the same. The tests of the
 summary (it never stands inside a quoted string, it is read with symget, the
@@ -61,6 +72,7 @@ import pytest
 
 RAG = pathlib.Path(__file__).resolve().parents[1]
 STEPS = RAG.parent / "Custom-Steps"
+JOB = RAG.parent / "RAG-Ingestion" / "Ingest-Documents.sas"
 
 RAG_STEPS = {
     "RAG - Chunk Documents": "rgch", "RAG - Embed Chunks": "rgem",
@@ -83,6 +95,19 @@ def _python(name):
 
 def _around_python(name):
     head, rest = _sas(name).split("\nsubmit;\n", 1)
+    return head + "\n" + rest.split("\nendsubmit;", 1)[1]
+
+
+def _job():
+    return JOB.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def _job_python():
+    return _job().split("\nsubmit;\n", 1)[1].split("\nendsubmit;", 1)[0]
+
+
+def _job_around_python():
+    head, rest = _job().split("\nsubmit;\n", 1)
     return head + "\n" + rest.split("\nendsubmit;", 1)[1]
 
 
@@ -157,7 +182,8 @@ def test_the_summary_is_read_with_symget_and_printed_as_before(name):
         r"        end;\n"
         r"    run;\n" % (prefix, re.escape(name)), sas)
     assert block, "the summary is no longer printed the pinned way"
-    assert sas.count("symget(") == 1
+    # the summary, and the message of a failed run
+    assert sas.count("symget(") == 2
     assert "countw(\"%superq" not in sas and "scan(\"%superq" not in sas
 
 
@@ -181,16 +207,104 @@ def test_the_variable_holds_whatever_the_python_block_hands_over(name):
 
 
 @pytest.mark.parametrize("name", sorted(RAG_STEPS))
-def test_the_failure_message_is_the_only_open_text_left_in_a_string(name):
-    """`%superq` puts a value into a string unresolved and whole. One such
-    string is left per step: the ERROR line of a failed run, whose message
-    the Python block cuts at 500 characters. A failed run can therefore still
-    write the NOTE beside its ERROR line; a run that succeeds cannot."""
+def test_the_error_line_is_put_together_from_a_message_read_with_symget(name):
+    """The defect of the failing run: the message, up to 500 characters,
+    resolved inside the literal of the ERROR line."""
     prefix = RAG_STEPS[name]
-    with_superq = [text for text in _quoted_strings(_around_python(name))
-                   if "%superq(" in text]
-    assert with_superq == ["ERROR: %s failed: %%superq(_%s_error)" % (name, prefix)]
+    block = re.search(
+        r"        data _null_;\n"
+        r"            length message \$ (\d+) line \$ (\d+);\n"
+        r'            message = symget\("_%s_error"\);\n'
+        r'            line = "(ERROR: %s failed: )" \|\| message;\n'
+        r"            putLog line;\n"
+        r"        run;\n" % (prefix, re.escape(name)), _around_python(name))
+    assert block, "the ERROR line is no longer written the pinned way"
+    # the Python block cuts the message at 500 characters; in UTF-8 that is
+    # at most 2000 bytes, and the line holds its prefix as well
     assert 'SAS.symput("_%s_error", sas_safe(error_text)[:500])' % prefix in _python(name)
+    assert int(block.group(1)) >= 500 * 4
+    assert int(block.group(2)) >= int(block.group(1)) + len(block.group(3))
+
+
+def _takes_no_open_text(strings, *variables):
+    """`%superq` puts a value into a string unresolved and whole, so none
+    stands in a string. A line the log reads as an ERROR resolves nothing at
+    all, and the message and the summary appear in a string only as a name,
+    which is how symget is given them."""
+    for text in strings:
+        assert "%superq(" not in text, text[:80]
+        if text.startswith("ERROR:"):
+            assert "&" not in text and "%" not in text, text[:80]
+        for variable in variables:
+            assert text == variable or variable not in text, text[:80]
+
+
+@pytest.mark.parametrize("name", sorted(RAG_STEPS))
+def test_no_quoted_string_of_a_step_takes_a_text_of_open_length(name):
+    prefix = RAG_STEPS[name]
+    strings = _quoted_strings(_around_python(name))
+    assert [text for text in strings if text.startswith("ERROR:")] == [
+        "ERROR: %s failed: " % name]
+    _takes_no_open_text(strings, "_%s_error" % prefix, "_%s_summary" % prefix)
+
+
+def test_the_scan_meets_an_error_line_that_resolves_a_macro_variable():
+    """The form the ERROR line had, in both spellings a macro variable can
+    reach a string in: this is what the test above is there to refuse."""
+    for line in ('putLog "ERROR: RAG - List Documents failed: %superq(_rgls_error)";',
+                 'putLog "ERROR: RAG - List Documents failed: &_rgls_error.";'):
+        with pytest.raises(AssertionError):
+            _takes_no_open_text(_quoted_strings(line), "_rgls_error")
+
+
+# ---------------------------------------------------------------------------
+# the single-program job: its last line, written the same way
+# ---------------------------------------------------------------------------
+def test_the_last_line_of_the_job_is_put_together_from_what_symget_reads():
+    """ERROR with the message of a failed run, NOTE with the summary of one
+    that went through - neither stands in a quoted string any more."""
+    block = re.search(
+        r"data _null_;\n"
+        r"    length text \$ (\d+) line \$ (\d+);\n"
+        r'    if "&_rag_rc\." ne "0" then do;\n'
+        r'        text = symget\("_rag_error"\);\n'
+        r'        line = "(ERROR: RAG ingestion failed: )" \|\| text;\n'
+        r"    end;\n"
+        r"    else do;\n"
+        r'        text = symget\("_rag_summary"\);\n'
+        r'        line = "(NOTE: RAG ingestion succeeded: )" \|\| text;\n'
+        r"    end;\n"
+        r"    putLog line;\n"
+        r"run;", _job_around_python())
+    assert block, "the last line of the job is no longer written the pinned way"
+    python = _job_python()
+    assert 'SAS.symput("_rag_error", sas_safe(error_text)[:500])' in python
+    assert 'SAS.symput("_rag_summary", sas_safe(summary)[:400])' in python
+    assert int(block.group(1)) >= 500 * 4
+    assert int(block.group(2)) >= int(block.group(1)) + max(
+        len(block.group(3)), len(block.group(4)))
+
+
+def test_no_quoted_string_of_the_job_takes_a_text_of_open_length():
+    strings = _quoted_strings(_job_around_python())
+    assert [text for text in strings if text.startswith("ERROR:")] == [
+        "ERROR: RAG ingestion failed: "]
+    _takes_no_open_text(strings, "_rag_error", "_rag_summary")
+    # and no literal is longer than 262 bytes as it stands in the file
+    assert max(len(text.encode("utf-8")) for text in strings) <= LIMIT
+
+
+def test_the_message_of_a_lock_that_was_not_read_back_is_why():
+    """It is longer than 262 bytes before the name of the table is in it,
+    so every run that failed this way wrote the NOTE above its last line."""
+    python = _job_python()
+    message = python.split('"the run lock could not be written to the ledger "', 1)[1]
+    message = message.split("        # run-<epoch>-<digits>:", 1)[0]
+    said = "".join(re.findall(r'"([^"]*)"', message.replace('"."', "")))
+    line = ("ERROR: RAG ingestion failed: RuntimeError: the run lock could "
+            "not be written to the ledger " + said)
+    assert "refusing to ingest unguarded" in line
+    assert len(line) > LIMIT
 
 
 @pytest.mark.parametrize("name", sorted(RAG_STEPS))

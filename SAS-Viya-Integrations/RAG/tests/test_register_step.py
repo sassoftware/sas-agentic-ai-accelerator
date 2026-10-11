@@ -869,8 +869,10 @@ def test_a_failed_run_writes_the_warnings_before_it_aborts():
     status = _status_macro()
     branch = status.split("%if &_rgrg_state. EQ fail %then %do;", 1)[1].split(
         "%return;", 1)[0]
-    error = branch.index('putLog "ERROR: RAG - Register Setup failed: '
-                         '%superq(_rgrg_error)";')
+    error = branch.index('line = "ERROR: RAG - Register Setup failed: " '
+                         '|| message;')
+    assert 'message = symget("_rgrg_error");' in branch[:error]
+    assert "putLog line;" in branch[error:].split("run;", 1)[0]
     stored = branch.index("the step failed after the score code of the "
                           "retrieval model was stored")
     warnings = branch.index("%_rgrg_tls_warnings;")

@@ -192,7 +192,7 @@
     %let syscc = &_rag_reload_syscc.;
     %if &_rag_reload_outcome. EQ failed %then %do;
         %let &statevar. = fail;
-        /* kept short: the caller writes it to the log inside a quoted string */
+        /* one line: the caller writes it to the log as its ERROR line */
         %let &errorvar. = the saved table &caslib..&table. could not be loaded into memory (CAS messages above) - stopped, because an empty table would re-embed the corpus and overwrite the saved file;
         %return;
     %end;
@@ -767,10 +767,22 @@ run; quit;
 %mend _rag_store_ledger;
 %_rag_store_ledger;
 
-/* ---- Propagate the outcome without ever raising a SAS error --------------- */
+/* ---- Propagate the outcome without ever raising a SAS error ---------------
+   The message and the summary are read with symget and the line is put
+   together in a variable. Written into the program as a quoted string, a
+   text that took the line beyond 262 bytes made SAS write the NOTE that
+   suspects unbalanced quotation marks above it - and the message of a run
+   lock that was not read back is that long with any table name. 2000 bytes
+   hold the 500 characters the Python program hands over at most. */
 data _null_;
-    if "&_rag_rc." ne "0" then
-        putLog "ERROR: RAG ingestion failed: %superq(_rag_error)";
-    else
-        putLog "NOTE: RAG ingestion succeeded: %superq(_rag_summary)";
+    length text $ 2000 line $ 2100;
+    if "&_rag_rc." ne "0" then do;
+        text = symget("_rag_error");
+        line = "ERROR: RAG ingestion failed: " || text;
+    end;
+    else do;
+        text = symget("_rag_summary");
+        line = "NOTE: RAG ingestion succeeded: " || text;
+    end;
+    putLog line;
 run;

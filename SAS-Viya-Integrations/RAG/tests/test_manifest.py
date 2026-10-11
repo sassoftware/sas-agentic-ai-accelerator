@@ -467,7 +467,7 @@ def test_a_failing_register_setup_sets_the_job_flag_before_it_says_anything():
     fail = status[status.index("%if &_rgrg_state. EQ fail %then %do;"):]
     positions = [fail.index(marker) for marker in (
         "%let RAG_PIPELINE_FAILED = 1;", "%let RAG_JOB_FAILED = 1;",
-        'putLog "ERROR: RAG - Register Setup failed:',
+        'line = "ERROR: RAG - Register Setup failed: " || message;',
         "%_rgrg_tls_warnings;", "abort 42;", "%return;")]
     assert positions == sorted(positions)
     warnings = code[code.index("%macro _rgrg_tls_warnings;"):
