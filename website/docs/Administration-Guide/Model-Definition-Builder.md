@@ -214,8 +214,8 @@ entry of the Prompt Builder, one per part of the Builder it concerns, with:
 | `is_current` | 1 for the newest dated release |
 | `release_rank`, `item_rank` | 1 = newest release; the entry's position within it, so a report can order without dates |
 | `section`, `change_type` | the heading as written and its normalised kind: Added, Changed, Fixed, Removed, Breaking, Upgrade, Release |
-| `component` | Prompt Builder, RAG runtime, Credentials, Model Definition Builder, Definitions, Documentation or General - from the section heading when it names one, else from the entry's wording. Entries about the RAG Builder are filed under Prompt Builder, which it is part of |
-| `summary`, `detail` | the entry's bold lead (or first sentence) and the rest, as plain text |
+| `component` | Prompt Builder, RAG runtime, Credentials, Model Definition Builder, Definitions, Documentation or General - from the section heading when it names one, else from the entry's wording. Entries about the RAG Builder are filed under Prompt Builder, which it is part of, and no entry of a release before 2.0.0 is filed under RAG runtime |
+| `summary`, `detail` | the entry's bold lead (or its first sentence, of which only the beginning is kept when it is longer than 140 characters) and the rest, as plain text |
 | `builder_part` | the part of the Prompt Builder an entry concerns: `Prompt`, `Decision` or `RAG`; empty for the release intro and for every component other than Prompt Builder and RAG runtime. The last column |
 
 It exists because a SAS Visual Analytics Data-Driven Content object needs a
@@ -223,6 +223,25 @@ data assignment before it renders: the Prompt Builder object is assigned this
 table, and a report author can filter it by `component` to show what changed
 for the Builder next to it. `mdb load-releases --csv out.csv`
 writes the table without contacting SAS Viya, for a look at the rows.
+
+The component is read from the wording with keyword lists, in a fixed order:
+the first component an entry names is the one it is filed under, the Prompt
+Builder first. Two things decide before the wording of the entry. A **section
+heading** that names a component files every entry under it there - the
+entries of 2.0.0 under *RAG cost* are `RAG runtime` rows, those about the
+setup editor of the RAG Builder included. And the **release**: `rag_core`, the
+RAG steps and the vector stores came with 2.0.0, so an older entry that
+"retrieves" or "enriches" something is filed under the next component it
+names. What the Prompt Builder is recognised by includes its buttons and
+objects - a prompt-test, the experiment tracker, the judge, the best prompt -
+and an entry that says it holds for *both builders*, the Prompt Builder and
+the RAG Builder of 2.0.0 to 2.2.x.
+
+The line the command ends with counts the release headings of the changelog,
+which is not the number of versions: `CHANGELOG.md` has the heading `[0.1.29]`
+twice, for 2025-10-13 and for 2025-10-10. For the changelog of 2.3.0 the
+command says 58 releases, and the table holds 58 values of `release_rank` and
+57 of `version`.
 
 #### One row per part of the Builder
 
@@ -238,31 +257,48 @@ rows, so a change is still counted once by that pair (not by `version` alone:
 the changelog used 0.1.29 for two releases); `mdb load-releases` prints the
 rows per part beside the number of entries they stand for.
 
-Which parts an entry concerns is read from its wording, as the component is:
+Which parts an entry concerns is read from its wording, as the component is.
+The first of these that applies decides:
 
-- The parts its **headline** names: a prompt, the judge, the optimization or
-  the Call LLM node for `Prompt`; a decision template, the decision mode or a
-  decision model for `Decision`; the RAG Builder, a RAG setup, retrieval,
-  ingestion, the ledger or a vector store for `RAG`. A prompt-test and an
-  experiment belong to the flow both kinds of template share, so they name
-  `Prompt` and `Decision`. A decision in SAS Intelligent Decisioning names no
-  part.
-- A headline that names the Prompt Builder and no part of it - *The create
-  dialogs of the Prompt Builder show the whole name* - concerns the Builder as
-  a whole and is written for all three. So are the steps of an upgrade, and an
-  entry that says it applies to all three kinds.
-- When the headline settles nothing, the parts the rest of the entry names
-  decide, and an entry that names none anywhere is written for the whole
-  Builder.
-- By release: a part that did not exist yet cannot be concerned. Before 2.2.0
-  there was no decision mode, so no entry of an older release is filed under
-  `Decision`. Before 2.0.0 the Builder was the one for prompts, so an entry
-  that names no part is `Prompt` alone there, `Prompt` and `RAG` from 2.0.0,
-  and all three from 2.2.0. Up to 2.2.x the Prompt Builder and the RAG Builder
-  were two applications, and the name *Prompt Builder* names the prompt part
-  in those releases; from 2.3.0 it is the name of the whole. An entry that
-  names the RAG Builder is filed under `RAG` in any release - the changelog
-  first names it in 0.1.14.
+1. A **section heading** that names a part: every entry under it is filed
+   under the parts the heading names, whatever its own headline names. 2.0.0
+   has the heading *RAG Builder: generating what a setup implies*, and its
+   entry *Deleting a setup says what depends on it first*, whose text begins
+   with the Prompt Builder, is `RAG` alone. The headings Added, Changed, Fixed
+   and Removed name nothing.
+2. The **steps of an upgrade** are written for the whole Builder, and so is an
+   entry that says it holds for all of it: with the words *three kinds*,
+   *every kind*, *all four create dialogs* or *both builders*.
+3. The parts the **headline** names: a prompt, the judge, the optimization or
+   the Call LLM node for `Prompt`; a decision template, the decision mode or a
+   decision model for `Decision`; the RAG Builder, a RAG setup, retrieval,
+   ingestion, the ledger or a vector store for `RAG`. A prompt-test and an
+   experiment belong to the flow both kinds of template share, so they name
+   `Prompt` and `Decision`, and so does a template named without its kind:
+   *a prompt, a template or a RAG setup* names all three parts. A decision in
+   SAS Intelligent Decisioning names no part. The headline is read whole - for
+   an entry without a bold lead that is its first sentence, also where the
+   column `summary` holds only the beginning of it.
+4. A headline that names the Prompt Builder and no part of it - *The create
+   dialogs of the Prompt Builder show the whole name* - concerns the Builder
+   as a whole and is written for all three.
+5. When the headline settles nothing, the parts the rest of the entry names
+   decide, and an entry that names none anywhere is written for the whole
+   Builder. A template without its kind names nothing here: in the text of an
+   entry the word is as often the score template of a definition or the file a
+   retrieval model is manifested from.
+
+In each of them the release has a say: a part that did not exist yet cannot be
+concerned. Before 2.2.0 there was no decision mode, so no entry of an older
+release is filed under `Decision`, and a template without its kind names
+nothing there. Before 2.0.0 the Builder was the one for prompts, so an entry
+that names no part is `Prompt` alone there, `Prompt` and `RAG` from 2.0.0, and
+all three from 2.2.0 - which is also what *the whole Builder* in the list
+above means for a release. Up to 2.2.x the Prompt Builder and the RAG Builder
+were two applications, and the name *Prompt Builder* names the prompt part in
+those releases; from 2.3.0 it is the name of the whole. An entry that names
+the RAG Builder is filed under `RAG` in any release - the changelog first
+names it in 0.1.14.
 
 The reading is a set of keyword lists (`PART_KEYWORDS` and its neighbours in
 `mdb/core/releases.py`), not an understanding of the entry, and the headline
@@ -270,7 +306,13 @@ outweighs the text: an entry whose headline names one part is filed under that
 part even where its text says that another is affected as well. The one
 exception is a headline about prompts whose text names decision templates,
 which is filed under both because the two share a flow. Name every part in the
-headline of a new entry when it concerns more than one.
+headline of a new entry when it concerns more than one, and put an entry that
+is not about one part under a heading that names none.
+
+These rules were checked on the CSV that `mdb load-releases --csv` writes from
+this changelog and by the tests of `mdb`. The table with `builder_part` was
+**not run in SAS Viya**: it was not loaded into CAS and not shown on a report
+page.
 
 #### The Changelog page of the report
 
@@ -279,7 +321,11 @@ The page needs two things from the table: the **filter on `component`** it has
 and `rag_core` under the RAG button as well), and a **button bar on
 `builder_part`** as the control a reader picks the part with. Without the
 filter on `component` the rows of the other components, which have no part,
-are rows of the empty value.
+are rows of the empty value. With `Prompt Builder` alone in the filter, the
+RAG button lacks the `RAG runtime` rows, and among those are entries about the
+interface of the RAG Builder: 2.0.0 lists some under its headings *RAG cost*
+and *Enrichment: making a chunk say where it came from*, and those headings
+file every entry under them as `RAG runtime`.
 
 `mdb load-releases` changes the table and not the report: the page with the
 button bar comes with the Prompt Builder package a maintainer exports after
