@@ -284,11 +284,13 @@ def test_the_job_reloads_its_ledger_before_exporting_it():
 
 def test_the_job_does_not_ingest_when_its_saved_ledger_could_not_be_loaded():
     """The Python program is the part that would read an empty ledger and
-    write a new one; it has to stop before it does anything."""
+    write a new one; it has to stop before it does anything but say why."""
     code = job_code()
     program = code[code.index("def main():"):code.index("endsubmit;")]
     guard = program.index('if str(SAS.symget("_rag_state") or "run").strip() != "run":')
-    assert program[guard:].split("\n")[1].strip() == "return"
+    block = program[guard:].split("\n\n", 1)[0].split("\n")[1:]
+    assert block[0].strip() == 'M("Ingestion failed: "'
+    assert block[-1].strip() == "return"
     assert guard < program.index("import requests")
     assert guard < program.index("rag_ledger_in.json")
 
@@ -372,12 +374,17 @@ class _StopAfterTheGuard(Exception):
 class _JobSas:
     """What the job's Python sees of SAS before it bootstraps rag_core."""
 
+    # what the reload leaves in _rag_error when a saved file cannot be loaded
+    ERROR = ("the saved table Public.HR_LEDGER could not be loaded into memory "
+             "(CAS messages above) - stopped, because an empty table would "
+             "re-embed the corpus and overwrite the saved file")
+
     def __init__(self, state):
         self.state = state
         self.written = []
 
     def symget(self, name):
-        return self.state if name == "_rag_state" else ""
+        return {"_rag_state": self.state, "_rag_error": self.ERROR}.get(name, "")
 
     def symput(self, name, value):
         self.written.append((name, value))
@@ -400,10 +407,14 @@ def _run_job_program(state):
 
 
 def test_the_job_program_returns_at_once_after_a_failed_reload():
-    """Run, not read: with _rag_state at fail the program writes nothing -
-    _rag_rc stays 1 and _rag_error keeps what the reload wrote - and it does
-    not get as far as the two exports the lock read-back compares."""
-    assert _run_job_program("fail").written == []
+    """Run, not read: with _rag_state at fail the program says why, as the
+    milestone of a failed run, and writes nothing else - _rag_rc stays 1 and
+    _rag_error keeps what the reload wrote - and it does not get as far as
+    the two exports the lock read-back compares. It wrote nothing at all
+    before, and the Prompt Builder showed such a run as finished
+    (test_job_outcome.py)."""
+    assert _run_job_program("fail").written == [
+        ("log", "RAGINGEST Ingestion failed: " + _JobSas.ERROR)]
 
 
 @pytest.mark.parametrize("state", ["run", " run ", "", None])

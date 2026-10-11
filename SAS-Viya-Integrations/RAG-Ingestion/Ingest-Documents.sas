@@ -80,10 +80,14 @@
  *                      (default casuser.RAG_INGESTION_LEDGER)
  *   ragCorePath      - SAS Content folder holding rag_core
  *
- * Contract: the job ALWAYS completes. The outcome lives in the log summary
- * (NOTE/ERROR) and the ledger; a raised SAS error would leave the session
- * stopped without Job Execution ever receiving its completion handshake -
- * the same lesson the optimize job learned live.
+ * Contract: the program ALWAYS runs to its last statement. A raised SAS
+ * error would leave the session stopped without Job Execution ever receiving
+ * its completion handshake - the same lesson the optimize job learned live.
+ * The outcome lives in the log (the milestone "Ingestion failed: <reason>"
+ * and the last line, NOTE or ERROR) and in the ledger. A run that failed
+ * also sets SYSCC as its last statement, so that SAS Job Execution reports
+ * the job as failed and not as completed - the way a job generated from a
+ * flow ends (JOB_EPILOGUE in rag_core/registration.py).
  ******************************************************************************/
 
 %macro _rag_default(name, value);
@@ -362,15 +366,21 @@ def main():
     # The saved ledger could not be loaded. Running on would read an empty
     # ledger, ingest every document as new and store the result over the
     # saved file; _rag_error already says what happened.
+    # It is said as the milestone every failure of this program is said as:
+    # the Prompt Builder reads the outcome of a run from the milestones, and
+    # a run that returned here without one was shown as finished.
     if str(SAS.symget("_rag_state") or "run").strip() != "run":
+        M("Ingestion failed: "
+          + sas_safe(str(SAS.symget("_rag_error") or "").strip()))
         return
 
     try:
         import requests
     except Exception:
-        SAS.symput("_rag_error", "The Python environment of this compute context "
-                                 "lacks the requests package - see the RAG "
-                                 "administration guide.")
+        missing = ("The Python environment of this compute context lacks the "
+                   "requests package - see the RAG administration guide.")
+        M("Ingestion failed: " + missing)
+        SAS.symput("_rag_error", missing)
         return
 
     BASE = str(SAS.symget("_rag_viyaHost") or "").rstrip("/")
@@ -786,3 +796,21 @@ data _null_;
     end;
     putLog line;
 run;
+
+/* ---- A run that failed is a failed job -------------------------------------
+   Nothing above raises a SAS error, so the program ends normally also when
+   the run failed - which SAS Job Execution reports as a completed job. Who
+   reads only the state of the job, a schedule for one, then takes the run
+   for one that went through, and so does the Prompt Builder for a run that
+   left no milestone. SYSCC is what makes it a failed job, set here as the
+   last statement of the program: nothing follows that it could stop.
+   This is also where a saved ledger that could not be loaded fails the job.
+   The reload restores SYSCC after it has looked, because a load that another
+   session won is no failure of the run - so what PROC CAS left behind does
+   not decide the state of the job, and _rag_rc does.
+   A macro, because the test is a conditional and has to hold in any SAS
+   release the job lands on. */
+%macro _rag_job_state;
+    %if &_rag_rc. NE 0 %then %let SYSCC = 1012;
+%mend _rag_job_state;
+%_rag_job_state;
