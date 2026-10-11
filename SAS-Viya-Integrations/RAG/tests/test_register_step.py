@@ -157,7 +157,10 @@ def test_the_code_reads_the_control_under_the_id_the_ui_gives_it():
     # and nowhere under a name that only looks like it
     names = set(re.findall(r"_rgrg_ssl\w*|_rgrg_tls\w*|_rgrg_verify\w*", _sas(),
                            re.IGNORECASE))
-    assert names == {CONTROL, "_rgrg_tlsState", "_rgrg_tlsTag"}
+    # two macro variables for what the Python found, and the macro that
+    # says it in the log
+    assert names == {CONTROL, "_rgrg_tlsState", "_rgrg_tlsTag",
+                     "_rgrg_tls_warnings"}
 
 
 def test_a_missing_or_blank_control_reads_as_ticked_in_sas():
@@ -251,7 +254,7 @@ class _Viya:
     test.
     """
 
-    def __init__(self, template, tags=None, refuse_tag_update=False):
+    def __init__(self, template, tags=None, refuse_tag_update=False, upload=""):
         self.template = template
         self.headers = {}
         self.model = None
@@ -262,6 +265,9 @@ class _Viya:
         self.score = None
         self.files = {}
         self.refuse_tag_update = refuse_tag_update
+        # the upload of the score code: "" (stored), "lost" (stored, and the
+        # answer never arrives) or "refused" (the service says 409)
+        self.upload = upload
         self.model_puts = 0
 
     # -- requests.get -------------------------------------------------------
@@ -296,7 +302,11 @@ class _Viya:
                                            "name": "RAG Engineering"}]})
         if endpoint == MODEL + "/contents":
             if params.get("role") == "score":
+                if self.upload == "refused":
+                    return _Reply(409, {"httpStatusCode": 409}, text="stub refused")
                 self.score = kwargs["files"]["files"][1].decode("utf-8")
+                if self.upload == "lost":
+                    raise TimeoutError("read timed out")
             return _Reply(201, {})
         if endpoint == MODEL:
             if method == "GET":
@@ -335,11 +345,13 @@ class _Sas:
 
 
 def _run_step(monkeypatch, tmp_path, checkbox="default", template=None,
-              old_rag_core=False, **service_options):
+              old_rag_core=False, flow="", **service_options):
     """Run the step's Python the way SAS Studio would: every control at the
     default the step file gives it, the required ones filled in, and the
     checkbox as the test sets it ("default" = as shipped, None = no macro
-    variable value at all)."""
+    variable value at all). `flow` is the path in the control Studio Flow to
+    generate the scheduled job from; the stub holds no flow, so a path there
+    is a flow that does not exist."""
     import requests
     import rag_core.adapters
     import rag_core.credentials
@@ -370,6 +382,11 @@ def _run_step(monkeypatch, tmp_path, checkbox="default", template=None,
         macros[CONTROL] = ""
     elif checkbox != "default":
         macros[CONTROL] = checkbox
+    if flow:
+        macros["_rgrg_flowPath"] = "sascontent:" + flow
+    # as the SAS around the program sets them before PROC PYTHON
+    macros["_rgrg_tlsState"] = "unknown"
+    macros["_rgrg_tlsTag"] = "ok"
     sas = _Sas(tmp_path, macros)
 
     (tmp_path / "rgrg_inventory_in.json").write_text(json.dumps([{
@@ -406,11 +423,15 @@ def _run_step(monkeypatch, tmp_path, checkbox="default", template=None,
                         lambda **_: str(tmp_path / "rag_core_staging"))
     if old_rag_core:
         # a rag_core deployed before the setting: its register_setup returns
-        # none of the keys that say what the stored code does
+        # none of the keys that say what the stored code does, and puts
+        # nothing on an exception
         current = rag_core.registration.register_setup
 
         def _before_the_setting(*args, **kwargs):
-            outcome = current(*args, **kwargs)
+            try:
+                outcome = current(*args, **kwargs)
+            except Exception as error:
+                raise type(error)(str(error)) from None
             for key in ("ssl_verify", "ssl_verify_in_template", "tls_tag_error"):
                 outcome.pop(key)
             return outcome
@@ -559,6 +580,109 @@ def test_the_report_detail_fits_the_column_sas_reads_it_into(monkeypatch, tmp_pa
 
 
 # ---------------------------------------------------------------------------
+# a run that fails AFTER the score code was stored
+# ---------------------------------------------------------------------------
+MISSING_FLOW = "/Flows/No Such Flow.flw"
+
+
+def test_a_missing_flow_with_the_box_unticked_still_says_the_model_does_not_verify(
+        monkeypatch, tmp_path):
+    """The flow named in the step does not exist. The step fails - and the
+    model in SAS Model Manager holds score code that does not verify. Before,
+    the failing run said nothing about it and left the state unknown."""
+    run = _run_step(monkeypatch, tmp_path, checkbox="0", flow=MISSING_FLOW)
+    assert run.sas.macros.get("_rgrg_rc") != "0"
+    assert "no flow named" in run.sas.macros["_rgrg_error"]
+    # the model is what the log has to describe
+    assert "SSL_VERIFY = False" in run.service.score.splitlines()
+    assert run.service.model["tags"] == STACK_TAGS + [TLS_TAG]
+    assert run.sas.macros["_rgrg_tlsState"] == "off"
+    assert run.sas.macros["_rgrg_tlsTag"] == "ok"
+    assert any("the step failed after the score code was stored" in line
+               and "TLS certificate verification OFF (tag TLS-Verification-Off)"
+               in line for line in run.sas.log)
+    assert run.report == []
+
+
+def test_a_missing_flow_with_a_tag_that_did_not_follow_says_that_too(
+        monkeypatch, tmp_path):
+    run = _run_step(monkeypatch, tmp_path, checkbox="0", flow=MISSING_FLOW,
+                    tags=STACK_TAGS, refuse_tag_update=True)
+    assert run.sas.macros.get("_rgrg_rc") != "0"
+    assert run.sas.macros["_rgrg_tlsState"] == "off"
+    assert run.sas.macros["_rgrg_tlsTag"] == "failed"
+    assert TLS_TAG not in run.service.model["tags"]
+
+
+def test_a_missing_flow_with_the_box_ticked_says_the_model_verifies(
+        monkeypatch, tmp_path):
+    run = _run_step(monkeypatch, tmp_path, flow=MISSING_FLOW)
+    assert run.sas.macros.get("_rgrg_rc") != "0"
+    assert "SSL_VERIFY = True" in run.service.score.splitlines()
+    assert run.sas.macros["_rgrg_tlsState"] == "on"
+    assert run.sas.macros["_rgrg_tlsTag"] == "ok"
+
+
+def test_a_missing_flow_with_an_old_template_is_still_the_stale_state(
+        monkeypatch, tmp_path):
+    run = _run_step(monkeypatch, tmp_path, checkbox="0", flow=MISSING_FLOW,
+                    template=_old_template())
+    assert run.sas.macros.get("_rgrg_rc") != "0"
+    assert run.sas.macros["_rgrg_tlsState"] == "stale"
+
+
+@pytest.mark.parametrize("checkbox,tags", [
+    ("0", STACK_TAGS), ("1", STACK_TAGS + [TLS_TAG])])
+def test_an_upload_without_an_answer_is_said_as_not_known(
+        monkeypatch, tmp_path, checkbox, tags):
+    """The score code may be stored, and nothing came back. The step neither
+    claims the state of the new code nor the old: it says that it does not
+    know, and the tag is as it was."""
+    run = _run_step(monkeypatch, tmp_path, checkbox=checkbox, tags=tags,
+                    upload="lost")
+    assert run.sas.macros.get("_rgrg_rc") != "0"
+    assert "TimeoutError" in run.sas.macros["_rgrg_error"]
+    assert run.sas.macros["_rgrg_tlsState"] == "unsure"
+    assert run.sas.macros["_rgrg_tlsTag"] == "ok"
+    assert run.service.model["tags"] == tags
+    assert run.service.model_puts == 1
+    assert any("it is not known whether the score code was stored" in line
+               for line in run.sas.log)
+
+
+def test_an_upload_the_service_refused_leaves_the_state_unknown(
+        monkeypatch, tmp_path):
+    """Nothing was stored: the model is what it was, and the step has nothing
+    to say about a score code it did not write."""
+    run = _run_step(monkeypatch, tmp_path, checkbox="0",
+                    tags=STACK_TAGS + [TLS_TAG], upload="refused")
+    assert run.sas.macros.get("_rgrg_rc") != "0"
+    assert "contents returned 409" in run.sas.macros["_rgrg_error"]
+    assert run.service.score is None
+    assert run.sas.macros["_rgrg_tlsState"] == "unknown"
+    assert run.service.model["tags"] == STACK_TAGS + [TLS_TAG]
+
+
+def test_a_rag_core_older_than_the_step_leaves_a_failing_run_unknown(
+        monkeypatch, tmp_path):
+    """An older rag_core puts nothing on the exception. The step then knows
+    as little as before, and says nothing it cannot know."""
+    run = _run_step(monkeypatch, tmp_path, checkbox="0", flow=MISSING_FLOW,
+                    old_rag_core=True)
+    assert run.sas.macros.get("_rgrg_rc") != "0"
+    assert run.sas.macros["_rgrg_tlsState"] == "unknown"
+
+
+def test_a_failure_before_the_registration_leaves_the_state_unknown(
+        monkeypatch, tmp_path):
+    run = _run_step(monkeypatch, tmp_path, checkbox="0",
+                    template="print('not the template')\n")
+    assert run.sas.macros.get("_rgrg_rc") != "0"
+    assert run.service.model is None
+    assert run.sas.macros["_rgrg_tlsState"] == "unknown"
+
+
+# ---------------------------------------------------------------------------
 # the SAS log: what the step says for each state the Python can set
 # ---------------------------------------------------------------------------
 def _status_macro():
@@ -566,21 +690,33 @@ def _status_macro():
         "%mend _rgrg_status;", 1)[0]
 
 
+def _tls_macro():
+    """The macro that writes the WARNING lines about TLS verification."""
+    return _sas().split("%macro _rgrg_tls_warnings;", 1)[1].split(
+        "%mend _rgrg_tls_warnings;", 1)[0]
+
+
 def _warnings(condition):
     """The WARNING lines of the first %do group that follows a condition."""
-    after = _status_macro().split(condition, 1)[1]
+    after = _tls_macro().split(condition, 1)[1]
     group = after.split("run;", 1)[0]
     return re.findall(r'putLog "(WARNING: [^"]*)";', group)
 
 
 def test_the_states_the_python_sets_are_the_states_the_sas_reads():
-    python, status = _python(), _status_macro()
+    python, status = _python(), _tls_macro()
     assert set(re.findall(r"tls_state = '(\w+)'", python)) == {"on", "off", "stale"}
     assert "SAS.symput('_rgrg_tlsState', tls_state)" in python
     assert "SAS.symput('_rgrg_tlsTag', 'failed' if tls_tag_failed else 'ok')" in python
+    # the one state that is not about a stored score code
+    assert re.findall(r"SAS\.symput\('_rgrg_tlsState', '(\w+)'\)", python) == ["unsure"]
     assert "%if &_rgrg_tlsState. EQ off %then %do;" in status
     assert "%if &_rgrg_tlsState. EQ stale %then %do;" in status
+    assert "%if &_rgrg_tlsState. EQ unsure %then %do;" in status
     assert status.count("%if &_rgrg_tlsTag. EQ failed %then %do;") == 2
+    # every state SAS compares with is one the Python sets, or the start value
+    compared = set(re.findall(r"&_rgrg_tlsState\. EQ (\w+)", _sas()))
+    assert compared == {"on", "off", "stale", "unsure"}
     # both are defined before the Python can be skipped or fail
     sas = _sas()
     assert sas.index("%let _rgrg_tlsState = unknown;") < sas.index("proc python")
@@ -608,7 +744,7 @@ def test_an_old_template_is_a_warning_that_says_on_and_deploy_again():
 
 
 def test_a_tag_that_could_not_be_updated_is_a_warning_in_both_directions():
-    status = _status_macro()
+    status = _tls_macro()
     assert ("the tag TLS-Verification-Off could not be written to the model"
             in status)
     assert ("the tag TLS-Verification-Off could not be removed from the model"
@@ -627,21 +763,69 @@ def test_every_warning_is_a_line_sas_prints_as_a_warning_without_complaining():
     quoted string of more than 262 characters makes SAS write a warning of
     its own, about a quotation mark that may be unbalanced. And inside a
     macro, % and & in the text would be read as macro triggers."""
-    literals = re.findall(r'putLog "([^"]*)";', _status_macro())
+    literals = re.findall(r'putLog "([^"]*)";', _tls_macro())
     warnings = [text for text in literals if text.startswith("WARNING")]
-    # off: three lines, then the tag written or not; stale: three lines; and
-    # the tag that could not be removed
-    assert len(warnings) == 9
-    for text in warnings:
+    # off: three lines, then the tag written or not; stale: three lines; not
+    # known whether the score code was stored: two lines; and the tag that
+    # could not be removed
+    assert len(warnings) == 11
+    # and one in the status macro, for the run that failed after the upload
+    literals = re.findall(r'putLog "([^"]*)";', _status_macro())
+    failed = [text for text in literals if text.startswith("WARNING")]
+    assert len(failed) == 1
+    for text in warnings + failed:
         assert text.startswith("WARNING: RAG - Register Setup: "), text
         assert len(text) <= 262, len(text)
         assert not set(text) & set("%&;'"), text
 
 
-def test_the_status_macro_closes_every_group_it_opens():
+def test_an_upload_without_an_answer_is_a_warning_that_says_run_again():
+    lines = _warnings("%if &_rgrg_tlsState. EQ unsure %then %do;")
+    text = " ".join(lines)
+    assert len(lines) == 2
+    assert "it is not known whether SAS Model Manager stored the score code" in text
+    assert "the file may have been stored all the same" in text
+    assert ("the tag TLS-Verification-Off was not updated and may not say what "
+            "the stored score code does") in text
+    assert "Run this step again" in text
+
+
+def test_a_failed_run_writes_the_warnings_before_it_aborts():
+    """The fail branch of the status macro: the ERROR line, the line that
+    says the score code is stored, the WARNING lines of the model, and only
+    then the abort. Before, the branch returned without them."""
+    status = _status_macro()
+    branch = status.split("%if &_rgrg_state. EQ fail %then %do;", 1)[1].split(
+        "%return;", 1)[0]
+    error = branch.index('putLog "ERROR: RAG - Register Setup failed: '
+                         '%superq(_rgrg_error)";')
+    stored = branch.index("the step failed after the score code of the "
+                          "retrieval model was stored")
+    warnings = branch.index("%_rgrg_tls_warnings;")
+    abort = branch.index("abort 42;")
+    assert error < stored < warnings < abort
+    # the line about the stored score code is written for the three states
+    # that mean a stored score code, and for no other
+    for state in ("on", "off", "stale"):
+        assert "%%if &_rgrg_tlsState. EQ %s %%then %%let stored = 1;" % state in branch
+    assert branch.count("%let stored = 1;") == 3
+    assert "%let stored = 0;" in branch and "%if &stored. EQ 1 %then %do;" in branch
+    assert "%local stored;" in status
+    # a run that went through writes the same lines, after its summary
+    after = status.split("%return;")[-1]
+    assert after.index('putLog "NOTE: ----- RAG - Register Setup -----";') \
+        < after.index("%_rgrg_tls_warnings;")
+    assert status.count("%_rgrg_tls_warnings;") == 2
+    # and the macro is defined before the one that calls it
+    sas = _sas()
+    assert sas.index("%mend _rgrg_tls_warnings;") < sas.index("%macro _rgrg_status;")
+
+
+@pytest.mark.parametrize("macro", ["status", "tls"])
+def test_the_status_macro_closes_every_group_it_opens(macro):
     """Nothing here runs SAS. What can be counted is counted: a %do without
     its %end swallows the rest of the step, and the log lines with it."""
-    status = _status_macro()
+    status = _status_macro() if macro == "status" else _tls_macro()
     assert status.count("%do;") == status.count("%end;")
     assert status.count("data _null_;") == len(re.findall(r"^\s*run;$", status,
                                                           re.MULTILINE))
@@ -658,9 +842,13 @@ def test_the_about_page_documents_the_checkbox_and_its_changelog_entry():
                  "RAGSTORE_SSLVERIFY", "embedding container",
                  "SAS Viya credentials service", "deploy-rag-content"):
         assert said in documentation, said
+    # a run that fails after the upload, and one that does not know
+    assert "in the log of the failing run as well, below its ERROR line" in documentation
+    assert "the tag may then not say what the stored score code does" in documentation
     changelog = _control("textChangelog")["text"]
     newest = changelog.split("\n* Version: ")[0]
     assert newest.startswith("* Version: 1.3 (11OCT2026)\n      - ")
     assert LABEL in newest and TLS_TAG in newest
+    assert "A run that fails after the score code was stored still says" in newest
     versions = re.findall(r"^\* Version: (\d+\.\d+) ", changelog, re.MULTILINE)
     assert versions == sorted(versions, reverse=True) and versions[0] == "1.3"

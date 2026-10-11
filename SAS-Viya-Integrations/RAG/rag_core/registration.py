@@ -39,21 +39,60 @@ TIMEOUT = (10, 120)
 #: prompt-decision.ts); a filter on it lists every model that does not verify.
 TLS_VERIFICATION_OFF_TAG = "TLS-Verification-Off"
 
+#: The retrieval model's variables: (name, type, length, description).
+#:
+#: EVERY variable carries a length. SAS Model Manager stores 99 for a string
+#: variable registered without one, SAS Intelligent Decisioning declares the
+#: model in its wrapper with what is stored (`in_out varchar(100)`), and SAS
+#: Micro Analytic Service then fails the execution as soon as a value is
+#: longer - found live with the two context outputs of a model the Prompt
+#: Builder had written without lengths: HTTP 201, an empty error column, every
+#: output of every node of the decision empty.
+#:
+#: The Builder holds the same two lists (INPUT_VARIABLES and OUTPUT_VARIABLES
+#: in rag-builder.ts), and test_manifest_parity.py compares them entry by
+#: entry: a model is the same model whichever of the two registered it last.
 RETRIEVAL_INPUTS = [
-    ("question", "string", 4096, "The user question to retrieve context for"),
-    ("k", "decimal", 8, "Number of chunks to return (0 = the setup default)"),
-    ("filter_json", "string", 1024, "Optional JSON metadata filter"),
-    ("retrieval_mode", "string", 16, "vector (hybrid arrives later)"),
-    ("options", "string", 2048,
+    ("question", "string", 32000, "The user question to retrieve context for"),
+    ("k", "decimal", 8, "Number of chunks to return (0 = the manifested default)"),
+    ("filter_json", "string", 4000,
+     "Optional JSON object of allow-listed column equality filters"),
+    ("retrieval_mode", "string", 32,
+     "vector (hybrid arrives with a later release)"),
+    ("options", "string", 4000,
      "Optional JSON overrides: connection settings, and API_KEY for an "
      "API-backed embedding model (a decision has no session to resolve one)"),
 ]
 RETRIEVAL_OUTPUTS = [
-    ("context_dg", "string", 32000, "Retrieved context as a datagrid"),
-    ("context_envelope", "string", 32000, "Context envelope, knowledge-graph ready"),
-    ("retrieval_status", "string", 512, "ok, or the reason retrieval degraded"),
-    ("run_time", "decimal", 8, "Seconds spent retrieving"),
+    ("context_dg", "string", 32000,
+     "Retrieved context as a datagrid (JSON string)"),
+    ("context_envelope", "string", 32000,
+     "JSON envelope: query, hits[], graph_context, retrieval_mode, "
+     "collection, ingestion_run_id"),
+    ("retrieval_status", "string", 512,
+     "ok or the failure message - retrieval never raises"),
+    ("run_time", "decimal", 8, "Total seconds spent"),
 ]
+
+#: What `register_setup` says about the score code when it fails on the way
+#: (the attribute `registration` of the exception, key `score_code`).
+SCORE_CODE_STORED = "stored"
+SCORE_CODE_NOT_STORED = "not stored"
+SCORE_CODE_UNKNOWN = "unknown"
+
+
+class UnexpectedStatus(RuntimeError):
+    """A request was answered with a status the caller did not expect.
+
+    `status_code` is that status. `from_service` says whether the body was a
+    JSON object, which is how a SAS Viya service words a refusal; an ingress
+    or a proxy that answers in its place sends a page of its own.
+    """
+
+    def __init__(self, message: str, status_code: int, from_service: bool):
+        super().__init__(message)
+        self.status_code = status_code
+        self.from_service = from_service
 
 
 def name_filter(name: str) -> str:
@@ -99,8 +138,14 @@ class ViyaClient:
         kwargs.setdefault("verify", self.verify)
         response = self.session.request(method, self.base + endpoint, **kwargs)
         if response.status_code not in expect:
-            raise RuntimeError(f"{method} {endpoint} returned "
-                               f"{response.status_code}: {response.text[:300]}")
+            try:
+                from_service = isinstance(response.json(), dict)
+            except Exception:
+                from_service = False
+            raise UnexpectedStatus(
+                f"{method} {endpoint} returned "
+                f"{response.status_code}: {response.text[:300]}",
+                response.status_code, from_service)
         return response
 
     def json(self, method: str, endpoint: str, expect=(200, 201), **kwargs):
@@ -294,24 +339,43 @@ class ViyaClient:
         # the service set on the model has to survive the update.
         merged = dict(body)
         etag = "*"
+        # Whether the model carries TLS-Verification-Off: True, False, or None
+        # while nothing has said so. A model created a moment ago holds no
+        # score code and no tag. For a model that was found, the entry of the
+        # listing is the first word, where it has one: the listing of the
+        # models of a project carries their tags (`tags: null` for a model
+        # without any) - the Builder tells its kinds of model apart by them.
+        # For the listing asked above, /modelRepository/models with a filter
+        # on the name, that was not measured; an entry without the key says
+        # nothing, and the tag is then kept (see below).
+        tagged = None
+        if not existing:
+            tagged = False
+        elif "tags" in existing[0]:
+            tagged = TLS_VERIFICATION_OFF_TAG in (existing[0].get("tags") or [])
         try:
             current = self.request("GET", f"/modelRepository/models/{model_id}",
                                    headers={"Accept": media})
             held = dict(current.json())
             merged = dict(held)
             merged.update(body)
-            # TLS-Verification-Off says what the STORED score code does, and
-            # this update stores none: the tag stays as the model has it, and
-            # set_tls_tag settles it once the new score code is stored. Taking
-            # it away here would leave a model that does not verify untagged
-            # whenever the upload that follows fails.
-            if TLS_VERIFICATION_OFF_TAG in (held.get("tags") or []):
-                merged["tags"] = list(body["tags"]) + [TLS_VERIFICATION_OFF_TAG]
+            tagged = TLS_VERIFICATION_OFF_TAG in (held.get("tags") or [])
             etag = current.headers.get("ETag") or "*"
         except Exception:
             # a model an interrupted registration left in a bad state cannot
             # even be READ; the complete definition still updates it
             pass
+        # TLS-Verification-Off says what the STORED score code does, and this
+        # update stores none: the tag stays as the model has it, and
+        # set_tls_tag settles it once the new score code is stored. Taking it
+        # away here would leave a model that does not verify untagged whenever
+        # the upload that follows fails. That holds for a model that could
+        # not be read as well: the tag stays when the listing showed it, and
+        # also when nothing said whether the model carries it - a tag too
+        # many is put right by the next registration that goes through, a
+        # model that does not verify and is not tagged is found by nobody.
+        if tagged is not False:
+            merged["tags"] = list(body["tags"]) + [TLS_VERIFICATION_OFF_TAG]
         merged["id"] = model_id
         self.json("PUT", f"/modelRepository/models/{model_id}",
                   headers=dict(headers, **{"If-Match": etag}), json=merged)
@@ -463,6 +527,25 @@ def register_setup(client: ViyaClient, settings: dict, template: str,
       written, and the model verifies whatever was asked for;
     * `tls_tag_error` - empty, or why the tag TLS-Verification-Off could not
       be set or removed after the score code was stored.
+
+    A registration that fails AFTER the model exists raises what failed, as
+    before, and the exception carries the attribute `registration`: a dict
+    with `model_id`, `model_name`, `ssl_verify`, `ssl_verify_in_template`,
+    `tls_tag_error` and `score_code`, one of
+
+    * "stored" - the model holds the new score code, and `ssl_verify` and
+      `tls_tag_error` say what that code does and whether the tag follows it.
+      A model that does not verify stays one when a later request fails (the
+      flow of the scheduled job does not exist, say), so the caller has to
+      be able to say so in the failing run;
+    * "not stored" - SAS Model Manager refused the upload with an answer of
+      its own: the model keeps the score code and the tag it had;
+    * "unknown" - the upload got no usable answer (the connection dropped, a
+      time-out, the page of an ingress in place of the service). The service
+      may have stored the file all the same. Nothing is read back and the
+      tag is left as it is - it may not say what the stored score code does
+      until the registration is run again. The Prompt Builder words the same
+      case the same way (ragBuilderScoreCodeUnknown).
     """
     from .manifest import (collection_manifest, ingestion_manifest,
                            manifest_block_has, manifested_ssl_verify,
@@ -502,45 +585,89 @@ def register_setup(client: ViyaClient, settings: dict, template: str,
                      f"{settings.get('EMBED_MODEL')}. Registered from "
                      f"ingestion run {settings.get('INGESTION_RUN_ID')}."),
         train_table=train_table)
-    client.put_model_content(model_id, "retrieve_context.py", model_source,
-                             role="score")
-    # The score code is stored: from here on the tag has to say what it does.
-    # A tag that cannot be updated does not undo the registration - it is
-    # reported, so that the caller can say which way the tag is now wrong.
-    tls_tag_error = ""
+    # From here on the model exists, and a failure leaves it as far as the
+    # registration got. `reached` goes onto the exception, so that the caller
+    # can say in the failing run what the model holds. The upload of the
+    # score code is the next request, and until it has an answer nothing is
+    # known about it.
+    reached = {"model_id": model_id, "model_name": model_name,
+               "score_code": SCORE_CODE_UNKNOWN, "ssl_verify": ssl_verify,
+               "ssl_verify_in_template": ssl_verify_in_template,
+               "tls_tag_error": ""}
     try:
-        client.set_tls_tag(model_id, not ssl_verify)
+        try:
+            client.put_model_content(model_id, "retrieve_context.py",
+                                     model_source, role="score")
+        except Exception as error:
+            # An answer of the service itself is certain: nothing was stored.
+            # Everything else is not - see "unknown" in the docstring.
+            refused = (isinstance(error, UnexpectedStatus)
+                       and error.from_service)
+            reached["score_code"] = (SCORE_CODE_NOT_STORED if refused
+                                     else SCORE_CODE_UNKNOWN)
+            reason = f"{type(error).__name__}: {error}"[:300]
+            if refused:
+                log("SAS Model Manager did not store retrieve_context.py - "
+                    "the model keeps the score code and the tag "
+                    f"{TLS_VERIFICATION_OFF_TAG} as it had them: {reason}")
+            else:
+                log("it is not known whether SAS Model Manager stored "
+                    "retrieve_context.py: the upload failed or got no usable "
+                    f"answer ({reason}), and the service may have stored the "
+                    f"file all the same. The tag {TLS_VERIFICATION_OFF_TAG} "
+                    "was not updated and may not say what the stored score "
+                    "code does - run the registration again")
+            raise
+        reached["score_code"] = SCORE_CODE_STORED
+        # The score code is stored: from here on the tag has to say what it
+        # does. A tag that cannot be updated does not undo the registration -
+        # it is reported, so that the caller can say which way the tag is
+        # now wrong.
+        tls_tag_error = ""
+        try:
+            client.set_tls_tag(model_id, not ssl_verify)
+        except Exception as error:
+            tls_tag_error = f"{type(error).__name__}: {error}"[:300]
+            log(f"the tag {TLS_VERIFICATION_OFF_TAG} could not be "
+                f"{'removed from' if ssl_verify else 'written to'} the model: "
+                f"{tls_tag_error}")
+        reached["tls_tag_error"] = tls_tag_error
+        log("TLS certificate verification in the stored score code: "
+            + ("on" if ssl_verify else "OFF"))
+        for name in ("pipeline.yaml", "ingestion-manifest.json",
+                     "collection-manifest.json", "vector-store-ddl.sql"):
+            if name in artifacts:
+                client.put_model_content(model_id, name, artifacts[name])
+        log(f"model {model_name} registered in {mm_project} ({model_id})")
+
+        result = {"folder": folder, "model_id": model_id,
+                  "model_name": model_name,
+                  "project_id": project_id, "artifacts": sorted(artifacts),
+                  "job_id": "", "job_name": "",
+                  "ssl_verify": ssl_verify,
+                  "ssl_verify_in_template": ssl_verify_in_template,
+                  "tls_tag_error": tls_tag_error}
+
+        if flow_path:
+            reference = client.flow_reference(flow_path)
+            code = client.generate_flow_code(flow_path)
+            job_name = f"RAG Ingest - {setup_name}"
+            job_id = client.put_job_definition(
+                client.folder_id(f"{content_root.rstrip('/')}/generated",
+                                 create=True),
+                job_name, code, reference["uri"],
+                description=(f"Scheduled ingestion for the {setup_name} RAG "
+                             f"setup, generated from {flow_path}."),
+                compute_context=compute_context)
+            result.update({"job_id": job_id, "job_name": job_name,
+                           "flow": reference["path"]})
+            log(f"job definition {job_name} generated from {flow_path} "
+                f"({job_id})")
+        return result
     except Exception as error:
-        tls_tag_error = f"{type(error).__name__}: {error}"[:300]
-        log(f"the tag {TLS_VERIFICATION_OFF_TAG} could not be "
-            f"{'removed from' if ssl_verify else 'written to'} the model: "
-            f"{tls_tag_error}")
-    log("TLS certificate verification in the stored score code: "
-        + ("on" if ssl_verify else "OFF"))
-    for name in ("pipeline.yaml", "ingestion-manifest.json",
-                 "collection-manifest.json", "vector-store-ddl.sql"):
-        if name in artifacts:
-            client.put_model_content(model_id, name, artifacts[name])
-    log(f"model {model_name} registered in {mm_project} ({model_id})")
-
-    result = {"folder": folder, "model_id": model_id, "model_name": model_name,
-              "project_id": project_id, "artifacts": sorted(artifacts),
-              "job_id": "", "job_name": "",
-              "ssl_verify": ssl_verify,
-              "ssl_verify_in_template": ssl_verify_in_template,
-              "tls_tag_error": tls_tag_error}
-
-    if flow_path:
-        reference = client.flow_reference(flow_path)
-        code = client.generate_flow_code(flow_path)
-        job_name = f"RAG Ingest - {setup_name}"
-        job_id = client.put_job_definition(
-            client.folder_id(f"{content_root.rstrip('/')}/generated", create=True),
-            job_name, code, reference["uri"],
-            description=(f"Scheduled ingestion for the {setup_name} RAG setup, "
-                         f"generated from {flow_path}."),
-            compute_context=compute_context)
-        result.update({"job_id": job_id, "job_name": job_name,
-                       "flow": reference["path"]})
-        log(f"job definition {job_name} generated from {flow_path} ({job_id})")
-    return result
+        try:
+            error.registration = dict(reached)
+        except Exception:
+            # an exception that takes no attribute is raised as it is
+            pass
+        raise

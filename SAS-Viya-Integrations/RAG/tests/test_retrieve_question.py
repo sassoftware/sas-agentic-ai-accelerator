@@ -14,6 +14,13 @@ The padding is not part of the question. The model works on the question
 without it: that is what is embedded and what `query` returns. A question of
 blanks only is still no question.
 
+The same padding on the other inputs: a `filter_json` of blanks only is no
+filter, a `retrieval_mode` of blanks only is the default mode (without the
+note that a mode is not available), and a `k` of blanks only is the default
+number of chunks. A `k` that is no number falls back to the default as well,
+with a note, instead of failing the call. Whether a decision hands these
+inputs over padded was not measured for them; `k` is a decimal input there.
+
 `_store_config`, `_embed_query` and `_search` are replaced where a test is
 about what `execute` passes on; one test goes through the real `_embed_query`
 down to the request it sends.
@@ -250,3 +257,130 @@ def test_a_filter_that_is_not_an_object_is_still_refused():
     module = _load()
     with pytest.raises(ValueError, match="must be a JSON object"):
         module._compile_filter("[1, 2]")
+
+
+# ---------------------------------------------------------------------------
+# a retrieval mode the decision left empty
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("manifested", [False, True])
+@pytest.mark.parametrize("empty", ["", None, " ", " " * 32, "\t \r\n"])
+def test_a_mode_of_blanks_only_is_the_default_without_a_note(manifested, empty):
+    """Before, blanks were taken for the name of a mode: the status read
+    `ok (retrieval_mode  not available yet - used vector)`, and a decision
+    that compares the status with `ok` took a retrieval that worked for one
+    that did not."""
+    module = _load(manifested)
+    _wired(module)
+    _, context_envelope, status, _ = module.execute(QUESTION, 0, "", empty, "")
+    assert status == "ok"
+    assert json.loads(context_envelope)["retrieval_mode"] == "vector"
+
+
+@pytest.mark.parametrize("mode", ["vector", " Vector ", "VECTOR".ljust(32)])
+def test_the_default_mode_padded_or_in_capitals_is_the_default_mode(mode):
+    module = _load()
+    _wired(module)
+    _, _, status, _ = module.execute(QUESTION, 0, "", mode, "")
+    assert status == "ok"
+
+
+def test_another_mode_is_still_answered_with_vector_and_a_note():
+    module = _load()
+    _wired(module)
+    _, context_envelope, status, _ = module.execute(QUESTION, 0, "", " Hybrid ", "")
+    assert status == "ok (retrieval_mode hybrid not available yet - used vector)"
+    assert json.loads(context_envelope)["retrieval_mode"] == "vector"
+
+
+# ---------------------------------------------------------------------------
+# a number of chunks nobody named
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("manifested", [False, True])
+@pytest.mark.parametrize("nothing", [0, 0.0, None, "", " ", " " * 8, "\t\n", "0",
+                                     " 0 ", float("nan"), "nan", False])
+def test_no_number_of_chunks_is_the_manifested_default(manifested, nothing):
+    """Blanks only failed the call before: `retrieval failed: ValueError:
+    could not convert string to float`."""
+    module = _load(manifested)
+    seen = _wired(module)
+    _, _, status, _ = module.execute(QUESTION, nothing, "", "vector", "")
+    assert status == "ok"
+    assert [k for _vector, k, _filter in seen["searched"]] == [module.DEFAULT_K]
+
+
+@pytest.mark.parametrize("k,asked", [(7, 7), (7.9, 7), ("7", 7), (" 7 ", 7),
+                                     ("7.0", 7), ("1e1", 10), (True, 1)])
+def test_a_number_of_chunks_is_passed_on_as_its_whole_part(k, asked):
+    module = _load()
+    seen = _wired(module)
+    _, _, status, _ = module.execute(QUESTION, k, "", "vector", "")
+    assert status == "ok"
+    assert [k for _vector, k, _filter in seen["searched"]] == [asked]
+
+
+@pytest.mark.parametrize("k,said", [("many", "many"), (" five ", "five"),
+                                    ("4 chunks", "4 chunks"), ([4], "[4]")])
+def test_a_k_that_is_no_number_is_the_default_and_the_status_says_so(k, said):
+    """The call is not failed for it: the default is used, and the status
+    names the value that was not."""
+    module = _load()
+    seen = _wired(module)
+    _, _, status, _ = module.execute(QUESTION, k, "", "vector", "")
+    assert status == "ok (k %s is not a number - used %d)" % (said, module.DEFAULT_K)
+    assert [k for _vector, k, _filter in seen["searched"]] == [module.DEFAULT_K]
+
+
+def test_both_notes_stand_in_one_status():
+    module = _load()
+    _wired(module, hits=[])
+    _, _, status, _ = module.execute(QUESTION, "many", "", "hybrid", "")
+    assert status == ("ok - no chunks matched (retrieval_mode hybrid not "
+                      "available yet - used vector) (k many is not a number - "
+                      "used %d)" % module.DEFAULT_K)
+
+
+def test_a_negative_number_of_chunks_is_passed_on_as_it_is():
+    """Unchanged, and pinned so that it is seen: the database answers a
+    negative LIMIT, not this function."""
+    module = _load()
+    seen = _wired(module)
+    module.execute(QUESTION, -3, "", "vector", "")
+    assert [k for _vector, k, _filter in seen["searched"]] == [-3]
+
+
+# ---------------------------------------------------------------------------
+# the status fits the length it is registered with
+# ---------------------------------------------------------------------------
+def _status_length():
+    from rag_core.registration import RETRIEVAL_OUTPUTS
+
+    return {name: length for name, _type, length, _text
+            in RETRIEVAL_OUTPUTS}["retrieval_status"]
+
+
+def test_a_status_with_both_notes_fits_its_declared_length():
+    """An output longer than the length it is registered with makes SAS
+    Micro Analytic Service fail the execution. The notes quote what the
+    caller sent, so each quotes at most 40 characters of it."""
+    module = _load()
+    _wired(module, hits=[])
+    _, _, status, _ = module.execute(QUESTION, "k" * 5000, "", "m" * 5000, "")
+    assert status.startswith("ok - no chunks matched (retrieval_mode " + "m" * 40
+                             + " not available yet")
+    assert "(k " + "k" * 40 + " is not a number" in status
+    assert len(status) <= _status_length()
+    assert len(status) < 200
+
+
+def test_a_failure_with_a_long_message_fits_its_declared_length():
+    module = _load()
+    _wired(module)
+
+    def refuse(options):
+        raise RuntimeError("x" * 5000)
+
+    module._store_config = refuse
+    _, _, status, _ = module.execute(QUESTION, 0, "", "vector", "")
+    assert status == "retrieval failed: RuntimeError: " + "x" * 400
+    assert len(status) <= _status_length()
+

@@ -479,3 +479,133 @@ def test_a_padded_ledger_reads_like_the_same_ledger_unpadded():
     padded = {name: (value.ljust(LENGTHS[name]) if isinstance(value, str) else value)
               for name, value in row.items()}
     assert {name: ledger_value(padded[name]) for name in LEDGER_COLUMNS} == row
+
+
+# ---------------------------------------------------------------------------
+# the job reads its run lock back
+# ---------------------------------------------------------------------------
+def _job_python():
+    return _job().split("\nsubmit;\n", 1)[1].split("\nendsubmit;", 1)[0]
+
+
+def test_the_job_exports_the_ledger_again_after_it_appended_its_lock():
+    """RAG - List Documents reads its lock back and refuses to ingest without
+    one. The job appended its lock and never looked: a lock CAS had refused
+    went unnoticed, and the job ran unguarded. It now exports the ledger a
+    second time, with the statements the first export is made of."""
+    macro = _macro(_job(), "_rag_export_ledger")
+    first = ('        filename _ragled "%sysfunc(pathname(work))/rag_ledger_in.json";\n'
+             "        proc json out=_ragled noSASTags;\n"
+             "            export _ragcl.&ledgerTable.;\n"
+             "        run; quit;\n"
+             "        filename _ragled clear;\n")
+    second = first.replace("_ragled", "_raglck").replace(
+        "rag_ledger_in.json", "rag_ledger_lock.json")
+    assert macro.count(first) == 1 and macro.count(second) == 1
+    append = macro.index("data _ragcl.&ledgerTable.(append=yes);")
+    assert macro.index(first) < append < macro.index(second)
+    # inside the group that runs only when the ledger exists, like the lock
+    group = macro.split("%if %sysfunc(exist(_ragcl.&ledgerTable.)) %then %do;", 1)[1]
+    assert group.index(second) < group.index("    %end;\n    libname _ragcl clear;")
+    # a fileref is at most eight characters
+    assert len("_raglck") <= 8
+
+
+def test_the_second_export_uses_no_statement_the_job_did_not_run_before():
+    """The read-back was to be made of what already runs in this file. The
+    statements of the macro, with the names of the second export put back to
+    the names of the first, are the statements it had."""
+    macro = _without_comments(_macro(_job(), "_rag_export_ledger"))
+    statements = {" ".join(statement.split())
+                  for statement in macro.replace("_raglck", "_ragled").replace(
+                      "rag_ledger_lock.json", "rag_ledger_in.json").split(";")}
+    once = {" ".join(statement.split()) for statement in macro.split(
+        "filename _raglck", 1)[0].split(";")} | {
+        " ".join(statement.split()) for statement in macro.split(
+            "filename _raglck clear;", 1)[1].split(";")}
+    assert statements == once
+
+
+def _lock_check(tmp_path, before, after, ledger_exists=True):
+    """The job's own read-back, cut out of its Python and run on two exports
+    of a ledger. Returns the message it refuses with, or "" when it goes on."""
+    python = _job_python()
+    start = python.index("        # ---- the lock of THIS run, read back")
+    end = python.index("        # run-<epoch>-<pid>:")
+    block = textwrap.dedent(python[start:end])
+    assert "if os.path.exists(ledger_path):" in block
+    ledger_path = tmp_path / "rag_ledger_in.json"
+    lock_path = tmp_path / "rag_ledger_lock.json"
+    for path in (ledger_path, lock_path):
+        if path.exists():
+            path.unlink()
+    if ledger_exists:
+        ledger_path.write_text(json.dumps(before), encoding="utf-8")
+    if after is not None:
+        lock_path.write_text(json.dumps(after), encoding="utf-8")
+
+    class _Sas:
+        @staticmethod
+        def symget(name):
+            return {"ledgerCaslib": "Public", "ledgerTable": "HR_LEDGER"}[name]
+
+    import os
+
+    scope = {"os": os, "json": json, "SAS": _Sas,
+             "WORKPATH": str(tmp_path) + os.sep,
+             "ledger_path": str(ledger_path),
+             "lock_rows": [row for row in before
+                           if row.get("doc_id") == "__run_lock__"]}
+    try:
+        exec(compile(block, "Ingest-Documents.sas", "exec"), scope)
+    except RuntimeError as error:
+        return str(error)
+    return ""
+
+
+_DOC = {"doc_id": "d1", "mtime": "1791800000", "status": "ok"}
+_STALE = {"doc_id": "__run_lock__", "mtime": "1791700000.5", "status": "lock"}
+_OURS = {"DOC_ID": "__run_lock__", "MTIME": "1791812345.25", "STATUS": "lock"}
+_REFUSED = ("the run lock could not be written to the ledger Public.HR_LEDGER "
+            "- refusing to ingest unguarded. The SAS log above holds the "
+            "ERROR of the append")
+
+
+def test_a_lock_that_was_written_lets_the_job_go_on(tmp_path):
+    assert _lock_check(tmp_path, [_DOC], [_DOC, _OURS]) == ""
+    # beside the stale lock of a run that crashed
+    assert _lock_check(tmp_path, [_DOC, _STALE], [_DOC, _STALE, _OURS]) == ""
+    # a CHAR ledger: its values come back padded
+    padded = {"doc_id": "__run_lock__".ljust(40), "mtime": "1791812345.25".ljust(32)}
+    assert _lock_check(tmp_path, [_DOC], [_DOC, padded]) == ""
+
+
+def test_a_lock_that_was_not_written_stops_the_job(tmp_path):
+    """What CAS does to a row whose column types differ from the table: the
+    append is refused, the ledger is what it was."""
+    assert _lock_check(tmp_path, [_DOC], [_DOC]) == _REFUSED
+    # the stale lock of another run is not the lock of this one
+    assert _lock_check(tmp_path, [_DOC, _STALE], [_DOC, _STALE]) == _REFUSED
+    # and neither is a second export that is not there, or holds nothing
+    assert _lock_check(tmp_path, [_DOC], None) == _REFUSED
+    assert _lock_check(tmp_path, [_DOC], {}) == _REFUSED
+
+
+def test_a_first_run_takes_no_lock_and_is_not_stopped(tmp_path):
+    """Without a ledger there is no export and no lock, as before."""
+    assert _lock_check(tmp_path, [], None, ledger_exists=False) == ""
+
+
+def test_the_read_back_stands_where_the_job_can_still_stop():
+    """After the look at the lock of another run, before the run gets its id
+    and before anything is embedded or loaded."""
+    python = _job_python()
+    another = python.index('"this ledger (run lock held) - retry later")')
+    ours = python.index("# ---- the lock of THIS run, read back")
+    run_id = python.index('run_id = f"run-{int(time.time())}-{os.getpid()}"')
+    connections = python.index("# ---- connections")
+    assert another < ours < run_id < connections
+    # the message leaves the block the way every failure of the job does
+    assert 'SAS.symput("_rag_error", sas_safe(error_text)[:500])' in python
+    assert "refusing to ingest unguarded" in python
+

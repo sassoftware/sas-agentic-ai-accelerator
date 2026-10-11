@@ -14,6 +14,17 @@ verifies TLS certificates, and the tag TLS-Verification-Off has to mean the
 same thing whichever path set it. So the names, the rule and - where a
 Node.js is installed that can run the Builder's TypeScript - the rendered
 text itself are compared here.
+
+The VARIABLES of the model are the second thing both sides write: the step
+registers them with the model (`RETRIEVAL_INPUTS` / `RETRIEVAL_OUTPUTS` in
+rag_core/registration.py), the Builder writes them with every save of a setup
+(`INPUT_VARIABLES` / `OUTPUT_VARIABLES` in rag-builder.ts). They drifted, and
+it showed on a live system: the Builder wrote `context_dg` and
+`context_envelope` without a length, SAS Model Manager stored 99, SAS
+Intelligent Decisioning declared them `varchar(100)` in the wrapper of the
+model, and a decision published to SAS Micro Analytic Service failed as soon
+as chunks came back - HTTP 201, an empty error column, every output empty.
+The two lists are compared here entry by entry.
 """
 import json
 import pathlib
@@ -29,6 +40,7 @@ RAG = pathlib.Path(__file__).resolve().parents[1]
 REPO = RAG.parents[1]
 BUILDER = REPO / "LLM-Prompt-Builder"
 TS_MANIFEST = BUILDER / "src" / "objects" / "rag-manifest.ts"
+TS_BUILDER = BUILDER / "src" / "objects" / "rag-builder.ts"
 TS_TAG = BUILDER / "src" / "objects" / "prompt-decision.ts"
 TEMPLATE = RAG / "retrieve_context.py"
 
@@ -214,3 +226,115 @@ def test_both_renderers_refuse_the_same_templates_and_settings(tmp_path):
         assert "error" in result, result
         with pytest.raises(ValueError):
             manifest.render_retrieval_model(case["template"], case["settings"])
+
+
+# ---------------------------------------------------------------------------
+# the variables of the retrieval model, as each side registers them
+# ---------------------------------------------------------------------------
+_TS_FIELD = {
+    "name": r"name: '([^']*)'", "role": r"role: '([^']*)'",
+    "type": r"type: '([^']*)'", "length": r"length: (\d+)",
+    "description": r"description: '([^']*)'",
+}
+
+
+def _ts_variables(name, source=None):
+    """One of the Builder's two lists, as dicts. A field an entry does not
+    have is simply not in its dict - that is the defect this looks for."""
+    source = TS_BUILDER.read_text(encoding="utf-8") if source is None else source
+    found = re.search(r"\nconst %s = \[\n(.*?)\n\];\n" % name, source, re.DOTALL)
+    assert found, f"rag-builder.ts no longer declares {name} as a list"
+    entries = re.findall(r"^  \{ (.*) \},$", found.group(1), re.MULTILINE)
+    # every line of the list is an entry: nothing is skipped unread
+    assert len(entries) == len(found.group(1).split("\n")), found.group(1)
+    variables = []
+    for entry in entries:
+        variable = {}
+        for field, pattern in _TS_FIELD.items():
+            value = re.search(r"(?:^|, )" + pattern, entry)
+            if value:
+                variable[field] = (int(value.group(1)) if field == "length"
+                                   else value.group(1))
+        variables.append(variable)
+    return variables
+
+
+def _py_variables(role):
+    source = (registration.RETRIEVAL_INPUTS if role == "input"
+              else registration.RETRIEVAL_OUTPUTS)
+    return [{"name": name, "role": role, "type": kind, "length": length,
+             "description": text} for name, kind, length, text in source]
+
+
+_SIDES = [("INPUT_VARIABLES", "input"), ("OUTPUT_VARIABLES", "output")]
+
+
+@pytest.mark.parametrize("ts_name,role", _SIDES)
+def test_both_sides_register_the_same_variables(ts_name, role):
+    """Names, order, roles, types, lengths and descriptions: a model is the
+    same model whichever of the two wrote its variables last."""
+    assert _ts_variables(ts_name) == _py_variables(role)
+
+
+@pytest.mark.parametrize("ts_name,role", _SIDES)
+def test_every_variable_carries_a_length_on_both_sides(ts_name, role):
+    """SAS Model Manager stores 99 for a string variable that comes without
+    a length. The Builder's two context outputs came without one."""
+    for side in (_ts_variables(ts_name), _py_variables(role)):
+        assert side, role
+        for variable in side:
+            assert set(variable) == {"name", "role", "type", "length",
+                                     "description"}, variable
+            assert variable["role"] == role
+            assert variable["type"] in ("string", "decimal"), variable
+            assert isinstance(variable["length"], int), variable
+            if variable["type"] == "decimal":
+                assert variable["length"] == 8, variable
+            else:
+                assert variable["length"] >= 32, variable
+
+
+def test_the_context_outputs_hold_what_a_retrieval_returns():
+    """About 2,000 characters were measured for an envelope of three hits;
+    100 is what the wrapper of the model had for it."""
+    for side in (_ts_variables("OUTPUT_VARIABLES"), _py_variables("output")):
+        lengths = {variable["name"]: variable["length"] for variable in side}
+        assert lengths["context_dg"] == 32000
+        assert lengths["context_envelope"] == 32000
+        assert lengths["retrieval_status"] == 512
+
+
+def test_the_variables_are_the_signature_of_the_model():
+    """The model's own docstring and its `execute` name the same variables,
+    in the same order."""
+    template = TEMPLATE.read_text(encoding="utf-8")
+    inputs = [variable["name"] for variable in _py_variables("input")]
+    outputs = [variable["name"] for variable in _py_variables("output")]
+    assert "def execute(%s):" % ", ".join(inputs) in template
+    assert '    "Output: %s"' % ", ".join(outputs) in template
+
+
+def test_the_builder_sends_the_two_lists_as_they_are_declared():
+    """The lists reach SAS Model Manager unchanged: the save puts them into
+    the model as `inputVariables` and `outputVariables`, and the model is
+    sent back whole."""
+    source = TS_BUILDER.read_text(encoding="utf-8")
+    assert source.count("        inputVariables: INPUT_VARIABLES,\n"
+                        "        outputVariables: OUTPUT_VARIABLES,\n") == 1
+    assert len(re.findall(r"\bINPUT_VARIABLES\b", source)) == 2
+    assert len(re.findall(r"\bOUTPUT_VARIABLES\b", source)) == 2
+
+
+def test_the_reader_of_the_builder_list_sees_a_missing_length():
+    """The check of the check: the entry as the Builder held it before."""
+    before = (
+        "\nconst OUTPUT_VARIABLES = [\n"
+        "  { name: 'context_dg', role: 'output', type: 'string', "
+        "description: 'Context datagrid' },\n"
+        "  { name: 'run_time', role: 'output', type: 'decimal', "
+        "description: 'Total seconds spent' },\n"
+        "];\n")
+    read = _ts_variables("OUTPUT_VARIABLES", before)
+    assert [variable["name"] for variable in read] == ["context_dg", "run_time"]
+    assert all("length" not in variable for variable in read)
+

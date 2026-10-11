@@ -18,13 +18,16 @@ Signature (a decision maps these to terms):
                    it are dropped before it is embedded and before it is
                    returned as `query`: a decision pads a character input
                    with blanks to its declared length
-  k              - number of chunks (0/blank -> the manifested default)
+  k              - number of chunks. 0, empty, blanks only or a missing
+                   value means the manifested default. A value that is
+                   no number falls back to the default as well and says
+                   so in retrieval_status
   filter_json    - optional JSON object of column equality filters,
                    e.g. {"doc_id": "..."} (allow-listed columns only);
                    empty or blanks only means no filter
   retrieval_mode - "vector" (hybrid arrives with a later release; any
                    other value falls back to vector and says so in
-                   retrieval_status)
+                   retrieval_status). Empty or blanks only means vector
   options        - optional JSON object overriding connection settings for
                    callers that manage their own secrets: host, port,
                    dbname, sslmode, user, password, scr_endpoint, model
@@ -410,10 +413,35 @@ def _search(vector, k, filter_json, store):
     return hits
 
 
+def _top_k(k):
+    """(number of chunks, note for retrieval_status) for the input k.
+
+    No value means the manifested default: 0, None, an empty text, blanks
+    only (the padding a decision gives a character input) and a missing
+    number (NaN). A text that is no number means the default too - the call
+    is not failed for it - and the note says which value was not used. A
+    number is cut to its whole part, as before; a negative one is passed on
+    as it is.
+    """
+    text = k.strip() if isinstance(k, str) else k
+    if text is None or text == "":
+        return DEFAULT_K, ""
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return DEFAULT_K, (" (k " + str(text)[:40] + " is not a number - used "
+                           + str(DEFAULT_K) + ")")
+    if number != number or number in (float("inf"), float("-inf")):
+        return DEFAULT_K, ""
+    return int(number) or DEFAULT_K, ""
+
+
 def execute(question, k, filter_json, retrieval_mode, options):
     "Output: context_dg, context_envelope, retrieval_status, run_time"
     started = time.time()
-    mode = str(retrieval_mode or "vector").strip().lower()
+    # Blanks only is an input a decision left empty and padded, not the name
+    # of a mode: it means the default, as an empty value does.
+    mode = str(retrieval_mode or "").strip().lower() or "vector"
     note = ""
     hits = []
     status = "ok"
@@ -426,12 +454,16 @@ def execute(question, k, filter_json, retrieval_mode, options):
         if not question:
             raise ValueError("question is empty")
         if mode != "vector":
-            note = " (retrieval_mode " + mode + " not available yet - used vector)"
+            # at most 40 characters of the name: retrieval_status has a
+            # declared length, and a note must not take it over
+            note = (" (retrieval_mode " + mode[:40]
+                    + " not available yet - used vector)")
             mode = "vector"
         parsed_options = {}
         if options and str(options).strip():
             parsed_options = json.loads(options) if isinstance(options, str) else dict(options)
-        top_k = int(float(k or 0)) or DEFAULT_K
+        top_k, k_note = _top_k(k)
+        note += k_note
         store = _store_config(parsed_options)
         vector = _embed_query(question, parsed_options)
         hits = _search(vector, top_k, filter_json, store)

@@ -202,7 +202,13 @@
    appears in its snapshot - the Python side aborts only on a fresh lock left
    by ANOTHER run (stale locks past 30 minutes are ignored; a failed run
    leaves its lock behind and times out the same way). The final ledger store
-   rewrites the table without a lock row, which releases it. */
+   rewrites the table without a lock row, which releases it.
+   A lock that failed to write is not a lock. After the append the ledger is
+   exported a second time, the same way as the first, and the Python side
+   looks in that export for a lock row the first one does not hold. Without
+   one it refuses to ingest unguarded, as RAG - List Documents does when it
+   cannot read its own lock back: CAS refuses a row whose column types
+   differ from the table, and SAS goes on after that ERROR. */
 %macro _rag_export_ledger;
     cas _ragcas;
     libname _ragcl cas caslib="&ledgerCaslib." sessref=_ragcas;
@@ -230,6 +236,11 @@
             run_id = '';
             updated_at = '';
         run;
+        filename _raglck "%sysfunc(pathname(work))/rag_ledger_lock.json";
+        proc json out=_raglck noSASTags;
+            export _ragcl.&ledgerTable.;
+        run; quit;
+        filename _raglck clear;
     %end;
     libname _ragcl clear;
     cas _ragcas terminate;
@@ -440,6 +451,32 @@ def main():
                 raise RuntimeError("another ingestion run appears active for "
                                    "this ledger (run lock held) - retry later")
             M("stale run lock ignored (held > 30 minutes)")
+        # ---- the lock of THIS run, read back -------------------------------
+        # SAS appended the lock after the export read above and exported the
+        # ledger a second time. A lock row the second export holds and the
+        # first does not is the lock of this run. Where the ledger did not
+        # exist there is no first export, and no lock was taken.
+        if os.path.exists(ledger_path):
+            written = []
+            lock_path = WORKPATH + "rag_ledger_lock.json"
+            if os.path.exists(lock_path):
+                with open(lock_path, "r", encoding="utf-8") as fh:
+                    rows = json.load(fh)
+                for row in rows if isinstance(rows, list) else []:
+                    lowered = {str(k).lower(): v for k, v in row.items()}
+                    if str(lowered.get("doc_id") or "").strip() == "__run_lock__":
+                        written.append(str(lowered.get("mtime") or "").strip())
+            for held in lock_rows:
+                seen = str(held.get("mtime") or "").strip()
+                if seen in written:
+                    written.remove(seen)
+            if not written:
+                raise RuntimeError(
+                    "the run lock could not be written to the ledger "
+                    + str(SAS.symget("ledgerCaslib") or "").strip() + "."
+                    + str(SAS.symget("ledgerTable") or "").strip()
+                    + " - refusing to ingest unguarded. The SAS log above "
+                      "holds the ERROR of the append")
         # run-<epoch>-<pid>: the epoch alone collided when two projects
         # sharing a database started in the same second
         run_id = f"run-{int(time.time())}-{os.getpid()}"

@@ -37,7 +37,19 @@ cut to under 262 bytes all the same, in all nine steps, so that no step file
 holds a string of that length in either language; what they explained stands
 below them as comments.
 
-Nothing here runs SAS; that the NOTE is gone is measured on a live system.
+Nothing here runs SAS. That the NOTE is gone was measured on a live system
+for RAG - Register Setup: its log goes from `%_rgrg_status;` straight to the
+summary. The logs of the other eight steps were not read for the NOTE; they
+hold the same change.
+
+Two kinds of test stand here, and they are not the same. The tests of the
+summary (it never stands inside a quoted string, it is read with symget, the
+variable holds what the Python block hands over) fail on the step files from
+before the change: they test the defect. The two tests of the length of a
+string as it stands in the file do NOT: no literal was longer than 262 bytes
+before the change either - the summary was 22 bytes in the file and as long
+as its text when SAS read it. They are a guard for a string that is written
+later, such as a new WARNING line, and say so.
 """
 import io
 import json
@@ -109,6 +121,9 @@ def test_the_scanner_reads_strings_the_way_the_tests_need():
 
 @pytest.mark.parametrize("name", sorted(RAG_STEPS))
 def test_no_quoted_string_of_a_step_is_longer_than_262_bytes(name):
+    """A guard, not the test of the defect: it measures the literals as they
+    stand in the file, and held before the summary was read with symget too.
+    It fails when a literal of more than 262 bytes is written into a step."""
     strings = _quoted_strings(_around_python(name))
     assert strings
     longest = max(strings, key=lambda text: len(text.encode("utf-8")))
@@ -152,10 +167,17 @@ def test_the_variable_holds_whatever_the_python_block_hands_over(name):
     at most 6000 bytes, the length the DATA step gives the variable."""
     prefix = RAG_STEPS[name]
     python = _python(name)
-    assert 'SAS.symput(target, sas_safe(" | ".join(SUMMARY))[:1500])' in python
+    handed_over = re.findall(
+        r'SAS\.symput\(target, sas_safe\(" \| "\.join\(SUMMARY\)\)\[:(\d+)\]\)', python)
+    assert len(handed_over) == 1, "the summary is no longer cut where it was"
     assert 'publish_summary("_%s_summary")' % prefix in python \
         or "publish_summary('_%s_summary')" % prefix in python
-    assert 1500 * 4 == 6000
+    declared = re.findall(r"length summary \$ (\d+) part \$ \d+;",
+                          _around_python(name))
+    assert len(declared) == 1
+    # both numbers are read from the file: a longer cut, or a shorter
+    # variable, and the summary is truncated where SAS reads it
+    assert int(handed_over[0]) * 4 <= int(declared[0])
 
 
 @pytest.mark.parametrize("name", sorted(RAG_STEPS))
@@ -217,11 +239,13 @@ def test_what_a_cut_docstring_explained_is_still_there(name, function, first_com
 
 def test_register_setup_keeps_its_warning_lines_word_for_word():
     """The lines that say a model does not verify TLS certificates were the
-    first suspects. Each is a literal of its own, none longer than 200 bytes,
-    and none was changed."""
+    first suspects. Each is a literal of its own, none longer than 200 bytes.
+    Three lines came later (a run that failed after the score code was
+    stored; an upload without a usable answer), under the same limit."""
     strings = [text for text in _quoted_strings(_around_python("RAG - Register Setup"))
                if text.startswith("WARNING: RAG - Register Setup: ")]
-    assert len(strings) == 9
+    assert len(strings) == 12
+    assert len(set(strings)) == 12
     assert max(len(text.encode("utf-8")) for text in strings) == 200
     assert ("WARNING: RAG - Register Setup: this retrieval model does NOT verify "
             "TLS certificates. Its two HTTPS calls - to the embedding container "
