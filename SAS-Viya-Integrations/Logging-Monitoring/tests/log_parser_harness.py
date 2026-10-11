@@ -12,6 +12,7 @@ format of the SCR containers, they are not copies of real requests.
 import json
 import sys
 import types
+import uuid
 from pathlib import Path
 
 INTEGRATIONS = Path(__file__).resolve().parents[2]
@@ -136,19 +137,32 @@ def log_line(timestamp, logger, message, level="INFO"):
     return f"{timestamp} - {logger} - {level} - {message}"
 
 
-def request_block(timestamp, model, inputs, score_lines, transaction="11111111-2222-3333-4444-555555555555",
-                  headers=(), status=200):
-    """One scoring request the way a container logs it at TRACE level.
+def made_up_id(*parts):
+    """An id in the shape of the ones the containers log. The same block gets the same id
+    wherever it is built, and blocks that differ in anything get different ones."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, repr(parts)))
+
+
+def request_head(timestamp, model, inputs, transaction=None, headers=(), request_id=None,
+                 user_agent="python-requests/2.32.5"):
+    """What a container logs for a scoring request before the score code runs: the request
+    line, the headers (one per line, without a timestamp, and closed by two empty lines),
+    the request body and the first three lines of the transaction the request is given.
 
     inputs       the request inputs as (name, value) pairs
-    score_lines  what the score code logs, as (key, value) pairs
-    headers      further request header lines (they follow the Host header, one per line, without a timestamp)
+    headers      further request header lines
     """
+    transaction = transaction or made_up_id(timestamp, model, inputs)
+    request_id = request_id or made_up_id("request", timestamp, model, inputs).replace("-", "")
     request_data = {"inputs": [{"name": name, "value": value} for name, value in inputs]}
     transaction_logger = f"transaction_{transaction}"
-    lines = [
+    return [
         log_line(timestamp, "api", f"Request: POST /{model}"),
         log_line(timestamp, "api", "Request Headers: Host: viya.example.com"),
+        f"X-Request-Id: {request_id}",
+        "X-Real-Ip: 192.0.2.17",
+        "X-Forwarded-For: 192.0.2.17",
+        *([f"User-Agent: {user_agent}"] if user_agent is not None else []),
         "Content-Type: application/json",
         *headers,
         "",
@@ -156,17 +170,67 @@ def request_block(timestamp, model, inputs, score_lines, transaction="11111111-2
         # The containers log the body as a Python literal, which is what repr writes
         log_line(timestamp, "api", f"Request Data: {request_data!r}"),
         log_line(timestamp, "api", "Randomly generated client_id is None"),
+        log_line(timestamp, "api", "Randomly generated transaction_id is None"),
         log_line(timestamp, transaction_logger, f"Score request received from POST /{model}"),
+        log_line(timestamp, transaction_logger, "Score request content type: application/json"),
         log_line(timestamp, transaction_logger, "The data was successfully formatted into a pandas DataFrame."),
     ]
-    lines += [log_line(timestamp, "scoreModel", f"{key}: {value}") for key, value in score_lines]
+
+
+def request_block(timestamp, model, inputs, score_lines, transaction=None, headers=(), status=200, finished=None, **head):
+    """One scoring request the way a container logs it at TRACE level.
+
+    inputs       the request inputs as (name, value) pairs
+    score_lines  what the score code logs, as (key, value) pairs
+    headers      further request header lines (they follow the Host header, one per line, without a timestamp)
+    finished     the time of the lines that are logged once the model has answered - the time of the request line by default
+    """
+    transaction = transaction or made_up_id(timestamp, model, inputs)
+    transaction_logger = f"transaction_{transaction}"
+    finished = finished or timestamp
+    lines = request_head(timestamp, model, inputs, transaction=transaction, headers=headers, **head)
+    lines += [log_line(finished, "scoreModel", f"{key}: {value}") for key, value in score_lines]
     lines += [
-        log_line(timestamp, transaction_logger, f"The model was successfully scored using the scoreModel function from the {model}.py file in 0.5 seconds."),
-        log_line(timestamp, "api", f"Elapsed time for /{model} was 500000000 nanoseconds"),
-        log_line(timestamp, "api", f"Response: Status Code {status}"),
-        log_line(timestamp, "api", f"Response Data: \"{{'module_id': '{model}.py', 'transaction_id': '{transaction}'}}\""),
+        log_line(finished, transaction_logger, f"The model was successfully scored using the scoreModel function from the {model}.py file in 0.5 seconds."),
+        log_line(finished, "api", f"Elapsed time for /{model} was 500000000 nanoseconds"),
+        log_line(finished, "api", f"Response: Status Code {status}"),
+        log_line(finished, "api", f"Response Data: \"{{'client_id': '{made_up_id('client', transaction)}', 'module_id': '{model}.py', 'step_id': 'scoreModel', 'transaction_id': '{transaction}'}}\""),
     ]
     return lines
+
+
+PROVIDER_ERROR = 'HTTP 401: {"error": {"message": "Missing Authentication header", "code": 401}}'
+
+
+def failed_block(timestamp, model, inputs, error=PROVIDER_ERROR, exception="RuntimeError: Request failed: 401",
+                 transaction=None, finished=None, **head):
+    """A scoring request whose score code raised. The score code logs the answer of the
+    provider (error; None for an exception it did not see coming), the container logs the
+    traceback and one more line, and nothing follows: no 'Response:' line is written."""
+    transaction = transaction or made_up_id(timestamp, model, inputs)
+    transaction_logger = f"transaction_{transaction}"
+    finished = finished or timestamp
+    lines = request_head(timestamp, model, inputs, transaction=transaction, **head)
+    if error is not None:
+        lines.append(log_line(finished, "scoreModel", error, level="ERROR"))
+    lines += [
+        log_line(finished, transaction_logger, "An exception occurred within the scoreModel function of the score code:", level="ERROR"),
+        "Traceback (most recent call last):",
+        '  File "app_scoring.py", line 217, in score',
+        "    scores = score_function(",
+        "             ^^^^^^^^^^^^^^^",
+        f'  File "{model}.py", line 134, in scoreModel',
+        "    answer = ask_the_provider(payload)",
+        exception,
+        log_line(finished, transaction_logger, "Error occurred in the model scoring function:     answer = ask_the_provider(payload)", level="ERROR"),
+    ]
+    return lines
+
+
+def split_at_scoring(block):
+    """A block in two parts: what is logged before the score code runs, and the rest."""
+    scoring = next(index for index, line in enumerate(block) if "The data was successfully formatted" in line) + 1
+    return block[:scoring], block[scoring:]
 
 
 def get_block(timestamp, path="/openapi.json"):
@@ -174,10 +238,12 @@ def get_block(timestamp, path="/openapi.json"):
     return [
         log_line(timestamp, "api", f"Request: GET {path}"),
         log_line(timestamp, "api", "Request Headers: Host: viya.example.com"),
+        "User-Agent: curl/8.5.0",
         "Accept: application/json",
         "",
         "",
         log_line(timestamp, "api", "Randomly generated client id is aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+        log_line(timestamp, "api", "Randomly generated transaction id is aaaaaaaa-bbbb-cccc-dddd-ffffffffffff"),
     ]
 
 
@@ -189,12 +255,20 @@ def startup_lines(timestamp, model):
     ]
 
 
+LLM_INPUT_NAMES = ("systemPrompt", "userPrompt", "options")
+
+
+def llm_inputs(system_prompt="You are a concise assistant.", user_prompt="What is the capital of Austria?",
+               options="{temperature:0.2,top_p:1,max_tokens:40}"):
+    return [("systemPrompt", system_prompt), ("userPrompt", user_prompt), ("options", options)]
+
+
 def llm_block(timestamp="2026-01-05 09:15:00", model="demo_llm", system_prompt="You are a concise assistant.",
               user_prompt="What is the capital of Austria?", options="{temperature:0.2,top_p:1,max_tokens:40}",
               prompt_length=21, output_length=9, run_time=1.25, response="The capital of Austria is Vienna.", **more):
     return request_block(
         timestamp, model,
-        [("systemPrompt", system_prompt), ("userPrompt", user_prompt), ("options", options)],
+        llm_inputs(system_prompt, user_prompt, options),
         [("prompt_length", prompt_length), ("output_length", output_length), ("run_time", run_time), ("response", response)],
         **more)
 
@@ -213,26 +287,49 @@ DECISION_ANSWERS = json.dumps({
 DECISION_STATE = "I was charged twice for my plan this morning and need one charge returned."
 
 
+def decision_inputs(state=DECISION_STATE, questions=DECISION_QUESTIONS, options="{}"):
+    return [("state", state), ("questions", questions), ("options", options)]
+
+
 def decision_block(timestamp="2026-01-05 09:20:00", model="demo_decider", state=DECISION_STATE, questions=DECISION_QUESTIONS,
-                   options="{}", prompt_length=120, output_length=14, run_time=0.4, answers=DECISION_ANSWERS, **more):
+                   options="{}", prompt_length=120, output_length=14, run_time=0.4, answers=DECISION_ANSWERS,
+                   answer="billing (0.900)", **more):
     return request_block(
         timestamp, model,
-        [("state", state), ("questions", questions), ("options", options)],
+        decision_inputs(state, questions, options),
         [("prompt_length", prompt_length), ("output_length", output_length), ("run_time", run_time),
-         ("answer", "billing (0.900)"), ("answers", answers)],
+         ("answer", answer), ("answers", answers)],
         **more)
 
 
 EMBEDDED_DOCUMENT = "Chapter 7 of the staff handbook: travel expenses are refunded within thirty days."
 
 
+def embedding_inputs(document=EMBEDDED_DOCUMENT, options="{Embedding_Mode:document}", project="handbook"):
+    return [("document", document), ("options", options), ("project", project)]
+
+
 def embedding_block(timestamp="2026-01-05 09:25:00", model="demo_embedder", document=EMBEDDED_DOCUMENT,
                     options="{Embedding_Mode:document}", project="handbook", tokens=17, run_time=0.08, **more):
     return request_block(
         timestamp, model,
-        [("document", document), ("options", options), ("project", project)],
+        embedding_inputs(document, options, project),
         [("project", project), ("tokens", tokens), ("run_time", run_time)],
         **more)
+
+
+def retrieval_envelope(collection="staff_handbook_v1", query="How long does a travel refund take?", hits=2):
+    """The results of a retrieval as the RAG runtime hands them to a prompt: one JSON
+    object that names the collection and the question beside the hits."""
+    return json.dumps({
+        "query": query,
+        "collection": collection,
+        "ingestion_run_id": "20260105T080000Z-1a2b3c",
+        "retrieval_mode": "dense",
+        "hits": [{"rank": rank + 1, "score": round(0.9 - rank / 10, 2), "text": f"Made-up passage {rank + 1} {{with braces}}.",
+                  "metadata": {"source_uri": f"handbook/chapter-{rank + 7}.pdf", "page": rank + 3}} for rank in range(hits)],
+        "graph_context": [],
+    })
 
 
 def as_log(*blocks):

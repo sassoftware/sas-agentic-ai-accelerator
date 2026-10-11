@@ -1,8 +1,10 @@
 """The log parser: the code file and the custom step stay the same program, and the
-parser turns the request blocks of every model kind into the twelve LLM_LOGS columns.
+parser turns the request blocks of every model kind into the rows of LLM_LOGS - the
+twelve columns the table has always had and the columns that were added behind them.
 
 Run with: python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests
 """
+import hashlib
 import json
 import math
 import re
@@ -16,33 +18,68 @@ from log_parser_harness import (
     DECISION_QUESTIONS,
     DECISION_STATE,
     EMBEDDED_DOCUMENT,
+    PROVIDER_ERROR,
     as_log,
     code_file_program,
     decision_block,
+    decision_inputs,
     embedding_block,
+    failed_block,
     get_block,
     llm_block,
+    llm_inputs,
     log_line,
+    made_up_id,
     parse,
     python_block,
     request_block,
+    retrieval_envelope,
     run_parser,
+    split_at_scoring,
     startup_lines,
     step_definition,
     step_program,
 )
 
-# The columns of LLM_LOGS. Tables that sites append to and the LLM Usage Report hold
-# exactly these names in this order, which is why they are spelled out here again.
+# The first twelve columns of LLM_LOGS. Tables that sites append to and the LLM Usage
+# Report hold exactly these names in this order, which is why they are spelled out here again.
 LLM_LOGS_COLUMNS = [
     "timestamp", "model", "system_prompt", "user_prompt", "temperature", "top_p", "top_k", "max_tokens",
     "prompt_length", "output_length", "runtime", "response",
 ]
-TEXT_COLUMNS = ["model", "system_prompt", "user_prompt", "response"]
+# The columns behind them, in the order the three programs that write and read the table agreed on
+ADDED_COLUMNS = [
+    "kind", "status_code", "failed", "error_text", "transaction_id", "request_id", "user_agent",
+    "embedding_mode", "project", "input_hash", "answer", "answer_confidence", "options", "rag_collection", "rag_query_hash",
+    "model_id", "caller_model_id", "caller_project_id", "caller_kind", "caller_name", "experiment_run_id", "rag_model_id",
+    "match_method", "match_candidates",
+]
+ALL_COLUMNS = LLM_LOGS_COLUMNS + ADDED_COLUMNS
+# The parser leaves these to the program that links the logs to the models
+LINK_COLUMNS = ADDED_COLUMNS[ADDED_COLUMNS.index("model_id"):]
+NUMERIC_COLUMNS = [
+    "timestamp", "temperature", "top_p", "top_k", "max_tokens", "prompt_length", "output_length", "runtime",
+    "status_code", "failed", "answer_confidence", "match_candidates",
+]
+TEXT_COLUMNS = [column for column in ALL_COLUMNS if column not in NUMERIC_COLUMNS]
+# The ids of the controls of the first twelve columns: flows that use the step hold them
+FIRST_COLUMN_CONTROLS = [
+    "_log_timestamp", "_log_model", "_log_sys_prompt", "_log_usr_prompt", "_log_temp", "_log_top_p", "_log_top_k",
+    "_log_max_tok", "_log_prompt_len", "_log_output_len", "_log_run_time", "_log_response",
+]
 
 
 def missing(value):
     return value is None or (isinstance(value, float) and math.isnan(value))
+
+
+def text_hash(text):
+    """The hash the three programs know a text by: SHA-256 of the text with every run of white space made one blank."""
+    return hashlib.sha256(" ".join(text.split()).encode("utf-8")).hexdigest()
+
+
+def notes(run):
+    return [message for kind, message in run.sas.messages if kind == "NOTE"]
 
 
 # ---------------------------------------------------------------------------
@@ -72,8 +109,25 @@ def test_step_announces_the_columns_the_parser_writes(monkeypatch, tmp_path):
     column_controls = step["flowMetadata"]["outputPorts"][0]["columnDelta"]["updateColumnArguments"]
     values = json.loads(step["ui"])["values"]
 
-    assert [values[control]["value"] for control in column_controls] == LLM_LOGS_COLUMNS
+    assert column_controls[:12] == FIRST_COLUMN_CONTROLS
+    assert len(set(column_controls)) == len(column_controls)
+    assert [values[control]["value"] for control in column_controls] == ALL_COLUMNS
     assert {values[control]["value"]: values[control]["label"] for control in column_controls} == labels
+    # A column the parser uploads as a number is announced as one
+    numeric = [values[control]["value"] for control in column_controls if values[control].get("type") == "n"]
+    assert numeric == [column for column in ALL_COLUMNS if column in NUMERIC_COLUMNS]
+    assert all(values[control].get("length") == 8 for control in column_controls if values[control].get("type") == "n")
+
+
+def test_every_announced_column_has_a_control_of_its_own():
+    definition = json.loads(step_definition()["ui"])
+    section = next(control for control in definition["pages"][0]["children"] if control["id"] == "_log_outputDefinition")
+    column_controls = step_definition()["flowMetadata"]["outputPorts"][0]["columnDelta"]["updateColumnArguments"]
+
+    assert [control["id"] for control in section["children"]] == column_controls
+    assert {control["type"] for control in section["children"]} == {"newcolumn"}
+    # The id of a control is the start of the macro variables SAS Studio hands the step
+    assert all(re.fullmatch(r"_log_[a-z_]{1,13}", control) for control in column_controls)
 
 
 # ---------------------------------------------------------------------------
@@ -86,12 +140,14 @@ def _write(tmp_path, text, name="llms.log"):
     return path
 
 
-def test_columns_are_the_twelve_of_llm_logs(monkeypatch, tmp_path):
+def test_columns_are_the_twelve_of_llm_logs_and_the_added_ones_behind_them(monkeypatch, tmp_path):
     run = run_parser(monkeypatch, _write(tmp_path, as_log(llm_block(), decision_block(), embedding_block())))
 
-    assert run.namespace["COLUMNS"] == LLM_LOGS_COLUMNS
-    assert list(run.namespace["df"].columns) == LLM_LOGS_COLUMNS
-    assert sorted(run.namespace["labels"]) == sorted(LLM_LOGS_COLUMNS)
+    assert run.namespace["COLUMNS"][:12] == LLM_LOGS_COLUMNS
+    assert run.namespace["COLUMNS"][12:] == ADDED_COLUMNS
+    assert list(run.namespace["df"].columns) == ALL_COLUMNS
+    assert sorted(run.namespace["labels"]) == sorted(ALL_COLUMNS)
+    assert run.namespace["LINK_COLUMNS"] == LINK_COLUMNS
 
 
 @pytest.mark.parametrize("text", [
@@ -104,7 +160,7 @@ def test_log_without_requests_gives_an_empty_table_and_uploads_nothing(monkeypat
 
     frame = run.namespace["df"]
     assert len(frame) == 0
-    assert list(frame.columns) == LLM_LOGS_COLUMNS
+    assert list(frame.columns) == ALL_COLUMNS
     assert run.uploads == []
     assert run.row_count == "0"
     # Nothing in these logs looks like a request, so nothing is said about them
@@ -121,19 +177,23 @@ def test_rows_are_uploaded_once_under_the_staging_name_with_replace(monkeypatch,
     assert upload["casout"]["caslib"] == "CASUSER"
     # A CAS session that is used again can still hold the staging table of an earlier run
     assert upload["casout"]["replace"] is True
-    assert [var["name"] for var in upload["importoptions"]["vars"]] == LLM_LOGS_COLUMNS
+    assert [var["name"] for var in upload["importoptions"]["vars"]] == ALL_COLUMNS
     assert len(upload["frame"]) == 3
+    # Requests that follow each other say nothing about themselves in the SAS log
+    assert run.sas.messages == []
 
 
 def test_every_column_is_uploaded_with_its_type(monkeypatch, tmp_path):
-    """A log of embedding calls has no prompt and no response at all. The types are
-    stated, so these columns are text columns whatever the log holds."""
+    """A log of embedding calls has no prompt and no response at all, and the columns of
+    the link are empty in every log. The types are stated, so these columns are text
+    columns whatever the log holds."""
     run = run_parser(monkeypatch, _write(tmp_path, as_log(embedding_block())))
 
     types = {var["name"]: var["type"] for var in run.uploads[0]["importoptions"]["vars"]}
-    assert types == {column: ("varchar" if column in TEXT_COLUMNS else "double") for column in LLM_LOGS_COLUMNS}
+    assert types == {column: ("varchar" if column in TEXT_COLUMNS else "double") for column in ALL_COLUMNS}
     formats = {var["name"]: var.get("format") for var in run.uploads[0]["importoptions"]["vars"]}
     assert formats["timestamp"] == "DATETIME20."
+    assert [name for name, value in formats.items() if value] == ["timestamp"]
 
 
 def test_row_count_stays_unset_when_the_parser_fails(monkeypatch, tmp_path):
@@ -149,50 +209,267 @@ def test_timestamp_becomes_a_sas_datetime(monkeypatch, tmp_path):
     assert run.namespace["df"].loc[0, "timestamp"] == seconds_since_1960
 
 
+def test_the_columns_of_the_link_are_written_empty(monkeypatch, tmp_path):
+    """Nothing in a log names the model in Model Manager or the prompt, the decision
+    template or the RAG setup that sent a request: the parser writes these columns
+    empty for every kind of request, and another program fills them."""
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        llm_block(user_prompt="Context: " + retrieval_envelope()), decision_block(), embedding_block())))
+
+    frame = run.uploads[0]["frame"]
+    assert bool(frame[LINK_COLUMNS].isna().all().all())
+    assert pd.api.types.is_numeric_dtype(frame["match_candidates"])
+
+
 # ---------------------------------------------------------------------------
 # The SAS code that writes the output table
 #
 # It only runs on a SAS Viya server. What is held here is its text: the order of
-# the actions in append mode, in the code file and in the step.
+# its actions in both modes, in the code file and in the step, and what the DATA
+# step that appends does by the rules SAS documents for it.
 # ---------------------------------------------------------------------------
 
-def _append_branch(program):
-    """The CASL the output macro runs in append mode."""
-    start = program.index("%if &_log_append_table. %then %do;")
-    return program[start:program.index("%else %do;", start)]
+def _output_macro(program):
+    return program[program.index("%macro _log_handle_output_table;"):program.index("%mend _log_handle_output_table;")]
 
 
-@pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
-def test_appending_loads_a_saved_table_before_it_starts_a_new_one(program):
+def _append_lookup(program):
+    """The CASL append mode runs first: it looks for the table the rows are appended to."""
+    macro = _output_macro(program)
+    start = macro.index("%if &_log_append_table. %then %do;")
+    return macro[start:macro.index("%if &_log_target_scope. GE 1 %then %do;", start)]
+
+
+def _append_step(program):
+    """The statements that write the existing rows and the new ones to one table."""
+    macro = _output_macro(program)
+    start = macro.index("%if &_log_target_scope. GE 1 %then %do;")
+    return macro[start:macro.index("libname _llmsrc clear;", start) + len("libname _llmsrc clear;")]
+
+
+def _swap(program):
+    """The CASL that puts the new table in the place of the existing one, in both modes."""
+    macro = _output_macro(program)
+    start = macro.index("proc cas;", macro.index("libname _llmsrc clear;"))
+    return macro[start:macro.index("%else %if &_log_row_count. EQ 0 %then %do;")]
+
+
+BOTH_PROGRAMS = pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
+
+
+@BOTH_PROGRAMS
+def test_appending_loads_a_saved_table_before_it_looks_for_the_table_to_append_to(program):
     """table.tableExists only sees the tables in memory. After a restart of the CAS
     server the table is on disk only, and a new table started from the rows of one log
     would be saved over the file that holds the rows of every run before."""
-    branch = _append_branch(program())
+    lookup = _append_lookup(program())
 
-    listing, load, look_again, append, new_table = (branch.index(action) for action in (
-        "table.fileInfo", "table.loadTable", "table.tableExists result=re", "table.append", "table.copyTable"))
-    assert listing < load < look_again < append < new_table
+    first_look, listing, load = (lookup.index(action) for action in ("table.tableExists result=re", "table.fileInfo", "table.loadTable"))
+    look_again = lookup.index("table.tableExists result=re", load)
+    decided = lookup.index("call symputx('_log_target_scope', '2');")
+    assert first_look < listing < load < look_again < decided
     # The file keeps the case the table name was saved with, a CAS table name has none
-    assert 'if savedEntry.Name EQ "&_log_target_table_name..sashdat" then savedFile = savedEntry.Name;' in branch
-    assert 'upcase(savedEntry.Name) EQ upcase("&_log_target_table_name..sashdat") then savedFile = savedEntry.Name;' in branch
+    assert 'if savedEntry.Name EQ "&_log_target_table_name..sashdat" then savedFile = savedEntry.Name;' in lookup
+    assert 'upcase(savedEntry.Name) EQ upcase("&_log_target_table_name..sashdat") then savedFile = savedEntry.Name;' in lookup
     # Loaded into the session: whether the table is promoted stays the choice of the user
-    assert "promote" not in branch[load:look_again].lower()
+    assert "promote" not in lookup[load:look_again].lower()
 
 
-@pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
+@BOTH_PROGRAMS
+def test_what_appending_found_is_handed_on_in_two_macro_variables(program):
+    program = program()
+    lookup = " ".join(_append_lookup(program).split())
+
+    # 2 a promoted table, 1 a table of the session, and a saved file only counts where no table was found
+    assert ("if re.exists GE 2 then do; call symputx('_log_target_scope', '2'); end; "
+            "else if re.exists EQ 1 then do; call symputx('_log_target_scope', '1'); end; "
+            "else if savedFile NE '' then do; call symputx('_log_target_unloaded', '1'); end;") in lookup
+    # Both start at 0 in every run - the step can run twice in one SAS session - and are deleted at the end
+    before_the_macro = program[:program.index("%macro _log_handle_output_table;")]
+    assert "%let _log_target_scope = 0;\n%let _log_target_unloaded = 0;\n" in before_the_macro
+    clean_up = program[program.index("* Clean up;"):]
+    assert "%symdel _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded;" in clean_up
+    # Replace mode never asks: the lookup runs in append mode only
+    macro = _output_macro(program)
+    assert macro.index("%if &_log_append_table. %then %do;") < macro.index("call symputx('_log_target_scope'")
+    assert macro.count("%if &_log_append_table. %then %do;") == 1
+
+
+@BOTH_PROGRAMS
 def test_saved_table_that_can_not_be_loaded_is_not_overwritten(program):
     program = program()
-    branch = _append_branch(program)
+    swap = _swap(program)
 
-    failed_load = branch[branch.index("else if savedFile NE '' then do;"):branch.index("table.copyTable")]
-    assert "print (error)" in failed_load
-    assert "tableWritten = False;" in failed_load
-    # A new table is only started when no saved file was found
-    assert failed_load.rstrip().endswith("else do;")
-    # Neither promoted nor saved without a written table
-    assert "if tableWritten and re.exists LE 1 then do;" in branch
-    save = program[program.index("%if &_log_save_table. %then %do;"):]
+    refused = swap[swap.index("%if &_log_target_unloaded. %then %do;"):swap.index("%else %do;")]
+    assert "print (error)" in refused
+    assert "could not be loaded, nothing was appended and the saved file was left as it is." in refused
+    assert "tableWritten = False;" in refused
+    # No table is built, dropped or renamed in that branch
+    for action in ("table.copyTable", "table.dropTable", "table.alterTable", "table.promote"):
+        assert action not in refused, action
+        assert action in swap[swap.index("%else %do;"):], action
+    # And nothing is saved without a written table
+    save = swap[swap.index("%if &_log_save_table. %then %do;"):]
     assert save.index("if tableWritten then do;") < save.index("table.save")
+    assert swap.count("table.save") == 1
+
+
+@BOTH_PROGRAMS
+def test_existing_rows_and_new_rows_become_one_table_beside_the_existing_one(program):
+    """Appending builds a new table and swaps it in, as replacing does. The rows are not
+    added to the existing table in place: a table with fewer columns would not take them."""
+    program = program()
+    lookup, step, swap = _append_lookup(program), _append_step(program), _swap(program)
+
+    assert "table.append" not in program
+    # What an earlier run left of its own table is dropped before the table of this run is built
+    assert re.search(r"table\.dropTable /\s+casLib = \"&_log_target_table_lib\.\",\s+name = '_TEMP_LLM_LOGS_ALL',\s+quiet = True;", lookup)
+    statements = [line.strip() for line in step.split("\n") if line.strip()]
+    assert statements[0] == "%if &_log_target_scope. GE 1 %then %do;"
+    assert 'libname _llmtgt cas caslib="&_log_target_table_lib.";' in statements
+    assert "libname _llmsrc cas caslib='CASUSER';" in statements
+    assert "data _llmtgt._TEMP_LLM_LOGS_ALL;" in statements
+    # The existing table is read first, the rows of the log behind it
+    assert 'set _llmtgt."&_log_target_table_name."n _llmsrc._TEMP_LLM_LOGS;' in statements
+    assert statements.index("data _llmtgt._TEMP_LLM_LOGS_ALL;") < statements.index('set _llmtgt."&_log_target_table_name."n _llmsrc._TEMP_LLM_LOGS;') < statements.index("run;")
+    assert statements[-2:] == ["libname _llmtgt clear;", "libname _llmsrc clear;"]
+
+    # The swap takes that table where there was a table to append to, and the rows of the log otherwise
+    staged = " ".join(swap[swap.index("%else %do;"):swap.index("table.tableExists result=staged")].split())
+    assert "%if &_log_target_scope. GE 1 %then %do; stagedTable = '_TEMP_LLM_LOGS_ALL'; %end;" in staged
+    assert ('%else %do; stagedTable = "&_log_target_table_name._NEW"; table.copyTable / table = {casLib = \'CASUSER\', name = \'_TEMP_LLM_LOGS\'}, '
+            'casOut = {casLib = "&_log_target_table_lib.", name = stagedTable, replace = True}; %end;') in staged
+    # The existing table is only dropped once its replacement exists
+    exists, drop, rename = (swap.index(text) for text in ("if staged.exists GE 1 then do;", "table.dropTable", "table.alterTable"))
+    assert exists < drop < rename
+    assert swap.count("table.dropTable") == 2
+    assert 'print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is.";' in swap[rename:]
+
+
+@BOTH_PROGRAMS
+def test_a_table_that_was_promoted_is_promoted_again(program):
+    """The new table is a table of the session. A table that other sessions could see
+    before the rows were appended has to be seen by them afterwards, whatever the
+    option of this run says."""
+    swap = _swap(program())
+
+    promote = swap[swap.index("table.alterTable"):swap.index("tableWritten = True;")]
+    assert "%if &_log_promote_table. or &_log_target_scope. EQ 2 %then %do;" in promote
+    assert promote.count("table.promote") == 1
+
+
+def _length_statement(program):
+    """The LENGTH statement of the DATA step that appends, as (column, length) pairs."""
+    step = _append_step(program)
+    statement = step[step.index("    length ") + len("    length "):]
+    words = statement[:statement.index(";")].split()
+    assert len(words) % 2 == 0
+    return list(zip(words[0::2], words[1::2]))
+
+
+def _data_step_columns(length_statement, *tables):
+    """The columns of the table that 'data ...; length ...; set <tables>; run;' writes, by
+    the rules SAS documents for the DATA step: a variable is created where the step
+    names it first - in the LENGTH statement, then in the tables of the SET statement in
+    their order - and has the type and the length it has there, and a variable that is
+    character in one place and numeric in another stops the step.
+
+    A table is given as (column, type) pairs with the types double, varchar and char(n)."""
+    columns = {name: "double" if length == "8" else length.replace("(*)", "") for name, length in length_statement}
+    for table in tables:
+        for name, kind in table:
+            first = columns.setdefault(name, kind)
+            if (first == "double") != (kind == "double"):
+                raise ValueError(f"Variable {name} has been defined as both character and numeric.")
+    return columns
+
+
+def _uploaded_columns(monkeypatch, tmp_path):
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(llm_block())))
+    return [(var["name"], var["type"]) for var in run.uploads[0]["importoptions"]["vars"]]
+
+
+@BOTH_PROGRAMS
+def test_the_length_statement_holds_the_columns_of_the_parser_with_their_types(monkeypatch, tmp_path, program):
+    uploaded = _uploaded_columns(monkeypatch, tmp_path)
+
+    lengths = _length_statement(program())
+    assert [name for name, _ in lengths] == ALL_COLUMNS
+    assert [(name, {"8": "double", "varchar(*)": "varchar"}[length]) for name, length in lengths] == uploaded
+
+
+def test_appending_to_a_table_of_twelve_columns_adds_the_others(monkeypatch, tmp_path):
+    """The table as the program wrote it before the columns were added: text as VARCHAR, numbers as DOUBLE."""
+    uploaded = _uploaded_columns(monkeypatch, tmp_path)
+    twelve = uploaded[:12]
+    assert [name for name, _ in twelve] == LLM_LOGS_COLUMNS
+
+    appended = _data_step_columns(_length_statement(code_file_program()), twelve, uploaded)
+
+    assert list(appended) == ALL_COLUMNS
+    assert appended == dict(uploaded)
+
+
+@pytest.mark.parametrize("extra", [
+    ["kind", "options"],
+    ["rag_query_hash", "kind", "failed"],
+    ADDED_COLUMNS,
+    list(reversed(ADDED_COLUMNS)),
+], ids=["two of them", "three in another order", "all of them", "all of them backwards"])
+def test_appending_to_a_table_with_some_of_the_added_columns_adds_the_rest(monkeypatch, tmp_path, extra):
+    """A table that an earlier version of the parser or the link widened in part. The
+    columns come out in the order of the parser wherever the table had them."""
+    uploaded = _uploaded_columns(monkeypatch, tmp_path)
+    existing = uploaded[:12] + [column for name in extra for column in uploaded if column[0] == name]
+
+    appended = _data_step_columns(_length_statement(code_file_program()), existing, uploaded)
+
+    assert list(appended) == ALL_COLUMNS
+
+
+def test_appending_keeps_a_column_the_parser_does_not_know(monkeypatch, tmp_path):
+    uploaded = _uploaded_columns(monkeypatch, tmp_path)
+    existing = uploaded[:5] + [("team", "char(20)")] + uploaded[5:12] + [("cost_center", "double")]
+
+    appended = _data_step_columns(_length_statement(code_file_program()), existing, uploaded)
+
+    # Behind the columns of the parser, in the order the table had them, with their type and length
+    assert list(appended) == ALL_COLUMNS + ["team", "cost_center"]
+    assert (appended["team"], appended["cost_center"]) == ("char(20)", "double")
+
+
+def test_appending_to_a_table_with_shorter_text_columns_cuts_nothing(monkeypatch, tmp_path):
+    """A table whose text columns have a fixed length, as a DATA step or an import writes
+    them. The LENGTH statement names every text column of the parser as VARCHAR before
+    the SET statement reads the table, so the column is not as short as the table had it."""
+    uploaded = _uploaded_columns(monkeypatch, tmp_path)
+    short = {"model": "char(10)", "system_prompt": "char(200)", "user_prompt": "char(200)", "response": "char(100)"}
+    existing = [(name, short.get(name, kind)) for name, kind in uploaded[:12]]
+
+    appended = _data_step_columns(_length_statement(code_file_program()), existing, uploaded)
+
+    assert {name: appended[name] for name in short} == dict.fromkeys(short, "varchar")
+    assert list(appended) == ALL_COLUMNS
+
+
+def test_appending_to_a_table_whose_column_has_the_other_type_stops(monkeypatch, tmp_path):
+    """The DATA step ends with an error, its table is not written, and the swap leaves the existing table as it is."""
+    uploaded = _uploaded_columns(monkeypatch, tmp_path)
+    existing = [(name, "char(8)" if name == "temperature" else kind) for name, kind in uploaded[:12]]
+
+    with pytest.raises(ValueError, match="temperature"):
+        _data_step_columns(_length_statement(code_file_program()), existing, uploaded)
+    swap = _swap(code_file_program())
+    assert swap.index("if staged.exists GE 1 then do;") < swap.index("table.dropTable")
+
+
+def test_replacing_writes_every_column(monkeypatch, tmp_path):
+    """Replace mode copies the uploaded rows, and the upload holds every column whatever the log holds."""
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(embedding_block())))
+
+    assert list(run.uploads[0]["frame"].columns) == ALL_COLUMNS
+    swap = _swap(code_file_program())
+    assert "table = {casLib = 'CASUSER', name = '_TEMP_LLM_LOGS'}," in swap
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +502,10 @@ def test_code_file_brings_the_cas_session_and_the_librefs_the_step_takes_from_it
     for statement in ("cas mysess;", "libname public cas caslib='Public';", "libname casuser cas caslib='casuser';"):
         assert statement in first_lines, statement
     statements = [line.strip() for line in step.split("\n")]
-    assert not [line for line in statements if line.startswith("libname ")]
+    # The only librefs the step assigns are the two of the DATA step that appends, and it clears both
+    assert [line for line in statements if line.startswith("libname ")] == [
+        'libname _llmtgt cas caslib="&_log_target_table_lib.";', "libname _llmsrc cas caslib='CASUSER';",
+        "libname _llmtgt clear;", "libname _llmsrc clear;"]
     # The only session the step ever starts is the one it also ends
     assert [line for line in statements if line.startswith("cas ")] == ["cas llmLogMySess;", "cas llmLogMySess terminate;"]
 
@@ -236,7 +516,7 @@ def _session_check(program):
     return program[start:program.index("proc cas;", start)]
 
 
-@pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
+@BOTH_PROGRAMS
 def test_a_cas_session_is_started_only_where_there_is_none_and_ended_only_then(program):
     program = program()
 
@@ -296,12 +576,12 @@ def _starts_a_session_of_its_own(program, session):
     return {"EQ": int(left) == int(right), "NE": int(left) != int(right)}[operator]
 
 
-@pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
+@BOTH_PROGRAMS
 def test_a_session_without_a_cas_session_gets_one_that_is_ended_again(program):
     assert _starts_a_session_of_its_own(program(), NO_CAS_SESSION)
 
 
-@pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
+@BOTH_PROGRAMS
 def test_the_name_an_ended_session_left_behind_is_not_taken_for_a_cas_session(program):
     """The step twice in one SAS session that has no CAS session. The first run ends its
     own session and the name stays behind. A second run that went by the name started no
@@ -310,7 +590,7 @@ def test_the_name_an_ended_session_left_behind_is_not_taken_for_a_cas_session(pr
     assert _starts_a_session_of_its_own(program(), OWN_SESSION_ENDED)
 
 
-@pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
+@BOTH_PROGRAMS
 def test_a_cas_session_of_the_user_is_used_and_never_ended(program):
     program = program()
 
@@ -325,7 +605,7 @@ def test_a_cas_session_of_the_user_is_used_and_never_ended(program):
     assert not [line for line in statements if line.lower().startswith("options ") or "sessref=" in line.lower()]
 
 
-@pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
+@BOTH_PROGRAMS
 def test_the_caslib_is_read_from_the_libref_and_a_libref_that_is_not_assigned_stops_nothing(program):
     """The select finds no row for a libref the session does not have, which leaves the
     macro variable as it is: its value then reaches CAS as the name of the caslib."""
@@ -380,9 +660,9 @@ def test_about_tab_says_that_the_log_file_is_read_on_the_sas_server():
 def test_llm_block(monkeypatch, tmp_path):
     system_prompt = "You are a concise assistant.\nAnswer in German."
     user_prompt = "Wie heißt die Hauptstadt von Österreich?\nSay \"only\" the city's name: {city}, please."
-    frame = parse(monkeypatch, tmp_path, as_log(llm_block(
-        system_prompt=system_prompt, user_prompt=user_prompt,
-        response="Die Hauptstadt von Österreich\nist Wien.\n\nGern geschehen.")))
+    block = llm_block(system_prompt=system_prompt, user_prompt=user_prompt,
+                      response="Die Hauptstadt von Österreich\nist Wien.\n\nGern geschehen.")
+    frame = parse(monkeypatch, tmp_path, as_log(block))
 
     assert len(frame) == 1
     row = frame.iloc[0]
@@ -395,6 +675,14 @@ def test_llm_block(monkeypatch, tmp_path):
     assert (row["prompt_length"], row["output_length"], row["runtime"]) == (21, 9, 1.25)
     # The lines of a response are joined with a blank
     assert row["response"] == "Die Hauptstadt von Österreich ist Wien.  Gern geschehen."
+
+    assert row["kind"] == "llm"
+    assert (row["status_code"], row["failed"]) == (200, 0)
+    assert row["transaction_id"] == made_up_id("2026-01-05 09:15:00", "demo_llm", llm_inputs(system_prompt, user_prompt))
+    assert row["options"] == "{temperature:0.2,top_p:1,max_tokens:40}"
+    # What only another kind of request has stays missing
+    for column in ("error_text", "embedding_mode", "project", "input_hash", "answer", "answer_confidence", "rag_collection", "rag_query_hash"):
+        assert missing(row[column]), column
 
 
 def test_decision_block_keeps_questions_state_and_answers(monkeypatch, tmp_path):
@@ -413,6 +701,30 @@ def test_decision_block_keeps_questions_state_and_answers(monkeypatch, tmp_path)
     assert (row["prompt_length"], row["output_length"], row["runtime"]) == (120, 14, 0.4)
     assert row["temperature"] == "0"
 
+    assert row["kind"] == "decision"
+    # The headline the score code logs beside the answers: the answer to the first question and its confidence
+    assert (row["answer"], row["answer_confidence"]) == ("billing", 0.9)
+    assert (row["status_code"], row["failed"]) == (200, 0)
+    for column in ("embedding_mode", "project", "input_hash", "rag_collection", "rag_query_hash"):
+        assert missing(row[column]), column
+
+
+@pytest.mark.parametrize("logged, answer, confidence", [
+    ("billing (0.900)", "billing", 0.9),
+    ("yes (0.750)", "yes", 0.75),
+    ("7 (1.000)", "7", 1.0),
+    ("not enough information (see notes) (0.207)", "not enough information (see notes)", 0.207),
+    ("billing", "billing", None),
+    (" (0.000)", None, 0.0),
+], ids=["choice", "noul", "score", "an answer with brackets", "no confidence", "no answer"])
+def test_headline_of_a_decision(monkeypatch, tmp_path, logged, answer, confidence):
+    frame = parse(monkeypatch, tmp_path, as_log(decision_block(answer=logged)))
+
+    assert (None if missing(frame.loc[0, "answer"]) else frame.loc[0, "answer"]) == answer
+    assert (None if missing(frame.loc[0, "answer_confidence"]) else frame.loc[0, "answer_confidence"]) == confidence
+    # The headline never takes the place of the answers
+    assert frame.loc[0, "response"] == DECISION_ANSWERS
+
 
 def test_embedding_block_keeps_tokens_and_runtime_but_not_the_document(monkeypatch, tmp_path):
     frame = parse(monkeypatch, tmp_path, as_log(embedding_block()))
@@ -422,11 +734,378 @@ def test_embedding_block_keeps_tokens_and_runtime_but_not_the_document(monkeypat
     assert row["model"] == "demo_embedder"
     assert row["prompt_length"] == 17
     assert row["runtime"] == 0.08
-    for column in ("system_prompt", "user_prompt", "response", "output_length"):
+    for column in ("system_prompt", "user_prompt", "response", "output_length", "answer", "answer_confidence", "rag_collection", "rag_query_hash"):
         assert missing(row[column]), column
     # Neither the text nor a part of it reaches any cell
-    assert not any(isinstance(cell, str) and "handbook" in cell for cell in row)
+    assert not any(isinstance(cell, str) and "travel expenses" in cell for cell in row)
     assert EMBEDDED_DOCUMENT not in frame.to_csv()
+
+    assert row["kind"] == "embedding"
+    assert (row["embedding_mode"], row["project"]) == ("document", "handbook")
+    # The text is known by its hash only
+    assert row["input_hash"] == text_hash(EMBEDDED_DOCUMENT)
+    assert re.fullmatch(r"[0-9a-f]{64}", row["input_hash"])
+    assert (row["status_code"], row["failed"]) == (200, 0)
+
+
+@pytest.mark.parametrize("options, mode", [
+    ("{Embedding_Mode:query}", "query"),
+    ("{Embedding_Mode:document,API_KEY:REDACTED}", "document"),
+    ('{"Embedding_Mode": "query"}', "query"),
+    ("{}", None),
+], ids=["query", "document", "options as JSON", "not sent"])
+def test_embedding_mode_is_the_option_as_it_was_sent(monkeypatch, tmp_path, options, mode):
+    """A call that sends no mode is embedded in the mode its model defaults to, which the log does not say."""
+    frame = parse(monkeypatch, tmp_path, as_log(embedding_block(options=options)))
+
+    assert (None if missing(frame.loc[0, "embedding_mode"]) else frame.loc[0, "embedding_mode"]) == mode
+
+
+@pytest.mark.parametrize("inputs, kind", [
+    ([("document", "made-up text")], "embedding"),
+    ([("questions", "{}")], "decision"),
+    ([("state", "made-up state"), ("options", "{}")], "decision"),
+    ([("userPrompt", "made-up question")], "llm"),
+    ([("systemPrompt", None), ("userPrompt", None), ("options", None)], "llm"),
+    ([("text", "made-up text"), ("options", "{}")], None),
+    ([], None),
+], ids=["a document", "questions", "a state", "a user prompt", "prompts without a value", "other inputs", "no inputs"])
+def test_kind_is_decided_by_the_names_of_the_inputs(monkeypatch, tmp_path, inputs, kind):
+    frame = parse(monkeypatch, tmp_path, as_log(request_block("2026-01-05 09:00:00", "demo_model", inputs, [("run_time", 0.5)])))
+
+    assert (None if missing(frame.loc[0, "kind"]) else frame.loc[0, "kind"]) == kind
+
+
+# ---------------------------------------------------------------------------
+# The hash of a text
+# ---------------------------------------------------------------------------
+
+def test_hash_of_a_text_is_the_one_the_other_programs_compute(monkeypatch, tmp_path):
+    """SHA-256 in lower-case hex of the UTF-8 bytes of the text with every run of white
+    space made one blank. The digests are written out: the programs that read the table
+    compute the same ones."""
+    run = run_parser(monkeypatch, _write(tmp_path, ""))
+    hash_of = run.namespace["text_hash"]
+
+    question = "How long does a travel refund take?"
+    assert hash_of(question) == "e422a7ae4d49d80be7ae1d8c9b32f06398796c0f498f0e5f3c0e342edf7a9032"
+    assert hash_of("  How long\tdoes a travel\r\nrefund   take?\n") == hash_of(question)
+    assert hash_of("Wie lange dauert eine Erstattung für Österreich?") == "d2273a642c1c1b3462649ed6b72cb0c63cfb32ea3576868f57b82325817d4006"
+    # Nothing else is made the same
+    assert hash_of(question.lower()) != hash_of(question)
+
+
+# ---------------------------------------------------------------------------
+# The results of a retrieval in a prompt
+# ---------------------------------------------------------------------------
+
+def test_prompt_with_the_results_of_a_retrieval_names_its_collection_and_the_hash_of_its_question(monkeypatch, tmp_path):
+    question = "How long does a travel refund take?"
+    user_prompt = ("Answer from the context only.\n\nContext:\n" + retrieval_envelope(collection="staff_handbook_v1", query=question)
+                   + "\n\nQuestion: " + question)
+    frame = parse(monkeypatch, tmp_path, as_log(llm_block(user_prompt=user_prompt)))
+
+    assert frame.loc[0, "rag_collection"] == "staff_handbook_v1"
+    assert frame.loc[0, "rag_query_hash"] == text_hash(question)
+    # The prompt itself is kept as it was sent
+    assert frame.loc[0, "user_prompt"] == user_prompt
+
+
+def test_question_of_a_retrieval_has_the_hash_of_the_call_that_embedded_it(monkeypatch, tmp_path):
+    """A retrieval embeds the question in query mode and hands its results to the prompt.
+    Neither request names the other: the hash of the question is what the two rows share."""
+    question = "How long does a travel refund take?"
+    frame = parse(monkeypatch, tmp_path, as_log(
+        embedding_block(timestamp="2026-01-05 09:14:58", document=f"  How long does a\ttravel refund take?\n",
+                        options="{Embedding_Mode:query}", project="rag"),
+        llm_block(timestamp="2026-01-05 09:15:00", user_prompt="Context: " + retrieval_envelope(query=question)),
+        embedding_block(timestamp="2026-01-05 09:15:30", document="Another question?", options="{Embedding_Mode:query}", project="rag"),
+    ))
+
+    assert list(frame["kind"]) == ["embedding", "llm", "embedding"]
+    assert frame.loc[0, "input_hash"] == frame.loc[1, "rag_query_hash"] == "e422a7ae4d49d80be7ae1d8c9b32f06398796c0f498f0e5f3c0e342edf7a9032"
+    assert frame.loc[2, "input_hash"] != frame.loc[1, "rag_query_hash"]
+    # The question is in the prompt, so it is in the table there and nowhere else
+    assert missing(frame.loc[0, "user_prompt"]) and question in frame.loc[1, "user_prompt"]
+
+
+@pytest.mark.parametrize("question", [
+    'What does "refund" mean in chapter {7}?',
+    "Wie lange dauert eine Erstattung\nfür Österreich?",
+    'A question that quotes JSON: {"collection": "not_this_one", "query": "nor this"}',
+    "",
+], ids=["quotes and braces", "a line break and umlauts", "JSON in the question", "an empty question"])
+def test_question_is_decoded_as_json_not_cut_out_of_the_text(monkeypatch, tmp_path, question):
+    envelope = retrieval_envelope(collection="policies_v2", query=question, hits=3)
+    frame = parse(monkeypatch, tmp_path, as_log(llm_block(user_prompt=f"Context:\n{envelope}\nAnswer in one sentence.")))
+
+    assert frame.loc[0, "rag_collection"] == "policies_v2"
+    assert frame.loc[0, "rag_query_hash"] == text_hash(question)
+
+
+@pytest.mark.parametrize("user_prompt", [
+    '{"note": "an object that is no retrieval"} ' + retrieval_envelope(collection="policies_v2", query="made-up question"),
+    'The braces of a template {city} and {"half": ' + " then " + retrieval_envelope(collection="policies_v2", query="made-up question"),
+    json.dumps({"context": json.loads(retrieval_envelope(collection="policies_v2", query="made-up question")), "language": "en"}),
+    json.dumps([{"role": "tool", "content": json.loads(retrieval_envelope(collection="policies_v2", query="made-up question"))}]) + " [1] and [2]",
+], ids=["behind another object", "behind text with braces", "inside another object", "inside a list"])
+def test_results_of_a_retrieval_are_found_wherever_they_stand_in_the_prompt(monkeypatch, tmp_path, user_prompt):
+    frame = parse(monkeypatch, tmp_path, as_log(llm_block(user_prompt=user_prompt)))
+
+    assert frame.loc[0, "rag_collection"] == "policies_v2"
+    assert frame.loc[0, "rag_query_hash"] == text_hash("made-up question")
+
+
+@pytest.mark.parametrize("user_prompt", [
+    'Which "collection" does the "query" of a retrieval name?',
+    'Explain this: {"collection": "policies_v2", "hits": []}',
+    'Explain this: {"collection": 7, "query": null}',
+    'Explain this: {"collection": "", "query": "made-up question"}',
+    "Context: " + retrieval_envelope()[:-25],
+    'Explain this: {collection: "policies_v2", query: "made-up question"}',
+], ids=["the two words", "no question", "no texts", "no collection", "cut off", "not JSON"])
+def test_prompt_without_the_results_of_a_retrieval_names_no_collection(monkeypatch, tmp_path, user_prompt):
+    frame = parse(monkeypatch, tmp_path, as_log(llm_block(user_prompt=user_prompt)))
+
+    assert missing(frame.loc[0, "rag_collection"]) and missing(frame.loc[0, "rag_query_hash"])
+    assert frame.loc[0, "user_prompt"] == user_prompt
+
+
+def test_only_the_user_prompt_of_an_llm_is_searched_for_the_results_of_a_retrieval(monkeypatch, tmp_path):
+    envelope = retrieval_envelope()
+    frame = parse(monkeypatch, tmp_path, as_log(
+        llm_block(system_prompt="Context: " + envelope, user_prompt="made-up question"),
+        decision_block(state="Context: " + envelope),
+        embedding_block(document=envelope),
+    ))
+
+    assert all(missing(value) for value in frame["rag_collection"])
+    assert all(missing(value) for value in frame["rag_query_hash"])
+
+
+# ---------------------------------------------------------------------------
+# The options
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("sent, kept", [
+    ("{temperature:0.2,top_p:1,max_tokens:40}", "{temperature:0.2,top_p:1,max_tokens:40}"),
+    ("{}", "{}"),
+    ("{Embedding_Mode:query}", "{Embedding_Mode:query}"),
+    ("{temperature:0.7,max_tokens:60,API_KEY:REDACTED}", "{temperature:0.7,max_tokens:60,API_KEY:REDACTED}"),
+    ("{model:gpt-4o-mini-2024-07-18,reasoning_effort:medium,max_completion_tokens:4000}", "{model:gpt-4o-mini-2024-07-18,reasoning_effort:medium,max_completion_tokens:4000}"),
+    ("{endpoint:https://models.example.com/v1/chat/completions,top_k:5}", "{endpoint:https://models.example.com/v1/chat/completions,top_k:5}"),
+    ('{"temperature":0.3,"top_k":5}', '{"temperature":0.3,"top_k":5}'),
+], ids=["an LLM", "none", "an embedding model", "redacted by the collection", "a model name", "an address", "JSON"])
+def test_options_are_kept_as_they_were_sent(monkeypatch, tmp_path, sent, kept):
+    frame = parse(monkeypatch, tmp_path, as_log(llm_block(options=sent)))
+
+    assert frame.loc[0, "options"] == kept
+
+
+@pytest.mark.parametrize("sent, kept, secrets", [
+    ("{temperature:0.7,API_KEY:sk-made-up-0123456789,max_tokens:60}", "{temperature:0.7,API_KEY:REDACTED,max_tokens:60}", ["sk-made-up"]),
+    ("{API_KEY:AIzaMadeUp_0123456789-abcdef}", "{API_KEY:REDACTED}", ["AIzaMadeUp"]),
+    ("{api_key:made-up-one,client_secret:made-up-two,Password:made-up-three}", "{api_key:REDACTED,client_secret:REDACTED,Password:REDACTED}", ["made-up"]),
+    ("{hf_token:made-up-four,max_tokens:12}", "{hf_token:REDACTED,max_tokens:12}", ["made-up-four"]),
+    ("{Authorization:Bearer made-up-five}", "{Authorization:REDACTED}", ["made-up-five", "Bearer"]),
+    ("{API_KEY:made,up,six,temperature:0.2}", "{API_KEY:REDACTED,temperature:0.2}", ["made", "six"]),
+    ("{deployment:A1b2C3d4E5f6G7h8I9j0K1l2,temperature:0.2}", "{deployment:REDACTED,temperature:0.2}", ["A1b2C3d4"]),
+    ("{header:Bearer made-up-seven}", "{header:REDACTED}", ["made-up-seven"]),
+    ("{route:sk-made-up-eight}", "{route:REDACTED}", ["made-up-eight"]),
+    ("API_KEY:made-up-nine,temperature:0.2", "API_KEY:REDACTED,temperature:0.2", ["made-up-nine"]),
+    ('{"temperature": 0.3, "API_KEY": "sk-made-up-0123456789", "max_tokens": 25}', '{"temperature": 0.3, "API_KEY": "REDACTED", "max_tokens": 25}', ["sk-made-up"]),
+    ('{"headers": {"x-api-key": "made-up-ten"}, "stop": ["A1b2C3d4E5f6G7h8I9j0K1l2"]}', '{"headers": {"x-api-key": "REDACTED"}, "stop": ["REDACTED"]}', ["made-up-ten", "A1b2C3d4"]),
+], ids=["the provider key", "a key of another shape", "other names of a secret", "a token", "an authorization", "a key with commas",
+        "a value in the shape of a key", "a bearer value", "a value with the prefix of a key", "no braces", "JSON", "JSON inside JSON"])
+def test_parser_redacts_every_secret_in_the_options_itself(monkeypatch, tmp_path, sent, kept, secrets):
+    """The collection script replaces API_KEY before the log is written. A log that was
+    collected another way still brings no key into the table."""
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(llm_block(options=sent), embedding_block(options=sent))))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["options"]) == [kept, kept]
+    table = frame.to_csv()
+    for secret in secrets:
+        assert secret not in table, secret
+
+
+def test_an_option_named_like_a_token_is_kept_when_it_is_a_number(monkeypatch, tmp_path):
+    frame = parse(monkeypatch, tmp_path, as_log(llm_block(options="{max_tokens:64,max_completion_tokens:300,max_new_tokens:20,token:made-up}")))
+
+    assert frame.loc[0, "options"] == "{max_tokens:64,max_completion_tokens:300,max_new_tokens:20,token:REDACTED}"
+
+
+@pytest.mark.parametrize("options, max_tokens", [
+    ("{temperature:0.1,max_length:128}", 128),
+    ("{max_length:128,max_tokens:64}", 64),
+    ("{max_tokens:64,max_length:128}", 64),
+    ("{max_completion_tokens:4000,reasoning_effort:low}", 4000),
+    ("{max_length:128,max_completion_tokens:4000}", 4000),
+    ('{"max_length": 256}', 256),
+    ("{temperature:0.1}", None),
+], ids=["max_length", "max_tokens first", "max_tokens last", "max_completion_tokens", "both other names", "JSON", "no limit"])
+def test_other_names_of_the_token_limit_fill_max_tokens(monkeypatch, tmp_path, options, max_tokens):
+    """max_tokens is the column of the limit of new tokens. A request that names the limit
+    max_length or max_completion_tokens used to leave it empty."""
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(llm_block(options=options))))
+
+    value = run.uploads[0]["frame"].loc[0, "max_tokens"]
+    assert (None if missing(value) else value) == max_tokens
+    assert run.uploads[0]["frame"].loc[0, "options"] == options
+
+
+def test_options_as_json_fill_the_option_columns(monkeypatch, tmp_path):
+    """The score code reads the options as JSON first and as name:value pairs otherwise."""
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        llm_block(options='{"temperature": 0.3, "top_p": 0.9, "top_k": 5, "max_tokens": 25}'),
+        llm_block(timestamp="2026-01-05 09:16:00", options='{"temperature":"0.4","max_tokens":"30"}'),
+        llm_block(timestamp="2026-01-05 09:17:00", options='{ "temperature" : 0.5 , \'max_tokens\' : 35 }'))))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["temperature"]) == [0.3, 0.4, 0.5]
+    assert list(frame["max_tokens"]) == [25, 30, 35]
+    assert (frame.loc[0, "top_p"], frame.loc[0, "top_k"]) == (0.9, 5)
+
+
+# ---------------------------------------------------------------------------
+# The request headers
+# ---------------------------------------------------------------------------
+
+def test_request_id_is_the_header_of_the_request(monkeypatch, tmp_path):
+    frame = parse(monkeypatch, tmp_path, as_log(
+        llm_block(request_id="0123456789abcdef0123456789abcdef"),
+        embedding_block(headers=("x-request-id: fedcba9876543210fedcba9876543210",), request_id="aaaa"),
+        decision_block()))
+
+    assert frame.loc[0, "request_id"] == "0123456789abcdef0123456789abcdef"
+    # Header names are read in any spelling of upper and lower case
+    assert frame.loc[1, "request_id"] == "fedcba9876543210fedcba9876543210"
+    assert re.fullmatch(r"[0-9a-f]{32}", frame.loc[2, "request_id"])
+
+
+@pytest.mark.parametrize("header, kind", [
+    ("python-requests/2.34.2", "python-requests"),
+    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36", "browser"),
+    ("SAS/URL", "SAS"),
+    ("sas-viya-cli/1.2", "SAS"),
+    ("curl/8.5.0", "other"),
+    ("Apache-HttpClient/5.4 (Java/21)", "other"),
+    ("", None),
+    (None, None),
+], ids=["python-requests", "a browser", "SAS", "sas in lower case", "curl", "a Java client", "empty", "no header"])
+def test_user_agent_is_kept_as_the_kind_of_client(monkeypatch, tmp_path, header, kind):
+    frame = parse(monkeypatch, tmp_path, as_log(llm_block(user_agent=header)))
+
+    assert (None if missing(frame.loc[0, "user_agent"]) else frame.loc[0, "user_agent"]) == kind
+
+
+def test_first_header_stands_on_the_request_headers_line(monkeypatch, tmp_path):
+    block = llm_block(user_agent=None)
+    assert " - Request Headers: Host: " in block[1]
+    block[1] = log_line("2026-01-05 09:15:00", "api", "Request Headers: User-Agent: Mozilla/5.0 (X11; Linux x86_64)")
+    frame = parse(monkeypatch, tmp_path, as_log(block))
+
+    assert frame.loc[0, "user_agent"] == "browser"
+
+
+def test_no_other_header_and_nothing_of_the_two_reaches_the_table(monkeypatch, tmp_path):
+    """The headers carry addresses, the page a browser came from and, in a log that was
+    not redacted, cookies and tokens. Two of them are read, one as an id and one as a class."""
+    headers = ("X-Original-Forwarded-For: 198.51.100.23",
+               "Referer: https://viya.example.com/SASJobExecution/?_program=/made-up/folder/secret-page",
+               "Origin: https://viya.example.com",
+               "Cookie: sessionid=made-up-cookie-value",
+               "Authorization: Bearer made-up-bearer-token",
+               "X-Csrf-Token: made-up-csrf-token")
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        llm_block(headers=headers, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
+        decision_block(headers=headers), embedding_block(headers=headers))))
+
+    table = run.uploads[0]["frame"].to_csv()
+    for text in ("192.0.2.17", "198.51.100.23", "viya.example.com", "secret-page", "made-up-cookie-value", "made-up-bearer-token",
+                 "made-up-csrf-token", "Mozilla", "AppleWebKit", "2.32.5", "application/json"):
+        assert text not in table, text
+    assert list(run.uploads[0]["frame"]["user_agent"]) == ["browser", "python-requests", "python-requests"]
+
+
+# ---------------------------------------------------------------------------
+# Requests that failed
+# ---------------------------------------------------------------------------
+
+def test_request_that_failed_has_its_error_and_no_status(monkeypatch, tmp_path):
+    """The score code logs what the provider answered and raises. The container logs the
+    traceback and writes no 'Response:' line."""
+    frame = parse(monkeypatch, tmp_path, as_log(
+        failed_block("2026-01-05 09:00:00", "demo_decider", decision_inputs(options="{}")),
+        llm_block(timestamp="2026-01-05 09:01:00")))
+
+    assert len(frame) == 2
+    failed, answered = frame.iloc[0], frame.iloc[1]
+    assert (failed["kind"], failed["failed"]) == ("decision", 1)
+    assert missing(failed["status_code"])
+    assert failed["error_text"] == PROVIDER_ERROR
+    # The request itself is all there, the answer is not
+    assert (failed["system_prompt"], failed["user_prompt"], failed["options"]) == (DECISION_QUESTIONS, DECISION_STATE, "{}")
+    assert failed["transaction_id"] == made_up_id("2026-01-05 09:00:00", "demo_decider", decision_inputs(options="{}"))
+    for column in ("prompt_length", "output_length", "runtime", "response", "answer", "answer_confidence"):
+        assert missing(failed[column]), column
+    # The request behind it is not touched by any of it
+    assert (answered["status_code"], answered["failed"]) == (200, 0)
+    assert missing(answered["error_text"])
+    assert (answered["prompt_length"], answered["response"]) == (21, "The capital of Austria is Vienna.")
+
+
+def test_exception_the_score_code_did_not_log_is_taken_from_the_traceback(monkeypatch, tmp_path):
+    """The line the container writes for an exception names no cause. The last line of
+    the traceback behind it does."""
+    frame = parse(monkeypatch, tmp_path, as_log(
+        failed_block("2026-01-05 09:00:00", "demo_decider", decision_inputs(), error=None, exception="KeyError: 'API_KEY'")))
+
+    assert frame.loc[0, "failed"] == 1
+    assert frame.loc[0, "error_text"] == "An exception occurred within the scoreModel function of the score code: KeyError: 'API_KEY'"
+
+
+def test_error_text_is_cut_and_holds_no_key(monkeypatch, tmp_path):
+    error = ("HTTP 401: {\"error\": {\"message\": \"Incorrect API key provided: sk-made-up-A1b2C3d4E5f6G7h8. The header was"
+             " Authorization: Bearer made-up-token-0123456789 and the key of the project is A1b2C3d4E5f6G7h8I9j0K1l2.\"}} "
+             + "<p>made-up page</p>\t" * 60)
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(failed_block("2026-01-05 09:00:00", "demo_llm", llm_inputs(), error=error))))
+
+    text = run.uploads[0]["frame"].loc[0, "error_text"]
+    assert len(text) == run.namespace["ERROR_TEXT_LENGTH"] == 500
+    assert text.startswith('HTTP 401: {"error": {"message": "Incorrect API key provided: REDACTED The header was Authorization: REDACTED and the key of the project is REDACTED."}} <p>made-up page</p> <p>')
+    for secret in ("sk-made-up", "made-up-token", "A1b2C3d4"):
+        assert secret not in text, secret
+
+
+def test_first_error_of_a_request_is_the_one_that_is_kept(monkeypatch, tmp_path):
+    before, after = split_at_scoring(llm_block())
+    errors = [log_line("2026-01-05 09:15:00", "scoreModel", "HTTP 429: {\"error\": \"rate limit\"}", level="ERROR"),
+              log_line("2026-01-05 09:15:01", "scoreModel", "HTTP 503: {\"error\": \"overloaded\"}", level="ERROR")]
+    frame = parse(monkeypatch, tmp_path, as_log(before, errors, after))
+
+    # An error line makes the request a failed one even where a response was written
+    assert (frame.loc[0, "status_code"], frame.loc[0, "failed"]) == (200, 1)
+    assert frame.loc[0, "error_text"] == 'HTTP 429: {"error": "rate limit"}'
+    assert frame.loc[0, "response"] == "The capital of Austria is Vienna."
+
+
+@pytest.mark.parametrize("status, failed", [(200, 0), (204, 0), (399, 0), (400, 1), (500, 1)])
+def test_status_of_the_response_decides_whether_a_request_without_an_error_failed(monkeypatch, tmp_path, status, failed):
+    frame = parse(monkeypatch, tmp_path, as_log(llm_block(status=status)))
+
+    assert (frame.loc[0, "status_code"], frame.loc[0, "failed"]) == (status, failed)
+    assert missing(frame.loc[0, "error_text"])
+
+
+def test_numbers_of_the_added_columns_are_numbers_in_the_upload(monkeypatch, tmp_path):
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        decision_block(), failed_block("2026-01-05 09:30:00", "demo_decider", decision_inputs()))))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["failed"]) == [0, 1]
+    assert frame.loc[0, "status_code"] == 200 and missing(frame.loc[1, "status_code"])
+    assert frame.loc[0, "answer_confidence"] == 0.9 and missing(frame.loc[1, "answer_confidence"])
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +1130,8 @@ def test_redacted_block_still_parses(monkeypatch, tmp_path):
     assert decision["system_prompt"] == DECISION_QUESTIONS
     assert decision["user_prompt"] == DECISION_STATE
     assert embedding["prompt_length"] == 17
+    assert list(frame["options"]) == ["{temperature:0.7,max_tokens:60,API_KEY:REDACTED}", "{API_KEY:REDACTED}", "{Embedding_Mode:query,API_KEY:REDACTED}"]
+    assert embedding["embedding_mode"] == "query"
 
 
 def test_key_of_an_unredacted_log_reaches_no_column(monkeypatch, tmp_path):
@@ -464,6 +1145,7 @@ def test_key_of_an_unredacted_log_reaches_no_column(monkeypatch, tmp_path):
     table = frame.to_csv()
     assert made_up_key not in table
     assert "made-up-cookie" not in table
+    assert list(frame["options"]) == ["{temperature:0.7,API_KEY:REDACTED}", "{API_KEY:REDACTED}"]
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +1155,7 @@ def test_key_of_an_unredacted_log_reaches_no_column(monkeypatch, tmp_path):
 def test_interleaved_blocks_of_all_kinds_keep_their_own_values(monkeypatch, tmp_path):
     """The collected file holds one container after the other, each with its start-up
     lines, its scoring requests and the requests that score nothing in between."""
-    frame = parse(monkeypatch, tmp_path, as_log(
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
         startup_lines("2026-01-05 08:00:00", "demo_llm"),
         llm_block(timestamp="2026-01-05 09:00:00", prompt_length=10, output_length=1, run_time=1.5, response="first"),
         get_block("2026-01-05 09:00:30"),
@@ -485,7 +1167,8 @@ def test_interleaved_blocks_of_all_kinds_keep_their_own_values(monkeypatch, tmp_
         embedding_block(timestamp="2026-01-05 09:03:00", tokens=5, run_time=0.01),
         embedding_block(timestamp="2026-01-05 09:03:01", tokens=6, run_time=0.02),
         llm_block(timestamp="2026-01-05 09:04:00", model="other_llm", prompt_length=30, output_length=3, run_time=3.5, response="third"),
-    ))
+    )))
+    frame = run.namespace["parse_log_file"](run.sas.macro_variables["_log_path"])
 
     assert list(frame["timestamp"]) == [
         "2026-01-05 09:00:00", "2026-01-05 09:01:00", "2026-01-05 09:02:00",
@@ -502,6 +1185,14 @@ def test_interleaved_blocks_of_all_kinds_keep_their_own_values(monkeypatch, tmp_
     # The embedding calls follow a decision call and take none of its text
     assert missing(frame.loc[3, "system_prompt"]) and missing(frame.loc[3, "user_prompt"])
 
+    assert list(frame["kind"]) == ["llm", "llm", "decision", "embedding", "embedding", "llm"]
+    assert list(frame["status_code"]) == [200] * 6 and list(frame["failed"]) == [0] * 6
+    assert frame["transaction_id"].nunique() == 6 and frame["request_id"].nunique() == 6
+    assert [None if missing(value) else value for value in frame["answer"]] == [None, None, "billing", None, None, None]
+    # The requests that score nothing are requests of a client too: its headers are not the headers of a scoring request
+    assert list(frame["user_agent"]) == ["python-requests"] * 6
+    assert run.sas.messages == []
+
 
 def test_score_lines_between_two_blocks_belong_to_no_request(monkeypatch, tmp_path):
     """A container's part of the file can begin in the middle of a request, because the
@@ -511,22 +1202,41 @@ def test_score_lines_between_two_blocks_belong_to_no_request(monkeypatch, tmp_pa
         log_line("2026-01-05 09:05:00", "scoreModel", "tokens: 999"),
         log_line("2026-01-05 09:05:00", "scoreModel", "run_time: 99.5"),
         log_line("2026-01-05 09:05:00", "scoreModel", "response: an answer to a request that is not in this file"),
-        log_line("2026-01-05 09:05:00", "api", "Response: Status Code 200"),
+        log_line("2026-01-05 09:05:00", "scoreModel", "HTTP 500: an error of a request that is not in this file", level="ERROR"),
+        log_line("2026-01-05 09:05:00", "api", "Response: Status Code 500"),
     ]
-    frame = parse(monkeypatch, tmp_path, as_log(leftover, llm_block(), leftover, embedding_block(), leftover))
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(leftover, llm_block(), leftover, embedding_block(), leftover)))
+    frame = run.namespace["parse_log_file"](run.sas.macro_variables["_log_path"])
 
     assert len(frame) == 2
     assert (frame.loc[0, "prompt_length"], frame.loc[0, "runtime"], frame.loc[0, "response"]) == (21, 1.25, "The capital of Austria is Vienna.")
     assert (frame.loc[1, "prompt_length"], frame.loc[1, "runtime"]) == (17, 0.08)
     assert missing(frame.loc[1, "response"])
+    assert list(frame["status_code"]) == [200, 200] and list(frame["failed"]) == [0, 0]
+    assert all(missing(value) for value in frame["error_text"])
+    assert run.sas.messages == []
+
+
+def test_rest_of_a_request_at_the_start_of_the_file_belongs_to_no_request(monkeypatch, tmp_path):
+    """The same cut with the lines of the transaction in it: they name a transaction that
+    no request line of the file started."""
+    cut_off = split_at_scoring(llm_block(timestamp="2026-01-05 08:59:00", user_prompt="a request whose first lines are not in this file",
+                                         response="an answer to it", prompt_length=999, status=500))[1]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(cut_off, llm_block(), embedding_block())))
+
+    frame = run.uploads[0]["frame"]
+    assert len(frame) == 2
+    assert (frame.loc[0, "prompt_length"], frame.loc[0, "response"], frame.loc[0, "status_code"]) == (21, "The capital of Austria is Vienna.", 200)
+    assert (frame.loc[1, "prompt_length"], frame.loc[1, "status_code"]) == (17, 200)
+    assert "an answer to it" not in frame.to_csv()
+    assert run.sas.messages == []
 
 
 def test_request_that_is_still_running_takes_no_lines_of_the_next_container(monkeypatch, tmp_path):
     """The last request of a container can be cut off before its response was logged.
     The next container's part of the file starts earlier in time, which is what ends it:
     the leftover score lines there are not its numbers and not its answer."""
-    # The first nine lines of a block are logged before the model is scored
-    running = llm_block(timestamp="2026-01-05 09:59:59", user_prompt="still running")[:9]
+    running = split_at_scoring(llm_block(timestamp="2026-01-05 09:59:59", user_prompt="still running"))[0]
     leftover = [
         log_line("2026-01-05 09:00:00", "scoreModel", "prompt_length: 999"),
         log_line("2026-01-05 09:00:00", "scoreModel", "output_length: 99"),
@@ -534,12 +1244,34 @@ def test_request_that_is_still_running_takes_no_lines_of_the_next_container(monk
         log_line("2026-01-05 09:00:00", "scoreModel", "response: the answer of another container"),
         log_line("2026-01-05 09:00:00", "api", "Response: Status Code 200"),
     ]
-    frame = parse(monkeypatch, tmp_path, as_log(running, leftover, embedding_block(timestamp="2026-01-05 09:30:00")))
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(running, leftover, embedding_block(timestamp="2026-01-05 09:30:00"))))
+    frame = run.namespace["parse_log_file"](run.sas.macro_variables["_log_path"])
 
     assert len(frame) == 2
     assert frame.loc[0, "user_prompt"] == "still running"
     assert all(missing(frame.loc[0, column]) for column in ("prompt_length", "output_length", "runtime", "response"))
     assert (frame.loc[1, "model"], frame.loc[1, "prompt_length"]) == ("demo_embedder", 17)
+    # The log holds no response for it, which is what failed says, and no error
+    assert missing(frame.loc[0, "status_code"]) and frame.loc[0, "failed"] == 1
+    assert missing(frame.loc[0, "error_text"])
+    assert frame.loc[0, "kind"] == "llm" and not missing(frame.loc[0, "transaction_id"])
+    assert run.sas.messages == []
+
+
+def test_request_to_another_model_is_the_next_container(monkeypatch, tmp_path):
+    """A container serves one model. Where a request to another model follows, the part of
+    the next container has begun - also when a client gave both requests the same
+    transaction id and the second one is the later one."""
+    shared = "99999999-8888-7777-6666-555555555555"
+    running = split_at_scoring(llm_block(timestamp="2026-01-05 09:00:00", model="demo_llm", user_prompt="still running", transaction=shared))[0]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        running, llm_block(timestamp="2026-01-05 09:00:05", model="other_llm", response="the answer of the other model", transaction=shared))))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["model"]) == ["demo_llm", "other_llm"]
+    assert missing(frame.loc[0, "response"]) and frame.loc[0, "failed"] == 1
+    assert (frame.loc[1, "response"], frame.loc[1, "status_code"], frame.loc[1, "failed"]) == ("the answer of the other model", 200, 0)
+    assert run.sas.messages == []
 
 
 def test_log_lines_quoted_in_a_prompt_or_a_response_are_text(monkeypatch, tmp_path):
@@ -549,7 +1281,7 @@ def test_log_lines_quoted_in_a_prompt_or_a_response_are_text(monkeypatch, tmp_pa
                    " and 2026-01-05 09:00:00 - scoreModel - INFO - run_time: 77 and prompt_length: 88")
     frame = parse(monkeypatch, tmp_path, as_log(llm_block(
         user_prompt=user_prompt,
-        response="Request: POST /other_model starts a request.\nrun_time: 77 is the time it took.\nResponse: Status Code 200 ends it.")))
+        response="Request: POST /other_model starts a request.\nrun_time: 77 is the time it took.\nResponse: Status Code 500 ends it.")))
 
     assert len(frame) == 1
     row = frame.iloc[0]
@@ -557,22 +1289,163 @@ def test_log_lines_quoted_in_a_prompt_or_a_response_are_text(monkeypatch, tmp_pa
     assert row["user_prompt"] == user_prompt
     assert (row["prompt_length"], row["runtime"]) == (21, 1.25)
     assert row["response"] == ("Request: POST /other_model starts a request. run_time: 77 is the time it took."
-                               " Response: Status Code 200 ends it.")
+                               " Response: Status Code 500 ends it.")
+    assert (row["status_code"], row["failed"]) == (200, 0)
+
+
+# ---------------------------------------------------------------------------
+# Requests of one container that overlap
+#
+# The lines of the score code and the 'Response:' line name no request. The lines
+# of the transaction and the 'Response Data:' line do, and a request whose
+# transaction a later line still names was running when the next one started.
+# ---------------------------------------------------------------------------
+
+def _overlap_note(run):
+    assert [kind for kind, _ in run.sas.messages] == ["NOTE"], run.sas.messages
+    counts = re.fullmatch(r"(\d+) request\(s\) were running at the same time as another request of their container\. .*: "
+                          r"(\d+) request\(s\) were running when that happened and can have missing values\.", run.sas.messages[0][1])
+    assert counts, run.sas.messages[0][1]
+    return int(counts.group(1)), int(counts.group(2))
 
 
 def test_requests_that_overlap_in_one_container_stay_one_row_each(monkeypatch, tmp_path):
-    """The score lines carry no request id, so when a second request starts before the
-    first one was answered they can not be told apart. Each request still gets its row
-    with its own inputs, and no row receives the answers of both."""
-    first = llm_block(timestamp="2026-01-05 09:00:00", user_prompt="question A", response="answer A")
-    second = llm_block(timestamp="2026-01-05 09:00:01", user_prompt="question B", response="answer B")
-    # The first nine lines of a block are logged before the model is scored
-    frame = parse(monkeypatch, tmp_path, as_log(first[:9], second[:9], first[9:], second[9:]))
+    """The second request starts before the first one was answered. What the score code
+    logged while both were running is the line of neither. What it logged after the
+    first one was answered is the line of the second."""
+    first = llm_block(timestamp="2026-01-05 09:00:00", finished="2026-01-05 09:00:03", user_prompt="question A", response="answer A", prompt_length=11)
+    second = llm_block(timestamp="2026-01-05 09:00:01", finished="2026-01-05 09:00:04", user_prompt="question B", response="answer B", prompt_length=22)
+    (before_first, after_first), (before_second, after_second) = split_at_scoring(first), split_at_scoring(second)
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(before_first, before_second, after_first, after_second)))
 
-    assert list(frame["timestamp"]) == ["2026-01-05 09:00:00", "2026-01-05 09:00:01"]
+    frame = run.uploads[0]["frame"]
+    assert list(frame["timestamp"].diff().dropna()) == [1]
     assert list(frame["user_prompt"]) == ["question A", "question B"]
     responses = [value for value in frame["response"] if not missing(value)]
     assert all(not ("answer A" in value and "answer B" in value) for value in responses)
+
+    # Each request has what its own lines say: the inputs, the transaction, and the response by its 'Response Data:' line
+    assert list(frame["transaction_id"]) == [made_up_id("2026-01-05 09:00:00", "demo_llm", llm_inputs(user_prompt="question A")),
+                                              made_up_id("2026-01-05 09:00:01", "demo_llm", llm_inputs(user_prompt="question B"))]
+    assert list(frame["status_code"]) == [200, 200] and list(frame["failed"]) == [0, 0]
+    assert all(missing(frame.loc[0, column]) for column in ("prompt_length", "output_length", "runtime", "response"))
+    assert (frame.loc[1, "prompt_length"], frame.loc[1, "output_length"], frame.loc[1, "runtime"], frame.loc[1, "response"]) == (22, 9, 1.25, "answer B")
+    assert _overlap_note(run) == (2, 2)
+
+
+def test_score_lines_of_two_running_requests_are_the_lines_of_neither(monkeypatch, tmp_path):
+    first = llm_block(timestamp="2026-01-05 09:00:00", finished="2026-01-05 09:00:03", user_prompt="question A", response="answer A", status=200)
+    second = decision_block(timestamp="2026-01-05 09:00:01", finished="2026-01-05 09:00:03", model="demo_llm", status=500)
+    (before_first, after_first), (before_second, after_second) = split_at_scoring(first), split_at_scoring(second)
+    # The score lines of both, then the last four lines of each: scored, elapsed time, response, response data
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        before_first, before_second, after_first[:-4], after_second[:-4], after_first[-4:], after_second[-4:])))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["kind"]) == ["llm", "decision"]
+    assert list(frame["user_prompt"]) == ["question A", DECISION_STATE]
+    for column in ("prompt_length", "output_length", "runtime", "response", "answer", "answer_confidence", "error_text"):
+        assert all(missing(value) for value in frame[column]), column
+    # The 'Response:' line stands in front of the 'Response Data:' line that names its transaction
+    assert list(frame["status_code"]) == [200, 500] and list(frame["failed"]) == [0, 1]
+    assert _overlap_note(run) == (2, 2)
+
+
+def test_response_lines_that_are_not_followed_by_their_response_data_are_the_lines_of_neither(monkeypatch, tmp_path):
+    first = llm_block(timestamp="2026-01-05 09:00:00", finished="2026-01-05 09:00:03", user_prompt="question A", status=200)
+    second = llm_block(timestamp="2026-01-05 09:00:01", finished="2026-01-05 09:00:03", user_prompt="question B", status=500)
+    (before_first, after_first), (before_second, after_second) = split_at_scoring(first), split_at_scoring(second)
+    last_lines = [line for pair in zip(after_first[-4:], after_second[-4:]) for line in pair]
+    assert [" - Response: " in line for line in last_lines] == [False, False, False, False, True, True, False, False]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(before_first, before_second, last_lines)))
+
+    frame = run.uploads[0]["frame"]
+    # The second 'Response:' line stands in front of the 'Response Data:' line of the first request: its 500 is not taken for it
+    assert all(missing(value) for value in frame["status_code"])
+    assert all(missing(value) for value in frame["failed"])
+    assert not any(missing(value) for value in frame["transaction_id"])
+    assert _overlap_note(run) == (2, 2)
+
+    # A request behind them is read like any other
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        before_first, before_second, last_lines, llm_block(timestamp="2026-01-05 09:00:09", user_prompt="question C", status=201))))
+    assert list(run.uploads[0]["frame"]["status_code"])[2] == 201
+    assert _overlap_note(run) == (2, 2)
+
+
+def test_error_of_a_request_that_overlaps_is_given_to_it_by_its_transaction(monkeypatch, tmp_path):
+    failed = failed_block("2026-01-05 09:00:00", "demo_llm", llm_inputs(user_prompt="question A"), finished="2026-01-05 09:00:02")
+    answered = llm_block(timestamp="2026-01-05 09:00:01", finished="2026-01-05 09:00:03", user_prompt="question B", response="answer B")
+    (before_failed, after_failed), (before_answered, after_answered) = split_at_scoring(failed), split_at_scoring(answered)
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(before_failed, before_answered, after_failed, after_answered)))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["user_prompt"]) == ["question A", "question B"]
+    # The error line of the score code names no request. The two lines of the container name the transaction
+    assert frame.loc[0, "failed"] == 1 and missing(frame.loc[0, "status_code"])
+    assert frame.loc[0, "error_text"] == "An exception occurred within the scoreModel function of the score code: RuntimeError: Request failed: 401"
+    # With that the first request has ended, and the lines behind it are the lines of the second
+    assert (frame.loc[1, "status_code"], frame.loc[1, "failed"], frame.loc[1, "response"], frame.loc[1, "prompt_length"]) == (200, 0, "answer B", 21)
+    assert missing(frame.loc[1, "error_text"])
+    assert _overlap_note(run) == (2, 2)
+
+
+def test_requests_whose_first_lines_overlap_keep_their_request_line_only(monkeypatch, tmp_path):
+    """The headers and the 'Request Data:' line name nothing either. A second line of the
+    same kind before any transaction line says that two requests wrote their first lines
+    at the same time, and no line says which is whose."""
+    first = llm_block(timestamp="2026-01-05 09:00:00", finished="2026-01-05 09:00:02", user_prompt="question A", response="answer A")
+    second = llm_block(timestamp="2026-01-05 09:00:00", finished="2026-01-05 09:00:03", system_prompt="Another system prompt.", user_prompt="question B", response="answer B")
+    (before_first, after_first), (before_second, after_second) = split_at_scoring(first), split_at_scoring(second)
+    data = next(index for index, line in enumerate(before_first) if " - Request Data: " in line)
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        before_first[:1], before_second[:1], before_first[1:data], before_second[1:data], before_first[data:], before_second[data:],
+        after_first, after_second,
+        llm_block(timestamp="2026-01-05 09:00:09", user_prompt="question C", response="answer C"))))
+
+    frame = run.uploads[0]["frame"]
+    assert len(frame) == 3
+    assert list(frame["model"]) == ["demo_llm"] * 3
+    for column in ALL_COLUMNS:
+        if column not in ("timestamp", "model"):
+            assert all(missing(value) for value in frame.loc[:1, column]), column
+    table = frame.loc[:1].to_csv(header=False)
+    assert "question" not in table and "answer" not in table and "prompt" not in table
+    # The request behind them is read like any other
+    assert (frame.loc[2, "user_prompt"], frame.loc[2, "response"], frame.loc[2, "status_code"], frame.loc[2, "failed"]) == ("question C", "answer C", 200, 0)
+    assert _overlap_note(run) == (2, 2)
+
+    # The same where the file ends before the second transaction was logged: the one transaction that is there is not taken for either
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        before_first[:1], before_second[:1], before_first[1:data], before_second[1:data], before_first[data:data + 1], before_second[data:])))
+    frame = run.uploads[0]["frame"]
+    assert len(frame) == 2
+    assert [column for column in ALL_COLUMNS if not frame[column].isna().all()] == ["timestamp", "model"]
+    assert _overlap_note(run) == (2, 2)
+
+
+def test_request_that_is_cut_off_in_its_first_lines_ends_at_the_next_request(monkeypatch, tmp_path):
+    """Its transaction is not known, so no later line can name it: the next request line ends it."""
+    block = llm_block(timestamp="2026-01-05 09:00:00", user_prompt="cut off behind its inputs")
+    data = next(index for index, line in enumerate(block) if " - Request Data: " in line)
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(block[:data + 1], llm_block(timestamp="2026-01-05 09:00:30"))))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["user_prompt"]) == ["cut off behind its inputs", "What is the capital of Austria?"]
+    assert frame.loc[0, "kind"] == "llm" and frame.loc[0, "failed"] == 1
+    assert missing(frame.loc[0, "transaction_id"]) and missing(frame.loc[0, "status_code"]) and missing(frame.loc[0, "response"])
+    assert (frame.loc[1, "response"], frame.loc[1, "status_code"], frame.loc[1, "failed"]) == ("The capital of Austria is Vienna.", 200, 0)
+    assert run.sas.messages == []
+
+
+def test_request_that_scores_nothing_does_not_hand_its_headers_to_a_scoring_request(monkeypatch, tmp_path):
+    block = llm_block(timestamp="2026-01-05 09:00:00", user_prompt="cut off behind its request line")
+    frame = parse(monkeypatch, tmp_path, as_log(block[:1], get_block("2026-01-05 09:00:10"), llm_block(timestamp="2026-01-05 09:00:30")))
+
+    assert len(frame) == 2
+    # The headers behind the GET are the headers of the GET, whose client was curl
+    assert missing(frame.loc[0, "user_agent"]) and missing(frame.loc[0, "request_id"])
+    assert frame.loc[1, "user_agent"] == "python-requests"
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +1453,7 @@ def test_requests_that_overlap_in_one_container_stay_one_row_each(monkeypatch, t
 # ---------------------------------------------------------------------------
 
 def test_request_without_a_response_line_ends_at_the_next_request(monkeypatch, tmp_path):
-    failed = llm_block(timestamp="2026-01-05 09:00:00", user_prompt="a call that failed")[:9] + [
+    failed = split_at_scoring(llm_block(timestamp="2026-01-05 09:00:00", user_prompt="a call that failed"))[0] + [
         log_line("2026-01-05 09:00:02", "scoreModel", "HTTP 429: {\"error\": \"rate limit\"}", level="ERROR"),
     ]
     frame = parse(monkeypatch, tmp_path, as_log(failed, llm_block(timestamp="2026-01-05 09:01:00")))
@@ -589,6 +1462,25 @@ def test_request_without_a_response_line_ends_at_the_next_request(monkeypatch, t
     assert frame.loc[0, "user_prompt"] == "a call that failed"
     assert all(missing(frame.loc[0, column]) for column in ("prompt_length", "output_length", "runtime", "response"))
     assert (frame.loc[1, "prompt_length"], frame.loc[1, "response"]) == (21, "The capital of Austria is Vienna.")
+    assert (frame.loc[0, "failed"], frame.loc[0, "error_text"]) == (1, 'HTTP 429: {"error": "rate limit"}')
+    assert (frame.loc[1, "failed"], frame.loc[1, "status_code"]) == (0, 200)
+
+
+def test_block_without_the_lines_of_a_transaction_is_read_by_its_order(monkeypatch, tmp_path):
+    """A log whose lines name no transaction leaves the order of the lines to go by, which
+    is all the parser went by before."""
+    def without_transaction(block):
+        return [line for line in block if " - transaction_" not in line]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        without_transaction(llm_block()), without_transaction(decision_block())[:-1], without_transaction(embedding_block()))))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["kind"]) == ["llm", "decision", "embedding"]
+    assert list(frame["prompt_length"]) == [21, 120, 17]
+    assert list(frame["status_code"]) == [200, 200, 200] and list(frame["failed"]) == [0, 0, 0]
+    # The 'Response Data:' line is then the only one that names the transaction; the second block was given none
+    assert not missing(frame.loc[0, "transaction_id"]) and missing(frame.loc[1, "transaction_id"])
+    assert run.sas.messages == []
 
 
 @pytest.mark.parametrize("prefix", [
@@ -630,7 +1522,7 @@ def test_byte_that_is_not_utf8_does_not_cost_the_file(monkeypatch, tmp_path):
 
     assert run.row_count == "2"
     frame = run.uploads[0]["frame"]
-    assert frame.loc[0, "response"] == "Ein Caf\ufffd in Wien."
+    assert frame.loc[0, "response"] == "Ein Caf� in Wien."
     assert (frame.loc[0, "prompt_length"], frame.loc[1, "prompt_length"]) == (21, 17)
 
 
@@ -643,6 +1535,9 @@ def test_unreadable_request_data_keeps_the_row_and_its_numbers(monkeypatch, tmp_
     assert len(frame) == 1
     assert missing(frame.loc[0, "system_prompt"]) and missing(frame.loc[0, "user_prompt"])
     assert (frame.loc[0, "prompt_length"], frame.loc[0, "output_length"], frame.loc[0, "runtime"]) == (21, 9, 1.25)
+    # What the inputs would have said is missing, what the other lines say is there
+    assert missing(frame.loc[0, "kind"]) and missing(frame.loc[0, "options"])
+    assert (frame.loc[0, "status_code"], frame.loc[0, "failed"], frame.loc[0, "user_agent"]) == (200, 0, "python-requests")
 
 
 def test_score_value_that_is_no_number_is_missing(monkeypatch, tmp_path):
@@ -657,19 +1552,32 @@ def test_inputs_that_are_no_text_do_not_stop_the_parser(monkeypatch, tmp_path):
     frame = parse(monkeypatch, tmp_path, as_log(
         request_block("2026-01-05 09:00:00", "demo_llm",
                       [("systemPrompt", None), ("userPrompt", 42), ("options", None)],
-                      [("prompt_length", 3), ("output_length", 1), ("run_time", 0.5), ("response", "ok")])))
+                      [("prompt_length", 3), ("output_length", 1), ("run_time", 0.5), ("response", "ok")]),
+        request_block("2026-01-05 09:00:01", "demo_embedder",
+                      [("document", 42), ("options", 7), ("project", ["made-up", "list"])],
+                      [("tokens", 1), ("run_time", 0.5)]),
+        request_block("2026-01-05 09:00:02", "demo_llm",
+                      [(["a", "list"], "as a name"), ("userPrompt", {"collection": "x", "query": "y"}), ("options", {"max_length": 5})],
+                      [("run_time", 0.5)])))
 
     assert missing(frame.loc[0, "system_prompt"])
     assert frame.loc[0, "user_prompt"] == "42"
     assert frame.loc[0, "response"] == "ok"
+    assert frame.loc[0, "kind"] == "llm" and missing(frame.loc[0, "options"])
+    assert (frame.loc[1, "kind"], frame.loc[1, "input_hash"], frame.loc[1, "options"]) == ("embedding", text_hash("42"), "7")
+    assert frame.loc[2, "kind"] == "llm" and frame.loc[2, "runtime"] == 0.5
 
 
 def test_text_columns_stay_text_after_the_parser_prepared_the_upload(monkeypatch, tmp_path):
-    run = run_parser(monkeypatch, _write(tmp_path, as_log(llm_block(), decision_block(), embedding_block())))
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        llm_block(user_prompt="Context: " + retrieval_envelope()), decision_block(), embedding_block(),
+        failed_block("2026-01-05 09:30:00", "demo_llm", llm_inputs()))))
 
     frame = run.uploads[0]["frame"]
-    for column in LLM_LOGS_COLUMNS:
+    for column in ALL_COLUMNS:
         if column in TEXT_COLUMNS:
             assert all(missing(value) or isinstance(value, str) for value in frame[column]), column
         else:
             assert pd.api.types.is_numeric_dtype(frame[column]), column
+    # Every column the parser fills holds a value in at least one of these four rows
+    assert [column for column in ALL_COLUMNS if frame[column].isna().all()] == ["top_k"] + LINK_COLUMNS
