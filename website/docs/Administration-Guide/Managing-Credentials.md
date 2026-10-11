@@ -224,9 +224,10 @@ fail the decision: it answers `retrieval failed: RuntimeError: no
 vector-store credentials resolved: …` in `retrieval_status` and returns no
 chunk. That is what it answered on 2026-10-11 in a test of SAS Intelligent
 Decisioning and in the publishing validation on a SAS Micro Analytic
-Service destination, where neither runtime had them. With the variables
-set, a retrieval model that returns chunks inside a decision has not been
-measured on that system.
+Service destination, where neither runtime had them. With the user and the
+password passed per call instead, in the `options` input of the model, the
+retrieval model returned chunks in both places the same day. With the two
+variables set on the destination it has not been measured.
 [The retrieval model in a decision](./RAG-Ingestion-and-Retrieval.md#the-retrieval-model-in-a-decision)
 lists every variable the model reads and where each destination takes
 them.

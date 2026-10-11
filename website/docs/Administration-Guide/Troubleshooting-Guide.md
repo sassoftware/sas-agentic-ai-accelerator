@@ -88,6 +88,20 @@ The same decision returns answers in the in-app test of SAS Intelligent Decision
 
 On a test system with a closed cluster network, verification can be switched off instead — with the option **Verify TLS certificates in manifested models** of the Prompt Builder, followed by manifesting the model again (for a retrieval model registered with the custom step *RAG - Register Setup*: with the step's checkbox **Verify TLS certificates in the registered retrieval model**, followed by running the step again), or with the environment variable *LLMCONTAINERSSLVERIFY=false* on the destination (*RAGEMBED_SSLVERIFY=false* for a retrieval model). The model then no longer checks which container answers; the same section says when that is acceptable. Where MAS runs Python in the runner container, set the variable on the runner as well — see [the variable and the Python runner](./Deployment-of-Decisions.md#the-variable-and-the-python-runner).
 
+### HTTP status 201, an empty error column and empty outputs in a publishing validation {#empty-outputs-published-decision}
+
+The publishing validation of a decision on a MAS destination ends without an error, every row has HTTP status 201 and an empty error column — and every output of the decision is empty, also the outputs of nodes that have nothing to do with each other. The log of the validation job has no ERROR and no WARNING line. The same decision returns its outputs in the in-app test of SAS Intelligent Decisioning.
+
+The execution failed inside SAS Micro Analytic Service. Look in the log of the pod *sas-microanalytic-score* for the two lines *Failure encountered during execution in revision … of module context '…'. Return code: 0x8b3ff145.* and *Micro Analytic Service failed to execute method*.
+
+The cause that was found for it, on 2026-10-11 on SAS Viya 2026.09: an output of a Python model was longer than the length the model's variable has in SAS Model Manager. SAS Intelligent Decisioning declares the model in the decision with that length; its own test tolerated the longer value, and SAS Micro Analytic Service failed the execution. The model was the retrieval model of a RAG setup, whose two context outputs a Prompt Builder before release 2.3.0 wrote without a length, so that SAS Model Manager held 99 for outputs of about 2,000 characters:
+
+1.   For a retrieval model manifested in the Prompt Builder: open the RAG setup in the Prompt Builder of release 2.3.0 and click **Manifest setup** again. The page writes the variables of the model with their lengths at every manifest. A model registered with the custom step *RAG - Register Setup* has had the lengths of these two outputs all along.
+2.   Check the variables of the model in SAS Model Manager: *context_dg* and *context_envelope* have to show the length 32000.
+3.   Publish the decision again with *Replace item with the same name* — a published decision keeps the declaration it was published with — and run the publishing validation again.
+
+[The lengths of the variables](./RAG-Ingestion-and-Retrieval.md#the-lengths-of-the-variables) has the details and what was measured. For another model with the same symptom, compare the lengths of its output variables in SAS Model Manager with the values it returns; that was not measured for a model of another kind.
+
 ## SAS Container Runtime
 
 This part of the troubleshooting guide describes issues that can occur when publishing decisions or models that call the LLMs to a SAS Container Runtime (SCR) publishing destination (independent of AWS, Azure, GCP or Private Docker).

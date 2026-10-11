@@ -196,8 +196,9 @@ its lock back so you can retry immediately. A stale lock expires after 30
 minutes. The ingestion job the Prompt Builder launches for a setup and the
 flow it generates for the same setup keep one ledger and take the same
 lock. Up to release 2.2 a flow could not take it on a ledger the job had
-written; the administration guide has
-[what was seen and what was changed](../Administration-Guide/RAG-Ingestion-and-Retrieval.md#one-ledger-for-the-job-and-the-flow).
+written; from release 2.3.0 the job and the flow of one setup ran one
+after the other in both orders. The administration guide has
+[what was seen, what was changed and what was measured](../Administration-Guide/RAG-Ingestion-and-Retrieval.md#one-ledger-for-the-job-and-the-flow).
 
 **A bad document does not fail the run.** Extraction and embedding failures are
 recorded against that document's ledger row; everything else proceeds. Failed
