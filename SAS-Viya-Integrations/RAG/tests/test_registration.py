@@ -597,3 +597,15 @@ def test_every_variable_is_registered_with_a_length():
     assert {v["role"] for v in inputs} == {"input"}
     assert {v["role"] for v in outputs} == {"output"}
 
+
+def test_the_comment_on_the_lengths_names_the_model_that_was_measured():
+    """The control measurement ran on a model whose two context outputs had
+    been set back to 99. The comment placed it on a model the Prompt Builder
+    had written without lengths, which is not what was run."""
+    source = pathlib.Path(registration.__file__).read_text(encoding="utf-8")
+    comment = source.split("#: The retrieval model's variables", 1)[1].split(
+        "RETRIEVAL_INPUTS = [", 1)[0]
+    said = " ".join(line[2:].strip() for line in comment.splitlines())
+    assert "on a model whose two context outputs were set back to 99" in said
+    assert "written without lengths" not in said
+

@@ -45,12 +45,11 @@ TLS_VERIFICATION_OFF_TAG = "TLS-Verification-Off"
 #: variable registered without one, and SAS Intelligent Decisioning declares
 #: the model in the code it generates for a decision with what is stored
 #: (`in_out varchar(100)`). The lengths say what the model takes and returns;
-#: nothing was found to depend on them. Measured live with the two context
-#: outputs at 99, on a model the Prompt Builder had written without lengths:
-#: an envelope of 1969 characters came back complete from SAS Micro Analytic
-#: Service, and a test of SAS Intelligent Decisioning returned the longer
-#: values complete as well - a longer value neither failed the execution nor
-#: was it cut.
+#: nothing was found to depend on them. Measured live on a model whose two
+#: context outputs were set back to 99: an envelope of 1969 characters came
+#: back complete from SAS Micro Analytic Service, and a test of SAS
+#: Intelligent Decisioning returned the longer values complete as well - a
+#: longer value neither failed the execution nor was it cut.
 #:
 #: The Builder holds the same two lists (INPUT_VARIABLES and OUTPUT_VARIABLES
 #: in rag-builder.ts), and test_manifest_parity.py compares them entry by
