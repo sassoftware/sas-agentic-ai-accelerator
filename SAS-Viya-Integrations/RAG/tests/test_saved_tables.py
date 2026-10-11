@@ -346,3 +346,44 @@ def test_the_job_program_goes_on_when_nothing_failed_before_it(state):
     only what the reload stopped."""
     with pytest.raises(_StopAfterTheGuard):
         _run_job_program(state)
+
+
+# ---------------------------------------------------------------------------
+# the About tab
+# ---------------------------------------------------------------------------
+def newest_changelog(path) -> str:
+    """The newest entry of the changelog on a step's About tab."""
+    def find(node):
+        if isinstance(node, dict):
+            if node.get("id") == "textChangelog":
+                return node["text"]
+            node = list(node.values())
+        if isinstance(node, list):
+            for value in node:
+                found = find(value)
+                if found:
+                    return found
+        return None
+    step = json.loads(path.read_text(encoding="utf-8"))
+    return find(json.loads(step["ui"])).split("\n* Version: ")[0]
+
+
+@pytest.mark.parametrize("path", sorted(STEPS.glob("RAG - *.step")),
+                         ids=lambda path: path.stem)
+def test_the_about_tab_names_the_tables_a_step_loads_back(path):
+    """Which step a site has is read on its About tab - so that is where a
+    step says that it loads its saved tables back, and names them."""
+    newest = newest_changelog(path)
+    assert "(11OCT2026)" in newest.split("\n")[0]
+    reloading = [line for line in newest.split("\n      - ")
+                 if "saved but" in line]
+    tables = set(RELOADING_STEPS.get(path.stem, ("", []))[1])
+    assert len(reloading) == (1 if tables else 0)
+    for line in reloading:
+        assert {suffix for suffix in ("_LEDGER", "_EMBEDDED")
+                if "<project>" + suffix in line} == tables
+        assert "A saved file that cannot be loaded fails the step" in line
+        assert ("before the run lock asks for its column types" in line) \
+            == (path.stem in LOCKING_STEPS)
+        # nothing of it has run in SAS yet, and the text says so
+        assert line.endswith("Not run in SAS with this version of the step")

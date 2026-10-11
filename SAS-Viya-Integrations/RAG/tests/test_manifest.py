@@ -476,6 +476,46 @@ def test_a_failing_register_setup_sets_the_job_flag_before_it_says_anything():
     assert "RAG_PIPELINE_FAILED" not in warnings
 
 
+def _newest_changelog(path) -> str:
+    """The newest entry of the changelog on a step's About tab."""
+    def find(node):
+        if isinstance(node, dict):
+            if node.get("id") == "textChangelog":
+                return node["text"]
+            node = list(node.values())
+        if isinstance(node, list):
+            for value in node:
+                found = find(value)
+                if found:
+                    return found
+        return None
+    step = json.loads(path.read_text(encoding="utf-8"))
+    return find(json.loads(step["ui"])).split("\n* Version: ")[0]
+
+
+@pytest.mark.parametrize("path", sorted(STEPS.glob("RAG - *.step")),
+                         ids=lambda path: path.stem)
+def test_the_about_tab_of_a_step_names_the_job_flag(path):
+    """A job only ends as failed when the steps it runs set the flag, and
+    the About tab is where a site sees which step it has."""
+    lines = _newest_changelog(path).split("\n      - ")
+    assert "(11OCT2026)" in lines[0]
+    flag = [line for line in lines
+            if line.startswith("A step that fails also sets RAG_JOB_FAILED")]
+    assert len(flag) == 1
+    assert "a flag no step clears" in flag[0]
+    # what the generated job holds is said by the step that generates it
+    job = [line for line in lines
+           if line.startswith("The job generated from a Studio Flow")]
+    assert len(job) == (1 if path.stem == "RAG - Register Setup" else 0)
+    for line in job:
+        assert "RAG_ABORT_ON_ERROR = 0" in line and "sets SYSCC" in line
+        assert "not part of the flow" in line
+    # nothing of it has run in SAS yet, and the text says so
+    for line in flag + job:
+        assert "Not run in SAS" in line
+
+
 def test_regenerating_updates_the_existing_job_definition():
     stub = _StubViya(existing_job=True)
     result = _register(stub, flow_path="/Users/x/My Folder/RAG-Example.flw")
