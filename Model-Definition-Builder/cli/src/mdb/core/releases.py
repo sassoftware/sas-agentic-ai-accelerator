@@ -28,8 +28,10 @@ Each change gets ONE component. When the section heading names a component
 there; otherwise the entry's own wording decides, in a fixed priority so that a
 Builder entry that also says "registers" is not filed under the Model
 Definition Builder - and by release: the RAG runtime came with 2.0.0, so no
-older entry is filed there. Nothing here needs SAS Viya; viya/cas.py uploads
-the CSV.
+older entry is filed there. An entry whose headline is about this table is
+filed under the Model Definition Builder, which makes it, whatever components
+it names as the values the table holds. Nothing here needs SAS Viya;
+viya/cas.py uploads the CSV.
 
 The RAG Builder is a part of the Prompt Builder, so what names it is filed
 under "Prompt Builder": that is the value the report's Changelog page filters
@@ -106,6 +108,13 @@ GENERAL = "General"
 #: what an older entry "retrieves" or "enriches" is something else, and it is
 #: filed under the next component its wording matches.
 COMPONENT_SINCE = {"RAG runtime": (2, 0, 0)}
+#: The table itself is made by `mdb load-releases`. An entry about it names
+#: components and parts as the values of two columns - "files RAG Builder
+#: changes under the Prompt Builder" - and none of them is what changed. In a
+#: headline only: in the text of an entry the table is as often what a report
+#: object is assigned.
+TABLE_KEYWORDS = ("release table", "accelerator_releases", "load-releases")
+TABLE_COMPONENT = "Model Definition Builder"
 
 #: The three parts of the Prompt Builder, in the order a shared entry is
 #: written, and the component whose entries are told apart by them.
@@ -251,11 +260,15 @@ def components_of(text: str, version: str = "") -> list[str]:
 
 def component_for(section: str, text: str, version: str = "") -> str:
     """The one component an entry is filed under: the section's, when the
-    heading names one, else the first the entry's wording matches."""
+    heading names one; that of the release table, when the headline is about
+    the table; else the first the entry's wording matches."""
     if section and section.lower() not in STANDARD_SECTIONS:
         by_section = components_of(section, version)
         if by_section != [GENERAL]:
             return by_section[0]
+    headline = _split(text, capped=False)[0].lower()
+    if any(_matches(word, headline) for word in TABLE_KEYWORDS):
+        return TABLE_COMPONENT
     return components_of(text, version)[0]
 
 

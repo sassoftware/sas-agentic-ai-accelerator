@@ -447,6 +447,30 @@ def test_an_entry_about_both_builders_is_a_builder_entry_for_every_part():
     assert parts_for("2.0.0", "Fixed", "Fixed", both.replace("in both builders' live", "in the live")) == ["RAG"]
 
 
+def test_an_entry_about_the_release_table_is_an_mdb_entry():
+    # `mdb load-releases` makes the table. An entry about it names components
+    # and parts as the values the table holds, and none of them is what changed
+    files = ("**The release table files RAG Builder changes under the Prompt Builder.** The component column no "
+             "longer has the value RAG Builder; RAG runtime stays a component of its own.")
+    assert components_of(files, "2.3.0")[0] == "Prompt Builder"
+    assert component_for("Changed", files, "2.3.0") == "Model Definition Builder"
+    # ... under each of its names
+    column = "**ACCELERATOR_RELEASES says which part of the Prompt Builder a change concerns.** A new last column."
+    command = "**A table for the Builder objects: `mdb load-releases`.** The Prompt Builder object is assigned it."
+    assert component_for("Added", column, "2.3.0") == component_for("Added", command, "2.0.4") == "Model Definition Builder"
+    # it is no Builder entry, so it is one row and has no part
+    rows = rows_from(parse_changelog(f"# Changelog\n\n## [2.3.0] - unreleased\n\n### Changed\n\n- {files}\n"))
+    assert [(r["component"], r["builder_part"]) for r in rows] == [("Model Definition Builder", "")]
+    # in a headline only: in the text the table is what a report object is
+    # assigned, and the entry is about what its headline names
+    assigned = ("**The RAG Builder object in the shipped package has a data assignment.** It is bound to "
+                "ACCELERATOR_RELEASES, the release table that `mdb load-releases` loads.")
+    assert component_for("Fixed", assigned, "2.0.5") == "Prompt Builder"
+    assert parts_for("2.0.5", "Fixed", "Fixed", assigned) == ["RAG"]
+    # a section heading that names a component still files every entry under it
+    assert component_for("RAG cost", files, "2.3.0") == "RAG runtime"
+
+
 def test_the_parts_of_the_real_changelog_follow_the_releases(tmp_path):
     rows, summary = build_release_table(REPO / "CHANGELOG.md", tmp_path / "releases.csv")
     key = lambda r: tuple(int(n) for n in r["version"].split("."))  # noqa: E731
@@ -463,6 +487,12 @@ def test_the_parts_of_the_real_changelog_follow_the_releases(tmp_path):
     assert component[("1.7.0", "The manifested best prompt inherits its winning LLM's attributes")] == BUILDER
     assert component[("1.0.0", '"Save Experiments" and "Manifest Best Prompt" are real buttons now, so they are '
                                "keyboard-accessible and properly disabled while busy")] == BUILDER
+    # an entry about the release table is mdb's, whichever Builder it names
+    about_the_table = [r for r in rows if "release table" in r["summary"].lower()]
+    assert {r["version"] for r in about_the_table} >= {"2.0.4", "2.1.0"}
+    assert {r["component"] for r in about_the_table} == {"Model Definition Builder"}
+    assert component[("2.0.4", "A release table for the Builder objects: mdb load-releases")] == "Model Definition Builder"
+    assert component[("2.0.5", "The RAG Builder object in the shipped package has a data assignment")] == BUILDER
     # only a Builder entry is more than one row
     by_entry: dict[tuple, list[dict]] = {}
     for r in rows:
