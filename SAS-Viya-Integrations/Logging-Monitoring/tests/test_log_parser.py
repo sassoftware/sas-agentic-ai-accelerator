@@ -5,6 +5,7 @@ Run with: python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests
 """
 import json
 import math
+import re
 from datetime import datetime
 
 import pandas as pd
@@ -229,16 +230,99 @@ def test_code_file_brings_the_cas_session_and_the_librefs_the_step_takes_from_it
     assert [line for line in statements if line.startswith("cas ")] == ["cas llmLogMySess;", "cas llmLogMySess terminate;"]
 
 
+def _session_check(program):
+    """The statements between the comment that announces the session check and the first PROC CAS."""
+    start = program.index("* Check if a CAS session exists;")
+    return program[start:program.index("proc cas;", start)]
+
+
 @pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
 def test_a_cas_session_is_started_only_where_there_is_none_and_ended_only_then(program):
     program = program()
 
-    start = program.index("* Check if a CAS session exists;")
-    check = program[start:program.index("proc cas;", start)].split("\n")
-    assert check[1:4] == ["%if %symexist(_CASNAME_) EQ 0 %then %do;", "    %let _log_clean_cas_session = 1;", "    cas llmLogMySess;"]
-    assert check[5:7] == ["%else %do;", "    %let _log_clean_cas_session = 0;"]
+    check = [line for line in _session_check(program).split("\n") if not line.startswith("*")]
+    assert check[:3] == [
+        "%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;",
+        "    %let _log_clean_cas_session = 1;",
+        "    cas llmLogMySess;",
+    ]
+    assert check[4:6] == ["%else %do;", "    %let _log_clean_cas_session = 0;"]
+    # A name that is still there says nothing about the session: no macro variable decides
+    assert "%symexist" not in _session_check(program)
     clean_up = program[program.index("* Clean up;"):]
     assert "%if &_log_clean_cas_session. %then %do;\n    cas llmLogMySess terminate;\n%end;" in clean_up
+
+
+class SasSession:
+    """What the session check can read of a SAS session: the CAS sessions that are
+    connected, the session the option SESSREF names and the macro variables."""
+
+    def __init__(self, connected, sessref, macro_variables):
+        self.connected = {name.upper() for name in connected}
+        self.sessref = sessref
+        self.macro_variables = {name.upper() for name in macro_variables}
+
+
+# The three states are the ones the job logs of SAS Viya Stable 2026.09 showed (11OCT2026).
+# A job started without a CAS session, without _CASNAME_ and with the option at its default.
+NO_CAS_SESSION = SasSession(connected=[], sessref="CASAUTO", macro_variables=[])
+# After a run of the step with a session of its own: "cas llmLogMySess terminate;" had
+# ended the session, "cas _all_ list;" listed none, and _CASNAME_, _SESSREF_ and the
+# option SESSREF still named it.
+OWN_SESSION_ENDED = SasSession(connected=[], sessref="LLMLOGMYSESS", macro_variables=["_CASNAME_", "_SESSREF_"])
+# "cas mysess;" in front of the step
+SESSION_OF_THE_USER = SasSession(connected=["MYSESS"], sessref="MYSESS", macro_variables=["_CASNAME_", "_SESSREF_"])
+
+
+def _starts_a_session_of_its_own(program, session):
+    """Whether the session check of the program starts "cas llmLogMySess;" in that SAS session.
+
+    The condition is taken from the program and its functions are given their documented
+    results: SESSFOUND is 1 for a session that is connected and 0 otherwise, GETOPTION
+    returns the option, %SYMEXIST is 1 for a macro variable that exists."""
+    lines = [line for line in _session_check(program).split("\n") if not line.startswith("*")]
+    assert lines[0].startswith("%if ") and lines[0].endswith(" %then %do;"), lines[0]
+    assert lines[1:7] == [
+        "    %let _log_clean_cas_session = 1;", "    cas llmLogMySess;", "%end;",
+        "%else %do;", "    %let _log_clean_cas_session = 0;", "%end;"]
+
+    condition = lines[0][len("%if "):-len(" %then %do;")]
+    condition = condition.replace("%sysfunc(getoption(sessref))", session.sessref)
+    condition = re.sub(r"%sysfunc\(sessfound\((\w+)\)\)",
+                       lambda found: str(int(found.group(1).upper() in session.connected)), condition)
+    condition = re.sub(r"%symexist\((\w+)\)",
+                       lambda exists: str(int(exists.group(1).upper() in session.macro_variables)), condition)
+    left, operator, right = condition.split()
+    return {"EQ": int(left) == int(right), "NE": int(left) != int(right)}[operator]
+
+
+@pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
+def test_a_session_without_a_cas_session_gets_one_that_is_ended_again(program):
+    assert _starts_a_session_of_its_own(program(), NO_CAS_SESSION)
+
+
+@pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
+def test_the_name_an_ended_session_left_behind_is_not_taken_for_a_cas_session(program):
+    """The step twice in one SAS session that has no CAS session. The first run ends its
+    own session and the name stays behind. A second run that went by the name started no
+    session, and its first CAS action ended with "ERROR: There is no server connection to
+    execute the action 'session.sessionId'."."""
+    assert _starts_a_session_of_its_own(program(), OWN_SESSION_ENDED)
+
+
+@pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
+def test_a_cas_session_of_the_user_is_used_and_never_ended(program):
+    program = program()
+
+    assert not _starts_a_session_of_its_own(program, SESSION_OF_THE_USER)
+    statements = [line.strip() for line in program.split("\n")]
+    # The one terminate names the step's own session and stands under the flag that only
+    # the branch with "cas llmLogMySess;" sets
+    assert [line for line in statements if line.startswith("cas ") and "terminate" in line] == ["cas llmLogMySess terminate;"]
+    assert [line for line in statements if line.startswith("%let _log_clean_cas_session")] == [
+        "%let _log_clean_cas_session = 1;", "%let _log_clean_cas_session = 0;"]
+    # Neither the option nor a session reference is set by the program itself
+    assert not [line for line in statements if line.lower().startswith("options ") or "sessref=" in line.lower()]
 
 
 @pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
@@ -260,14 +344,21 @@ def test_about_tab_names_what_the_step_takes_from_the_session():
     step = step_program()
 
     # Named the way the program spells them
-    for name in ("_CASNAME_", "llmLogMySess", "dictionary.libnames", "_TEMP_LLM_LOGS", "SSLCALISTLOC", "SAS_SERVICES_TOKEN"):
+    for name in ("llmLogMySess", "dictionary.libnames", "_TEMP_LLM_LOGS", "SSLCALISTLOC", "SAS_SERVICES_TOKEN"):
         assert name in prerequisites, name
         assert name in step, name
     for option in ("CASHOST", "CASPORT"):
         assert option in prerequisites, option
         assert f"SAS.sasfnc('getoption', '{option.lower()}')" in step, option
     assert "caslib CASUSER" in prerequisites and "caslib='CASUSER'," in step
+    # The session check: the function and the option it asks about, and both outcomes
+    assert "the SESSFOUND function whether the session that the SAS option SESSREF names is connected" in prerequisites
+    assert "%sysfunc(sessfound(%sysfunc(getoption(sessref))))" in step
+    assert "the step runs in that session and does not end it" in prerequisites
     assert "starts a CAS session of its own (llmLogMySess) and ends it as its last action" in prerequisites
+    assert "the step does not go by the name" in prerequisites
+    # The macro variable the step went by before decides nothing any more
+    assert "_CASNAME_ exists" not in prerequisites and "%symexist(_CASNAME_)" not in step
     assert "the name of the libref is handed to CAS as the name of the caslib" in prerequisites
 
 

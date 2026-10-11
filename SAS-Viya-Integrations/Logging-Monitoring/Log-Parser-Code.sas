@@ -44,7 +44,8 @@ proc sql noPrint;
 quit;
 
 * Check if a CAS session exists;
-%if %symexist(_CASNAME_) EQ 0 %then %do;
+* The option SESSREF names the session the CAS actions run in and keeps the name of a session that was ended, so SESSFOUND is asked whether that session is connected;
+%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;
     %let _log_clean_cas_session = 1;
     cas llmLogMySess;
 %end;
