@@ -471,6 +471,35 @@ def test_an_entry_about_the_release_table_is_an_mdb_entry():
     assert component_for("RAG cost", files, "2.3.0") == "RAG runtime"
 
 
+def test_a_headline_about_definitions_is_filed_under_the_definitions_not_the_tool():
+    # mdb makes the definitions, so an entry that adds some says how they were
+    # generated, and by its wording it is the tool's. The headline says which
+    # of the two it is about
+    added = ("Open-source CPU embedding definitions informed by a leaderboard: granite_embedding_small_r2 joins "
+             "the BGE family. The generated sentence-transformers scorer was verified end-to-end on CPU.")
+    assert components_of(added, "1.1.0")[0] == "Model Definition Builder"
+    assert component_for("Added", added, "1.1.0") == "Definitions"
+    shipped = "**Shipped definitions.** jev_1_13 and von_1_2 - `mdb deploy` renders the persistent-volume variant."
+    assert component_for("Added", shipped, "2.2.0") == "Definitions"
+    assert [r["builder_part"] for r in rows_from(parse_changelog(
+        f"# Changelog\n\n## [2.2.0] - 2026-10-07\n\n### Added\n\n- {shipped}\n"))] == [""]
+    # a headline that names the tool as well is the tool's: what mdb does
+    # with the definitions is a change to mdb
+    for tool in ("**`mdb sync --rebuild` regenerates the fact sheets from the definitions.** Idempotent.",
+                 "Embedding definitions are fully supported: generated embedding scorers return all three outputs.",
+                 "**Environment-neutral definitions: one published image serves every region.** Resolved at scoring time."):
+        assert component_for("Added", tool, "1.8.0") == "Model Definition Builder", tool
+    # between those two only: definitions that another component reads stay there
+    read = "**Decision definitions carry what a model takes.** `mdb register` writes it, the Prompt Builder's cards read it."
+    assert component_for("Added", read, "2.2.0") == "Prompt Builder"
+    # in a headline only, and "definition" alone names a kind or a file as
+    # often as the definitions
+    text = "**The generator emits toolVersion 3.11.** `mdb generate` rewrites all definitions."
+    assert component_for("Changed", text, "1.1.0") == "Model Definition Builder"
+    kind = "**Decision models are a definition kind of their own.** `mdb add` asks for the kind."
+    assert component_for("Added", kind, "2.2.0") == "Model Definition Builder"
+
+
 def test_the_parts_of_the_real_changelog_follow_the_releases(tmp_path):
     rows, summary = build_release_table(REPO / "CHANGELOG.md", tmp_path / "releases.csv")
     key = lambda r: tuple(int(n) for n in r["version"].split("."))  # noqa: E731
@@ -493,6 +522,12 @@ def test_the_parts_of_the_real_changelog_follow_the_releases(tmp_path):
     assert {r["component"] for r in about_the_table} == {"Model Definition Builder"}
     assert component[("2.0.4", "A release table for the Builder objects: mdb load-releases")] == "Model Definition Builder"
     assert component[("2.0.5", "The RAG Builder object in the shipped package has a data assignment")] == BUILDER
+    # definitions that were added are filed under the definitions, although
+    # their entries say what mdb generated or renders; what mdb does with the
+    # definitions is mdb's
+    granite = next(k for k in component if k[0] == "1.1.0" and k[1].startswith("Open-source CPU embedding definitions"))
+    assert component[granite] == component[("2.2.0", "Shipped definitions")] == "Definitions"
+    assert component[("1.8.0", "mdb sync --rebuild regenerates the fact sheets from the definitions")] == "Model Definition Builder"
     # only a Builder entry is more than one row
     by_entry: dict[tuple, list[dict]] = {}
     for r in rows:
