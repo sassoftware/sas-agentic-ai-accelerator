@@ -210,6 +210,11 @@ def test_the_value_of_a_key_is_not_copied_into_the_options(monkeypatch, tmp_path
     assert redacted("{API_KEY:sk-made-up,max_tokens:40}") == "{API_KEY:REDACTED,max_tokens:40}"
     assert redacted("{access_token:abc,client_secret:def,password:ghi}") == \
         "{access_token:REDACTED,client_secret:REDACTED,password:REDACTED}"
+    # the names the log parser goes by: the same option is redacted in the log table and here
+    assert redacted("{Authorization:Bearer abc,pwd:x,session_cookie:y,token_id:abc,temperature:1}") == \
+        "{Authorization:REDACTED,pwd:REDACTED,session_cookie:REDACTED,token_id:REDACTED,temperature:1}"
+    assert redacted('{"api_key":"abc","hf_token":"def"}') == '{"api_key":REDACTED,"hf_token":REDACTED}'
+    assert redacted("{token_limit:512,max_new_tokens:64}") == "{token_limit:512,max_new_tokens:64}"
     # options without a key stay as they are stored, max_tokens is no token
     for options in ("{temperature:0.2,top_p:1,max_tokens:40,max_completion_tokens:9}", "{}", ""):
         assert redacted(options) == options
@@ -691,6 +696,8 @@ def test_every_setup_is_in_the_catalog_with_its_collection(monkeypatch, tmp_path
     assert [(row["modelID"], row["name"], row["collection"], row["target_model"], row["runID"]) for row in rows] == [
         (builder["id"], "Staff Handbook", "handbook_v1", "demo_embedder", ""),
         (step["id"], "RAG Retrieval - Travel Rules", "travel_rules_v1", "demo_embedder", "")]
+    # who wrote the model: the link program takes the setup of the Builder where both hold one collection
+    assert [row["template_source"] for row in rows] == ["builder", "step"]
     assert all(row["projectID"] == project["id"] and row["system_template"] == "" for row in rows)
 
 

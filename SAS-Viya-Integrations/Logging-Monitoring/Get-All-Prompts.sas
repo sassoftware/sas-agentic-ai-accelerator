@@ -196,7 +196,9 @@ CATALOG_COLUMNS = [
     ('role', 'c', 16), ('runID', 'c', 16), ('target_model', 'c', 128), ('system_template', 't', MAX_TEXT),
     ('user_template', 't', MAX_TEXT), ('resolved_system_prompt', 't', MAX_TEXT),
     ('resolved_user_prompt', 't', MAX_TEXT), ('collection', 'c', 128),
-    # Beside the columns the link program reads
+    # Where the row is from - the templates of a model (score code, best run, newest run) or a RAG
+    # setup (builder, step) - and the hashes of the prompts as sent, taken of the whole text. The
+    # link program reads the three when the table has them.
     ('template_source', 'c', 16), ('resolved_system_hash', 'c', 64), ('resolved_user_hash', 'c', 64),
 ]
 
@@ -213,8 +215,9 @@ TABLES = {
 OPTION_NUMBERS = ['temperature', 'top_p', 'top_k', 'max_tokens', 'thinking_budget', 'max_completion_tokens',
                   'seed', 'frequency_penalty', 'presence_penalty', 'dimensions']
 OPTION_TEXTS = ['reasoning_effort', 'input_type', 'normalize']
-# An option whose value is not copied into the output (max_tokens is none: it ends in tokens)
-SECRET_OPTION = re.compile(r'key|secret|password|passwd|credential|token$', re.IGNORECASE)
+# An option whose name says that its value is a secret and is not copied into the output: the names
+# the log parser goes by. A name with token in it does when its value is no number (max_tokens is a number).
+SECRET_OPTION = re.compile(r'key|secret|password|passwd|pwd|credential|authorization|bearer|cookie', re.IGNORECASE)
 
 # What the regular expressions of JavaScript match with \s. The Prompt Builder fills a
 # {{variable}} in with such an expression, and Python counts other characters as blanks.
@@ -431,7 +434,9 @@ def redacted_options(options):
     parts = text.split(',')
     for index, part in enumerate(parts):
         key, colon, value = part.partition(':')
-        if colon and SECRET_OPTION.search(key.strip(' {')):
+        name = key.strip(' {"\'')
+        plain = value.strip().rstrip('}').strip().strip('"\'')
+        if colon and (SECRET_OPTION.search(name) or ('token' in name.lower() and number_of(plain) is None)):
             closing = '}' if index == len(parts) - 1 and value.rstrip().endswith('}') else ''
             parts[index] = key + ':REDACTED' + closing
     return ','.join(parts)
@@ -761,13 +766,16 @@ def catalog_answer_row(model, project, role):
 
 def catalog_setup_row(setup):
     """
-    The catalog row of a RAG setup, from its row of RAG_SETUPS: the collection it searches
-    and the embedding model its questions and documents are sent to.
+    The catalog row of a RAG setup, from its row of RAG_SETUPS: the collection it searches,
+    the embedding model its questions and documents are sent to, and in template_source who
+    wrote the model - builder or step. A setup that was saved in the Prompt Builder and
+    registered with the step RAG - Register Setup is two models with one collection, and the
+    link program takes the one the Builder saved.
     """
     return {
         'modelID': setup['modelID'], 'projectID': setup['projectID'], 'projectName': setup['projectName'],
         'name': setup['name'], 'role': 'rag', 'runID': '', 'target_model': setup.get('embedding_model'),
-        'collection': setup.get('collection'),
+        'collection': setup.get('collection'), 'template_source': setup.get('source'),
     }
 
 
@@ -1589,7 +1597,7 @@ run; quit;
                 resolved_system_prompt = 'System Prompt as Sent'
                 resolved_user_prompt = 'User Prompt as Sent'
                 collection = 'Collection'
-                template_source = 'Where the Template Is From'
+                template_source = 'Where the Template or the Setup Is From'
                 resolved_system_hash = 'Hash of the System Prompt as Sent'
                 resolved_user_hash = 'Hash of the User Prompt as Sent';
     quit;
