@@ -403,6 +403,19 @@ def test_a_component_that_did_not_exist_yet_cannot_be_concerned():
     assert parts_for("1.7.0", "Changed", "Changed", best) == ["Prompt"]
 
 
+def test_an_entry_about_both_builders_is_a_builder_entry_for_every_part():
+    # from 2.0.0 to 2.2.x there were two: the Prompt Builder and the RAG
+    # Builder. What is fixed in both is no change to the runtime, whatever it
+    # was found with, and concerns every part the release had
+    both = ("**Long progress messages were being read as their first 132 characters.** It went unnoticed until "
+            "a retrieval hit arrived truncated. The fragments are now rejoined, in both builders' live run displays.")
+    assert components_of(both, "2.0.0")[:2] == ["Prompt Builder", "RAG runtime"]
+    assert parts_for("2.0.0", "Fixed", "Fixed", both) == ["Prompt", "RAG"]
+    assert parts_for("2.2.0", "Fixed", "Fixed", both) == ["Prompt", "Decision", "RAG"]
+    # without the phrase the text decides: a retrieval hit is the RAG part
+    assert parts_for("2.0.0", "Fixed", "Fixed", both.replace("in both builders' live", "in the live")) == ["RAG"]
+
+
 def test_the_parts_of_the_real_changelog_follow_the_releases(tmp_path):
     rows, summary = build_release_table(REPO / "CHANGELOG.md", tmp_path / "releases.csv")
     key = lambda r: tuple(int(n) for n in r["version"].split("."))  # noqa: E731
@@ -445,6 +458,8 @@ def test_the_parts_of_the_real_changelog_follow_the_releases(tmp_path):
     assert parts[("2.0.0", "Save documentation")] == ["RAG"]
     assert parts[("2.0.0", "One button makes a setup real")] == ["RAG"]
     assert parts[("2.0.0", "Model Manager names were rendered as HTML in every picker")] == ["Prompt", "RAG"]
+    assert parts[("2.0.0", "A carriage return would have made every progress milestone unreadable")] == ["Prompt", "RAG"]
+    assert parts[("2.0.0", "Long progress messages were being read as their first 132 characters")] == ["Prompt", "RAG"]
     assert parts[("2.0.0", "Per-user model availability")] == ["Prompt"]
     assert parts[("1.9.0", "An Optimize section in the Prompt Builder")] == ["Prompt"]
     assert parts[("1.7.0", "The manifested best prompt inherits its winning LLM's attributes")] == ["Prompt"]

@@ -81,7 +81,7 @@ COMPONENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "the judge", "judge this", "judge rank", "prompt experiment", "experiment tracker",
         "prompt-test", "prompt test", "optimiz", "dspy", "manifested prompt", "manifest the best",
         "call llm node", "dist/index.html", "ddc", "properties panel", "options pane",
-        "best prompt",
+        "best prompt", "both builders",
     )),
     ("RAG runtime", (
         "rag_core", "rag -", "rag ingestion", "rag cost", "ingest", "chunk", "vector store",
@@ -140,7 +140,9 @@ PART_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 FLOW_KEYWORDS = ("prompt-test", "prompt test", "prompt flow", "experiment", "manifest best prompt")
 FLOW_PARTS = ("Prompt", "Decision")
 #: An entry that says so itself concerns every part, whatever else it names.
-EVERY_PART_PHRASES = ("three kinds", "every kind", "all four create dialogs")
+#: "Both builders" are the Prompt Builder and the RAG Builder of 2.0.0 to
+#: 2.2.x, which is every part those releases had.
+EVERY_PART_PHRASES = ("three kinds", "every kind", "all four create dialogs", "both builders")
 
 #: By release: what did not exist yet cannot be concerned.
 #:  - BUILDER_SINCE is the Builder as a whole, which is what an entry that
