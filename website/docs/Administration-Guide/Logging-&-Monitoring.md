@@ -117,6 +117,63 @@ These are the statements that ran. The folder, the file name, the names of the t
 
 The file in SAS Content holds the prompts and the responses like the log itself, so whoever may read that folder reads them (see the note at the top of this page).
 
+## Running the Parser
+
+`Log-Parser-Code.sas` and the *LLM - Log Parser* custom step hold the same program. The README of `SAS-Viya-Integrations/Logging-Monitoring` describes the table it writes, what a row holds for each kind of model and what happens to a table that already exists. The two differ in what they bring along:
+
+- **`Log-Parser-Code.sas`** starts a CAS session itself (`cas mysess;`), assigns the librefs `public` and `casuser` and sets its options in the `%let` lines at its top. `_log_target_table_lib` names a libref: the program looks up the caslib behind it and, when no libref of that name is assigned, hands the value to CAS as the name of the caslib.
+- **The custom step** is the same program without those first lines, so it takes the following from the SAS session it runs in.
+
+### What the Custom Step Takes from the Session
+
+- **A CAS session.** The step looks for the macro variable `_CASNAME_`. When it exists, the step starts no session and its CAS actions run in the session that is active. When it does not exist, the step starts a session of its own (`cas llmLogMySess;`) and ends it as its last action. A table that is not promoted belongs to the session that created it, so of a run with a session of its own only what *Promote the table to global scope* or *Save the table* kept is left.
+- **The libref of the output table.** SAS Studio hands the step the output table as a libref and a table name. The step looks the libref up in `dictionary.libnames` and writes to the caslib it finds there. When the libref is not assigned in the session, nothing is found and the name of the libref is handed to CAS as the name of the caslib - which is the caslib you chose only where the two have the same name, as with `CASUSER` and `PUBLIC`.
+- **The caslib `CASUSER`** of the user who runs the step. The parsed rows are uploaded there as `_TEMP_LLM_LOGS`, copied or appended to the output table from there, and the staging table is dropped at the end.
+- **PROC PYTHON with the pandas and swat packages, and what Python needs to reach CAS:** the SAS options `CASHOST` and `CASPORT`, the certificate file named in the environment variable `SSLCALISTLOC` and the token in `SAS_SERVICES_TOKEN`. The Python code connects to the CAS session of the step with them.
+
+The code SAS Studio generates for a flow provides neither a CAS session nor the libref: the code generated on the test system for a flow of the step and its output table held no `cas` and no `libname` statement. The measurement ran that code unchanged as a SAS Job Execution job behind these two lines, with the output table in `CASUSER` (the name of the session is free):
+
+```SAS
+cas mysess;
+libname casuser cas caslib='casuser';
+```
+
+That is the only way the step was run - in a session that already had a CAS session and the libref of the output table. The step's own `cas llmLogMySess;` branch and a run without the libref are among what was not measured, below.
+
+### Reading the Job Log
+
+The parser says in the SAS log what it did with the output table:
+
+- `NOTE: The log contains no requests, the table <caslib>.<table> was left as it is.` - an empty log, or one that holds no scoring request.
+- `WARNING: Python-Subprocess - No request was read: 'Request: POST' was found in <n> line(s) that do not start as a log line ...`, followed by the same note - the lines of the log carry something in front, see the top of this page.
+- `ERROR: The log could not be parsed, the table <caslib>.<table> was left as it is.` - the Python code did not finish, for example because the file is missing.
+- An error that says `The saved table <caslib>.<table> could not be loaded, nothing was appended and the saved file was left as it is.` (append) or `The new table could not be created, the table <caslib>.<table> was left as it is.` (replace).
+
+When you search a job log for `ERROR`, start at the first line of the program: lines before the first source line are not the parser's. On the test system every job log of the *SAS Studio compute context* began with two such lines - `ERROR: Failed to connect to host ...` and `ERROR: Unable to connect to Cloud Analytic Services ...` - before source line 1, also in a job that held no parser code. The jobs ended as `completed`, and `SYSCC` was 0 after the parser had run.
+
+## What Was Measured
+
+The collection script of this guide, `Log-Parser-Code.sas` and the *LLM - Log Parser* step were run on the test system (SAS Viya 2026.09) on 2026-10-11, the parser as SAS Job Execution jobs that wrote to a table in `CASUSER`:
+
+- **Collection and redaction.** The script, with only `llm_log_path` and `llm_logging_interval` changed, read the pods its selector picked - all of them model pods - and wrote 5,773 lines with 174 requests. An unredacted copy of the same logs held one provider key and seven `Cookie` headers; the written file held `API_KEY:REDACTED` once and `Cookie: REDACTED` seven times, neither the key nor one of the cookie values, and the same number of lines.
+- **Every kind of model that had requests.** The 174 requests gave 174 rows with the twelve columns: 57 of three LLMs with prompts, response, token counts and run time; 50 of a decision model with the questions and the answers as JSON, the state, token counts and run time; 67 of an embedding model with its tokens in `prompt_length` and its run time, and no prompt, response or `output_length`. No cell held `API_KEY` or a `Cookie` header.
+- **An empty log and a log without requests.** A file of 0 bytes and a file with start-up lines only each ended with the note, in replace and in append mode. The table kept its 174 rows and its saved file was not written.
+- **Append.** Two newer collections with 21 and 7 requests took the table from 174 to 195 to 202 rows, and no earlier row was lost. Before the second one the table was dropped from memory while its `.sashdat` stayed: the parser loaded the saved table first, appended, promoted and saved it again. The three files held different requests - a log that is parsed twice is in the table twice.
+- **The custom step.** Run as the code SAS Studio generated for a flow, in a session with a CAS session and the libref, the step wrote the same 174 rows as the program in replace mode and the same 195 after appending the second collection.
+- **The warning for unread requests.** A log collected with `kubectl logs --timestamps` (858 lines, 26 of them with `Request: POST`) gave the warning with that count and the note, and the table was left as it is.
+- **A request that is still open.** A request that was still running when its container's part of the file ended gave one row with its prompts and without token counts, run time and response. The lines of another container's finished request followed it in the file, and their numbers were not added to it.
+- **Failed requests.** Two requests to a decision model that failed in the container - a traceback in the log, no score lines, no `Response: Status Code` line - gave one row each with the questions and the state, without numbers and response.
+
+### Not Measured
+
+- The redaction of the `Authorization` and `X-CSRF-TOKEN` headers: none occurred in the logs, so only the `API_KEY` and the `Cookie` expression were exercised.
+- The shared mount of the example paths and the hourly crontab entry.
+- The models that had no request in the collected day. The rows come from three LLMs - one of them, with a single row, is called with a provider key -, one embedding model and one decision model. No embedding model that is called with a provider key had a request, and a second decision model has failed requests only.
+- The error branches: an append whose saved `.sashdat` can not be loaded, a replace that can not build the `<table>_NEW` table, and a log file that is missing.
+- Append without promoting, a saved table whose name differs from the table name in upper and lower case, and a target caslib other than `CASUSER` - nothing was written to `Public`.
+- The step clicked in the SAS Studio UI, the step in a session without a CAS session, and the step without the libref of its output table.
+- A log with bytes that are not valid UTF-8, and two requests that overlap in one container. Both are covered by the tests of the repository, which run the parser's Python outside of SAS.
+
 # The LLM Usage Report
 
 The repository ships a ready-made SAS Visual Analytics report,

@@ -5,8 +5,8 @@ writes exactly like the unredacted log.
 The redaction is run for real: the sed expressions are taken from the guide and handed
 to sed. That needs GNU sed, as the script itself does; without it these tests are skipped.
 
-The guide also says where the parser reads the collected file. That part is held against
-the program it describes.
+The guide also says where the parser reads the collected file and what it writes to the
+SAS log. Those parts are held against the program they describe.
 """
 import re
 import shlex
@@ -208,7 +208,7 @@ def test_the_parser_reads_a_redacted_log_like_the_unredacted_one(monkeypatch, tm
 
 
 # ---------------------------------------------------------------------------
-# Where the parser reads the file
+# Where the parser reads the file, and what it says in the SAS log
 # ---------------------------------------------------------------------------
 
 def guide_section(heading, next_heading):
@@ -254,3 +254,22 @@ def test_the_copy_from_sas_content_names_no_system():
 
     assert "folderpath='/Users/<user>/My Folder/<folder>'" in block
     assert "://" not in block and ".com" not in block
+
+
+def test_the_guide_quotes_the_messages_the_parser_writes():
+    section = guide_section("### Reading the Job Log", "## What Was Measured")
+    program = code_file_program()
+
+    table = "&_log_target_table_lib..&_log_target_table_name."
+    assert f"%put NOTE: The log contains no requests, the table {table} was left as it is.;" in program
+    assert "`NOTE: The log contains no requests, the table <caslib>.<table> was left as it is.`" in section
+    assert f"%put ERROR: The log could not be parsed, the table {table} was left as it is.;" in program
+    assert "`ERROR: The log could not be parsed, the table <caslib>.<table> was left as it is.`" in section
+    assert "No request was read: 'Request: POST' was found in {unmatched_requests} line(s) that do not start as a log line" in program
+    assert "No request was read: 'Request: POST' was found in <n> line(s) that do not start as a log line" in section
+    for message in ("The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded, nothing was appended and the saved file was left as it is.",
+                    "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is."):
+        assert f'print (error) "{message}";' in program
+        assert "`" + message.replace(table, "<caslib>.<table>") + "`" in section
+    # A system can write lines of its own before the program starts
+    assert "lines before the first source line are not the parser's" in section
