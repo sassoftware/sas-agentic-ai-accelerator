@@ -250,3 +250,52 @@ def test_the_reload_still_keeps_its_own_condition_code_out_of_the_run():
         < reload.index("proc cas;") \
         < reload.index("%let syscc = &_rag_reload_syscc.;") \
         < reload.index("%let &statevar. = fail;")
+
+
+# ---------------------------------------------------------------------------
+# the retrieval test job
+#
+# Test-Retrieval.sas is read by the Prompt Builder the same way, by another
+# word: a probe that did not work says FAILED <reason>. Its one early return
+# wrote a line without that word, which the Builder read as nothing - and
+# showed as a probe that returned no chunks.
+# ---------------------------------------------------------------------------
+def _probe_python():
+    probe = (JOBS / "Test-Retrieval.sas").read_text(encoding="utf-8").replace(
+        "\r\n", "\n")
+    return probe.split("\nsubmit;\n", 1)[1].split("\nendsubmit;", 1)[0]
+
+
+def test_the_builder_reads_a_failed_probe_by_the_word_failed():
+    reader = (BUILDER / "objects" / "rag-retrieval-log.ts").read_text(
+        encoding="utf-8")
+    assert r"const message = raw.replace(/^RAGRETRIEVE\s+/, '');" in reader
+    assert "} else if (message.startsWith('FAILED ')) {" in reader
+
+
+def test_a_probe_in_a_context_without_requests_says_failed(monkeypatch):
+    monkeypatch.setitem(sys.modules, "requests", None)   # import raises
+    sas = _Sas({})
+    exec(compile(_probe_python(), "Test-Retrieval.sas", "exec"), {"SAS": sas})
+    assert len(sas.log) == 1
+    message = re.sub(r"^RAGRETRIEVE\s+", "", sas.log[0])
+    assert message.startswith("FAILED ")
+    assert "lacks the requests package" in message
+
+
+def test_no_way_out_of_the_probe_is_silent():
+    main = ast.parse(_probe_python()).body[0]
+    returns = 0
+    for block in _blocks(main):
+        for position, statement in enumerate(block):
+            if isinstance(statement, ast.Return) and statement.value is None:
+                returns += 1
+                said = [ast.unparse(earlier.value.args[0])
+                        for earlier in block[:position]
+                        if isinstance(earlier, ast.Expr)
+                        and isinstance(earlier.value, ast.Call)
+                        and getattr(earlier.value.func, "id", "") == "M"]
+                assert any(text.startswith("'FAILED ") for text in said), \
+                    "line %d returns without FAILED" % statement.lineno
+    assert returns == 1
+    assert 'M("FAILED " + sas_safe(' in _probe_python()
