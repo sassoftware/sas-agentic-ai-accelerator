@@ -301,19 +301,20 @@
    there afterwards is one this run wrote. A file that is there and cannot be
    deleted stops the run, the way a saved ledger that cannot be loaded does. */
 data _null_;
-    length file $ 32 ref $ 8 line $ 200;
+    length file $ 32 path $ 1024 ref $ 8 line $ 200;
     do file = "rag_ledger_in.json", "rag_ledger_lock.json";
-        ref = "_ragold";
-        if filename(ref, cats("%sysfunc(pathname(work))/", file)) = 0 then do;
-            if fexist(ref) then do;
-                if fdelete(ref) = 0 then do;
-                    line = "NOTE: RAG ingestion: " || strip(file) || " of an earlier run of this SAS session was deleted from WORK";
-                    putLog line;
-                end;
-                else do;
-                    call symputx("_rag_state", "fail", "G");
-                    call symputx("_rag_error", strip(file) || " of an earlier run of this SAS session could not be deleted from WORK - stopped, because the run would read the ledger of that run as its own", "G");
-                end;
+        path = cats("%sysfunc(pathname(work))/", file);
+        if fileexist(path) then do;
+            ref = "_ragold";
+            rc = filename(ref, path);
+            if rc = 0 then rc = fdelete(ref);
+            if rc = 0 then do;
+                line = "NOTE: RAG ingestion: " || strip(file) || " of an earlier run of this SAS session was deleted from WORK";
+                putLog line;
+            end;
+            else do;
+                call symputx("_rag_state", "fail", "G");
+                call symputx("_rag_error", strip(file) || " of an earlier run of this SAS session could not be deleted from WORK - stopped, because the run would read the ledger of that run as its own", "G");
             end;
             rc = filename(ref);
         end;

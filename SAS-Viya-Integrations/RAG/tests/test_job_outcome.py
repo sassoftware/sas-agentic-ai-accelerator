@@ -252,15 +252,18 @@ def test_no_export_of_an_earlier_run_is_left_for_this_one():
     head = re.sub(r"/\*.*?\*/", "", job.split("\nsubmit;\n", 1)[0], flags=re.DOTALL)
     step = head[head.index('    do file = "rag_ledger_in.json", "rag_ledger_lock.json";'):]
     step = step[:step.index("\nrun;")]
-    order = ['ref = "_ragold";',
-             'if filename(ref, cats("%sysfunc(pathname(work))/", file)) = 0 then do;',
-             "if fexist(ref) then do;", "if fdelete(ref) = 0 then do;",
-             "was deleted from WORK", "else do;",
+    order = ['path = cats("%sysfunc(pathname(work))/", file);',
+             # a file that is there is deleted, or the run stops: whatever
+             # keeps it there, the fileref or the delete, ends in the else
+             "if fileexist(path) then do;", 'ref = "_ragold";',
+             "rc = filename(ref, path);", "if rc = 0 then rc = fdelete(ref);",
+             "if rc = 0 then do;", "was deleted from WORK", "else do;",
              'call symputx("_rag_state", "fail", "G");',
              'call symputx("_rag_error", strip(file) || ',
              "rc = filename(ref);"]
     positions = [step.index(text) for text in order]
     assert positions == sorted(positions)
+    assert step.count("fileexist(") == 1 and step.count("fdelete(") == 1
     # the files are named here and where they are written and read, nowhere
     # else - and here first, in open code, before the macro that exports
     for name in ("rag_ledger_in.json", "rag_ledger_lock.json"):
