@@ -551,10 +551,11 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       'the model gets the ledger reference and the retrieval variables'
     );
     // Every variable goes out with a length. SAS Model Manager stores 99 for a
-    // string variable that comes without one, SAS Intelligent Decisioning then
-    // declares it varchar(100) in the wrapper of the model, and a decision
-    // published to SAS Micro Analytic Service fails as soon as chunks come back
-    // (found live: HTTP 201, an empty error column, every output empty).
+    // string variable that comes without one, and SAS Intelligent Decisioning
+    // then declares it varchar(100) in the code it generates for a decision.
+    // The model then says something else than RAG - Register Setup registers;
+    // no execution was measured to fail for it (an envelope of 1969 characters
+    // came back complete with the 99).
     assert(
       lengthOf(registration, 'outputVariables', 'context_dg') === 32000 && lengthOf(registration, 'outputVariables', 'context_envelope') === 32000,
       `Save writes the two context outputs with the length 32000 (got: context_dg ${lengthOf(registration, 'outputVariables', 'context_dg')}, context_envelope ${lengthOf(registration, 'outputVariables', 'context_envelope')})`
@@ -578,8 +579,9 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     // -- manifest ----------------------------------------------------------------
     await goRagStep(page, 'store');
     // The setup as a Builder from before the lengths left it in SAS Model
-    // Manager: 99 for the two context outputs. A manifest has to put that right,
-    // because it is what a site does with the setups it already has.
+    // Manager: 99 for the two context outputs. A manifest has to write the
+    // lengths of this release, because it is what a site does with the setups
+    // it already has.
     const modelUrl = `${BASE}/modelRepository/models/${setupId}`;
     const heldBefore = await fetch(modelUrl);
     const modelBefore = await heldBefore.json();
@@ -606,7 +608,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     const modelAfter = await (await fetch(modelUrl)).json();
     assert(
       lengthOf(modelAfter, 'outputVariables', 'context_dg') === 32000 && lengthOf(modelAfter, 'outputVariables', 'context_envelope') === 32000,
-      `after the manifest the setup holds 32000 for both: a manifest repairs a setup from before the lengths (got: ${contextLengths(modelAfter)})`
+      `after the manifest the setup holds 32000 for both: a manifest brings the lengths to a setup from before them (got: ${contextLengths(modelAfter)})`
     );
 
     const folderPosts = log.filter((e) => e.method === 'POST' && e.url.startsWith('/folders/folders?'));

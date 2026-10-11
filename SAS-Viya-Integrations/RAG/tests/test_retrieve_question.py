@@ -21,6 +21,12 @@ number of chunks. A `k` that is no number falls back to the default as well,
 with a note, instead of failing the call. Whether a decision hands these
 inputs over padded was not measured for them; `k` is a decimal input there.
 
+Measured afterwards on the same system, with the model as it is here: a
+question followed by 200 blanks arrived as 56 characters in `query` in SAS
+Micro Analytic Service, and a blank `retrieval_mode`, a `k` of 0, a missing
+`k` and a blank `filter_json` each gave the status `ok`, there and in a test
+of SAS Intelligent Decisioning.
+
 `_store_config`, `_embed_query` and `_search` are replaced where a test is
 about what `execute` passes on; one test goes through the real `_embed_query`
 down to the request it sends.
@@ -359,10 +365,12 @@ def _status_length():
 
 
 def test_a_status_with_both_notes_fits_its_declared_length():
-    """An output much longer than the length it is registered with made SAS
-    Micro Analytic Service fail an execution (measured for the context
-    outputs). The notes quote what the caller sent, so each quotes at most
-    40 characters of it and the status stays within its length."""
+    """The status says what it is registered with: 512 characters. The notes
+    quote what the caller sent, so each quotes at most 40 characters of it
+    and the status stays within that length. (A value longer than its
+    registered length was not seen to fail or to be cut - measured for the
+    context outputs - so this keeps the model to its own description and
+    guards against nothing that was measured.)"""
     module = _load()
     _wired(module, hits=[])
     _, _, status, _ = module.execute(QUESTION, "k" * 5000, "", "m" * 5000, "")

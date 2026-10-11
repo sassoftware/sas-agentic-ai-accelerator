@@ -215,13 +215,15 @@ function offeredBackends(config: RagBuilderConfig): ReadonlyArray<RagBackend> {
  *
  * EVERY variable carries a length, the outputs as much as the inputs. SAS
  * Model Manager stores 99 for a string variable that comes without one, and
- * SAS Intelligent Decisioning declares the model in its wrapper with what is
- * stored: `in_out varchar(100) "context_envelope"`. A test in SAS Intelligent
- * Decisioning tolerates the longer value; the same decision published to SAS
- * Micro Analytic Service fails the execution as soon as chunks come back
- * (found live: HTTP 201, an empty error column, every output of every node
- * empty). The variables are written by every save, so a manifest of a setup
- * from before this repairs its model.
+ * SAS Intelligent Decisioning declares the model in the code it generates
+ * for a decision with what is stored: `in_out varchar(100)
+ * "context_envelope"`. The lengths say what the model takes and returns;
+ * nothing was found to depend on them. Measured live with both context
+ * outputs at 99: an envelope of 1969 characters came back complete from SAS
+ * Micro Analytic Service, and a test of SAS Intelligent Decisioning returned
+ * the longer values complete as well. The variables are written by every
+ * save, so a manifest of a setup from before the lengths brings them to its
+ * model.
  *
  * The same list is in rag_core/registration.py (RETRIEVAL_INPUTS and
  * RETRIEVAL_OUTPUTS), which registers the model from SAS Studio.

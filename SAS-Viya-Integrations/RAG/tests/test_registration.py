@@ -531,10 +531,9 @@ def _registered_variables(service):
 
 def test_every_variable_is_registered_with_a_length():
     """A string variable without a length is stored with 99 by SAS Model
-    Manager, and a decision published to SAS Micro Analytic Service failed
-    when envelopes of about 2,000 characters came back for it (found live
-    with a model the Builder had written). Every variable of the request
-    carries one."""
+    Manager (found live with a model the Builder had written), which then
+    says something else about the model than the Builder's list does. Every
+    variable of the request carries one, and they are the Builder's."""
     service = _ModelManager()
     _register(service)
     inputs, outputs = _registered_variables(service)

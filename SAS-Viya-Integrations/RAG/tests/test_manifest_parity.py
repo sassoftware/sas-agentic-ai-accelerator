@@ -18,12 +18,13 @@ text itself are compared here.
 The VARIABLES of the model are the second thing both sides write: the step
 registers them with the model (`RETRIEVAL_INPUTS` / `RETRIEVAL_OUTPUTS` in
 rag_core/registration.py), the Builder writes them with every save of a setup
-(`INPUT_VARIABLES` / `OUTPUT_VARIABLES` in rag-builder.ts). They drifted, and
-it showed on a live system: the Builder wrote `context_dg` and
-`context_envelope` without a length, SAS Model Manager stored 99, SAS
-Intelligent Decisioning declared them `varchar(100)` in the wrapper of the
-model, and a decision published to SAS Micro Analytic Service failed as soon
-as chunks came back - HTTP 201, an empty error column, every output empty.
+(`INPUT_VARIABLES` / `OUTPUT_VARIABLES` in rag-builder.ts). They drifted: the
+Builder wrote `context_dg` and `context_envelope` without a length, for which
+SAS Model Manager stored 99 and SAS Intelligent Decisioning declared
+`varchar(100)` in the code it generates for a decision, and the inputs of the
+step were shorter than the Builder's. Nothing was measured to fail for it - an
+envelope of 1969 characters came back complete with the 99 - but a model was
+another model depending on which of the two had written its variables last.
 The two lists are compared here entry by entry.
 """
 import json
@@ -294,9 +295,11 @@ def test_every_variable_carries_a_length_on_both_sides(ts_name, role):
                 assert variable["length"] >= 32, variable
 
 
-def test_the_context_outputs_hold_what_a_retrieval_returns():
-    """About 2,000 characters were measured for an envelope of three hits;
-    100 is what the wrapper of the model had for it."""
+def test_the_context_outputs_are_declared_with_what_a_retrieval_returns():
+    """1969 characters were measured for an envelope of three hits, so the
+    declaration says what comes back. The same envelope came back complete
+    while the model held 99 for it: the length is a description here, and no
+    execution was seen to depend on it."""
     for side in (_ts_variables("OUTPUT_VARIABLES"), _py_variables("output")):
         lengths = {variable["name"]: variable["length"] for variable in side}
         assert lengths["context_dg"] == 32000
