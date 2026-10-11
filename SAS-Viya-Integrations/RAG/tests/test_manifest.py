@@ -302,7 +302,178 @@ def test_the_job_is_generated_from_the_flow_and_tied_to_it():
     assert body["properties"][0] == {
         "name": "DeployedResourceName",
         "value": "sascontent:/dataFlows/dataFlows/flow-9"}
-    assert body["code"].startswith("data _null_")
+    assert "data _null_; run;" in body["code"]
+
+
+def _stored_job_code(stub):
+    return next(body for method, url, _p, body in stub.calls
+                if "/jobDefinitions/definitions" in url
+                and method in ("POST", "PUT"))["code"]
+
+
+@pytest.mark.parametrize("existing_job", [False, True])
+def test_a_generated_job_never_aborts_its_session(existing_job):
+    """`abort 42` in a job ends the session before SAS Job Execution gets its
+    completion handshake, so the job reports running for ever. The switch has
+    to be the FIRST statement: each step only defaults it when it is unset."""
+    stub = _StubViya(existing_job=existing_job)
+    _register(stub, flow_path="/Users/x/My Folder/RAG-Example.flw")
+    code = _stored_job_code(stub)
+    assert code.startswith("%let RAG_ABORT_ON_ERROR = 0;\n")
+    assert code.index("%let RAG_ABORT_ON_ERROR = 0;") \
+        < code.index("data _null_; run;")
+
+
+@pytest.mark.parametrize("existing_job", [False, True])
+def test_a_generated_job_reports_a_failed_step_as_a_failed_job(existing_job):
+    """Without the abort a failing step returns and the program ends
+    normally; only SYSCC tells SAS Job Execution that the run failed."""
+    stub = _StubViya(existing_job=existing_job)
+    _register(stub, flow_path="/Users/x/My Folder/RAG-Example.flw")
+    code = _stored_job_code(stub)
+    flow_end = code.index("data _null_; run;") + len("data _null_; run;")
+    epilogue = code[flow_end:]
+    assert code.rstrip().endswith("%_rag_job_outcome;")
+    # a conditional in open code is not portable, so it lives in a macro
+    assert "%macro _rag_job_outcome;" in epilogue
+    assert epilogue.index("%macro _rag_job_outcome;") \
+        < epilogue.index("%mend _rag_job_outcome;") \
+        < epilogue.rindex("%_rag_job_outcome;")
+    body = epilogue[epilogue.index("%macro _rag_job_outcome;"):
+                    epilogue.index("%mend _rag_job_outcome;")]
+    assert "%superq(RAG_JOB_FAILED) EQ 1 %then %let failed = 1;" in body
+    assert "%if &failed. NE 1 %then %return;" in body
+    assert "%put ERROR:" in body
+    assert "%let SYSCC = 1012;" in body
+    assert body.index("%then %return;") < body.index("%let SYSCC")
+
+
+def test_the_job_outcome_is_read_from_a_flag_no_step_clears():
+    """RAG_PIPELINE_FAILED belongs to a chain: List Documents, Purge
+    Documents and Retrieve Context clear it when they start. A Retrieve
+    Context node that runs after a failed ingestion chain - the user guide
+    says to add one anywhere - left it at 0 at the end of the program, and
+    the job ended as completed. The job has a flag of its own: the prologue
+    sets it to 0, so a session that is used again starts clean, and only a
+    failing step changes it."""
+    stub = _StubViya()
+    _register(stub, flow_path="/Users/x/My Folder/RAG-Example.flw")
+    code = _stored_job_code(stub)
+    flow_start = code.index("data _null_; run;")
+    assert "%global RAG_JOB_FAILED;\n%let RAG_JOB_FAILED = 0;\n" \
+        in code[:flow_start]
+    # nothing after the generated code sets it back before it is tested
+    assert "RAG_JOB_FAILED = 0" not in code[flow_start:]
+
+
+STEPS = pathlib.Path(__file__).resolve().parents[2] / "Custom-Steps"
+
+# the steps that start a chain: their guard clears RAG_PIPELINE_FAILED
+CHAIN_STARTERS = {"RAG - List Documents", "RAG - Purge Documents",
+                  "RAG - Retrieve Context"}
+
+
+@pytest.mark.parametrize("path", sorted(STEPS.glob("RAG - *.step")),
+                         ids=lambda path: path.stem)
+def test_a_failing_step_sets_the_job_flag_and_no_step_clears_it(path):
+    code = json.loads(path.read_text(encoding="utf-8"))["templates"]["SAS"]
+    status = re.search(r"%macro (_\w+_status);(.*?)%mend \1;", code, re.S)
+    assert status, f"{path.stem} has no _status macro"
+    body = status.group(2)
+    start = body.index("_state. EQ fail %then %do;")
+    fail_branch = body[start:body.index("%return;", start)]
+    assert "%let RAG_PIPELINE_FAILED = 1;" in fail_branch
+    # declared before it is set: inside a macro %let alone would create a
+    # local variable that is gone when the macro ends
+    assert fail_branch.index("%global RAG_JOB_FAILED;") \
+        < fail_branch.index("%let RAG_JOB_FAILED = 1;") \
+        < fail_branch.index("%if &RAG_ABORT_ON_ERROR. NE 0")
+    # the only assignment in the whole step
+    assert re.findall(r"RAG_JOB_FAILED\s*=\s*(\S+)", code) == ["1;"]
+    # why the job cannot read RAG_PIPELINE_FAILED: these three clear it
+    guard = re.search(r"%macro (_\w+_guard);(.*?)%mend \1;", code, re.S)
+    clears = "%let RAG_PIPELINE_FAILED = 0;" in guard.group(2)
+    assert clears == (path.stem in CHAIN_STARTERS)
+
+
+def test_all_nine_steps_are_checked_for_the_job_flag():
+    assert len(list(STEPS.glob("RAG - *.step"))) == 9
+
+
+def test_the_job_wrapper_keeps_the_generated_code_whole():
+    from rag_core.registration import (JOB_EPILOGUE, JOB_PROLOGUE,
+                                       scheduled_job_code)
+    flow_code = "%let a = 1;\r\ndata _null_;\r\n    abort 42;\r\nrun;\r\n\r\n"
+    code = scheduled_job_code(flow_code)
+    assert code == JOB_PROLOGUE + flow_code.rstrip("\r\n") + "\n" + JOB_EPILOGUE
+    # the last generated statement is terminated before the epilogue begins
+    assert "run;\n\n/*" in code
+
+
+def test_the_job_of_a_registration_without_tls_verification_is_the_same_job():
+    """The TLS setting of 2.3.0 decides the score code of the retrieval model
+    and its tag. The job is the flow, and is wrapped whatever the setting."""
+    from rag_core.registration import ViyaClient, register_setup
+
+    def job_code(ssl_verify):
+        stub = _StubViya()
+        result = register_setup(
+            ViyaClient("https://viya.example", "token", session=stub),
+            dict(SETTINGS, SSL_VERIFY=ssl_verify),
+            TEMPLATE.read_text(encoding="utf-8"), [],
+            "/SAS Agentic AI Accelerator/RAG", "HR", log=lambda *_: None,
+            flow_path="/Users/x/My Folder/RAG-Example.flw")
+        assert result["ssl_verify"] is ssl_verify
+        assert result["job_id"] == "job-new"
+        return _stored_job_code(stub)
+
+    assert job_code(False) == job_code(True)
+    assert job_code(False).startswith("%let RAG_ABORT_ON_ERROR = 0;\n")
+    assert job_code(False).rstrip().endswith("%_rag_job_outcome;")
+
+
+def test_a_job_that_is_refused_still_says_what_the_model_holds():
+    """The job is the last request of a registration. When the service
+    refuses it, the model exists and holds its score code - which the
+    exception has to say (2.3.0) - and what was refused was the wrapped
+    code, not the flow as generated."""
+    from rag_core.registration import SCORE_CODE_STORED, UnexpectedStatus
+
+    class _NoJobs(_StubViya):
+        def request(self, method, url, **kwargs):
+            reply = super().request(method, url, **kwargs)
+            if "/jobDefinitions/definitions" in url:
+                return _Reply(403, {"message": "no"})
+            return reply
+
+    stub = _NoJobs()
+    with pytest.raises(UnexpectedStatus) as caught:
+        _register(stub, flow_path="/Users/x/My Folder/RAG-Example.flw")
+    assert caught.value.status_code == 403
+    assert caught.value.registration["score_code"] == SCORE_CODE_STORED
+    assert caught.value.registration["model_id"] == "model-new"
+    assert _stored_job_code(stub).startswith("%let RAG_ABORT_ON_ERROR = 0;\n")
+
+
+def test_a_failing_register_setup_sets_the_job_flag_before_it_says_anything():
+    """The fail branch of this step is longer than the others since 2.3.0:
+    it says what the stored score code does about TLS before it aborts. The
+    flag is set before all of that, and the macro that writes the WARNING
+    lines leaves both flags alone."""
+    code = json.loads((STEPS / "RAG - Register Setup.step").read_text(
+        encoding="utf-8"))["templates"]["SAS"]
+    status = code[code.index("%macro _rgrg_status;"):
+                  code.index("%mend _rgrg_status;")]
+    fail = status[status.index("%if &_rgrg_state. EQ fail %then %do;"):]
+    positions = [fail.index(marker) for marker in (
+        "%let RAG_PIPELINE_FAILED = 1;", "%let RAG_JOB_FAILED = 1;",
+        'putLog "ERROR: RAG - Register Setup failed:',
+        "%_rgrg_tls_warnings;", "abort 42;", "%return;")]
+    assert positions == sorted(positions)
+    warnings = code[code.index("%macro _rgrg_tls_warnings;"):
+                    code.index("%mend _rgrg_tls_warnings;")]
+    assert "RAG_JOB_FAILED" not in warnings
+    assert "RAG_PIPELINE_FAILED" not in warnings
 
 
 def test_regenerating_updates_the_existing_job_definition():

@@ -508,6 +508,64 @@ class ViyaClient:
 #: context does not, and the steps cannot run there
 DEFAULT_COMPUTE_CONTEXT = "SAS Studio compute context"
 
+#: The first statements of a job generated from a flow. The steps default
+#: RAG_ABORT_ON_ERROR to 1, which is right for a flow run interactively in
+#: SAS Studio: `abort 42` stops it at the failing step. In a job the same
+#: statement ends the session before SAS Job Execution gets its completion
+#: handshake, so the job reports running indefinitely and its dead compute
+#: server keeps counting against the context's server limit. Every step
+#: leaves a value that is already set alone, so setting it first decides it
+#: for the whole run.
+#: RAG_JOB_FAILED is what the epilogue tests. It starts at 0 here, so a
+#: session that ran a failing job before does not fail this one, and no step
+#: ever sets it back.
+JOB_PROLOGUE = ("%let RAG_ABORT_ON_ERROR = 0;\n"
+                "%global RAG_JOB_FAILED;\n"
+                "%let RAG_JOB_FAILED = 0;\n")
+
+#: The last statements of a job generated from a flow. With the abort off, a
+#: failing step writes its ERROR line, sets RAG_PIPELINE_FAILED and
+#: RAG_JOB_FAILED and returns; the steps after it skip, and the program ends
+#: normally - which SAS Job Execution reports as a completed job. SYSCC is
+#: what makes it a failed one. The test is on RAG_JOB_FAILED first:
+#: List Documents, Purge Documents and Retrieve Context each start a chain
+#: and clear RAG_PIPELINE_FAILED, so a Retrieve Context node that runs after
+#: a failed ingestion chain, or a second chain in the same flow, leaves that
+#: one at 0 at the end of a run that failed. RAG_PIPELINE_FAILED is still
+#: read as well: it is all a step deployed before RAG_JOB_FAILED existed
+#: sets.
+#: A macro, because the test is a conditional and has to hold in any SAS
+#: release the job lands on.
+JOB_EPILOGUE = """
+/* The outcome SAS Job Execution reports for this job: a step that failed set
+   RAG_JOB_FAILED and the steps after it in its chain skipped, so without
+   this the job would end as completed. */
+%macro _rag_job_outcome;
+    %local failed;
+    %let failed = 0;
+    %if %symexist(RAG_JOB_FAILED) %then
+        %if %superq(RAG_JOB_FAILED) EQ 1 %then %let failed = 1;
+    %if %symexist(RAG_PIPELINE_FAILED) %then
+        %if %superq(RAG_PIPELINE_FAILED) EQ 1 %then %let failed = 1;
+    %if &failed. NE 1 %then %return;
+    %put ERROR: RAG ingestion failed - a step of this run reported an error (its ERROR line is above) and the steps after it were skipped.;
+    %let SYSCC = 1012;
+%mend _rag_job_outcome;
+%_rag_job_outcome;
+"""
+
+
+def scheduled_job_code(flow_code: str) -> str:
+    """The code of a job definition, from the code generated for its flow.
+
+    The generated code is the flow as SAS Studio would run it; a job needs it
+    not to abort and to report a failure as one (see JOB_PROLOGUE and
+    JOB_EPILOGUE). Both are added HERE and are not part of the flow, so
+    regenerating the job from SAS Studio's own deployment of the flow drops
+    them - Register Setup is what regenerates this job.
+    """
+    return JOB_PROLOGUE + flow_code.rstrip("\r\n") + "\n" + JOB_EPILOGUE
+
 
 def register_setup(client: ViyaClient, settings: dict, template: str,
                    ledger_rows: list, content_root: str, setup_name: str,
@@ -651,7 +709,7 @@ def register_setup(client: ViyaClient, settings: dict, template: str,
 
         if flow_path:
             reference = client.flow_reference(flow_path)
-            code = client.generate_flow_code(flow_path)
+            code = scheduled_job_code(client.generate_flow_code(flow_path))
             job_name = f"RAG Ingest - {setup_name}"
             job_id = client.put_job_definition(
                 client.folder_id(f"{content_root.rstrip('/')}/generated",
