@@ -219,16 +219,20 @@ def test_only_the_literal_false_switches_verification_off(bundle, monkeypatch, v
 # ---------------------------------------------------------------------------
 # copies that were manifested, not the template
 # ---------------------------------------------------------------------------
+_SETUP = {
+    "BACKEND": "pgvector", "COLLECTION": "rag_demo_v1",
+    "EMBED_MODEL": "all_minilm_l6_v2", "EMBED_ENDPOINT": "https://scr.example/scr",
+    "STORE_HOST": "db.example", "STORE_PORT": "5432", "STORE_DB": "postgres",
+    "STORE_SSLMODE": "require", "CREDENTIAL_DOMAIN": "agentic-ai-keys",
+    "DEFAULT_K": 4, "INGESTION_RUN_ID": "run-1"}
+
+
 def _manifested(ssl_verify=None):
-    """The template the way a renderer leaves it. rag_core.manifest rebuilds
-    the block from the names it knows, so the constant is put back by hand
-    when a test wants one - which is what the Builder does."""
-    rendered = render_retrieval_model(TEMPLATE.read_text(encoding="utf-8"), {
-        "BACKEND": "pgvector", "COLLECTION": "rag_demo_v1",
-        "EMBED_MODEL": "all_minilm_l6_v2", "EMBED_ENDPOINT": "https://scr.example/scr",
-        "STORE_HOST": "db.example", "STORE_PORT": "5432", "STORE_DB": "postgres",
-        "STORE_SSLMODE": "require", "CREDENTIAL_DOMAIN": "agentic-ai-keys",
-        "DEFAULT_K": 4, "INGESTION_RUN_ID": "run-1"})
+    """The template the way a renderer leaves it, with the constant's line
+    written by hand: `ssl_verify` is the text of its value, and None is a
+    copy without the line - what a renderer older than the setting wrote.
+    The copies rag_core.manifest itself writes are executed further down."""
+    rendered = render_retrieval_model(TEMPLATE.read_text(encoding="utf-8"), _SETUP)
     lines = [line for line in rendered.splitlines()
              if not line.startswith("SSL_VERIFY")]
     if ssl_verify is not None:
@@ -242,8 +246,8 @@ def _manifested(ssl_verify=None):
 def test_a_copy_without_the_constant_behaves_as_before(monkeypatch, tmp_path, bundle,
                                                        prefix, word, present):
     """A setup manifested by a renderer that does not write SSL_VERIFY - the
-    Register Setup step, or a Builder older than the option - must neither
-    fail on the missing name nor stop verifying."""
+    Register Setup step before release 2.3.0, or a Builder older than the
+    option - must neither fail on the missing name nor stop verifying."""
     module = _load(_manifested())
     assert not hasattr(module, "SSL_VERIFY")
     monkeypatch.setenv(prefix + "_CABUNDLE",
@@ -271,6 +275,24 @@ def test_a_copy_manifested_with_verification_on_equals_the_template(monkeypatch,
         monkeypatch.setenv(prefix + "_CABUNDLE", bundle)
         _set_word(monkeypatch, prefix, word)
         assert module._ssl_verify(prefix) == _before_the_option(prefix)
+
+
+@pytest.mark.parametrize("prefix,asked,word,present", list(itertools.product(
+    PREFIXES, (True, False, None), WORDS, (True, False))))
+def test_the_copy_rag_core_writes_does_what_was_asked(monkeypatch, tmp_path, bundle,
+                                                      prefix, asked, word, present):
+    """The text the Register Setup step stores, executed - not a line put in
+    by hand. `asked` is the step's checkbox as it reaches the renderer: False
+    for unticked, True for ticked, None for a caller that sends nothing."""
+    settings = dict(_SETUP) if asked is None else dict(_SETUP, SSL_VERIFY=asked)
+    module = _load(render_retrieval_model(TEMPLATE.read_text(encoding="utf-8"),
+                                          settings))
+    assert module.SSL_VERIFY is (asked is not False)
+    path = bundle if present else str(tmp_path / "not-there.pem")
+    monkeypatch.setenv(prefix + "_CABUNDLE", path)
+    _set_word(monkeypatch, prefix, word)
+    assert module._ssl_verify(prefix) == _expected(
+        asked is not False, word, path if present else True)
 
 
 # ---------------------------------------------------------------------------

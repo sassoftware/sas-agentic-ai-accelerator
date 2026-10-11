@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 
 MANIFEST_START = "# ---- MANIFEST: rewritten per RAG Setup"
 MANIFEST_END = "# ----------------------------------------"
@@ -32,11 +33,65 @@ MANIFEST_STRINGS = ("BACKEND", "COLLECTION", "EMBED_MODEL", "EMBED_ENDPOINT",
                     "STORE_HOST", "STORE_PORT", "STORE_DB", "STORE_SSLMODE",
                     "CREDENTIAL_DOMAIN", "INGESTION_RUN_ID")
 MANIFEST_NUMBERS = ("DEFAULT_K",)
+# Written as a Python bool literal, `NAME = True`, and ONLY into a template
+# whose block already holds the name. SSL_VERIFY is the default the retrieval
+# model applies to its two HTTPS calls (the embedding container and the
+# credentials service) when the destination sets neither RAGEMBED_SSLVERIFY
+# nor RAGSTORE_SSLVERIFY. A content root deployed before the setting existed
+# holds a retrieve_context.py without the constant and without the code that
+# reads it; such a template still has to manifest, and it verifies. The
+# Prompt Builder's rag-manifest.ts follows the same rule - keep the two in
+# step (tests/test_manifest_parity.py compares them).
+MANIFEST_OPTIONAL_BOOLEANS = ("SSL_VERIFY",)
 REQUIRED = ("BACKEND", "COLLECTION", "EMBED_MODEL", "STORE_HOST", "STORE_DB")
 
 
 def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _manifest_block(lines: list):
+    """The first and the last line index of the MANIFEST block, or None."""
+    start = -1
+    for index, line in enumerate(lines):
+        if start < 0 and line.startswith(MANIFEST_START):
+            start = index
+        elif start >= 0 and line.startswith(MANIFEST_END):
+            return start, index
+    return None
+
+
+def _assigns(line: str, name: str) -> bool:
+    """Whether a line of the block assigns this name (`NAME = ...`)."""
+    return re.match(re.escape(name) + r"\s*=", line) is not None
+
+
+def manifest_block_has(template: str, name: str) -> bool:
+    """Whether the template's MANIFEST block holds a name.
+
+    Asked for SSL_VERIFY: a template without it verifies TLS whatever the
+    setting says, and the caller has to be able to say so.
+    """
+    lines = template.splitlines()
+    found = _manifest_block(lines)
+    return found is not None and any(
+        _assigns(line, name) for line in lines[found[0] + 1:found[1]])
+
+
+def manifested_ssl_verify(source: str) -> bool:
+    """Whether a manifested retrieve_context.py verifies TLS by default.
+
+    Read from the text that is stored, not from the setting that was asked
+    for: False only when the block holds the line `SSL_VERIFY = False`, which
+    is the one spelling retrieve_context.py switches verification off for. A
+    copy without the line, or with any other value, verifies.
+    """
+    lines = source.splitlines()
+    found = _manifest_block(lines)
+    if found is None:
+        return True
+    return not any(re.match(r"SSL_VERIFY\s*=\s*False\s*(#.*)?$", line)
+                   for line in lines[found[0] + 1:found[1]])
 
 
 def render_retrieval_model(template: str, settings: dict) -> str:
@@ -45,22 +100,23 @@ def render_retrieval_model(template: str, settings: dict) -> str:
     Refuses rather than guesses: a missing marker or a missing required
     setting raises, because the failure mode otherwise is a model deployed
     against `your-database-host` that only shows up when a decision runs.
+
+    SSL_VERIFY is the one OPTIONAL name of the block: it is written when the
+    template has it and left out when the template does not (see
+    MANIFEST_OPTIONAL_BOOLEANS). `manifest_block_has(template, "SSL_VERIFY")`
+    tells a caller which of the two happened.
     """
     missing = [key for key in REQUIRED if not str(settings.get(key) or "").strip()]
     if missing:
         raise ValueError("cannot manifest the retrieval model without "
                          + ", ".join(missing))
     lines = template.splitlines()
-    start = end = -1
-    for index, line in enumerate(lines):
-        if start < 0 and line.startswith(MANIFEST_START):
-            start = index
-        elif start >= 0 and line.startswith(MANIFEST_END):
-            end = index
-            break
-    if start < 0 or end < 0:
+    found = _manifest_block(lines)
+    if found is None:
         raise ValueError("the retrieval template has no MANIFEST block - it is "
                          "not the accelerator's retrieve_context.py")
+    start, end = found
+    template_block = lines[start + 1:end]
 
     block = [lines[start]]
     for key in MANIFEST_STRINGS:
@@ -70,6 +126,10 @@ def render_retrieval_model(template: str, settings: dict) -> str:
         block.append(f'{key} = "{value}"')
     for key in MANIFEST_NUMBERS:
         block.append(f"{key} = {int(settings.get(key) or 4)}")
+    for key in MANIFEST_OPTIONAL_BOOLEANS:
+        # only the literal False writes False: anything else keeps the safe value
+        if any(_assigns(line, key) for line in template_block):
+            block.append(f"{key} = {'False' if settings.get(key) is False else 'True'}")
     block.append(lines[end])
     return "\n".join(lines[:start] + block + lines[end + 1:]) + "\n"
 

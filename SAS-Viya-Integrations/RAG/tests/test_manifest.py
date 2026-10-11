@@ -11,6 +11,7 @@ import re
 
 import pytest
 
+from rag_core import manifest
 from rag_core.manifest import (collection_manifest, ingestion_manifest,
                                pipeline_yaml, render_retrieval_model,
                                settings_from_inventory)
@@ -384,3 +385,142 @@ def test_regenerating_a_job_sends_its_id_in_the_body():
     body = next(body for method, url, _p, body in stub.calls
                 if method == "PUT" and "/jobDefinitions/definitions/" in url)
     assert body["id"] == "job-old"
+
+
+# ---------------------------------------------------------------------------
+# SSL_VERIFY: the one optional name of the block
+# ---------------------------------------------------------------------------
+def _block(source):
+    """The lines between the two markers of a manifested copy."""
+    lines = source.splitlines()
+    start = next(i for i, line in enumerate(lines)
+                 if line.startswith(manifest.MANIFEST_START))
+    end = next(i for i, line in enumerate(lines)
+               if i > start and line.startswith(manifest.MANIFEST_END))
+    return lines[start + 1:end]
+
+
+def _old_template():
+    """retrieve_context.py as a content root deployed before the setting
+    holds it: no SSL_VERIFY line in the block."""
+    template = TEMPLATE.read_text(encoding="utf-8")
+    assert template.count("\nSSL_VERIFY = True\n") == 1
+    return template.replace("\nSSL_VERIFY = True\n", "\n")
+
+
+def test_the_setting_is_written_as_true_when_nothing_asks_for_anything_else():
+    """A caller that does not know the setting - every caller before it
+    existed - gets a model that verifies, with the line the template has."""
+    rendered = render_retrieval_model(TEMPLATE.read_text(encoding="utf-8"), SETTINGS)
+    assert _block(rendered).count("SSL_VERIFY = True") == 1
+    assert manifest.manifested_ssl_verify(rendered) is True
+
+
+def test_the_literal_false_writes_false():
+    rendered = render_retrieval_model(TEMPLATE.read_text(encoding="utf-8"),
+                                      dict(SETTINGS, SSL_VERIFY=False))
+    block = _block(rendered)
+    assert block.count("SSL_VERIFY = False") == 1
+    assert not [line for line in block if line.startswith("SSL_VERIFY = True")]
+    assert manifest.manifested_ssl_verify(rendered) is False
+    compile(rendered, "manifested.py", "exec")
+
+
+@pytest.mark.parametrize("value", [True, None, "", "False", "false", "no", "0",
+                                   0, 0.0, [], 1, "True"])
+def test_only_the_literal_false_writes_false(value):
+    """The failure direction is the safe one, as in the Builder's renderer
+    (`settings[key] === false`): a word, a zero or an empty value is not a
+    request to stop verifying."""
+    rendered = render_retrieval_model(TEMPLATE.read_text(encoding="utf-8"),
+                                      dict(SETTINGS, SSL_VERIFY=value))
+    assert _block(rendered).count("SSL_VERIFY = True") == 1
+    assert manifest.manifested_ssl_verify(rendered) is True
+
+
+def test_the_setting_is_the_last_line_of_the_block():
+    """Strings, numbers, then the optional boolean - the order the Builder
+    writes, so that the two renderers produce the same text."""
+    rendered = render_retrieval_model(TEMPLATE.read_text(encoding="utf-8"),
+                                      dict(SETTINGS, SSL_VERIFY=False))
+    names = [line.split(" = ")[0] for line in _block(rendered)]
+    assert names == (list(manifest.MANIFEST_STRINGS) + list(manifest.MANIFEST_NUMBERS)
+                     + list(manifest.MANIFEST_OPTIONAL_BOOLEANS))
+
+
+@pytest.mark.parametrize("asked", [True, False])
+def test_a_template_without_the_setting_is_left_without_it(asked):
+    """A content root deployed before the setting holds a template that has
+    neither the constant nor the code that reads it. It still manifests, the
+    line is not invented, and the copy verifies whatever was asked for."""
+    old = _old_template()
+    assert manifest.manifest_block_has(old, "SSL_VERIFY") is False
+    rendered = render_retrieval_model(old, dict(SETTINGS, SSL_VERIFY=asked))
+    assert not [line for line in rendered.splitlines()
+                if line.startswith("SSL_VERIFY")]
+    assert manifest.manifested_ssl_verify(rendered) is True
+    # everything else is manifested as before
+    assert [line.split(" = ")[0] for line in _block(rendered)] == (
+        list(manifest.MANIFEST_STRINGS) + list(manifest.MANIFEST_NUMBERS))
+    assert 'COLLECTION = "rag_hr_policies_v1"' in rendered
+
+
+def test_the_caller_can_find_out_whether_the_setting_was_written():
+    template = TEMPLATE.read_text(encoding="utf-8")
+    assert manifest.manifest_block_has(template, "SSL_VERIFY") is True
+    assert manifest.manifest_block_has(_old_template(), "SSL_VERIFY") is False
+    assert manifest.manifest_block_has("print('not the template')\n", "SSL_VERIFY") is False
+    # every name of the block answers, not only this one
+    assert manifest.manifest_block_has(template, "COLLECTION") is True
+    assert manifest.manifest_block_has(template, "SSL") is False
+
+
+def test_a_line_outside_the_block_is_not_the_setting():
+    """Only the block is rewritten, so only the block counts: a line of the
+    same name further down would not be replaced and must not be read as
+    'this template has the setting'."""
+    outside = _old_template() + "\nSSL_VERIFY = False\n"
+    assert manifest.manifest_block_has(outside, "SSL_VERIFY") is False
+    assert manifest.manifested_ssl_verify(outside) is True
+    rendered = render_retrieval_model(outside, dict(SETTINGS, SSL_VERIFY=False))
+    assert not [line for line in _block(rendered) if line.startswith("SSL_VERIFY")]
+
+
+@pytest.mark.parametrize("line,verifies", [
+    ("SSL_VERIFY = False", False),
+    ("SSL_VERIFY=False", False),
+    ("SSL_VERIFY = False  # switched off for a test system", False),
+    ("SSL_VERIFY = True", True),
+    ('SSL_VERIFY = "False"', True),
+    ("SSL_VERIFY = false", True),
+    ("SSL_VERIFY = 0", True),
+    ("SSL_VERIFY = Falsey", True),
+    ("# SSL_VERIFY = False", True),
+])
+def test_what_a_stored_copy_does_is_read_from_its_text(line, verifies):
+    """The tag follows the score code that is stored. retrieve_context.py
+    switches verification off for the Python literal False and for nothing
+    else, so nothing else is read as off here."""
+    source = TEMPLATE.read_text(encoding="utf-8").replace(
+        "\nSSL_VERIFY = True\n", "\n" + line + "\n")
+    assert manifest.manifested_ssl_verify(source) is verifies
+
+
+def test_manifesting_with_verification_off_is_idempotent_and_reversible():
+    template = TEMPLATE.read_text(encoding="utf-8")
+    off = render_retrieval_model(template, dict(SETTINGS, SSL_VERIFY=False))
+    assert render_retrieval_model(off, dict(SETTINGS, SSL_VERIFY=False)) == off
+    # a copy that was manifested with verification off is a template like any
+    # other: manifested again without the request, it verifies again
+    assert render_retrieval_model(off, SETTINGS) == render_retrieval_model(
+        template, SETTINGS)
+
+
+def test_a_false_setting_survives_the_way_the_step_assembles_its_settings():
+    """settings_from_inventory drops blank extras. False is not a blank: a
+    filter on truthiness would turn 'do not verify' into 'no value', and the
+    model would be registered verifying without anybody having asked."""
+    rows = [{"doc_id": "d1", "config_json": json.dumps({"collection": "c"})}]
+    assert settings_from_inventory(rows, {"SSL_VERIFY": False})["SSL_VERIFY"] is False
+    assert settings_from_inventory(rows, {"SSL_VERIFY": True})["SSL_VERIFY"] is True
+    assert "SSL_VERIFY" not in settings_from_inventory(rows, {})

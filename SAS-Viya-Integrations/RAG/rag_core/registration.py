@@ -22,12 +22,22 @@ referenced the old one; every PUT carries the resource id in the BODY as well
 as the URL, or the service reports the resource as missing or mismatched; and
 Model Manager drops `tags` on create, keeping them only on a later update, so
 registration always finishes with one.
+
+One tag is not part of that definition: TLS-Verification-Off says what the
+STORED score code does, so it is set or taken away only after the score code
+has been stored (`set_tls_tag`), never by the update that precedes the upload.
 """
 from __future__ import annotations
 
 import json
 
 TIMEOUT = (10, 120)
+
+#: On the model exactly when the score code it holds has TLS verification off
+#: (`SSL_VERIFY = False` in the MANIFEST block). The Prompt Builder sets the
+#: same tag for the same reason (TLS_VERIFICATION_OFF_TAG in
+#: prompt-decision.ts); a filter on it lists every model that does not verify.
+TLS_VERIFICATION_OFF_TAG = "TLS-Verification-Off"
 
 RETRIEVAL_INPUTS = [
     ("question", "string", 4096, "The user question to retrieve context for"),
@@ -254,8 +264,16 @@ class ViyaClient:
         try:
             current = self.request("GET", f"/modelRepository/models/{model_id}",
                                    headers={"Accept": media})
-            merged = dict(current.json())
+            held = dict(current.json())
+            merged = dict(held)
             merged.update(body)
+            # TLS-Verification-Off says what the STORED score code does, and
+            # this update stores none: the tag stays as the model has it, and
+            # set_tls_tag settles it once the new score code is stored. Taking
+            # it away here would leave a model that does not verify untagged
+            # whenever the upload that follows fails.
+            if TLS_VERIFICATION_OFF_TAG in (held.get("tags") or []):
+                merged["tags"] = list(body["tags"]) + [TLS_VERIFICATION_OFF_TAG]
             etag = current.headers.get("ETag") or "*"
         except Exception:
             # a model an interrupted registration left in a bad state cannot
@@ -265,6 +283,34 @@ class ViyaClient:
         self.json("PUT", f"/modelRepository/models/{model_id}",
                   headers=dict(headers, **{"If-Match": etag}), json=merged)
         return model_id
+
+    def set_tls_tag(self, model_id: str, verification_off: bool) -> bool:
+        """Put TLS-Verification-Off on the model, or take it away.
+
+        Called AFTER the score code is stored, with what that code does: the
+        tag is on the model exactly when the code has verification off, so a
+        re-registration with verification on removes it. Every other tag
+        stays. GET, change the one tag, PUT - with the id in the body, as for
+        every model update - and no PUT at all when the tag already is as it
+        should be. Returns whether the model was updated.
+        """
+        media = "application/vnd.sas.models.model+json"
+        current = self.request("GET", f"/modelRepository/models/{model_id}",
+                               headers={"Accept": media})
+        model = dict(current.json())
+        held = list(model.get("tags") or [])
+        tags = [tag for tag in held if tag != TLS_VERIFICATION_OFF_TAG]
+        if (len(tags) != len(held)) == bool(verification_off):
+            return False
+        if verification_off:
+            tags.append(TLS_VERIFICATION_OFF_TAG)
+        model["tags"] = tags
+        model["id"] = model_id
+        self.json("PUT", f"/modelRepository/models/{model_id}",
+                  headers={"Content-Type": media, "Accept": media,
+                           "If-Match": current.headers.get("ETag") or "*"},
+                  json=model)
+        return True
 
     def put_model_content(self, model_id: str, name: str, content: str,
                           role: str = "") -> None:
@@ -371,11 +417,29 @@ def register_setup(client: ViyaClient, settings: dict, template: str,
                    cas_server: str = "cas-shared-default", flow_path: str = "",
                    compute_context: str = "",
                    log=print) -> dict:
-    """Everything Register Setup does, in one call. Returns what it produced."""
+    """Everything Register Setup does, in one call. Returns what it produced.
+
+    `settings["SSL_VERIFY"]` set to the literal False asks for a retrieval
+    model that does not verify TLS certificates; anything else, or no value,
+    keeps verification on. The result says what was stored rather than what
+    was asked for:
+
+    * `ssl_verify` - whether the stored score code verifies by default;
+    * `ssl_verify_in_template` - whether the template's MANIFEST block holds
+      SSL_VERIFY. False means the template predates the setting: nothing was
+      written, and the model verifies whatever was asked for;
+    * `tls_tag_error` - empty, or why the tag TLS-Verification-Off could not
+      be set or removed after the score code was stored.
+    """
     from .manifest import (collection_manifest, ingestion_manifest,
+                           manifest_block_has, manifested_ssl_verify,
                            pipeline_yaml, render_retrieval_model)
 
     model_source = render_retrieval_model(template, settings)
+    # read back from the text that will be stored, so the tag and the report
+    # follow the score code and not the request
+    ssl_verify = manifested_ssl_verify(model_source)
+    ssl_verify_in_template = manifest_block_has(template, "SSL_VERIFY")
     artifacts = {
         "retrieve_context.py": model_source,
         "pipeline.yaml": pipeline_yaml(dict(settings, setup=setup_name)),
@@ -407,6 +471,19 @@ def register_setup(client: ViyaClient, settings: dict, template: str,
         train_table=train_table)
     client.put_model_content(model_id, "retrieve_context.py", model_source,
                              role="score")
+    # The score code is stored: from here on the tag has to say what it does.
+    # A tag that cannot be updated does not undo the registration - it is
+    # reported, so that the caller can say which way the tag is now wrong.
+    tls_tag_error = ""
+    try:
+        client.set_tls_tag(model_id, not ssl_verify)
+    except Exception as error:
+        tls_tag_error = f"{type(error).__name__}: {error}"[:300]
+        log(f"the tag {TLS_VERIFICATION_OFF_TAG} could not be "
+            f"{'removed from' if ssl_verify else 'written to'} the model: "
+            f"{tls_tag_error}")
+    log("TLS certificate verification in the stored score code: "
+        + ("on" if ssl_verify else "OFF"))
     for name in ("pipeline.yaml", "ingestion-manifest.json",
                  "collection-manifest.json", "vector-store-ddl.sql"):
         if name in artifacts:
@@ -415,7 +492,10 @@ def register_setup(client: ViyaClient, settings: dict, template: str,
 
     result = {"folder": folder, "model_id": model_id, "model_name": model_name,
               "project_id": project_id, "artifacts": sorted(artifacts),
-              "job_id": "", "job_name": ""}
+              "job_id": "", "job_name": "",
+              "ssl_verify": ssl_verify,
+              "ssl_verify_in_template": ssl_verify_in_template,
+              "tls_tag_error": tls_tag_error}
 
     if flow_path:
         reference = client.flow_reference(flow_path)
