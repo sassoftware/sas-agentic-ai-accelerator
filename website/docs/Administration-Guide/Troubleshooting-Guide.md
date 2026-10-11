@@ -137,16 +137,21 @@ What follows from it where a log shows these lines:
 1.   A check that counts the ERROR lines of a job log never finds 0 there: it finds three when it counts the lines of the type error, the continuation included, and two when it counts the lines that start with `ERROR`. Start at the first source line of the program, or read the state of the job.
 2.   The lines of the accelerator name their program: `ERROR: RAG ingestion failed`, `ERROR: RAG - <step> failed`, `ERROR: The log could not be parsed`. An ERROR line before source line 1 is none of them. Since release 2.3.0 the RAG lines are written from a variable and not as a quoted string; they are still of the type error (measured on 2026-10-11).
 
-### A long ERROR or NOTE line goes on in the next line {#long-log-lines}
+### A long message goes on in the next line {#long-log-lines}
 
-The job logs of the test system are 132 characters wide, and SAS breaks a longer line there - inside a word, and with no prefix on what follows. Measured on 2026-10-11 with the RAG steps and the ingestion job of release 2.3.0:
+The job logs of the test system are 132 characters wide, and a longer message goes on in the next log line. Where the break stands depends on who wrote the line. Measured on 2026-10-11 with the RAG steps and the ingestion job of release 2.3.0:
 
-```text
-ERROR: RAG - List Documents failed: another ingestion run holds the lock on this ledger - wait for it to finish, or retry in 30 minu
-tes if it crashed
-```
+- **A line a program of the accelerator writes with `PUT`** - the ERROR line of a RAG step and of the ingestion job, a part of a step's summary - is cut after 132 characters, inside a word, and what follows has no prefix:
 
-Every log line of such a message has the type of its first one: the three lines of a 311-character ERROR line of *RAG - List Documents* and the four of a 413-character ERROR line of the ingestion job were all of the type error. A search for the text of a message therefore has to expect a break anywhere in it, and a check that counts lines counts a long message more than once.
+  ```text
+  ERROR: RAG - List Documents failed: another ingestion run holds the lock on this ledger - wait for it to finish, or retry in 30 minu
+  tes if it crashed
+  ```
+
+- **A long NOTE milestone and the WARNING lines of the steps** were broken at a blank before column 132: the first log line ended with a word, in the logs of that day after 127 to 129 characters, and what followed was not indented.
+- **A message SAS writes itself** is broken at a blank as well, and its next line is indented - as the second of the two connect messages above, which goes on with seven blanks and `parameters and retry.`
+
+Every log line of a message has the type of its first one: the three lines of a 311-character ERROR line of *RAG - List Documents* and the four of a 413-character ERROR line of the ingestion job were all of the type error, and the four lines of two WARNING messages of *RAG - List Documents* were all of the type warning. A search for the text of a message therefore has to expect a break in it - anywhere in a line written with `PUT`, at a blank in the others - and a check that counts lines counts a long message more than once.
 
 ### A job of the accelerator that failed reports the error code 5713 {#failed-job-5713}
 
@@ -154,7 +159,7 @@ A run of the RAG ingestion job that failed ends as `failed` in SAS Job Execution
 
 ### The *LLM - Log Parser* step fails in its second run of one SAS session {#log-parser-second-run}
 
-`ERROR: There is no server connection to execute the action 'session.sessionId'.`, followed by `ERROR: Unhandled Python exception.` and `ERROR: The log could not be parsed, the table <caslib>.<table> was left as it is.`, in a run of the step that follows an earlier run in the same SAS session: the earlier run had started a CAS session of its own and ended it, and the step of release 2.2 and earlier takes the macro variable `_CASNAME_`, which the ended session leaves behind, for a session. Nothing is written by such a run. Measured on 2026-10-11 with two runs of the step in one SAS Job Execution job whose session had no CAS session. The step of release 2.3.0 asks the `SESSFOUND` function instead - import it again with a `PUT`, which keeps its id; that check is not run in SAS ([Logging & Monitoring](./Logging-&-Monitoring.md#what-was-measured)). With the older step, put a `cas` statement in front of the flow code: a step that finds a CAS session uses it and ends none.
+`ERROR: There is no server connection to execute the action 'session.sessionId'.`, followed by `ERROR: Unhandled Python exception.` and `ERROR: The log could not be parsed, the table <caslib>.<table> was left as it is.`, in a run of the step that follows an earlier run in the same SAS session: the earlier run had started a CAS session of its own and ended it, and the step of release 2.2 and earlier takes the macro variable `_CASNAME_`, which the ended session leaves behind, for a session. Nothing is written by such a run. Measured on 2026-10-11 with two runs of the step in one SAS Job Execution job whose session had no CAS session. The step of release 2.3.0 asks the `SESSFOUND` function instead - import it again with a `PUT`, which keeps its id. With that check the step was run on the same system later that day, twice and three times in one job whose session had no CAS session: every run started and ended a session of its own and wrote its table ([Logging & Monitoring](./Logging-&-Monitoring.md#the-session-check-with-sessfound)). With the older step, put a `cas` statement in front of the flow code: a step that finds a CAS session uses it and ends none.
 
 ## SAS Container Runtime
 
