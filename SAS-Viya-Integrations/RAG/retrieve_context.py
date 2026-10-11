@@ -14,10 +14,14 @@ Signature (a decision maps these to terms):
     execute(question, k, filter_json, retrieval_mode, options)
       -> (context_dg, context_envelope, retrieval_status, run_time)
 
-  question       - the user question to retrieve context for
+  question       - the user question to retrieve context for. Blanks around
+                   it are dropped before it is embedded and before it is
+                   returned as `query`: a decision pads a character input
+                   with blanks to its declared length
   k              - number of chunks (0/blank -> the manifested default)
   filter_json    - optional JSON object of column equality filters,
-                   e.g. {"doc_id": "..."} (allow-listed columns only)
+                   e.g. {"doc_id": "..."} (allow-listed columns only);
+                   empty or blanks only means no filter
   retrieval_mode - "vector" (hybrid arrives with a later release; any
                    other value falls back to vector and says so in
                    retrieval_status)
@@ -305,7 +309,9 @@ def _quote(identifier):
 def _compile_filter(filter_json):
     """Equality-only allow-listed filter -> (condition, params); always bound."""
     condition, params = "TRUE", []
-    if not filter_json:
+    # blanks only is an input a decision left empty and padded, not a filter
+    if not filter_json or (isinstance(filter_json, str)
+                           and not filter_json.strip()):
         return condition, params
     parsed = json.loads(filter_json) if isinstance(filter_json, str) else filter_json
     if not isinstance(parsed, dict):
@@ -411,8 +417,13 @@ def execute(question, k, filter_json, retrieval_mode, options):
     note = ""
     hits = []
     status = "ok"
+    # A decision hands a character input over padded with blanks to its
+    # declared length (found live: a 1000-character input arrived with about
+    # 900 trailing blanks). The padding is not part of the question, so it is
+    # neither embedded nor returned in the envelope.
+    question = str(question or "").strip()
     try:
-        if not str(question or "").strip():
+        if not question:
             raise ValueError("question is empty")
         if mode != "vector":
             note = " (retrieval_mode " + mode + " not available yet - used vector)"
@@ -422,7 +433,7 @@ def execute(question, k, filter_json, retrieval_mode, options):
             parsed_options = json.loads(options) if isinstance(options, str) else dict(options)
         top_k = int(float(k or 0)) or DEFAULT_K
         store = _store_config(parsed_options)
-        vector = _embed_query(str(question), parsed_options)
+        vector = _embed_query(question, parsed_options)
         hits = _search(vector, top_k, filter_json, store)
         status = "ok" + note if hits else "ok - no chunks matched" + note
     except Exception as error:
@@ -442,7 +453,7 @@ def execute(question, k, filter_json, retrieval_mode, options):
                   for h in hits]},
     ])
     context_envelope = json.dumps({
-        "query": str(question or ""),
+        "query": question,
         "hits": hits,
         "graph_context": None,
         "retrieval_mode": mode,

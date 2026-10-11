@@ -176,20 +176,53 @@ class ViyaClient:
                  if item.get("name") == name]
         if items:
             return items[0]["id"]
-        repositories = self.json("GET", "/modelRepository/repositories",
-                                 params={"limit": 1}).get("items") or []
-        if not repositories:
-            raise RuntimeError("no model repository exists to create the "
-                               f"project {name!r} in")
+        repository = self.project_repository(name)
         project = self.json(
             "POST", "/modelRepository/projects",
             headers={"Content-Type": "application/vnd.sas.models.project+json"},
             json={"name": name, "function": "RAG",
-                  "repositoryId": repositories[0]["id"],
+                  "repositoryId": repository["id"],
+                  # the service refuses a project without it: 400, "You must
+                  # specify a value for the "folderId" parameter" (found live)
+                  "folderId": repository["folderId"],
                   "description": "RAG setups registered by the SAS Agentic AI "
                                  "Accelerator",
                   "tags": ["LLM", "RAG-Engineering"]})
         return self.created_id(project)
+
+    def project_repository(self, project: str) -> dict:
+        """The repository a project that does not exist yet is created in.
+
+        The DEFAULT repository - the one SAS Model Manager marks with
+        `defaultRepository` - and, where none is marked, the first one the
+        service lists. The choice is made here rather than left to the order
+        of a one-item page: a site can hold many repositories (nine on the
+        system this was found on), and "the first" is whichever the service
+        happens to return first.
+
+        Returns its `id` and its `folderId`. Both go into the project: the
+        service places a project in a folder, and answers 400 when the request
+        names the repository alone. A repository that does not name its folder
+        is refused here, by name, instead of surfacing as a KeyError.
+        """
+        repositories = self.json("GET", "/modelRepository/repositories",
+                                 params={"limit": 100}).get("items") or []
+        if not repositories:
+            raise RuntimeError("no model repository exists to create the "
+                               f"project {project!r} in")
+        chosen = next((item for item in repositories
+                       if str(item.get("defaultRepository")).lower() == "true"),
+                      repositories[0])
+        label = str(chosen.get("name") or chosen.get("id") or "")
+        if not chosen.get("id") or not chosen.get("folderId"):
+            raise RuntimeError(
+                f"the project {project!r} cannot be created: the model "
+                f"repository {label!r} does not name its "
+                + ("id" if not chosen.get("id") else "folder (folderId)")
+                + ". Create the project in SAS Model Manager and run this "
+                  "again - an existing project is used as it is")
+        return {"id": str(chosen["id"]), "folderId": str(chosen["folderId"]),
+                "name": label}
 
     def project_version_id(self, project_id: str) -> str:
         """The project version a model belongs to.

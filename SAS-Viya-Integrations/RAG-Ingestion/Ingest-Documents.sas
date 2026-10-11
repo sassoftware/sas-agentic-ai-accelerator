@@ -130,6 +130,73 @@
 %let _rag_error = The Python program did not run.;
 %let _rag_summary = ;
 
+/* ---- One ledger, two writers ----------------------------------------------
+   The ledger is written by the RAG steps and by the single-program job
+   Ingest-Documents.sas, and the two do not leave it alike: the Load and Purge
+   steps upload it through SWAT, which makes its text columns VARCHAR, and
+   the job loads it from a SAS data set, which makes them CHAR. CAS refuses
+   to append a row whose column is the one where the table has the other
+   (The variable doc_id has been specified with incompatible data types -
+   found live, in both directions), so a run lock declared one way could
+   only be written to a ledger the same writer had left.
+   The table is asked what it holds and the lock row is declared to match.
+   doc_id answers for all text columns, because each writer creates all of
+   them the same way. An answer that is neither char nor varchar falls back
+   to what this writer leaves itself, which is what it declared before.
+   The same two macros stand in RAG - List Documents, RAG - Purge Documents
+   and Ingest-Documents.sas; only the prefix of their names differs. */
+%macro _rag_ledger_types(session, caslib, table, fallback);
+    %global _rag_ledgerTypes;
+    %let _rag_ledgerTypes = ;
+    %if %sysfunc(exist(work._rag_ledger_ci)) %then %do;
+        proc delete data=work._rag_ledger_ci;
+        run;
+    %end;
+    proc cas;
+        session &session.;
+        table.columnInfo result=_rag_ci /
+            table={caslib="&caslib.", name="&table."};
+        saveresult _rag_ci dataout=work._rag_ledger_ci;
+    quit;
+    %if %sysfunc(exist(work._rag_ledger_ci)) %then %do;
+        data _null_;
+            set work._rag_ledger_ci;
+            if lowcase(strip(Column)) = "doc_id" then
+                call symputx("_rag_ledgerTypes", lowcase(strip(Type)), "G");
+        run;
+        proc delete data=work._rag_ledger_ci;
+        run;
+    %end;
+    %if &_rag_ledgerTypes. NE char %then %if &_rag_ledgerTypes. NE varchar %then %do;
+        data _null_;
+            putLog "NOTE: the column types of the ledger &caslib..&table. could not be read - the run lock is written as &fallback.";
+        run;
+        %let _rag_ledgerTypes = &fallback.;
+        %return;
+    %end;
+    data _null_;
+        putLog "NOTE: the ledger &caslib..&table. holds its text columns as &_rag_ledgerTypes. - the run lock is written the same way";
+    run;
+%mend _rag_ledger_types;
+/* The LENGTH statement of a ledger row, spelled the way the table holds its
+   text. The char lengths are the ones the job gives its ledger. */
+%macro _rag_ledger_length;
+    %if &_rag_ledgerTypes. EQ char %then %do;
+        length doc_id $ 40 source_uri $ 1024 source_kind $ 16
+               content_hash $ 64 mtime $ 32 status $ 12 error_text $ 512
+               pipeline_version $ 32 config_hash $ 32 chunk_count 8
+               run_id $ 32 updated_at $ 24;
+    %end;
+    %else %do;
+        length doc_id varchar(40) source_uri varchar(1024)
+               source_kind varchar(16) content_hash varchar(64)
+               mtime varchar(32) status varchar(12)
+               error_text varchar(512) pipeline_version varchar(32)
+               config_hash varchar(32) chunk_count 8
+               run_id varchar(32) updated_at varchar(24);
+    %end;
+%mend _rag_ledger_length;
+
 /* ---- Export the existing ledger to WORK, then take the run lock ----------
    The export happens BEFORE the lock append, so this run's own lock never
    appears in its snapshot - the Python side aborts only on a fresh lock left
@@ -146,11 +213,9 @@
         run; quit;
         filename _ragled clear;
 
+        %_rag_ledger_types(_ragcas, &ledgerCaslib., &ledgerTable., char);
         data _ragcl.&ledgerTable.(append=yes);
-            length doc_id $ 40 source_uri $ 1024 source_kind $ 16
-                   content_hash $ 64 mtime $ 32 status $ 12 error_text $ 512
-                   pipeline_version $ 32 config_hash $ 32 chunk_count 8
-                   run_id $ 32 updated_at $ 24;
+            %_rag_ledger_length
             doc_id = '__run_lock__';
             source_uri = '';
             source_kind = '';
