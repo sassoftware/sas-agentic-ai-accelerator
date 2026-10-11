@@ -385,6 +385,24 @@ def test_what_did_not_exist_yet_cannot_be_concerned():
                      "**The job and the flow were not the same pipeline.** The ledger re-ingests that document unprompted.") == ["RAG"]
 
 
+def test_a_component_that_did_not_exist_yet_cannot_be_concerned():
+    # rag_core, the steps and the stores came with 2.0.0: what an older entry
+    # "enriches" or "retrieves" is filed under the next component it names
+    old = "**Live catalogs no longer lose the kind.** The static-snapshot enrichment carries it over for `mdb add`."
+    assert component_for("Fixed", old, "1.8.3") == "Model Definition Builder"
+    assert component_for("Fixed", old, "2.0.0") == "RAG runtime"
+    assert component_for("Fixed", old) == "RAG runtime"  # no release given: the newest there can be
+    assert components_of("Get-All-Prompts.sas retrieves all prompting projects.", "0.1.15") == [GENERAL]
+    # a section heading is read by release as well
+    assert component_for("RAG cost", "A new view.", "1.9.0") == GENERAL
+    assert component_for("RAG cost", "A new view.", "2.0.0") == "RAG runtime"
+    # Manifest Best Prompt is a button of the Prompt Builder: an entry about
+    # the best prompt is filed there, not under what its text registers
+    best = "**The manifested best prompt inherits its winning LLM's attributes.** As the registered LLMs do (mdb-enriched)."
+    assert components_of(best, "1.7.0")[:2] == ["Prompt Builder", "Model Definition Builder"]
+    assert parts_for("1.7.0", "Changed", "Changed", best) == ["Prompt"]
+
+
 def test_the_parts_of_the_real_changelog_follow_the_releases(tmp_path):
     rows, summary = build_release_table(REPO / "CHANGELOG.md", tmp_path / "releases.csv")
     key = lambda r: tuple(int(n) for n in r["version"].split("."))  # noqa: E731
@@ -393,6 +411,14 @@ def test_the_parts_of_the_real_changelog_follow_the_releases(tmp_path):
     assert {r["builder_part"] for r in builder} == set(PARTS)
     assert {r["builder_part"] for r in rows if r["component"] == "RAG runtime"} == {"RAG"}
     assert {r["builder_part"] for r in rows if r["component"] not in (BUILDER, "RAG runtime")} == {""}
+    # no runtime entry before the runtime: an older one is filed elsewhere
+    assert not [r for r in rows if r["component"] == "RAG runtime" and key(r) < (2, 0, 0)]
+    component = {(r["version"], r["summary"]): r["component"] for r in rows}
+    assert component[("1.8.3", "Live catalogs no longer lose the kind")] == "Model Definition Builder"
+    assert component[("1.6.0", "Richer model attributes on register")] == "Model Definition Builder"
+    assert component[("1.7.0", "The manifested best prompt inherits its winning LLM's attributes")] == BUILDER
+    assert component[("1.0.0", '"Save Experiments" and "Manifest Best Prompt" are real buttons now, so they are '
+                               "keyboard-accessible and properly disabled while busy")] == BUILDER
     # only a Builder entry is more than one row
     by_entry: dict[tuple, list[dict]] = {}
     for r in rows:
@@ -421,6 +447,7 @@ def test_the_parts_of_the_real_changelog_follow_the_releases(tmp_path):
     assert parts[("2.0.0", "Model Manager names were rendered as HTML in every picker")] == ["Prompt", "RAG"]
     assert parts[("2.0.0", "Per-user model availability")] == ["Prompt"]
     assert parts[("1.9.0", "An Optimize section in the Prompt Builder")] == ["Prompt"]
+    assert parts[("1.7.0", "The manifested best prompt inherits its winning LLM's attributes")] == ["Prompt"]
     assert parts[("1.4.0", "Disabled buttons now explain themselves on hover")] == ["Prompt"]
 
 

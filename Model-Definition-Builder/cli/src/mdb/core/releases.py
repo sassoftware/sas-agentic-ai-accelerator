@@ -27,7 +27,9 @@ Each change gets ONE component. When the section heading names a component
 ("RAG Builder: generating what a setup implies") every entry under it belongs
 there; otherwise the entry's own wording decides, in a fixed priority so that a
 Builder entry that also says "registers" is not filed under the Model
-Definition Builder. Nothing here needs SAS Viya; viya/cas.py uploads the CSV.
+Definition Builder - and by release: the RAG runtime came with 2.0.0, so no
+older entry is filed there. Nothing here needs SAS Viya; viya/cas.py uploads
+the CSV.
 
 The RAG Builder is a part of the Prompt Builder, so what names it is filed
 under "Prompt Builder": that is the value the report's Changelog page filters
@@ -79,6 +81,7 @@ COMPONENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "the judge", "judge this", "judge rank", "prompt experiment", "experiment tracker",
         "prompt-test", "prompt test", "optimiz", "dspy", "manifested prompt", "manifest the best",
         "call llm node", "dist/index.html", "ddc", "properties panel", "options pane",
+        "best prompt",
     )),
     ("RAG runtime", (
         "rag_core", "rag -", "rag ingestion", "rag cost", "ingest", "chunk", "vector store",
@@ -98,6 +101,11 @@ COMPONENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Documentation", ("documentation", "guide", "readme", "changelog", "docs")),
 )
 GENERAL = "General"
+#: By release, as for the parts below: a component that did not exist yet
+#: cannot be concerned. rag_core, the steps and the stores came with 2.0.0 -
+#: what an older entry "retrieves" or "enriches" is something else, and it is
+#: filed under the next component its wording matches.
+COMPONENT_SINCE = {"RAG runtime": (2, 0, 0)}
 
 #: The three parts of the Prompt Builder, in the order a shared entry is
 #: written, and the component whose entries are told apart by them.
@@ -216,28 +224,31 @@ def _matches(keyword: str, text: str) -> bool:
     return keyword in text
 
 
-def components_of(text: str) -> list[str]:
-    """Every component the text names, in priority order; [General] if none."""
-    lowered = text.lower()
-    found = [name for name, words in COMPONENT_KEYWORDS if any(_matches(w, lowered) for w in words)]
-    return found or [GENERAL]
-
-
-def component_for(section: str, text: str) -> str:
-    """The one component an entry is filed under: the section's, when the
-    heading names one, else the first the entry's wording matches."""
-    if section and section.lower() not in STANDARD_SECTIONS:
-        by_section = components_of(section)
-        if by_section != [GENERAL]:
-            return by_section[0]
-    return components_of(text)[0]
-
-
 def _release_key(version: str) -> tuple:
     """The version as numbers, 2.3.0 -> (2, 3, 0), to tell older from newer.
     A heading without a number ("Unreleased") is the newest there can be."""
     numbers = re.findall(r"\d+", version)
     return tuple(int(n) for n in numbers[:3]) if numbers else (float("inf"),)
+
+
+def components_of(text: str, version: str = "") -> list[str]:
+    """Every component the text names, in priority order; [General] if none.
+    With a version, only the components its release had."""
+    lowered = text.lower()
+    release = _release_key(version)
+    found = [name for name, words in COMPONENT_KEYWORDS
+             if release >= COMPONENT_SINCE.get(name, (0,)) and any(_matches(w, lowered) for w in words)]
+    return found or [GENERAL]
+
+
+def component_for(section: str, text: str, version: str = "") -> str:
+    """The one component an entry is filed under: the section's, when the
+    heading names one, else the first the entry's wording matches."""
+    if section and section.lower() not in STANDARD_SECTIONS:
+        by_section = components_of(section, version)
+        if by_section != [GENERAL]:
+            return by_section[0]
+    return components_of(text, version)[0]
 
 
 def _names(keyword: str, text: str) -> bool:
@@ -355,7 +366,7 @@ def rows_from(releases: list[Release]) -> list[dict]:
         for item in release.items:
             item_rank += 1
             summary, detail = _split(item["text"])
-            component = component_for(item["section"], item["text"])
+            component = component_for(item["section"], item["text"], release.version)
             if component == BUILDER:
                 parts = parts_for(release.version, item["section"], item["change_type"], item["text"])
             else:
