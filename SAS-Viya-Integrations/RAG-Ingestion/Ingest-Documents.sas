@@ -129,6 +129,78 @@
 %let _rag_rc = 1;
 %let _rag_error = The Python program did not run.;
 %let _rag_summary = ;
+/* run until something before the Python program says otherwise: fail makes
+   the program return at once, and _rag_error then holds the reason */
+%let _rag_state = run;
+
+/* A pipeline table that was saved but is not in memory - which is how a CAS
+   server restart leaves every one of them - is loaded back before anything
+   looks at it. The code below only ever tests the in-memory table, so a
+   saved table that is not loaded would read as no previous run at all:
+   every document new, the whole corpus embedded again, and the saved file
+   overwritten by the result.
+   Nothing is done for a table that is in memory or was never saved. A saved
+   file that cannot be loaded FAILS the run, through the caller's state and
+   error variables, because carrying on would destroy what the file holds. */
+%macro _rag_reload_saved(sessref, caslib, table, statevar, errorvar);
+    %local _rag_reload_outcome _rag_reload_syscc;
+    %if %superq(&statevar.) NE run %then %return;
+    %let _rag_reload_outcome = unknown;
+    %let _rag_reload_syscc = &syscc.;
+    proc cas;
+        session &sessref.;
+        outcome = "memory";
+        table.tableExists result = found / caslib = "&caslib." name = "&table.";
+        if found.exists == 0 then do;
+            /* The saved file carries the table name as it was typed and a
+               path-based caslib is case-sensitive, while CAS table names
+               are not - so the file is looked up in the listing: the exact
+               name when there is one, otherwise the same name in another
+               case. */
+            outcome = "absent";
+            saved = "";
+            table.fileInfo result = listing status = listed / caslib = "&caslib.";
+            if listed.severity == 0 then do;
+                if exists(listing, "FileInfo") then do;
+                    do entry over listing.FileInfo;
+                        if entry.Name == "&table..sashdat" then
+                            saved = entry.Name;
+                        else if saved == "" and upcase(entry.Name) == upcase("&table..sashdat") then
+                            saved = entry.Name;
+                    end;
+                end;
+            end;
+            else outcome = "unlisted";
+            if saved != "" then do;
+                table.loadTable result = ignored status = loaded / caslib = "&caslib." path = saved
+                    casOut = {caslib = "&caslib.", name = "&table.", promote = true};
+                /* A concurrent session may have loaded the table in the
+                   meantime. That refuses this load, and is just as good. */
+                table.tableExists result = found / caslib = "&caslib." name = "&table.";
+                if found.exists != 0 then outcome = "loaded";
+                else outcome = "failed";
+            end;
+        end;
+        /* "L": the macro variable is local to this macro, and without a
+           scope CASL writes to the global symbol table */
+        call symputx("_rag_reload_outcome", outcome, "L");
+    quit;
+    /* Looking is not part of the run and never decides its condition code:
+       not a load that was refused because another session got there first,
+       and not a load that failed either - that one is reported through the
+       caller's state, the way the caller reports every other failure. */
+    %let syscc = &_rag_reload_syscc.;
+    %if &_rag_reload_outcome. EQ failed %then %do;
+        %let &statevar. = fail;
+        /* kept short: the caller writes it to the log inside a quoted string */
+        %let &errorvar. = the saved table &caslib..&table. could not be loaded into memory (CAS messages above) - stopped, because an empty table would re-embed the corpus and overwrite the saved file;
+        %return;
+    %end;
+    %if &_rag_reload_outcome. EQ loaded %then
+        %put NOTE: RAG: &caslib..&table. was saved but not in memory and has been loaded from its saved file.;
+    %else %if &_rag_reload_outcome. NE memory and &_rag_reload_outcome. NE absent %then
+        %put NOTE: RAG: could not look for a saved copy of &caslib..&table. - the run continues with what is in memory.;
+%mend _rag_reload_saved;
 
 /* ---- One ledger, two writers ----------------------------------------------
    The ledger is written by the RAG steps and by the single-program job
@@ -208,10 +280,15 @@
    looks in that export for a lock row the first one does not hold. Without
    one it refuses to ingest unguarded, as RAG - List Documents does when it
    cannot read its own lock back: CAS refuses a row whose column types
-   differ from the table, and SAS goes on after that ERROR. */
+   differ from the table, and SAS goes on after that ERROR.
+   The order is: load a saved ledger back, export it, read its column types,
+   append the lock, export again. The reload stands first because everything
+   after it asks the in-memory table - a ledger that is only on disk would
+   be exported as none, typed as none and get no lock. */
 %macro _rag_export_ledger;
     cas _ragcas;
     libname _ragcl cas caslib="&ledgerCaslib." sessref=_ragcas;
+    %_rag_reload_saved(_ragcas, &ledgerCaslib., &ledgerTable., _rag_state, _rag_error);
     %if %sysfunc(exist(_ragcl.&ledgerTable.)) %then %do;
         filename _ragled "%sysfunc(pathname(work))/rag_ledger_in.json";
         proc json out=_ragled noSASTags;
@@ -270,6 +347,12 @@ def main():
 
     def M(msg):
         SAS.logMessage("RAGINGEST " + sas_safe(msg))
+
+    # The saved ledger could not be loaded. Running on would read an empty
+    # ledger, ingest every document as new and store the result over the
+    # saved file; _rag_error already says what happened.
+    if str(SAS.symget("_rag_state") or "run").strip() != "run":
+        return
 
     try:
         import requests
