@@ -9,15 +9,22 @@ numbered lists, paragraphs under a heading, "None" placeholders) and the
 component tagging must put Builder changes where that filter finds them. The
 filter is `component = 'Prompt Builder'`, and the RAG Builder is a part of the
 Prompt Builder: a change to it must land under that value too.
+
+The page also has a button bar on `builder_part` - Prompt, Decision, RAG. A
+button bar shows the rows of one value, so a Builder entry is one row per part
+it concerns, and the tests below pin which parts that is: by what the entry
+names, and by release - a part that did not exist yet cannot be concerned.
 """
 import csv
+import io
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from mdb.core.releases import (
-    COLUMNS, COMPONENT_KEYWORDS, GENERAL, build_release_table, component_for, components_of,
-    parse_changelog, rows_from,
+    BUILDER, COLUMNS, COMPONENT_KEYWORDS, GENERAL, PARTS, build_release_table, component_for,
+    components_of, parse_changelog, parts_for, rows_from,
 )
 
 REPO = Path(__file__).resolve().parents[3]
@@ -211,9 +218,16 @@ def test_the_real_changelog_parses(tmp_path):
     assert summary["current"]  # a dated release exists
     assert {"Prompt Builder", "RAG runtime", "Model Definition Builder"} <= set(summary["by_component"])
     assert "RAG Builder" not in summary["by_component"]
-    # every entry is exactly one row (the key includes the date: the changelog
-    # once reused a version number for two releases)
-    assert len({(r["version"], r["release_date"], r["item_rank"]) for r in rows}) == len(rows)
+    # every entry is exactly one row per part (the key includes the date: the
+    # changelog once reused a version number for two releases)
+    assert len({(r["version"], r["release_date"], r["item_rank"], r["builder_part"]) for r in rows}) == len(rows)
+    # ... and one entry however many rows it is: what a release holds is
+    # still counted by release and item rank
+    releases = parse_changelog((REPO / "CHANGELOG.md").read_text(encoding="utf-8"))
+    assert summary["entries"] == sum(len(r.items) + bool(r.intro) for r in releases)
+    assert summary["entries"] == len({(r["release_rank"], r["item_rank"]) for r in rows}) < summary["rows"]
+    assert sum(summary["by_part"].values()) == len([r for r in rows if r["builder_part"]])
+    assert tuple(summary["by_part"]) == PARTS and all(summary["by_part"].values())
     # no numbered-list fragment became a headline
     assert not [r for r in rows if r["summary"].isdigit()]
     with (tmp_path / "releases.csv").open(encoding="utf-8", newline="") as fh:
@@ -221,6 +235,210 @@ def test_the_real_changelog_parses(tmp_path):
         assert tuple(reader.fieldnames) == COLUMNS
         first = next(reader)
     assert first["release_rank"] == "1" and first["change_type"] == "Release"
+    # the release intro belongs to no part
+    assert COLUMNS[-1] == "builder_part" and first["builder_part"] == ""
+
+
+# Entries in the wording 2.3.0 uses: since the merge "Prompt Builder" is the
+# name of the whole, so a headline says which part it means - or names none.
+PARTS_RELEASE = """# Changelog
+
+## [2.3.0] - unreleased
+
+One report, three kinds.
+
+### Upgrading from 2.2.x
+
+Save the options while the RAG Builder report still exists, then run `mdb builders-import`.
+
+### Changed
+
+- **The RAG Builder is part of the Prompt Builder.** One bundle, one report and one Options pane serve all three kinds.
+- **LLMCONTAINERSSLVERIFY switches TLS verification on as well as off.** The score code of a prompt template with the included LLM call and of a decision template manifested in the Prompt Builder read the variable in one direction only.
+
+### Fixed
+
+- **A decision template manifested in the Prompt Builder can be scored.** The manifest of a prompt template uses the same escaping.
+- **The optimization switch of the Prompt Builder shows what is stored.** The switch is a checkbox now.
+- **An LLM run in the Prompt Builder keeps the results of the models that answered.** Decision runs behave the same.
+- **"Judge this run" in the Prompt Builder can be used right after a run.** After an experiment the button stayed disabled until the prompt-test was loaded again.
+- **Prompt-tests made in the Prompt Builder record their modeler.** A misspelt field name meant that every prompt-test was created without one.
+- **A RAG setup embeds its documents and its questions at one endpoint.** The retrieval model was written with the host whatever the SCR endpoint option of the Prompt Builder said.
+- **A decision with a retrieval model manifested in the Prompt Builder returns its outputs in SAS Micro Analytic Service.** Found with a decision of three model nodes - a retrieval model, a prompt template and a decision template.
+- **The create dialogs of the Prompt Builder show the whole name.** In the dialogs that create a project, a prompt-test or a RAG setup the field was too narrow.
+- **The Prompt Builder sends no Referer to another site.** The user-guide link of the Optimize step goes to another site.
+- **mdb builders-import knows the Prompt Builder package from the RAG runtime package.** A report RAG Builder that is still on the site is reported.
+- **A manifest of a RAG setup that fails half way says so beside the button.** As the prompt flow does.
+- **rag_core records the run history again.** The column was missing from the DDL.
+- **mdb register keeps the model version.** Nothing of the Builder.
+"""
+
+
+def _parts_by_summary(rows):
+    parts: dict[str, list[str]] = {}
+    for row in rows:
+        parts.setdefault(row["summary"], []).append(row["builder_part"])
+    return parts
+
+
+def test_a_builder_entry_is_one_row_per_part_it_concerns():
+    rows = rows_from(parse_changelog(PARTS_RELEASE))
+    parts = _parts_by_summary(rows)
+    every = list(PARTS)
+    # the headline names the part
+    assert parts["A decision template manifested in the Prompt Builder can be scored"] == ["Decision"]
+    assert parts["The optimization switch of the Prompt Builder shows what is stored"] == ["Prompt"]
+    assert parts["A RAG setup embeds its documents and its questions at one endpoint"] == ["RAG"]
+    # ... and what the text mentions on the way does not add one: a judge is
+    # for prompts although its text says "experiment", and a decision in SAS
+    # Intelligent Decisioning is not a decision template
+    assert parts['"Judge this run" in the Prompt Builder can be used right after a run'] == ["Prompt"]
+    assert parts["A decision with a retrieval model manifested in the Prompt Builder returns its outputs "
+                 "in SAS Micro Analytic Service"] == ["RAG"]
+    assert parts["A manifest of a RAG setup that fails half way says so beside the button"] == ["RAG"]
+    # one flow serves both kinds of template: a prompt-test is either, and a
+    # headline about prompts is joined by Decision when the text says so
+    assert parts["Prompt-tests made in the Prompt Builder record their modeler"] == ["Prompt", "Decision"]
+    assert parts["An LLM run in the Prompt Builder keeps the results of the models that answered"] == ["Prompt", "Decision"]
+    # a headline that names no part: the Builder as a whole when it names
+    # that, else the parts the text names
+    assert parts["The create dialogs of the Prompt Builder show the whole name"] == every
+    assert parts["The Prompt Builder sends no Referer to another site"] == every
+    assert parts["LLMCONTAINERSSLVERIFY switches TLS verification on as well as off"] == ["Prompt", "Decision"]
+    # "RAG runtime" is the other component, not the RAG part
+    assert parts["mdb builders-import knows the Prompt Builder package from the RAG runtime package"] == every
+    # an entry that says "all three kinds" is about all three, whatever it names
+    assert parts["The RAG Builder is part of the Prompt Builder"] == every
+    # the steps of an upgrade are everybody's
+    upgrade = [r["builder_part"] for r in rows if r["change_type"] == "Upgrade"]
+    assert upgrade == every
+    # the runtime is the RAG part, once; nothing else belongs to a part
+    assert parts["rag_core records the run history again"] == ["RAG"]
+    assert parts["mdb register keeps the model version"] == [""]
+    assert [r["builder_part"] for r in rows if r["change_type"] == "Release"] == [""]
+
+
+def test_the_rows_of_one_entry_differ_in_the_part_only():
+    rows = rows_from(parse_changelog(PARTS_RELEASE))
+    shared = [r for r in rows if r["summary"] == "The create dialogs of the Prompt Builder show the whole name"]
+    assert [r["builder_part"] for r in shared] == ["Prompt", "Decision", "RAG"]
+    assert len({tuple(r[c] for c in COLUMNS if c != "builder_part") for r in shared}) == 1
+    # the ranks count entries, not rows: the next entry is the next rank
+    ranks = [r["item_rank"] for r in rows]
+    assert sorted(set(ranks)) == list(range(0, 17)) and ranks == sorted(ranks)
+    # every Builder row has a part, every part is one of the three
+    assert all(r["builder_part"] in PARTS for r in rows if r["component"] == BUILDER)
+    assert {r["builder_part"] for r in rows} == {"", *PARTS}
+
+
+NO_PART = "**Disabled buttons explain themselves on hover.** A disabled button fires no hover events."
+
+
+@pytest.mark.parametrize("version, expected", [
+    ("0.1.35", ["Prompt"]),                     # the Builder was prompts
+    ("1.9.0", ["Prompt"]),
+    ("2.0.0", ["Prompt", "RAG"]),               # the RAG Builder came into the repository
+    ("2.1.0", ["Prompt", "RAG"]),
+    ("2.2.0", ["Prompt", "Decision", "RAG"]),   # the decision mode
+    ("2.3.0", ["Prompt", "Decision", "RAG"]),
+    ("3.0.0", ["Prompt", "Decision", "RAG"]),
+    ("Unreleased", ["Prompt", "Decision", "RAG"]),
+])
+def test_an_entry_that_names_no_part_concerns_the_builder_of_its_release(version, expected):
+    assert parts_for(version, "Changed", "Changed", NO_PART) == expected
+    # the steps of an upgrade likewise, whatever they name
+    assert parts_for(version, "Upgrading", "Upgrade", "Import the RAG Builder package.") == expected
+
+
+def test_what_did_not_exist_yet_cannot_be_concerned():
+    # before the decision mode a "decision model" was something else, and the
+    # Call LLM node of SAS Intelligent Decisioning is how a prompt is used
+    old = "**The run table names the decision model.** For the Call LLM node in SAS Intelligent Decisioning."
+    assert parts_for("2.1.0", "Fixed", "Fixed", old) == ["Prompt"]
+    assert parts_for("2.2.0", "Fixed", "Fixed", old) == ["Decision"]
+    flow = "**Prompt-tests record their modeler.** Every prompt-test was created without one."
+    assert parts_for("1.4.0", "Fixed", "Fixed", flow) == ["Prompt"]
+    assert parts_for("2.2.0", "Fixed", "Fixed", flow) == ["Prompt", "Decision"]
+    # until 2.3.0 "the Prompt Builder" was the UI for prompts, beside the RAG
+    # Builder: its name names the prompt part there, and the whole since
+    named = "**The Prompt Builder keeps its width.** On a narrow report object the columns stack."
+    assert parts_for("1.9.0", "Fixed", "Fixed", named) == ["Prompt"]
+    assert parts_for("2.1.0", "Fixed", "Fixed", named) == ["Prompt"]
+    assert parts_for("2.2.0", "Fixed", "Fixed", named) == ["Prompt"]
+    assert parts_for("2.3.0", "Fixed", "Fixed", named) == ["Prompt", "Decision", "RAG"]
+    both = "**The Prompt Builder and the RAG Builder are step flows.** Both were one long page."
+    assert parts_for("2.1.0", "Changed", "Changed", both) == ["Prompt", "RAG"]
+    # the RAG Builder is older than its place in this repository: an entry
+    # that names it is about it, in every release
+    assert parts_for("0.1.14", "Added", "Added", "rag-builder.json is used for the RAG Builder UI") == ["RAG"]
+    # a section that names a part files everything under it there
+    assert parts_for("2.0.0", "RAG Builder: generating what a setup implies", "Changed",
+                     "**Deleting a setup says what depends on it first.** The Prompt Builder has asked since 1.3.0.") == ["RAG"]
+    # a comparison names the Builder an entry is measured against
+    assert parts_for("2.0.0", "Added", "Added",
+                     "**Save documentation** in the RAG Builder, as in the Prompt Builder: the fields save on their own.") == ["RAG"]
+    # a keyword never starts inside a word
+    assert parts_for("2.0.0", "Fixed", "Fixed",
+                     "**The job and the flow were not the same pipeline.** The ledger re-ingests that document unprompted.") == ["RAG"]
+
+
+def test_the_parts_of_the_real_changelog_follow_the_releases(tmp_path):
+    rows, summary = build_release_table(REPO / "CHANGELOG.md", tmp_path / "releases.csv")
+    key = lambda r: tuple(int(n) for n in r["version"].split("."))  # noqa: E731
+    builder = [r for r in rows if r["component"] == BUILDER]
+    # every Builder row has a part; the runtime is RAG; nothing else has one
+    assert {r["builder_part"] for r in builder} == set(PARTS)
+    assert {r["builder_part"] for r in rows if r["component"] == "RAG runtime"} == {"RAG"}
+    assert {r["builder_part"] for r in rows if r["component"] not in (BUILDER, "RAG runtime")} == {""}
+    # only a Builder entry is more than one row
+    by_entry: dict[tuple, list[dict]] = {}
+    for r in rows:
+        by_entry.setdefault((r["release_rank"], r["item_rank"]), []).append(r)
+    assert all(len(group) == 1 or group[0]["component"] == BUILDER for group in by_entry.values())
+    for group in by_entry.values():
+        assert [r["builder_part"] for r in group] == [p for p in ("", *PARTS) if p in {r["builder_part"] for r in group}]
+        assert len({tuple(r[c] for c in COLUMNS if c != "builder_part") for r in group}) == 1
+    # no decision template before the decision mode
+    assert not [r for r in rows if r["builder_part"] == "Decision" and key(r) < (2, 2, 0)]
+    # before the RAG Builder came into the repository a Builder entry is RAG
+    # only where it names it
+    early = [r for r in builder if r["builder_part"] == "RAG" and key(r) < (2, 0, 0)]
+    assert early and all("rag-buil" in f'{r["summary"]} {r["detail"]}'.lower() for r in early)
+    # entries of released versions, as they were read when the column was made
+    parts = {(r["version"], r["summary"]): [] for r in builder}
+    for r in builder:
+        parts[(r["version"], r["summary"])].append(r["builder_part"])
+    assert parts[("2.2.0", "The Prompt Builder has a decision mode")] == ["Prompt", "Decision"]
+    assert parts[("2.2.0", "The designer guides the decision template")] == ["Decision"]
+    assert parts[("2.1.0", "The Prompt Builder and the RAG Builder are step flows")] == ["Prompt", "RAG"]
+    assert parts[("2.1.0", "The Builder packages no longer carry the exporting environment's configuration")] == ["Prompt", "RAG"]
+    assert parts[("2.0.5", "The RAG Builder object in the shipped package has a data assignment")] == ["RAG"]
+    assert parts[("2.0.0", "Save documentation")] == ["RAG"]
+    assert parts[("2.0.0", "One button makes a setup real")] == ["RAG"]
+    assert parts[("2.0.0", "Model Manager names were rendered as HTML in every picker")] == ["Prompt", "RAG"]
+    assert parts[("2.0.0", "Per-user model availability")] == ["Prompt"]
+    assert parts[("1.9.0", "An Optimize section in the Prompt Builder")] == ["Prompt"]
+    assert parts[("1.4.0", "Disabled buttons now explain themselves on hover")] == ["Prompt"]
+
+
+def test_load_releases_prints_the_rows_per_part(tmp_path, monkeypatch):
+    from rich.console import Console
+    from typer.testing import CliRunner
+
+    from mdb import cli
+
+    (tmp_path / "CHANGELOG.md").write_text(PARTS_RELEASE, encoding="utf-8")
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=tmp_path))
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=out, width=400, force_terminal=False))
+    result = CliRunner().invoke(cli.app, ["load-releases", "--csv", str(tmp_path / "out.csv")])
+    assert result.exit_code == 0, result.output
+    rows = rows_from(parse_changelog(PARTS_RELEASE))
+    counts = {part: len([r for r in rows if r["builder_part"] == part]) for part in PARTS}
+    assert (f"rows per Builder part (builder_part): Prompt {counts['Prompt']}, Decision {counts['Decision']}, "
+            f"RAG {counts['RAG']} - {len(rows)} rows for 17 changelog entries") in out.getvalue()
+    with (tmp_path / "out.csv").open(encoding="utf-8", newline="") as fh:
+        assert next(csv.reader(fh))[-1] == "builder_part"
 
 
 def test_a_file_without_releases_is_refused(tmp_path):

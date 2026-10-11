@@ -7,8 +7,9 @@ before the report renders, and the tables the shipped packages used to bind to
 (the retired key table, a demo table) meant every importer first had to have
 one lying around. This module turns the changelog into a small table an
 environment can always provide - ``ACCELERATOR_RELEASES`` - with one row per
-release and one per change, so the assignment also tells a report author which
-release is deployed and what changed for the Builder they are looking at.
+release and one per change (a change to the Builder: one per part of it, see
+below), so the assignment also tells a report author which release is deployed
+and what changed for the Builder they are looking at.
 
 Parsing follows the changelog's own conventions (keep-a-changelog style):
 
@@ -32,6 +33,17 @@ The RAG Builder is a part of the Prompt Builder, so what names it is filed
 under "Prompt Builder": that is the value the report's Changelog page filters
 on, in reports already imported as much as in new ones. "RAG runtime" - the
 steps, rag_core, the stores - stays a component of its own.
+
+The Builder holds three parts in one report - prompt templates, decision
+templates, RAG setups - and the last column, ``builder_part``, says which of
+them an entry concerns: "Prompt", "Decision" or "RAG". It is made for a button
+bar, which shows the rows of ONE value, so an entry of the component "Prompt
+Builder" is written ONCE PER PART it concerns: the same row, in the order
+Prompt, Decision, RAG, with only `builder_part` different. One that names no
+part concerns the Builder as a whole and is written for every part its release
+had. A "RAG runtime" row carries "RAG", once; the rows of every other
+component and the release intros carry an empty value. Every other column
+means what it meant, so (release_rank, item_rank) still counts a change once.
 """
 from __future__ import annotations
 
@@ -45,7 +57,7 @@ TABLE_ENV = "SAS_RELEASES_TABLE"
 
 COLUMNS = (
     "version", "release_date", "is_current", "release_rank", "item_rank",
-    "section", "change_type", "component", "summary", "detail",
+    "section", "change_type", "component", "summary", "detail", "builder_part",
 )
 
 STANDARD_SECTIONS = {"added": "Added", "changed": "Changed", "fixed": "Fixed", "removed": "Removed"}
@@ -86,6 +98,62 @@ COMPONENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Documentation", ("documentation", "guide", "readme", "changelog", "docs")),
 )
 GENERAL = "General"
+
+#: The three parts of the Prompt Builder, in the order a shared entry is
+#: written, and the component whose entries are told apart by them.
+PARTS = ("Prompt", "Decision", "RAG")
+BUILDER = "Prompt Builder"
+#: A component that is one part by itself: its rows carry that part, once.
+PART_OF_COMPONENT = {"RAG runtime": "RAG"}
+
+#: What names a part. Unlike the components these are not a priority list:
+#: every part an entry names gets a row. "decision" alone names nothing - a
+#: SAS Intelligent Decisioning decision uses a prompt as much as a RAG setup -
+#: and neither does "embedding": `mdb setup` creates an embedding project. A
+#: keyword never starts inside a word ("prompt" is not in "unprompted"), and a
+#: short one is a whole word, as for the components.
+PART_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Prompt", (
+        "prompt", "judge", "judging", "council", "optimiz", "dspy", "best response",
+        "llm run", "llm call", "call llm",
+    )),
+    ("Decision", (
+        "decision template", "decision mode", "decision view", "decision kind", "decision model",
+        "decision run", "decision project", "decision definition", "decision manifest",
+        "decision-template",
+    )),
+    ("RAG", (
+        "rag", "retrieval", "ingestion", "vector", "ledger", "chunk", "manifest setup",
+    )),
+)
+#: One flow serves both kinds of template: a prompt-test is the object behind
+#: a prompt template as much as behind a decision template, and both are run
+#: and saved as experiments. A headline about the flow names both parts.
+FLOW_KEYWORDS = ("prompt-test", "prompt test", "prompt flow", "experiment", "manifest best prompt")
+FLOW_PARTS = ("Prompt", "Decision")
+#: An entry that says so itself concerns every part, whatever else it names.
+EVERY_PART_PHRASES = ("three kinds", "every kind", "all four create dialogs")
+
+#: By release: what did not exist yet cannot be concerned.
+#:  - BUILDER_SINCE is the Builder as a whole, which is what an entry that
+#:    names no part is about: prompts alone until the RAG Builder came into
+#:    this repository (2.0.0), no decision templates before the decision mode
+#:    (2.2.0).
+#:  - NAMED_SINCE is the release from which a keyword can mean the part at
+#:    all. The RAG Builder has none: 0.1.14 names it, when it lived in another
+#:    repository, and an entry that names it is about it.
+BUILDER_SINCE = {"Prompt": (0,), "Decision": (2, 2, 0), "RAG": (2, 0, 0)}
+NAMED_SINCE = {"Decision": (2, 2, 0)}
+#: Since 2.3.0 "Prompt Builder" is the name of the whole: it names no part,
+#: and a headline that names it and no part is about all of it. Before, it
+#: was the UI for prompts beside the RAG Builder, so there the name counts as
+#: the keyword "prompt" that it contains.
+MERGED_SINCE = (2, 3, 0)
+_BUILDER_NAME = re.compile(r"prompt[- ]builder")
+#: What is named without being concerned: "RAG runtime" is the other
+#: component, and a comparison ("as in the Prompt Builder") names the Builder
+#: an entry is measured against.
+_NOT_CONCERNED = re.compile(r"rag[- ]runtime|\bas (?:in |of )?the (?:prompt|rag)[- ]builder")
 
 _RELEASE = re.compile(r"^## \[(?P<version>[^\]]+)\]\s*-\s*(?P<date>.+?)\s*$")
 _SECTION = re.compile(r"^### (?P<title>.+?)\s*$")
@@ -165,6 +233,65 @@ def component_for(section: str, text: str) -> str:
     return components_of(text)[0]
 
 
+def _release_key(version: str) -> tuple:
+    """The version as numbers, 2.3.0 -> (2, 3, 0), to tell older from newer.
+    A heading without a number ("Unreleased") is the newest there can be."""
+    numbers = re.findall(r"\d+", version)
+    return tuple(int(n) for n in numbers[:3]) if numbers else (float("inf"),)
+
+
+def _names(keyword: str, text: str) -> bool:
+    whole_word = r"\b" if len(keyword) <= 4 and keyword.isalpha() else ""
+    return re.search(rf"\b{re.escape(keyword)}{whole_word}", text) is not None
+
+
+def _named_parts(text: str, release: tuple, flow: bool = True) -> list[str]:
+    """The parts the text names, in the order of PARTS; [] if it names none.
+    `flow` is off where only a part's own name may count."""
+    lowered = _NOT_CONCERNED.sub(" ", text.lower())
+    if release >= MERGED_SINCE:
+        lowered = _BUILDER_NAME.sub("builder", lowered)
+    named = {part for part, words in PART_KEYWORDS if any(_names(w, lowered) for w in words)}
+    if flow and any(_names(w, lowered) for w in FLOW_KEYWORDS):
+        named.update(FLOW_PARTS)
+    return [part for part in PARTS if part in named and release >= NAMED_SINCE.get(part, (0,))]
+
+
+def parts_for(version: str, section: str, change_type: str, text: str) -> list[str]:
+    """The parts of the Builder an entry of the component "Prompt Builder"
+    concerns, in the order of PARTS - one row is written for each.
+
+    The section decides when its heading names a part, as it does for the
+    component; the steps of an upgrade are everybody's, and so is an entry
+    that says it holds for every kind. Otherwise the headline decides: the
+    parts it names, or the whole Builder when it names that and no part. A
+    headline that settles nothing leaves it to the text, and an entry that
+    names no part anywhere concerns the Builder as a whole: every part its
+    release had.
+    """
+    release = _release_key(version)
+    whole = [part for part in PARTS if release >= BUILDER_SINCE[part]]
+    if section and section.lower() not in STANDARD_SECTIONS:
+        by_section = _named_parts(section, release)
+        if by_section:
+            return by_section
+    if change_type == "Upgrade":
+        return whole
+    headline, detail = _split(text)
+    if any(phrase in _plain(text).lower() for phrase in EVERY_PART_PHRASES):
+        return whole
+    named = _named_parts(headline, release)
+    if named == ["Prompt"] and "Decision" in _named_parts(detail, release, flow=False):
+        # a headline about prompts alone, and a text that says the decision
+        # templates behave the same
+        return ["Prompt", "Decision"]
+    if named:
+        return named
+    if release >= MERGED_SINCE and _BUILDER_NAME.search(headline.lower()):
+        return whole
+    return _named_parts(detail, release) or whole
+
+
 def parse_changelog(text: str) -> list[Release]:
     releases: list[Release] = []
     current: Release | None = None
@@ -224,14 +351,19 @@ def rows_from(releases: list[Release]) -> list[dict]:
             intro = " ".join(_plain(p) for p in release.intro)
             summary, _ = _split(intro)
             rows.append({**base, "item_rank": item_rank, "section": "Release", "change_type": "Release",
-                         "component": GENERAL, "summary": summary, "detail": intro})
+                         "component": GENERAL, "summary": summary, "detail": intro, "builder_part": ""})
         for item in release.items:
             item_rank += 1
             summary, detail = _split(item["text"])
-            rows.append({**base, "item_rank": item_rank, "section": item["section"],
-                         "change_type": item["change_type"],
-                         "component": component_for(item["section"], item["text"]),
-                         "summary": summary, "detail": detail})
+            component = component_for(item["section"], item["text"])
+            if component == BUILDER:
+                parts = parts_for(release.version, item["section"], item["change_type"], item["text"])
+            else:
+                parts = [PART_OF_COMPONENT.get(component, "")]
+            for part in parts:
+                rows.append({**base, "item_rank": item_rank, "section": item["section"],
+                             "change_type": item["change_type"], "component": component,
+                             "summary": summary, "detail": detail, "builder_part": part})
     return rows
 
 
@@ -254,12 +386,19 @@ def build_release_table(changelog: Path, csv_path: Path) -> tuple[list[dict], di
     rows = rows_from(releases)
     write_csv(rows, csv_path)
     by_component: dict[str, int] = {}
+    by_part = {part: 0 for part in PARTS}
     for row in rows:
         by_component[row["component"]] = by_component.get(row["component"], 0) + 1
+        if row["builder_part"]:
+            by_part[row["builder_part"]] += 1
     current = next((r for r in rows if r["is_current"]), None)
     return rows, {
         "releases": len(releases),
         "rows": len(rows),
+        # what the changelog holds, each counted once: a Builder entry that
+        # concerns two parts is two rows and one entry
+        "entries": len({(r["release_rank"], r["item_rank"]) for r in rows}),
         "current": current["version"] if current else "",
         "by_component": dict(sorted(by_component.items(), key=lambda kv: -kv[1])),
+        "by_part": by_part,
     }

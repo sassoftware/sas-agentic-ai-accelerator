@@ -849,9 +849,14 @@ def _releases_table() -> str:
     return os.environ.get(TABLE_ENV) or DEFAULT_TABLE
 
 
-def _print_component_counts(summary: dict) -> None:
+def _print_release_counts(summary: dict) -> None:
     counts = ", ".join(f"{name} {n}" for name, n in summary["by_component"].items())
     console.print(f"  rows per component: {counts}")
+    # a Builder entry is one row per part it concerns, so the rows outnumber
+    # the entries and the parts add up to more than the Builder's entries
+    parts = ", ".join(f"{name} {n}" for name, n in summary["by_part"].items())
+    console.print(f"  rows per Builder part (builder_part): {parts} - {summary['rows']} rows "
+                  f"for {summary['entries']} changelog entries")
 
 
 @app.command("load-releases")
@@ -883,10 +888,12 @@ def load_releases(
     One row per release and one per change, with the release, the section
     (Added / Changed / Fixed / Removed), the component it concerns (Prompt
     Builder, RAG runtime, Model Definition Builder, ...) and the change as a
-    headline plus detail. It is the table a report author assigns to the
-    Prompt Builder object in SAS Visual Analytics - a Data-Driven Content
-    object needs a data assignment before it renders - and it says which
-    release an environment runs. `mdb setup` loads it too.
+    headline plus detail. A change to the Prompt Builder is one row per part
+    of it that it concerns - builder_part is Prompt, Decision or RAG - so a
+    button bar on that column shows it under each. It is the table a report
+    author assigns to the Prompt Builder object in SAS Visual Analytics - a
+    Data-Driven Content object needs a data assignment before it renders -
+    and it says which release an environment runs. `mdb setup` loads it too.
     """
     from .core.releases import build_release_table
     from .viya.cas import resolve_server
@@ -901,7 +908,7 @@ def load_releases(
             raise typer.Exit(1)
         console.print(f"Wrote {summary['rows']} rows for {summary['releases']} releases to {csv_out} "
                       f"(current release: {summary['current'] or 'none dated'}).")
-        _print_component_counts(summary)
+        _print_release_counts(summary)
         return
     caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
     server_choice = server or os.environ.get("SAS_CAS_SERVER")
@@ -916,7 +923,7 @@ def load_releases(
     suffix = " (replaced a loaded copy)" if summary["dropped"] else ""
     console.print(f"  {table_name}: {summary['rows']} rows for {summary['releases']} releases, uploaded, "
                   f"promoted (global) and saved to disk{suffix}")
-    _print_component_counts(summary)
+    _print_release_counts(summary)
     console.print(f"[green]Done. Current release: {summary['current'] or 'none dated'}. Assign "
                   f"{caslib}.{table_name} to the Prompt Builder object in SAS Visual Analytics.[/green]")
 
