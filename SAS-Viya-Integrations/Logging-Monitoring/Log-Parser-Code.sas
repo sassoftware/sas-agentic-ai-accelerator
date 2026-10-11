@@ -168,8 +168,10 @@ def text_hash(text):
 
     The programs that read the table hash a text the same way, which is how the question
     of a retrieval is found again in the call to the embedding model that embedded it.
+    A character that has no UTF-8 bytes - half of a surrogate pair in a request body -
+    is hashed as a question mark, as those programs do.
     """
-    return hashlib.sha256(' '.join(text.split()).encode('utf-8')).hexdigest()
+    return hashlib.sha256(' '.join(text.split()).encode('utf-8', errors='replace')).hexdigest()
 
 def looks_like_a_key(text):
     """

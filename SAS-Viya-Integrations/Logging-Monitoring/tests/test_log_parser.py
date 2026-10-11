@@ -903,6 +903,16 @@ def test_hash_of_a_text_is_the_one_the_other_programs_compute(monkeypatch, tmp_p
     assert hash_of(question.lower()) != hash_of(question)
 
 
+def test_text_that_has_no_utf8_bytes_is_hashed_as_the_other_programs_hash_it(monkeypatch, tmp_path):
+    """A request body can hold half of a surrogate pair, which has no UTF-8 bytes. Get-All-Prompts.sas
+    and the link program hash such a character as a question mark. The parser does the same, and the
+    request does not stop the parsing of the file."""
+    frame = parse(monkeypatch, tmp_path, as_log(embedding_block(document="caf\udce9 au lait"), llm_block()))
+
+    assert len(frame) == 2
+    assert frame.loc[0, "input_hash"] == text_hash("caf? au lait")
+
+
 # ---------------------------------------------------------------------------
 # The results of a retrieval in a prompt
 # ---------------------------------------------------------------------------
