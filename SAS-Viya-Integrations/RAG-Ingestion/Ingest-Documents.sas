@@ -750,8 +750,16 @@ run; quit;
 proc python terminate;
 run; quit;
 
-/* ---- Persist the updated ledger (promote AND save - survives restarts) --- */
+/* ---- Persist the updated ledger (promote AND save - survives restarts) ----
+   Only a run that went through stores a ledger. rag_ledger_out.json stays in
+   WORK, so in a SAS session that ran the job before, a later run that
+   stopped early - at a saved ledger that could not be loaded, at the lock of
+   another run - found the file of the EARLIER run here and stored that
+   ledger again: over the saved file, and without the lock of the other run.
+   The Python program writes the file and then reports success, so a run
+   that reports success always stores its own. */
 %macro _rag_store_ledger;
+    %if &_rag_rc. NE 0 %then %return;
     %if %sysfunc(fileexist(%sysfunc(pathname(work))/rag_ledger_out.json)) %then %do;
         filename _ragout "%sysfunc(pathname(work))/rag_ledger_out.json";
         libname _ragjson json fileref=_ragout;

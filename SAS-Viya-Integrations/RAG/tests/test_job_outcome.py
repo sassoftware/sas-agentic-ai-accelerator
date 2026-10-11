@@ -222,6 +222,26 @@ def test_only_a_run_that_went_through_is_not_a_failed_one():
         < program.index("except Exception as error:")
 
 
+def test_a_run_that_failed_stores_no_ledger():
+    """rag_ledger_out.json stays in WORK. In a SAS session that ran the job
+    before, a run that stopped early found the file of the earlier run and
+    stored that ledger again - after a failed reload over the very file that
+    could not be loaded. The file alone decided; now the run does."""
+    after = _after_python()
+    store = _macro(after, "_rag_store_ledger")
+    guard = store.index("%if &_rag_rc. NE 0 %then %return;")
+    assert guard < store.index("fileexist(") < store.index("droptable casdata=") \
+        < store.index("promote casdata=") < store.index("save casdata=")
+    # nothing of the store stands in front of the guard
+    assert store[:guard].strip() == "%macro _rag_store_ledger;"
+    # and a run that reports success wrote the file itself, just before
+    program = _python()
+    assert program.count('"rag_ledger_out.json"') == 1
+    assert program.index('"rag_ledger_out.json"') \
+        < program.index('SAS.symput("_rag_rc", "0")')
+    assert after.index("%_rag_store_ledger;") < after.index("%macro _rag_job_state;")
+
+
 def test_the_reload_still_keeps_its_own_condition_code_out_of_the_run():
     """The job fails through _rag_rc at its end, not through what PROC CAS
     left behind: a load another session won is no failure of the run."""
