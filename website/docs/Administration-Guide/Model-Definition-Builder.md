@@ -205,22 +205,98 @@ The save step writes a `.sashdat`, so target a **path-based** caslib (like
 `ACCELERATOR_RELEASES` (same caslib and server options as `load-facts`; the
 name comes from `--table` or `SAS_RELEASES_TABLE`) and `mdb setup` loads it by
 default (`--no-releases` skips it). It has one row per release - the release
-intro, `change_type` = `Release` - and one per changelog entry, with:
+intro, `change_type` = `Release` - and one per changelog entry, or, for an
+entry of the Prompt Builder, one per part of the Builder it concerns, with:
 
 | Column | Content |
 | --- | --- |
 | `version`, `release_date` | from the `## [x.y.z] - date` heading; an *Unreleased* section is listed but never current |
 | `is_current` | 1 for the newest dated release |
 | `release_rank`, `item_rank` | 1 = newest release; the entry's position within it, so a report can order without dates |
-| `section`, `change_type` | the heading as written and its normalised kind: Added, Changed, Fixed, Removed, Breaking, Release |
+| `section`, `change_type` | the heading as written and its normalised kind: Added, Changed, Fixed, Removed, Breaking, Upgrade, Release |
 | `component` | Prompt Builder, RAG runtime, Credentials, Model Definition Builder, Definitions, Documentation or General - from the section heading when it names one, else from the entry's wording. Entries about the RAG Builder are filed under Prompt Builder, which it is part of |
 | `summary`, `detail` | the entry's bold lead (or first sentence) and the rest, as plain text |
+| `builder_part` | the part of the Prompt Builder an entry concerns: `Prompt`, `Decision` or `RAG`; empty for the release intro and for every component other than Prompt Builder and RAG runtime. The last column |
 
 It exists because a SAS Visual Analytics Data-Driven Content object needs a
 data assignment before it renders: the Prompt Builder object is assigned this
 table, and a report author can filter it by `component` to show what changed
 for the Builder next to it. `mdb load-releases --csv out.csv`
 writes the table without contacting SAS Viya, for a look at the rows.
+
+#### One row per part of the Builder
+
+The Prompt Builder holds three parts in one report - prompt templates,
+decision templates and RAG setups - and `builder_part` is the column for a
+button bar that lets a reader of the Changelog page pick one of them. A button
+bar shows the rows of the value that is picked, so an entry of the component
+`Prompt Builder` is written **once for each part it concerns**: the rows are
+equal in every column but `builder_part`, in the order Prompt, Decision, RAG.
+A row of the component `RAG runtime` carries `RAG`, once. Nothing else has a
+part. `release_rank` and `item_rank` are those of the entry on each of its
+rows, so a change is still counted once by that pair (not by `version` alone:
+the changelog used 0.1.29 for two releases); `mdb load-releases` prints the
+rows per part beside the number of entries they stand for.
+
+Which parts an entry concerns is read from its wording, as the component is:
+
+- The parts its **headline** names: a prompt, the judge, the optimization or
+  the Call LLM node for `Prompt`; a decision template, the decision mode or a
+  decision model for `Decision`; the RAG Builder, a RAG setup, retrieval,
+  ingestion, the ledger or a vector store for `RAG`. A prompt-test and an
+  experiment belong to the flow both kinds of template share, so they name
+  `Prompt` and `Decision`. A decision in SAS Intelligent Decisioning names no
+  part.
+- A headline that names the Prompt Builder and no part of it - *The create
+  dialogs of the Prompt Builder show the whole name* - concerns the Builder as
+  a whole and is written for all three. So are the steps of an upgrade, and an
+  entry that says it applies to all three kinds.
+- When the headline settles nothing, the parts the rest of the entry names
+  decide, and an entry that names none anywhere is written for the whole
+  Builder.
+- By release: a part that did not exist yet cannot be concerned. Before 2.2.0
+  there was no decision mode, so no entry of an older release is filed under
+  `Decision`. Before 2.0.0 the Builder was the one for prompts, so an entry
+  that names no part is `Prompt` alone there, `Prompt` and `RAG` from 2.0.0,
+  and all three from 2.2.0. Up to 2.2.x the Prompt Builder and the RAG Builder
+  were two applications, and the name *Prompt Builder* names the prompt part
+  in those releases; from 2.3.0 it is the name of the whole. An entry that
+  names the RAG Builder is filed under `RAG` in any release - the changelog
+  first names it in 0.1.14.
+
+The reading is a set of keyword lists (`PART_KEYWORDS` and its neighbours in
+`mdb/core/releases.py`), not an understanding of the entry, and the headline
+outweighs the text: an entry whose headline names one part is filed under that
+part even where its text says that another is affected as well. The one
+exception is a headline about prompts whose text names decision templates,
+which is filed under both because the two share a flow. Name every part in the
+headline of a new entry when it concerns more than one.
+
+#### The Changelog page of the report
+
+The page needs two things from the table: the **filter on `component`** it has
+(`Prompt Builder`; add `RAG runtime` to it to list the changes to the steps
+and `rag_core` under the RAG button as well), and a **button bar on
+`builder_part`** as the control a reader picks the part with. Without the
+filter on `component` the rows of the other components, which have no part,
+are rows of the empty value.
+
+`mdb load-releases` changes the table and not the report: the page with the
+button bar comes with the Prompt Builder package a maintainer exports after
+building it, and until that report is imported a site has the new table under
+the page it had. On that page a `Prompt Builder` entry that concerns two or
+three parts is two or three rows of the table, equal in everything the page
+shows. What the page as shipped up to now makes of them was read from the
+package and **not measured in SAS Visual Analytics**: its list table is an
+aggregated one (`detail="false"` in the report content) over Version,
+Component, Summary and Detail, and an aggregated list table has one line per
+combination of its columns, so such an entry should still be one line there;
+its button bar on Change Type and its filter on `component` are not affected.
+A list table switched to detail data shows the entry once per part, and
+anything that counts rows - a Frequency, a key value, a bar chart of changes
+per release - counts it once per part as well. To count entries instead of
+rows, count under one button of the bar, or take the distinct count of an item
+that joins `release_rank` and `item_rank`.
 
 `mdb generate --all --check` verifies that every generated file matches its manifest and is intended as a CI gate. Files you edited by hand are never overwritten silently — the command tells you to either fold the change into the manifest, declare the file as hand-maintained under `generation.overrides`, or pass `--force`.
 
