@@ -251,6 +251,10 @@ One report, three kinds.
 
 Save the options while the RAG Builder report still exists, then run `mdb builders-import`.
 
+### Added
+
+- **The Administration Guide says how to recognise an execution that SAS Micro Analytic Service ended after 30 seconds, for a decision with a retrieval model.** Measured with a decision of three model nodes that were all manifested in the Prompt Builder - a retrieval model, a prompt template and a decision template.
+
 ### Changed
 
 - **The RAG Builder is part of the Prompt Builder.** One bundle, one report and one Options pane serve all three kinds.
@@ -264,7 +268,6 @@ Save the options while the RAG Builder report still exists, then run `mdb builde
 - **"Judge this run" in the Prompt Builder can be used right after a run.** After an experiment the button stayed disabled until the prompt-test was loaded again.
 - **Prompt-tests made in the Prompt Builder record their modeler.** A misspelt field name meant that every prompt-test was created without one.
 - **A RAG setup embeds its documents and its questions at one endpoint.** The retrieval model was written with the host whatever the SCR endpoint option of the Prompt Builder said.
-- **A decision with a retrieval model manifested in the Prompt Builder returns its outputs in SAS Micro Analytic Service.** Found with a decision of three model nodes - a retrieval model, a prompt template and a decision template.
 - **The create dialogs of the Prompt Builder show the whole name.** In the dialogs that create a project, a prompt-test or a RAG setup the field was too narrow.
 - **The Prompt Builder sends no Referer to another site.** The user-guide link of the Optimize step goes to another site.
 - **mdb builders-import knows the Prompt Builder package from the RAG runtime package.** A report RAG Builder that is still on the site is reported.
@@ -293,8 +296,8 @@ def test_a_builder_entry_is_one_row_per_part_it_concerns():
     # for prompts although its text says "experiment", and a decision in SAS
     # Intelligent Decisioning is not a decision template
     assert parts['"Judge this run" in the Prompt Builder can be used right after a run'] == ["Prompt"]
-    assert parts["A decision with a retrieval model manifested in the Prompt Builder returns its outputs "
-                 "in SAS Micro Analytic Service"] == ["RAG"]
+    assert parts["The Administration Guide says how to recognise an execution that SAS Micro Analytic Service "
+                 "ended after 30 seconds, for a decision with a retrieval model"] == ["RAG"]
     assert parts["A manifest of a RAG setup that fails half way says so beside the button"] == ["RAG"]
     # one flow serves both kinds of template: a prompt-test is either, and a
     # headline about prompts is joined by Decision when the text says so
