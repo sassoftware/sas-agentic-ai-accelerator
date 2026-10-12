@@ -261,7 +261,8 @@ RUNTIME_PROJECT = 'rag'
 # target_model, system_template, user_template, resolved_system_prompt, resolved_user_prompt,
 # collection, template_source, resolved_system_hash, resolved_user_hash, run_time,
 # window_start, window_end and optimization_id - read as missing values when the catalog
-# does not have them.
+# does not have them. The catalog holds three more that nothing here reads: projectname, and
+# prompt_length and output_length of a run.
 CATALOG_KEY_COLUMNS = ['modelid', 'name', 'role']
 # The columns an ingestion run is read from. modelid, the setup that holds the run, is optional.
 RUN_COLUMNS = ['run_id', 'collection', 'embed_model', 'started_at', 'finished_at']
@@ -988,9 +989,11 @@ def setup_of_collection(index, collection, user_prompt=''):
     if len(setups) == 1:
         return setups[0]
     if len(setups) > 1 and user_prompt:
-        named = INGESTION_RUN.search(user_prompt)
+        # Of several retrievals in one prompt the last one counts: the log parser takes the
+        # collection and the question of that one, and the run is taken of the same
+        named = INGESTION_RUN.findall(user_prompt)
         if named:
-            holding = [setup for setup in setups if setup in index['run_setups'].get(named.group(1), ())]
+            holding = [setup for setup in setups if setup in index['run_setups'].get(named[-1], ())]
             if len(holding) == 1:
                 return holding[0]
     setups = saved_setups(index, setups)

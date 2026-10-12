@@ -427,6 +427,18 @@ def test_collection_of_two_setups_is_decided_by_the_ingestion_run_of_the_retriev
     assert link(program, [leave_request()], [LLM, LEAVE_PROMPT] + setups, runs)[0]["rag_model_id"] == uuid(31)
 
 
+def test_of_several_retrievals_in_a_prompt_the_last_one_names_the_ingestion_run(program):
+    """The log parser takes the collection and the question of the last retrieval a prompt holds, and the
+    ingestion run is taken of the same retrieval."""
+    setups = [HANDBOOK, rag_setup(uuid(31), "RAG Retrieval - Staff handbook", "handbook_v1")]
+    runs = [ingestion_run("run-1767604500", "handbook_v1", "2026-01-05 09:15:00", "2026-01-05 09:20:00", model_id=uuid(30)),
+            ingestion_run("run-1767690900", "handbook_v1", "2026-01-06 09:15:00", "2026-01-06 09:20:00", model_id=uuid(31))]
+    earlier, last = envelope("handbook_v1", "How is a sick day reported?", run_id="run-1767604500"), envelope("handbook_v1", QUESTION, run_id="run-1767690900")
+    for passages, setup in ((earlier + "\n" + last, uuid(31)), (last + "\n" + earlier, uuid(30)), (earlier, uuid(30))):
+        row = llm_row(LEAVE_SYSTEM, LEAVE_USER.replace("{{question}}", QUESTION).replace("{{passages}}", passages), retrieval=("handbook_v1", QUESTION))
+        assert link(program, [row], [LLM, LEAVE_PROMPT] + setups, runs)[0]["rag_model_id"] == setup, passages[:60]
+
+
 def test_setup_the_builder_saved_is_ahead_of_the_model_the_step_registered(program):
     """A setup that was saved in the Prompt Builder and registered with the step RAG - Register Setup is two
     models with one collection, and Get-All-Prompts.sas stacks the runs of their run table once for each.
