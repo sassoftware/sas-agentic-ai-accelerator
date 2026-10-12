@@ -306,7 +306,8 @@ def read_options(options_str):
 
     The models take them as '{name:value,name:value}' or as JSON, and read them the
     same way: JSON first, otherwise every part between two commas that holds a colon.
-    Nested deeper than Python decodes, the options are read the second way.
+    Nested deeper than Python decodes, the options are read the second way: such a
+    request is not one that holds a value that could not be read, and no NOTE counts it.
     """
     text = options_str.strip()
     try:
@@ -468,9 +469,12 @@ def find_retrieval_envelope(text):
     object somewhere in its text. It is decoded as JSON from a '{' on, so a question
     with quotes, braces or line breaks in it is read as it was written.
 
-    Only an object with all the keys of the runtime counts, and of several the last one:
-    what a user typed in front of the retrieval of a prompt does not set the columns. The
-    search tries ENVELOPE_STARTS opening braces and decodes ENVELOPE_CHARACTERS characters
+    Only an object with all the keys of the runtime counts, and of several the last one.
+    So an object with a collection and a query that a user typed does not set the columns,
+    and neither does a whole envelope in front of the retrieval of a prompt - the retrieval
+    of an example, or one a user typed there. A whole envelope that stands behind the
+    retrieval does: it is the last one, and the columns are its collection and its question.
+    The search tries ENVELOPE_STARTS opening braces and decodes ENVELOPE_CHARACTERS characters
     at most. A prompt that needs more keeps the envelope found by then, which can be none.
     """
     if any('"' + key + '"' not in text for key in ENVELOPE_KEYS):
@@ -1149,7 +1153,7 @@ def parse_log_file(file_path):
     if ended > 0:
         say(f"{ended} request(s) were running where the lines of their container end - at the end of the file, or at the end of a part of it, where the time of the lines goes back. The log holds neither a response nor an error for them, and failed is missing for them.")
     if unreadable > 0:
-        say(f"{unreadable} request(s) hold a value that could not be read, for example a 'Request Data:' line that was cut off or options that are nested deeper than Python decodes. The rows were kept with what was read.")
+        say(f"{unreadable} request(s) hold a value that could not be read, for example a 'Request Data:' line that was cut off or a request body that is nested deeper than Python reads. The rows were kept with what was read.")
     if replaced > 0:
         say(f"{replaced} request(s) hold a character that has no UTF-8 bytes in a text column - half of a surrogate pair in a request body. It was replaced by a question mark, the way the hash of a text counts it.")
 

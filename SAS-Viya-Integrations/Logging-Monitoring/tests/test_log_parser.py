@@ -2374,6 +2374,11 @@ def test_request_line_that_is_the_last_log_line_of_a_response_reads_as_a_request
 # Content that can not be read
 # ---------------------------------------------------------------------------
 
+# The NOTE names what it counts. Options that are nested deeper than Python decodes are not
+# among it: they are read as names and values and leave nothing unread
+UNREADABLE_NOTE = ("1 request(s) hold a value that could not be read, for example a `Request Data:` line that was cut off or "
+                   "a request body that is nested deeper than Python reads. The rows were kept with what was read.")
+
 @pytest.mark.parametrize("options", ["[" * 100000, '{"a":' * 100000, "{a:" * 100000 + "1" + "}" * 100000],
                          ids=["brackets", "JSON objects", "lists of options"])
 def test_options_that_are_nested_deeper_than_python_decodes_do_not_stop_the_file(monkeypatch, tmp_path, options):
@@ -2387,6 +2392,27 @@ def test_options_that_are_nested_deeper_than_python_decodes_do_not_stop_the_file
         ("llm", "What is the capital of Austria?", "The capital of Austria is Vienna.", 200)
     assert frame.loc[0, "options"] == options
     assert (frame.loc[1, "temperature"], frame.loc[1, "options"]) == (0.4, "{temperature:0.4}")
+    # They are read as names and values, the way options that are no JSON are: nothing of the request
+    # is left unread, and the NOTE that counts requests with a value that could not be read is not written
+    assert run.sas.messages == []
+
+
+def test_request_body_that_is_nested_deeper_than_python_reads_is_counted_in_a_note(monkeypatch, tmp_path):
+    """The 'Request Data:' line holds the request body as a Python literal. One that is nested
+    deeper than Python reads leaves the inputs of its request unread: the row is kept with
+    what the other lines say, the file is read to its end and the NOTE counts the request."""
+    block = llm_block()
+    data_line = next(index for index, line in enumerate(block) if " - Request Data: " in line)
+    start = block[data_line].index("Request Data: ") + len("Request Data: ")
+    block[data_line] = block[data_line][:start] + "{'inputs': " + "[" * 100000 + "]" * 100000 + "}"
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(block, llm_block(timestamp="2026-01-05 09:16:00"))))
+
+    frame = run.uploads[0]["frame"]
+    assert run.row_count == "2"
+    assert missing(frame.loc[0, "user_prompt"]) and missing(frame.loc[0, "kind"])
+    assert (frame.loc[0, "response"], frame.loc[0, "status_code"], frame.loc[0, "failed"]) == ("The capital of Austria is Vienna.", 200, 0)
+    assert frame.loc[1, "user_prompt"] == "What is the capital of Austria?"
+    assert notes(run) == [UNREADABLE_NOTE]
 
 
 def test_request_whose_content_raises_anything_keeps_its_row_with_what_was_read(monkeypatch, tmp_path):
@@ -2412,8 +2438,7 @@ def test_request_whose_content_raises_anything_keeps_its_row_with_what_was_read(
     # The inputs that could be read are there, and so is everything the other lines say
     assert (frame.loc[0, "kind"], frame.loc[0, "embedding_mode"], frame.loc[0, "project"]) == ("embedding", "document", "handbook")
     assert (frame.loc[0, "prompt_length"], frame.loc[0, "status_code"], frame.loc[0, "failed"]) == (5, 200, 0)
-    assert notes(run) == ["1 request(s) hold a value that could not be read, for example a `Request Data:` line that was cut off or "
-                          "options that are nested deeper than Python decodes. The rows were kept with what was read."]
+    assert notes(run) == [UNREADABLE_NOTE]
 
 
 def test_request_data_that_was_cut_off_is_counted_in_a_note(monkeypatch, tmp_path):
@@ -2423,7 +2448,7 @@ def test_request_data_that_was_cut_off_is_counted_in_a_note(monkeypatch, tmp_pat
     run = run_parser(monkeypatch, _write(tmp_path, as_log(block, llm_block(timestamp="2026-01-05 09:16:00"))))
 
     assert run.row_count == "2"
-    assert len(notes(run)) == 1 and notes(run)[0].startswith("1 request(s) hold a value that could not be read, for example a `Request Data:` line")
+    assert notes(run) == [UNREADABLE_NOTE]
 
 
 @pytest.mark.parametrize("inputs, columns", [
