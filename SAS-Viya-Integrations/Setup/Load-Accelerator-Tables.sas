@@ -29,8 +29,10 @@
  * session, its rows are counted against the lines of the file, and only then
  * is the table dropped, the upload promoted under its name and saved. A file
  * that is not there, that has other columns or that CAS did not take leaves
- * the table as it is, with a WARNING. Load-Fact-Sheets.sas does the same for
- * each sheet.
+ * the table as it is, with a WARNING. Load-Fact-Sheets.sas tries each sheet
+ * beside its table in the same way, but drops that trial again: it then
+ * drops the table and loads the sheet a second time, so the load that takes
+ * the place of a fact sheet table is not the one whose rows were counted.
  *
  * THE JOB FAILS when one of the four tables is not in the CAS library at its
  * end, or when a parameter is refused: it then writes an ERROR line and sets
