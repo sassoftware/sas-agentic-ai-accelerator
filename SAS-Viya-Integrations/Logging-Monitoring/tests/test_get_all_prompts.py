@@ -1230,8 +1230,17 @@ def test_the_about_tab_names_the_five_tables():
     for words in ("Prompt experiments", "Prompt optimizations", "RAG setups", "RAG runs", "Model catalog",
                   "modelID, runID, model", "modelID, optimizationId", "modelID, run_id"):
         assert words in about
-    assert by_id["textChangelog"]["text"].startswith("* Version: 2.1 (12OCT2026)")
-    assert "* Version: 2.0 (11OCT2026)" in by_id["textChangelog"]["text"]
+    assert by_id["textChangelog"]["text"].startswith("* Version: 2.2 (12OCT2026)")
+    assert "\n* Version: 2.1 (12OCT2026)" in by_id["textChangelog"]["text"] and "* Version: 2.0 (11OCT2026)" in by_id["textChangelog"]["text"]
+    # what version 2.2 says, beside the place of the program it is about
+    program = step_program()
+    assert "(SYSCC) to 1012 at its end" in about and "%let SYSCC = 1012;" in program
+    for path in ("an output library that is no CAS library", "a table name that is refused", "projects that could not be listed",
+                 "a table that was not written"):
+        assert path in about, path
+    assert "carry the id as <id>#2" in about and "identifier = f'{identifier}#{held[identifier]}'" in program
+    assert "a quote shows as a backtick, % as pct, & as +, a semicolon as a comma" in about
+    assert """NOT_FOR_SAS = (("'", '`'), ('"', '`'), ('%', 'pct '), ('&', '+'), (';', ','), ('/' + '*', '/ *'), ('*' + '/', '* /'))""" in program
     assert by_id["textChangelog"]["text"].endswith("* Version: 1.0 (09AUG2025)\n      - Initial version")
     # an About tab says what the step does, not what was or was not run
     texts = " ".join(control.get("text", "") for control in by_id.values())
