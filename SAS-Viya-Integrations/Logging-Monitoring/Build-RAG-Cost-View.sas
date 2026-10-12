@@ -249,7 +249,7 @@ proc sql noprint;
     from work._rcv_cost
     where enrich_cost = . and enrich_model is not null and enrich_model ne '';
 quit;
-%put NOTE: RAG_RUN_COST built in &_rcv_out_caslib..;
+%put NOTE: &_rcv_out_table. built in &_rcv_out_caslib..;
 %if %sysevalf(&_rcv_unpriced. > 0) %then %do;
     %put WARNING: &_rcv_unpriced. embedding model(s) have no price in EMBEDDING_FACT_SHEET;
     %put WARNING- their runs show a missing cost. Reload the fact sheet or add the model.;
