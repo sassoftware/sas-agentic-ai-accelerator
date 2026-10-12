@@ -166,3 +166,24 @@ def test_job_messages_name_the_failing_task():
     session = FakeSession()
     job = {"links": [{"rel": "self", "href": "/transfer/importJobs/i-1"}]}
     assert transfer.job_messages(session, job) == ["Prompt Builder: failed no such caslib"]
+
+
+def test_the_other_tables_follow_a_library_only_when_one_is_named():
+    """A site that keeps LLM_LOGS and the fact sheets in a library of its own
+    asks for it; the table keeps its name, because a report retargeted at a
+    table with other columns loses its data items."""
+    mapping, changes = transfer.rehost_mapping(
+        MAPPING(), "viya.example.com", "ACCELERATOR_RELEASES",
+        "server=cas-shared-default;library=MyLib;table=RELEASES", library="Monitoring", server="cas-team")
+    targets = {c["source"].split("table=")[1]: c["target"] for c in mapping["connectors"]["table"]}
+    assert targets == {"ACCELERATOR_RELEASES": "server=cas-shared-default;library=MyLib;table=RELEASES",
+                       "HMEQ": "server=cas-team;library=Monitoring;table=HMEQ"}
+    assert "data source server=cas-shared-default;library=Public;table=HMEQ -> " \
+           "server=cas-team;library=Monitoring;table=HMEQ" in changes
+    assert not any("left as exported" in c for c in changes)
+    # without a server the table stays on the server the package names
+    mapping, _ = transfer.rehost_mapping(MAPPING(), "h", "ACCELERATOR_RELEASES", "x", library="Monitoring")
+    assert mapping["connectors"]["table"][1]["target"] == "server=cas-shared-default;library=Monitoring;table=HMEQ"
+    # a second run over a mapping that already points there reports no change
+    again, changes = transfer.rehost_mapping(mapping, "h", "ACCELERATOR_RELEASES", "x", library="Monitoring")
+    assert not [c for c in changes if "HMEQ" in c]

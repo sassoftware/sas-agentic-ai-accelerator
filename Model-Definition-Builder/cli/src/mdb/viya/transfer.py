@@ -151,14 +151,18 @@ def host_of(url_or_host: str) -> str:
 
 
 def rehost_mapping(mapping: dict, host: str, releases_from: str, releases_to: str,
-                   placeholder: str = PLACEHOLDER_HOST) -> tuple[dict, list[str]]:
+                   placeholder: str = PLACEHOLDER_HOST,
+                   library: Optional[str] = None, server: Optional[str] = None) -> tuple[dict, list[str]]:
     """The import mapping this deployment needs: the placeholder host in every
     substitution becomes `host`, and each table connector whose source names
     the release table (any server or library) is retargeted at `releases_to`.
 
-    Returns (mapping, changes) - the changes as sentences for the console. Other
-    table connectors are left as exported and reported, because retargeting a
-    report at a table with different columns breaks its data items.
+    Returns (mapping, changes) - the changes as sentences for the console.
+    Every other table connector is left as exported and reported, unless
+    `library` is given: then it is pointed at the table of the SAME NAME in
+    that CAS library (on `server`, or the server it named). The name is never
+    changed, because retargeting a report at a table with different columns
+    breaks its data items.
     """
     changes: list[str] = []
     for entry in mapping.get("substitutions") or []:
@@ -174,6 +178,11 @@ def rehost_mapping(mapping: dict, host: str, releases_from: str, releases_to: st
             if connector.get("target") != releases_to:
                 connector["target"] = releases_to
                 changes.append(f"data source {connector.get('source')} -> {releases_to}")
+        elif library and source.get("table"):
+            target = table_spec(server or source.get("server", ""), library, source["table"])
+            if connector.get("target") != target:
+                connector["target"] = target
+                changes.append(f"data source {connector.get('source')} -> {target}")
         else:
             changes.append(f"data source {connector.get('source')} left as exported "
                            "(not the release table)")
