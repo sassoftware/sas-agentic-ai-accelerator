@@ -1325,19 +1325,47 @@ def check_output_names(names):
     return ''
 
 
-def sas_safe(text):
-    """
-    A text that can travel through SAS.logMessage and SAS.symput: both put it into SAS
-    statements, where a quote, a macro trigger or a semicolon would end up as code.
-    """
-    cleaned = str(text)
-    for bad, replacement in (("'", '`'), ('"', '`'), ('%', 'pct '), ('&', '+'), (';', ','), ('\r', ' '), ('\n', ' ')):
+# SAS.logMessage and SAS.symput put their text into SAS statements. There a semicolon ends
+# the statement and the rest of the text runs as code, a percent sign or an ampersand starts
+# a macro call, a quote or the start of a comment swallows the code that follows. The two
+# marks of a comment are put together from their halves, so that this block holds neither.
+MESSAGE_LIMIT = 900
+NOT_FOR_SAS = (("'", '`'), ('"', '`'), ('%', 'pct '), ('&', '+'), (';', ','), ('/' + '*', '/ *'), ('*' + '/', '* /'))
+
+
+def sas_safe(value, limit=MESSAGE_LIMIT):
+    """A text that can stand in a SAS statement: on one line, without a character that is no
+    text, without a quote, a macro trigger, a semicolon or a comment mark, not longer than
+    the limit and with its parentheses as brackets when they do not pair up."""
+    cleaned = ' '.join(str(value).split())
+    cleaned = ''.join(character if character.isprintable() else ' ' for character in cleaned)
+    for bad, replacement in NOT_FOR_SAS:
         cleaned = cleaned.replace(bad, replacement)
+    cleaned = ' '.join(cleaned.split())
+    if len(cleaned) > limit:
+        cleaned = cleaned[:limit - 3].rstrip() + '...'
+    depth = 0
+    for character in cleaned:
+        depth += 1 if character == '(' else -1 if character == ')' else 0
+        if depth < 0:
+            break
+    if depth != 0:
+        cleaned = cleaned.replace('(', '[').replace(')', ']')
     return cleaned
 
 
+# The longest value of a macro variable. The LENGTH statement of a table is longer than a message
+MACRO_LIMIT = 65534
+
+
 def say(message_type, message):
-    SAS.logMessage(sas_safe(message)[:900], messageType=message_type)
+    """Writes one line to the SAS log. Every message of this program takes this way."""
+    SAS.logMessage(sas_safe(message), messageType=message_type)
+
+
+def hand_over(name, value):
+    """Sets a macro variable. Everything the SAS code is handed takes this way."""
+    SAS.symput(sas_safe(name), sas_safe(value, MACRO_LIMIT))
 
 
 def setting(name):
@@ -1408,12 +1436,12 @@ def run_pull():
             json.dump(rows, file)
         with open(os.path.join(folder, f'_gap_{key}.map'), 'w', encoding='utf-8') as file:
             json.dump(json_map(columns, lengths), file)
-        SAS.symput(f'_gap_rows_{key}', str(len(rows)))
-        SAS.symput(f'_gap_length_{key}', length_statement(columns, lengths))
-    SAS.symput('_gap_length_rag_runs', length_statement(RAG_RUN_COLUMNS, column_lengths([], RAG_RUN_COLUMNS)))
-    SAS.symput('_gap_runs_texts', ' '.join(name for name, _ in RAG_RUN_TEXTS))
-    SAS.symput('_gap_runs_numbers', ' '.join(RAG_RUN_NUMBERS))
-    SAS.symput('_gap_rc', '0')
+        hand_over(f'_gap_rows_{key}', str(len(rows)))
+        hand_over(f'_gap_length_{key}', length_statement(columns, lengths))
+    hand_over('_gap_length_rag_runs', length_statement(RAG_RUN_COLUMNS, column_lengths([], RAG_RUN_COLUMNS)))
+    hand_over('_gap_runs_texts', ' '.join(name for name, _ in RAG_RUN_TEXTS))
+    hand_over('_gap_runs_numbers', ' '.join(RAG_RUN_NUMBERS))
+    hand_over('_gap_rc', '0')
 
 
 run_pull()

@@ -1434,7 +1434,7 @@ def test_log_lines_quoted_in_a_prompt_or_a_response_are_text(monkeypatch, tmp_pa
 
 OVERLAP_NOTE = re.compile(
     r"(\d+) request\(s\) were running at the same time as another request - of their container, or of another container whose "
-    r"lines are mixed with theirs in the file\. The first lines of a request, the lines of the score code and the 'Response:' line "
+    r"lines are mixed with theirs in the file\. The first lines of a request, the lines of the score code and the `Response:` line "
     r"name no request, so a line that the log does not decide was given to none of them: (\d+) request\(s\) can have missing "
     r"values, and failed is missing for (\d+) request\(s\)\.")
 
@@ -1661,7 +1661,7 @@ def test_requests_behind_a_line_prefix_are_reported_with_a_warning(monkeypatch, 
     assert run.uploads == []
     assert [kind for kind, _ in run.sas.messages] == ["WARNING"]
     warning = run.sas.messages[0][1]
-    assert "'Request: POST' was found in 2 line(s)" in warning
+    assert "`Request: POST` was found in 2 line(s)" in warning
     assert "<timestamp> - <logger> - <level> - " in warning
 
 
@@ -2356,7 +2356,7 @@ def test_request_whose_content_raises_anything_keeps_its_row_with_what_was_read(
     # The inputs that could be read are there, and so is everything the other lines say
     assert (frame.loc[0, "kind"], frame.loc[0, "embedding_mode"], frame.loc[0, "project"]) == ("embedding", "document", "handbook")
     assert (frame.loc[0, "prompt_length"], frame.loc[0, "status_code"], frame.loc[0, "failed"]) == (5, 200, 0)
-    assert notes(run) == ["1 request(s) hold a value that could not be read, for example a 'Request Data:' line that was cut off or "
+    assert notes(run) == ["1 request(s) hold a value that could not be read, for example a `Request Data:` line that was cut off or "
                           "options that are nested deeper than Python decodes. The rows were kept with what was read."]
 
 
@@ -2367,7 +2367,7 @@ def test_request_data_that_was_cut_off_is_counted_in_a_note(monkeypatch, tmp_pat
     run = run_parser(monkeypatch, _write(tmp_path, as_log(block, llm_block(timestamp="2026-01-05 09:16:00"))))
 
     assert run.row_count == "2"
-    assert len(notes(run)) == 1 and notes(run)[0].startswith("1 request(s) hold a value that could not be read, for example a 'Request Data:' line")
+    assert len(notes(run)) == 1 and notes(run)[0].startswith("1 request(s) hold a value that could not be read, for example a `Request Data:` line")
 
 
 @pytest.mark.parametrize("inputs, columns", [
@@ -2549,7 +2549,7 @@ def test_every_macro_variable_the_code_file_reads_is_one_it_sets():
     assigned = set(name.lower() for name in re.findall(r"%let (_log_\w+)", program))
     assigned |= set(name.lower() for name in re.findall(r"call symputx\('(_log_\w+)'", program))
     assert read - assigned == set()
-    assert "_log_row_count" not in read - assigned and "SAS.symput('_log_row_count'" in code_file_program()
+    assert "_log_row_count" not in read - assigned and "put_number('_log_row_count', len(df))" in code_file_program()
 
 
 def test_code_file_starts_its_cas_session_only_where_none_is_connected():

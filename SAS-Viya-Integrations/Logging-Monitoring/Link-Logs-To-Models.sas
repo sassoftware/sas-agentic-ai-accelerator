@@ -210,7 +210,7 @@ def say(message, message_type='NOTE'):
 
 def put_number(name, value):
     """Hands a whole number to a macro variable. Nothing but whole numbers is handed to SAS that way."""
-    SAS.symput(name, str(int(value)))
+    SAS.symput(sas_safe(name), sas_safe(str(int(value))))
 
 
 def setting(name):

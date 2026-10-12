@@ -982,6 +982,8 @@ def test_what_travels_through_sas_statements_is_cleaned(monkeypatch, tmp_path):
     sas_safe = functions(monkeypatch, tmp_path)["sas_safe"]
 
     assert sas_safe("Bob's \"100%\" R&D; done\nnext") == "Bob`s `100pct ` R+D, done next"
+    # What the function let through before: both marks of a comment, a tab, a parenthesis without its partner
+    assert sas_safe("Billing /" + "* notes *" + "/ tab\there (open") == "Billing / * notes * / tab here [open"
 
 
 # ---------------------------------------------------------------------------

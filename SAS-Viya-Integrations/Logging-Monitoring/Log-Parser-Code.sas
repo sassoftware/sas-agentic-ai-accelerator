@@ -83,11 +83,51 @@ import json
 import bisect
 import hashlib
 from datetime import datetime
+
+# SAS.logMessage and SAS.symput put their text into SAS statements. There a semicolon ends
+# the statement and the rest of the text runs as code, a percent sign or an ampersand starts
+# a macro call, a quote or the start of a comment swallows the code that follows. The two
+# marks of a comment are put together from their halves, so that this block holds neither.
+MESSAGE_LIMIT = 900
+NOT_FOR_SAS = (("'", '`'), ('"', '`'), ('%', 'pct '), ('&', '+'), (';', ','), ('/' + '*', '/ *'), ('*' + '/', '* /'))
+
+
+def sas_safe(value, limit=MESSAGE_LIMIT):
+    """A text that can stand in a SAS statement: on one line, without a character that is no
+    text, without a quote, a macro trigger, a semicolon or a comment mark, not longer than
+    the limit and with its parentheses as brackets when they do not pair up."""
+    cleaned = ' '.join(str(value).split())
+    cleaned = ''.join(character if character.isprintable() else ' ' for character in cleaned)
+    for bad, replacement in NOT_FOR_SAS:
+        cleaned = cleaned.replace(bad, replacement)
+    cleaned = ' '.join(cleaned.split())
+    if len(cleaned) > limit:
+        cleaned = cleaned[:limit - 3].rstrip() + '...'
+    depth = 0
+    for character in cleaned:
+        depth += 1 if character == '(' else -1 if character == ')' else 0
+        if depth < 0:
+            break
+    if depth != 0:
+        cleaned = cleaned.replace('(', '[').replace(')', ']')
+    return cleaned
+
+
+def say(message, message_type='NOTE'):
+    """Writes one line to the SAS log. Every message of this program takes this way."""
+    SAS.logMessage(sas_safe(message), messageType=message_type)
+
+
+def put_number(name, value):
+    """Hands a whole number to a macro variable. Nothing but whole numbers is handed to SAS that way."""
+    SAS.symput(sas_safe(name), sas_safe(str(int(value))))
+
+
 try:
     import swat
     import pandas as pd
 except ImportError:
-    SAS.logMessage('Ensure that the SWAT and Pandas package are installed', messageType='ERROR')
+    say('Ensure that the SWAT and Pandas package are installed', 'ERROR')
 
 #  Add certificate location to operating system list of trusted certs
 os.environ['CAS_CLIENT_SSL_CA_LIST'] = os.environ['SSLCALISTLOC']
@@ -1087,15 +1127,15 @@ def parse_log_file(file_path):
 
     # Requests that were all skipped must not pass as a log without requests
     if not records and unmatched_requests > 0:
-        SAS.logMessage(f"No request was read: 'Request: POST' was found in {unmatched_requests} line(s) that do not start as a log line ('<timestamp> - <logger> - <level> - '). The parser needs the lines as the containers write them, with nothing in front.", messageType='WARNING')
+        say(f"No request was read: 'Request: POST' was found in {unmatched_requests} line(s) that do not start as a log line ('<timestamp> - <logger> - <level> - '). The parser needs the lines as the containers write them, with nothing in front.", 'WARNING')
     if overlapped > 0:
-        SAS.logMessage(f"{overlapped} request(s) were running at the same time as another request - of their container, or of another container whose lines are mixed with theirs in the file. The first lines of a request, the lines of the score code and the 'Response:' line name no request, so a line that the log does not decide was given to none of them: {unattributed} request(s) can have missing values, and failed is missing for {undecided} request(s).")
+        say(f"{overlapped} request(s) were running at the same time as another request - of their container, or of another container whose lines are mixed with theirs in the file. The first lines of a request, the lines of the score code and the 'Response:' line name no request, so a line that the log does not decide was given to none of them: {unattributed} request(s) can have missing values, and failed is missing for {undecided} request(s).")
     if ended > 0:
-        SAS.logMessage(f"{ended} request(s) were running where the lines of their container end - at the end of the file, or at the end of a part of it, where the time of the lines goes back. The log holds neither a response nor an error for them, and failed is missing for them.")
+        say(f"{ended} request(s) were running where the lines of their container end - at the end of the file, or at the end of a part of it, where the time of the lines goes back. The log holds neither a response nor an error for them, and failed is missing for them.")
     if unreadable > 0:
-        SAS.logMessage(f"{unreadable} request(s) hold a value that could not be read, for example a 'Request Data:' line that was cut off or options that are nested deeper than Python decodes. The rows were kept with what was read.")
+        say(f"{unreadable} request(s) hold a value that could not be read, for example a 'Request Data:' line that was cut off or options that are nested deeper than Python decodes. The rows were kept with what was read.")
     if replaced > 0:
-        SAS.logMessage(f"{replaced} request(s) hold a character that has no UTF-8 bytes in a text column - half of a surrogate pair in a request body. It was replaced by a question mark, the way the hash of a text counts it.")
+        say(f"{replaced} request(s) hold a character that has no UTF-8 bytes in a text column - half of a surrogate pair in a request body. It was replaced by a question mark, the way the hash of a text counts it.")
 
     df = pd.DataFrame(records, columns=COLUMNS)
     return df
@@ -1185,7 +1225,7 @@ if len(df) > 0:
         importoptions={'vars': vars_metadata}
     )
 
-SAS.symput('_log_row_count', str(len(df)))
+put_number('_log_row_count', len(df))
 endsubmit;
 run; quit;
 

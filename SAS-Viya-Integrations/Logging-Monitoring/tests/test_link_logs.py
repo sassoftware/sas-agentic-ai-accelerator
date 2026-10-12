@@ -1093,12 +1093,13 @@ def uses_of_the_sas_object():
 
 def test_every_text_for_sas_takes_one_of_two_ways():
     """SAS.logMessage writes its text into a SAS statement and SAS.symput into an assignment. The program has one
-    place for each: a message is made safe on its way, and a macro variable is only ever given a whole number."""
+    place for each: a message is made safe on its way, and a macro variable is only ever given a whole number,
+    which takes the same way."""
     tree, found = uses_of_the_sas_object()
     assert sorted(found, key=str) == [("logMessage", "say"), ("sasfnc", None), ("sasfnc", None), ("symget", "setting"), ("symput", "put_number")]
     functions_of_the_program = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
     assert ast.unparse(functions_of_the_program["say"].body[-1]) == "SAS.logMessage(sas_safe(message), messageType=message_type)"
-    assert ast.unparse(functions_of_the_program["put_number"].body[-1]) == "SAS.symput(name, str(int(value)))"
+    assert ast.unparse(functions_of_the_program["put_number"].body[-1]) == "SAS.symput(sas_safe(name), sas_safe(str(int(value))))"
 
     calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
     # The two options of the SAS session that say where CAS is
