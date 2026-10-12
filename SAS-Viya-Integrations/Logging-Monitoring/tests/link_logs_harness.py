@@ -44,6 +44,7 @@ LOG_COLUMNS = OLD_COLUMNS + PARSER_COLUMNS + LINK_COLUMNS
 CATALOG_COLUMNS = [
     "modelID", "projectID", "projectName", "name", "role", "runID", "target_model", "system_template", "user_template",
     "resolved_system_prompt", "resolved_user_prompt", "collection", "template_source", "resolved_system_hash", "resolved_user_hash",
+    "run_time", "window_start", "window_end", "optimization_id",
 ]
 RUNS_COLUMNS = ["run_id", "collection", "embed_model", "started_at", "finished_at", "modelID", "projectID"]
 
@@ -63,16 +64,42 @@ def python_block(sas_program):
 
 
 def text_hash(text):
-    """The hash the three programs share: SHA-256 of the text with its whitespace squeezed."""
-    return hashlib.sha256(" ".join(text.split()).encode("utf-8")).hexdigest()
+    """The hash the three programs share: SHA-256 of the text with its whitespace squeezed. A character that
+    has no UTF-8 bytes counts as a question mark, as in the programs."""
+    return hashlib.sha256(" ".join(text.split()).encode("utf-8", errors="replace")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
 # Stand-ins for SAS and CAS
 # ---------------------------------------------------------------------------
 
+# SAS.logMessage writes its text into a statement of the macro language and SAS.symput into an
+# assignment: what a text must not hold to arrive there as text
+MESSAGE_LIMIT = 900
+BREAKS_SAS = {";": "a semicolon", "%": "a percent sign", "&": "an ampersand", "'": "a single quote", '"': "a double quote",
+              "/*": "the start of a comment", "*/": "the end of a comment"}
+
+
+def unsafe_for_sas(text):
+    """Why a text can not stand in a SAS statement, as a list of reasons. Empty for a text that can."""
+    reasons = [reason for mark, reason in BREAKS_SAS.items() if mark in text]
+    if any(not character.isprintable() for character in text):
+        reasons.append("a line break or another character that is no text")
+    depth = 0
+    for character in text:
+        depth += {"(": 1, ")": -1}.get(character, 0)
+        if depth < 0:
+            break
+    if depth != 0:
+        reasons.append("parentheses that do not pair up")
+    if len(text) > MESSAGE_LIMIT:
+        reasons.append(f"{len(text)} characters")
+    return reasons
+
+
 class FakeSAS:
-    """Stands in for the SAS object PROC PYTHON provides."""
+    """Stands in for the SAS object PROC PYTHON provides. It keeps what would have broken SAS:
+    every message and every value the program hands over is looked at, in every test."""
 
     def __init__(self, **macro_variables):
         # The values the SAS program has set when PROC PYTHON starts
@@ -89,22 +116,31 @@ class FakeSAS:
             "_lnk_redo_all": "0",
             "_lnk_min_literal": "20",
             "_lnk_utc_offset": "0",
+            "_lnk_query_window": "300",
             "_lnk_row_count": "-1",
+            "_lnk_unchanged": "0",
             "_lnk_refused": "0",
         }
         self.macro_variables.update(macro_variables)
         self.messages = []
+        # (what was handed over, why SAS would not have taken it as text)
+        self.unsafe = []
 
     def symget(self, name):
         return self.macro_variables[name]
 
     def symput(self, name, value):
+        if not isinstance(value, str) or not re.fullmatch(r"-?\d+", value):
+            self.unsafe.append((f"{name} = {value!r}", ["a value that is no whole number"]))
         self.macro_variables[name] = value
 
     def sasfnc(self, function, *arguments):
         return {"cashost": "cas.example.com", "casport": "5570"}[arguments[0]]
 
     def logMessage(self, message, messageType="NOTE"):
+        reasons = unsafe_for_sas(message) + ([] if messageType in ("NOTE", "WARNING", "ERROR") else [f"the message type {messageType}"])
+        if reasons:
+            self.unsafe.append((message, reasons))
         self.messages.append((messageType, message))
 
     def lines(self, message_type):
@@ -117,19 +153,29 @@ class FakeResult(dict):
     status = ""
 
 
-STAGE_STEP = re.compile(r"data '(?P<out>[^']+)'n\(caslib='(?P<outlib>[^']+)'\); set '(?P<src>[^']+)'n\(caslib='(?P<srclib>[^']+)'\); "
-                        r"_lnk_row = _n_; _lnk_one = 1; run;")
-MERGE_STEP = re.compile(r"data '(?P<out>[^']+)'n\(caslib='(?P<outlib>[^']+)' drop=(?P<outdrop>[^)]+)\); "
-                        r"merge '(?P<left>[^']+)'n\(caslib='(?P<leftlib>[^']+)' in=_lnk_in drop=(?P<leftdrop>[^)]+)\) "
-                        r"'(?P<right>[^']+)'n\(caslib='(?P<rightlib>[^']+)'\); by _lnk_one _lnk_row; if _lnk_in; run;")
+# A name in the code of a DATA step: in single quotes, with a single quote of the name written twice
+QUOTED = r"'(?P<{}>(?:[^']|'')+)'"
+STAGE_STEP = re.compile(r"data " + QUOTED.format("out") + r"n\(caslib=" + QUOTED.format("outlib") + r"\); set " + QUOTED.format("src") + r"n\(caslib="
+                        + QUOTED.format("srclib") + r"\); _lnk_row = _n_; _lnk_one = 1; run;")
+MERGE_STEP = re.compile(r"data " + QUOTED.format("out") + r"n\(caslib=" + QUOTED.format("outlib") + r" drop=(?P<outdrop>[\w ]+)\); "
+                        r"merge " + QUOTED.format("left") + r"n\(caslib=" + QUOTED.format("leftlib") + r" in=_lnk_in drop=(?P<leftdrop>[\w ]+)\) "
+                        + QUOTED.format("right") + r"n\(caslib=" + QUOTED.format("rightlib") + r"\); by _lnk_one _lnk_row; if _lnk_in; run;")
+
+
+def unquoted(step, name):
+    """A name of a DATA step the way the DATA step reads it."""
+    return step[name].replace("''", "'")
 
 
 class FakeCAS:
     """Stands in for swat.CAS. Tables are pandas frames by (caslib, name), both without case."""
 
-    # What the tests put into CAS before the program runs, and what a table says of its column labels
+    # What the tests put into CAS before the program runs, what a table says of its column labels and the labels of the tables
     tables = {}
     labels = {}
+    table_labels = {}
+    # True makes the action that sets the label of a table fail
+    label_refused = False
     # Rows that are added to the log table while the program reads it, to show what the row check does
     rows_added_meanwhile = None
 
@@ -169,23 +215,28 @@ class FakeCAS:
         return FakeResult(Fetch=page.reset_index(drop=True)) if len(page) else FakeResult()
 
     def _dataStep_runCode(self, code, single):
+        """The two DATA steps of the program. A step it does not know - a table name that ended the
+        statement it stands in, say - is an error, as it would be other code than the program wrote."""
         assert single == "yes"
         staged = STAGE_STEP.fullmatch(code)
         merged = MERGE_STEP.fullmatch(code)
         if staged:
-            frame = self.table(staged["srclib"], staged["src"]).copy()
+            frame = self.table(unquoted(staged, "srclib"), unquoted(staged, "src")).copy()
             frame["_lnk_row"] = range(1, len(frame) + 1)
             frame["_lnk_one"] = 1
-            FakeCAS.tables[self.key(staged["outlib"], staged["out"])] = frame
+            FakeCAS.tables[self.key(unquoted(staged, "outlib"), unquoted(staged, "out"))] = frame
             if FakeCAS.rows_added_meanwhile is not None:
-                source = self.key(staged["srclib"], staged["src"])
+                source = self.key(unquoted(staged, "srclib"), unquoted(staged, "src"))
                 records = FakeCAS.tables[source].to_dict("records") + FakeCAS.rows_added_meanwhile.to_dict("records")
                 FakeCAS.tables[source] = pd.DataFrame(records, columns=FakeCAS.tables[source].columns)
         elif merged:
-            left = self.table(merged["leftlib"], merged["left"]).drop(columns=merged["leftdrop"].split())
-            right = self.table(merged["rightlib"], merged["right"])
+            left = self.table(unquoted(merged, "leftlib"), unquoted(merged, "left")).drop(columns=merged["leftdrop"].split())
+            right = self.table(unquoted(merged, "rightlib"), unquoted(merged, "right"))
             frame = left.merge(right, on=["_lnk_one", "_lnk_row"], how="left").sort_values(["_lnk_one", "_lnk_row"])
-            FakeCAS.tables[self.key(merged["outlib"], merged["out"])] = frame.drop(columns=merged["outdrop"].split()).reset_index(drop=True)
+            # The table a DATA step writes has no label
+            created = self.key(unquoted(merged, "outlib"), unquoted(merged, "out"))
+            FakeCAS.tables[created] = frame.drop(columns=merged["outdrop"].split()).reset_index(drop=True)
+            FakeCAS.table_labels.pop(created, None)
         else:
             raise AssertionError(f"a DATA step the stand-in does not know: {code}")
         return FakeResult()
@@ -193,14 +244,26 @@ class FakeCAS:
     def _simple_numRows(self, table):
         return FakeResult(numrows=len(self.table(table["caslib"], table["name"])))
 
-    def _table_alterTable(self, caslib, name, columnOrder):
+    def _table_alterTable(self, caslib, name, columnOrder=None, label=None):
         frame = self.table(caslib, name)
-        ordered = [column for column in columnOrder if column in frame.columns]
-        FakeCAS.tables[self.key(caslib, name)] = frame[ordered + [column for column in frame.columns if column not in ordered]]
+        if label is not None:
+            if FakeCAS.label_refused:
+                refused = FakeResult()
+                refused.severity = 2
+                return refused
+            FakeCAS.table_labels[self.key(caslib, name)] = label
+        if columnOrder is not None:
+            ordered = [column for column in columnOrder if column in frame.columns]
+            FakeCAS.tables[self.key(caslib, name)] = frame[ordered + [column for column in frame.columns if column not in ordered]]
         return FakeResult()
+
+    def _table_tableInfo(self, caslib, name):
+        self.table(caslib, name)
+        return FakeResult(TableInfo=pd.DataFrame({"Name": [name.upper()], "Label": [FakeCAS.table_labels.get(self.key(caslib, name), "")]}))
 
     def _table_dropTable(self, caslib, name, quiet):
         FakeCAS.tables.pop(self.key(caslib, name), None)
+        FakeCAS.table_labels.pop(self.key(caslib, name), None)
         return FakeResult()
 
     def upload_frame(self, frame, casout=None, importoptions=None):
@@ -221,12 +284,22 @@ class LinkRun:
         return self.namespace.get("conn")
 
     @property
+    def new_table_key(self):
+        variables = self.sas.macro_variables
+        return FakeCAS.key(variables["_lnk_log_caslib"], variables["_lnk_log_table"] + "_NEW")
+
+    @property
     def new_table(self):
         """The table the SAS program puts in the place of the log table, None when the Python built none."""
-        return FakeCAS.tables.get(("PUBLIC", "LLM_LOGS_NEW"))
+        return FakeCAS.tables.get(self.new_table_key)
+
+    @property
+    def new_table_label(self):
+        """The label of that table, the empty text when it has none."""
+        return FakeCAS.table_labels.get(self.new_table_key, "")
 
 
-def run_program(monkeypatch, tables=None, python=None, labels=None, added_meanwhile=None, **macro_variables):
+def run_program(monkeypatch, tables=None, python=None, labels=None, added_meanwhile=None, table_labels=None, label_refused=False, **macro_variables):
     """Executes the program's Python and returns the LinkRun.
 
     tables           what is in CAS, as {(caslib, name): frame}. Without tables _lnk_ready is 0,
@@ -234,6 +307,11 @@ def run_program(monkeypatch, tables=None, python=None, labels=None, added_meanwh
                      defines its functions.
     labels           the column labels of a table, as {(caslib, name): {column: label}}
     added_meanwhile  rows another session appends to the log table after its rows were numbered
+    table_labels     the labels of the tables, as {(caslib, name): label}
+    label_refused    True makes CAS refuse to set the label of a table
+
+    Every message and every macro variable the Python hands to SAS must be a text SAS takes as
+    text: a run that handed over anything else fails here, whatever the test looks at.
     """
     fake_swat = types.ModuleType("swat")
     fake_swat.CAS = FakeCAS
@@ -245,6 +323,8 @@ def run_program(monkeypatch, tables=None, python=None, labels=None, added_meanwh
     monkeypatch.setattr(FakeCAS, "tables", {FakeCAS.key(*key): frame.copy() for key, frame in (tables or {}).items()})
     monkeypatch.setattr(FakeCAS, "labels", {FakeCAS.key(*key): value for key, value in (labels or {}).items()})
     monkeypatch.setattr(FakeCAS, "rows_added_meanwhile", added_meanwhile)
+    monkeypatch.setattr(FakeCAS, "table_labels", {FakeCAS.key(*key): value for key, value in (table_labels or {}).items()})
+    monkeypatch.setattr(FakeCAS, "label_refused", label_refused)
 
     if tables is None:
         macro_variables.setdefault("_lnk_ready", "0")
@@ -256,6 +336,7 @@ def run_program(monkeypatch, tables=None, python=None, labels=None, added_meanwh
     except Exception as error:
         error.sas = sas
         raise
+    assert sas.unsafe == [], f"handed to SAS as it is, this would not have arrived as text: {sas.unsafe}"
     return LinkRun(namespace, sas)
 
 
@@ -297,7 +378,8 @@ def log_row(defaults, values):
 
 
 def llm_row(system_prompt="You are a concise assistant for the travel desk.", user_prompt="What is the capital of Austria?", retrieval=None, **values):
-    """An LLM request. retrieval is the (collection, query) of the envelope its user prompt holds."""
+    """An LLM request. retrieval is the (collection, query) of the envelope its user prompt holds. The run time
+    the container logged is in runtime: 1.25 seconds, 0.4 for a decision and 0.08 for an embedding."""
     defaults = dict(kind="llm", model="demo_llm", system_prompt=system_prompt, user_prompt=user_prompt, prompt_length=21.0, output_length=9.0,
                     runtime=1.25, response="The capital of Austria is Vienna.")
     if retrieval is not None:
@@ -357,17 +439,36 @@ def prompt_template(model_id, name, system_template, user_template, target_model
 
 
 def experiment_run(model_id, name, run_id, target_model, system_template, user_template, resolved_system_prompt, resolved_user_prompt, role="prompt",
-                   hashes=True, column_length=None):
+                   hashes=True, column_length=None, run_time=None):
     """One experiment run of a prompt against one model, with the prompts as they were sent.
 
     hashes         Get-All-Prompts.sas writes the hash of both prompts beside them; False leaves the two columns empty
     column_length  the characters the catalog keeps of a prompt: the hash is taken of the whole text, the text is cut afterwards
+    run_time       the seconds the tracker holds for the answer of the model; None is a catalog that holds no run time for the run
     """
     row = catalog_row(model_id, role, name, runID=run_id, target_model=target_model, system_template=system_template, user_template=user_template,
-                      resolved_system_prompt=resolved_system_prompt[:column_length], resolved_user_prompt=resolved_user_prompt[:column_length])
+                      resolved_system_prompt=resolved_system_prompt[:column_length], resolved_user_prompt=resolved_user_prompt[:column_length],
+                      run_time=run_time)
     if hashes:
         row.update(resolved_system_hash=text_hash(resolved_system_prompt), resolved_user_hash=text_hash(resolved_user_prompt))
     return row
+
+
+def optimization_call(model_id, name, target_model, text, window=None, optimization_id="1", user_text=""):
+    """The catalog row of the calls a prompt optimization sent to a model for a prompt: the text every such
+    request holds - the system prompt of the prompt, which the optimizer hands on as its instructions - and
+    the (start, end) of the optimization in UTC."""
+    start, end = window or ("", "")
+    return catalog_row(model_id, "optimization", name, target_model=target_model, resolved_system_prompt=text, resolved_user_prompt=user_text,
+                       window_start=start, window_end=end, optimization_id=optimization_id)
+
+
+def judge_call(model_id, name, run_id, judge_model, resolved_system_prompt, resolved_user_prompt, window=None, run_time=None):
+    """The catalog row of the call a judge got to rank the answers of a run: the prompts of the run, which the
+    judge is shown, and the model that judged."""
+    start, end = window or ("", "")
+    return catalog_row(model_id, "judge", name, runID=run_id, target_model=judge_model, resolved_system_prompt=resolved_system_prompt,
+                       resolved_user_prompt=resolved_user_prompt, window_start=start, window_end=end, run_time=run_time)
 
 
 def rag_setup(model_id, name, collection, target_model="", source=""):

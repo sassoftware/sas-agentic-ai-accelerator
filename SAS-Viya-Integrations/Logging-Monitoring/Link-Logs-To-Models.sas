@@ -12,8 +12,9 @@
     match_method and the number of candidates in match_candidates.
 
     No request and no log line names its caller, so every link is made by
-    content: the prompts, questions and hashes of the log row are compared
-    with the templates and experiment runs of the table MODEL_CATALOG that
+    content: the prompts, questions, hashes and run times of the log row are
+    compared with the templates, the experiment runs and the calls of
+    optimizations and judges in the table MODEL_CATALOG that
     Get-All-Prompts.sas writes, and with the ingestion runs of RAG_RUNS.
     A row that fits nothing gets match_method = none, a row that fits two
     callers equally well gets match_method = ambiguous.
@@ -24,6 +25,7 @@
     Every other column of the log table stays in CAS and is not rewritten:
     the program numbers the rows in a copy in CASUSER, reads what it compares
     into Python, uploads the link columns and merges them back by that number.
+    A run that links no row leaves the table as it is.
 
     lnk is short for:
       Link
@@ -40,10 +42,12 @@
 %let _lnk_runs_table = RAG_RUNS;
 * 0 links only the rows without a match_method and leaves every other row as it is, 1 links all rows again;
 %let _lnk_redo_all = 0;
-* A template takes part with at least this many characters of fixed text (whitespace is not counted), an experiment run with at least as many characters in its prompts;
+* A template takes part with at least this many characters of fixed text (whitespace is not counted), an experiment run with at least as many characters in its prompts, a call of an optimization or of a judge with as many in the texts the catalog holds of it;
 %let _lnk_min_literal = 20;
-* The hours the clock of the containers is ahead of UTC. The ingestion runs are recorded in UTC;
+* The hours the clock of the containers is ahead of UTC. The ingestion runs and the windows of the optimizations are recorded in UTC;
 %let _lnk_utc_offset = 0;
+* The seconds within which the prompt that carries a retrieval follows the embedding of its query. A query embedding without such a prompt is not linked;
+%let _lnk_query_window = 300;
 * A table that is promoted stays promoted and a table that has a saved file is saved again, whatever these two say. They decide for a table that is not promoted and for one that has no saved file;
 %let _lnk_promote_table = 1;
 %let _lnk_save_table = 1;
@@ -148,8 +152,10 @@ run; quit;
     %put NOTE: The table &_lnk_runs_caslib..&_lnk_runs_table. was not found, so no embedding row is linked to an ingestion run.;
 %end;
 
-* The number of rows of the new table. The Python code sets it as its last statement, so -1 means that the links were not made;
+* The number of rows of the log table. The Python code sets it as its last statement, so -1 means that the links were not made;
 %let _lnk_row_count = -1;
+* 1 when the Python code linked no row and built no new table: the log table, its promotion and its saved file stay as they are;
+%let _lnk_unchanged = 0;
 * 1 when the Python code refused the tables and wrote the ERROR line itself;
 %let _lnk_refused = 0;
 
@@ -157,15 +163,83 @@ proc python restart;
 submit;
 import hashlib
 import json
+import math
 import os
 import re
 import time
+from bisect import bisect_left
 from datetime import datetime, timezone
+
+# ---------------------------------------------------------------------------
+# What is handed to SAS
+# ---------------------------------------------------------------------------
+
+# SAS.logMessage and SAS.symput put their text into SAS statements. There a semicolon ends
+# the statement and the rest of the text runs as code, a percent sign or an ampersand starts
+# a macro call, a quote or the start of a comment swallows the code that follows. The two
+# marks of a comment are put together from their halves, so that this block holds neither.
+MESSAGE_LIMIT = 900
+NOT_FOR_SAS = (("'", '`'), ('"', '`'), ('%', 'pct '), ('&', '+'), (';', ','), ('/' + '*', '/ *'), ('*' + '/', '* /'))
+
+
+def sas_safe(value, limit=MESSAGE_LIMIT):
+    """A text that can stand in a SAS statement: on one line, without a character that is no
+    text, without a quote, a macro trigger, a semicolon or a comment mark, not longer than
+    the limit and with its parentheses as brackets when they do not pair up."""
+    cleaned = ' '.join(str(value).split())
+    cleaned = ''.join(character if character.isprintable() else ' ' for character in cleaned)
+    for bad, replacement in NOT_FOR_SAS:
+        cleaned = cleaned.replace(bad, replacement)
+    cleaned = ' '.join(cleaned.split())
+    if len(cleaned) > limit:
+        cleaned = cleaned[:limit - 3].rstrip() + '...'
+    depth = 0
+    for character in cleaned:
+        depth += 1 if character == '(' else -1 if character == ')' else 0
+        if depth < 0:
+            break
+    if depth != 0:
+        cleaned = cleaned.replace('(', '[').replace(')', ']')
+    return cleaned
+
+
+def say(message, message_type='NOTE'):
+    """Writes one line to the SAS log. Every message of this program takes this way."""
+    SAS.logMessage(sas_safe(message), messageType=message_type)
+
+
+def put_number(name, value):
+    """Hands a whole number to a macro variable. Nothing but whole numbers is handed to SAS that way."""
+    SAS.symput(name, str(int(value)))
+
+
+def setting(name):
+    """A setting of the SAS program as text, the empty text when it is not set."""
+    try:
+        value = SAS.symget(name)
+    except Exception:
+        value = None
+    return '' if value is None else str(value).strip()
+
+
+def number_setting(name, default):
+    """A setting that is a number. A value that is none gives the default and a WARNING."""
+    raw = setting(name)
+    try:
+        value = float(raw)
+    except ValueError:
+        value = float('nan')
+    if value != value or value in (float('inf'), float('-inf')):
+        say(f"The setting {name} is {raw or 'empty'}, which is no number. {default} is taken in its place.", 'WARNING')
+        return float(default)
+    return value
+
+
 try:
     import swat
     import pandas as pd
 except ImportError:
-    SAS.logMessage('Ensure that the SWAT and Pandas package are installed', messageType='ERROR')
+    say('Ensure that the SWAT and Pandas package are installed', 'ERROR')
 
 # The link columns in the order the log table holds them. Only this program fills them.
 LINK_TEXT_COLUMNS = ['model_id', 'caller_model_id', 'caller_project_id', 'caller_kind', 'caller_name', 'experiment_run_id', 'rag_model_id', 'match_method']
@@ -175,16 +249,19 @@ LINK_COLUMNS = LINK_TEXT_COLUMNS + ['match_candidates']
 # was written by a parser that is older than the link columns.
 CONTENT_COLUMNS = ['timestamp', 'model', 'system_prompt', 'user_prompt', 'kind', 'embedding_mode', 'input_hash', 'rag_collection', 'rag_query_hash']
 PROMPT_COLUMNS = ['system_prompt', 'user_prompt']
-# Read when the table has it
-OPTIONAL_COLUMNS = ['user_agent']
+# Read when the table has them
+OPTIONAL_COLUMNS = ['user_agent', 'runtime', 'project']
 # The user agents of requests that no Builder page sent: the score code of a published model, a job or
 # a script, and a SAS session. The Builder page runs in a browser.
 NOT_A_BROWSER = ('python-requests', 'sas')
+# What the RAG runtime sends as the project input of every embedding request
+RUNTIME_PROJECT = 'rag'
 
 # The columns no row of the catalog can be read without. The others - projectid, runid,
 # target_model, system_template, user_template, resolved_system_prompt, resolved_user_prompt,
-# collection, template_source, resolved_system_hash and resolved_user_hash - read as missing
-# values when the catalog does not have them.
+# collection, template_source, resolved_system_hash, resolved_user_hash, run_time,
+# window_start, window_end and optimization_id - read as missing values when the catalog
+# does not have them.
 CATALOG_KEY_COLUMNS = ['modelid', 'name', 'role']
 # The columns an ingestion run is read from. modelid, the setup that holds the run, is optional.
 RUN_COLUMNS = ['run_id', 'collection', 'embed_model', 'started_at', 'finished_at']
@@ -192,10 +269,13 @@ RUN_COLUMNS = ['run_id', 'collection', 'embed_model', 'started_at', 'finished_at
 # The role of the catalog rows that answer a log row of each kind
 ANSWER_ROLE = {'llm': 'llm', 'embedding': 'embedding', 'decision': 'decision_model'}
 KIND_OF_ROLE = {role: kind for kind, role in ANSWER_ROLE.items()}
+# The roles of the catalog rows that hold a call the Builder made for a prompt, in the order
+# the two rules are asked. The role is the match_method of the rows it links.
+CALL_ROLES = ('optimization', 'judge')
 
 # The methods a row of each kind can get, in the order the summary names them
 METHODS = {
-    'llm': ['experiment run', 'template'],
+    'llm': ['experiment run', 'template', 'optimization', 'judge'],
     'decision': ['experiment run', 'questions and state', 'questions'],
     'embedding': ['retrieval query', 'ingestion run'],
 }
@@ -216,17 +296,27 @@ LABELS = {
 VARIABLE = re.compile(r'\{\{[^{}]*\}\}')
 # The hash of a text as the catalog and the log table hold it
 TEXT_HASH = re.compile(r'[0-9a-f]{64}')
-# What the catalog writes into template_source for a RAG setup that the Prompt Builder saved
+# What the catalog writes into template_source for a RAG setup that the Prompt Builder saved,
+# and for a model that the step RAG - Register Setup registered - which it names after the setup
 BUILDER_SETUP = 'builder'
+STEP_SETUP = 'step'
+STEP_MODEL_PREFIX = 'RAG Retrieval - '
 INGESTION_RUN = re.compile(r'"ingestion_run_id"\s*:\s*"([^"]*)"')
 # A template with a variable in its system prompt is found through the first characters
 # of that system prompt or, when it starts with the variable, through its last ones.
 # Only a template that has less fixed text than this at both ends is compared with every row.
 PREFIX_LENGTH = 12
+# The calls of optimizations and judges are compared one by one with a row while a model has
+# no more of them than this. Beyond it they are found through a piece of their longest text
+# of this many characters, which is looked up at every place of the prompts of the row.
+CALLS_COMPARED = 32
+CALL_ANCHOR = 24
 SAS_EPOCH = datetime(1960, 1, 1)
 STAGE_TABLE = '_LNK_STAGE'
 LINKS_TABLE = '_LNK_LINKS'
 READ_PAGE = 2000
+# How many models, names or rows a message names before it counts the rest
+NAMED_IN_A_MESSAGE = 5
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +352,26 @@ def squeeze(value):
 def size(value):
     """The number of characters that are not whitespace."""
     return len(''.join(text(value).split()))
+
+
+def number(value):
+    """A number of a table as a float. None when the value is missing or is no number."""
+    if value is None or isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float)):
+        try:
+            value = float(text(value).strip())
+        except ValueError:
+            return None
+    value = float(value)
+    return None if value != value or value in (float('inf'), float('-inf')) else value
+
+
+def same_time(one, other):
+    """Whether two run times are the same time. The tracker of a prompt holds the run time
+    the container returned and the log holds the one it logged: they are compared with
+    three decimals, which is what a table and a file leave of the same number."""
+    return round(one, 3) == round(other, 3)
 
 
 def text_hash(value):
@@ -332,6 +442,22 @@ def fits(parts, squeezed):
     return True
 
 
+def holds(texts, system, user):
+    """Whether a request holds the texts the catalog has of a call that was made for a
+    prompt: each of them stands in its system prompt or in its user prompt, and at least
+    one of them is a part of that prompt and not all of it. A request whose prompts ARE
+    these texts is the prompt itself, not a call that was made about it."""
+    inside = False
+    for part in texts:
+        if part == system or part == user:
+            continue
+        if part in system or part in user:
+            inside = True
+        else:
+            return False
+    return inside
+
+
 def run_order(run_id):
     """Sorts run ids so that the newest is the largest: numbers by their value, anything else as text behind them."""
     try:
@@ -382,8 +508,12 @@ def build_index(catalog, runs=None, min_literal=20):
     Nothing here depends on the number of log rows, and no log row is ever compared
     with the whole catalog: a model is found by its name, an experiment run by its
     prompts, a decision template by its questions, a prompt template by the start of
-    or the end of its system prompt, a RAG setup by its collection and an ingestion
-    run by its embedding model.
+    or the end of its system prompt, a call of an optimization or of a judge by the
+    model it was sent to, a RAG setup by its collection and an ingestion run by its
+    embedding model.
+
+    A catalog row whose content can not be read - questions that are nested deeper
+    than Python reads JSON, say - is left out and named in index['skipped'].
 
     Args:
         catalog (pandas.DataFrame): MODEL_CATALOG, column names in lower case.
@@ -394,24 +524,34 @@ def build_index(catalog, runs=None, min_literal=20):
         dict: The index.
     """
     index = {
-        'models': {},        # container name -> [(role, modelID)]
+        'models': {},        # container name -> [(role, modelID, projectID)]
         'callers': {},       # modelID -> what the link columns say of the caller
         'runs': {},          # (space, system key, hash of the user prompt) -> [experiment run]
+        'run_times': {},     # (caller, run id, model the run was sent to) -> the run time the catalog holds, None where it holds none
+        'run_ids': set(),    # (caller, run id) of every experiment run of the catalog
         'exact': {},         # squeezed system prompt without a variable -> [prompt pattern]
         'prefix': {},        # start of a system prompt with a variable -> [prompt pattern]
         'suffix': {},        # end of a system prompt that starts with a variable -> [prompt pattern]
         'open': [],          # prompt patterns whose system prompt starts and ends with a variable
         'questions': {},     # questions key -> [decision pattern]
+        'calls': {},         # (role, model) -> the calls an optimization or a judge sent to the model for a prompt
         'collections': {},   # collection -> [modelID of a RAG setup]
+        'setups': {},        # modelID of a RAG setup -> its name and who wrote it
         'builder_setups': set(),  # modelIDs of the RAG setups the Prompt Builder saved
         'rag_targets': {},   # modelID of a RAG setup -> the embedding models it is known to call
         'ingestions': {},    # embedding model -> [ingestion run]
         'run_setups': {},    # ingestion run id -> modelIDs of the setups that hold the run
+        'run_mates': {},     # modelID of a RAG setup -> the setups that hold an ingestion run it holds
+        'decided': {},       # the setups of a collection -> the ones among them that are taken
         'short': set(),      # callers with a template that is too short to take part
+        'skipped': [],       # (name, modelID, error) of the catalog rows that could not be read
+        'unusable_calls': 0,
         'patterns': 0,
         'runs_without_window': 0,
     }
     patterns = {}
+    weak_callers = set()
+    calls = {}
 
     def pattern_of(key, where, first):
         pattern = patterns.get(key)
@@ -428,28 +568,67 @@ def build_index(catalog, runs=None, min_literal=20):
         else:
             pattern['any_target'] = True
 
-    for record in catalog.to_dict('records'):
+    def add_caller(model_id, project_id, kind, name, weak=False):
+        """A row of the prompt, the decision template or the setup itself says what kind the caller
+        is. The row of a call that was made for it only says so until such a row is read."""
+        if model_id not in index['callers'] or (model_id in weak_callers and not weak):
+            index['callers'][model_id] = {'caller_model_id': model_id, 'caller_project_id': project_id, 'caller_kind': kind, 'caller_name': name}
+            weak_callers.discard(model_id)
+            if weak:
+                weak_callers.add(model_id)
+
+    def add_record(record):
         # A column the catalog does not have reads as a missing value
         cell = record.get
         model_id = squeeze(cell('modelid'))
         role = squeeze(cell('role')).lower()
         name = squeeze(cell('name'))
         if not model_id or not role:
-            continue
+            return
 
         if role in KIND_OF_ROLE:
-            entry = (role, model_id)
+            entry = (role, model_id, squeeze(cell('projectid')))
             known = index['models'].setdefault(name.lower(), [])
-            if name and entry not in known:
+            if name and entry[:2] not in [(known_role, known_id) for known_role, known_id, _ in known]:
                 known.append(entry)
-            continue
-        if role not in ('prompt', 'decision', 'rag'):
-            continue
-
-        index['callers'].setdefault(model_id, {'caller_model_id': model_id, 'caller_project_id': squeeze(cell('projectid')), 'caller_kind': role, 'caller_name': name})
+            return
         target = squeeze(cell('target_model')).lower()
+        run_id = squeeze(cell('runid'))
+        resolved_system = squeeze(cell('resolved_system_prompt'))
+        resolved_user = squeeze(cell('resolved_user_prompt'))
+        run_time = number(cell('run_time'))
+
+        if role in CALL_ROLES:
+            # A call the Builder made for a prompt: the texts the request must hold, the models it
+            # was sent to and, where the catalog knows it, the time it was sent in
+            texts = tuple(part for part in (resolved_system, resolved_user) if part)
+            targets = {part for part in (squeeze(piece) for piece in target.split(',')) if part}
+            start_text, end_text = squeeze(cell('window_start')), squeeze(cell('window_end'))
+            start, end = sas_seconds(start_text), sas_seconds(end_text)
+            usable = (sum(size(part) for part in texts) >= min_literal and targets
+                      and (start is not None or not start_text) and (end is not None or not end_text)
+                      and (start is None or end is None or start <= end))
+            if not usable:
+                index['unusable_calls'] += 1
+                return
+            add_caller(model_id, squeeze(cell('projectid')), 'prompt', name, weak=True)
+            key = (role, model_id, run_id, squeeze(cell('optimization_id')), texts, start, end)
+            call = patterns.get(key)
+            if call is None:
+                # The log has whole seconds, so the window is taken with the seconds it starts and ends in
+                call = {'caller': model_id, 'texts': texts, 'literal': sum(size(part) for part in texts), 'run': run_id, 'run_time': run_time,
+                        'start': None if start is None else math.floor(start), 'end': None if end is None else math.ceil(end), 'models': set()}
+                patterns[key] = call
+                index['patterns'] += 1
+            for model in targets - call['models']:
+                call['models'].add(model)
+                calls.setdefault((role, model), []).append(call)
+            return
+        if role not in ('prompt', 'decision', 'rag'):
+            return
 
         if role == 'rag':
+            add_caller(model_id, squeeze(cell('projectid')), role, name)
             collection = squeeze(cell('collection'))
             if collection:
                 setups = index['collections'].setdefault(collection, [])
@@ -457,18 +636,48 @@ def build_index(catalog, runs=None, min_literal=20):
                     setups.append(model_id)
             if target:
                 index['rag_targets'].setdefault(model_id, set()).add(target)
-            if squeeze(cell('template_source')).lower() == BUILDER_SETUP:
+            source = squeeze(cell('template_source')).lower()
+            index['setups'].setdefault(model_id, {'name': name, 'source': source})
+            if source == BUILDER_SETUP:
                 index['builder_setups'].add(model_id)
-            continue
+            return
 
         system_template = text(cell('system_template'))
         user_template = text(cell('user_template'))
-        run_id = squeeze(cell('runid'))
-        resolved_system = squeeze(cell('resolved_system_prompt'))
-        resolved_user = squeeze(cell('resolved_user_prompt'))
         system_hash, user_hash = cell('resolved_system_hash'), cell('resolved_user_hash')
         system_parts, system_size = template_parts(system_template)
         user_parts, user_size = template_parts(user_template)
+        # Everything that reads the content of the row is done before the index is touched, so a row
+        # that can not be read leaves nothing of itself behind
+        template_keys, run_keys = [], []
+        if role == 'decision':
+            # A decision: the system template is the questions JSON, the user template the state
+            if size(system_template) >= min_literal:
+                template_keys = question_keys(system_template)
+            if run_id:
+                resolved_questions = text(cell('resolved_system_prompt')) if resolved_system else system_template
+                if not resolved_user and len(user_parts) == 1:
+                    resolved_user = user_parts[0]
+                    user_hash = ''
+                if resolved_user and size(resolved_questions) >= min_literal:
+                    # The questions by their JSON and their text, and by the hash the catalog took of the whole text
+                    stored = squeeze(system_hash).lower()
+                    run_keys = [('D', key, hash_or(user_hash, resolved_user)) for key in question_keys(resolved_questions)
+                                + ['H:' + (stored if resolved_system and TEXT_HASH.fullmatch(stored) else text_hash(resolved_questions))]]
+        elif run_id:
+            # A run without resolved prompts is its templates when they hold no variable
+            if not resolved_system and not resolved_user and len(system_parts) == 1 and len(user_parts) == 1:
+                resolved_system, resolved_user = system_parts[0], user_parts[0]
+                system_hash = user_hash = ''
+            if size(resolved_system) + size(resolved_user) >= min_literal:
+                run_keys = [('P', hash_or(system_hash, resolved_system), hash_or(user_hash, resolved_user))]
+
+        add_caller(model_id, squeeze(cell('projectid')), role, name)
+        if run_id:
+            index['run_ids'].add((model_id, run_id))
+            index['run_times'][(model_id, run_id, target)] = run_time
+        for key in run_keys:
+            index['runs'].setdefault(key, []).append({'caller': model_id, 'run': run_id, 'target': target, 'run_time': run_time})
 
         if role == 'prompt':
             if system_size + user_size >= min_literal:
@@ -485,38 +694,47 @@ def build_index(catalog, runs=None, min_literal=20):
                 add_target(pattern, target)
             elif system_size + user_size > 0 or len(system_parts) + len(user_parts) > 2:
                 index['short'].add(model_id)
+        elif template_keys:
+            for key in template_keys:
+                where = index['questions'].setdefault(key, [])
+                pattern = pattern_of((model_id, key, user_parts), where,
+                                     {'caller': model_id, 'state': user_parts, 'literal': user_size})
+                add_target(pattern, target)
+        elif size(system_template) > 0:
+            index['short'].add(model_id)
 
-            if run_id:
-                # A run without resolved prompts is its templates when they hold no variable
-                if not resolved_system and not resolved_user and len(system_parts) == 1 and len(user_parts) == 1:
-                    resolved_system, resolved_user = system_parts[0], user_parts[0]
-                    system_hash = user_hash = ''
-                if size(resolved_system) + size(resolved_user) >= min_literal:
-                    key = ('P', hash_or(system_hash, resolved_system), hash_or(user_hash, resolved_user))
-                    index['runs'].setdefault(key, []).append({'caller': model_id, 'run': run_id, 'target': target})
-        else:
-            # A decision: the system template is the questions JSON, the user template the state
-            if size(system_template) >= min_literal:
-                for key in question_keys(system_template):
-                    where = index['questions'].setdefault(key, [])
-                    pattern = pattern_of((model_id, key, user_parts), where,
-                                         {'caller': model_id, 'state': user_parts, 'literal': user_size})
-                    add_target(pattern, target)
-            elif size(system_template) > 0:
-                index['short'].add(model_id)
+    for catalog_row in catalog.to_dict('records'):
+        try:
+            add_record(catalog_row)
+        except Exception as error:
+            index['skipped'].append((squeeze(catalog_row.get('name')), squeeze(catalog_row.get('modelid')), type(error).__name__))
 
-            if run_id:
-                resolved_questions = text(cell('resolved_system_prompt')) if resolved_system else system_template
-                if not resolved_user and len(user_parts) == 1:
-                    resolved_user = user_parts[0]
-                    user_hash = ''
-                if resolved_user and size(resolved_questions) >= min_literal:
-                    # The questions by their JSON and their text, and by the hash the catalog took of the whole text
-                    keys = question_keys(resolved_questions)
-                    stored = squeeze(system_hash).lower()
-                    keys.append('H:' + (stored if resolved_system and TEXT_HASH.fullmatch(stored) else text_hash(resolved_questions)))
-                    for key in keys:
-                        index['runs'].setdefault(('D', key, hash_or(user_hash, resolved_user)), []).append({'caller': model_id, 'run': run_id, 'target': target})
+    for key, found in calls.items():
+        entry = {'calls': found, 'anchors': None, 'width': 0, 'at_words': True}
+        if len(found) > CALLS_COMPARED:
+            width = max(1, min(CALL_ANCHOR, min(max(len(part) for part in call['texts']) for call in found)))
+            # The calls for one prompt hold the same system prompt, and their user prompts start alike and end
+            # alike. Of five pieces at even distances in each of its texts, a call is found through the one that
+            # the fewest calls share. A piece starts where a word of the text starts, so that it is only looked
+            # for where a word of a prompt starts - unless a text has no such place, and then at every place
+            pieces = []
+            for call in found:
+                of_call = []
+                for part in call['texts']:
+                    starts = [place + 1 for place in range(len(part) - width) if part[place] == ' ']
+                    of_call += [part[starts[len(starts) * step // 5]:][:width] for step in range(5)] if starts else []
+                if not of_call:
+                    entry['at_words'] = False
+                    of_call = [part[:width] for part in call['texts'] if len(part) >= width]
+                pieces.append(of_call)
+            shared = {}
+            for of_call in pieces:
+                for piece in set(of_call):
+                    shared[piece] = shared.get(piece, 0) + 1
+            entry['width'], entry['anchors'] = width, {}
+            for call, of_call in zip(found, pieces):
+                entry['anchors'].setdefault(min(of_call, key=lambda piece: shared[piece]), []).append(call)
+        index['calls'][key] = entry
 
     if runs is not None and len(runs) > 0:
         seen = {}
@@ -544,6 +762,10 @@ def build_index(catalog, runs=None, min_literal=20):
                 index['ingestions'].setdefault(embed_model, []).append(ingestion)
             if setup:
                 ingestion['setups'].add(setup)
+        for holders in index['run_setups'].values():
+            if len(holders) > 1:
+                for setup in holders:
+                    index['run_mates'].setdefault(setup, set()).update(holders)
         # A run table that names no setup: the setup is the one that holds the collection of the run
         for ingestions in index['ingestions'].values():
             for ingestion in ingestions:
@@ -577,23 +799,47 @@ def tier(pattern, model):
     return 0 if pattern['any_target'] or model in pattern['targets'] else 1
 
 
-def match_run(index, space, system_keys, user, model):
-    """Rule 'experiment run': the prompts of the row are the resolved prompts of a run
-    that was sent to the model of the row. Asked for the rows a browser can have sent.
-    The user prompt is compared by its hash, the system prompt by its hash or, for the
-    questions of a decision, by the keys of the questions."""
-    found = set()
+def runs_with_prompts(index, space, system_keys, user, model):
+    """The experiment runs whose resolved prompts are the prompts of a row and that were
+    sent to the model of the row. The user prompt is compared by its hash, the system
+    prompt by its hash or, for the questions of a decision, by the keys of the questions."""
+    found = {}
     for key in system_keys:
         for run in index['runs'].get((space, key, user), ()):
             if run['target'] in ('', model):
-                found.add((run['caller'], run['run']))
-    if not found:
-        return None
-    callers = {caller for caller, _ in found}
-    if len(callers) > 1:
-        return {'match_method': 'ambiguous', 'match_candidates': len(found)}
-    newest = max((run for _, run in found), key=run_order)
-    return {'caller': callers.pop(), 'match_method': 'experiment run', 'match_candidates': len(found), 'experiment_run_id': newest}
+                found.setdefault((run['caller'], run['run']), run)
+    return list(found.values())
+
+
+def claim_run(found, runtime):
+    """What the rule 'experiment run' makes of the runs that hold the prompts of a row.
+
+    A run was one request per model, and the tracker keeps the run time that request
+    returned: the row is the request of the run whose run time is its own. Returns
+
+    * ('fits', runs) - the runs whose run time is the one of the row, the closest and then
+      the oldest first. Which of them the row gets is decided over all rows, as a run is
+      given to one row only;
+    * ('link', match) - no run time decides: the runs are of two callers, which is
+      ambiguous, or the catalog holds no run time for them, and then the newest of them is
+      taken as before the catalog had run times, with their number as the candidates;
+    * ('none', None) - the prompts are those of runs, but no run has the run time of the
+      row: it is another request with the same prompts, and the rules after this one say
+      who sent it.
+    """
+    timed = [run for run in found if run['run_time'] is not None]
+    fitting = [] if runtime is None else [run for run in timed if same_time(run['run_time'], runtime)]
+    if fitting:
+        if len({run['caller'] for run in fitting}) > 1:
+            return 'link', {'match_method': 'ambiguous', 'match_candidates': len(fitting)}
+        return 'fits', sorted(fitting, key=lambda run: (abs(run['run_time'] - runtime), run_order(run['run'])))
+    untimed = [run for run in found if run['run_time'] is None]
+    if not untimed:
+        return 'none', None
+    if len({run['caller'] for run in untimed}) > 1:
+        return 'link', {'match_method': 'ambiguous', 'match_candidates': len(untimed)}
+    newest = max((run['run'] for run in untimed), key=run_order)
+    return 'link', {'caller': untimed[0]['caller'], 'match_method': 'experiment run', 'match_candidates': len(untimed), 'experiment_run_id': newest, 'untimed': True}
 
 
 def fitting_patterns(index, system, user, cache):
@@ -620,6 +866,62 @@ def match_template(index, system, user, model, cache):
     return {'caller': caller, 'match_method': 'template', 'match_candidates': callers}
 
 
+def calls_held(index, role, model, system, user, cache):
+    """The calls of a role that were sent to a model and whose texts the prompts of a row
+    hold. Kept per pair of prompts."""
+    key = (role, model, system, user)
+    held = cache.get(key)
+    if held is None:
+        entry = index['calls'][(role, model)]
+        if entry['anchors'] is None:
+            candidates = entry['calls']
+        else:
+            width, anchors, found = entry['width'], entry['anchors'], {}
+            for prompt in (system, user):
+                if entry['at_words']:
+                    start = prompt.find(' ') + 1
+                    while start > 0:
+                        for call in anchors.get(prompt[start:start + width], ()):
+                            found[id(call)] = call
+                        start = prompt.find(' ', start) + 1
+                else:
+                    for start in range(len(prompt) - width + 1):
+                        for call in anchors.get(prompt[start:start + width], ()):
+                            found[id(call)] = call
+            candidates = list(found.values())
+        held = [call for call in candidates if holds(call['texts'], system, user)]
+        cache[key] = held
+    return held
+
+
+def match_call(index, role, system, user, model, moment, runtime, cache):
+    """Rules 'optimization' and 'judge': the request is a call the Builder made for a
+    prompt - the calls of a prompt optimization, the call of a judge that ranks the
+    answers of a run. The catalog holds for each of them the texts the request must hold,
+    the model it was sent to and, where it is known, the time it was sent in. All three
+    must fit. A judge call gets the run that was judged when the catalog leaves one."""
+    if (role, model) not in index['calls']:
+        return None
+    fitting = [call for call in calls_held(index, role, model, system, user, cache)
+               if (call['start'] is None and call['end'] is None)
+               or (moment is not None and (call['start'] is None or moment >= call['start']) and (call['end'] is None or moment <= call['end']))]
+    if not fitting:
+        return None
+    caller, callers, top = choose((call['caller'], -call['literal']) for call in fitting)
+    if caller is None:
+        return {'match_method': 'ambiguous', 'match_candidates': callers}
+    match = {'caller': caller, 'match_method': role, 'match_candidates': callers}
+    if role == 'judge':
+        best = [call for call in fitting if call['caller'] == caller and -call['literal'] == top]
+        judged = {call['run'] for call in best}
+        if len(judged) > 1 and runtime is not None:
+            timed = {call['run'] for call in best if call['run_time'] is not None and same_time(call['run_time'], runtime)}
+            judged = timed if len(timed) == 1 else judged
+        if len(judged) == 1:
+            match['experiment_run_id'] = judged.pop()
+    return match
+
+
 def match_questions(index, keys, state, model, cache):
     """Rules 'questions and state' and 'questions': the questions of the row are the
     questions of a decision template. A template whose state has fixed text that the
@@ -641,21 +943,47 @@ def match_questions(index, keys, state, model, cache):
     return {'caller': caller, 'match_method': 'questions and state' if top[1] == 0 else 'questions', 'match_candidates': callers}
 
 
+def registered_for(index, step, builder):
+    """Whether a model of a collection is the registration of the setup the Prompt Builder
+    saved for that collection. What the catalog and RAG_RUNS let be seen of it: who wrote
+    the model, the embedding model of both, the name - the step RAG - Register Setup names
+    its model 'RAG Retrieval - ' and the setup - and the ingestion runs both hold. A model
+    the step did not write, another embedding model, or another name without a common
+    ingestion run: it is another setup with the same collection name."""
+    described, saved = index['setups'].get(step, {}), index['setups'].get(builder, {})
+    if described.get('source') != STEP_SETUP:
+        return False
+    targets, saved_targets = index['rag_targets'].get(step, set()), index['rag_targets'].get(builder, set())
+    if targets and saved_targets and not targets.intersection(saved_targets):
+        return False
+    if saved.get('name') and described.get('name', '').lower() == (STEP_MODEL_PREFIX + saved['name']).lower():
+        return True
+    return builder in index['run_mates'].get(step, ())
+
+
 def saved_setups(index, setups):
-    """The setups among several that the Prompt Builder saved, when it saved exactly one of
-    them - otherwise the setups as they are. A setup that was saved in the Prompt Builder and
-    registered with the step RAG - Register Setup is two models with one collection and the
-    same ingestion runs: the model the Builder saved is the one that holds the setup."""
-    setups = list(setups)
-    saved = [setup for setup in setups if setup in index['builder_setups']]
-    return saved if len(setups) > 1 and len(saved) == 1 else setups
+    """The setup among several of one collection that the Prompt Builder saved, when it
+    saved exactly one of them and every other one is its registration - otherwise the
+    setups as they are. A setup that was saved in the Prompt Builder and registered with
+    the step RAG - Register Setup is two models with one collection and the same ingestion
+    runs: the model the Builder saved is the one that holds the setup."""
+    key = tuple(sorted(setups))
+    decided = index['decided'].get(key)
+    if decided is None:
+        decided = list(setups)
+        saved = [setup for setup in decided if setup in index['builder_setups']]
+        if len(decided) > 1 and len(saved) == 1 and all(registered_for(index, setup, saved[0]) for setup in decided if setup != saved[0]):
+            decided = saved
+        index['decided'][key] = decided
+    return decided
 
 
 def setup_of_collection(index, collection, user_prompt=''):
     """The RAG setup a collection belongs to: the one setup the catalog has for it. When
     several setups hold the collection, the ingestion run the retrieval names decides,
     if exactly one of them holds that run, and after that the one setup among them that
-    the Prompt Builder saved. The empty text when nothing decides."""
+    the Prompt Builder saved and the others are the registration of. The empty text when
+    nothing decides."""
     setups = index['collections'].get(collection, ())
     if len(setups) == 1:
         return setups[0]
@@ -669,22 +997,32 @@ def setup_of_collection(index, collection, user_prompt=''):
     return setups[0] if len(setups) == 1 else ''
 
 
-def match_query(index, evidence, input_hash, model):
+def match_query(index, evidence, input_hash, moment, model, window):
     """Rule 'retrieval query': the text an embedding model got in query mode is the query
-    of a retrieval that an LLM row of the table carries. The same question is embedded
-    many times, so there is no time window: the row gets the setup of the collection
-    when every such LLM row names the same collection."""
+    of a retrieval, and the prompt that carries that retrieval follows within the window.
+    The row gets the setup of the collection the nearest such prompt names. The same
+    question is embedded many times and for more than one collection, so a prompt that
+    came hours later, or before the embedding, says nothing about this request."""
     seen = evidence.get(input_hash)
-    if not input_hash or not seen:
+    if not input_hash or not seen or moment is None:
         return None
-    if len(seen['collections']) > 1:
-        return {'match_method': 'ambiguous', 'match_candidates': len(seen['collections'])}
-    collection = next(iter(seen['collections']))
-    setups = saved_setups(index, index['collections'].get(collection, ()))
+    position = bisect_left(seen['times'], moment)
+    if position == len(seen['times']) or seen['times'][position] - moment > window:
+        return None
+    nearest = seen['times'][position]
+    carried = []
+    while position < len(seen['times']) and seen['times'][position] == nearest:
+        carried.append(seen['prompts'][position])
+        position += 1
+    collections = {collection for collection, _ in carried}
+    if len(collections) > 1:
+        return {'match_method': 'ambiguous', 'match_candidates': len(collections)}
+    setups = saved_setups(index, index['collections'].get(collections.pop(), ()))
     if not setups:
         return None
-    if len(seen['setups']) == 1 and not seen['open']:
-        setup = next(iter(seen['setups']))
+    named = {setup for _, setup in carried}
+    if len(named) == 1 and '' not in named:
+        setup = named.pop()
     elif len(setups) == 1:
         setup = setups[0]
     else:
@@ -721,18 +1059,19 @@ def match_ingestion(index, moment, model, cache):
 # The table
 # ---------------------------------------------------------------------------
 
-def link_rows(rows, catalog, runs=None, redo_all=False, min_literal=20, utc_offset=0.0):
+def link_rows(rows, catalog, runs=None, redo_all=False, min_literal=20, utc_offset=0.0, query_window=300.0):
     """Links the rows of a log table to the catalog.
 
     Args:
-        rows (pandas.DataFrame): The log rows with CONTENT_COLUMNS and LINK_COLUMNS, and user_agent
-            when the table has it, names in lower case. The prompts of a row that is not linked
-            again may be missing.
+        rows (pandas.DataFrame): The log rows with CONTENT_COLUMNS and LINK_COLUMNS, and the
+            OPTIONAL_COLUMNS the table has, names in lower case. The prompts of a row that is
+            not linked again may be missing.
         catalog (pandas.DataFrame): MODEL_CATALOG, names in lower case.
         runs (pandas.DataFrame): RAG_RUNS, names in lower case, or None.
         redo_all (bool): True links every row, False only the rows without a match_method.
         min_literal (int): The fixed text a template needs to take part.
         utc_offset (float): The hours the clock of the log is ahead of UTC.
+        query_window (float): The seconds within which the prompt of a retrieval follows its query.
 
     Returns:
         tuple: A frame of the LINK_COLUMNS with one row per log row in the order of
@@ -740,18 +1079,24 @@ def link_rows(rows, catalog, runs=None, redo_all=False, min_literal=20, utc_offs
     """
     index = build_index(catalog, runs, min_literal)
     records = rows.to_dict('records')
+    doubles = {}
 
     def model_of(name, kind):
         """The modelID of the model that answered, and the kind of the row when it has none."""
         known = index['models'].get(name, ())
         if not kind:
-            roles = {role for role, _ in known}
+            roles = {role for role, _, _ in known}
             kind = KIND_OF_ROLE[roles.pop()] if len(roles) == 1 else ''
-        ids = {model_id for role, model_id in known if role == ANSWER_ROLE.get(kind)} or {model_id for _, model_id in known}
-        return (ids.pop() if len(ids) == 1 else ''), kind
+        of_kind = [entry for entry in known if entry[0] == ANSWER_ROLE.get(kind)] or list(known)
+        if len(of_kind) > 1:
+            # Two models with one name: the name of the container does not say which of them answered
+            double = doubles.setdefault((name, of_kind[0][0] if len({role for role, _, _ in of_kind}) == 1 else 'model'), {'models': of_kind, 'rows': 0})
+            double['rows'] += 1
+        return (of_kind[0][1] if len(of_kind) == 1 else ''), kind
 
     todo = [redo_all or not squeeze(record.get('match_method')) for record in records]
     models = [squeeze(record.get('model')).lower() for record in records]
+    moments = [sas_seconds(record.get('timestamp')) for record in records]
     kinds = []
     model_ids = []
     for record, model in zip(records, models):
@@ -759,25 +1104,79 @@ def link_rows(rows, catalog, runs=None, redo_all=False, min_literal=20, utc_offs
         kinds.append(kind)
         model_ids.append(model_id)
 
-    # The retrievals the LLM rows of the whole table carry, by the hash of their query:
-    # they are what an embedding row in query mode is linked through
+    # A row whose content can not be compared - questions that are nested deeper than Python
+    # reads JSON, say - is not linked, and the rows after it are
+    failed = {}
+
+    # The retrievals the LLM rows of the whole table carry, by the hash of their query and in
+    # the order of their time: they are what an embedding row in query mode is linked through
     setups = [''] * len(records)
-    evidence = {}
+    carried = {}
     for position, record in enumerate(records):
         collection = squeeze(record.get('rag_collection'))
         if kinds[position] != 'llm' or not collection:
             continue
-        setups[position] = setup_of_collection(index, collection, text(record.get('user_prompt')))
+        try:
+            setups[position] = setup_of_collection(index, collection, text(record.get('user_prompt')))
+        except Exception as error:
+            if todo[position]:
+                failed[position] = type(error).__name__
         query_hash = squeeze(record.get('rag_query_hash')).lower()
-        if query_hash:
-            seen = evidence.setdefault(query_hash, {'collections': set(), 'setups': set(), 'open': False})
-            seen['collections'].add(collection)
-            if setups[position]:
-                seen['setups'].add(setups[position])
-            else:
-                seen['open'] = True
+        if query_hash and moments[position] is not None:
+            carried.setdefault(query_hash, []).append((moments[position], collection, setups[position]))
+    evidence = {}
+    for query_hash, prompts in carried.items():
+        prompts.sort(key=lambda prompt: prompt[0])
+        evidence[query_hash] = {'times': [moment for moment, _, _ in prompts], 'prompts': [(collection, setup) for _, collection, setup in prompts]}
 
-    pattern_cache, state_cache, window_cache = {}, {}, {}
+    # Rule 'experiment run', over all rows: a run was one request for each of its models, so a run
+    # is given to one row only. The runs that rows of earlier runs of this program hold are taken.
+    given = set()
+    stale = {'gone': 0, 'other time': 0}
+    for position, record in enumerate(records):
+        if todo[position]:
+            continue
+        method, caller, run_id = squeeze(record.get('match_method')), squeeze(record.get('caller_model_id')), squeeze(record.get('experiment_run_id'))
+        if not run_id or method not in ('experiment run', 'judge'):
+            continue
+        # The id of a run is its place in the tracker, and the Builder numbers the runs again when one
+        # is deleted: a row that was linked earlier may name a run the catalog no longer has under that id
+        if (caller, run_id) not in index['run_ids']:
+            stale['gone'] += 1
+        elif method == 'experiment run':
+            given.add((caller, run_id, models[position]))
+            known = index['run_times'].get((caller, run_id, models[position]), index['run_times'].get((caller, run_id, '')))
+            runtime = number(record.get('runtime'))
+            if known is not None and runtime is not None and not same_time(known, runtime):
+                stale['other time'] += 1
+
+    pattern_cache, call_cache, state_cache, window_cache = {}, {}, {}, {}
+    counted = {'untimed runs': 0}
+
+    def by_content(kind, first, second, model, moment, runtime):
+        """The rules after 'experiment run': for an LLM row, of its squeezed prompts, the template and then
+        the calls made for a prompt - for a decision row, of the keys of its questions and its state, the questions."""
+        if kind == 'llm':
+            match = match_template(index, first, second, model, pattern_cache)
+            for role in CALL_ROLES:
+                match = match or match_call(index, role, first, second, model, moment, runtime, call_cache)
+            return match
+        return match_questions(index, first, second, model, state_cache)
+
+    def close(link, match):
+        """Writes what a rule found into the link columns of a row."""
+        if match is None:
+            match = {'match_method': 'none', 'match_candidates': 0}
+        counted['untimed runs'] += 1 if match.get('untimed') else 0
+        link['match_method'] = match['match_method']
+        link['match_candidates'] = match['match_candidates']
+        link['experiment_run_id'] = match.get('experiment_run_id', '')
+        if 'caller' in match:
+            link.update(index['callers'].get(match['caller'], {'caller_model_id': match['caller']}))
+
+    # The rows whose run time is the one of a run with their prompts. Which of them gets the run is
+    # decided once all rows were seen, and only these rows are kept with their prompts until then
+    waiting = []
     links = []
     for position, record in enumerate(records):
         if not todo[position]:
@@ -789,36 +1188,67 @@ def link_rows(rows, catalog, runs=None, redo_all=False, min_literal=20, utc_offs
         kind, model = kinds[position], models[position]
         link = dict.fromkeys(LINK_TEXT_COLUMNS, '')
         link['model_id'] = model_ids[position]
-        # An experiment run is a request of the Builder page. A published model that sends the prompts
-        # of a run again is the same caller, but its request is not that run
-        may_be_run = bool(index['runs']) and not squeeze(record.get('user_agent')).lower().startswith(NOT_A_BROWSER)
-        match = None
         if kind == 'llm':
             link['rag_model_id'] = setups[position]
-            system, user = squeeze(record.get('system_prompt')), squeeze(record.get('user_prompt'))
-            match = (may_be_run and match_run(index, 'P', [text_hash(system)], text_hash(user), model)) or match_template(index, system, user, model, pattern_cache)
-        elif kind == 'decision':
-            keys, state = question_keys(record.get('system_prompt')), squeeze(record.get('user_prompt'))
-            match = (may_be_run and match_run(index, 'D', keys + ['H:' + text_hash(record.get('system_prompt'))], text_hash(state), model)) or match_questions(index, keys, state, model, state_cache)
-        elif kind == 'embedding':
-            mode = squeeze(record.get('embedding_mode')).lower()
-            if mode == 'query':
-                match = match_query(index, evidence, squeeze(record.get('input_hash')).lower(), model)
-            elif mode == 'document':
-                moment = sas_seconds(record.get('timestamp'))
-                match = match_ingestion(index, None if moment is None else moment - utc_offset * 3600.0, model, window_cache)
-
-        if match is None:
-            match = {'match_method': 'none', 'match_candidates': 0}
-        link['match_method'] = match['match_method']
-        link['match_candidates'] = match['match_candidates']
-        link['experiment_run_id'] = match.get('experiment_run_id', '')
-        if 'caller' in match:
-            link.update(index['callers'].get(match['caller'], {'caller_model_id': match['caller']}))
         links.append(link)
+        match = None
+        try:
+            moment = None if moments[position] is None else moments[position] - utc_offset * 3600.0
+            if position in failed:
+                pass
+            elif kind in ('llm', 'decision'):
+                runtime = number(record.get('runtime'))
+                # An experiment run is a request of the Builder page. A published model that sends the prompts
+                # of a run again is the same caller, but its request is not that run
+                may_be_run = bool(index['runs']) and not squeeze(record.get('user_agent')).lower().startswith(NOT_A_BROWSER)
+                found = []
+                if kind == 'llm':
+                    first, second = squeeze(record.get('system_prompt')), squeeze(record.get('user_prompt'))
+                    if may_be_run:
+                        found = runs_with_prompts(index, 'P', [text_hash(first)], text_hash(second), model)
+                else:
+                    first, second = question_keys(record.get('system_prompt')), squeeze(record.get('user_prompt'))
+                    if may_be_run:
+                        found = runs_with_prompts(index, 'D', first + ['H:' + text_hash(record.get('system_prompt'))], text_hash(second), model)
+                decided, result = claim_run(found, runtime) if found else ('none', None)
+                if decided == 'fits':
+                    waiting.append((moments[position] if moments[position] is not None else float('inf'), position, result, kind, first, second, moment, runtime))
+                    continue
+                match = result if decided == 'link' else by_content(kind, first, second, model, moment, runtime)
+            elif kind == 'embedding':
+                mode = squeeze(record.get('embedding_mode')).lower()
+                if mode == 'query':
+                    match = match_query(index, evidence, squeeze(record.get('input_hash')).lower(), moments[position], model, query_window)
+                elif mode == 'document' and squeeze(record.get('project')).lower() in ('', RUNTIME_PROJECT):
+                    # The RAG runtime names itself in the project input of its requests. A document that
+                    # another program embedded while a run was under way is no chunk of that run
+                    match = match_ingestion(index, moment, model, window_cache)
+        except Exception as error:
+            failed[position] = type(error).__name__
+            match = None
+        close(link, match)
+
+    # The earlier request gets the run. A second request with the same prompts and the same run time finds
+    # the run given, and the rules after this one say who sent it
+    for _, position, fitting, kind, first, second, moment, runtime in sorted(waiting, key=lambda entry: entry[:2]):
+        match = None
+        for run in fitting:
+            key = (run['caller'], run['run'], models[position])
+            if key not in given:
+                given.add(key)
+                match = {'caller': run['caller'], 'match_method': 'experiment run', 'match_candidates': len(fitting), 'experiment_run_id': run['run']}
+                break
+        if match is None:
+            try:
+                match = by_content(kind, first, second, models[position], moment, runtime)
+            except Exception as error:
+                failed[position] = type(error).__name__
+        close(links[position], match)
 
     summary = {'rows': len(records), 'linked': sum(todo), 'left': len(records) - sum(todo), 'kinds': {},
-               'patterns': index['patterns'], 'short': len(index['short']), 'runs_without_window': index['runs_without_window']}
+               'patterns': index['patterns'], 'short': len(index['short']), 'runs_without_window': index['runs_without_window'],
+               'untimed_runs': counted['untimed runs'], 'stale_runs': stale, 'failed_rows': failed, 'skipped': index['skipped'],
+               'unusable_calls': index['unusable_calls'], 'doubles': doubles}
     for kind, link in zip(kinds, links):
         counts = summary['kinds'].setdefault(kind if kind in METHODS else 'unknown', {'rows': 0, 'model': 0, 'rag': 0, 'methods': {}})
         counts['rows'] += 1
@@ -830,7 +1260,8 @@ def link_rows(rows, catalog, runs=None, redo_all=False, min_literal=20, utc_offs
 
 
 def summary_lines(summary):
-    """The summary as the lines of the SAS log: one per kind of row."""
+    """The summary as the lines of the SAS log: one per kind of row. They hold no semicolon:
+    a line of the SAS log is a SAS statement on its way there."""
     lines = []
     for kind in ['llm', 'decision', 'embedding', 'unknown']:
         counts = summary['kinds'].get(kind)
@@ -841,10 +1272,59 @@ def summary_lines(summary):
         named += [f"{method} {methods.pop(method, 0)}" for method in ['ambiguous', 'none']]
         named += [f"{method} {count}" for method, count in sorted(methods.items())]
         label = 'rows of no known kind' if kind == 'unknown' else f"{kind} rows"
-        line = f"{counts['rows']} {label}: {counts['model']} linked to a model; caller by {', '.join(named)}"
+        line = f"{counts['rows']} {label}: {counts['model']} linked to a model, caller by {', '.join(named)}"
         if kind == 'llm':
-            line += f"; {counts['rag']} linked to a RAG setup"
+            line += f", and {counts['rag']} linked to a RAG setup"
         lines.append(line + '.')
+    return lines
+
+
+def named_first(entries):
+    """The first entries of a list for a message, and how many more there are."""
+    entries = list(entries)
+    more = len(entries) - NAMED_IN_A_MESSAGE
+    return ', '.join(entries[:NAMED_IN_A_MESSAGE]) + (f" and {more} more" if more > 0 else '')
+
+
+def warning_lines(summary):
+    """What a run has to say about the catalog and about rows it linked earlier, as the WARNING
+    lines of the SAS log. They are written whether or not a row was linked."""
+    lines = []
+    for name, model_id, error in summary['skipped'][:NAMED_IN_A_MESSAGE]:
+        lines.append(f"The catalog row of {name or 'a model without a name'} ({model_id}) could not be read - {error} - and takes no part in the links.")
+    if len(summary['skipped']) > NAMED_IN_A_MESSAGE:
+        lines.append(f"{len(summary['skipped']) - NAMED_IN_A_MESSAGE} more catalog rows could not be read and take no part in the links.")
+    if summary['failed_rows']:
+        errors = sorted(set(summary['failed_rows'].values()))
+        lines.append(f"{len(summary['failed_rows'])} row(s) could not be compared with the catalog - {named_first(errors)} - and got match_method none.")
+    stale = summary['stale_runs']
+    if stale['gone'] or stale['other time']:
+        lines.append(f"{stale['gone'] + stale['other time']} row(s) that were linked to an experiment run earlier no longer name that run: for {stale['gone']} the catalog has no run "
+                     f"with their id, for {stale['other time']} the run with their id has another run time than the request. The id of a run is its place in the tracker "
+                     "and changes when a run is deleted. Link all rows again with _lnk_redo_all = 1.")
+    return lines
+
+
+def note_lines(summary, settings):
+    """What a run that linked rows has to say besides its counts, as the NOTE lines of the SAS log."""
+    lines = []
+    if summary['short']:
+        lines.append(f"{summary['short']} prompt(s) or decision template(s) of the catalog have a template with less than {settings['min_literal']} characters of fixed text. "
+                     "Such a template takes no part, as it would fit the requests of other callers.")
+    if summary['unusable_calls']:
+        lines.append(f"{summary['unusable_calls']} catalog row(s) of an optimization or a judge name no model, hold less than {settings['min_literal']} characters of text "
+                     "or have a window that can not be read. Such a row takes no part.")
+    if summary['runs_without_window']:
+        lines.append(f"{summary['runs_without_window']} ingestion run(s) have no start or no end and take no part.")
+    if summary['untimed_runs']:
+        lines.append(f"{summary['untimed_runs']} row(s) were linked to an experiment run without a run time to compare, as the catalog holds none for the runs with their prompts. "
+                     "They carry the newest of those runs, and match_candidates is the number of those runs.")
+    for (name, role), double in list(summary['doubles'].items())[:NAMED_IN_A_MESSAGE]:
+        described = [f"{model_id} in project {project_id or 'unknown'}" for _, model_id, project_id in double['models']]
+        lines.append(f"The catalog holds {len(double['models'])} models named {name} with the role {role} - {named_first(described)} - so the name of the container does not say "
+                     f"which of them answered, and model_id is empty in {double['rows']} row(s).")
+    if len(summary['doubles']) > NAMED_IN_A_MESSAGE:
+        lines.append(f"{len(summary['doubles']) - NAMED_IN_A_MESSAGE} more model names are held by more than one model of the catalog, and model_id is empty in their rows.")
     return lines
 
 
@@ -880,6 +1360,15 @@ def columns_of(conn, caslib, name):
     return [(str(column), text(label)) for column, label in zip(info['Column'], labels)]
 
 
+def label_of(conn, caslib, name):
+    """The label of a CAS table. The empty text when it has none or it can not be read."""
+    try:
+        info = conn.retrieve('table.tableInfo', caslib=caslib, name=name)['TableInfo']
+        return text(info['Label'].iloc[0]).strip() if 'Label' in info.columns and len(info) > 0 else ''
+    except Exception:
+        return ''
+
+
 def read_table(conn, caslib, name, columns=None, where=None):
     """Reads a CAS table page by page, as the fetch action hands out a limited number of
     rows per call. Column names come back in lower case."""
@@ -912,14 +1401,24 @@ def link_table(conn, settings, log=print):
     """Reads the tables, links the rows and builds the new log table beside the old one.
 
     The new table is <log table>_NEW in the caslib of the log table: the rows of the log
-    table in their order with every column they had, the link columns replaced. The SAS
-    program takes it from there the way the parser replaces a table.
+    table in their order with every column they had and the label of the table, the link
+    columns replaced. The SAS program takes it from there the way the parser replaces a
+    table. When no row was linked no new table is built.
+
+    Args:
+        log: Called with a message and, for a WARNING, with 'WARNING' as the type of the message.
 
     Returns:
-        int: The number of rows of the new table, 0 when the log table has none.
+        tuple: The number of rows of the log table, 0 when it has none, and whether the
+        new table was built.
     """
     log_caslib, log_table = settings['log_caslib'], settings['log_table']
     new_table = log_table + '_NEW'
+
+    # A name with a line break can stand neither in a message nor in the code of a DATA step
+    for name in (log_caslib, log_table, settings['catalog_caslib'], settings['catalog_table'], settings['runs_caslib'], settings['runs_table']):
+        if any(not character.isprintable() for character in name):
+            raise Refused(f"The settings name a table or a CAS library with a line break or another character that is no text: {name}. Nothing was linked.")
 
     described = columns_of(conn, log_caslib, log_table)
     present = {column.lower(): label for column, label in described}
@@ -939,7 +1438,7 @@ def link_table(conn, settings, log=print):
     small = [column for column in CONTENT_COLUMNS + LINK_COLUMNS + OPTIONAL_COLUMNS if column in present and column not in PROMPT_COLUMNS]
     rows = read_table(conn, 'CASUSER', STAGE_TABLE, ['_lnk_row'] + small)
     if len(rows) == 0:
-        return 0
+        return 0, False
     # The prompts are only read of the rows that are linked
     prompts = read_table(conn, 'CASUSER', STAGE_TABLE, ['_lnk_row'] + PROMPT_COLUMNS, None if settings['redo_all'] else 'missing(match_method)')
     if len(prompts) > 0:
@@ -957,8 +1456,16 @@ def link_table(conn, settings, log=print):
             runs = None
 
     started = time.perf_counter()
-    links, summary = link_rows(rows, catalog, runs, settings['redo_all'], settings['min_literal'], settings['utc_offset'])
+    links, summary = link_rows(rows, catalog, runs, settings['redo_all'], settings['min_literal'], settings['utc_offset'], settings['query_window'])
     seconds = time.perf_counter() - started
+
+    if summary['linked'] == 0:
+        # Nothing to write: the table, its promotion and its saved file stay as they are
+        log(f"0 of {summary['rows']} rows of {log_caslib}.{log_table} were linked, as every row has a match_method. The table was left as it is. "
+            "With _lnk_redo_all = 1 all rows are linked again.")
+        for line in warning_lines(summary):
+            log(line, 'WARNING')
+        return len(rows), False
 
     links.insert(0, '_lnk_one', 1)
     links.insert(0, '_lnk_row', rows['_lnk_row'].astype('int64'))
@@ -967,6 +1474,7 @@ def link_table(conn, settings, log=print):
     variables += [{'name': column, 'type': 'double' if column == 'match_candidates' else 'varchar', 'label': present[column] or LABELS[column]} for column in LINK_COLUMNS]
     conn.upload_frame(links, casout=dict(name=LINKS_TABLE, caslib='CASUSER', replace=True), importoptions={'vars': variables})
 
+    table_label = label_of(conn, log_caslib, log_table)
     run_action(conn, 'table.dropTable', caslib=log_caslib, name=new_table, quiet=True)
     try:
         # Everything is one BY group, so the rows are written in the order of their number
@@ -984,44 +1492,50 @@ def link_table(conn, settings, log=print):
         # Without the new table the SAS program leaves the log table as it is
         conn.retrieve('table.dropTable', caslib=log_caslib, name=new_table, quiet=True)
         raise
+    if table_label:
+        # The label of the table is no part of its rows: the new table is given the one the table had.
+        # A label that can not be set is no reason to keep the links back
+        labelled = conn.retrieve('table.alterTable', caslib=log_caslib, name=new_table, label=table_label)
+        if getattr(labelled, 'severity', 0) > 1:
+            log(f"The label of the table {log_caslib}.{log_table} could not be given to the linked table, which has none now.")
 
     log(f"{summary['linked']} of {summary['rows']} rows of {log_caslib}.{log_table} were linked against {len(catalog)} catalog rows in {seconds:.2f} seconds"
         + (f", {summary['left']} rows that have a match_method were left as they are." if summary['left'] else '.'))
-    for line in summary_lines(summary):
+    for line in summary_lines(summary) + note_lines(summary, settings):
         log(line)
-    if summary['short']:
-        log(f"{summary['short']} prompt(s) or decision template(s) of the catalog have a template with less than {settings['min_literal']} characters of fixed text. Such a template takes no part, as it would fit the requests of other callers.")
-    if summary['runs_without_window']:
-        log(f"{summary['runs_without_window']} ingestion run(s) have no start or no end and take no part.")
-    return written
+    for line in warning_lines(summary):
+        log(line, 'WARNING')
+    return written, True
 
 
-if SAS.symget('_lnk_ready') == '1':
+if setting('_lnk_ready') == '1':
     #  Add certificate location to operating system list of trusted certs
     os.environ['CAS_CLIENT_SSL_CA_LIST'] = os.environ['SSLCALISTLOC']
 
     # Connect to CAS
-    conn = swat.CAS(hostname=SAS.sasfnc('getoption', 'cashost'), port=SAS.sasfnc('getoption', 'casport'), password=os.environ['SAS_SERVICES_TOKEN'], session=SAS.symget('_casSessionUUID'))
+    conn = swat.CAS(hostname=SAS.sasfnc('getoption', 'cashost'), port=SAS.sasfnc('getoption', 'casport'), password=os.environ['SAS_SERVICES_TOKEN'], session=setting('_casSessionUUID'))
 
     settings = {
-        'log_caslib': SAS.symget('_lnk_log_caslib'),
-        'log_table': SAS.symget('_lnk_log_table'),
-        'catalog_caslib': SAS.symget('_lnk_catalog_caslib'),
-        'catalog_table': SAS.symget('_lnk_catalog_table'),
-        'runs_caslib': SAS.symget('_lnk_runs_caslib'),
-        'runs_table': SAS.symget('_lnk_runs_table'),
-        'runs_exists': SAS.symget('_lnk_runs_exists') == '1',
-        'redo_all': SAS.symget('_lnk_redo_all') == '1',
-        'min_literal': int(float(SAS.symget('_lnk_min_literal'))),
-        'utc_offset': float(SAS.symget('_lnk_utc_offset')),
+        'log_caslib': setting('_lnk_log_caslib'),
+        'log_table': setting('_lnk_log_table'),
+        'catalog_caslib': setting('_lnk_catalog_caslib'),
+        'catalog_table': setting('_lnk_catalog_table'),
+        'runs_caslib': setting('_lnk_runs_caslib'),
+        'runs_table': setting('_lnk_runs_table'),
+        'runs_exists': setting('_lnk_runs_exists') == '1',
+        'redo_all': setting('_lnk_redo_all') == '1',
+        'min_literal': int(number_setting('_lnk_min_literal', 20)),
+        'utc_offset': number_setting('_lnk_utc_offset', 0),
+        'query_window': max(0.0, number_setting('_lnk_query_window', 300)),
     }
     try:
-        linked_rows = link_table(conn, settings, log=SAS.logMessage)
+        table_rows, table_built = link_table(conn, settings, log=say)
     except Refused as refusal:
-        SAS.logMessage(str(refusal), messageType='ERROR')
-        SAS.symput('_lnk_refused', '1')
+        say(str(refusal), 'ERROR')
+        put_number('_lnk_refused', 1)
     else:
-        SAS.symput('_lnk_row_count', str(linked_rows))
+        put_number('_lnk_unchanged', 0 if table_built or table_rows == 0 else 1)
+        put_number('_lnk_row_count', table_rows)
 endsubmit;
 run; quit;
 
@@ -1030,7 +1544,7 @@ run; quit;
 
 * Replace the log table by the new one, promote and save it;
 %macro _lnk_handle_output_table;
-    %if &_lnk_row_count. GT 0 %then %do;
+    %if &_lnk_row_count. GT 0 and &_lnk_unchanged. NE 1 %then %do;
         proc cas;
             /* The new table was built beside the existing one, which is only dropped once its replacement exists */
             table.tableExists result=staged /
@@ -1083,7 +1597,7 @@ run; quit;
     %else %if &_lnk_row_count. EQ 0 %then %do;
         %put NOTE: The table &_lnk_log_caslib..&_lnk_log_table. has no rows, it was left as it is.;
     %end;
-    %else %if &_lnk_ready. EQ 1 and &_lnk_refused. NE 1 %then %do;
+    %else %if &_lnk_row_count. LT 0 and &_lnk_ready. EQ 1 and &_lnk_refused. NE 1 %then %do;
         %put ERROR: The rows could not be linked, the table &_lnk_log_caslib..&_lnk_log_table. was left as it is.;
     %end;
 
@@ -1107,5 +1621,5 @@ run; quit;
 %end;
 %sysmacdelete _lnk_handle_output_table;
 %sysmacdelete _lnk_ensure_loaded;
-%symdel _lnk_clean_cas_session _casSessionUUID _lnk_row_count _lnk_refused _lnk_ready _lnk_log_exists _lnk_catalog_exists _lnk_runs_exists _lnk_log_scope _lnk_log_saved;
-%symdel _lnk_log_caslib _lnk_log_table _lnk_catalog_caslib _lnk_catalog_table _lnk_runs_caslib _lnk_runs_table _lnk_redo_all _lnk_min_literal _lnk_utc_offset _lnk_promote_table _lnk_save_table;
+%symdel _lnk_clean_cas_session _casSessionUUID _lnk_row_count _lnk_unchanged _lnk_refused _lnk_ready _lnk_log_exists _lnk_catalog_exists _lnk_runs_exists _lnk_log_scope _lnk_log_saved;
+%symdel _lnk_log_caslib _lnk_log_table _lnk_catalog_caslib _lnk_catalog_table _lnk_runs_caslib _lnk_runs_table _lnk_redo_all _lnk_min_literal _lnk_utc_offset _lnk_query_window _lnk_promote_table _lnk_save_table;

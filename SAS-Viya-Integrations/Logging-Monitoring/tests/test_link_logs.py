@@ -3,6 +3,7 @@ content of the request shows it, the prompt, decision template or RAG setup that
 
 Run with: python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests
 """
+import ast
 import json
 import math
 import re
@@ -19,6 +20,7 @@ from link_logs_harness import (
     QUESTIONS_AS_SENT,
     FakeCAS,
     answer_model,
+    catalog_row,
     catalog_table,
     code_file_program,
     decision_row,
@@ -27,15 +29,18 @@ from link_logs_harness import (
     experiment_run,
     functions,
     ingestion_run,
+    judge_call,
     llm_row,
     log_table,
     lower_case,
+    optimization_call,
     prompt_template,
     python_block,
     rag_setup,
     run_program,
     runs_table,
     sas_datetime,
+    unsafe_for_sas,
     uuid,
 )
 
@@ -100,7 +105,7 @@ def test_settings_are_macro_variables_with_the_default_tables():
         "_lnk_log_caslib": "Public", "_lnk_log_table": "LLM_LOGS",
         "_lnk_catalog_caslib": "Public", "_lnk_catalog_table": "MODEL_CATALOG",
         "_lnk_runs_caslib": "Public", "_lnk_runs_table": "RAG_RUNS",
-        "_lnk_redo_all": "0", "_lnk_min_literal": "20", "_lnk_utc_offset": "0",
+        "_lnk_redo_all": "0", "_lnk_min_literal": "20", "_lnk_utc_offset": "0", "_lnk_query_window": "300",
         "_lnk_promote_table": "1", "_lnk_save_table": "1",
     }
 
@@ -630,11 +635,59 @@ def test_questions_below_the_minimum_match_nothing(program):
 # ---------------------------------------------------------------------------
 
 def test_retrieval_query_links_an_embedding_row_to_the_setup_of_the_prompt_that_carried_it(program):
-    """The question is embedded, and hours later a prompt carries the retrieval of the same question: there is no time window."""
-    rows = [embedding_row(QUESTION, timestamp="2026-01-05 06:00:00"), leave_request(timestamp="2026-01-05 11:30:00")]
+    """The question is embedded, and two seconds later a prompt carries the retrieval of the same question."""
+    rows = [embedding_row(QUESTION, timestamp="2026-01-05 11:29:58"), leave_request(timestamp="2026-01-05 11:30:00")]
     row = link(program, rows, [LLM, EMBEDDER, HANDBOOK])[0]
     assert row == {"model_id": uuid(3), "caller_model_id": uuid(30), "caller_project_id": uuid(900), "caller_kind": "rag", "caller_name": "Staff handbook",
                    "experiment_run_id": "", "rag_model_id": "", "match_method": "retrieval query", "match_candidates": 1}
+
+
+@pytest.mark.parametrize("embedded_at, method", [
+    ("2026-01-05 11:30:00", "retrieval query"),   # logged in the same second as the prompt
+    ("2026-01-05 11:25:00", "retrieval query"),   # 300 seconds before it
+    ("2026-01-05 11:24:59", "none"),              # 301 seconds
+    ("2026-01-05 06:00:00", "none"),              # hours before: the text is the same, the request is another one
+    ("2026-01-05 11:30:01", "none"),              # after the prompt: no prompt follows it
+    ("2026-01-06 11:29:58", "none"),
+])
+def test_prompt_of_a_retrieval_follows_its_query_within_the_window(program, embedded_at, method):
+    """A query is linked through the prompt that carries its retrieval, and that prompt is sent right after the
+    retrieval. The same question is asked again and again: a prompt of another hour is the retrieval of another request."""
+    rows = [embedding_row(QUESTION, timestamp=embedded_at), leave_request(timestamp="2026-01-05 11:30:00")]
+    row = link(program, rows, [LLM, EMBEDDER, HANDBOOK])[0]
+    assert (row["match_method"], row["caller_model_id"]) == (method, uuid(30) if method == "retrieval query" else "")
+
+
+def test_window_of_a_retrieval_is_a_setting(program):
+    rows = [embedding_row(QUESTION, timestamp="2026-01-05 11:20:00"), leave_request(timestamp="2026-01-05 11:30:00")]
+    assert link(program, rows, [LLM, EMBEDDER, HANDBOOK])[0]["match_method"] == "none"
+    assert link(program, rows, [LLM, EMBEDDER, HANDBOOK], query_window=600.0)[0]["match_method"] == "retrieval query"
+    assert link(program, rows, [LLM, EMBEDDER, HANDBOOK], query_window=599.0)[0]["match_method"] == "none"
+
+
+def test_query_gets_the_setup_of_the_nearest_prompt_that_follows_it(program):
+    """The same question is asked of two collections. Each embedding belongs to the retrieval whose prompt comes next,
+    and an embedding no prompt follows is linked to neither - not to the one setup the question was once asked of."""
+    catalog = [LLM, EMBEDDER, HANDBOOK, rag_setup(uuid(32), "Travel policy", "travel_v1")]
+    rows = [embedding_row(QUESTION, timestamp="2026-01-05 09:00:00"), leave_request(timestamp="2026-01-05 09:00:02"),
+            embedding_row(QUESTION, timestamp="2026-01-05 09:01:00"), leave_request(collection="travel_v1", timestamp="2026-01-05 09:01:03"),
+            embedding_row(QUESTION, timestamp="2026-01-05 15:00:00")]
+    links = link(program, rows, catalog)
+    assert [(links[position]["match_method"], links[position]["caller_name"]) for position in (0, 2, 4)] == [
+        ("retrieval query", "Staff handbook"), ("retrieval query", "Travel policy"), ("none", "")]
+    # Two prompts follow the first embedding within the window: the nearer one is its own
+    assert links[0]["match_candidates"] == 1
+
+
+def test_query_embedded_for_one_collection_is_not_linked_to_the_setup_of_another(program):
+    """Review of the release before: the question was embedded for the travel policy, where no prompt carried it,
+    and was linked to the handbook because a prompt of the handbook once held the same text."""
+    catalog = [LLM, EMBEDDER, HANDBOOK, rag_setup(uuid(32), "Travel policy", "travel_v1")]
+    rows = [embedding_row(QUESTION, timestamp="2026-01-05 09:00:00"), leave_request(timestamp="2026-01-05 09:00:02"),
+            embedding_row(QUESTION, timestamp="2026-01-26 16:00:00")]
+    query, prompt, later = link(program, rows, catalog)
+    assert (query["match_method"], query["caller_name"], prompt["rag_model_id"]) == ("retrieval query", "Staff handbook", uuid(30))
+    assert (later["match_method"], later["caller_model_id"]) == ("none", "")
 
 
 def test_query_that_no_prompt_carried_is_not_linked(program):
@@ -884,11 +937,13 @@ def test_summary_is_one_note_per_kind(monkeypatch):
     notes = run.sas.lines("NOTE")
     assert re.fullmatch(r"6 of 6 rows of Public\.LLM_LOGS were linked against 6 catalog rows in \d+\.\d\d seconds\.", notes[0])
     assert notes[1:] == [
-        "2 llm rows: 2 linked to a model; caller by experiment run 0, template 1, ambiguous 0, none 1; 1 linked to a RAG setup.",
-        "1 decision rows: 1 linked to a model; caller by experiment run 0, questions and state 1, questions 0, ambiguous 0, none 0.",
-        "3 embedding rows: 3 linked to a model; caller by retrieval query 1, ingestion run 1, ambiguous 0, none 1.",
+        "2 llm rows: 2 linked to a model, caller by experiment run 0, template 1, optimization 0, judge 0, ambiguous 0, none 1, and 1 linked to a RAG setup.",
+        "1 decision rows: 1 linked to a model, caller by experiment run 0, questions and state 1, questions 0, ambiguous 0, none 0.",
+        "3 embedding rows: 3 linked to a model, caller by retrieval query 1, ingestion run 1, ambiguous 0, none 1.",
     ]
     assert run.sas.lines("ERROR") == [] and run.sas.lines("WARNING") == []
+    # A semicolon would end the statement the line is written to the SAS log with, and the rest of the line would run as SAS code
+    assert not [note for note in notes if ";" in note]
 
 
 def test_notes_name_what_takes_no_part(monkeypatch):
@@ -1001,3 +1056,712 @@ def test_settings_reach_the_matching(monkeypatch):
     assert run_program(monkeypatch, showcase_tables(catalog=catalog)).new_table["match_method"].tolist()[4] == "none"
     run = run_program(monkeypatch, showcase_tables(catalog=catalog), _lnk_min_literal="15", _lnk_utc_offset="1")
     assert run.new_table["match_method"].tolist()[3:5] == ["none", "template"]
+
+
+# ---------------------------------------------------------------------------
+# What is handed to SAS
+# ---------------------------------------------------------------------------
+
+def uses_of_the_sas_object():
+    """Every place of the program's Python that names the SAS object, as (what it takes of it, the function the place is in)."""
+    tree = ast.parse(python_block(code_file_program()))
+    found = []
+
+    def visit(node, function):
+        if isinstance(node, ast.FunctionDef):
+            function = node.name
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "SAS":
+            found.append((node.attr, function))
+        for child in ast.iter_child_nodes(node):
+            visit(child, function)
+
+    visit(tree, None)
+    return tree, found
+
+
+def test_every_text_for_sas_takes_one_of_two_ways():
+    """SAS.logMessage writes its text into a SAS statement and SAS.symput into an assignment. The program has one
+    place for each: a message is made safe on its way, and a macro variable is only ever given a whole number."""
+    tree, found = uses_of_the_sas_object()
+    assert sorted(found, key=str) == [("logMessage", "say"), ("sasfnc", None), ("sasfnc", None), ("symget", "setting"), ("symput", "put_number")]
+    functions_of_the_program = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+    assert ast.unparse(functions_of_the_program["say"].body[-1]) == "SAS.logMessage(sas_safe(message), messageType=message_type)"
+    assert ast.unparse(functions_of_the_program["put_number"].body[-1]) == "SAS.symput(name, str(int(value)))"
+
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    # The two options of the SAS session that say where CAS is
+    assert sorted(ast.unparse(call) for call in calls if ast.unparse(call.func) == "SAS.sasfnc") == [
+        "SAS.sasfnc('getoption', 'cashost')", "SAS.sasfnc('getoption', 'casport')"]
+    # The macro variables the Python sets are named in the code, and the messages of the table are written by say
+    assert sorted(ast.unparse(call.args[0]) for call in calls if ast.unparse(call.func) == "put_number") == ["'_lnk_refused'", "'_lnk_row_count'", "'_lnk_unchanged'"]
+    assert [ast.unparse(call) for call in calls if ast.unparse(call.func) == "link_table"] == ["link_table(conn, settings, log=say)"]
+
+
+def test_names_of_the_settings_stand_in_the_code_for_cas_as_names():
+    """The code of the two DATA steps is the only code the Python writes. What it holds of the settings - the log
+    table and its CAS library - is written as a name in quotes, so a quote in a name ends nothing."""
+    tree, _ = uses_of_the_sas_object()
+    codes = [keyword.value for node in ast.walk(tree) if isinstance(node, ast.Call) for keyword in node.keywords if keyword.arg == "code"]
+    assert len(codes) == 2
+    inserted = sorted({ast.unparse(value.value) for code in codes for value in ast.walk(code) if isinstance(value, ast.FormattedValue)})
+    assert inserted == ["' '.join(LINK_COLUMNS)", "named(LINKS_TABLE)", "named(STAGE_TABLE)", "named(log_table)", "named(new_table)", "quoted(log_caslib)"]
+    # The only condition a table is read under is written out in the code
+    wheres = {ast.unparse(node) for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str) and "missing(" in node.value}
+    assert wheres == {"'missing(match_method)'"}
+
+
+HOSTILE_TEXTS = [
+    "a caller; %put ERROR: this ran as SAS code;",
+    "%let stolen = &sysuserid.;",
+    "%nrstr(%put never;)",
+    "it's a name",
+    'a "quoted" name',
+    "an open ( parenthesis",
+    "a closed ) parenthesis ( and an open one",
+    ")(",
+    "line one\nline two\r\nline three\tand a tab",
+    "the start /* of a comment",
+    "the end */ of a comment",
+    "a zero \x00 byte, an end of file \x1a mark and a line   separator",
+    "half of a pair \udce9",
+    "x" * 5000,
+    "(" * 3000,
+    "; " * 2000,
+]
+
+
+@pytest.mark.parametrize("hostile", HOSTILE_TEXTS)
+def test_text_that_would_break_a_sas_statement_is_made_safe(program, hostile):
+    assert unsafe_for_sas(hostile) != []
+    assert unsafe_for_sas(program["sas_safe"](hostile)) == []
+
+
+def test_text_that_sas_takes_as_it_is_stays_as_it_is(program):
+    safe = program["sas_safe"]
+    for harmless in ("6 of 6 rows of Public.LLM_LOGS were linked against 6 catalog rows in 0.01 seconds.",
+                     "2 prompt(s) or decision template(s) of the catalog have a template with less than 20 characters of fixed text.",
+                     "Größe: 3 - ok, [x] = 1, a/b, a*b"):
+        assert safe(harmless) == harmless
+    assert safe("50% of A&B; 'x' and \"y\"") == "50pct of A+B, `x` and `y`"
+    assert safe("two\nlines") == "two lines"
+    assert safe("a (b") == "a [b" and safe("(a) (b)") == "(a) (b)"
+    long = safe("word " * 400)
+    assert len(long) == 900 and long.startswith("word word ") and long.endswith("...")
+
+
+HOSTILE_TABLE = "LLM';%put ERROR: ran as code;LOGS"
+HOSTILE_CASLIB = "Pub'lic\"&sysuserid"
+HOSTILE_NAME = "Leave desk'; %put ERROR: ran as code; %let x = &sysuserid; /* \") \n"
+
+
+def hostile_tables(log, catalog):
+    return {(HOSTILE_CASLIB, HOSTILE_TABLE): log, (HOSTILE_CASLIB, "CATALOG;%put x;"): catalog, (HOSTILE_CASLIB, "RUNS)"): pd.DataFrame([{"run": "run-1"}])}
+
+
+HOSTILE_SETTINGS = {"_lnk_log_caslib": HOSTILE_CASLIB, "_lnk_log_table": HOSTILE_TABLE, "_lnk_catalog_caslib": HOSTILE_CASLIB, "_lnk_catalog_table": "CATALOG;%put x;",
+                    "_lnk_runs_caslib": HOSTILE_CASLIB, "_lnk_runs_table": "RUNS)"}
+
+
+def test_hostile_names_reach_sas_as_text_and_cas_as_names(monkeypatch):
+    """Table names with a quote, a semicolon and a macro call, a model and a prompt whose names hold a statement:
+    the tables are linked, CAS is given the names as they are, and every line for the SAS log is one text.
+    run_program fails for a message SAS would not have taken as text."""
+    deep = "[" * 100000 + "]" * 100000
+    catalog = catalog_table(
+        answer_model(HOSTILE_NAME, "llm", uuid(1)), answer_model(HOSTILE_NAME, "llm", uuid(4)), DECIDER, EMBEDDER, HANDBOOK,
+        prompt_template(uuid(10), HOSTILE_NAME, LEAVE_SYSTEM, LEAVE_USER),
+        prompt_template(uuid(21), HOSTILE_NAME, deep, TICKET_STATE, role="decision"))
+    log = log_table(leave_request(model=HOSTILE_NAME), decision_row(questions=deep), embedding_row(QUESTION, timestamp="2026-01-05 09:14:58"))
+    run = run_program(monkeypatch, hostile_tables(log, catalog), table_labels={(HOSTILE_CASLIB, HOSTILE_TABLE): HOSTILE_NAME}, **HOSTILE_SETTINGS)
+
+    # CAS got the names as they are: the stand-in found the tables under them, and the new table is named after the log table
+    after = run.new_table
+    assert FakeCAS.key(HOSTILE_CASLIB, HOSTILE_TABLE + "_NEW") in FakeCAS.tables and len(after) == 3
+    assert after["match_method"].tolist() == ["template", "none", "retrieval query"]
+    # What is data stays what it was: the name of the caller in the table, the label of the table
+    assert after.loc[0, "caller_name"] == " ".join(HOSTILE_NAME.split())
+    assert run.new_table_label == HOSTILE_NAME.strip()
+    steps = [parameters["code"] for action, parameters in run.cas.actions if action == "dataStep.runCode"]
+    assert len(steps) == 2 and all("\n" not in step for step in steps)
+    assert "set 'LLM'';%put ERROR: ran as code;LOGS'n(caslib='Pub''lic\"&sysuserid');" in steps[0]
+
+    # Every kind of message that names something of the tables was written, and each of them as one text
+    notes, warnings = run.sas.lines("NOTE"), run.sas.lines("WARNING")
+    assert [note for note in notes if note.startswith("3 of 3 rows of Pub`lic`+sysuserid.LLM`,pct put ERROR: ran as code,LOGS were linked against 7 catalog rows in ")]
+    assert [note for note in notes if note.startswith("The table Pub`lic`+sysuserid.RUNS] has no column run_id,")]
+    assert [note for note in notes if note.startswith("The catalog holds 2 models named leave desk`, pct put error: ran as code, pct let x = +sysuserid, / * `] with the role llm - ")]
+    assert warnings == [
+        "The catalog row of Leave desk`, pct put ERROR: ran as code, pct let x = +sysuserid, / * `] [00000000-0000-0000-0000-000000000021] could not be read "
+        "- RecursionError - and takes no part in the links.",
+        "1 row(s) could not be compared with the catalog - RecursionError - and got match_method none.",
+    ]
+    assert run.sas.lines("ERROR") == []
+    assert {name: value for name, value in run.sas.macro_variables.items() if name in ("_lnk_row_count", "_lnk_unchanged", "_lnk_refused")} == {
+        "_lnk_row_count": "3", "_lnk_unchanged": "0", "_lnk_refused": "0"}
+
+
+def test_refusal_of_a_table_with_a_hostile_name_is_one_safe_error_line(monkeypatch):
+    twelve_columns = log_table(*SHOWCASE_ROWS)[OLD_COLUMNS]
+    run = run_program(monkeypatch, hostile_tables(twelve_columns, SHOWCASE_CATALOG), **HOSTILE_SETTINGS)
+    (error,) = run.sas.lines("ERROR")
+    assert error.startswith("The table Pub`lic`+sysuserid.LLM`,pct put ERROR: ran as code,LOGS has no column kind, embedding_mode,")
+    assert run.sas.macro_variables["_lnk_refused"] == "1" and run.new_table is None
+
+    no_catalog = SHOWCASE_CATALOG.drop(columns=["role"])
+    run = run_program(monkeypatch, hostile_tables(log_table(*SHOWCASE_ROWS), no_catalog), **HOSTILE_SETTINGS)
+    (error,) = run.sas.lines("ERROR")
+    assert error.startswith("The table Pub`lic`+sysuserid.CATALOG,pct put x, has no column role,")
+
+
+@pytest.mark.parametrize("setting", ["_lnk_log_caslib", "_lnk_log_table", "_lnk_catalog_table", "_lnk_runs_table"])
+def test_table_name_with_a_line_break_is_refused_before_anything_is_asked_of_cas(monkeypatch, setting):
+    """A line break can not stand in a name of the code of a DATA step."""
+    run = run_program(monkeypatch, showcase_tables(), **{setting: "LLM_LOGS\ndata x; run;"})
+    (error,) = run.sas.lines("ERROR")
+    assert error == ("The settings name a table or a CAS library with a line break or another character that is no text: LLM_LOGS data x, run,. "
+                     "Nothing was linked.")
+    assert run.cas.actions == [] and run.sas.macro_variables["_lnk_refused"] == "1"
+
+
+def test_setting_that_is_no_number_gives_a_warning_and_the_default(monkeypatch):
+    run = run_program(monkeypatch, showcase_tables(), _lnk_min_literal="20; %put x;", _lnk_utc_offset="", _lnk_query_window="soon")
+    assert run.sas.lines("WARNING") == [
+        "The setting _lnk_min_literal is 20, pct put x,, which is no number. 20 is taken in its place.",
+        "The setting _lnk_utc_offset is empty, which is no number. 0 is taken in its place.",
+        "The setting _lnk_query_window is soon, which is no number. 300 is taken in its place.",
+    ]
+    assert run.new_table["match_method"].tolist() == ["template", "questions and state", "retrieval query", "ingestion run", "none", "none"]
+
+
+# ---------------------------------------------------------------------------
+# The run of an experiment by its run time
+# ---------------------------------------------------------------------------
+
+RESOLVED = "Question: Why? Passages: none Answer:"
+
+
+def leave_run(run_id, run_time, caller=10, name="Leave desk"):
+    """A run of the Leave desk prompt against demo_llm, with the run time its tracker holds."""
+    return experiment_run(uuid(caller), name, run_id, "demo_llm", LEAVE_SYSTEM, LEAVE_USER, LEAVE_SYSTEM, RESOLVED, run_time=run_time)
+
+
+def sent(runtime, timestamp="2026-01-05 09:15:00", **values):
+    """A request of the Builder page with the prompts of those runs and the run time the container logged."""
+    return llm_row(LEAVE_SYSTEM, RESOLVED, runtime=runtime, timestamp=timestamp, user_agent="browser", **values)
+
+
+def run_links(links):
+    return [(row["match_method"], row["experiment_run_id"], row["match_candidates"]) for row in links]
+
+
+def test_run_is_the_one_whose_run_time_is_the_run_time_of_the_request(program):
+    """Runs 1 and 2 were sent with the same prompts. The tracker holds the run time each request returned, and the
+    log holds the same number: each request gets its own run, and a third request with these prompts is no run."""
+    catalog = [LLM, leave_run("1", 13.098107), leave_run("2", 15.004382)]
+    rows = [sent(13.0981074), sent(15.0043821, "2026-01-05 09:17:00"), sent(14.2, "2026-01-05 09:30:00")]
+    links = link(program, rows, catalog)
+    assert run_links(links) == [("experiment run", "1", 1), ("experiment run", "2", 1), ("template", "", 1)]
+    assert {row["caller_model_id"] for row in links} == {uuid(10)}
+    # Whatever the order of the rows in the table
+    assert run_links(link(program, rows[::-1], catalog)) == [("template", "", 1), ("experiment run", "2", 1), ("experiment run", "1", 1)]
+
+
+@pytest.mark.parametrize("logged, linked", [
+    (1.25, True), (1.2504, True), (1.2496, True),     # 1.250 with three decimals
+    (1.251, False), (1.2494, False), (12.5, False),
+    (None, False),                                    # a request that failed logged no run time
+])
+def test_run_times_are_compared_with_three_decimals(program, logged, linked):
+    row = link(program, [sent(logged)], [LLM, leave_run("3", 1.25)])[0]
+    assert (row["match_method"], row["experiment_run_id"]) == (("experiment run", "3") if linked else ("template", ""))
+    assert row["caller_model_id"] == uuid(10)
+
+
+def test_run_is_given_to_one_request_only(program):
+    """Two requests with the prompts and the run time of one run: the earlier one is the run. The other one keeps
+    the prompt as its caller and gets no run."""
+    catalog = [LLM, leave_run("3", 1.25)]
+    rows = [sent(1.25, "2026-01-05 09:20:00"), sent(1.25, "2026-01-05 09:15:00"), sent(1.25, "2026-01-05 09:25:00")]
+    assert run_links(link(program, rows, catalog)) == [("template", "", 1), ("experiment run", "3", 1), ("template", "", 1)]
+    # Two runs with the same prompts and the same run time: the requests get them in their order
+    twins = [LLM, leave_run("4", 1.25), leave_run("3", 1.25)]
+    assert run_links(link(program, rows, twins)) == [("experiment run", "4", 2), ("experiment run", "3", 2), ("template", "", 1)]
+
+
+def test_run_that_a_row_holds_from_an_earlier_link_is_not_given_again(program):
+    held = sent(1.25)
+    held.update(model_id=uuid(1), match_method="experiment run", caller_model_id=uuid(10), caller_kind="prompt", experiment_run_id="3", match_candidates=1.0)
+    rows = [held, sent(1.25, "2026-01-05 09:00:00")]
+    links = link(program, rows, [LLM, leave_run("3", 1.25)])
+    assert run_links(links) == [("experiment run", "3", 1.0), ("template", "", 1)]
+    # Linked again, the earlier request is the run
+    assert run_links(link(program, rows, [LLM, leave_run("3", 1.25)], redo_all=True)) == [("template", "", 1), ("experiment run", "3", 1)]
+
+
+def test_catalog_without_run_times_links_a_run_as_the_release_before_did_and_says_so(program):
+    """Without a run time nothing tells the requests with the prompts of a run apart: each of them gets the newest
+    run with these prompts, match_candidates holds the number of those runs and the summary counts the rows."""
+    rows = lower_case(log_table(sent(1.25), sent(7.5, "2026-01-05 09:20:00")))
+    catalog = catalog_table(LLM, *[leave_run(run_id, None) for run_id in ("9", "10", "2")])
+    links, summary = program["link_rows"](rows, lower_case(catalog))
+    assert run_links(links.to_dict("records")) == [("experiment run", "10", 3), ("experiment run", "10", 3)]
+    assert summary["untimed_runs"] == 2
+    # The catalog of the release before has no such column
+    links, summary = program["link_rows"](rows, lower_case(catalog).drop(columns=["run_time", "window_start", "window_end", "optimization_id"]))
+    assert run_links(links.to_dict("records")) == [("experiment run", "10", 3), ("experiment run", "10", 3)]
+    assert summary["untimed_runs"] == 2
+
+    # A run with a run time is compared, also beside one without: the request that is none of the timed runs is left to the run without
+    mixed = lower_case(catalog_table(LLM, leave_run("1", None), leave_run("2", 1.25), leave_run("3", 9.0)))
+    links, summary = program["link_rows"](rows, mixed)
+    assert run_links(links.to_dict("records")) == [("experiment run", "2", 1), ("experiment run", "1", 1)]
+    assert summary["untimed_runs"] == 1
+
+
+def test_run_without_a_run_time_is_named_in_the_log(monkeypatch):
+    log = log_table(sent(1.25), sent(7.5, "2026-01-05 09:20:00"))
+    run = run_program(monkeypatch, showcase_tables(log, catalog=catalog_table(LLM, leave_run("3", None))))
+    assert run.new_table["experiment_run_id"].tolist() == ["3", "3"]
+    assert run.sas.lines("NOTE")[-1] == ("2 row(s) were linked to an experiment run without a run time to compare, as the catalog holds none for the runs with their prompts. "
+                                        "They carry the newest of those runs, and match_candidates is the number of those runs.")
+    timed = run_program(monkeypatch, showcase_tables(log, catalog=catalog_table(LLM, leave_run("3", 1.25))))
+    assert timed.new_table["experiment_run_id"].fillna("").tolist() == ["3", ""]
+    assert not [note for note in timed.sas.lines("NOTE") if "without a run time" in note]
+
+
+def test_decision_run_is_found_by_its_run_time_as_well(program):
+    state = "Ticket: I was charged twice for my plan this morning."
+    runs = [experiment_run(uuid(20), "Ticket routing", run_id, "demo_decider", json.dumps(QUESTIONS, indent=2), TICKET_STATE, "", state, role="decision", run_time=run_time)
+            for run_id, run_time in (("7", 0.4), ("8", 0.613))]
+    rows = [decision_row(runtime=0.6129), decision_row(runtime=0.4), decision_row(runtime=0.33)]
+    links = link(program, rows, [DECIDER] + runs, agent="browser")
+    assert run_links(links) == [("experiment run", "8", 1), ("experiment run", "7", 1), ("questions and state", "", 1)]
+    assert {row["caller_model_id"] for row in links} == {uuid(20)}
+
+
+def test_run_time_decides_between_the_runs_of_two_prompts_with_the_same_prompts(program):
+    runs = [leave_run("1", 1.25), leave_run("1", 2.5, caller=11, name="Leave desk copy")]
+    first, second, third = link(program, [sent(2.5), sent(1.25), sent(4.0)], [LLM] + runs)
+    assert (first["match_method"], first["caller_name"], second["caller_name"]) == ("experiment run", "Leave desk copy", "Leave desk")
+    # The request that is neither run fits the templates of both prompts
+    assert (third["match_method"], third["match_candidates"], third["experiment_run_id"]) == ("ambiguous", 2, "")
+    same = [leave_run("1", 1.25), leave_run("1", 1.25, caller=11, name="Leave desk copy")]
+    row = link(program, [sent(1.25)], [LLM] + same)[0]
+    assert (row["match_method"], row["match_candidates"], row["caller_model_id"]) == ("ambiguous", 2, "")
+
+
+def test_rows_that_no_longer_find_their_run_are_counted(monkeypatch):
+    """The id of a run is its place in the tracker. Run 1 is deleted in the Builder, the run that was 2 is 1 now,
+    and the catalog is pulled again: the rows that were linked before name runs that are no longer theirs."""
+    log = log_table(sent(1.25), sent(2.5, "2026-01-05 09:20:00"))
+    first = run_program(monkeypatch, showcase_tables(log, catalog=catalog_table(LLM, leave_run("1", 1.25), leave_run("2", 2.5))))
+    linked = first.new_table
+    assert linked["experiment_run_id"].tolist() == ["1", "2"] and first.sas.lines("WARNING") == []
+
+    renumbered = catalog_table(LLM, leave_run("1", 2.5))
+    run = run_program(monkeypatch, showcase_tables(linked, catalog=renumbered))
+    assert run.sas.lines("WARNING") == [
+        "2 row(s) that were linked to an experiment run earlier no longer name that run: for 1 the catalog has no run with their id, for 1 the run with their id has "
+        "another run time than the request. The id of a run is its place in the tracker and changes when a run is deleted. Link all rows again with _lnk_redo_all = 1."]
+    # Nothing was linked, so the table is as it was
+    assert run.new_table is None and run.sas.macro_variables["_lnk_unchanged"] == "1"
+
+    redone = run_program(monkeypatch, showcase_tables(linked, catalog=renumbered), _lnk_redo_all="1")
+    assert redone.new_table["experiment_run_id"].fillna("").tolist() == ["", "1"]
+    assert redone.new_table["match_method"].tolist() == ["template", "experiment run"]
+    assert redone.sas.lines("WARNING") == []
+
+
+def test_rows_of_a_catalog_without_run_times_are_only_counted_when_their_run_is_gone(program):
+    held = sent(1.25)
+    held.update(model_id=uuid(1), match_method="experiment run", caller_model_id=uuid(10), experiment_run_id="3", match_candidates=1.0)
+    rows = lower_case(log_table(held))
+    for catalog, stale in (([LLM, leave_run("3", None)], {"gone": 0, "other time": 0}), ([LLM, leave_run("3", 1.2504)], {"gone": 0, "other time": 0}),
+                           ([LLM, leave_run("3", 8.0)], {"gone": 0, "other time": 1}), ([LLM, leave_run("2", 1.25)], {"gone": 1, "other time": 0}),
+                           ([LLM, LEAVE_PROMPT], {"gone": 1, "other time": 0})):
+        _, summary = program["link_rows"](rows, lower_case(catalog_table(*catalog)))
+        assert summary["stale_runs"] == stale
+
+
+# ---------------------------------------------------------------------------
+# The calls the Builder makes for a prompt: an optimization, a judge
+# ---------------------------------------------------------------------------
+
+# What an optimizer makes of the system prompt of the prompt it works on: its own frame around it
+FRAME = "The fields you are given are question and passages. The field you return is response.\nKeep to this structure. Your task:\n"
+OPTIMIZER_SYSTEM = FRAME + LEAVE_SYSTEM
+WINDOW = ("2026-01-05T10:00:00.250000+00:00", "2026-01-05T10:01:00.750000+00:00")
+LEAVE_OPTIMIZATION = optimization_call(uuid(10), "Leave desk", "demo_llm", LEAVE_SYSTEM, WINDOW)
+JUDGE = answer_model("demo_judge", "llm", uuid(4))
+JUDGE_SYSTEM = "You compare the answers several assistants gave to one task and name the best of them."
+
+
+def optimizer_request(**values):
+    """A request an optimizer sent to demo_llm while it worked on the Leave desk prompt."""
+    request = dict(system_prompt=OPTIMIZER_SYSTEM, user_prompt="question: How many days of leave?\npassages: none", timestamp="2026-01-05 10:00:30")
+    request.update(values)
+    return llm_row(**request)
+
+
+def judge_request(system=LEAVE_SYSTEM, user=RESOLVED, **values):
+    """The request a judge gets from the Builder page: the prompts of the run and the answers to rank."""
+    shown = f"The task, its system prompt:\n{system}\n\nThe task, its user prompt:\n{user}\n\nThe answers:\n[A]\n25 days.\n\n[B]\nThirty days, chapter 4."
+    request = dict(system_prompt=JUDGE_SYSTEM, user_prompt=shown, model="demo_judge", user_agent="browser")
+    request.update(values)
+    return llm_row(**request)
+
+
+def test_call_of_an_optimization_is_linked_to_the_prompt_it_was_made_for(program):
+    """The request is no request of the prompt: its system prompt is the frame of the optimizer around the system
+    prompt of the prompt. It holds that text, it went to the model the optimization ran against, and it was sent
+    while the optimization ran."""
+    assert link(program, [optimizer_request()], [LLM, LEAVE_PROMPT])[0]["match_method"] == "none"
+    row = link(program, [optimizer_request()], [LLM, LEAVE_PROMPT, LEAVE_OPTIMIZATION])[0]
+    assert row == {"model_id": uuid(1), "caller_model_id": uuid(10), "caller_project_id": uuid(900), "caller_kind": "prompt", "caller_name": "Leave desk",
+                   "experiment_run_id": "", "rag_model_id": "", "match_method": "optimization", "match_candidates": 1}
+
+
+@pytest.mark.parametrize("change, method", [
+    ({"timestamp": "2026-01-05 10:00:00"}, "optimization"),     # the second the optimization started in
+    ({"timestamp": "2026-01-05 10:01:01"}, "optimization"),     # the second it ended in
+    ({"timestamp": "2026-01-05 09:59:59"}, "none"),
+    ({"timestamp": "2026-01-05 10:01:02"}, "none"),
+    ({"timestamp": "2026-01-06 10:00:30"}, "none"),
+    ({"model": "other_llm"}, "none"),                           # not the model the optimization ran against
+    ({"system_prompt": FRAME + "You answer questions of employees about the canteen."}, "none"),
+    ({"system_prompt": FRAME, "user_prompt": "instructions so far: " + LEAVE_SYSTEM}, "optimization"),   # the text stands in the user prompt
+    ({"user_agent": "browser"}, "optimization"),
+])
+def test_call_of_an_optimization_needs_the_text_the_model_and_the_time(program, change, method):
+    row = link(program, [optimizer_request(**change)], [LLM, LEAVE_PROMPT, LEAVE_OPTIMIZATION])[0]
+    assert (row["match_method"], row["caller_model_id"]) == (method, uuid(10) if method == "optimization" else "")
+
+
+def test_window_of_an_optimization_is_utc_like_the_ingestion_runs(program):
+    late = optimizer_request(timestamp="2026-01-05 12:00:30")
+    assert link(program, [late], [LLM, LEAVE_OPTIMIZATION])[0]["match_method"] == "none"
+    assert link(program, [late], [LLM, LEAVE_OPTIMIZATION], utc_offset=2.0)[0]["match_method"] == "optimization"
+
+
+def test_optimization_against_several_models_and_one_without_a_window(program):
+    several = optimization_call(uuid(10), "Leave desk", "other_llm, Demo_LLM", LEAVE_SYSTEM, WINDOW)
+    assert link(program, [optimizer_request()], [LLM, several])[0]["match_method"] == "optimization"
+    # Where the catalog holds no window, the text and the model link the call at any time
+    open_end = optimization_call(uuid(10), "Leave desk", "demo_llm", LEAVE_SYSTEM)
+    assert link(program, [optimizer_request(timestamp="2026-03-01 08:00:00")], [LLM, open_end])[0]["match_method"] == "optimization"
+    started = optimization_call(uuid(10), "Leave desk", "demo_llm", LEAVE_SYSTEM, (WINDOW[0], ""))
+    assert [row["match_method"] for row in link(program, [optimizer_request(timestamp="2026-01-05 09:00:00"), optimizer_request(timestamp="2026-03-01 08:00:00")],
+                                                [LLM, started])] == ["none", "optimization"]
+
+
+@pytest.mark.parametrize("unusable", [
+    optimization_call(uuid(10), "Leave desk", "", LEAVE_SYSTEM, WINDOW),                           # no model
+    optimization_call(uuid(10), "Leave desk", "demo_llm", "", WINDOW),                             # no text
+    optimization_call(uuid(10), "Leave desk", "demo_llm", "Answer briefly.", WINDOW),              # 14 characters
+    optimization_call(uuid(10), "Leave desk", "demo_llm", LEAVE_SYSTEM, ("last Monday", WINDOW[1])),
+    optimization_call(uuid(10), "Leave desk", "demo_llm", LEAVE_SYSTEM, (WINDOW[1], WINDOW[0])),   # it ends before it starts
+])
+def test_call_row_of_the_catalog_that_can_not_be_checked_takes_no_part(program, unusable):
+    """A row that names no model, has too little text to be told from other requests, or a window that is none:
+    it links nothing, and the summary counts it."""
+    request = optimizer_request(system_prompt=FRAME + LEAVE_SYSTEM + " Answer briefly.")
+    links, summary = program["link_rows"](lower_case(log_table(request)), lower_case(catalog_table(LLM, unusable)))
+    assert links["match_method"].tolist() == ["none"] and summary["unusable_calls"] == 1
+
+
+def test_call_rows_that_take_no_part_are_named_in_the_log(monkeypatch):
+    catalog = catalog_table(LLM, DECIDER, EMBEDDER, LEAVE_PROMPT, optimization_call(uuid(10), "Leave desk", "", LEAVE_SYSTEM, WINDOW))
+    run = run_program(monkeypatch, showcase_tables(catalog=catalog))
+    assert ("1 catalog row(s) of an optimization or a judge name no model, hold less than 20 characters of text or have a window that can not be read. "
+            "Such a row takes no part.") in run.sas.lines("NOTE")
+
+
+def test_request_that_is_the_text_of_a_call_is_no_call(program):
+    """The published prompt was called while it was optimized, with an input its user template does not fit. The
+    request is the system prompt of the prompt, it does not hold it: nothing says an optimization sent it."""
+    row = llm_row(LEAVE_SYSTEM, "Something its user template does not fit.", timestamp="2026-01-05 10:00:30")
+    assert link(program, [row], [LLM, LEAVE_PROMPT, LEAVE_OPTIMIZATION])[0]["match_method"] == "none"
+
+
+def test_experiment_run_and_template_are_ahead_of_the_calls_made_for_a_prompt(program):
+    """A prompt whose templates take the whole request of the optimizer is the caller, as for any other request."""
+    wrapped = prompt_template(uuid(12), "Optimizer frame", "The fields you are given are {{fields}} Your task: {{task}}", "{{input}}")
+    row = link(program, [optimizer_request()], [LLM, wrapped, LEAVE_OPTIMIZATION])[0]
+    assert (row["match_method"], row["caller_name"]) == ("template", "Optimizer frame")
+    run = experiment_run(uuid(12), "Optimizer frame", "5", "demo_llm", "{{all}}", "{{input}}", OPTIMIZER_SYSTEM, "question: How many days of leave?\npassages: none", run_time=1.25)
+    row = link(program, [optimizer_request(user_agent="browser")], [LLM, run, LEAVE_OPTIMIZATION])[0]
+    assert (row["match_method"], row["caller_name"], row["experiment_run_id"]) == ("experiment run", "Optimizer frame", "5")
+
+
+def test_call_of_a_judge_is_linked_to_the_prompt_and_the_run_it_judged(program):
+    """The judge is shown the prompts of the run and its answers. The catalog holds the prompts of every run that
+    was judged, and the model that judged."""
+    judged = judge_call(uuid(10), "Leave desk", "3", "demo_judge", LEAVE_SYSTEM, RESOLVED)
+    catalog = [LLM, JUDGE, LEAVE_PROMPT, judged]
+    row = link(program, [judge_request()], catalog)[0]
+    assert row == {"model_id": uuid(4), "caller_model_id": uuid(10), "caller_project_id": uuid(900), "caller_kind": "prompt", "caller_name": "Leave desk",
+                   "experiment_run_id": "3", "rag_model_id": "", "match_method": "judge", "match_candidates": 1}
+    # The same request to a model that is not the judge of that run, and the judgment of other prompts
+    assert link(program, [judge_request(model="demo_llm")], catalog)[0]["match_method"] == "none"
+    assert link(program, [judge_request(user="Question: Why not? Passages: none Answer:")], catalog)[0]["match_method"] == "none"
+    assert link(program, [judge_request(system="You answer questions of employees about the canteen.")], catalog)[0]["match_method"] == "none"
+    # A call of the score code of a published model is no less a judge call than one of a browser
+    assert link(program, [judge_request(user_agent="python-requests")], catalog)[0]["match_method"] == "judge"
+
+
+def test_judge_call_names_the_run_where_the_catalog_leaves_one(program):
+    """Two runs with the same prompts were judged: the call is one of the prompt, and which run it judged is not said
+    - unless the catalog holds how long each judgment took."""
+    judged = [judge_call(uuid(10), "Leave desk", run_id, "demo_judge", LEAVE_SYSTEM, RESOLVED) for run_id in ("3", "4")]
+    row = link(program, [judge_request()], [JUDGE] + judged)[0]
+    assert (row["match_method"], row["caller_model_id"], row["experiment_run_id"], row["match_candidates"]) == ("judge", uuid(10), "", 1)
+    timed = [judge_call(uuid(10), "Leave desk", run_id, "demo_judge", LEAVE_SYSTEM, RESOLVED, run_time=run_time) for run_id, run_time in (("3", 6.5), ("4", 7.25))]
+    assert [row["experiment_run_id"] for row in link(program, [judge_request(runtime=7.2501), judge_request(runtime=6.5), judge_request(runtime=9.0)], [JUDGE] + timed)] == ["4", "3", ""]
+    # The run whose prompts the call holds in full is ahead of one whose prompts are a part of them
+    longer = [judge_call(uuid(10), "Leave desk", "3", "demo_judge", LEAVE_SYSTEM, RESOLVED),
+              judge_call(uuid(10), "Leave desk", "9", "demo_judge", LEAVE_SYSTEM, "Postscript. " + RESOLVED + " In one sentence.")]
+    assert [row["experiment_run_id"] for row in link(program, [judge_request(), judge_request(user="Postscript. " + RESOLVED + " In one sentence.")], [JUDGE] + longer)] == ["3", "9"]
+
+
+def test_call_that_fits_two_prompts_is_ambiguous_and_the_one_that_holds_more_wins(program):
+    calls = [judge_call(uuid(10), "Leave desk", "3", "demo_judge", LEAVE_SYSTEM, RESOLVED), judge_call(uuid(11), "Leave desk copy", "1", "demo_judge", LEAVE_SYSTEM, RESOLVED)]
+    row = link(program, [judge_request()], [JUDGE] + calls)[0]
+    assert (row["match_method"], row["match_candidates"]) == ("ambiguous", 2)
+    assert [row[column] for column in CALLER_COLUMNS] == [""] * 5 and row["model_id"] == uuid(4)
+    calls[1] = judge_call(uuid(11), "Leave desk copy", "1", "demo_judge", LEAVE_SYSTEM, "none Answer:")
+    row = link(program, [judge_request()], [JUDGE] + calls)[0]
+    assert (row["match_method"], row["caller_name"], row["experiment_run_id"], row["match_candidates"]) == ("judge", "Leave desk", "3", 2)
+
+
+def test_optimization_is_asked_before_the_judge(program):
+    """An optimization that scores with a judge sends the judge the task as well. The window says that it was
+    the optimization, and the run of an earlier judgment is not written to the row."""
+    catalog = [JUDGE, optimization_call(uuid(10), "Leave desk", "demo_judge", LEAVE_SYSTEM, WINDOW), judge_call(uuid(10), "Leave desk", "3", "demo_judge", LEAVE_SYSTEM, RESOLVED)]
+    inside, outside = link(program, [judge_request(timestamp="2026-01-05 10:00:30"), judge_request(timestamp="2026-01-05 11:00:00")], catalog)
+    assert (inside["match_method"], inside["experiment_run_id"]) == ("optimization", "")
+    assert (outside["match_method"], outside["experiment_run_id"]) == ("judge", "3")
+
+
+def test_caller_of_a_call_is_described_by_the_catalog_row_of_the_caller_itself(program):
+    """The row of a call names the model it was made for. What kind of caller that is and how it is named
+    says the row of the template, whichever of the two the catalog holds first."""
+    call = optimization_call(uuid(20), "Ticket routing as the optimizer names it", "demo_llm", LEAVE_SYSTEM, WINDOW)
+    for catalog in ([LLM, call, TICKET_TEMPLATE], [LLM, TICKET_TEMPLATE, call]):
+        row = link(program, [optimizer_request()], catalog)[0]
+        assert (row["match_method"], row["caller_kind"], row["caller_name"], row["caller_model_id"]) == ("optimization", "decision", "Ticket routing", uuid(20))
+    row = link(program, [optimizer_request()], [LLM, call])[0]
+    assert (row["caller_kind"], row["caller_name"]) == ("prompt", "Ticket routing as the optimizer names it")
+
+
+def test_decision_and_embedding_rows_are_no_calls_for_a_prompt(program):
+    catalog = [DECIDER, EMBEDDER, optimization_call(uuid(10), "Leave desk", "demo_decider", "Ticket: I was charged twice"),
+               optimization_call(uuid(10), "Leave desk", "demo_embedder", "Ticket: I was charged twice")]
+    assert [row["match_method"] for row in link(program, [decision_row(), embedding_row()], catalog)] == ["none", "none"]
+
+
+def test_many_calls_for_one_model_are_not_compared_one_by_one(program):
+    """300 runs of one prompt were judged by one model. Their prompts start alike and end alike: a request is
+    compared with the calls a piece of its own text leads to, not with all of them."""
+    def prompts(number):
+        return "You are assistant number one of the service desk and you answer in one sentence.", f"Question: what is {number} plus one? Answer with the number only, please."
+
+    calls = [judge_call(uuid(10), "Service desk", str(number), "demo_judge", *prompts(number)) for number in range(1, 301)]
+    rows = [judge_request(*prompts(number)) for number in (1, 57, 300, 301)]
+    compared = []
+    holds = program["holds"]
+    program["holds"] = lambda texts, system, user: compared.append(1) or holds(texts, system, user)
+    links = link(program, rows, [JUDGE] + calls)
+    assert [(row["match_method"], row["experiment_run_id"]) for row in links] == [("judge", "1"), ("judge", "57"), ("judge", "300"), ("none", "")]
+    assert len(compared) <= 8
+    # With as few calls as a model usually has, each of them is compared and the result is the same
+    compared.clear()
+    links = link(program, rows, [JUDGE] + calls[:20] + calls[56:57])
+    assert [(row["match_method"], row["experiment_run_id"]) for row in links] == [("judge", "1"), ("judge", "57"), ("none", ""), ("none", "")]
+    assert len(compared) == 4 * 21
+
+
+def test_many_calls_whose_texts_have_no_word_to_start_at_are_looked_for_at_every_place(program):
+    """The piece a call is found through starts where a word of its text starts, and is looked for where a word of
+    the prompt starts. A text of one word has no such place: with such a call the pieces are looked for everywhere."""
+    calls = [judge_call(uuid(10), "Archive", str(number), "demo_judge", f"ticket-{number:04d}-of-the-archive-of-the-service-desk", "") for number in range(1, 61)]
+    rows = [judge_request(system="see below", user=f"ref=ticket-{number:04d}-of-the-archive-of-the-service-desk!") for number in (7, 60, 61)]
+    assert [(row["match_method"], row["experiment_run_id"]) for row in link(program, rows, [JUDGE] + calls)] == [("judge", "7"), ("judge", "60"), ("none", "")]
+
+
+def test_summary_counts_the_calls_made_for_a_prompt(monkeypatch):
+    log = log_table(leave_request(timestamp="2026-01-05 09:30:00"), optimizer_request(), judge_request(timestamp="2026-01-05 11:00:00"))
+    catalog = catalog_table(LLM, JUDGE, LEAVE_PROMPT, LEAVE_OPTIMIZATION, judge_call(uuid(10), "Leave desk", "3", "demo_judge", LEAVE_SYSTEM, RESOLVED))
+    run = run_program(monkeypatch, showcase_tables(log, catalog=catalog))
+    assert run.new_table["match_method"].tolist() == ["template", "optimization", "judge"]
+    assert run.new_table["caller_model_id"].tolist() == [uuid(10)] * 3 and run.new_table["experiment_run_id"].fillna("").tolist() == ["", "", "3"]
+    assert run.sas.lines("NOTE")[1] == "3 llm rows: 3 linked to a model, caller by experiment run 0, template 1, optimization 1, judge 1, ambiguous 0, none 0, and 0 linked to a RAG setup."
+
+
+# ---------------------------------------------------------------------------
+# Content that can not be read
+# ---------------------------------------------------------------------------
+
+# Nested deeper than Python reads JSON: json.loads raises a RecursionError, which is no ValueError
+DEEP = "[" * 100000 + "]" * 100000
+
+
+def test_row_whose_content_can_not_be_read_is_not_linked_and_the_rows_around_it_are(program):
+    rows = lower_case(log_table(decision_row(), decision_row(questions=DEEP), decision_row(questions=DEEP, user_agent="browser"), decision_row()))
+    links, summary = program["link_rows"](rows, lower_case(catalog_table(DECIDER, TICKET_TEMPLATE)))
+    assert links["match_method"].tolist() == ["questions and state", "none", "none", "questions and state"]
+    assert links["model_id"].tolist() == [uuid(2)] * 4 and links["match_candidates"].tolist() == [1, 0, 0, 1]
+    assert summary["failed_rows"] == {1: "RecursionError", 2: "RecursionError"}
+    # The row has a match_method now, so the next run does not meet it again
+    rows[LINK_COLUMNS] = links
+    _, summary = program["link_rows"](rows, lower_case(catalog_table(DECIDER, TICKET_TEMPLATE)))
+    assert summary["failed_rows"] == {} and summary["linked"] == 0
+
+
+@pytest.mark.parametrize("broken", [
+    prompt_template(uuid(21), "Deep questions", DEEP, TICKET_STATE, role="decision"),
+    experiment_run(uuid(21), "Deep questions", "1", "demo_decider", "{}", TICKET_STATE, DEEP, "Ticket: x", role="decision"),
+])
+def test_catalog_row_whose_content_can_not_be_read_is_left_out_with_a_warning(monkeypatch, broken):
+    catalog = catalog_table(LLM, DECIDER, EMBEDDER, LEAVE_PROMPT, broken, TICKET_TEMPLATE, HANDBOOK)
+    log = log_table(*SHOWCASE_ROWS, decision_row(questions=DEEP, timestamp="2026-01-05 09:50:00"))
+    run = run_program(monkeypatch, showcase_tables(log, catalog=catalog))
+    assert run.new_table["match_method"].tolist() == ["template", "questions and state", "retrieval query", "ingestion run", "none", "none", "none"]
+    assert run.sas.lines("WARNING") == [
+        "The catalog row of Deep questions (00000000-0000-0000-0000-000000000021) could not be read - RecursionError - and takes no part in the links.",
+        "1 row(s) could not be compared with the catalog - RecursionError - and got match_method none.",
+    ]
+    assert run.sas.lines("ERROR") == [] and run.sas.macro_variables["_lnk_row_count"] == "7"
+    # Nothing of the row that was left out is in the index
+    index = run.namespace["build_index"](lower_case(catalog))
+    assert uuid(21) not in index["callers"] and index["skipped"] == [("Deep questions", uuid(21), "RecursionError")]
+
+
+def test_many_catalog_rows_that_can_not_be_read_are_counted_after_the_first_five(program):
+    catalog = [DECIDER, TICKET_TEMPLATE] + [prompt_template(uuid(40 + number), f"Deep {number}", DEEP, TICKET_STATE, role="decision") for number in range(8)]
+    _, summary = program["link_rows"](lower_case(log_table(decision_row())), lower_case(catalog_table(*catalog)))
+    lines = program["warning_lines"](summary)
+    assert len(lines) == 6 and lines[0].startswith("The catalog row of Deep 0 (") and lines[5] == "3 more catalog rows could not be read and take no part in the links."
+
+
+# ---------------------------------------------------------------------------
+# Links that were made too easily
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("project, method", [("rag", "ingestion run"), ("RAG", "ingestion run"), ("", "ingestion run"), (None, "ingestion run"),
+                                             ("my own script", "none"), ("handbook", "none")])
+def test_ingestion_run_links_the_documents_the_rag_runtime_embedded(program, project, method):
+    """The RAG runtime sends rag as the project of every request. A document another program embedded while a run
+    was under way lies in the window of that run and is no chunk of it."""
+    runs = [ingestion_run("run-1767604500", "handbook_v1", "2026-01-05 09:15:00", "2026-01-05 09:20:00", model_id=uuid(30))]
+    row = embedding_row("Chapter 7.", mode="document", timestamp="2026-01-05 09:17:00", project=project)
+    assert link(program, [row], [EMBEDDER, HANDBOOK], runs)[0]["match_method"] == method
+
+
+def test_table_without_a_project_or_a_runtime_column_is_linked(monkeypatch):
+    log = log_table(*SHOWCASE_ROWS).drop(columns=["project", "runtime"])
+    run = run_program(monkeypatch, showcase_tables(log))
+    assert run.new_table["match_method"].tolist() == ["template", "questions and state", "retrieval query", "ingestion run", "none", "none"]
+
+
+def test_setup_of_the_builder_is_only_taken_for_the_model_that_is_its_registration(program):
+    """Two models hold one collection. The setup the Prompt Builder saved is taken when the other one is the model the
+    step RAG - Register Setup registered for it: the catalog says that the step wrote it, the step names its model
+    after the setup, and RAG_RUNS shows the ingestion runs both hold. Another setup that only has the same collection
+    name leaves the link open."""
+    saved = rag_setup(uuid(30), "Staff handbook", "handbook_v1", target_model="demo_embedder", source="builder")
+    rows = [leave_request(timestamp="2026-01-05 11:30:00"), embedding_row(QUESTION, timestamp="2026-01-05 11:29:59"),
+            embedding_row("Chapter 7.", mode="document", timestamp="2026-01-05 09:17:00")]
+
+    def linked_with(other, both_hold_the_run=False):
+        holders = (uuid(30), uuid(31)) if both_hold_the_run else (uuid(30),)
+        runs = [ingestion_run("run-1767604400", "handbook_v1", "2026-01-05 09:15:00", "2026-01-05 09:20:00", model_id=model_id) for model_id in holders]
+        prompt, query, document = link(program, rows, [LLM, EMBEDDER, LEAVE_PROMPT, saved, other], runs)
+        return prompt["rag_model_id"], query["match_method"], document["match_method"]
+
+    taken, left_open = (uuid(30), "retrieval query", "ingestion run"), ("", "ambiguous", "ingestion run")
+    assert linked_with(rag_setup(uuid(31), "RAG Retrieval - Staff handbook", "handbook_v1", source="step")) == taken
+    assert linked_with(rag_setup(uuid(31), "rag retrieval - staff  HANDBOOK", "handbook_v1", target_model="demo_embedder", source="step")) == taken
+    # Another setup with the same collection name
+    assert linked_with(rag_setup(uuid(31), "RAG Retrieval - Something else", "handbook_v1", source="step")) == left_open
+    # ... which is the registration all the same when both hold the same ingestion run
+    assert linked_with(rag_setup(uuid(31), "RAG Retrieval - Something else", "handbook_v1", source="step"), both_hold_the_run=True) == taken
+    # Named after the setup, but embedding with another model
+    assert linked_with(rag_setup(uuid(31), "RAG Retrieval - Staff handbook", "handbook_v1", target_model="other_embedder", source="step"))[:2] == left_open[:2]
+    assert linked_with(rag_setup(uuid(31), "RAG Retrieval - Staff handbook", "handbook_v1", target_model="other_embedder", source="step"), both_hold_the_run=True)[:2] == left_open[:2]
+    # A model of which the catalog does not say that the step wrote it
+    assert linked_with(rag_setup(uuid(31), "RAG Retrieval - Staff handbook", "handbook_v1")) == left_open
+    # Three models: every one beside the setup of the Builder has to be its registration
+    related = rag_setup(uuid(31), "RAG Retrieval - Staff handbook", "handbook_v1", source="step")
+    stranger = rag_setup(uuid(33), "RAG Retrieval - Something else", "handbook_v1", source="step")
+    prompt = link(program, rows[:1], [LLM, LEAVE_PROMPT, saved, related, stranger])[0]
+    assert prompt["rag_model_id"] == ""
+
+
+def test_two_models_with_one_name_leave_model_id_empty_and_are_named(monkeypatch):
+    """Two definition projects hold a model with the name of the container: nothing in the log says which answered."""
+    twin = answer_model("demo_llm", "llm", uuid(4))
+    twin["projectID"] = uuid(901)
+    run = run_program(monkeypatch, showcase_tables(catalog=catalog_table(LLM, twin, DECIDER, EMBEDDER, LEAVE_PROMPT, TICKET_TEMPLATE, HANDBOOK)))
+    assert run.new_table["model_id"].fillna("").tolist() == ["", uuid(2), uuid(3), uuid(3), "", uuid(3)]
+    # The caller does not depend on it
+    assert run.new_table["match_method"].tolist() == ["template", "questions and state", "retrieval query", "ingestion run", "none", "none"]
+    assert run.sas.lines("NOTE")[-1] == (
+        f"The catalog holds 2 models named demo_llm with the role llm - {uuid(1)} in project {uuid(900)}, {uuid(4)} in project {uuid(901)} - "
+        "so the name of the container does not say which of them answered, and model_id is empty in 2 row(s).")
+    # The same model twice in the catalog is one model
+    run = run_program(monkeypatch, showcase_tables(catalog=catalog_table(LLM, LLM, DECIDER, EMBEDDER, LEAVE_PROMPT, TICKET_TEMPLATE, HANDBOOK)))
+    assert run.new_table["model_id"].tolist()[0] == uuid(1) and not [note for note in run.sas.lines("NOTE") if "models named" in note]
+
+
+# ---------------------------------------------------------------------------
+# A run that has nothing to write, and the label of the table
+# ---------------------------------------------------------------------------
+
+def test_run_that_links_no_row_leaves_the_table_as_it_is(monkeypatch):
+    """Every row has a match_method: nothing is uploaded, no new table is built, and the SAS program neither drops
+    nor promotes nor saves. One NOTE says so."""
+    linked = run_program(monkeypatch, showcase_tables()).new_table
+    run = run_program(monkeypatch, showcase_tables(linked))
+    assert run.sas.messages == [("NOTE", "0 of 6 rows of Public.LLM_LOGS were linked, as every row has a match_method. The table was left as it is. "
+                                         "With _lnk_redo_all = 1 all rows are linked again.")]
+    assert run.new_table is None and run.cas.uploads == []
+    assert [action for action, _ in run.cas.actions if action not in ("table.columnInfo", "table.fetch")] == ["dataStep.runCode"]
+    assert (run.sas.macro_variables["_lnk_unchanged"], run.sas.macro_variables["_lnk_row_count"]) == ("1", "6")
+    pd.testing.assert_frame_equal(FakeCAS.tables[("PUBLIC", "LLM_LOGS")], linked)
+
+    # The SAS program swaps the table only for a run that built one, and has no ERROR line for a run that did not
+    macro = output_macro()
+    assert re.findall(r"^    %(?:else %)?if (.*) %then %do;$", macro, flags=re.MULTILINE) == [
+        "&_lnk_row_count. GT 0 and &_lnk_unchanged. NE 1", "&_lnk_row_count. EQ 0", "&_lnk_row_count. LT 0 and &_lnk_ready. EQ 1 and &_lnk_refused. NE 1"]
+    assert "%let _lnk_unchanged = 0;" in code_file_program()
+
+    redo = run_program(monkeypatch, showcase_tables(linked), _lnk_redo_all="1")
+    assert redo.new_table is not None and (redo.sas.macro_variables["_lnk_unchanged"], redo.sas.macro_variables["_lnk_row_count"]) == ("0", "6")
+    first = run_program(monkeypatch, showcase_tables())
+    assert first.sas.macro_variables["_lnk_unchanged"] == "0"
+
+
+def test_linked_table_keeps_the_label_of_the_table(monkeypatch):
+    """The new table is written by a DATA step, which gives it no label: it gets the one the log table had."""
+    label = {("Public", "LLM_LOGS"): "Extracted LLM Log Data"}
+    run = run_program(monkeypatch, showcase_tables(), table_labels=label)
+    assert run.new_table_label == "Extracted LLM Log Data"
+    assert [parameters for action, parameters in run.cas.actions if action == "table.alterTable" and "label" in parameters] == [
+        {"caslib": "Public", "name": "LLM_LOGS_NEW", "label": "Extracted LLM Log Data"}]
+
+    # A table without a label gets none, and CAS is not asked to set one
+    run = run_program(monkeypatch, showcase_tables())
+    assert run.new_table_label == "" and not [parameters for action, parameters in run.cas.actions if action == "table.alterTable" and "label" in parameters]
+
+    # A label CAS does not take is no reason to keep the links back
+    run = run_program(monkeypatch, showcase_tables(), table_labels=label, label_refused=True)
+    assert run.new_table["match_method"].tolist() == ["template", "questions and state", "retrieval query", "ingestion run", "none", "none"]
+    assert run.sas.macro_variables["_lnk_row_count"] == "6" and run.sas.lines("ERROR") == []
+    assert "The label of the table Public.LLM_LOGS could not be given to the linked table, which has none now." in run.sas.lines("NOTE")
+
+
+def test_window_of_a_retrieval_reaches_the_matching_from_its_setting(monkeypatch):
+    """The showcase query is embedded a minute before its prompt."""
+    assert run_program(monkeypatch, showcase_tables(), _lnk_query_window="60").new_table["match_method"].tolist()[2] == "retrieval query"
+    assert run_program(monkeypatch, showcase_tables(), _lnk_query_window="59").new_table["match_method"].tolist()[2] == "none"
+    assert run_program(monkeypatch, showcase_tables(), _lnk_query_window="-5").new_table["match_method"].tolist()[2] == "none"
