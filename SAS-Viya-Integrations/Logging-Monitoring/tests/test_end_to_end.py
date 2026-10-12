@@ -493,9 +493,10 @@ def test_programs_hash_a_text_the_same_way(chain):
 
 
 def test_programs_name_the_same_tables_by_default():
-    parser = dict(re.findall(r"^%let (_log_\w+) = (.*);$", parser_harness.code_file_program(), flags=re.MULTILINE))
-    pull = dict(re.findall(r"^%let (_gap_\w+?)\s*= (.*);$", pull_harness.code_file_program(), flags=re.MULTILINE))
-    link = dict(re.findall(r"^%let (_lnk_\w+) = (.*);$", link_harness.code_file_program(), flags=re.MULTILINE))
+    # What each program takes for a setting that is not set when it starts
+    parser = dict(re.findall(r"^%_log_default\((_log_\w+), (.*)\);$", parser_harness.code_file_program(), flags=re.MULTILINE))
+    pull = dict(re.findall(r"^%_gap_default\((_gap_\w+), (.*)\);$", pull_harness.code_file_program(), flags=re.MULTILINE))
+    link = dict(re.findall(r"^%_lnk_default\((_lnk_\w+), (.*)\);$", link_harness.code_file_program(), flags=re.MULTILINE))
 
     assert (link["_lnk_log_caslib"], link["_lnk_log_table"]) == (parser["_log_target_table_lib"], parser["_log_target_table_name"]) == ("Public", "LLM_LOGS")
     assert (link["_lnk_catalog_caslib"], link["_lnk_catalog_table"]) == (pull["_gap_out_caslib"], pull["_gap_out_catalog"]) == ("Public", "MODEL_CATALOG")

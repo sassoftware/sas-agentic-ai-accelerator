@@ -21,10 +21,21 @@
 
     LFS is short for Load Fact Sheets
 ********************************************************************************/
+/* A setting is taken from the lines below only where its macro variable is
+   not set yet. A program of your own that sets a value with a LET statement
+   and then includes this file keeps that value, also after this file was
+   replaced by the one of a newer release. */
+%macro _lfs_default(_lfs_name, _lfs_value);
+    %if %symexist(&_lfs_name.) EQ 0 %then %do;
+        %global &_lfs_name.;
+        %let &_lfs_name. = &_lfs_value.;
+    %end;
+%mend _lfs_default;
 * Provide the path in SAS Content where the files are being stored;
-%let _lfs_path = /SAS Agentic AI Accelerator/Data;
+%_lfs_default(_lfs_path, /SAS Agentic AI Accelerator/Data);
 * Provide the target CAS library for the tables;
-%let _lfs_caslib = Public;
+%_lfs_default(_lfs_caslib, Public);
+%sysmacdelete _lfs_default;
 
 * Check if a CAS session exists;
 * The option SESSREF names the session the CAS actions run in and keeps the name of a session that was ended, so SESSFOUND is asked whether that session is connected. A session that is connected is used as it is: starting mySess a second time in one SAS session makes SAS warn that the session exists, and ending it takes the session from the librefs another program bound to it;

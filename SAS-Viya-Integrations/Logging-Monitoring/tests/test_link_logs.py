@@ -100,7 +100,10 @@ def leave_request(question=QUESTION, collection="handbook_v1", **values):
 
 def test_settings_are_macro_variables_with_the_default_tables():
     program = code_file_program()
-    settings = dict(re.findall(r"^%let (_lnk_\w+) = (.*);$", program[:program.index("proc cas;")], flags=re.MULTILINE))
+    top = program[:program.index("proc cas;")]
+    # no LET statement at the top sets a setting over a value that is there
+    assert dict(re.findall(r"^%let (_lnk_\w+) = (.*);$", top, flags=re.MULTILINE)) == {}
+    settings = dict(re.findall(r"^%_lnk_default\((_lnk_\w+), (.*)\);$", top, flags=re.MULTILINE))
     assert settings == {
         "_lnk_log_caslib": "Public", "_lnk_log_table": "LLM_LOGS",
         "_lnk_catalog_caslib": "Public", "_lnk_catalog_table": "MODEL_CATALOG",
@@ -112,9 +115,12 @@ def test_settings_are_macro_variables_with_the_default_tables():
 
 def test_every_macro_variable_of_the_program_is_removed_at_its_end():
     program = code_file_program()
-    assigned = set(re.findall(r"%let (_lnk_\w+)", program)) | {"_casSessionUUID"}
+    settings = set(re.findall(r"^%_lnk_default\((_lnk_\w+),", program, flags=re.MULTILINE))
+    # the two names of the macro that sets a default are its own, and gone with it
+    assigned = (set(re.findall(r"%let (_lnk_\w+)", program)) | settings | {"_casSessionUUID"}) - {"_lnk_name", "_lnk_value"}
     removed = set(" ".join(re.findall(r"^%symdel (.*);$", program, flags=re.MULTILINE)).split())
-    assert assigned == removed
+    assert len(settings) == 12 and assigned == removed
+    assert "%sysmacdelete _lnk_default;" in program
 
 
 def test_missing_table_is_one_error_line_that_names_the_program_that_writes_it():

@@ -10,13 +10,21 @@ libname public cas caslib='Public';
 libname casuser cas caslib='casuser';
 
 * Configure were the log is located and where you wish the table to end up in CAS;
-%let _log_path = sasserver:/export/pvs/sasdata/data/llm/llms.log;
-%let _log_target_table_engine = CAS;
-%let _log_target_table_lib = Public;
-%let _log_target_table_name = LLM_LOGS;
-%let _log_append_table = 0;
-%let _log_promote_table = 1;
-%let _log_save_table = 1;
+* A setting is taken from the lines below only where its macro variable is not set yet. A program of your own that sets a value with a LET statement and then includes this file keeps that value, also after this file was replaced by the one of a newer release;
+%macro _log_default(_log_name, _log_value);
+    %if %symexist(&_log_name.) EQ 0 %then %do;
+        %global &_log_name.;
+        %let &_log_name. = &_log_value.;
+    %end;
+%mend _log_default;
+%_log_default(_log_path, sasserver:/export/pvs/sasdata/data/llm/llms.log);
+%_log_default(_log_target_table_engine, CAS);
+%_log_default(_log_target_table_lib, Public);
+%_log_default(_log_target_table_name, LLM_LOGS);
+%_log_default(_log_append_table, 0);
+%_log_default(_log_promote_table, 1);
+%_log_default(_log_save_table, 1);
+%sysmacdelete _log_default;
 
 * Check if the file is located on the SAS Server, if so extract the path;
 * 1 until one of the two checks below refuses the run. A refusal writes its one ERROR line and sets this to 0: no log is read and nothing is written behind it. An ABORT statement put SAS into syntax check mode instead, where the program went on and wrote a further ERROR line about a log it had not read;

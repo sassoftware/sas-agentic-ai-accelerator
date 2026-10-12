@@ -39,16 +39,29 @@
     schedule it alongside the ingestion job.
 ********************************************************************************/
 
+/* A setting is taken from the lines below only where its macro variable is
+   not set yet. A program of your own that sets a value with a LET statement
+   and then includes this file keeps that value, also after this file was
+   replaced by the one of a newer release. */
+%macro _rcv_default(_rcv_name, _rcv_value);
+    %if %symexist(&_rcv_name.) EQ 0 %then %do;
+        %global &_rcv_name.;
+        %let &_rcv_name. = &_rcv_value.;
+    %end;
+%mend _rcv_default;
 /* CAS library holding the fact sheets (see Load-Fact-Sheets.sas) */
-%let _rcv_fact_caslib = Public;
+%_rcv_default(_rcv_fact_caslib, Public);
 /* CAS library the RAG pipeline published its run history to */
-%let _rcv_runs_caslib = Public;
+%_rcv_default(_rcv_runs_caslib, Public);
 /* Published run-history tables: one per RAG setup, comma-separated.
-   The Load step names them <PIPELINE PREFIX>_RUNS. */
-%let _rcv_runs_tables = RAG_HR_RUNS;
+   The Load step names them <PIPELINE PREFIX>_RUNS. Several tables are set
+   with a LET statement in front of this file: a list with commas can not
+   be written into the line below. */
+%_rcv_default(_rcv_runs_tables, RAG_HR_RUNS);
 /* Output table */
-%let _rcv_out_caslib  = Public;
-%let _rcv_out_table   = RAG_RUN_COST;
+%_rcv_default(_rcv_out_caslib, Public);
+%_rcv_default(_rcv_out_table, RAG_RUN_COST);
+%sysmacdelete _rcv_default;
 
 /* A CAS session that is connected is used as it is, and only a session this
    program started is ended at its end. The option SESSREF keeps the name of

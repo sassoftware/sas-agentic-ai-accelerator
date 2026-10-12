@@ -6,7 +6,7 @@ For this two options are available:
 1. The *Log-Parser-Code.sas* is a script that you can point at the logging file and it will parse all of the information into a CAS table.
 2. The *LLM - Log Parser* custom step, which is just a nice little UI on top of the same SAS script - this step is located in the Custom-Steps folder.
 
-By default the parser writes the CAS table **`LLM_LOGS`** to the **`Public`** caslib and both promotes it (global scope) and saves it to disk. Change the `_log_target_table_lib` / `_log_target_table_name` macro variables at the top of *Log-Parser-Code.sas* (or the custom step's options) to target a different library or table name.
+By default the parser writes the CAS table **`LLM_LOGS`** to the **`Public`** caslib and both promotes it (global scope) and saves it to disk. Set the `_log_target_table_lib` / `_log_target_table_name` macro variables in front of *Log-Parser-Code.sas* (or the custom step's options) to target a different library or table name - see [Settings that stay yours](#settings-that-stay-yours).
 
 The parser reads the log from the file system of the SAS compute server: `_log_path` has to start with `sasserver:`, and a file in SAS Content is not read. The default, `sasserver:/export/pvs/sasdata/data/llm/llms.log`, is an example path. The [Logging & Monitoring administration guide](../../website/docs/Administration-Guide/Logging-&-Monitoring.md) says what that path assumes and how the file reaches the compute server where the host that collects the logs shares no mount with it.
 
@@ -127,6 +127,29 @@ The collection script in the [Logging & Monitoring administration guide](../../w
 
 The code file and the step both need the caslib `CASUSER` of the user who runs them for the staging table `_TEMP_LLM_LOGS`, and PROC PYTHON with the pandas and swat packages. The guide lists what the step takes from the session in full, what was run on a SAS Viya system and what was not.
 
+## Settings that stay yours
+
+The five programs of this folder take a setting only where its macro variable is not set when the program starts. Keep your values in a program of your own that sets them and includes the shipped file from the content folder - the shipped file can then be replaced by the one of a newer release, or by an import, without a value of yours in it:
+
+```sas
+%let _log_path = sasserver:/data/llm/llms.log;
+filename shipped filesrvc folderPath='/SAS Agentic AI Accelerator/Logging and Monitoring' filename='Log-Parser-Code.sas';
+%include shipped;
+```
+
+| Program | Settings and what the program takes where one is not set |
+| --- | --- |
+| *Log-Parser-Code.sas* | `_log_path` (`sasserver:/export/pvs/sasdata/data/llm/llms.log`), `_log_target_table_engine` (`CAS`), `_log_target_table_lib` (`Public`), `_log_target_table_name` (`LLM_LOGS`), `_log_append_table` (`0`), `_log_promote_table` (`1`), `_log_save_table` (`1`) |
+| *Get-All-Prompts.sas* | `_gap_tag`, `_gap_rag_tag`, `_gap_llm_project`, `_gap_embedding_project`, `_gap_decision_project`, `_gap_out_caslib`, `_gap_out_experiments`, `_gap_out_optimizations`, `_gap_out_rag_setups`, `_gap_out_rag_runs`, `_gap_out_catalog` - the table under [The experiments](#the-experiments-get-all-promptssas) has their values |
+| *Link-Logs-To-Models.sas* | `_lnk_log_caslib`, `_lnk_log_table`, `_lnk_catalog_caslib`, `_lnk_catalog_table`, `_lnk_runs_caslib`, `_lnk_runs_table`, `_lnk_redo_all`, `_lnk_min_literal`, `_lnk_utc_offset`, `_lnk_query_window`, `_lnk_promote_table`, `_lnk_save_table` - the table under [Linking the log](#linking-the-log-to-the-models-and-to-what-called-them) has their values |
+| *Load-Fact-Sheets.sas* | `_lfs_path` (`/SAS Agentic AI Accelerator/Data`), `_lfs_caslib` (`Public`) |
+| *Build-RAG-Cost-View.sas* | `_rcv_fact_caslib` (`Public`), `_rcv_runs_caslib` (`Public`), `_rcv_runs_tables` (`RAG_HR_RUNS`; several tables separated by commas), `_rcv_out_caslib` (`Public`), `_rcv_out_table` (`RAG_RUN_COST`) |
+
+- Set means that the macro variable exists: a variable that is set and empty stays empty. For `_gap_llm_project`, `_gap_embedding_project` and `_gap_decision_project` an empty value leaves the models of that kind out of the catalog.
+- Each program deletes its settings with its other macro variables at its end, as before, so a program of yours sets them every time in front of the include.
+- A macro variable of that name that something else left in the SAS session counts as set as well - a run of the program that was cancelled before its end, for one. Of the parser such a run leaves `_log_path` without its `sasserver:`, which the next run refuses. Start a new SAS session, or delete the variable with `%symdel`.
+- The two custom steps do not use these lines: a step gets every setting from one of its controls.
+
 ## The experiments: Get-All-Prompts.sas
 
 *Get-All-Prompts.sas* reads what the Prompt Builder keeps in SAS Model Manager and writes five CAS tables. Every row carries `modelID` and `projectID`, the SAS Model Manager ids of the model - the prompt template, the decision template or the RAG setup - and of its project. The *LLM - Get All Prompts* custom step runs the same program.
@@ -139,7 +162,7 @@ The code file and the step both need the caslib `CASUSER` of the user who runs t
 | `RAG_RUNS` | ingestion run of a setup: the rows of its `<tables_prefix>_RUNS` table when that is in memory, otherwise the runs its `<tables_prefix>_LEDGER` table still names | `modelID`, `run_id` |
 | `MODEL_CATALOG` | model and pattern: the template of a model, each of its experiment runs with the prompts as they were sent, the calls of its judges and of its optimizations, a RAG setup with its collection, a model that answers | `modelID`, `role`, `runID`, `optimization_id`, `target_model` |
 
-The settings are the `%let` lines at the top of the program:
+The settings are macro variables. The program takes the value below for each one that is not set when it starts ([Settings that stay yours](#settings-that-stay-yours)):
 
 | Macro variable | Default | |
 |---|---|---|
@@ -163,7 +186,7 @@ Limits: a model whose file can not be read is named in a WARNING and keeps a row
 
 *Link-Logs-To-Models.sas* fills the link columns of the log table: for every request the SAS Model Manager model that answered, and the manifested prompt, decision template or RAG setup that made the call. It reads the log table, `MODEL_CATALOG` and, when it is there, `RAG_RUNS`.
 
-The settings are macro variables at the top of the program:
+The settings are macro variables. The program takes the default below for each one that is not set when it starts ([Settings that stay yours](#settings-that-stay-yours)):
 
 | Macro variable | Default | Meaning |
 | --- | --- | --- |
@@ -253,7 +276,7 @@ python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests
 
 `tests/test_link_logs.py` runs the Python of *Link-Logs-To-Models.sas*. `tests/link_logs_harness.py` builds log rows and catalog rows with the columns of the two other programs and stands in for the SAS object and for CAS: it keeps tables as frames and does what the program asks CAS for. The tests cover every rule and their order, ambiguity, the minimum of fixed text, a prompt with a retrieval, ingestion windows, a second run and a redo, the columns the program does not know and the two refusals. The stand-in for the SAS object fails a test in which the program hands SAS a message that would not arrive as one text, or a macro variable that is no whole number. They do not show what CAS does with the calls.
 
-Three test files read all the programs at once. `tests/test_handed_to_sas.py` collects every place of the Python of the three programs and the two steps that hands a text to SAS - a message, the name and the value of a macro variable, code for CAS - and fails for one that does not send its text through the escaping function, for another way to SAS and for a function that differs between the programs; it also sends names through each program that SAS would not take as text. `tests/test_job_state.py` reads every statement of the SAS code that writes an ERROR line and checks that it leads to the statement that sets `SYSCC`, and that nothing else does. `tests/test_cas_sessions.py` reads every statement that starts or ends a CAS session in the programs of this folder and in the two steps: each stands under the check of a connected session.
+Three test files read all the programs at once. `tests/test_handed_to_sas.py` collects every place of the Python of the three programs and the two steps that hands a text to SAS - a message, the name and the value of a macro variable, code for CAS - and fails for one that does not send its text through the escaping function, for another way to SAS and for a function that differs between the programs; it also sends names through each program that SAS would not take as text. `tests/test_job_state.py` reads every statement of the SAS code that writes an ERROR line and checks that it leads to the statement that sets `SYSCC`, and that nothing else does. `tests/test_cas_sessions.py` reads every statement that starts or ends a CAS session in the programs of this folder and in the two steps: each stands under the check of a connected session. `tests/test_settings.py` reads the settings of all five programs: the macro that sets a default is the one text it may have, and followed the way that text says a value that is set in front of a program wins, every other setting is the default it was, and each of the two steps gets every setting from a control.
 
 `tests/test_end_to_end.py` runs the three one after the other: log lines of all three kinds become rows, tracker, setup and score code files become the catalog, and the link program is given both. Among its requests are two experiment runs with the same prompts, a further request with those prompts, the call of a judge, the calls of an optimization inside and outside of its window, and a query embedding with and without a prompt behind it. It also reads from the code of the three programs that they hand each other the same columns, kinds, roles, default table names and the same hash.
 

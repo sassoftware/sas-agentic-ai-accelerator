@@ -1003,9 +1003,12 @@ def sas_code(program):
 
 def test_the_outputs_are_set_at_the_top_of_the_code_file():
     program = code_file_program()
-    settings = dict(re.findall(r"^%let (_gap_\w+?)\s*=\s*(.*?);$", program.split("cas mySess;")[0], flags=re.MULTILINE))
+    top = program.split("cas mySess;")[0]
+    settings = dict(re.findall(r"^%_gap_default\((_gap_\w+), (.*?)\);$", top, flags=re.MULTILINE))
 
     assert settings == DEFAULT_SETTINGS
+    # a setting is a default and nothing else: no LET statement at the top sets one over a value that is there
+    assert re.findall(r"^%let (_gap_\w+)", top, flags=re.MULTILINE) == []
     code = sas_code(program)
     # no table name and no library is written into the code below the settings
     below = code.split("cas mySess;", 1)[1]

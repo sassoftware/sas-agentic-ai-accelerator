@@ -234,8 +234,10 @@ def test_the_guide_calls_its_paths_examples_and_names_the_ones_in_use():
     assert "site specific" in section
     script_path = re.search(r'^llm_log_path="([^"]+)"$', collection_script(), re.MULTILINE).group(1)
     assert f"`{script_path}`" in section
-    default = re.search(r"^%let _log_path = sasserver:\S+;$", code_file_program(), re.MULTILINE).group(0)
-    assert f"`{default}`" in section
+    # The code file takes the path from this line where _log_path is not set; the guide shows it as the
+    # statement a site sets the path with
+    default = re.search(r"^%_log_default\(_log_path, (sasserver:\S+)\);$", code_file_program(), re.MULTILINE).group(1)
+    assert f"`%let _log_path = {default};`" in section
 
 
 def test_the_copy_from_sas_content_ends_where_the_parser_reads():

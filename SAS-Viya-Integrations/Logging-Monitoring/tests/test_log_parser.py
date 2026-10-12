@@ -103,7 +103,9 @@ def test_step_program_is_the_code_file_without_its_configuration():
     step = step_program()
     assert code_file.count(step) == 1
     before, after = code_file.split(step)
-    assert before.rstrip().endswith("%let _log_save_table = 1;")
+    # Its configuration is one line per setting, each taken only where the macro variable is not set yet
+    assert before.rstrip().endswith("%_log_default(_log_save_table, 1);\n%sysmacdelete _log_default;")
+    assert re.findall(r"^%let (_log_\w+)", before, flags=re.MULTILINE) == []
     assert after.strip().startswith("%symdel _log_path ") and after.strip().count("\n") == 0
 
 
@@ -2706,8 +2708,10 @@ def test_every_macro_variable_the_code_file_reads_is_one_it_sets():
 
     read = set(name.lower() for name in re.findall(r"&+(_log_\w+)", program))
     assigned = set(name.lower() for name in re.findall(r"%let (_log_\w+)", program))
+    assigned |= set(name.lower() for name in re.findall(r"^%_log_default\((_log_\w+),", program, flags=re.MULTILINE))
     assigned |= set(name.lower() for name in re.findall(r"call symputx\('(_log_\w+)'", program))
-    assert read - assigned == set()
+    # the two names of the macro that sets a default are its parameters
+    assert read - assigned == {"_log_name", "_log_value"}
     assert "_log_row_count" not in read - assigned and "put_number('_log_row_count', len(df))" in code_file_program()
 
 

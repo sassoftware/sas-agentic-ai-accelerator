@@ -31,26 +31,34 @@
       Link
 *********************************************************************************/
 
+* A setting is taken from the lines below only where its macro variable is not set yet. A program of your own that sets a value with a LET statement and then includes this file keeps that value, also after this file was replaced by the one of a newer release;
+%macro _lnk_default(_lnk_name, _lnk_value);
+    %if %symexist(&_lnk_name.) EQ 0 %then %do;
+        %global &_lnk_name.;
+        %let &_lnk_name. = &_lnk_value.;
+    %end;
+%mend _lnk_default;
 * The log table the parser wrote. Its link columns are filled in place;
-%let _lnk_log_caslib = Public;
-%let _lnk_log_table = LLM_LOGS;
+%_lnk_default(_lnk_log_caslib, Public);
+%_lnk_default(_lnk_log_table, LLM_LOGS);
 * The catalog of models, prompts, decision templates and RAG setups that Get-All-Prompts.sas writes;
-%let _lnk_catalog_caslib = Public;
-%let _lnk_catalog_table = MODEL_CATALOG;
+%_lnk_default(_lnk_catalog_caslib, Public);
+%_lnk_default(_lnk_catalog_table, MODEL_CATALOG);
 * The ingestion runs of the RAG setups that Get-All-Prompts.sas stacks. Without the table no embedding row is linked to an ingestion run;
-%let _lnk_runs_caslib = Public;
-%let _lnk_runs_table = RAG_RUNS;
+%_lnk_default(_lnk_runs_caslib, Public);
+%_lnk_default(_lnk_runs_table, RAG_RUNS);
 * 0 links only the rows without a match_method and leaves every other row as it is, 1 links all rows again;
-%let _lnk_redo_all = 0;
+%_lnk_default(_lnk_redo_all, 0);
 * A template takes part with at least this many characters of fixed text (whitespace is not counted), an experiment run with at least as many characters in its prompts, a call of an optimization or of a judge with as many in the texts the catalog holds of it;
-%let _lnk_min_literal = 20;
+%_lnk_default(_lnk_min_literal, 20);
 * The hours the clock of the containers is ahead of UTC. The ingestion runs and the windows of the optimizations are recorded in UTC;
-%let _lnk_utc_offset = 0;
+%_lnk_default(_lnk_utc_offset, 0);
 * The seconds within which the prompt that carries a retrieval follows the embedding of its query. A query embedding without such a prompt is not linked;
-%let _lnk_query_window = 300;
+%_lnk_default(_lnk_query_window, 300);
 * A table that is promoted stays promoted and a table that has a saved file is saved again, whatever these two say. They decide for a table that is not promoted and for one that has no saved file;
-%let _lnk_promote_table = 1;
-%let _lnk_save_table = 1;
+%_lnk_default(_lnk_promote_table, 1);
+%_lnk_default(_lnk_save_table, 1);
+%sysmacdelete _lnk_default;
 
 * Check if a CAS session exists;
 * The option SESSREF names the session the CAS actions run in and keeps the name of a session that was ended, so SESSFOUND is asked whether that session is connected;

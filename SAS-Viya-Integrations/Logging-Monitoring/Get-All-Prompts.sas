@@ -56,23 +56,35 @@
     gap is short for:
       Get All Prompts
 *********************************************************************************/
+/* A setting is taken from the lines below only where its macro variable is
+   not set yet. A program of your own that sets a value with a LET statement
+   and then includes this file keeps that value, also after this file was
+   replaced by the one of a newer release. A variable that is set and empty
+   stays empty. */
+%macro _gap_default(_gap_name, _gap_value);
+    %if %symexist(&_gap_name.) EQ 0 %then %do;
+        %global &_gap_name.;
+        %let &_gap_name. = &_gap_value.;
+    %end;
+%mend _gap_default;
 /* The tag of the projects that hold prompt templates and decision templates */
-%let _gap_tag = Prompt-Engineering;
+%_gap_default(_gap_tag, Prompt-Engineering);
 /* The tag of the projects that hold RAG setups */
-%let _gap_rag_tag = RAG-Engineering;
+%_gap_default(_gap_rag_tag, RAG-Engineering);
 /* The projects that hold the models that answer a request. Each value is a
    project name, a project id or tag:<tag>; several are separated by |. An
    empty value leaves the models of that kind out of MODEL_CATALOG. */
-%let _gap_llm_project = LLM Model Project;
-%let _gap_embedding_project = Embedding Model Project;
-%let _gap_decision_project = Decision Model Project;
+%_gap_default(_gap_llm_project, LLM Model Project);
+%_gap_default(_gap_embedding_project, Embedding Model Project);
+%_gap_default(_gap_decision_project, Decision Model Project);
 /* Output: the CAS library and one table name per output */
-%let _gap_out_caslib        = Public;
-%let _gap_out_experiments   = PROMPT_EXPERIMENTS;
-%let _gap_out_optimizations = PROMPT_OPTIMIZATIONS;
-%let _gap_out_rag_setups    = RAG_SETUPS;
-%let _gap_out_rag_runs      = RAG_RUNS;
-%let _gap_out_catalog       = MODEL_CATALOG;
+%_gap_default(_gap_out_caslib, Public);
+%_gap_default(_gap_out_experiments, PROMPT_EXPERIMENTS);
+%_gap_default(_gap_out_optimizations, PROMPT_OPTIMIZATIONS);
+%_gap_default(_gap_out_rag_setups, RAG_SETUPS);
+%_gap_default(_gap_out_rag_runs, RAG_RUNS);
+%_gap_default(_gap_out_catalog, MODEL_CATALOG);
+%sysmacdelete _gap_default;
 
 * Check if a CAS session exists;
 * The option SESSREF names the session the CAS actions run in and keeps the name of a session that was ended, so SESSFOUND is asked whether that session is connected. Behind Log-Parser-Code.sas in one SAS session a session is connected: starting it again made SAS warn that the session exists, and ending it took the session from the librefs of that program;
