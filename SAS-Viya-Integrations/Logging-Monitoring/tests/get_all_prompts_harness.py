@@ -12,9 +12,11 @@ Every tracker, setup and score code in the tests is made up by the builders belo
 They have the shape of the files the Prompt Builder, the optimization job and the
 step RAG - Register Setup write, they are not copies of real ones.
 """
+import csv
 import json
 import sys
 import types
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -475,3 +477,165 @@ def scoreModel({inputs}):
     answers = ""
     return answers
 '''
+
+
+# ---------------------------------------------------------------------------
+# The run tables of the RAG setups: what publishes one, and a stand-in for the SAS code that stacks them
+# ---------------------------------------------------------------------------
+
+def rag_history():
+    """rag_core/history.py of the RAG runtime: what the step RAG - Load Vector Store and the ingestion
+    job Ingest-Documents.sas stage a run table with."""
+    path = str(INTEGRATIONS / "RAG")
+    sys.path.insert(0, path)
+    try:
+        from rag_core import history
+    finally:
+        sys.path.remove(path)
+    return history
+
+
+def store_run(history, run_id, started_at, finished_at, collection="handbook_v1", **changed):
+    """A made-up row of rag_runs as the driver of a vector store hands it over: a time as a datetime,
+    a count as a number, and nothing where the run recorded nothing."""
+    row = dict.fromkeys(history.RUN_COLUMNS)
+    row.update(run_id=run_id, collection=collection, backend="pgvector", started_at=started_at, finished_at=finished_at,
+               status="completed", pipeline_version="v1", config_id="0f1e2d3c", embed_model="demo_embedder", embed_dims=384,
+               chunker="recursive", input_token_limit=256, overlap_tokens=32, docs_new=0, docs_unchanged=3, docs_ingested=0,
+               chunks_written=0, collection_chunks=3, embed_calls=0, embed_tokens=0, embed_seconds=0.0)
+    row.update(changed)
+    return row
+
+
+def job_run_table(history, store_rows, folder):
+    """The <prefix>_RUNS table as the ingestion job publishes it: the file its Python writes with rag_core
+    (rag_runs_out.csv), read the way the upload of the job reads it - with the type the job names for each
+    column, a measure as a double and everything else as a varchar."""
+    path = Path(folder) / "rag_runs_out.csv"
+    history.write_cas_file(str(path), store_rows, history.RUN_COLUMNS, history.RUN_NUMERIC)
+    kinds = dict(history.cas_types(history.RUN_COLUMNS, history.RUN_NUMERIC))
+    with open(path, encoding="utf-8", newline="") as handle:
+        records = list(csv.DictReader(handle))
+    return [{name: float(value) if kinds[name] == "double" else value for name, value in record.items()} for record in records]
+
+
+def step_run_table(history, store_rows):
+    """The same table as the step RAG - Load Vector Store stages it for its upload: rag_core holds that
+    staging for both (cas_values), and the tests of the RAG runtime compare it with the code of the step."""
+    return [dict(zip(history.RUN_COLUMNS, values))
+            for values in history.cas_values(store_rows, history.RUN_COLUMNS, history.RUN_NUMERIC)]
+
+
+def _put_line(part, values):
+    """The %put line of the code file that holds part, as SAS writes it with these macro variables."""
+    (line,) = [line.strip() for line in code_file_program().split("\n") if line.strip().startswith("%put ") and part in line]
+    text = line[len("%put "):]
+    assert text.endswith(";")
+    text = text[:-1]
+    for name, value in values.items():
+        text = text.replace(f"&{name}.", str(value))
+    assert "&" not in text, text
+    return text
+
+
+def _missing(value):
+    return value is None or value != value
+
+
+def _cats(value):
+    """A value as the text cats() makes of it. A missing value is an empty text here."""
+    if _missing(value):
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _number(value):
+    """A value as input(cats(value), ?? best32.) reads it: a number, or missing."""
+    try:
+        return float(_cats(value))
+    except ValueError:
+        return None
+
+
+def _table(rows):
+    """(the column names in upper case, the rows with their names in lower case) of a list of rows or a frame."""
+    if hasattr(rows, "to_dict"):
+        names, records = list(rows.columns), rows.to_dict("records")
+    else:
+        names, records = list(dict.fromkeys(name for row in rows for name in row)), list(rows)
+    return {name.upper() for name in names}, [{name.lower(): value for name, value in record.items()} for record in records]
+
+
+def stack_rag_runs(run, in_memory, caslibs=None):
+    """What the SAS code of the pull makes of the tables of the RAG setups: the macro _gap_stack_rag_runs
+    with _gap_runs_of_ledger, followed branch by branch and statement by statement. No test runs SAS, so
+    this is a reading of the macros and not the macros - the tests of the pull hold the text of the
+    statements it follows.
+
+    run        the PullRun whose Python wrote the row of every setup the macro looks at (rag_run_sources)
+    in_memory  the CAS tables that are in memory, as {(caslib, name): rows}, rows a list of rows or a frame
+    caslibs    the CAS libraries the session knows - without it those of in_memory
+
+    Returns (the rows of RAG_RUNS, the lines the macros write to the log).
+    """
+    namespace = run.namespace
+    texts = [name for name, _ in namespace["RAG_RUN_TEXTS"]]
+    numbers = list(namespace["RAG_RUN_NUMBERS"])
+    columns = [name for name, _, _ in namespace["RAG_RUN_COLUMNS"]]
+    tables = {(caslib.upper(), name.upper()): _table(rows) for (caslib, name), rows in in_memory.items()}
+    known = {caslib.upper() for caslib in (caslibs if caslibs is not None else [caslib for caslib, _ in in_memory])} | {"CASUSER"}
+    stacked, lines = [], []
+
+    def new_row(source, table, run_source):
+        row = dict.fromkeys(columns)
+        row.update(dict.fromkeys(texts, ""), modelID=source["modelID"], projectID=source["projectID"],
+                   source_caslib=source["tables_caslib"], source_table=table, run_source=run_source)
+        return row
+
+    for source in run.rows("rag_run_sources"):
+        caslib, table, ledger = source["tables_caslib"], source["runs_table"], source["ledger_table"]
+        names = {"_gap_rs_caslib": caslib, "_gap_rs_table": table, "_gap_rs_ledger": ledger,
+                 "_gap_out_rag_runs": run.macro("_gap_out_rag_runs")}
+        if caslib.upper() not in known:
+            lines.append(_put_line("is not available in this session", names))
+        elif (caslib.upper(), table.upper()) not in tables:
+            # the run table is not in memory: the runs the ledger still names, if that is in memory
+            if not ledger or (caslib.upper(), ledger.upper()) not in tables:
+                lines.append(_put_line("is not in memory, its runs are not in", names))
+                continue
+            have, records = tables[(caslib.upper(), ledger.upper())]
+            if not {"RUN_ID", "UPDATED_AT"} <= have:
+                lines.append(_put_line("has no columns run_id and updated_at", names))
+                continue
+            latest = {}
+            for record in records:
+                run_id = _cats(record.get("run_id"))
+                if run_id != "":
+                    latest[run_id] = max(latest.get(run_id, ""), _cats(record.get("updated_at")))
+            for run_id in sorted(latest):
+                row = new_row(source, ledger, namespace["RUN_FROM_LEDGER"])
+                row.update(run_id=run_id, collection=source["collection"], embed_model=source["embedding_model"])
+                words = [word for word in run_id.split("-") if word]
+                epoch = _number(words[1]) if len(words) > 1 else None
+                if epoch is not None and 1000000000 < epoch < 4000000000:
+                    row["started_at"] = (datetime(1970, 1, 1) + timedelta(seconds=int(epoch))).strftime("%Y-%m-%d %H:%M:%S")
+                if latest[run_id] != "":
+                    row["finished_at"] = latest[run_id][:19].replace("T", " ")
+                stacked.append(row)
+            lines.append(_put_line("run(s) were taken from the ledger", dict(names, _gap_lruns=len(latest))))
+        else:
+            # the run table is in memory: its rows, and the ledger is not asked
+            have, records = tables[(caslib.upper(), table.upper())]
+            if "RUN_ID" not in have:
+                lines.append(_put_line("has no column run_id, it is not read as a run table", names))
+                continue
+            for record in records:
+                row = new_row(source, table, namespace["RUN_FROM_TABLE"])
+                row.update({name: _cats(record.get(name)) for name in texts if name.upper() in have})
+                row.update({name: _number(record.get(name)) for name in numbers if name.upper() in have})
+                if source["collection"] and row["collection"] not in ("", source["collection"]):
+                    continue
+                stacked.append(row)
+    return stacked, lines

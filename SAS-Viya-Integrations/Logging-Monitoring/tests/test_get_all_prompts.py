@@ -4,17 +4,21 @@ The Python of the program runs here as it stands in the SAS program, against a
 made-up SAS Model Manager (see get_all_prompts_harness.py). What the SAS code
 around it does - the DATA steps, PROC CASUTIL, the stacking of the run tables -
 does not run here; of that code the tests check what can be read from its text.
+The stacking of the run tables is also followed by a stand-in of the harness
+(stack_rag_runs), which is a reading of the two macros and not the macros.
 """
 import hashlib
 import json
 import re
+from datetime import datetime, timezone
 
 import pytest
 
 from get_all_prompts_harness import (
     ANSWERS, DEFAULT_SETTINGS, INTEGRATIONS, QUESTIONS, FakeViya, code_file_program, core,
-    decision_header, decision_score_code, functions, header_row, model_row, optimization_entry, prompt_score_code,
-    python_block, rag_setup, run_pull, step_definition, step_pipeline_yaml, step_program, step_ui, variable)
+    decision_header, decision_score_code, functions, header_row, job_run_table, model_row, optimization_entry,
+    prompt_score_code, python_block, rag_history, rag_setup, run_pull, stack_rag_runs, step_definition,
+    step_pipeline_yaml, step_program, step_run_table, step_ui, store_run, variable)
 
 # The columns of PROMPT_EXPERIMENTS the report "LLM Usage Report" reads, with their type
 REPORT_TEXTS = ["createdBy", "description", "function", "input_type", "model", "modelLink", "modifiedBy", "name",
@@ -1614,15 +1618,42 @@ def _stack_macro():
     return code[code.index("%macro _gap_stack_rag_runs;"):code.index("%mend _gap_stack_rag_runs;")]
 
 
-def test_the_ingestion_job_publishes_its_ledger_and_no_run_table():
-    """Why a setup of the Prompt Builder has no <prefix>_RUNS table: Ingest-Documents.sas loads,
-    promotes and saves the ledger and writes its runs into the vector store. What a row of the
-    ledger holds of a run is its id and the time the row was written."""
-    job = (INTEGRATIONS / "RAG-Ingestion" / "Ingest-Documents.sas").read_text(encoding="utf-8")
+def test_the_ingestion_job_publishes_its_run_table_under_the_name_the_pull_looks_for(monkeypatch, tmp_path):
+    """Ingest-Documents.sas publishes <prefix>_RUNS beside its ledger, as the step RAG - Load Vector Store
+    does. <prefix> is the ledger table without its ending _LEDGER, and the pull looks for the run table
+    and the ledger of a setup under the table prefix of that setup."""
+    job = (INTEGRATIONS / "RAG-Ingestion" / "Ingest-Documents.sas").read_text(encoding="utf-8").replace("\r\n", "\n")
 
+    # PROC CASUTIL stores the ledger and nothing else, and the run table is published behind it with CAS actions
     published = re.findall(r'(?:promote|save) casdata="&(\w+)\.(\w*)"', job)
     assert published and {name for name, _ in published} == {"ledgerTable"}
-    assert "_RUNS" not in job
+    assert "%_rag_history_table(Run, _RUNS, rag_runs_out.csv);" in job
+    assert job.index('save casdata="&ledgerTable." casout="&ledgerTable." replace;') < job.index("%_rag_history_table(Run, _RUNS, rag_runs_out.csv);")
+    assert "%let _rag_ht = &_rag_histPrefix.&suffix.;" in job
+    assert ("    %if %upcase(%substr(&ledgerTable., %eval(%length(&ledgerTable.) - 6))) EQ _LEDGER %then\n"
+            "        %let _rag_histPrefix = %substr(&ledgerTable., 1, %eval(%length(&ledgerTable.) - 7));") in job
+    assert 'table.promote status = promoted / caslib = "&ledgerCaslib." name = "&_rag_ht._S"' in job
+    # the rows are the runs rag_core reads from the store, with the columns and the types of rag_core
+    assert '("Run", "rag_runs_out.csv",\n                         reader.runs(P["collection"]),\n                         RUN_COLUMNS, RUN_NUMERIC),' in job
+    assert '{name = "%scan(&_rag_hv., 1, %str(:))", type = "%scan(&_rag_hv., 2, %str(:))"}' in job
+
+    viya, _, builder, _ = rag_viya()
+    run = run_pull(monkeypatch, tmp_path, viya)
+    setup, source = run.rows("rag_setups")[0], run.rows("rag_run_sources")[0]
+    assert (setup["modelID"], setup["tables_prefix"], setup["tables_caslib"]) == (builder["id"], "HANDBOOK", "Public")
+    # the ledger the Prompt Builder names for the job, and the run table the job makes of that name
+    assert (source["tables_caslib"], source["ledger_table"], source["runs_table"]) == ("Public", "HANDBOOK_LEDGER", "HANDBOOK_RUNS")
+    assert source["ledger_table"][:-len("_LEDGER")] + "_RUNS" == source["runs_table"] == setup["runs_table"]
+
+
+def test_the_ledger_of_the_ingestion_job_names_a_run_by_an_id_that_holds_its_start():
+    """What the pull takes from a ledger where the run table of a setup is not in memory - the job
+    definition of the setup holds a program from before the job published its run table, or the run
+    history of the setup is switched off. A row of the ledger holds of a run its id and the time the
+    row was written."""
+    job = (INTEGRATIONS / "RAG-Ingestion" / "Ingest-Documents.sas").read_text(encoding="utf-8")
+
+    assert "%if &_rag_histState. EQ off %then %return;" in job
     assert "%let _rag_runId = run-%sysfunc(compress(%sysfunc(putn(&_rag_now., 12.))))-&_rag_digits.;" in job
     assert "%let _rag_now = %sysevalf(%sysfunc(datetime()) - 315619200);" in job
     monkey_path = str(INTEGRATIONS / "RAG")
@@ -1700,3 +1731,112 @@ def test_the_ledger_and_the_embedding_model_of_a_setup_are_handed_to_the_sas_cod
         ("HANDBOOK_RUNS", "HANDBOOK_LEDGER", "demo_embedder"), ("TRAVEL_RUNS", "TRAVEL_LEDGER", "demo_embedder"),
         # a ledger name of more than 32 characters and a model name that can not stand in SAS code are left out
         ("P" * 26 + "_RUNS", "", "demo_embedder"), ("ODD_RUNS", "ODD_LEDGER", "")]
+
+
+# ---------------------------------------------------------------------------
+# The run table the ingestion job publishes
+# ---------------------------------------------------------------------------
+
+UTC = timezone.utc
+# Two runs of one setup, as the ingestion job numbers them: run-<seconds since 1970>-<digits>
+FIRST_RUN = "run-1767600000-0000000001"    # 2026-01-05 08:00:00
+NEWEST_RUN = "run-1767610800-0000000002"   # 2026-01-05 11:00:00
+
+
+def store_runs(history):
+    """What the vector store holds of the collection handbook_v1, the newest run first: a run that found
+    nothing to do, and the run before it that ingested three documents."""
+    return [
+        store_run(history, NEWEST_RUN, datetime(2026, 1, 5, 11, 0, 0, tzinfo=UTC), datetime(2026, 1, 5, 11, 0, 6, tzinfo=UTC)),
+        store_run(history, FIRST_RUN, datetime(2026, 1, 5, 8, 0, 0, tzinfo=UTC), datetime(2026, 1, 5, 8, 10, 0, tzinfo=UTC),
+                  docs_new=3, docs_unchanged=0, docs_ingested=3, chunks_written=7, collection_chunks=7, embed_calls=7,
+                  embed_tokens=412, embed_seconds=0.5625, docs_excluded=None, error_text=None),
+    ]
+
+
+def ledger_rows(run_id=NEWEST_RUN, documents=3, written="2026-01-05T11:00:0{}Z"):
+    """The ledger of the setup after that run: every document of the folder is listed by the newest run."""
+    return [{"doc_id": f"doc-{number}", "source_uri": f"/data/handbook/chapter-{number}.md", "status": "unchanged",
+             "run_id": run_id, "updated_at": written.format(number + 3)} for number in range(1, documents + 1)]
+
+
+def test_a_run_table_of_the_ingestion_job_is_read_like_one_of_the_load_step(monkeypatch, tmp_path):
+    history = rag_history()
+    viya, _, builder, step = rag_viya()
+    run = run_pull(monkeypatch, tmp_path, viya)
+    namespace = run.namespace
+    job_table = job_run_table(history, store_runs(history), tmp_path)
+
+    # the columns of the file of the job are the columns the pull reads, each with the type the pull reads it as
+    kinds = history.cas_types(history.RUN_COLUMNS, history.RUN_NUMERIC)
+    assert list(job_table[0]) == history.RUN_COLUMNS == [name for name, _ in kinds]
+    assert [name for name, kind in kinds if kind == "double"] == [name for name in history.RUN_COLUMNS if name in namespace["RAG_RUN_NUMBERS"]]
+    assert sorted(name for name, kind in kinds if kind == "varchar") == sorted(name for name, _ in namespace["RAG_RUN_TEXTS"])
+
+    from_job, lines = stack_rag_runs(run, {("Public", "HANDBOOK_RUNS"): job_table})
+    from_step, _ = stack_rag_runs(run, {("Public", "HANDBOOK_RUNS"): step_run_table(history, store_runs(history))})
+    # the same rows of RAG_RUNS whichever of the two published the table
+    assert from_job == from_step
+    assert [list(row) for row in from_job] == [[name for name, _, _ in namespace["RAG_RUN_COLUMNS"]]] * 2
+    # every run the store holds, each a row of the setup that says where it is from
+    assert [(row["modelID"], row["run_id"], row["source_caslib"], row["source_table"], row["run_source"]) for row in from_job] == [
+        (builder["id"], NEWEST_RUN, "Public", "HANDBOOK_RUNS", "run table"), (builder["id"], FIRST_RUN, "Public", "HANDBOOK_RUNS", "run table")]
+    first = from_job[1]
+    # the times as the store hands them over, which is the text the link program reads as UTC
+    assert (first["started_at"], first["finished_at"]) == ("2026-01-05 08:00:00+00:00", "2026-01-05 08:10:00+00:00")
+    assert (first["collection"], first["embed_model"], first["status"], first["backend"]) == ("handbook_v1", "demo_embedder", "completed", "pgvector")
+    assert (first["docs_new"], first["chunks_written"], first["embed_tokens"], first["embed_seconds"]) == (3.0, 7.0, 412.0, 0.5625)
+    # what the run recorded nothing for is 0 for a measure and empty for a text, as the step stages it
+    assert (first["docs_excluded"], first["enrich_calls"], first["error_text"], first["rag_project"]) == (0.0, 0.0, "", "")
+    # the other setup has neither table in memory
+    assert lines == ["NOTE: The run table Public.TRAVEL_RUNS is not in memory, its runs are not in RAG_RUNS."]
+    assert step["id"] not in {row["modelID"] for row in from_job}
+
+
+def test_a_run_that_the_run_table_and_the_ledger_name_is_one_row_of_rag_runs(monkeypatch, tmp_path):
+    """After a run of the job that publishes, a setup has its run table and its ledger in memory, and both
+    name the newest run. The ledger is read only where the run table is not in memory."""
+    history = rag_history()
+    viya, _, builder, _ = rag_viya()
+    run = run_pull(monkeypatch, tmp_path, viya)
+    job_table = job_run_table(history, store_runs(history), tmp_path)
+    travel = "NOTE: The run table Public.TRAVEL_RUNS is not in memory, its runs are not in RAG_RUNS."
+
+    def of_setup(rows):
+        return [(row["run_id"], row["run_source"]) for row in rows if row["modelID"] == builder["id"]]
+
+    both, lines = stack_rag_runs(run, {("Public", "HANDBOOK_RUNS"): job_table, ("Public", "HANDBOOK_LEDGER"): ledger_rows()})
+    assert of_setup(both) == [(NEWEST_RUN, "run table"), (FIRST_RUN, "run table")] and lines == [travel]
+    assert both == stack_rag_runs(run, {("Public", "HANDBOOK_RUNS"): job_table})[0]
+    keys = [(row["modelID"], row["run_id"]) for row in both]
+    assert len(set(keys)) == len(keys) == 2
+
+    # the setup whose table is not there: the runs its ledger still names, which is the newest run
+    only_ledger, lines = stack_rag_runs(run, {("Public", "HANDBOOK_LEDGER"): ledger_rows()})
+    assert of_setup(only_ledger) == [(NEWEST_RUN, "ledger")]
+    assert lines == ["NOTE: The run table Public.HANDBOOK_RUNS is not in memory. 1 run(s) were taken from the ledger Public.HANDBOOK_LEDGER - "
+                     "the runs its rows still name, each from the start its id holds to the latest of its rows.", travel]
+    (taken,) = only_ledger
+    assert (taken["started_at"], taken["finished_at"], taken["collection"], taken["embed_model"], taken["source_table"]) == (
+        "2026-01-05 11:00:00", "2026-01-05 11:00:06", "handbook_v1", "demo_embedder", "HANDBOOK_LEDGER")
+    assert taken["status"] == "" and all(taken[name] is None for name in run.namespace["RAG_RUN_NUMBERS"])
+    # it is the run the run table names with the same id, and its start is the second the id holds
+    assert (taken["run_id"], taken["started_at"]) == (both[0]["run_id"], both[0]["started_at"][:19])
+    assert history.started_at_from_run_id(NEWEST_RUN) == taken["started_at"]
+
+    # a run table that is in memory is all that is read: a run only the ledger names is not added to it
+    older_table = [row for row in job_table if row["run_id"] == FIRST_RUN]
+    assert of_setup(stack_rag_runs(run, {("Public", "HANDBOOK_RUNS"): older_table, ("Public", "HANDBOOK_LEDGER"): ledger_rows()})[0]) == [
+        (FIRST_RUN, "run table")]
+    # neither table: no row, and a line that says so
+    assert stack_rag_runs(run, {}, caslibs=["Public"]) == ([], [travel.replace("TRAVEL", "HANDBOOK"), travel])
+
+    # the branches of the macro, in the order the stand-in follows them
+    stack = _stack_macro()
+    assert stack.count("%_gap_runs_of_ledger;") == 1 and stack.count('run_source = "run table";') == 1
+    not_in_memory = stack.index("%else %if &_gap_runs_exists. EQ 0 %then %do;")
+    in_memory = stack.index("%else %do;\n            libname _gaprn cas caslib=\"&_gap_rs_caslib.\";")
+    assert stack.index("%if &_gap_runs_exists. LT 0 %then %do;") < not_in_memory < stack.index("%_gap_runs_of_ledger;") < in_memory
+    read = stack[in_memory:stack.index("libname _gaprn clear;", in_memory)]
+    assert 'run_source = "run table";' in read and "ledger" not in read.lower()
+    assert "set _gaprn.&_gap_rs_table.(keep=&_gap_keep. rename=(&_gap_rename.));" in read

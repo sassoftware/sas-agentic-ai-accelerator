@@ -8,11 +8,15 @@ makes of tracker, setup and score code files are what the link program is given.
 
 The Python of the three programs runs outside of SAS, with the stand-ins of their
 harnesses. What SAS and CAS do between them - the upload, the DATA steps that read the
-files of the pull, the stacking of the run tables - is not part of this test. Every log
-line and every file is made up for it.
+files of the pull - is not part of this test. RAG_RUNS is the one table SAS code alone
+makes: its rows are the run table the ingestion job of the setup publishes, written with
+the functions of rag_core the job writes it with, as a stand-in of the harness of the
+pull stacks it, which follows the two macros of the pull and is not them. Every log line
+and every file is made up for it.
 """
 import json
 import re
+from datetime import datetime, timezone
 
 import pandas as pd
 import pytest
@@ -72,6 +76,31 @@ OPTIMIZER_JUDGE_SYSTEM_PROMPT = "You compare the answer of an assistant with a r
 OPTIMIZER_JUDGE_USER_PROMPT = "== TASK ==\n" + SYSTEM_PROMPT + "\n\n== TASK INPUTS ==\nquestion: Who books a rental car?\n\nReturn the JSON object now."
 OPTIMIZATION_STARTED = "2026-01-05T10:00:00.250000+00:00"
 OPTIMIZATION_FINISHED = "2026-01-05T10:12:30.500000+00:00"
+
+# The two ingestion runs of the setup, as the ingestion job numbers them: run-<seconds since 1970>-<digits>.
+# The first embedded the documents, the newest found nothing to do - and is the one run the ledger still names
+FIRST_RUN = "run-1767600000-0000000001"    # 2026-01-05 08:00:00 to 08:10:00
+NEWEST_RUN = "run-1767610800-0000000002"   # 2026-01-05 11:00:00 to 11:00:06
+RUNS_TABLE = ("Public", "HANDBOOK_RUNS")
+LEDGER_TABLE = ("Public", "HANDBOOK_LEDGER")
+
+
+def store_runs(history):
+    """What the vector store holds of the collection, the newest run first, as the job reads it."""
+    utc = timezone.utc
+    return [
+        pull_harness.store_run(history, NEWEST_RUN, datetime(2026, 1, 5, 11, 0, 0, tzinfo=utc), datetime(2026, 1, 5, 11, 0, 6, tzinfo=utc),
+                               collection=COLLECTION),
+        pull_harness.store_run(history, FIRST_RUN, datetime(2026, 1, 5, 8, 0, 0, tzinfo=utc), datetime(2026, 1, 5, 8, 10, 0, tzinfo=utc),
+                               collection=COLLECTION, docs_new=3, docs_unchanged=0, docs_ingested=3, chunks_written=7, collection_chunks=7,
+                               embed_calls=7, embed_tokens=412, embed_seconds=0.5625),
+    ]
+
+
+def ledger_of_the_setup():
+    """The ledger after the newest run: every document of the folder is listed by that run."""
+    return [{"doc_id": f"doc-{number}", "source_uri": f"/data/handbook/chapter-{number}.md", "status": "unchanged",
+             "run_id": NEWEST_RUN, "updated_at": f"2026-01-05T11:00:0{number + 3}Z"} for number in (1, 2, 3)]
 
 
 def made_up_viya():
@@ -172,19 +201,23 @@ def chain(monkeypatch, tmp_path):
     assert pulled.rc == "0" and pulled.sas.of_type("ERROR") == [] and pulled.sas.of_type("WARNING") == []
     catalog = pd.DataFrame(pulled.rows("catalog"), columns=[name for name, _, _ in pulled.namespace["CATALOG_COLUMNS"]])
 
-    # RAG_RUNS is stacked by the SAS code of the pull, which no test runs: one run of the run table of the
-    # setup, with the columns the pull gives that table and once for each of the two models of the setup
-    run_columns = [name for name, _, _ in pulled.namespace["RAG_RUN_COLUMNS"]]
-    runs = pd.DataFrame([dict(dict.fromkeys(run_columns), modelID=models[which]["id"], projectID=models[which]["projectId"],
-                              run_id="20260105T080000Z-1a2b3c", collection=COLLECTION, embed_model="demo_embedder", status="succeeded",
-                              started_at="2026-01-05 08:00:00", finished_at="2026-01-05 08:10:00", source_caslib="Public",
-                              source_table="HANDBOOK_RUNS", run_source=pulled.namespace["RUN_FROM_TABLE"])
-                         for which in ("setup", "registered")], columns=run_columns)
+    # RAG_RUNS is stacked by the SAS code of the pull, which no test runs. The run table of the setup is the
+    # one its ingestion job published - every run the store holds - and the stand-in of the harness reads it
+    # as the macros of the pull do, once for each of the two models of the setup
+    history = pull_harness.rag_history()
+    job_table = pull_harness.job_run_table(history, store_runs(history), tmp_path)
+    run_rows, run_lines = pull_harness.stack_rag_runs(pulled, {RUNS_TABLE: job_table, LEDGER_TABLE: ledger_of_the_setup()})
+    runs = runs_frame(pulled, run_rows)
 
     linked = link_harness.run_program(monkeypatch, tables={
         ("Public", "LLM_LOGS"): upload["frame"], ("Public", "MODEL_CATALOG"): catalog, ("Public", "RAG_RUNS"): runs})
     return {"requests": [what for what, _ in requests], "parsed": parsed, "upload": upload, "pulled": pulled, "catalog": catalog,
-            "linked": linked, "models": models}
+            "linked": linked, "models": models, "job_table": job_table, "runs": runs, "run_lines": run_lines}
+
+
+def runs_frame(pulled, rows):
+    """Rows of RAG_RUNS as the table the link program is given."""
+    return pd.DataFrame(rows, columns=[name for name, _, _ in pulled.namespace["RAG_RUN_COLUMNS"]])
 
 
 def test_every_request_of_the_log_is_linked_to_its_model_and_to_what_sent_it(chain):
@@ -240,6 +273,66 @@ def test_every_request_of_the_log_is_linked_to_its_model_and_to_what_sent_it(cha
     assert linked_prompt["rag_collection"] == COLLECTION
     # The question that was embedded again has the same hash, and no prompt follows it within the window
     assert by_request["the query of the retrieval long after its prompt"]["input_hash"] == linked_prompt["rag_query_hash"]
+
+
+def test_the_run_table_the_ingestion_job_published_gives_a_document_embedding_its_run(chain):
+    models, runs = chain["models"], chain["runs"]
+    pull, link = chain["pulled"].namespace, chain["linked"].namespace
+    setup, registered = models["setup"]["id"], models["registered"]["id"]
+
+    # Every run the store holds is in RAG_RUNS, read from the run table of the job. The ledger of the setup is in
+    # memory as well and names the newest run: the run is one row for each model of the setup, not two
+    assert chain["run_lines"] == []
+    assert list(zip(runs["modelID"], runs["run_id"], runs["source_table"], runs["run_source"])) == [
+        (setup, NEWEST_RUN, "HANDBOOK_RUNS", pull["RUN_FROM_TABLE"]), (setup, FIRST_RUN, "HANDBOOK_RUNS", pull["RUN_FROM_TABLE"]),
+        (registered, NEWEST_RUN, "HANDBOOK_RUNS", pull["RUN_FROM_TABLE"]), (registered, FIRST_RUN, "HANDBOOK_RUNS", pull["RUN_FROM_TABLE"])]
+    first = runs[(runs["modelID"] == setup) & (runs["run_id"] == FIRST_RUN)].iloc[0]
+    # The times of a run as the store hands them over, which the link program reads as UTC
+    assert (first["started_at"], first["finished_at"], first["embed_model"]) == ("2026-01-05 08:00:00+00:00", "2026-01-05 08:10:00+00:00", "demo_embedder")
+    assert (first["docs_new"], first["embed_calls"], first["embed_tokens"]) == (3, 7, 412)
+
+    # The document that was embedded five minutes into the first run is linked to the setup by that run
+    table = chain["linked"].new_table
+    by_request = dict(zip(chain["requests"], table.to_dict("records")))
+    document = by_request["document of an ingestion run"]
+    assert link["sas_seconds"](first["started_at"]) < document["timestamp"] < link["sas_seconds"](first["finished_at"])
+    assert document["timestamp"] == link_harness.sas_datetime("2026-01-05 08:05:00")
+    assert (document["match_method"], document["caller_model_id"], document["caller_kind"], document["caller_name"], document["match_candidates"]) == (
+        "ingestion run", setup, "rag", "Staff Handbook", 1)
+    assert (document["kind"], document["embedding_mode"], document["project"]) == ("embedding", "document", "rag")
+    # A document that was embedded between the two runs is of no run
+    assert by_request["document outside of a run"]["match_method"] == "none"
+
+
+def test_a_setup_without_its_run_table_has_the_newest_run_of_its_ledger_and_no_run_for_an_earlier_document(chain, monkeypatch):
+    """The state of a setup whose job definition holds a program from before the job published its run table,
+    or whose run history is switched off: the ledger is all that CAS holds of its runs."""
+    pulled, models = chain["pulled"], chain["models"]
+    rows, lines = pull_harness.stack_rag_runs(pulled, {LEDGER_TABLE: ledger_of_the_setup()})
+
+    assert [(row["modelID"], row["run_id"], row["started_at"], row["finished_at"], row["run_source"]) for row in rows] == [
+        (models[which]["id"], NEWEST_RUN, "2026-01-05 11:00:00", "2026-01-05 11:00:06", pulled.namespace["RUN_FROM_LEDGER"])
+        for which in ("setup", "registered")]
+    assert lines == ["NOTE: The run table Public.HANDBOOK_RUNS is not in memory. 1 run(s) were taken from the ledger Public.HANDBOOK_LEDGER - "
+                     "the runs its rows still name, each from the start its id holds to the latest of its rows."] * 2
+    # It is the run the run table of the job names under the same id, from the same second
+    of_table = chain["runs"][chain["runs"]["run_id"] == NEWEST_RUN]
+    assert set(of_table["started_at"].str[:19]) == {"2026-01-05 11:00:00"} and len(of_table) == len(rows)
+
+    linked = link_harness.run_program(monkeypatch, tables={
+        ("Public", "LLM_LOGS"): chain["upload"]["frame"], ("Public", "MODEL_CATALOG"): chain["catalog"],
+        ("Public", "RAG_RUNS"): runs_frame(pulled, rows)})
+    by_request = dict(zip(chain["requests"], linked.new_table.to_dict("records")))
+    # The first run is no longer named by the ledger, so the document it embedded has no run
+    document = by_request["document of an ingestion run"]
+    assert (document["match_method"], document["caller_model_id"], document["match_candidates"]) == ("none", "", 0)
+    assert linked.sas.lines("NOTE")[3] == "5 embedding rows: 5 linked to a model, caller by retrieval query 1, ingestion run 0, ambiguous 0, none 4."
+    # Nothing else of the link rests on the runs
+    others = [what for what in chain["requests"] if what != "document of an ingestion run"]
+    with_table = dict(zip(chain["requests"], chain["linked"].new_table.to_dict("records")))
+    for what in others:
+        assert [by_request[what][column] for column in linked.namespace["LINK_COLUMNS"]] == \
+            [with_table[what][column] for column in linked.namespace["LINK_COLUMNS"]], what
 
 
 def test_a_run_is_the_request_with_its_run_time(chain):
