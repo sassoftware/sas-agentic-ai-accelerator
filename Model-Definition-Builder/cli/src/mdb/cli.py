@@ -1505,7 +1505,8 @@ def content_deploy(
     place with its program, its form and its parameters. Two files are written
     by mdb itself: the release table as CSV, exactly as `mdb load-releases
     --csv` writes it, and release.json - the release, the commit of the
-    checkout and its date, and every entry with its kind and content hash.
+    checkout and its date, and every entry with its kind and, for a file,
+    a custom step and a job definition, a hash of its content.
 
     One line per entry says what happened: equal, updated, created - or
     FAILED with the reason, after which the run goes on with the next entry

@@ -619,7 +619,8 @@ def checkout_commit(repo_root) -> tuple:
 def release_info(manifest: ContentManifest) -> dict:
     """What release.json holds: the release, the commit of the checkout it was
     deployed from with that commit's date, and every entry of the manifest
-    with its kind and content hash (`entry_hash`)."""
+    with its kind and its content hash (`entry_hash` - none for a folder, a
+    report and release.json itself)."""
     commit, date = checkout_commit(manifest.repo_root)
     return {
         "kind": RELEASE_INFO_KIND,
