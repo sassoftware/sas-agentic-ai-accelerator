@@ -178,3 +178,82 @@ def test_create_session_passes_the_password_grant_positionally(env, fake_sasctl)
     session = s.create_session()
     assert fake_sasctl == [((URL, "u", "p"), {"verify_ssl": False})]
     assert session.auth_summary == f"{URL} as u (password grant)"
+
+
+# -- a sign-in that is refused while sign-ins overlap ---------------------------------
+
+class AuthenticationError(ValueError):
+    """What sasctl raises for a password grant answered 401 - told by its name."""
+
+
+def test_a_refused_password_grant_is_asked_again(env):
+    """Seen on the test system: the grant answered 401 while several sign-ins
+    overlapped. The next one is taken."""
+    waited, asked = [], []
+
+    def make():
+        asked.append(1)
+        if len(asked) < 3:
+            raise AuthenticationError("Authentication failed for user 'u'.")
+        return "session"
+    assert s._sign_in(make, sleep=waited.append) == "session"
+    assert len(asked) == 3 and waited == [2, 5]
+
+
+def test_a_wrong_password_is_passed_on_after_the_last_try(env):
+    waited, asked = [], []
+
+    def make():
+        asked.append(1)
+        raise AuthenticationError("Authentication failed for user 'u'.")
+    with pytest.raises(AuthenticationError):
+        s._sign_in(make, sleep=waited.append)
+    assert len(asked) == s.LOGIN_ATTEMPTS == 3 and waited == [2, 5]
+    # a site that locks an account after a few failed sign-ins switches the repeat off
+    del asked[:], waited[:]
+    env.setenv(s.LOGIN_ATTEMPTS_ENV, "1")
+    with pytest.raises(AuthenticationError):
+        s._sign_in(make, sleep=waited.append)
+    assert len(asked) == 1 and waited == []
+    env.setenv(s.LOGIN_ATTEMPTS_ENV, "not a number")
+    with pytest.raises(AuthenticationError):
+        s._sign_in(make, sleep=waited.append)
+    assert len(asked) == 1 + 3
+
+
+def test_anything_but_a_refused_sign_in_is_not_repeated(env):
+    """A server that is not reachable is not a sign-in that overlapped."""
+    asked = []
+
+    def make():
+        asked.append(1)
+        raise ConnectionError("no route to host")
+    with pytest.raises(ConnectionError):
+        s._sign_in(make, sleep=lambda seconds: pytest.fail("waited for nothing"))
+    assert len(asked) == 1
+
+
+def test_only_the_password_grant_is_repeated(env, monkeypatch, tmp_path):
+    """A token is taken or not: asking again does not change the answer."""
+    calls = []
+
+    class Session:
+        def __init__(self, *args, **kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                raise AuthenticationError("refused")
+
+    monkeypatch.setitem(sys.modules, "sasctl", types.SimpleNamespace(Session=Session))
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    env.setenv(s.URL_ENV, URL)
+    env.setenv(s.USER_ENV, "u")
+    env.setenv(s.PASSWORD_ENV, "p")
+    assert s.create_session().auth_summary == f"{URL} as u (password grant)"
+    assert calls == [(URL, "u", "p"), (URL, "u", "p")]
+    del calls[:]
+    env.delenv(s.USER_ENV)
+    env.delenv(s.PASSWORD_ENV)
+    env.setenv(s.TOKEN_ENV, "not-a-jwt")
+    with pytest.raises(AuthenticationError):
+        s.create_session()
+    assert calls == [(URL,)]

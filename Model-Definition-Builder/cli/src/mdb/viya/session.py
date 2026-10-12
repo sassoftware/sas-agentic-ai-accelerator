@@ -213,8 +213,51 @@ def create_session():
 
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     if auth.method == "password":
-        session = Session(auth.url, auth.user, auth.password, verify_ssl=verify)
+        session = _sign_in(lambda: Session(auth.url, auth.user, auth.password, verify_ssl=verify))
     else:
         session = Session(auth.url, token=auth.token, verify_ssl=verify)
     session.auth_summary = auth.summary
     return session
+
+
+#: How often the password grant is asked, and the seconds waited before the
+#: second and the third time. LOGIN_ATTEMPTS_ENV overrides the number; 1
+#: switches the repeat off.
+LOGIN_ATTEMPTS = 3
+LOGIN_WAIT = (2, 5)
+LOGIN_ATTEMPTS_ENV = "MDB_LOGIN_ATTEMPTS"
+
+
+def _refused_sign_in(exc: Exception) -> bool:
+    """Whether an exception is the password grant answered 401: sasctl raises
+    its AuthenticationError for it. Recognised by name, so that this module
+    needs no import of sasctl to say so."""
+    return type(exc).__name__ == "AuthenticationError"
+
+
+def _sign_in(make, attempts: int | None = None, sleep=None):
+    """A session from `make()`, asked again when the password grant is refused.
+
+    A password grant has been answered 401 on the test system while several
+    sign-ins overlapped. So a refused grant is asked again - LOGIN_ATTEMPTS
+    times in all - before the refusal is passed on. A wrong password is refused every
+    time, which costs that many failed sign-ins: sites that lock an account
+    after a few can set MDB_LOGIN_ATTEMPTS=1. Anything that is not a refused
+    sign-in (the server not reachable, a certificate) is passed on at once.
+    """
+    import time
+
+    if attempts is None:
+        try:
+            attempts = int(_env(LOGIN_ATTEMPTS_ENV) or LOGIN_ATTEMPTS)
+        except ValueError:
+            attempts = LOGIN_ATTEMPTS
+    attempts = max(1, attempts)
+    sleep = sleep or time.sleep
+    for attempt in range(1, attempts + 1):
+        try:
+            return make()
+        except Exception as exc:
+            if attempt == attempts or not _refused_sign_in(exc):
+                raise
+            sleep(LOGIN_WAIT[min(attempt - 1, len(LOGIN_WAIT) - 1)])
