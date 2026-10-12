@@ -13,6 +13,12 @@ and can do the two things the CLI cannot on its own:
 * strip the exporting environment's hostname from a fresh export before it is
   written into the repository (core/packages.py does the rewriting).
 
+`mdb builders-import` hands this service the REPORTS of a package only (with
+the files that are children of a report and the folders they sit in): files,
+custom steps and job definitions are brought in place by viya/content.py. And
+it reads the tasks of an import job to the end (`job_tasks`,
+`task_problems`), because a job ends `completed` with tasks that did not.
+
 Request shapes are the ones the service records on its own jobs
 (`GET /transfer/importJobs` shows `request`): export request version 1 with
 `items` and `options`, import request version 2 with `packageUri` and an
@@ -89,6 +95,44 @@ def job_messages(session, job: dict) -> list[str]:
     return lines
 
 
+def job_tasks(session, job: dict) -> list[dict]:
+    """Every task of a finished job, read page by page to the end.
+
+    A job tells in its own state only whether it ran: an import job was seen
+    to end `completed` with `errorCount` 0 while three of its tasks had ended
+    `completedWithWarnings` - an object the service had written into no
+    folder. So the tasks are what says whether an import did what it was
+    for, and a job whose tasks cannot be read is not known to have."""
+    self_uri = job_uri(job)
+    tasks, start = [], 0
+    while True:
+        response = session.get(f"{self_uri}/tasks", params={"start": start, "limit": 100})
+        if not response.ok:
+            raise _failure(f"Reading the tasks of the job {self_uri} failed", response)
+        page = response.json()
+        items = page.get("items") or []
+        tasks.extend(items)
+        start += len(items)
+        if not items or start >= int(page.get("count") or 0):
+            return tasks
+
+
+def task_problems(tasks: list) -> list[str]:
+    """One line per task that did not end `completed`: its object, the state
+    it ended in and what the service says about it. A warning counts - it is
+    how the service reports an object it could not put where it belongs."""
+    lines = []
+    for task in tasks:
+        state = str(task.get("state") or "")
+        if state.lower() == "completed":
+            continue
+        message = " / ".join(part.strip() for part in str(task.get("message") or "").splitlines() if part.strip())
+        kind = str(task.get("resourceType") or "").rsplit(".", 1)[-1].replace("+json", "")
+        name = task.get("name") or task.get("resourceName") or task.get("id")
+        lines.append(f"{kind + ' ' if kind else ''}'{name}': {state or 'no state'}" + (f" - {message}" if message else ""))
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------
@@ -119,13 +163,20 @@ def delete_package(session, package_uri: str) -> None:
 # ---------------------------------------------------------------------------
 def upload_package(session, path: Path) -> dict:
     """Upload a package file; returns the package summary (id, name)."""
+    return upload_package_bytes(session, path.name, path.read_bytes())
+
+
+def upload_package_bytes(session, name: str, data: bytes) -> dict:
+    """Upload a package that is not a file - the part of one that
+    `mdb builders-import` hands to the transfer service; returns the package
+    summary (id, name)."""
     response = session.post(
         "/transfer/packages",
-        files={"file": (path.name, path.read_bytes(), "application/json")},
+        files={"file": (name, data, "application/json")},
         headers={"Accept": "application/json"},
     )
     if not response.ok:
-        raise _failure(f"Uploading {path.name} failed", response)
+        raise _failure(f"Uploading {name} failed", response)
     return response.json()
 
 
