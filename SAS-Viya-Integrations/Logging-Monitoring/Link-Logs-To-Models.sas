@@ -44,6 +44,7 @@
 %let _lnk_min_literal = 20;
 * The hours the clock of the containers is ahead of UTC. The ingestion runs are recorded in UTC;
 %let _lnk_utc_offset = 0;
+* A table that is promoted stays promoted and a table that has a saved file is saved again, whatever these two say. They decide for a table that is not promoted and for one that has no saved file;
 %let _lnk_promote_table = 1;
 %let _lnk_save_table = 1;
 
@@ -61,6 +62,31 @@ proc cas;
     session.sessionId result = sessresults;
     call symputx('_casSessionUUID', sessresults[1]);
 quit;
+
+* What the log table is before it is linked: 2 a promoted table, 1 a table of this session, 0 not in memory;
+%let _lnk_log_scope = 0;
+proc cas;
+    table.tableExists result=found /
+        casLib = "&_lnk_log_caslib.",
+        name = "&_lnk_log_table.";
+    call symputx('_lnk_log_scope', found.exists);
+run; quit;
+
+* Whether the CAS library holds a saved file of the log table. Asked only when the table is not saved anyway;
+%let _lnk_log_saved = 0;
+%if &_lnk_save_table. NE 1 %then %do;
+    proc cas;
+        table.fileInfo result=listing status=listed /
+            casLib = "&_lnk_log_caslib.";
+        if listed.severity EQ 0 then do;
+            if exists(listing, 'FileInfo') then do;
+                do savedEntry over listing.FileInfo;
+                    if upcase(savedEntry.Name) EQ upcase("&_lnk_log_table..sashdat") then call symputx('_lnk_log_saved', 1);
+                end;
+            end;
+        end;
+    run; quit;
+%end;
 
 * Sets the macro variable named in _lnk_flag to 1 when the table is in memory, after loading it from its saved file when it is not;
 %macro _lnk_ensure_loaded(_lnk_lib, _lnk_name, _lnk_flag);
@@ -1026,7 +1052,8 @@ run; quit;
                     name = "&_lnk_log_table._NEW",
                     rename = "&_lnk_log_table.";
 
-                %if &_lnk_promote_table. %then %do;
+                /* A table that was promoted when it was linked is promoted again, as the parser does it when it appends */
+                %if &_lnk_promote_table. or &_lnk_log_scope. EQ 2 %then %do;
                     table.promote /
                         casLib = "&_lnk_log_caslib.",
                         name = "&_lnk_log_table.",
@@ -1041,7 +1068,8 @@ run; quit;
                 tableWritten = False;
             end;
 
-            %if &_lnk_save_table. %then %do;
+            /* A table that has a saved file is saved again: the file would bring back the table without its links */
+            %if &_lnk_save_table. or &_lnk_log_saved. %then %do;
                 if tableWritten then do;
                     table.save /
                         table = {casLib = "&_lnk_log_caslib.", name = "&_lnk_log_table."},
@@ -1079,5 +1107,5 @@ run; quit;
 %end;
 %sysmacdelete _lnk_handle_output_table;
 %sysmacdelete _lnk_ensure_loaded;
-%symdel _lnk_clean_cas_session _casSessionUUID _lnk_row_count _lnk_refused _lnk_ready _lnk_log_exists _lnk_catalog_exists _lnk_runs_exists;
+%symdel _lnk_clean_cas_session _casSessionUUID _lnk_row_count _lnk_refused _lnk_ready _lnk_log_exists _lnk_catalog_exists _lnk_runs_exists _lnk_log_scope _lnk_log_saved;
 %symdel _lnk_log_caslib _lnk_log_table _lnk_catalog_caslib _lnk_catalog_table _lnk_runs_caslib _lnk_runs_table _lnk_redo_all _lnk_min_literal _lnk_utc_offset _lnk_promote_table _lnk_save_table;

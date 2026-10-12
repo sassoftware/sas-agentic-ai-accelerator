@@ -128,16 +128,43 @@ def test_python_is_skipped_when_a_table_is_missing(monkeypatch):
     assert run.sas.macro_variables["_lnk_row_count"] == "-1"
 
 
+def output_macro():
+    program = code_file_program()
+    return program[program.index("%macro _lnk_handle_output_table;"):program.index("%mend _lnk_handle_output_table;")]
+
+
 def test_swap_of_the_table_is_the_one_of_the_parser():
     """The new table takes the place of the log table the way the parser replaces a table: dropped
     twice, renamed, promoted and saved under the same name."""
-    program = code_file_program()
-    swap = program[program.index("%macro _lnk_handle_output_table;"):program.index("%mend _lnk_handle_output_table;")]
+    swap = output_macro()
     actions = re.findall(r"^\s*table\.(\w+)", swap, flags=re.MULTILINE)
     assert actions == ["tableExists", "dropTable", "dropTable", "alterTable", "promote", "save", "dropTable", "dropTable"]
     assert 'rename = "&_lnk_log_table."' in swap
-    assert swap.index("%if &_lnk_promote_table. %then %do;") < swap.index("table.promote")
-    assert swap.index("%if &_lnk_save_table. %then %do;") < swap.index("table.save")
+    assert swap.index("%if &_lnk_promote_table. or &_lnk_log_scope. EQ 2 %then %do;") < swap.index("table.promote")
+    assert swap.index("%if &_lnk_save_table. or &_lnk_log_saved. %then %do;") < swap.index("table.save")
+
+
+def test_promoted_table_stays_promoted_and_a_saved_one_is_saved_again_whatever_the_options_say():
+    """With _lnk_promote_table = 0 the swap would leave a session table where a promoted one was, and with
+    _lnk_save_table = 0 a saved file that brings back the table without its links. What the table is, is
+    asked before anything is loaded or dropped: the parser does the same when it appends."""
+    program = code_file_program()
+    swap = output_macro()
+    # The only two conditions the promotion and the save stand under
+    assert re.findall(r"%if (.*) %then %do;\n\s*table\.promote", swap) == ["&_lnk_promote_table. or &_lnk_log_scope. EQ 2"]
+    assert re.findall(r"%if (.*) %then %do;\n\s*if tableWritten then do;\n\s*table\.save", swap) == ["&_lnk_save_table. or &_lnk_log_saved."]
+
+    # 2 is what tableExists answers for a promoted table. It is asked of the log table before the macro that loads a saved table runs
+    scope = program.index("call symputx('_lnk_log_scope', found.exists);")
+    asked = program.rindex("table.tableExists result=found /", 0, scope)
+    assert 'casLib = "&_lnk_log_caslib.",' in program[asked:scope] and 'name = "&_lnk_log_table.";' in program[asked:scope]
+    assert program.index("%let _lnk_log_scope = 0;") < scope < program.index("%macro _lnk_ensure_loaded")
+    # The saved file is looked for by its name without case, and only when the table is not saved anyway
+    saved = program.index("call symputx('_lnk_log_saved', 1);")
+    listing = program[program.index("%let _lnk_log_saved = 0;"):saved]
+    assert "%if &_lnk_save_table. NE 1 %then %do;" in listing and "table.fileInfo result=listing status=listed /" in listing
+    assert 'if upcase(savedEntry.Name) EQ upcase("&_lnk_log_table..sashdat") then' in listing
+    assert saved < program.index("%macro _lnk_ensure_loaded")
 
 
 def test_program_starts_a_cas_session_only_when_none_is_connected_and_ends_only_its_own():
