@@ -23,8 +23,8 @@ name: Verify generated model definitions
 # `mdb package-check` and the mdb test suite compare the package with them:
 # LLM-Prompt-Builder/dist/index.html (and the option names src/va/ddc.ts and
 # src/objects/rag-backends.ts post), RAG/, RAG-Ingestion/, Prompt-Optimization/,
-# Logging-Monitoring/, the custom steps and the fact sheets in the definition
-# folders. Each of those is watched so that the change that makes the package
+# Logging-Monitoring/, Setup/, the custom steps and the fact sheets in the
+# definition folders. Each of those is watched so that the change that makes the package
 # stale is the one that fails - a rebuilt dist/index.html needs the content
 # folder deployed and the package exported again. CHANGELOG.md is watched
 # because the release table, in CAS and in the package, is built from it.
@@ -52,6 +52,7 @@ on:
       - "LLM-Prompt-Builder/src/objects/rag-backends.ts"
       - "CHANGELOG.md"
       - "SAS-Viya-Integrations/Logging-Monitoring/**"
+      - "SAS-Viya-Integrations/Setup/**"
       - "SCR-LLM-Deployment-YAML/**"
       - "website/docs/Administration-Guide/Logging-&-Monitoring.md"
       - ".github/workflows/verify-model-definitions.yml"
@@ -73,6 +74,7 @@ on:
       - "LLM-Prompt-Builder/src/objects/rag-backends.ts"
       - "CHANGELOG.md"
       - "SAS-Viya-Integrations/Logging-Monitoring/**"
+      - "SAS-Viya-Integrations/Setup/**"
       - "SCR-LLM-Deployment-YAML/**"
       - "website/docs/Administration-Guide/Logging-&-Monitoring.md"
       - ".github/workflows/verify-model-definitions.yml"
@@ -119,3 +121,9 @@ jobs:
         # installed by the step above); the same suite fails when the code file
         # and the custom step no longer hold the same program.
         run: python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests -q
+      - name: Setup programs test suite
+        # Start-Here.sas and Load-Accelerator-Tables.sas: the Python of the
+        # page runs against a SAS Viya system that is made up, and the columns
+        # of the release table are held against the ones mdb writes - hence
+        # the mdb installed above.
+        run: python -m pytest SAS-Viya-Integrations/Setup/tests -q
