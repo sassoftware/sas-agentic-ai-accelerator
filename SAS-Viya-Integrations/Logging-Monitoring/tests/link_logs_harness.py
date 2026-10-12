@@ -44,7 +44,7 @@ LOG_COLUMNS = OLD_COLUMNS + PARSER_COLUMNS + LINK_COLUMNS
 CATALOG_COLUMNS = [
     "modelID", "projectID", "projectName", "name", "role", "runID", "target_model", "system_template", "user_template",
     "resolved_system_prompt", "resolved_user_prompt", "collection", "template_source", "resolved_system_hash", "resolved_user_hash",
-    "run_time", "window_start", "window_end", "optimization_id",
+    "run_time", "prompt_length", "output_length", "window_start", "window_end", "optimization_id",
 ]
 RUNS_COLUMNS = ["run_id", "collection", "embed_model", "started_at", "finished_at", "modelID", "projectID"]
 
