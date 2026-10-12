@@ -41,6 +41,15 @@
  * drops the table and loads the sheet a second time, so the load that takes
  * the place of a fact sheet table is not the one whose rows were counted.
  *
+ * THE JOB RUNS AS THE USER WHO STARTS IT where its compute context does: the
+ * job definition names the context in its parameter _contextName. In a
+ * context that runs under a service account the SAS session is that account,
+ * and the log says so in one NOTE: the user of the session (SYSUSERID) is
+ * then another one than the user SAS Job Execution started the session for
+ * (SYS_COMPUTE_SESSION_OWNER). Measured on 2026-10-12 for the page Start
+ * Here in such a context: SAS Viya answered every request of the session
+ * with 401.
+ *
  * THE JOB FAILS when one of the four tables is not in the CAS library at its
  * end, or when a parameter is refused: it then writes an ERROR line and sets
  * the condition code of the session to 1012. A table that was left as it is
@@ -49,6 +58,8 @@
  *
  * Parameters of the job definition:
  *   _action       execute
+ *   _contextName  the compute context the job runs in: one that runs under the
+ *                 identity of the person who starts the job
  *   contentRoot   the content folder (default /SAS Agentic AI Accelerator)
  *   caslib        the CAS library of the tables (default Public)
  *   releaseTable  the name of the release table (default ACCELERATOR_RELEASES)
@@ -113,6 +124,17 @@ data _null_;
         putLog 'ERROR: Load-Accelerator-Tables: the parameter releaseTable is no SAS name of 28 characters at most, nothing was read or written.';
         call symputx('releaseTable', 'ACCELERATOR_RELEASES');
         call symputx('_lat_ready', '0');
+    end;
+    /* Whose session this is. SAS Job Execution names the user a session was
+       started for; a session without that name - the program run in SAS
+       Studio - is not asked. The two users are compared as text and neither
+       is written to the log. */
+    if symexist('SYS_COMPUTE_SESSION_OWNER') then do;
+        _lat_value = symget('SYS_COMPUTE_SESSION_OWNER');
+        if lengthn(_lat_value) > 0 and upcase(strip(_lat_value)) ne upcase(strip(symget('SYSUSERID'))) then do;
+            putLog 'NOTE: Load-Accelerator-Tables: this SAS session does not run as the user who started the job, but under the account of its compute context. A file that is reported as not found below may be one that account may not read.';
+            putLog 'NOTE- To run the job as yourself, start it with the parameter _contextName and the name of a compute context that runs as you.';
+        end;
     end;
 run;
 

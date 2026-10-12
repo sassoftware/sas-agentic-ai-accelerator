@@ -324,10 +324,33 @@ def test_the_parameters_of_the_job_and_what_the_program_takes_without_them():
     assert ("%macro _lat_default(name, value);\n    %if not %symexist(&name.) %then %do;\n        %global &name.;\n"
             "        %let &name. = &value.;\n    %end;\n%mend _lat_default;") in text
     header = program().split("*/")[0]
-    for parameter in list(defaults) + ["_action"]:
+    for parameter in list(defaults) + ["_action", "_contextName"]:
         assert re.search(rf"\b{parameter}\b", header), parameter
     # the folder of the content root the two files are read from is the folder Load-Fact-Sheets.sas reads by default
     assert defaults["contentRoot"] + "/Data" == "/SAS Agentic AI Accelerator/Data"
+
+
+def test_a_session_that_does_not_run_as_the_user_who_started_the_job_is_one_note():
+    """Start Here was measured on 2026-10-12 in a compute context under a service account: SAS Viya answered
+    every request of that session with 401. The job that loads the tables says in one NOTE when its session
+    is such a one - SAS Job Execution names the user a session was started for - and how it is run as oneself."""
+    text = code()
+    check = text[text.index("data _null_;"):text.index("run;") + 4]
+
+    in_order(check, "if symexist('SYS_COMPUTE_SESSION_OWNER') then do;", "_lat_value = symget('SYS_COMPUTE_SESSION_OWNER');",
+             "if lengthn(_lat_value) > 0 and upcase(strip(_lat_value)) ne upcase(strip(symget('SYSUSERID'))) then do;",
+             "putLog 'NOTE: Load-Accelerator-Tables: this SAS session does not run as the user who started the job,",
+             "putLog 'NOTE- To run the job as yourself, start it with the parameter _contextName and the name of a compute context that runs as you.';")
+    # the session is asked for the user only where it names one, and no statement resolves either user
+    assert check.count("symget('SYS_COMPUTE_SESSION_OWNER')") == 1 and check.index("symexist(") < check.index("symget('SYS_COMPUTE_SESSION_OWNER')")
+    assert not re.search(r"&sysuserid|&SYS_COMPUTE_SESSION_OWNER", text, flags=re.IGNORECASE)
+    # neither user is written: every line of the log is a text of the program, and one a SAS statement takes
+    written = re.findall(r"putLog (.*);", check)
+    assert len(written) == 5 and all(re.fullmatch(r"'[^']*'", line) for line in written)
+    assert all(len(line) < 262 and not set(line[1:-1]) & set("%&;\"") for line in written)
+    # it is a NOTE: the job is the job it was, with its state decided by the tables at its end
+    assert [line[1:6] for line in written] == ["ERROR", "ERROR", "ERROR", "NOTE:", "NOTE-"]
+    assert check.count("call symputx('_lat_ready', '0');") == 3 and "_lat_failed" not in check
 
 
 def test_a_parameter_that_would_be_read_as_code_is_refused_before_it_stands_in_a_statement():
