@@ -742,6 +742,8 @@ def parse_log_file(file_path):
     # The entries of the requests whose first lines broke off at the request line of another request, and of every request since
     stopped = []
     doubted = []
+    # Of the requests whose first lines were not all there when they broke off: the entry, and the entry of the request at whose request line they did
+    broken = []
     # By model, the requests that are waiting for a transaction and can not be told apart any more: the ones that
     # have all their first lines (waiting) and the ones whose first lines are not known to be theirs (blurred)
     waiting = {}
@@ -767,9 +769,18 @@ def parse_log_file(file_path):
     def end_of_the_log():
         # The lines of a container end here - at the end of its part or of the file - while these requests are
         # running or waiting: the log holds neither a response nor an error for them, and does not say that they failed
+        cut = set()
         for entry in [slot['entry'] for slot in running] + [head['entry'] for head in pending]:
             if entry is not None:
                 entry['_cut'] = True
+                cut.add(id(entry))
+        # A request whose first lines broke off at the request line of one of these: the two wrote their first lines at
+        # the same time, and the lines that would have shown it - the rest of the first lines - are not in this part
+        for entry, behind in reversed(broken):
+            if behind is not None and id(behind) in cut:
+                entry['_cut'] = True
+                cut.add(id(entry))
+        del broken[:]
 
     def wipe(entry):
         # What was read for this request may be the line of another one: only its request line is kept
@@ -927,19 +938,22 @@ def parse_log_file(file_path):
                     running.remove(slot)
                     continue
                 names = named[slot['transaction']]
-                following = units[names[bisect.bisect_right(names, this)]][2]
+                following = max(units[position][2] for position in names[bisect.bisect_right(names, this):bisect.bisect_right(names, slot['last'])])
                 if following < timestamp and seconds_back(following, timestamp) > STEP_BACK:
                     if slot['entry'] is not None:
                         slot['entry']['_cut'] = True
                     running.remove(slot)
             # First lines that are not all there have broken off. A request that has them all is waiting for its
             # transaction - unless the log names no transaction at all and is read by the order of its lines
+            broke_off = []
             for head in list(pending):
                 if not head['scoring']:
                     pending.remove(head)
                 elif head['stage'] < complete or not names_transactions:
                     pending.remove(head)
                     stopped.append(head['entry'])
+                    if head['stage'] < complete:
+                        broke_off.append(head['entry'])
             entry = None
             if scoring_request:
                 entry = dict.fromkeys(COLUMNS)
@@ -949,6 +963,7 @@ def parse_log_file(file_path):
                 records.append(entry)
                 if stopped:
                     doubted.append(entry)
+            broken.extend((earlier, entry) for earlier in broke_off)
             pending.append({'entry': entry, 'model': model, 'start': timestamp, 'stage': 0,
                             'needs': complete if scoring_request else 1, 'scoring': scoring_request})
             mark_overlap()

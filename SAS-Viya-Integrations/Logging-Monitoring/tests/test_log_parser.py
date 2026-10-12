@@ -2155,8 +2155,10 @@ def test_requests_whose_first_lines_stand_behind_older_lines_are_not_both_called
     """Two requests whose first lines are cut in two, the second halves four seconds older
     than the request line in front of them - no container writes that, the file was put
     together by hand. The part ends where the time goes back: the request that was waiting
-    there is not called failed, and the NOTE counts it. The first one had lost its first
-    lines to the request line of the second, which is a request that broke off."""
+    there is not called failed, and neither is the one whose first lines broke off at its
+    request line - the two wrote their first lines at the same time, and the lines that
+    would have shown it are not in this part. The NOTE counts both. Before, the first one
+    was failed = 1 without a word, although the file holds its response further down."""
     first, second = log_units(_numbered(1)), log_units(_numbered(2))
     lines = lines_of([_stamped(unit, "2026-01-05 07:30:45") for unit in first[:2]]
                      + [_stamped(unit, "2026-01-05 07:30:49") for unit in second[:2]]
@@ -2170,8 +2172,60 @@ def test_requests_whose_first_lines_stand_behind_older_lines_are_not_both_called
     assert len(frame) == 2
     for number, (_, row) in zip((1, 2), frame.iterrows()):
         assert set(_numbers_in(row).values()) <= {number}
-    assert frame.loc[0, "failed"] == 1 and missing(frame.loc[1, "failed"])
-    assert _end_note(run) == 1
+    assert missing(frame.loc[0, "failed"]) and missing(frame.loc[1, "failed"])
+    assert _end_note(run) == 2
+
+
+def test_request_whose_first_lines_broke_off_failed_where_the_request_behind_it_was_answered(monkeypatch, tmp_path):
+    """What stays as it was: first lines that break off at the request line of a request that
+    is answered are the first lines of a request that failed, and no NOTE is written for it.
+    Only where the lines of the container end on the request behind it is nothing said."""
+    broken_off = log_units(_numbered(1))[:2]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(lines_of(broken_off), llm_block(timestamp="2026-01-05 09:20:00", user_prompt="answered"))))
+    frame = run.uploads[0]["frame"]
+    assert list(frame["failed"]) == [1, 0] and run.sas.messages == []
+
+    # The same first lines in front of a request the file ends on
+    running = split_at_scoring(llm_block(timestamp="2026-01-05 09:20:00", user_prompt="still running"))[0]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(lines_of(broken_off), running), "ends.log"))
+    frame = run.uploads[0]["frame"]
+    assert missing(frame.loc[0, "failed"]) and missing(frame.loc[1, "failed"]) and _end_note(run) == 2
+
+    # And with an answered request in between: the first one failed, the last one is the only one the file ends on
+    answered = llm_block(timestamp="2026-01-05 09:18:00", user_prompt="answered")
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(lines_of(broken_off), answered, running), "between.log"))
+    frame = run.uploads[0]["frame"]
+    assert list(frame["failed"])[:2] == [1, 0] and missing(frame.loc[2, "failed"]) and _end_note(run) == 1
+
+
+@pytest.mark.parametrize("back", [2, 5, 30])
+@pytest.mark.parametrize("late", range(1, 32))
+def test_line_that_is_seconds_older_than_a_request_line_in_front_of_it_gives_no_value_away(monkeypatch, tmp_path, late, back):
+    """The same two requests with one line that is older than the newest request line in
+    front of it by more than a line of a container is written late. No container writes
+    that and no collection puts it together: the part ends there, and what follows is read
+    as the lines of the next one. Whatever the line is, no request gets a value of the
+    other one, a request that was answered is not called failed, and a row that lacks a
+    value is counted in a NOTE. A transaction whose later lines are younger than a request
+    line is still running at that request line, also where its next line is older."""
+    units = _two_that_overlap()
+    moments = [datetime(2026, 1, 5, 9, 15, 0).timestamp() + position for position in range(len(units))]
+    newest_request = max(position for position in range(late) if " - Request: POST" in units[position][1][0])
+    moments[late] = moments[newest_request] - back
+    lines = [line for moment, (_, unit) in zip(moments, units) for line in _stamped(unit, datetime.fromtimestamp(moment).strftime("%Y-%m-%d %H:%M:%S"))]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(lines)))
+
+    frame = run.uploads[0]["frame"]
+    # A request line that is older than the request in front of it starts the next part, which is read in its order
+    order = (1, 2) if len(frame) == 2 else (1,)
+    assert len(frame) == 2 or " - Request: POST" in units[late][1][0]
+    lacking = 0
+    for number, (_, row) in zip(order, frame.iterrows()):
+        found = _numbers_in(row)
+        assert set(found.values()) <= {number}, (number, found)
+        assert missing(row["failed"]) or row["failed"] == 0, (number, row["failed"])
+        lacking += 1 if missing(row["failed"]) or not ANSWERED_HAS <= set(found) else 0
+    assert lacking == 0 or _counted(run.sas.messages) >= lacking
 
 
 def test_seconds_that_go_back_by_one_between_requests_that_overlap_change_no_value(monkeypatch, tmp_path):
