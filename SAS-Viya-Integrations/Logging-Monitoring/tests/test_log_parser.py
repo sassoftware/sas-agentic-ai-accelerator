@@ -765,12 +765,40 @@ def test_about_tab_names_every_column_and_what_the_program_does_with_it(monkeypa
 def test_about_tab_is_about_the_program_and_the_changelog_starts_with_this_version():
     texts = _about_tab()
 
-    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.3 (")
+    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.4 (")
     changelog = texts["textChangelog"]
-    assert changelog.index("Version: 2.3") < changelog.index("Version: 2.2") < changelog.index("Version: 2.1") < changelog.index("Version: 2.0")
+    assert (changelog.index("Version: 2.4") < changelog.index("Version: 2.3") < changelog.index("Version: 2.2") < changelog.index("Version: 2.1")
+            < changelog.index("Version: 2.0"))
     # What a release has not run yet is said in the changelog of the release, not in the step
     for name, text in texts.items():
         assert "not run in sas" not in text.lower(), name
+
+
+def test_about_tab_says_what_version_2_4_does(monkeypatch, tmp_path):
+    """The sentences of the About tab that came with version 2.4, each beside the place of the program it is about."""
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(llm_block())))
+    texts = _about_tab()
+    about, columns = texts["textAbout"], texts["textColumns"]
+    step = step_program()
+
+    # Where the next part of a file begins
+    assert run.namespace["STEP_BACK"] == 1
+    assert "A line that is more than one second older than a request that is running or waiting starts the next part" in columns
+    assert "A line that is older by one second can be a line of the same container that was written late: it ends no request" in columns
+    assert "and for a request that was running where the lines of its container end" in columns
+    assert "were running where the lines of their container end" in step
+    # The two cases a response is not told apart from a request in, and what is counted as content that can not be read
+    assert "with a Request Headers line behind it" in columns and "with no further line that starts like a log line behind it" in columns
+    assert "a request body that is nested deeper than Python reads" in columns and "a request body that is nested deeper than Python reads" in step
+    assert "Options that are nested deeper than Python decodes are read as names and values" in columns and "the NOTE does not count it" in columns
+    assert "options that are nested deeper than Python decodes -" not in columns
+    # How a run ends that wrote an ERROR line and no table
+    assert "sets the condition code of the SAS session (SYSCC) to 1012 at its end" in about and "%let SYSCC = 1012;" in step
+    for path in ("a log file that is not on the SAS Server", "an output table that is no CAS table", "a log that could not be parsed",
+                 "a saved table that could not be loaded", "a new table that could not be created"):
+        assert path in about, path
+    assert "abort" not in step.lower().replace("an abort statement", "")
+    assert "a quote shows as a backtick" in about and "('\"', '`')" in step
 
 
 # ---------------------------------------------------------------------------
