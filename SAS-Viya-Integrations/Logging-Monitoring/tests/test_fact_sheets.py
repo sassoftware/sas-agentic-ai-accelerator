@@ -107,13 +107,31 @@ def test_a_sheet_is_read_and_tried_in_cas_before_its_table_is_touched():
     assert macro.count("proc casUtil") == 1 and macro.count("proc cas;") == 1 and macro.count("proc import") == 1
 
 
+def test_an_error_for_one_sheet_does_not_put_a_batch_session_into_syntax_check_mode():
+    """Behind an error a batch session checks syntax only and runs no further step - measured on
+    2026-10-12 for the first DATA step behind a program that ended with an error condition. The
+    sheets behind a sheet that CAS refused would not be read. The option that decides it is off
+    while the program runs and is put back to what it was, as the ingestion job of a RAG setup
+    does it while it publishes its run history."""
+    code = without_comments(program("Load-Fact-Sheets.sas"))
+
+    assert code.count("%let _lfs_syntaxcheck = %sysfunc(getoption(syntaxcheck));\noptions nosyntaxcheck;\n") == 1
+    assert code.count("options &_lfs_syntaxcheck.;") == 1 and len(re.findall(r"^\s*options\b", code, flags=re.MULTILINE)) == 2
+    # switched off in front of the first step of the program and put back behind its last one
+    in_order(code, "options nosyntaxcheck;", "cas mySess;", "%macro _lfs_read(", "%_lfs_read(llm_fact_sheet.csv",
+             "delete _lfs_llm_fact_sheet _lfs_embedding_fact_sheet _lfs_decision_fact_sheet;", "cas mySess terminate;",
+             "options &_lfs_syntaxcheck.;")
+    # the condition code is left as the program found or made it: an error stays an error of the job
+    assert not re.search(r"syscc", code, flags=re.IGNORECASE)
+
+
 def test_the_macro_and_its_flag_are_gone_at_the_end():
     text = program("Load-Fact-Sheets.sas")
     tail = text[text.rindex("* Clean up;"):]
 
     assert "delete _lfs_llm_fact_sheet _lfs_embedding_fact_sheet _lfs_decision_fact_sheet;" in tail
-    in_order(tail, "cas mySess terminate;", "%sysmacdelete _lfs_read;", "%symdel _lfs_ok / nowarn;",
-             "%symdel _lfs_path _lfs_caslib _lfs_clean_cas_session;")
+    in_order(tail, "cas mySess terminate;", "%sysmacdelete _lfs_read;", "options &_lfs_syntaxcheck.;",
+             "%symdel _lfs_ok _lfs_syntaxcheck / nowarn;", "%symdel _lfs_path _lfs_caslib _lfs_clean_cas_session;")
     # the header says what the program does with a table that exists, and who includes the file
     head = text.split("*/")[0]
     assert "A table that exists is only replaced by a sheet that was read" in head

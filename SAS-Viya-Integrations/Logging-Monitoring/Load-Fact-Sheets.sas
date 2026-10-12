@@ -37,6 +37,13 @@
 %_lfs_default(_lfs_caslib, Public);
 %sysmacdelete _lfs_default;
 
+/* An error for one sheet must not leave a batch session checking syntax
+   only, in which no further step runs and the sheets behind it are not
+   read. The option that decides it is switched off while the program runs
+   and put back to what it was at its end. */
+%let _lfs_syntaxcheck = %sysfunc(getoption(syntaxcheck));
+options nosyntaxcheck;
+
 * Check if a CAS session exists;
 * The option SESSREF names the session the CAS actions run in and keeps the name of a session that was ended, so SESSFOUND is asked whether that session is connected. A session that is connected is used as it is: starting mySess a second time in one SAS session makes SAS warn that the session exists, and ending it takes the session from the librefs another program bound to it;
 %if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;
@@ -164,5 +171,6 @@ run; quit;
     cas mySess terminate;
 %end;
 %sysmacdelete _lfs_read;
-%symdel _lfs_ok / nowarn;
+options &_lfs_syntaxcheck.;
+%symdel _lfs_ok _lfs_syntaxcheck / nowarn;
 %symdel _lfs_path _lfs_caslib _lfs_clean_cas_session;
