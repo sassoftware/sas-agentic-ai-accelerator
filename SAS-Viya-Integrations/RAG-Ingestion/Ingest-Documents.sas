@@ -78,6 +78,14 @@
  *                      fast (drift guard). Blank = computed from parameters
  *   ledgerCaslib/ledgerTable - the incremental ledger location
  *                      (default casuser.RAG_INGESTION_LEDGER)
+ *   recordHistory    - 1 (default) records the run in rag_runs,
+ *                      rag_doc_events and rag_configs beside the collection
+ *                      and publishes the first two to CAS for reporting, as
+ *                      <prefix>_RUNS and <prefix>_DOC_EVENTS in ledgerCaslib,
+ *                      promoted and saved - the tables RAG - Load Vector
+ *                      Store publishes. <prefix> is ledgerTable without its
+ *                      ending _LEDGER. 0 records nothing and leaves the two
+ *                      tables as they are
  *   ragCorePath      - SAS Content folder holding rag_core
  *
  * Contract: the program ALWAYS runs to its last statement. A raised SAS
@@ -142,6 +150,18 @@
 %let _rag_runId = ;
 %let _rag_lockHeld = ;
 %let _rag_lockTaken = 0;
+/* the run history for CAS: off until the Python program has read it from the
+   vector store (read) or could not (failed, with the reason); then, for the
+   runs and for the document events, the rows it wrote to WORK, their columns
+   as name:type and the labels of the columns as name=label, split by a bar */
+%let _rag_histState = off;
+%let _rag_histError = ;
+%let _rag_histRuns = 0;
+%let _rag_histRunVars = ;
+%let _rag_histRunLabels = ;
+%let _rag_histEvents = 0;
+%let _rag_histEventVars = ;
+%let _rag_histEventLabels = ;
 
 /* A pipeline table that was saved but is not in memory - which is how a CAS
    server restart leaves every one of them - is loaded back before anything
@@ -815,6 +835,74 @@ def main():
                              "enrich_failed": int(enrich_total("failed"))}
                             if stages else {})},
                 log=M)
+            # ---- the run history, read back for CAS -------------------------
+            # The store holds the history. <prefix>_RUNS and
+            # <prefix>_DOC_EVENTS in CAS are the copy a report reads, and the
+            # step RAG - Load Vector Store was the only writer of them: a
+            # setup this job ingested had none, and nothing in CAS said which
+            # run had embedded a document.
+            # What is read is what the step publishes - every run the store
+            # holds for the collection (the newest 500) and their document
+            # events (the newest 5000), not the row of this run alone - so
+            # that one run brings the runs before it into CAS, also a run
+            # that found nothing to do. The rows are read here, over the
+            # connection the run still holds, and written to WORK as the
+            # files SAS uploads behind this program, once the ledger is
+            # stored. A column name and a label reach SAS inside a statement:
+            # a name that is no plain name stops the hand-over, a label that
+            # is not plain text is left out.
+            # Never fails the run, as recording the history does not: the
+            # reason is handed over and SAS writes it as a WARNING.
+            try:
+                from rag_core.history import (EVENT_COLUMNS, EVENT_NUMERIC,
+                                              RUN_COLUMNS, RUN_NUMERIC,
+                                              History, cas_types,
+                                              write_cas_file)
+                from rag_core.steps import column_labels
+                reader = History(adapter.raw_connection(),
+                                 getattr(adapter, "HISTORY_DIALECT", "postgres"))
+                handed = []
+                for kind, filename, rows, columns, numeric in (
+                        ("Run", "rag_runs_out.csv",
+                         reader.runs(P["collection"]),
+                         RUN_COLUMNS, RUN_NUMERIC),
+                        ("Event", "rag_doc_events_out.csv",
+                         reader.doc_events(P["collection"]),
+                         EVENT_COLUMNS, EVENT_NUMERIC)):
+                    for column in columns:
+                        if not (column.isascii() and column.isidentifier()):
+                            raise RuntimeError(
+                                f"the history column {column} is no name a "
+                                "SAS statement can hold")
+                    count = write_cas_file(WORKPATH + filename,
+                                           [dict(row) for row in rows],
+                                           columns, numeric)
+                    labels = "|".join(
+                        f"{column}={label}"
+                        for column, label in column_labels(columns).items()
+                        if label.strip() and all(
+                            ch.isascii() and (ch.isalnum() or ch in " _.-")
+                            for ch in label))
+                    handed.append((kind, count, " ".join(
+                        f"{column}:{kind_of}"
+                        for column, kind_of in cas_types(columns, numeric)),
+                        labels))
+                for kind, count, variables, labels in handed:
+                    SAS.symput(f"_rag_hist{kind}s", str(count))
+                    SAS.symput(f"_rag_hist{kind}Vars", variables)
+                    if labels:
+                        SAS.symput(f"_rag_hist{kind}Labels", labels)
+                SAS.symput("_rag_histState", "read")
+                M(f"rag history: read for CAS, runs {handed[0][1]} and "
+                  f"document events {handed[1][1]} of the collection")
+            except Exception as exc:
+                reason = " ".join(sas_safe(
+                    f"{type(exc).__name__}: {exc}").replace("/*", "/ *")
+                    .replace("*/", "* /").split())[:200]
+                SAS.symput("_rag_histState", "failed")
+                SAS.symput("_rag_histError", reason or "no reason given")
+                M(f"rag history: not read for CAS ({reason}) - the "
+                  "ingestion itself is unaffected")
         adapter.close()
 
         # ---- hand the new ledger back to SAS -------------------------------
@@ -931,6 +1019,158 @@ run; quit;
     cas _ragcas3 terminate;
 %mend _rag_release;
 %_rag_release;
+
+/* ---- The run history, published to CAS -------------------------------------
+   The run history is kept in the vector store (rag_runs, rag_doc_events).
+   The step RAG - Load Vector Store publishes it to CAS, as <project>_RUNS
+   and <project>_DOC_EVENTS beside the ledger, and was the only one that
+   did: a setup this job ingested had a ledger in CAS and no run table, so a
+   report had no runs for it and nothing in CAS said which run had embedded
+   a document.
+   The job publishes the same two tables, under the same names, with the
+   same columns and types. <project> is the ledger table without its ending
+   _LEDGER - the Prompt Builder names the ledger <prefix>_LEDGER - and the
+   whole name of a ledger that does not end that way.
+   What is published is what the Python program read from the store before
+   the run stored its ledger, so a run that took a lock still held it: every
+   run the store holds for the collection and their document events, as the
+   step does it, so that one run brings the runs before it into CAS. Each
+   table is uploaded beside the one in CAS with the options the step names
+   and the locale SWAT adds to them, gets the labels of its columns, and
+   takes the place of the table: the table is dropped, the upload promoted
+   under its name and saved. An upload that does not hold every row that
+   was written takes the place of no table.
+   Two things the step does are not done here. It drops a table the store
+   holds no rows for and deletes its saved file, and does the same to both
+   tables when the history is switched off; the job leaves such a table as
+   it is.
+   The tables are written behind the ledger store and the release of a
+   failed run, so the run is over when they are: its ledger is stored and
+   its lock is gone, whatever happens here. A table that could not be
+   published is a WARNING and never a failed run - the store keeps the
+   history, and the next run publishes all of it again. The condition code
+   of the session is put back for that reason, as the reload of a saved
+   table does it: what CAS answered here does not decide the state of the
+   job. And an error here must not leave a batch session checking syntax
+   only, which is what it does behind a step that ended in an error: the
+   last line of the log is written by a DATA step behind this macro. The
+   option that decides it is switched off while the tables are written and
+   put back to what it was. The lines of the publication are %put
+   statements, which are written whatever state the session is in.
+   One table: kind is Run or Event, the middle of the names the Python
+   program handed its rows, columns and labels over under. */
+%macro _rag_history_table(kind, suffix, file);
+    %local _rag_ht _rag_hrows _rag_hvars _rag_hlabels _rag_hi _rag_hn _rag_hv
+           _rag_hl _rag_houtcome _rag_hstaged;
+    %let _rag_ht = &_rag_histPrefix.&suffix.;
+    %let _rag_hrows = &&_rag_hist&kind.s;
+    %let _rag_hvars = &&_rag_hist&kind.Vars;
+    %let _rag_hlabels = &&_rag_hist&kind.Labels;
+    %if %length(&_rag_hrows.) EQ 0 %then %let _rag_hrows = 0;
+    %if &_rag_hrows. LE 0 %then %do;
+        %put NOTE: RAG ingestion: the vector store holds no rows of this collection for &ledgerCaslib..&_rag_ht., the table was left as it is.;
+        %return;
+    %end;
+    %let _rag_houtcome = unknown;
+    %let _rag_hstaged = -1;
+    %if %length(%superq(_rag_hvars)) GT 0 %then %do;
+        %let _rag_hn = %sysfunc(countw(&_rag_hvars., %str( )));
+        proc cas;
+            session _ragcas4;
+            outcome = "upload";
+            staged = -1;
+            upload path = "%sysfunc(pathname(work))/&file."
+                casOut = {caslib = "&ledgerCaslib.", name = "&_rag_ht._S", replace = true}
+                importOptions = {fileType = "csv", allowEmbeddedNewLines = true,
+                                 locale = "EN-us", vars = {
+                    %do _rag_hi = 1 %to &_rag_hn.;
+                        %let _rag_hv = %scan(&_rag_hvars., &_rag_hi., %str( ));
+                        %if &_rag_hi. GT 1 %then %str(,);
+                        {name = "%scan(&_rag_hv., 1, %str(:))", type = "%scan(&_rag_hv., 2, %str(:))"}
+                    %end;
+                }};
+            /* the rows the upload holds, against the rows that were written */
+            table.tableExists result = found / caslib = "&ledgerCaslib." name = "&_rag_ht._S";
+            if found.exists != 0 then do;
+                staged = 0;
+                table.tableInfo result = listing / caslib = "&ledgerCaslib.";
+                if exists(listing, "TableInfo") then do;
+                    do entry over listing.TableInfo;
+                        if upcase(entry.Name) == upcase("&_rag_ht._S") then staged = entry.Rows;
+                    end;
+                end;
+                outcome = "rows";
+            end;
+            if staged == &_rag_hrows. then do;
+                outcome = "replace";
+                %if %length(%superq(_rag_hlabels)) GT 0 %then %do;
+                    table.alterTable status = labelled / caslib = "&ledgerCaslib." name = "&_rag_ht._S"
+                        columns = {
+                        %do _rag_hi = 1 %to %sysfunc(countw(&_rag_hlabels., %str(|)));
+                            %let _rag_hl = %scan(&_rag_hlabels., &_rag_hi., %str(|));
+                            %if &_rag_hi. GT 1 %then %str(,);
+                            {name = "%scan(&_rag_hl., 1, %str(=))", label = "%scan(&_rag_hl., 2, %str(=))"}
+                        %end;
+                        };
+                %end;
+                table.dropTable status = dropped / caslib = "&ledgerCaslib." name = "&_rag_ht." quiet = true;
+                table.promote status = promoted / caslib = "&ledgerCaslib." name = "&_rag_ht._S"
+                    targetLib = "&ledgerCaslib." target = "&_rag_ht.";
+                if promoted.severity == 0 then do;
+                    outcome = "save";
+                    table.save status = stored / table = {caslib = "&ledgerCaslib.", name = "&_rag_ht."}
+                        caslib = "&ledgerCaslib." name = "&_rag_ht." replace = true;
+                    if stored.severity == 0 then outcome = "published";
+                end;
+            end;
+            /* "L": local to this macro, as in the reload of a saved table */
+            call symputx("_rag_houtcome", outcome, "L");
+            call symputx("_rag_hstaged", staged, "L");
+        quit;
+    %end;
+    %if &_rag_houtcome. EQ published %then %do;
+        %if %length(%superq(_rag_histDone)) GT 0 %then %let _rag_histDone = &_rag_histDone. and;
+        %let _rag_histDone = &_rag_histDone. &ledgerCaslib..&_rag_ht. with &_rag_hrows. rows;
+    %end;
+    %else %if &_rag_houtcome. EQ upload %then
+        %put WARNING: RAG ingestion: the run history table &ledgerCaslib..&_rag_ht. was not published - its &_rag_hrows. rows could not be uploaded to CAS (messages above). The table was left as it is, the ingestion itself went through and the next run publishes the history again.;
+    %else %if &_rag_houtcome. EQ rows %then
+        %put WARNING: RAG ingestion: the run history table &ledgerCaslib..&_rag_ht. was not published - the upload holds &_rag_hstaged. rows where the vector store gave &_rag_hrows. (messages above). The table was left as it is, the ingestion itself went through and the next run publishes the history again.;
+    %else %if &_rag_houtcome. EQ replace %then
+        %put WARNING: RAG ingestion: the run history table &ledgerCaslib..&_rag_ht. was not published - the upload could not take the place of the table (messages above). It holds what it held before or is no longer in memory, the ingestion itself went through and the next run publishes the history again.;
+    %else %if &_rag_houtcome. EQ save %then
+        %put WARNING: RAG ingestion: the run history table &ledgerCaslib..&_rag_ht. holds its &_rag_hrows. rows in memory and could not be saved (messages above). The ingestion itself went through and the next run saves the history again.;
+    %else
+        %put WARNING: RAG ingestion: the run history table &ledgerCaslib..&_rag_ht. may not be published - nothing said what became of its upload (messages above). The ingestion itself went through and the next run publishes the history again.;
+%mend _rag_history_table;
+
+%macro _rag_publish_history;
+    %local _rag_histPrefix _rag_histDone _rag_hist_syscc _rag_hist_check;
+    /* a run that failed publishes nothing, as it stores no ledger; off: the
+       history is switched off, or the run never got as far as reading it */
+    %if &_rag_rc. NE 0 %then %return;
+    %if &_rag_histState. EQ off %then %return;
+    %let _rag_histPrefix = &ledgerTable.;
+    %if %length(&ledgerTable.) GT 7 %then
+    %if %upcase(%substr(&ledgerTable., %eval(%length(&ledgerTable.) - 6))) EQ _LEDGER %then
+        %let _rag_histPrefix = %substr(&ledgerTable., 1, %eval(%length(&ledgerTable.) - 7));
+    %if &_rag_histState. NE read %then %do;
+        %put WARNING: RAG ingestion: the run history was not published to CAS - it could not be read from the vector store (%superq(_rag_histError)). &ledgerCaslib..&_rag_histPrefix._RUNS and &ledgerCaslib..&_rag_histPrefix._DOC_EVENTS were left as they are, the ingestion itself went through and the next run publishes the history again.;
+        %return;
+    %end;
+    %let _rag_hist_syscc = &syscc.;
+    %let _rag_hist_check = %sysfunc(getoption(syntaxcheck));
+    options nosyntaxcheck;
+    cas _ragcas4;
+    %_rag_history_table(Run, _RUNS, rag_runs_out.csv);
+    %_rag_history_table(Event, _DOC_EVENTS, rag_doc_events_out.csv);
+    cas _ragcas4 terminate;
+    options &_rag_hist_check.;
+    %let syscc = &_rag_hist_syscc.;
+    %if %length(%superq(_rag_histDone)) GT 0 %then
+        %put NOTE: RAG ingestion: the run history was published to CAS, promoted and saved - &_rag_histDone..;
+%mend _rag_publish_history;
+%_rag_publish_history;
 
 /* ---- Propagate the outcome without ever raising a SAS error ---------------
    The message and the summary are read with symget and the line is put

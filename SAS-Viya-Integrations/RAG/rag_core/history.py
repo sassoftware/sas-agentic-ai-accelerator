@@ -424,6 +424,58 @@ class History:
             [int(limit)])
 
 
+# -- the CAS publish, for a caller without SWAT --------------------------------
+#
+# RAG - Load Vector Store publishes what `runs()` and `doc_events()` return
+# through SWAT: its cas_stage puts the rows into a DataFrame, and upload_frame
+# writes that as a CSV file and has CAS read it with the column types the step
+# names. The job Ingest-Documents.sas has no SWAT. It writes such a file
+# itself and SAS uploads it, with the same types - the three functions below
+# are the step's cas_stage up to the upload, so that <project>_RUNS and
+# <project>_DOC_EVENTS hold the same columns whichever of the two wrote them.
+def cas_types(columns, numeric=()) -> list:
+    """(column, CAS type) in the order of `columns`: a measure is a double,
+    every other column a varchar - a count staged as text is a category in
+    Visual Analytics (see RUN_NUMERIC)."""
+    return [(column, "double" if column in numeric else "varchar")
+            for column in columns]
+
+
+def cas_values(rows, columns, numeric=()) -> list:
+    """One list of values per row, as the Load step stages them: a measure
+    as a float with 0 for a missing or unreadable one, anything else as its
+    text with an empty text for None."""
+    data = []
+    for row in rows:
+        record = []
+        for column in columns:
+            value = row.get(column)
+            if column in numeric:
+                try:
+                    record.append(float(value or 0))
+                except Exception:
+                    record.append(0.0)
+            else:
+                record.append("" if value is None else str(value))
+        data.append(record)
+    return data
+
+
+def write_cas_file(path: str, rows, columns, numeric=()) -> int:
+    """Write `rows` as the CSV file a CAS upload reads and return how many
+    there are: the column names in the first line, then a line per row of
+    cas_values(), UTF-8, a value quoted only where it has to be. The file
+    is written for no rows too, with its first line only."""
+    import csv
+
+    data = cas_values(rows, columns, numeric)
+    with open(path, "w", encoding="utf-8", errors="replace", newline="") as fh:
+        writer = csv.writer(fh, lineterminator="\n")
+        writer.writerow(list(columns))
+        writer.writerows(data)
+    return len(data)
+
+
 def events_from_inventory(inventory: list, previous: dict = None) -> list:
     """Turn a run's inventory into document events.
 
