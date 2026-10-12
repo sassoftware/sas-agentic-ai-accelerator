@@ -27,21 +27,18 @@ This is the **RAG runtime**. It holds no user interface: the RAG Builder that
 writes setups against it is part of the Prompt Builder — see
 [Serving the RAG Builder](#serving-the-rag-builder) below.
 
-Two things put the runtime there, and their order matters:
+Two ways put the runtime there:
 
-1. `mdb builders-import` imports the **RAG runtime package** beside the Prompt
-   Builder package (see
-   [Deploying the Builder UIs](./Setup-Additional-UIs.md)). The package holds
-   the runtime as it was on the day it was exported.
-2. The shipped script publishes the runtime **of your checkout**, which is the
-   one the documentation and the changelog of that checkout describe.
-
-Import first, then run the script — never the other way round: an import that
-follows the script can put the package's copy over what the script published.
-A site that does not use the package at all needs only the script.
-
-The script reads your local checkout and authenticates through the `sas-viya`
-CLI session:
+1. **The transfer package.** `mdb builders-import` imports the content folder,
+   and the runtime is the folder `RAG` of it — see
+   [Install or upgrade with the transfer package](./Setup-Additional-UIs.md#the-transfer-package).
+   The package is compared with the repository before it ships, file by file
+   and step by step, so a site that imports the package of a release has the
+   runtime the documentation and the changelog of that release describe, and
+   needs no script.
+2. **From a checkout.** The shipped script publishes the runtime of your
+   checkout — for a fix between two packages, or for a site that does not
+   import the package:
 
 ```powershell
 ./SAS-Viya-Integrations/Other/deploy-rag-content.ps1
@@ -51,28 +48,81 @@ CLI session:
 ./SAS-Viya-Integrations/Other/deploy-rag-content.sh
 ```
 
-Re-run it after every change. **Nothing is ever fetched from the internet at
-run time**, so the same script works in an air-gapped deployment: the SAS
-Content folder is the distribution channel, not GitHub.
+The script calls `mdb content-deploy --only RAG` (see
+[The content folder: deploy, export, check](./Model-Definition-Builder.md#the-content-folder-deploy-export-check)).
+It needs the Model Definition Builder installed and a sign-in it can use — a
+token, a password grant or the login of the SAS Viya CLI. The folder it deploys
+into is `/SAS Agentic AI Accelerator/RAG`; `-ContentRoot` (PowerShell) or `-r`
+(bash) names another one, which has to be a folder named `RAG`, because the
+list of what ships places the runtime in `RAG` of a content root. `-DryRun` /
+`-n` lists what would change and writes nothing. The script as a caller of
+`mdb` has **not run against SAS Viya**.
 
-If the script stops with an error, run it again before anything else. It
-replaces a file by deleting it and uploading the new copy, so the file it
-stopped at can be missing from the folder until a run has completed.
-Measured on 2026-10-11 on SAS Viya 2026.09 with `deploy-rag-content.ps1`,
-against a content folder that held the runtime of release 2.0: the first
-run stopped after four files with `(409) Conflict` on the upload of a file
-(`POST /files/files`) whose old copy it had just deleted, and left that
-file missing. The same upload was answered 201 a minute later, and a
-second run of the script completed with *Deployed 35 files*. All nine
-steps had kept their ids, and every file equalled the checkout afterwards.
-A third run later the same day went through at the first attempt.
+**Nothing is ever fetched from the internet at run time**, so both ways work
+in an air-gapped deployment: the SAS Content folder is the distribution
+channel, not GitHub.
 
-:::note Why the script and not a manual upload
+If a deploy ends with a line that says `FAILED`, run it again before anything
+else. A file is replaced by deleting it and uploading the new copy, so a file
+whose upload failed can be missing from the folder until a run has completed.
+Measured on 2026-10-11 on SAS Viya 2026.09 with `deploy-rag-content.ps1` as
+it was then — a script that uploaded the files itself —, against a content
+folder that held the runtime of release 2.0: the first run stopped after four
+files with `(409) Conflict` on the upload of a file (`POST /files/files`)
+whose old copy it had just deleted, and left that file missing. The same
+upload was answered 201 a minute later, and a second run of the script
+completed with *Deployed 35 files*. All nine steps had kept their ids, and
+every file equalled the checkout afterwards. A third run later the same day
+went through at the first attempt. `mdb content-deploy` repeats an upload
+that is answered 409 up to five times, goes on with the next entry after a
+failure, and reports a file that is still missing as deleted and not
+uploaded; that repeat has not run against SAS Viya.
+
+:::note Why a deploy and not a manual upload
 A `.step` file uploaded as a plain Content file renders as an empty step
-editor — steps are dataFlows *service* resources. The script also **updates**
+editor — steps are dataFlows *service* resources. The deploy also **updates**
 an already-registered step in place rather than replacing it. Re-registering a
 step mints a new id, and every saved flow referencing the old id breaks.
 :::
+
+### After an upgrade: manifest every setup once {#after-an-upgrade}
+
+A new runtime in the folder does not reach what a site made from the earlier
+one. After the package of a new release was imported, or its runtime deployed
+from a checkout:
+
+- **Open every RAG setup in the Prompt Builder and click Manifest setup.** A
+  retrieval model holds the score code it was manifested with, and the job
+  definition of a setup holds a copy of `Ingest-Documents.sas` from the day it
+  was manifested; the manifest writes the template and the program of the
+  release into them. For release 2.3.0 that is what brings the endpoint a
+  setup embeds at ([Where a setup embeds](#where-a-setup-embeds)), the TLS
+  setting of the report, the lengths of the variables
+  ([The lengths of the variables](#the-lengths-of-the-variables)), the saved
+  ledger that is loaded back
+  ([A saved ledger is loaded back](#a-saved-ledger-is-loaded-back)), the run
+  lock that follows the column types of the ledger, and a failed run that ends
+  as a failed job.
+- **Run the ingestion of each setup once.** From release 2.3.0 on the job
+  publishes `<prefix>_RUNS` and `<prefix>_DOC_EVENTS` beside the ledger, and
+  that one run publishes every run the vector store holds for the collection
+  ([Run history](#run-history)). A job definition that was not manifested
+  again holds the program of the day it was made and publishes neither table.
+- **Publish the decisions that use the retrieval model again**, so that the
+  destinations run the new score code. No published decision has to be
+  repaired for the lengths of the variables.
+- **A setup that was registered from a flow** gets the new score code when the
+  step *RAG - Register Setup* runs again
+  ([the checkbox of the step](#tls-register-setup-step)). A job that the step
+  generated from a flow is not written by **Manifest setup**: run the step
+  again with the flow named under *Studio Flow to generate the scheduled job
+  from*. A job that SAS Studio itself deploys from the flow does not have the
+  statements that report a failed run as failed.
+- **A schedule, a monitor or a script that reads the state of the ingestion
+  job** has to expect a new state from release 2.3.0 on: a run that failed
+  ends as `failed`. Up to 2.2.x, and with a job definition that was not
+  manifested again, it ends as `completed` with *ERROR: RAG ingestion
+  failed: …* as the last message of the program in its log.
 
 ## Serving the RAG Builder
 
@@ -84,7 +134,7 @@ nothing to build and no job definition to create for it — deploy the Prompt
 Builder as described in
 [Deploying the Builder UIs](./Setup-Additional-UIs.md), then switch RAG on:
 
-1. Deploy the runtime (above), so the content root holds `rag_core`, the
+1. Import the package or deploy the runtime (above), so the content root holds `rag_core`, the
    steps, the jobs and the model template.
 2. Open the Prompt Builder report, select the object and open its **Options**
    pane. The release table `Public.ACCELERATOR_RELEASES` has to be assigned to
@@ -150,7 +200,7 @@ shows the RAG Builder alone; add `llmProjectID` and `SCREndpoint` to get the
 template kinds beside it. A URL written for the job definition
 `RAG-Builder-UI` of release 2.2 or earlier has to be rewritten this way: that
 definition is retired, its context parameter was called `computeContext`, and
-it needed no `enableRag`.
+it needed no `enableRag`. `id` is no longer read from the URL. For your own builds: `npm run build:rag` is gone, and `npm run build` produces the one `dist/index.html` that holds all three kinds.
 
 :::note If you replace the app by hand: the HTML is the FORM, and the form is a *property*
 `mdb builders-import` and the manual steps in
@@ -261,7 +311,7 @@ alike; that would have changed how the last step of a flow, or the job,
 writes the table, and neither change could be measured.
 
 The new lock is in the steps and in the job, which reach a site with
-`deploy-rag-content`. The job definition of a setup holds a copy of
+the transfer package, or from a checkout with `deploy-rag-content`. The job definition of a setup holds a copy of
 `Ingest-Documents.sas` as it was when the setup was manifested, so manifest
 the setup again afterwards; whether a flow generated earlier runs the
 redeployed steps without that was not checked.
@@ -935,7 +985,7 @@ connection to the vector store is a database connection: its TLS is the
 *SSL mode* (PostgreSQL) or *TLS* (SingleStore) control of the steps that
 connect to it, and for the registered model the *SSL mode* of this step.
 
-The step and `rag_core` reach a site with `deploy-rag-content`. The step
+The step and `rag_core` reach a site with the transfer package, or from a checkout with `deploy-rag-content`. The step
 was run in SAS Studio on 2026-10-11, on SAS Viya 2026.09, as the last of a
 flow of six steps — List, Extract, Chunk, Embed, Load, Register Setup. The
 flow was created without a value for the checkbox, which is what a flow
@@ -1689,10 +1739,40 @@ The job publishes since release 2.3.0; before, only the step did. Measured on
 had 3 rows after a job run on pgvector, and on SingleStore the store held four
 runs of a collection while the CAS copy held three. On 2026-10-11 and on
 2026-10-12 the pull of the log chain found the ledger of a setup that the
-Prompt Builder had ingested in memory and its `<project>_RUNS` not. What the
-job does since is **not run in SAS**: the tests run its Python against a
-stand-in for the store and compare the file it writes with what the step
-stages, and they hold the SAS statements of the upload as text.
+Prompt Builder had ingested in memory and its `<project>_RUNS` not.
+
+The job as it publishes ran on the test system later on 2026-10-12, in six
+SAS Job Execution jobs with a content folder, a table prefix and a collection
+of their own; every job ended as completed:
+
+- **A first run** of three documents, with one file excluded: `<project>_RUNS`
+  with 1 row and 35 columns - 13 VARCHAR and 22 DOUBLE - and
+  `<project>_DOC_EVENTS` with 4 rows and 10 columns, both promoted and saved,
+  with the NOTE below above the last line of the log. Set against a run
+  table the step had published on 2026-10-11, no column differed in name,
+  type or label; two differed in length, and one of the document events.
+- **A run that found nothing to do:** 2 rows and 5 events. **A run with one
+  changed document:** 3 rows and 7 events.
+- **With the run history switched off** the log had no line about the
+  history, and both tables and their saved files were as the run before had
+  left them.
+- **Both tables dropped and their files deleted, then a run:** 4 rows and 8
+  events - every run the store held. The run with the history switched off
+  is not among them: it is not in the store.
+- **With the `rag_core` of before this change** in the content folder the job
+  wrote the milestone *rag history: not read for CAS (ImportError: …) - the
+  ingestion itself is unaffected* and the WARNING, left both tables as they
+  were and ended as completed.
+
+The tables were read back in a compute session, not in jobs. The pull and the
+link of the log chain then found those runs - see
+[The Third Run](./Logging-&-Monitoring.md#the-third-run). Not provoked: an
+upload that fails, a row count that differs, a promote or a save that is
+refused. Changed after those runs and **not run in SAS**: the reason of a
+history that could not be read reaches SAS through the function of the
+logging programs, so in the WARNING and in the milestone a quote shows as a
+backtick, `%` as `pct`, `&` as `+` and a semicolon as a comma, a comment mark
+is split, and the reason ends after 200 characters.
 
 The two differ in three points. With the history switched off, and for a table
 the store holds no rows for, the step drops the CAS table and deletes its saved
@@ -1875,7 +1955,7 @@ PostgreSQL, on/off for SingleStore) and defaults to enabled.
 | Retrieval returns fewer chunks than exist | A SingleStore ANN index is enabled — see the warning above |
 | The run refuses to start | Another run holds the ledger lock; it expires after 30 minutes |
 | *RAG - List Documents* fails with *the run lock could not be written to … - refusing to ingest unguarded*, below `ERROR: The variable doc_id has been specified with incompatible data types` | The flow runs on a ledger the ingestion job wrote, with steps from before release 2.3.0 (or the job on a ledger a flow wrote) — see [one ledger for the job and the flow](#one-ledger-for-the-job-and-the-flow) |
-| *RAG - Register Setup* fails with `POST /modelRepository/projects returned 400` and *You must specify a value for the "folderId" parameter* | The SAS Model Manager project named in the step does not exist, and the `rag_core` on the site is from before release 2.3.0. Run `deploy-rag-content`, or create the project in SAS Model Manager first — see [the checkbox of the custom step](#tls-register-setup-step) |
+| *RAG - Register Setup* fails with `POST /modelRepository/projects returned 400` and *You must specify a value for the "folderId" parameter* | The SAS Model Manager project named in the step does not exist, and the `rag_core` on the site is from before release 2.3.0. Import the package of the release or run `deploy-rag-content`, or create the project in SAS Model Manager first — see [the checkbox of the custom step](#tls-register-setup-step) |
 | A RAG step writes *NOTE: The quoted string currently being processed has become more than 262 bytes long* above its summary or above its ERROR line | Steps from before release 2.3.0; nothing is wrong with the run. The steps of release 2.3.0 write neither the summary nor the ERROR line as a quoted string. Above the summary the NOTE was gone in *RAG - Register Setup* and in a flow of List, Extract, Chunk, Embed and Load; above the ERROR line it was gone in a failing *RAG - List Documents* (measured on 2026-10-11) — see [the checkbox of the custom step](#tls-register-setup-step) |
 | A publishing validation on a SAS Micro Analytic Service destination returns HTTP status 201, an empty error column and **empty outputs** in some or all rows, for a decision that uses a retrieval model | SAS Micro Analytic Service ended those executions after 30 seconds. The validation sends its rows at the same time, and the models behind the nodes took longer when they were called together; a direct call of the module answers `"executionState": "timedOut"`. The lengths of the model's variables are not the cause — see [several rows at once](#several-rows-at-once) and the [Troubleshooting Guide](./Troubleshooting-Guide.md#empty-outputs-published-decision) |
 | *RAG - Register Setup* fails, and its log holds *WARNING: … the step failed after the score code of the retrieval model was stored* | A request after the upload failed (a flow that does not exist, an artifact that could not be attached). The model holds the new score code; the WARNING lines below say whether it verifies TLS certificates and whether it is tagged — see [the checkbox of the custom step](#tls-register-setup-step) |
@@ -1889,7 +1969,7 @@ PostgreSQL, on/off for SingleStore) and defaults to enabled.
 | The log of the ingestion job holds *NOTE: RAG ingestion: rag_ledger_in.json of an earlier run of this SAS session was deleted from WORK* | The program ran before in the same SAS session. The file is the export of that run and is removed so that this run cannot read it; nothing is wrong. A job started by SAS Job Execution has a WORK of its own and does not write the line. The line comes once for each of the two files that is there, `rag_ledger_in.json` and `rag_ledger_lock.json` (measured on 2026-10-11) |
 | The ingestion job ends with *… of an earlier run of this SAS session could not be deleted from WORK - stopped, because the run would read the ledger of that run as its own* | The export of an earlier run is still in WORK and SAS could not delete it. Start a new SAS session and run the job there. The log of such a run also holds three ERROR messages of `PROC JSON` above its milestone, on six log lines - *ERROR: Invalid file, …/rag_ledger_in.json.*, *ERROR: Due to the previous error, the JSON output file is incomplete and invalid, …* and *ERROR: The JSON writer is in an error state at this point and no more items may be inserted.* They have the same cause: the export still runs after the delete failed, and writes to the file that is in the way. Measured on 2026-10-11 with a directory of that name in WORK; by the code, the last line names the lock instead of the file where another run holds a fresh lock at that moment |
 | **Test retrieval** says *The probe failed: the Python environment of this compute context lacks the requests package* | The Python of the compute context named in `ragComputeContext` has no `requests` — see [Python packages](#python-packages). Up to release 2.2 the page showed a probe that returned no chunks in that case. The line the page reads - *RAGRETRIEVE FAILED the Python environment of this compute context lacks the requests package - see the RAG administration guide* - was measured on 2026-10-11 in a session in which the import of `requests` was made to fail; the text of the page was not run in SAS, because the test system has no compute context without the package |
-| `deploy-rag-content` stops with *(409) Conflict* on the upload of a file | Seen on 2026-10-11 with `deploy-rag-content.ps1`, on a content folder that held an earlier runtime: the Files service refused the upload of a file whose old copy the script had just deleted, and answered the same upload with 201 a minute later. Run the script again - the second run completed. Until a run has completed, the file the script stopped at is missing from the folder — see [what gets deployed](#what-gets-deployed) |
+| `deploy-rag-content` stops with *(409) Conflict* on the upload of a file | Seen on 2026-10-11 with `deploy-rag-content.ps1`, on a content folder that held an earlier runtime: the Files service refused the upload of a file whose old copy the script had just deleted, and answered the same upload with 201 a minute later. Run the script again - the second run completed. Until a run has completed, the file the script stopped at is missing from the folder. The script calls `mdb content-deploy` since release 2.3.0, which repeats such an upload up to five times and reports a file that is still missing as *DELETED and NOT uploaded*; that repeat has not run against SAS Viya — see [what gets deployed](#what-gets-deployed) |
 | The Load step logs *rag history: not recorded (… must be owner of table rag_runs* | The store user of the ingestion may not alter `rag_runs`, which release 2.3.0 widens by the column `docs_excluded`. The ingestion itself is not affected. Let the owner of the table run an ingestion, or run `ALTER TABLE rag_runs ADD COLUMN docs_excluded integer DEFAULT 0` once — see [run history](#run-history) |
 | A job generated by *RAG - Register Setup* ends with *ERROR: RAG ingestion failed - a step of this run reported an error (its ERROR line is above) and the steps after it were skipped.* | A step of the flow failed. The line is written by the job, not by a step: the ERROR of the step that failed is above it — see *The job generated from a flow* under [the checkbox of the custom step](#tls-register-setup-step) |
 | `retrieval_status` of a retrieval model in a decision says *no vector-store credentials resolved* | The runtime the decision runs in has no `<BACKEND>_RAG_USER` and `<BACKEND>_RAG_PW` — see [the retrieval model in a decision](#the-retrieval-model-in-a-decision) |
