@@ -328,6 +328,20 @@ def test_a_site_setting_keeps_the_value_of_the_site(repo):
         "Team compute context", "prompts,form,execute"]
 
 
+def test_a_part_of_the_manifest_is_a_manifest_of_its_own(repo):
+    manifest = load_manifest(repo)
+    part = content.part_of(manifest, "RAG/", "/Team/Retrieval/")
+    assert part.content_root == "/Team/Retrieval"
+    assert [(e.kind, e.path) for e in part.objects()] == [
+        ("file", "rag_core/__init__.py"), ("file", "rag_core/adapters/__init__.py"), ("step", f"steps/{STEP_NAME}")]
+    assert [f.path for f in part.folders()] == ["rag_core", "steps", "rag_core/adapters"]
+    # the entries still come from the same sources
+    source = content.CheckoutSource(manifest)
+    assert source.file_bytes(part.objects()[0]) == b"CORE = 1\n"
+    assert source.step_body(part.objects()[2])["name"] == STEP_NAME
+    assert json.loads(source.step_document(part.objects()[2])) == STEP
+
+
 # ---- the two files mdb writes -----------------------------------------------
 def test_the_release_table_is_the_csv_load_releases_writes(repo, monkeypatch):
     """Byte for byte: the loader in SAS and `mdb load-releases` read one format."""

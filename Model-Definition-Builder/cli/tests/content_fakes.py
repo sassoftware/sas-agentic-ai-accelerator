@@ -286,24 +286,30 @@ class Response:
 
 
 class Viya:
-    """Folders, files, custom steps and job definitions, with the calls made.
+    """Folders, files, custom steps, job definitions and reports, with the
+    calls made.
 
-    `conflicts` is how often an upload of a name that was just deleted is
-    answered 409 before it is taken - what the Files service did on the test
-    system. `refuse` maps (method, path prefix) to a status to answer with.
+    A member of a folder carries its `type` as the Folders service gives it:
+    `child` for an object of the folder, `reference` for a pointer at an
+    object that lives elsewhere. A file has an ETag that changes with its
+    content, and its content is replaced with `PUT .../content` under that
+    ETag - the file keeps its id. `refuse` maps (method, path prefix) to a
+    status to answer with, `drop` to an exception to raise instead of an
+    answer (a timeout).
     """
 
-    def __init__(self, conflicts: int = 0):
+    def __init__(self):
         self._n = 0
         self.folders: dict = {}          # id -> {"name", "parent", "description"}
-        self.members: dict = {}          # folder id -> [{"name", "uri"}]
+        self.members: dict = {}          # folder id -> [{"name", "uri", "type"}]
         self.files: dict = {}            # uri -> bytes
+        self.etags: dict = {}            # file uri -> version number
         self.steps: dict = {}            # uri -> body
         self.jobs: dict = {}             # uri -> (body, etag)
+        self.reports: dict = {}          # report name -> content (XML)
         self.calls: list = []
-        self.conflicts = conflicts
         self.refuse: dict = {}
-        self._just_deleted: dict = {}    # (folder id, name) -> conflicts left
+        self.drop: dict = {}
 
     # -- what a test reads -------------------------------------------------
     def _new(self) -> str:
@@ -332,13 +338,18 @@ class Viya:
             for member in self.members.get(folder_id, []):
                 path = f"{prefix}{member['name']}"
                 found.append(path)
-                if member["uri"].startswith("/folders/folders/"):
+                if member["uri"].startswith("/folders/folders/") and member.get("type") != "reference":
                     walk(member["uri"].rsplit("/", 1)[-1], path + "/")
         walk(self.folder_id(root), "")
         return sorted(found)
 
     def wrote(self) -> list:
         return [(method, path) for method, path, _ in self.calls if method != "GET"]
+
+    def ids(self, root: str) -> dict:
+        """{path below root: uri} of every object that is not a folder."""
+        return {path: self.at(f"{root}/{path}")[0] for path in self.tree(root)
+                if not self.at(f"{root}/{path}")[0].startswith("/folders/")}
 
     # -- what a test prepares ----------------------------------------------
     def make_folder(self, path: str) -> str:
@@ -354,32 +365,46 @@ class Viya:
         self.folders[folder_id] = {"name": name, "parent": parent, "description": description}
         self.members[folder_id] = []
         if parent:
-            self.members[parent].append({"name": name, "uri": f"/folders/folders/{folder_id}"})
+            self.members[parent].append({"name": name, "uri": f"/folders/folders/{folder_id}", "type": "child"})
         return folder_id
 
     def put_member(self, path: str, uri_prefix: str, value) -> str:
         above, _, name = path.rpartition("/")
         folder_id = self.make_folder(above)
         uri = f"{uri_prefix}{self._new()}"
-        self.members[folder_id].append({"name": name, "uri": uri})
+        self.members[folder_id].append({"name": name, "uri": uri, "type": "child"})
         store = {"/files/files/": self.files, "/dataFlows/steps/": self.steps}.get(uri_prefix)
         if store is not None:
             store[uri] = value
         elif uri_prefix == "/jobDefinitions/definitions/":
             self.jobs[uri] = ({**value, "id": uri.rsplit("/", 1)[-1]}, '"1"')
+        if uri_prefix == "/files/files/":
+            self.etags[uri] = 1
         return uri
+
+    def put_reference(self, path: str, uri: str) -> None:
+        """A member of the folder that points at an object living elsewhere."""
+        above, _, name = path.rpartition("/")
+        self.members[self.make_folder(above)].append({"name": name, "uri": uri, "type": "reference"})
 
     # -- the session ---------------------------------------------------------
     def _refused(self, method, path):
+        for (m, prefix), error in self.drop.items():
+            if m == method and path.startswith(prefix):
+                raise error
         for (m, prefix), status in self.refuse.items():
             if m == method and path.startswith(prefix):
                 return Response(status, {"message": "refused"})
         return None
 
+    def _file_headers(self, uri) -> dict:
+        return {"ETag": f'"{self.etags.get(uri, 1)}"', "Content-Type": "application/octet-stream"}
+
     def get(self, path, params=None, headers=None, **kw):
         self.calls.append(("GET", path, params))
-        if self._refused("GET", path):
-            return self._refused("GET", path)
+        refused = self._refused("GET", path)
+        if refused:
+            return refused
         params = params or {}
         if path == "/folders/folders/@item":
             folder_id = self.folder_id(params["path"])
@@ -390,18 +415,32 @@ class Viya:
             start, limit = int(params.get("start", 0)), int(params.get("limit", 20))
             return Response(200, {"items": items[start:start + limit], "count": len(items)})
         if path.endswith("/content") and path[:-len("/content")] in self.files:
-            return Response(200, content=self.files[path[:-len("/content")]])
+            uri = path[:-len("/content")]
+            return Response(200, content=self.files[uri], headers=self._file_headers(uri))
+        if path in self.files:
+            return Response(200, {"id": path.rsplit("/", 1)[-1]}, headers=self._file_headers(path))
         if path in self.steps:
             return Response(200, {**as_registered(self.steps[path]), "id": path.rsplit("/", 1)[-1]})
         if path in self.jobs:
             body, etag = self.jobs[path]
             return Response(200, body, headers={"ETag": etag})
+        if path == "/reports/reports":
+            wanted = str(params.get("filter", ""))
+            return Response(200, {"items": [{"id": name, "name": name} for name in self.reports
+                                            if f'"{name}"' in wanted]})
+        if path.startswith("/reports/reports/") and path.endswith("/content"):
+            name = path[len("/reports/reports/"):-len("/content")]
+            if name in self.reports:
+                return Response(200, content=self.reports[name].encode("utf-8"), headers={"ETag": '"r1"'})
+        if path.startswith("/casManagement/servers"):
+            return Response(200, {"items": [{"name": "cas-shared-default"}]})
         return Response(404, {"message": "not found"})
 
     def post(self, path, params=None, data=None, headers=None, **kw):
         self.calls.append(("POST", path, params))
-        if self._refused("POST", path):
-            return self._refused("POST", path)
+        refused = self._refused("POST", path)
+        if refused:
+            return refused
         params = params or {}
         parent = str(params.get("parentFolderUri") or "").rsplit("/", 1)[-1] or None
         if path == "/folders/folders":
@@ -411,32 +450,43 @@ class Viya:
         if path == "/files/files":
             name = params["filename"]
             assert f'filename="{name}"' in headers["Content-Disposition"]
-            left = self._just_deleted.get((parent, name), 0)
-            if left:
-                self._just_deleted[(parent, name)] = left - 1
-                return Response(409, {"message": "conflict"})
+            if any(m["name"] == name and m["uri"].startswith("/files/files/") for m in self.members[parent]):
+                # the rule the Folders service was seen to hold: one name per kind in a folder
+                return Response(409, {"message": f'An item named "{name}" of type "File" already exists'})
             uri = f"/files/files/{self._new()}"
             self.files[uri] = bytes(data)
-            self.members[parent].append({"name": name, "uri": uri})
+            self.etags[uri] = 1
+            self.members[parent].append({"name": name, "uri": uri, "type": "child"})
             return Response(201, {"id": uri.rsplit("/", 1)[-1]})
         if path == "/dataFlows/steps":
             body = json.loads(data)
             uri = f"/dataFlows/steps/{self._new()}"
             self.steps[uri] = body
-            self.members[parent].append({"name": body["name"], "uri": uri})
+            self.members[parent].append({"name": body["name"], "uri": uri, "type": "child"})
             return Response(201, {"id": uri.rsplit("/", 1)[-1]})
         if path == "/jobDefinitions/definitions":
             body = json.loads(data)
             uri = f"/jobDefinitions/definitions/{self._new()}"
             self.jobs[uri] = ({**body, "id": uri.rsplit("/", 1)[-1]}, '"1"')
-            self.members[parent].append({"name": body["name"], "uri": uri})
+            self.members[parent].append({"name": body["name"], "uri": uri, "type": "child"})
             return Response(201, self.jobs[uri][0])
         return Response(400, {"message": "bad request"})
 
     def put(self, path, data=None, headers=None, **kw):
         self.calls.append(("PUT", path, None))
-        if self._refused("PUT", path):
-            return self._refused("PUT", path)
+        refused = self._refused("PUT", path)
+        if refused:
+            return refused
+        if path.endswith("/content") and path[:-len("/content")] in self.files:
+            uri = path[:-len("/content")]
+            if headers.get("If-Match") != f'"{self.etags[uri]}"':
+                return Response(412 if headers.get("If-Match") else 428, {"message": "precondition"})
+            self.files[uri] = bytes(data)
+            self.etags[uri] += 1
+            return Response(200, {"id": uri.rsplit("/", 1)[-1]})
+        if path.startswith("/reports/reports/") and path.endswith("/content"):
+            self.reports[path[len("/reports/reports/"):-len("/content")]] = bytes(data).decode("utf-8")
+            return Response(204)
         body = json.loads(data)
         if path in self.steps:
             assert headers["If-Match"] == "*" and body["id"] == path.rsplit("/", 1)[-1]
@@ -451,14 +501,12 @@ class Viya:
         return Response(404, {"message": "not found"})
 
     def delete(self, path, **kw):
+        """Nothing of the content code deletes. A test sees it in `wrote()`."""
         self.calls.append(("DELETE", path, None))
-        if self._refused("DELETE", path):
-            return self._refused("DELETE", path)
-        for folder_id, items in self.members.items():
+        for items in self.members.values():
             for member in list(items):
                 if member["uri"] == path:
                     items.remove(member)
-                    self._just_deleted[(folder_id, member["name"])] = self.conflicts
         self.files.pop(path, None)
         return Response(204)
 

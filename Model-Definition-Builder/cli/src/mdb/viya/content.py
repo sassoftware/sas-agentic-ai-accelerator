@@ -1,41 +1,59 @@
 # Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Bring a SAS Content folder to the state of the checkout.
+"""Bring a SAS Content folder to the state of a source - IN PLACE.
 
 `mdb content-deploy` reads the content manifest (core/content.py) and, entry
-by entry, makes the content folder hold what the checkout holds:
+by entry, makes the content folder hold what the checkout holds.
+`mdb builders-import` runs the same code with a transfer package as the
+source (core/packages.py, PackageSource): the files, custom steps and job
+definitions of a package reach a site through these requests, not through the
+transfer service.
 
 * a folder is created when it is missing;
-* a file is uploaded - a repository file with LF line ends, a generated file
-  as mdb writes it - and replaced when its bytes differ;
+* a file is uploaded when it is missing - a repository file with LF line
+  ends, a generated file as mdb writes it - and one whose bytes differ gets
+  its CONTENT replaced (`PUT /files/files/{id}/content` with the ETag of the
+  file). The file object stays: same id, same place in the folder;
 * a custom step is REGISTERED through /dataFlows/steps (a .step uploaded as a
-  file renders as an empty step editor) and an existing one is updated IN
-  PLACE with PUT, which keeps its id: saved flows reference a step by id, and
-  a step that is deleted and posted again gets a new one;
+  file renders as an empty step editor) and an existing one is updated with
+  PUT, which keeps its id: saved flows reference a step by id;
 * a job definition is created, or updated in place with its ETag: the program
-  as `code`, an HTML form as the property `form`, the parameters.
+  as `code`, an HTML form as the property `form`, the parameters. A parameter
+  the manifest marks as a site setting keeps the value the site has.
 
-A report is not deployed: it is authored in SAS Visual Analytics and reaches a
-site with the transfer package. Nothing that is not in the manifest is
-touched, and nothing is removed - the one delete this module sends is of a
-file it replaces in the same step, because the Files service is given the new
-content as a new file.
+An object that exists at its path is therefore updated under ITS OWN id,
+whatever id the object had on the system the content comes from. That is the
+reason a package is not handed to the transfer service for these objects: it
+was measured to leave a file alone that exists in the target folder under the
+same name with another id.
 
-Two things earlier runs against a live system showed, and this handles:
+NOTHING IS DELETED. Not a file that is replaced, and not an object that is
+not in the source. Where the Files service refuses the update of a file's
+content, the file is left as it is and the run says so.
 
-* `POST /files/files` can answer 409 right after the old copy of the file was
-  deleted, and 201 a little later. The upload is tried again
-  (`UPLOAD_RETRIES`), and a file that is still not there afterwards is
-  reported as deleted and not uploaded - never passed over.
-* a step updated with PUT must come back under the id it had.
+THE RUN STOPS AT THE FIRST WRITE THAT FAILS. A write that was refused, or
+that got no answer, ends the run: the entry is FAILED with what is known of
+the object, and every entry behind it is listed as not attempted. An entry
+that fails before anything was sent - two objects of its name in the folder,
+an object that cannot be read - is FAILED too, and the run goes on: nothing
+was written for it.
 
-Every request goes through a session with `get` / `post` / `put` / `delete`
-that take a path, as sasctl's does, so the tests run this against a fake.
+WHAT IS NEVER WRITTEN. An object outside the folders of the source. A member
+of a folder can be a REFERENCE to an object that lives somewhere else; a
+reference is told by its member type, is never followed, and is no object of
+the folder. And where a folder holds two objects of one name and kind, none
+of them is guessed to be the one.
+
+A report is not deployed: it is authored in SAS Visual Analytics and reaches
+a site through the transfer service.
+
+Every request goes through a session with `get` / `post` / `put` that take a
+path, as sasctl's does, so the tests run this against a fake.
 """
 from __future__ import annotations
 
 import json
-import time
+import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -44,25 +62,66 @@ from ..core import content as _content
 STEP_MEDIA = "application/vnd.sas.data.flow.step+json"
 DEFINITION_MEDIA = "application/vnd.sas.job.definition+json"
 
-#: How often an upload that is answered 409 is tried again, and the seconds
-#: waited before each further try.
-UPLOAD_RETRIES = 5
-UPLOAD_WAIT = (2, 5, 10, 20, 30)
-
 #: The service a member of a folder belongs to, by the manifest's kind.
 _MEMBER_URI = {"file": "/files/files/", "step": "/dataFlows/steps/",
                "jobDefinition": "/jobDefinitions/definitions/", "report": "/reports/reports/",
                "folder": "/folders/folders/"}
 
-EQUAL, UPDATED, CREATED, NOT_DEPLOYED, FAILED = "equal", "updated", "created", "not deployed", "FAILED"
+#: What a line calls an object of each kind.
+_WORD = {"file": "file", "step": "registered step", "jobDefinition": "job definition", "report": "report",
+         "folder": "folder"}
+
+EQUAL, UPDATED, CREATED, NOT_DEPLOYED, FAILED, NOT_ATTEMPTED = (
+    "equal", "updated", "created", "not deployed", "FAILED", "not attempted")
+
+_ID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
 class DeployError(RuntimeError):
-    pass
+    """An entry could not be brought to the source. Nothing was sent that
+    changes the site, unless it is a WriteFailed."""
+
+
+class WriteFailed(DeployError):
+    """A write was sent and was refused, or got no answer. The run stops."""
 
 
 def _failure(what: str, response) -> DeployError:
     return DeployError(f"{what}: HTTP {response.status_code} {str(getattr(response, 'text', ''))[:300]}")
+
+
+def _read(what: str, call):
+    """One GET. No answer at all is a DeployError like a refusal is."""
+    try:
+        return call()
+    except DeployError:
+        raise
+    except Exception as exc:                                   # a timeout, a dropped connection
+        raise DeployError(f"{what}: no answer ({type(exc).__name__}: {exc})") from exc
+
+
+def _write(what: str, call, unknown: str = ""):
+    """One write. Refused or unanswered, it is a WriteFailed: `unknown` says
+    what is then known of the object."""
+    try:
+        response = call()
+    except Exception as exc:                                   # a timeout, a dropped connection
+        raise WriteFailed(f"{what}: no answer ({type(exc).__name__}: {exc})"
+                          + (f" - {unknown}" if unknown else "")) from exc
+    if not response.ok:
+        raise WriteFailed(f"{what}: HTTP {response.status_code} {str(getattr(response, 'text', ''))[:300]}")
+    return response
+
+
+def _id(uri: str) -> str:
+    return str(uri).rstrip("/").rsplit("/", 1)[-1]
+
+
+def _answered_id(response) -> str:
+    try:
+        return str(response.json().get("id") or "")
+    except (ValueError, AttributeError, TypeError):
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +129,8 @@ def _failure(what: str, response) -> DeployError:
 # ---------------------------------------------------------------------------
 def find_folder(session, path: str) -> Optional[dict]:
     """The folder at a SAS Content path, or None when there is none."""
-    response = session.get("/folders/folders/@item", params={"path": path})
+    response = _read(f"Looking up the folder {path} failed",
+                     lambda: session.get("/folders/folders/@item", params={"path": path}))
     if response.status_code == 404:
         return None
     if not response.ok:
@@ -85,18 +145,17 @@ def create_folder(session, name: str, parent_id: Optional[str], description: str
     if description:
         body["description"] = description
     params = {"parentFolderUri": f"/folders/folders/{parent_id}"} if parent_id else None
-    response = session.post("/folders/folders", params=params, data=json.dumps(body),
-                            headers={"Content-Type": "application/json", "Accept": "application/json"})
-    if not response.ok:
-        raise _failure(f"Creating the folder {name} failed", response)
-    return response.json()
+    return _write(f"Creating the folder {name} failed", lambda: session.post(
+        "/folders/folders", params=params, data=json.dumps(body),
+        headers={"Content-Type": "application/json", "Accept": "application/json"})).json()
 
 
 def folder_members(session, folder_id: str) -> list:
     """Every member of a folder, read page by page."""
     members, start = [], 0
     while True:
-        response = session.get(f"/folders/folders/{folder_id}/members", params={"limit": 200, "start": start})
+        response = _read("Listing the members of a folder failed", lambda: session.get(
+            f"/folders/folders/{folder_id}/members", params={"limit": 200, "start": start}))
         if not response.ok:
             raise _failure("Listing the members of a folder failed", response)
         page = response.json()
@@ -107,61 +166,89 @@ def folder_members(session, folder_id: str) -> list:
             return members
 
 
-def _members_named(members: list, name: str, kind: str) -> list:
+def is_reference(member: dict) -> bool:
+    """Whether a folder member is a reference to an object that lives
+    elsewhere, by its member type. A member is a child unless it says so."""
+    return str(member.get("type") or "child").lower() == "reference"
+
+
+def _named(members: list, name: str, kind: str) -> list:
     prefix = _MEMBER_URI[kind]
     return [m for m in members if m.get("name") == name and str(m.get("uri") or "").startswith(prefix)]
+
+
+def _members_named(members: list, name: str, kind: str) -> list:
+    """The objects of a folder with this name and kind: its children. A
+    reference is not one - what it names lives in another folder."""
+    return [m for m in _named(members, name, kind) if not is_reference(m)]
 
 
 # ---------------------------------------------------------------------------
 # files
 # ---------------------------------------------------------------------------
-def file_content(session, uri: str) -> bytes:
-    response = session.get(f"{uri}/content")
+def read_file(session, uri: str) -> tuple:
+    """(bytes, etag, content type) of a file."""
+    response = _read(f"Reading {uri} failed", lambda: session.get(f"{uri}/content"))
     if not response.ok:
         raise _failure(f"Reading {uri} failed", response)
-    return response.content
+    headers = getattr(response, "headers", None) or {}
+    return response.content, headers.get("ETag") or "", headers.get("Content-Type") or ""
 
 
-def upload_file(session, folder_id: str, name: str, data: bytes,
-                sleep: Callable[[float], None] = time.sleep) -> int:
-    """Upload a file into a folder; returns how often a 409 was answered
-    before the upload was taken.
-
-    A raw upload is named by the Content-Disposition header - without it the
-    Files service mints a `FileResource<timestamp>` name. A 409 is the answer
-    seen right after the old copy of the same name was deleted; the same
-    request was taken a little later, so it is sent again up to
-    UPLOAD_RETRIES times before it counts as a failure.
-    """
-    conflicts = 0
-    while True:
-        response = session.post(
-            "/files/files",
-            params={"parentFolderUri": f"/folders/folders/{folder_id}", "filename": name},
-            data=data,
-            headers={"Content-Type": "application/octet-stream",
-                     "Content-Disposition": f'attachment; filename="{name}"',
-                     "Accept": "application/json"})
-        if response.ok:
-            return conflicts
-        if response.status_code != 409 or conflicts >= UPLOAD_RETRIES:
-            raise _failure(f"Uploading {name} failed"
-                           + (f" after {conflicts + 1} tries" if conflicts else ""), response)
-        sleep(UPLOAD_WAIT[min(conflicts, len(UPLOAD_WAIT) - 1)])
-        conflicts += 1
+def file_content(session, uri: str) -> bytes:
+    return read_file(session, uri)[0]
 
 
-def delete_object(session, uri: str) -> None:
-    response = session.delete(uri)
-    if not response.ok and response.status_code != 404:
-        raise _failure(f"Deleting {uri} failed", response)
+def create_file(session, folder_id: str, name: str, data: bytes) -> str:
+    """Upload a new file into a folder; returns its id where the answer
+    gives one. A raw upload is named by the Content-Disposition header -
+    without it the Files service mints a `FileResource<timestamp>` name."""
+    return _answered_id(_write(f"Uploading {name} failed", lambda: session.post(
+        "/files/files",
+        params={"parentFolderUri": f"/folders/folders/{folder_id}", "filename": name},
+        data=data,
+        headers={"Content-Type": "application/octet-stream",
+                 "Content-Disposition": f'attachment; filename="{name}"',
+                 "Accept": "application/json"}),
+        "whether the file is in the folder is not known"))
+
+
+def update_file(session, uri: str, name: str, data: bytes, etag: str = "", content_type: str = "") -> None:
+    """Replace the content of a file in place. The file object stays - its
+    id, its place in the folder - and the Files service takes the new bytes
+    only for the version of the file the ETag names (`If-Match`): a file
+    somebody changed in between is refused, not written over.
+
+    The ETag and the content type are those of the file itself, asked for
+    right before the write; `etag` and `content_type` - what the read of the
+    content gave - stand in where the file does not answer with them. No
+    name is sent: the file keeps the one it has."""
+    response = _read(f"Reading {uri} failed", lambda: session.get(
+        uri, headers={"Accept": "application/vnd.sas.file+json, application/json"}))
+    if response.ok:
+        etag = (getattr(response, "headers", None) or {}).get("ETag") or etag
+        try:
+            content_type = response.json().get("contentType") or content_type
+        except (ValueError, AttributeError, TypeError):
+            pass
+    headers = {"Content-Type": content_type or "application/octet-stream", "Accept": "application/json"}
+    if etag:
+        headers["If-Match"] = etag
+    try:
+        response = session.put(f"{uri}/content", data=data, headers=headers)
+    except Exception as exc:                                   # a timeout, a dropped connection
+        raise WriteFailed(f"no answer to the update of the content of {name} ({type(exc).__name__}: {exc}) - the "
+                          "file holds its old or its new content, and was not removed") from exc
+    if not response.ok:
+        raise WriteFailed(f"the file was left as it is: the update of its content was refused (HTTP "
+                          f"{response.status_code} {str(getattr(response, 'text', ''))[:300]})")
 
 
 # ---------------------------------------------------------------------------
 # custom steps
 # ---------------------------------------------------------------------------
 def get_step(session, uri: str) -> dict:
-    response = session.get(uri, headers={"Accept": STEP_MEDIA})
+    response = _read(f"Reading the step {uri} failed", lambda: session.get(uri, headers={"Accept": STEP_MEDIA}))
     if not response.ok:
         raise _failure(f"Reading the step {uri} failed", response)
     return response.json()
@@ -171,27 +258,24 @@ def update_step(session, uri: str, definition: dict) -> None:
     """Update a registered step in place. The id is part of the body and of
     the address, and the answer has to carry it too: a step that came back
     under another id would have lost every flow that uses it."""
-    step_id = uri.rsplit("/", 1)[-1]
+    step_id = _id(uri)
     body = dict(definition)
     body["id"] = step_id
-    response = session.put(uri, data=json.dumps(body).encode("utf-8"),
-                           headers={"Content-Type": STEP_MEDIA, "Accept": STEP_MEDIA, "If-Match": "*"})
-    if not response.ok:
-        raise _failure(f"Updating the step {definition.get('name')} failed", response)
-    try:
-        answered = response.json().get("id")
-    except (ValueError, AttributeError):
-        answered = None
+    response = _write(f"Updating the step {definition.get('name')} failed", lambda: session.put(
+        uri, data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": STEP_MEDIA, "Accept": STEP_MEDIA, "If-Match": "*"}),
+        "the step holds its old or its new content under the id it had")
+    answered = _answered_id(response)
     if answered and answered != step_id:
-        raise DeployError(f"the step {definition.get('name')} was updated at {uri} and answered with the id "
+        raise WriteFailed(f"the step {definition.get('name')} was updated at {uri} and answered with the id "
                           f"{answered} - saved flows reference {step_id}")
 
 
-def create_step(session, folder_id: str, raw: bytes, name: str) -> None:
-    response = session.post("/dataFlows/steps", params={"parentFolderUri": f"/folders/folders/{folder_id}"},
-                            data=raw, headers={"Content-Type": "application/json", "Accept": STEP_MEDIA})
-    if not response.ok:
-        raise _failure(f"Registering the step {name} failed", response)
+def create_step(session, folder_id: str, raw: bytes, name: str) -> str:
+    return _answered_id(_write(f"Registering the step {name} failed", lambda: session.post(
+        "/dataFlows/steps", params={"parentFolderUri": f"/folders/folders/{folder_id}"},
+        data=raw, headers={"Content-Type": "application/json", "Accept": STEP_MEDIA}),
+        "whether the step is registered is not known"))
 
 
 # ---------------------------------------------------------------------------
@@ -199,33 +283,43 @@ def create_step(session, folder_id: str, raw: bytes, name: str) -> None:
 # ---------------------------------------------------------------------------
 def get_job_definition(session, uri: str) -> tuple:
     """(definition, etag)."""
-    response = session.get(uri, headers={"Accept": DEFINITION_MEDIA})
+    response = _read(f"Reading the job definition {uri} failed",
+                     lambda: session.get(uri, headers={"Accept": DEFINITION_MEDIA}))
     if not response.ok:
         raise _failure(f"Reading the job definition {uri} failed", response)
-    return response.json(), response.headers.get("ETag", "")
+    return response.json(), (getattr(response, "headers", None) or {}).get("ETag", "")
 
 
 def update_job_definition(session, uri: str, live: dict, wanted: dict, etag: str) -> None:
-    """A full replacement of an existing definition, guarded by its ETag: what
-    the definition holds beside its program, form and parameters stays."""
+    """Replace an existing definition, guarded by its ETag. Written from the
+    source: the program, the form, the parameters, and the description where
+    the source gives one. Kept from the site: the id and the name, a property
+    that is not the form, and whatever else the definition holds."""
     body = {key: value for key, value in live.items() if key != "links"}
-    body.update(wanted)
-    body["id"] = live.get("id") or uri.rsplit("/", 1)[-1]
+    for key in ("code", "parameters", "type"):
+        if key in wanted:
+            body[key] = wanted[key]
+    if wanted.get("description"):
+        body["description"] = wanted["description"]
+    kept = [p for p in live.get("properties") or [] if isinstance(p, dict) and p.get("name") != "form"]
+    body["properties"] = kept + [p for p in wanted.get("properties") or [] if p.get("name") == "form"]
+    body["id"] = live.get("id") or _id(uri)
+    body["name"] = live.get("name") or wanted.get("name")
     headers = {"Content-Type": DEFINITION_MEDIA, "Accept": DEFINITION_MEDIA}
     if etag:
         headers["If-Match"] = etag
-    response = session.put(uri, data=json.dumps(body).encode("utf-8"), headers=headers)
-    if not response.ok:
-        raise _failure(f"Updating the job definition {wanted.get('name')} failed", response)
+    _write(f"Updating the job definition {body['name']} failed",
+           lambda: session.put(uri, data=json.dumps(body).encode("utf-8"), headers=headers),
+           "the definition holds its old or its new content")
 
 
-def create_job_definition(session, folder_id: str, wanted: dict) -> None:
-    response = session.post("/jobDefinitions/definitions",
-                            params={"parentFolderUri": f"/folders/folders/{folder_id}"},
-                            data=json.dumps(wanted).encode("utf-8"),
-                            headers={"Content-Type": DEFINITION_MEDIA, "Accept": DEFINITION_MEDIA})
-    if not response.ok:
-        raise _failure(f"Creating the job definition {wanted.get('name')} failed", response)
+def create_job_definition(session, folder_id: str, wanted: dict) -> str:
+    return _answered_id(_write(f"Creating the job definition {wanted.get('name')} failed", lambda: session.post(
+        "/jobDefinitions/definitions",
+        params={"parentFolderUri": f"/folders/folders/{folder_id}"},
+        data=json.dumps(wanted).encode("utf-8"),
+        headers={"Content-Type": DEFINITION_MEDIA, "Accept": DEFINITION_MEDIA}),
+        "whether the definition was created is not known"))
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +330,7 @@ class Outcome:
     """What happened to one entry."""
 
     entry: object
-    status: str            # equal | updated | created | not deployed | FAILED
+    status: str            # equal | updated | created | not deployed | FAILED | not attempted
     note: str = ""
 
 
@@ -248,6 +342,8 @@ class DeployResult:
     #: True when the content root itself was missing (and, unless it was a
     #: dry run, created).
     root_created: bool = False
+    #: The outcome of the entry whose write failed and ended the run.
+    stopped_at: Optional[Outcome] = None
 
     def count(self, status: str) -> int:
         return sum(1 for outcome in self.outcomes if outcome.status == status)
@@ -255,6 +351,25 @@ class DeployResult:
     @property
     def failed(self) -> list:
         return [outcome for outcome in self.outcomes if outcome.status == FAILED]
+
+    @property
+    def written(self) -> list:
+        """The entries a run wrote (in a dry run: would write)."""
+        return [outcome for outcome in self.outcomes if outcome.status in (CREATED, UPDATED)]
+
+    @property
+    def not_attempted(self) -> list:
+        return [outcome for outcome in self.outcomes if outcome.status == NOT_ATTEMPTED]
+
+    def stop_line(self) -> str:
+        """The sentence that says what a stopped run wrote and did not."""
+        if self.stopped_at is None:
+            return ""
+        entry = self.stopped_at.entry
+        return (f"Stopped at the first write that failed: {entry.kind} {entry.path}. Written before it: "
+                f"{self.count(CREATED)} created, {self.count(UPDATED)} updated. Not attempted behind it: "
+                f"{len(self.not_attempted)} entr{'y' if len(self.not_attempted) == 1 else 'ies'}. Nothing was "
+                "removed.")
 
 
 def _ensure_root(session, content_root: str, dry_run: bool) -> tuple:
@@ -287,27 +402,35 @@ def selected(manifest, only) -> tuple:
 
 
 def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool = False,
-           emit: Optional[Callable[[Outcome], None]] = None,
-           sleep: Callable[[float], None] = time.sleep, only=None) -> DeployResult:
-    """Bring `content_root` to the state of the checkout; returns one Outcome
-    per entry of the manifest, folders first.
+           emit: Optional[Callable[[Outcome], None]] = None, only=None, source=None,
+           settings: Optional[dict] = None, reports: bool = True) -> DeployResult:
+    """Bring `content_root` to the state of `source`; returns one Outcome per
+    entry of the manifest, folders first.
 
-    With `dry_run` nothing is written: every outcome says what a run would do.
-    `emit` is called with each outcome as it is known. An entry that fails is
-    reported as FAILED with the reason and the deploy goes on with the next -
-    what did not reach the folder is listed, not hidden behind the first error.
-    `only` restricts the run to the entries at or below the given paths (and
-    the folders above them); everything else is not looked at.
+    `manifest` is the list of entries, `source` what each holds - the
+    checkout unless another source is given. With `dry_run` nothing is
+    written: every outcome says what a run would do, and every request is a
+    GET. `emit` is called with each outcome as it is known. `only` restricts
+    the run to the entries at or below the given paths (and the folders above
+    them); everything else is not looked at. `settings` maps the name of a
+    job definition parameter to the value to write there (the compute
+    context, the content root). With `reports` off a report entry gives no
+    outcome; it still counts as listed.
+
+    The run stops at the first write that fails (see the module text); the
+    result says where in `stopped_at`.
     """
     content_root = (content_root or manifest.content_root).rstrip("/")
+    source = source or _content.CheckoutSource(manifest)
     result = DeployResult()
     folders, objects = selected(manifest, only)
 
-    def done(entry, status: str, note: str = "") -> None:
+    def done(entry, status: str, note: str = "") -> Outcome:
         outcome = Outcome(entry, status, note)
         result.outcomes.append(outcome)
         if emit:
             emit(outcome)
+        return outcome
 
     root_id, root_created = _ensure_root(session, content_root, dry_run)
     folder_ids: dict = {"": root_id}
@@ -324,7 +447,7 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
         try:
             found = _members_named(members_of(entry.folder), entry.name, "folder") if parent_id else []
             if found:
-                folder_ids[entry.path] = str(found[0]["uri"]).rsplit("/", 1)[-1]
+                folder_ids[entry.path] = _id(found[0]["uri"])
                 done(entry, EQUAL)
             elif dry_run:
                 folder_ids[entry.path] = None
@@ -339,88 +462,163 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
             done(entry, FAILED, str(exc))
 
     for entry in objects:
+        if entry.kind == "report" and not reports:
+            continue
+        if result.stopped_at is not None:
+            done(entry, NOT_ATTEMPTED)
+            continue
         folder_id = folder_ids.get(entry.folder)
         try:
-            existing = _members_named(members_of(entry.folder), entry.name, entry.kind) if folder_id else []
+            listed = members_of(entry.folder) if folder_id else []
+            existing = _members_named(listed, entry.name, entry.kind)
             if entry.kind == "report":
                 done(entry, NOT_DEPLOYED, "on the site" if existing else "not on the site - it comes with the package")
                 continue
             if folder_id is None and not dry_run:
                 done(entry, FAILED, "its folder could not be created")
                 continue
-            status, note = _DEPLOYERS[entry.kind](session, manifest, entry, folder_id, existing, dry_run, sleep)
+            if len(existing) > 1:
+                done(entry, FAILED, _several(entry, existing))
+                continue
+            references = [m for m in _named(listed, entry.name, entry.kind) if is_reference(m)]
+            if not existing and references:
+                done(entry, FAILED,
+                     f"a reference of that name is in the folder and names {references[0].get('uri')}, an object "
+                     "that lives elsewhere: it is not followed, and nothing was written - remove the reference, "
+                     "or update the object it names with --to")
+                continue
+            status, note = _DEPLOYERS[entry.kind](session, source, entry, folder_id, existing, dry_run, settings)
             done(entry, status, note)
+        except WriteFailed as exc:
+            result.stopped_at = done(entry, FAILED, str(exc))
         except (DeployError, OSError, ValueError) as exc:
             done(entry, FAILED, str(exc))
 
     # what else sits in the folders of the manifest: named, and left alone
-    listed = {(entry.folder, entry.name, entry.kind) for entry in manifest.all_entries()}
+    listed_entries = {(entry.folder, entry.name, entry.kind) for entry in manifest.all_entries()}
     for folder_path, items in sorted(members.items()):
         for member in items:
             uri = str(member.get("uri") or "")
             kind = next((k for k, prefix in _MEMBER_URI.items() if uri.startswith(prefix)), None)
-            if (folder_path, member.get("name"), kind) not in listed:
+            if is_reference(member) or (folder_path, member.get("name"), kind) not in listed_entries:
                 what = kind or member.get("contentType") or uri.strip("/").split("/")[0] or "object"
+                if is_reference(member):
+                    what = f"reference to a {what}"
                 name = str(member.get("name"))
                 result.unlisted.append(f"{folder_path}/{name} ({what})" if folder_path else f"{name} ({what})")
     result.root_created = root_created
     return result
 
 
-def _deploy_file(session, manifest, entry, folder_id, existing, dry_run, sleep) -> tuple:
-    wanted = _content.file_bytes(manifest, entry)
-    if not existing:
-        if not dry_run:
-            upload_file(session, folder_id, entry.name, wanted, sleep)
-        return CREATED, ""
-    if len(existing) == 1 and file_content(session, existing[0]["uri"]) == wanted:
-        return EQUAL, ""
-    if dry_run:
-        return UPDATED, ""
-    for member in existing:
-        delete_object(session, member["uri"])
-    try:
-        conflicts = upload_file(session, folder_id, entry.name, wanted, sleep)
-    except DeployError as exc:
-        raise DeployError(f"the file was DELETED and NOT uploaded - run the command again ({exc})") from exc
-    notes = []
-    if len(existing) > 1:
-        notes.append(f"replaced {len(existing)} files of that name")
-    if conflicts:
-        notes.append(f"the upload was answered 409 {conflicts} time(s) and then taken")
-    return UPDATED, "; ".join(notes)
+def _several(entry, existing: list) -> str:
+    ids = ", ".join(_id(m["uri"]) for m in existing)
+    return (f"{len(existing)} {_WORD[entry.kind]}s of that name are in the folder (ids {ids}): none was changed, "
+            f"because nothing says which one is meant - update one with `mdb content-deploy --only "
+            f"\"{entry.path}\" --to <id>`, or remove the other")
 
 
-def _deploy_step(session, manifest, entry, folder_id, existing, dry_run, sleep) -> tuple:
-    wanted = _content.step_body(manifest, entry)
+def _deploy_file(session, source, entry, folder_id, existing, dry_run, settings) -> tuple:
+    wanted = source.file_bytes(entry)
     if not existing:
-        if not dry_run:
-            create_step(session, folder_id, manifest.source_path(entry.source).read_bytes(), entry.name)
-        return CREATED, ""
+        if dry_run:
+            return CREATED, ""
+        created = create_file(session, folder_id, entry.name, wanted)
+        return CREATED, f"id {created}" if created else ""
     uri = existing[0]["uri"]
-    step_id = uri.rsplit("/", 1)[-1]
-    parts = _content.step_differences(wanted, get_step(session, uri))
-    if not parts:
-        return EQUAL, f"id {step_id}"
+    held, etag, content_type = read_file(session, uri)
+    if held == wanted:
+        return EQUAL, f"id {_id(uri)}"
     if not dry_run:
-        update_step(session, uri, wanted)
-    return UPDATED, f"{', '.join(parts)}; id {step_id} kept"
+        update_file(session, uri, entry.name, wanted, etag, content_type)
+    return UPDATED, f"content replaced in place; id {_id(uri)} kept"
 
 
-def _deploy_job_definition(session, manifest, entry, folder_id, existing, dry_run, sleep) -> tuple:
-    wanted = _content.job_definition_body(manifest, entry)
+def _deploy_step(session, source, entry, folder_id, existing, dry_run, settings) -> tuple:
+    wanted = source.step_body(entry)
     if not existing:
-        if not dry_run:
-            create_job_definition(session, folder_id, wanted)
-        return CREATED, ""
+        if dry_run:
+            return CREATED, ""
+        created = create_step(session, folder_id, source.step_document(entry), entry.name)
+        return CREATED, f"id {created}" if created else ""
+    uri = existing[0]["uri"]
+    live = get_step(session, uri)
+    parts = _content.step_differences(wanted, live)
+    if not parts:
+        return EQUAL, f"id {_id(uri)}"
+    if not dry_run:
+        # the step is the site's object: it keeps the name it has there
+        update_step(session, uri, {**wanted, "name": live.get("name") or wanted.get("name")})
+    return UPDATED, f"{', '.join(parts)}; id {_id(uri)} kept"
+
+
+def _deploy_job_definition(session, source, entry, folder_id, existing, dry_run, settings) -> tuple:
+    wanted = source.job_body(entry)
+    site_names = source.site_settings(entry)
+    if not existing:
+        if dry_run:
+            return CREATED, ""
+        created = create_job_definition(session, folder_id, _content.settle_parameters(wanted, None, (), settings))
+        return CREATED, f"id {created}" if created else ""
     uri = existing[0]["uri"]
     live, etag = get_job_definition(session, uri)
+    wanted = _content.settle_parameters(wanted, live, site_names, settings)
     parts = _content.job_differences(wanted, live)
     if not parts:
-        return EQUAL, ""
+        return EQUAL, f"id {_id(uri)}"
     if not dry_run:
         update_job_definition(session, uri, live, wanted, etag)
-    return UPDATED, ", ".join(parts)
+    return UPDATED, f"{', '.join(parts)}; id {_id(uri)} kept"
 
 
 _DEPLOYERS = {"file": _deploy_file, "step": _deploy_step, "jobDefinition": _deploy_job_definition}
+
+
+# ---------------------------------------------------------------------------
+# one entry, into an object the site has somewhere else
+# ---------------------------------------------------------------------------
+def resolve_target(session, kind: str, target: str) -> dict:
+    """The object of `kind` that a `--to` names: {"uri", "name"}.
+
+    `target` is the object's URI (`/dataFlows/steps/<id>`), its id, or its
+    SAS Content path (`/Custom Steps/LLM - Log Parser.step`). A path has to
+    name exactly one object of that kind in its folder - a reference is not
+    one - and nothing is ever created from it.
+    """
+    target = (target or "").strip()
+    prefix = _MEMBER_URI[kind]
+    if target.startswith(prefix) and _ID.fullmatch(target[len(prefix):]):
+        return {"uri": target, "name": ""}
+    if _ID.fullmatch(target):
+        return {"uri": prefix + target, "name": ""}
+    if not target.startswith("/") or target.startswith(tuple(_MEMBER_URI.values())):
+        raise DeployError(f"--to {target}: not a SAS Content path (starting with a slash), an id or the URI of a "
+                          f"{_WORD[kind]} ({prefix}<id>)")
+    folder_path, _, name = target.rstrip("/").rpartition("/")
+    folder = find_folder(session, folder_path) if folder_path else None
+    if not folder:
+        raise DeployError(f"--to {target}: there is no folder {folder_path or '/'}")
+    found = _members_named(folder_members(session, folder["id"]), name, kind)
+    if not found:
+        raise DeployError(f"--to {target}: the folder {folder_path} holds no {_WORD[kind]} named '{name}'. "
+                          "Nothing was written - this option updates an object and never creates one.")
+    if len(found) > 1:
+        raise DeployError(f"--to {target}: the folder holds {len(found)} {_WORD[kind]}s of that name (ids "
+                          f"{', '.join(_id(m['uri']) for m in found)}) - name one of them by its id")
+    return {"uri": found[0]["uri"], "name": name}
+
+
+def deploy_to(session, manifest, entry, target: str, dry_run: bool = False, source=None,
+              settings: Optional[dict] = None) -> Outcome:
+    """Update ONE object a site has somewhere else, in place, from one entry
+    of the manifest: the step a site registered in a folder of its own, which
+    its flows reference by id. Nothing is created, no folder is looked at but
+    the one a path names, and the object keeps its id and its name."""
+    source = source or _content.CheckoutSource(manifest)
+    try:
+        if entry.kind not in _DEPLOYERS:
+            raise DeployError(f"a {entry.kind} is not updated this way")
+        found = resolve_target(session, entry.kind, target)
+        status, note = _DEPLOYERS[entry.kind](session, source, entry, None, [found], dry_run, settings)
+    except (DeployError, OSError, ValueError) as exc:
+        return Outcome(entry, FAILED, str(exc))
+    return Outcome(entry, status, note)

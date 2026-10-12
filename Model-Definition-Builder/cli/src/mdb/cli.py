@@ -1483,46 +1483,93 @@ def _package_objects(package: dict) -> list[tuple[str, str]]:
     return package_objects(package)
 
 
+def _emit_outcome(outcome, indent: str = "  ") -> None:
+    """One line for one entry of a deploy or of an import: what happened,
+    the kind, the path and what there is to say about it."""
+    note = f"  ({outcome.note})" if outcome.note else ""
+    console.print(f"{indent}{outcome.status:<12} {outcome.entry.kind:<13} {outcome.entry.path}{note}",
+                  markup=False, highlight=False, soft_wrap=True)
+
+
+def _deploy_settings(content_root_given: Optional[str], compute_context: Optional[str]) -> dict:
+    """The values a deploy or an import writes into the site settings of the
+    job definitions, by the name of the parameter: only what was given."""
+    from .core.content import CONTENT_ROOT_PARAMETER, CONTEXT_PARAMETER
+    settings: dict = {}
+    if compute_context and compute_context.strip():
+        settings[CONTEXT_PARAMETER] = compute_context.strip()
+    if content_root_given:
+        settings[CONTENT_ROOT_PARAMETER] = content_root_given.rstrip("/")
+    return settings
+
+
 @app.command("content-deploy")
 def content_deploy(
     content_root: Optional[str] = typer.Option(
         None, "--content-root",
         help="SAS Content folder to bring to the state of the checkout (default: the content root the "
-             "manifest names, /SAS Agentic AI Accelerator)."),
+             "manifest names, /SAS Agentic AI Accelerator). Given, it is also written into the parameter "
+             "contentRoot of the job definitions that have one."),
     only: Optional[list[str]] = typer.Option(
         None, "--only",
         help="Deploy only the entries at or below this path of the manifest (repeatable), e.g. --only RAG "
              "for the RAG runtime. Default: every entry."),
+    to: Optional[str] = typer.Option(
+        None, "--to",
+        help="With one --only: where that part of the manifest goes instead of its place in the content root. "
+             "For a custom step, a file or a job definition: the object a site has somewhere else - its SAS "
+             "Content path, its id or its URI - which is updated in place and never created. For a folder of "
+             "the manifest: the SAS Content folder its entries are deployed into."),
+    compute_context: Optional[str] = typer.Option(
+        None, "--compute-context",
+        help="Write this compute context into the parameter _contextName of the job definitions that have "
+             "one. Without it a job definition on the site keeps the context it has."),
     dry_run: bool = typer.Option(False, "--dry-run", help="List what would change; write nothing."),
 ):
     """Bring a SAS Content folder to the state of this checkout, from the
     content manifest (SAS-Viya-Integrations/package-manifest.yaml).
 
-    Entry by entry: a folder is created when it is missing; a file is
-    uploaded, and replaced when its bytes differ; a custom step is registered,
-    and an existing one is updated in place so that it keeps its id and the
-    flows that use it keep working; a job definition is created, or updated in
-    place with its program, its form and its parameters. Two files are written
-    by mdb itself: the release table as CSV, exactly as `mdb load-releases
-    --csv` writes it, and release.json - the release, the commit of the
-    checkout and its date, and every entry with its kind and, for a file,
-    a custom step and a job definition, a hash of its content.
+    Entry by entry, and in place: a folder is created when it is missing; a
+    file is uploaded when it is missing, and one whose bytes differ gets its
+    content replaced - the file stays the object it was; a custom step is
+    registered, and an existing one is updated so that it keeps its id and
+    the flows that use it keep working; a job definition is created, or
+    updated with its program, its form and its parameters. Two files are
+    written by mdb itself: the release table as CSV, exactly as `mdb
+    load-releases --csv` writes it, and release.json - the release, the commit
+    of the checkout and its date, and every entry with its kind and, for a
+    file, a custom step and a job definition, a hash of its content.
 
     One line per entry says what happened: equal, updated, created - or
-    FAILED with the reason, after which the run goes on with the next entry
-    and ends with exit code 1. A report is not deployed: it reaches a site
-    with the transfer package, and its line says whether it is on the site.
-    A file that differs is replaced - its old copy is deleted, the new one
-    uploaded - and nothing else is removed. Nothing that is not in the
-    manifest is touched; what else sits in the folders of the manifest is
-    listed at the end.
+    FAILED with the reason. Nothing is deleted, and nothing that is not in
+    the manifest is touched; what else sits in the folders of the manifest is
+    listed at the end. A report is not deployed: it reaches a site through
+    `mdb builders-import`, and its line says whether it is on the site.
 
-    This is how the folder the package is exported from gets its content, and
-    how a site takes a fix from a checkout without waiting for a package.
-    With --only a part of the folder is deployed and the rest is not looked
-    at: `--only RAG` is what the deploy-rag-content scripts run.
+    THE RUN STOPS at the first write that fails - a refusal, or no answer -
+    and says what was written before it; every entry behind it is listed as
+    not attempted. Where the update of a file is refused, the file is left as
+    it is. An entry that fails before anything was sent (two objects of its
+    name in the folder, a reference to an object elsewhere, an object that
+    cannot be read) is reported and the run goes on. Either way the exit code
+    is 1, and a second run leaves what is equal by then as it is.
+
+    SITE SETTINGS. A parameter the manifest marks `siteSetting` - the compute
+    context `_contextName`, the content root `contentRoot` - gets its default
+    in a new job definition and keeps the site's value in an existing one.
+    --compute-context and --content-root write the value they are given.
+
+    PARTS. With --only a part of the folder is deployed and the rest is not
+    looked at: `--only RAG` is the RAG runtime. With --to that part goes
+    somewhere else: `--only RAG --to "/Team/Retrieval"` deploys the RAG
+    runtime into a RAG content root of any name (what the deploy-rag-content
+    scripts run), and `--only "Logging and Monitoring/LLM - Log Parser.step"
+    --to "/Custom Steps/LLM - Log Parser.step"` updates, in place, the step a
+    site registered in a folder of its own - the step its flows reference.
     """
-    from .viya.content import CREATED, EQUAL, NOT_DEPLOYED, UPDATED, DeployError, deploy, selected
+    from .core.content import CheckoutSource, part_of
+    from .viya.content import (CREATED, EQUAL, FAILED, NOT_ATTEMPTED, NOT_DEPLOYED, UPDATED, DeployError, deploy,
+                               deploy_to, selected)
     ctx = Context()
     manifest = _content_manifest(ctx)
     root = (content_root or manifest.content_root).rstrip("/")
@@ -1535,17 +1582,54 @@ def content_deploy(
             console.print(f"--only {path}: the manifest lists nothing at or below that path.", style="red",
                           markup=False, highlight=False)
             raise typer.Exit(2)
+    settings = _deploy_settings(content_root, compute_context)
+    source = CheckoutSource(manifest)
 
-    def emit(outcome) -> None:
-        note = f"  ({outcome.note})" if outcome.note else ""
-        console.print(f"  {outcome.status:<12} {outcome.entry.kind:<13} {outcome.entry.path}{note}",
-                      markup=False, highlight=False, soft_wrap=True)
+    # --to: one part of the manifest, somewhere else
+    target_entry = None
+    if to is not None:
+        to = to.strip()
+        if len(only) != 1:
+            console.print("[red]--to goes with exactly one --only: the entry, or the folder of the manifest, that "
+                          "is deployed there.[/red]")
+            raise typer.Exit(2)
+        if content_root:
+            console.print("[red]--to names the place itself; --content-root does not go with it.[/red]")
+            raise typer.Exit(2)
+        listed = [entry for entry in manifest.objects() if entry.path == only[0]]
+        if listed and listed[0].kind == "report":
+            console.print("[red]A report is not deployed: it reaches a site through `mdb builders-import`.[/red]")
+            raise typer.Exit(2)
+        if listed:
+            target_entry = listed[0]
+        elif not to.startswith("/"):
+            console.print(f"--only {only[0]} is a folder of the manifest, so --to has to be the SAS Content folder "
+                          "its entries go into, starting with a slash.", style="red", markup=False, highlight=False)
+            raise typer.Exit(2)
 
     with _viya_session() as session:
-        console.print(f"{'Dry run - nothing is written. What a run would do to' if dry_run else 'Deploying to'} "
-                      f"{root}" + (f" (only {', '.join(only)})" if only else "") + ":", markup=False, highlight=False)
+        if target_entry is not None:
+            console.print(f"{'Dry run - nothing is written. What a run would do to' if dry_run else 'Updating'} "
+                          f"{to} from {target_entry.path}:", markup=False, highlight=False)
+            outcome = deploy_to(session, manifest, target_entry, to, dry_run, source, settings)
+            _emit_outcome(outcome)
+            if outcome.status == FAILED:
+                console.print("[red]Nothing was updated.[/red]")
+                raise typer.Exit(1)
+            console.print("Nothing was written." if dry_run else "[green]Done.[/green]")
+            return
+        if to is not None:
+            deployed, root, only_shown = part_of(manifest, only[0], to), to.rstrip("/"), []
+            console.print(f"{'Dry run - nothing is written. What a run would do to' if dry_run else 'Deploying to'} "
+                          f"{root} (the entries below {only[0]} of the manifest):", markup=False, highlight=False)
+        else:
+            deployed, only_shown = manifest, only
+            console.print(f"{'Dry run - nothing is written. What a run would do to' if dry_run else 'Deploying to'} "
+                          f"{root}" + (f" (only {', '.join(only)})" if only else "") + ":",
+                          markup=False, highlight=False)
         try:
-            result = deploy(session, manifest, root, dry_run, emit, only=only)
+            result = deploy(session, deployed, root, dry_run, _emit_outcome, only=only_shown, source=source,
+                            settings=settings)
         except DeployError as exc:
             console.print(str(exc), style="red", markup=False, highlight=False)
             raise typer.Exit(1)
@@ -1554,10 +1638,12 @@ def content_deploy(
                       "`mdb package-export` leaves them out:", highlight=False)
         for line in result.unlisted:
             console.print(f"  {line}", markup=False, highlight=False, soft_wrap=True)
-    counts = ", ".join(f"{result.count(status)} {status}" for status in (EQUAL, UPDATED, CREATED, NOT_DEPLOYED)
-                       if result.count(status))
+    counts = ", ".join(f"{result.count(status)} {status}"
+                       for status in (EQUAL, UPDATED, CREATED, NOT_DEPLOYED, NOT_ATTEMPTED) if result.count(status))
     console.print(f"\n{len(result.outcomes)} entries: {counts or 'nothing done'}"
                   + (f", {len(result.failed)} FAILED" if result.failed else "") + ".", highlight=False)
+    if result.stopped_at is not None:
+        console.print(result.stop_line(), style="red", markup=False, highlight=False, soft_wrap=True)
     if result.failed:
         console.print("[red]Not every entry reached the folder.[/red] Fix what is reported above and run the "
                       "command again: what is equal by then is left as it is.")

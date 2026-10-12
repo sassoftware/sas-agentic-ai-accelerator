@@ -633,6 +633,48 @@ def settle_parameters(wanted: dict, live: Optional[dict], site_names=(), given: 
     return {**wanted, "parameters": parameters}
 
 
+class CheckoutSource:
+    """What each entry of a manifest holds, read from the checkout: the
+    source `mdb content-deploy` writes from. `mdb builders-import` hands the
+    same write path a source that reads a transfer package
+    (core/packages.py, PackageSource)."""
+
+    #: How a line names where the content comes from.
+    name = "the checkout"
+
+    def __init__(self, manifest: ContentManifest):
+        self.manifest = manifest
+
+    def file_bytes(self, entry: Entry) -> bytes:
+        return file_bytes(self.manifest, entry)
+
+    def step_body(self, entry: Entry) -> dict:
+        return step_body(self.manifest, entry)
+
+    def step_document(self, entry: Entry) -> bytes:
+        """The step as it is registered: the .step file as it is."""
+        return self.manifest.source_path(entry.source).read_bytes()
+
+    def job_body(self, entry: Entry) -> dict:
+        return job_definition_body(self.manifest, entry)
+
+    def site_settings(self, entry: Entry) -> tuple:
+        return site_settings(entry)
+
+
+def part_of(manifest: ContentManifest, folder: str, content_root: str) -> ContentManifest:
+    """The entries below one folder of the manifest as a manifest of their
+    own, with the paths written below that folder and `content_root` as the
+    folder they go to: `--only RAG --to /Team/Retrieval` deploys the RAG
+    runtime into a folder that need not be called RAG."""
+    from dataclasses import replace
+    prefix = folder.strip("/") + "/"
+    entries = [replace(entry, path=entry.path[len(prefix):]) for entry in manifest.entries
+               if entry.path.startswith(prefix)]
+    return ContentManifest(repo_root=manifest.repo_root, content_root=content_root.rstrip("/"),
+                           package=manifest.package, entries=entries)
+
+
 def _sha256(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
