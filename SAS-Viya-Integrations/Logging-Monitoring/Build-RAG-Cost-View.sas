@@ -5,10 +5,11 @@
     Build RAG_RUN_COST: what each RAG ingestion run cost.
 
     The RAG pipeline records every run in `rag_runs` INSIDE the vector store,
-    and the Load step publishes that table to CAS as <PREFIX>_RUNS. This
-    script joins those published runs to EMBEDDING_FACT_SHEET and applies the
-    price, the same way the LLM Usage Report joins LLM_LOGS to
-    LLM_FACT_SHEET - one table, one join, no new plumbing.
+    and the Load step and the ingestion job of a setup publish that table to
+    CAS as <PREFIX>_RUNS. This script joins those published runs to
+    EMBEDDING_FACT_SHEET and applies the price, the same way the LLM Usage
+    Report joins LLM_LOGS to LLM_FACT_SHEET - one table, one join, no new
+    plumbing.
 
     Two cost bases, taken from the fact sheet's cost_type:
 

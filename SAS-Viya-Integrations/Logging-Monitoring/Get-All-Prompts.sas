@@ -1059,9 +1059,11 @@ def rag_run_sources(setups):
         rows.append({
             'modelID': setup['modelID'], 'projectID': setup['projectID'], 'tables_caslib': caslib,
             'runs_table': table,
-            # The ingestion job of a setup of the Prompt Builder publishes no run table. Its ledger
-            # names the run that listed each document, which is where the SAS code below takes the
-            # runs from. A name that can not stand in SAS code is left out
+            # The run table of a setup can be missing: the ingestion job of a setup of the Prompt
+            # Builder published none before it was given the publication of the run history, and it
+            # publishes none while that history is switched off. The ledger of the setup names the
+            # run that listed each document, which is where the SAS code below takes the runs from
+            # then. A name that can not stand in SAS code is left out
             'ledger_table': ledger if SAS_NAME.fullmatch(ledger) else '',
             'embedding_model': model if re.fullmatch(r'[A-Za-z0-9_.\-]+', model) else '',
             # rag_runs is shared by every collection of a vector store, and a published run table can hold
@@ -1507,8 +1509,11 @@ run; quit;
 %mend _gap_read;
 
 * Takes the runs of one RAG setup from its ledger, for a setup whose run table is not in memory.
-  The ingestion job of a setup of the Prompt Builder keeps its runs in the vector store and
-  publishes the ledger only. A row of the ledger names the run that listed its document last
+  The ingestion job of a setup of the Prompt Builder keeps its runs in the vector store. It
+  published the ledger only before it was given the publication of the run history, and it
+  publishes the ledger only while that history is switched off. The run table is read where
+  it is in memory and the ledger is not asked then, so a run that both name is one row.
+  A row of the ledger names the run that listed its document last
   (run_id) and when the row was written (updated_at), and the id of a run holds the second the
   run started in - run-<seconds since 1970>-<digits>, which is where rag_core takes the start
   of a run from. Every run the ledger still names gives one row, from that start to the latest
