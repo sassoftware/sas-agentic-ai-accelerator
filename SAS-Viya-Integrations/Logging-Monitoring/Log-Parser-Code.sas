@@ -142,6 +142,12 @@ LOG_LINE = re.compile(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\S* - (\S+) - ([A-Z
 SCORE_LINE = re.compile(r'(prompt_length|tokens|output_length|run_time|response|answers|answer):(.*)', re.DOTALL)
 LOG_TIMESTAMP = re.compile(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}')
 TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
+# A file holds the lines of one container after the lines of another, and one collection after
+# another (kubectl logs per pod, appended). Where one part ends and the next begins the time goes
+# back. Inside a part it can go back as well: a line is stamped when it is made and written a
+# moment later, so a line can carry the second before the line in front of it. A line that is
+# older by more seconds than this is the first line of the next part.
+STEP_BACK = 1
 
 # The container gives every request a transaction and logs under 'transaction_<id>' what
 # it does with it. The 'Response Data:' line names the same id.
@@ -594,9 +600,19 @@ def parse_log_file(file_path):
     Each request block starts with 'Request: POST' and ends with its 'Response: Status Code'
     line or, for a request that failed, with the 'Error occurred in the model scoring function'
     line of its transaction. A request that has neither ends at the next request line that no
-    line of its transaction follows, and before the first line that is older than itself or,
-    at a request line, younger than the last line of its transaction. Lines between two blocks
-    belong to no request and are skipped.
+    line of its transaction follows. Lines between two blocks belong to no request and are
+    skipped.
+
+    The lines of a container stand together in the file, one container after the other and one
+    collection after the other, and where a part ends the time goes back. A line that is more
+    than STEP_BACK seconds older than a request that is running or waiting starts the next
+    part: the log ends there for these requests, without a response and without an error, so
+    failed stays missing for them - as it does for a request the file ends on. A transaction
+    of theirs that a later line still names is followed to its end and given nothing more.
+    A line that is older by STEP_BACK seconds at most can be a line of the same container that
+    was written late. It is the line of its transaction when it names one of this part; any
+    other such line is given to no request, and the requests that are running or waiting are
+    counted with the ones the log does not decide.
 
     Only the lines of a transaction and the 'Response Data:' line name the request they belong
     to. Every other line is given to a request where the lines around it leave one request it
@@ -689,8 +705,9 @@ def parse_log_file(file_path):
     # have all their first lines (waiting) and the ones whose first lines are not known to be theirs (blurred)
     waiting = {}
     blurred = {}
-    # The transactions a line has named so far
+    # The transactions a line has named so far, and the ones a line of this part of the file has named
     started = set()
+    here = set()
     # The 'Response:' lines that could not be given to a request and whose 'Response Data:' line is still to come,
     # and the time of the newest request that can not be told apart
     state = {'unpaired': 0, 'newest': ''}
@@ -698,6 +715,20 @@ def parse_log_file(file_path):
     def flag(entry):
         if entry is not None:
             entry['_unattributed'] = True
+
+    def seconds_back(older, newer):
+        # The seconds a time lies before another one. A time that is no date lies further back than any
+        try:
+            return (datetime.strptime(newer, TIMESTAMP_FORMAT) - datetime.strptime(older, TIMESTAMP_FORMAT)).total_seconds()
+        except ValueError:
+            return float('inf')
+
+    def end_of_the_log():
+        # The lines of a container end here - at the end of its part or of the file - while these requests are
+        # running or waiting: the log holds neither a response nor an error for them, and does not say that they failed
+        for entry in [slot['entry'] for slot in running] + [head['entry'] for head in pending]:
+            if entry is not None:
+                entry['_cut'] = True
 
     def wipe(entry):
         # What was read for this request may be the line of another one: only its request line is kept
@@ -721,14 +752,25 @@ def parse_log_file(file_path):
         counts[head['model']] = counts.get(head['model'], 0) + 1
         state['newest'] = max(state['newest'], head['start'])
 
-    def next_part():
-        del running[:]
+    def next_part(position):
+        end_of_the_log()
+        # A transaction that a later line still names has not ended with its part: the file holds its rest further
+        # down - behind an overlap of two collections, or because the lines of several containers are mixed. It is
+        # followed to its end and given nothing more, so that a line that names no request is not taken for the
+        # line of the one other request that is running then
+        carried = [slot for slot in running if slot['last'] >= position]
+        for slot in carried:
+            slot['entry'] = None
+            slot['carried'] = True
+        running[:] = carried
         del pending[:]
         del stopped[:]
         del doubted[:]
         waiting.clear()
         blurred.clear()
         state.update(unpaired=0, newest='')
+        here.clear()
+        here.update(slot['transaction'] for slot in carried)
 
     def mark_overlap():
         entries = [slot['entry'] for slot in running] + [head['entry'] for head in pending if head['scoring']]
@@ -803,21 +845,52 @@ def parse_log_file(file_path):
         this = index
         index += 1
 
-        # A line that is older than a request that is running belongs to the next container's part of the file
-        newest = [slot['start'] for slot in running] + [head['start'] for head in pending]
+        # A line that is older than a request that is running or waiting. By more than a line of one container is
+        # written late: the next part of the file begins. By less: a line of this part that was written late, or the
+        # first line of the next part. A line that names a transaction of this part is the line of that transaction.
+        # Of any other line the log does not say which of the two it is
+        newest = [slot['start'] for slot in running if not slot['carried']] + [head['start'] for head in pending]
         if anonymous(waiting) + anonymous(blurred) > 0:
             newest.append(state['newest'])
+        late = False
         if newest and timestamp < max(newest):
-            next_part()
+            if seconds_back(timestamp, max(newest)) > STEP_BACK:
+                next_part(this)
+            else:
+                late = transaction_of(logger, message) not in here
 
         kind = next((position for position, start in enumerate(head_lines) if message.startswith(start)), None)
+
+        if late:
+            # The requests that are running or waiting can have written the line, and they can be over where it
+            # stands: they are counted with the requests the log does not decide. A request line and the first lines
+            # of a request are read by their order, as they are tied to the request line in front of them, and so is
+            # the line that starts a transaction. Where a part begins in the middle of a request it begins with the
+            # lines of the score code, the 'Response:' line or a later line of a transaction: such a line is given
+            # to no request, and such a transaction is followed and bound to none
+            for slot in running:
+                flag(slot['entry'])
+            for head in pending:
+                flag(head['entry'])
+            if kind is None and not message.startswith('Request: ') and not logger.startswith(TRANSACTION_LOGGER):
+                continue
 
         if message.startswith('Request: '):
             scoring_request = message.startswith('Request: POST')
             model = (message[len('Request: POST'):].strip().strip('/') or None) if scoring_request else None
-            # A request ends here unless a later line names its transaction. Where the lines in between are
-            # younger than that line, it is the line of another part of the file and the request ended in this one
-            running[:] = [slot for slot in running if slot['last'] > this and slot['end'] >= timestamp]
+            # A request ends here unless a later line names its transaction. Where the next such line is older than
+            # this one by more than a line is written late, it stands in another part of the file: the lines of the
+            # container ended in this part while the request was running, which is all the log says of it
+            for slot in list(running):
+                if slot['last'] <= this:
+                    running.remove(slot)
+                    continue
+                names = named[slot['transaction']]
+                following = units[names[bisect.bisect_right(names, this)]][2]
+                if following < timestamp and seconds_back(following, timestamp) > STEP_BACK:
+                    if slot['entry'] is not None:
+                        slot['entry']['_cut'] = True
+                    running.remove(slot)
             # First lines that are not all there have broken off. A request that has them all is waiting for its
             # transaction - unless the log names no transaction at all and is read by the order of its lines
             for head in list(pending):
@@ -831,7 +904,7 @@ def parse_log_file(file_path):
                 entry = dict.fromkeys(COLUMNS)
                 entry['timestamp'] = timestamp
                 entry['model'] = model
-                entry.update(_errors=False, _overlapped=False, _unattributed=False, _unreadable=False)
+                entry.update(_errors=False, _overlapped=False, _unattributed=False, _unreadable=False, _cut=False)
                 records.append(entry)
                 if stopped:
                     doubted.append(entry)
@@ -892,6 +965,7 @@ def parse_log_file(file_path):
                 if transaction is not None:
                     head['entry']['transaction_id'] = transaction
                     started.add(transaction)
+                    here.add(transaction)
                 pending.remove(head)
         elif message.startswith('Response Data: '):
             # Reached with its transaction still running only when the 'Response:' line in front of it was not taken as its line
@@ -909,21 +983,21 @@ def parse_log_file(file_path):
                 flag(slot['entry'])
                 slot['entry'] = None
                 slot['last'] = last_naming(transaction, this)
-                slot['end'] = units[slot['last']][2]
                 take_transaction(model_named(message), False)
             elif slot is None:
                 entry = None
                 if opens or transaction not in started:
-                    entry = take_transaction(model_named(message), True)
+                    # The rest of a transaction at a place where the next part can have begun is bound to no request
+                    entry = take_transaction(model_named(message), opens or not late)
                 # Otherwise the rest of a request that ended further up, in another part of the file: nothing is kept of it
                 if entry is not None:
                     entry['transaction_id'] = transaction
-                last = last_naming(transaction, this)
                 slot = {'entry': entry, 'transaction': transaction, 'start': entry['timestamp'] if entry is not None else timestamp,
-                        'last': last, 'end': units[last][2]}
+                        'last': last_naming(transaction, this), 'carried': False}
                 running.append(slot)
                 mark_overlap()
             started.add(transaction)
+            here.add(transaction)
             if level == 'ERROR':
                 if slot['entry'] is not None:
                     guarded(read_error, slot['entry'], message, more_lines)
@@ -977,21 +1051,27 @@ def parse_log_file(file_path):
                     behind = units[index][0] if index < len(units) else len(lines)
                 entry['response'] = ' '.join([value.strip()] + [line.strip() for line in lines[first + 1:behind]])
 
-    # A request failed when the log holds an error for it or no response. For a request that ran at the same
-    # time as another one the log can hold a response that could not be given to it: nothing is said then
+    end_of_the_log()
+
+    # A request failed when the log holds an error for it, or no response although its container went on. For a
+    # request that ran at the same time as another one the log can hold a response that could not be given to it,
+    # and for a request the lines of its container end on it holds none yet: nothing is said then
     overlapped = 0
     unattributed = 0
     undecided = 0
+    ended = 0
     unreadable = 0
     replaced = 0
     for entry in records:
+        mixed = entry['_overlapped'] or entry['_unattributed']
         if entry['status_code'] is not None:
             entry['failed'] = 1 if entry['_errors'] or entry['status_code'] >= 400 else 0
-        elif entry['_errors'] or not (entry['_overlapped'] or entry['_unattributed']):
+        elif entry['_errors'] or not (mixed or entry['_cut']):
             entry['failed'] = 1
-        overlapped += 1 if entry['_overlapped'] or entry['_unattributed'] else 0
+        overlapped += 1 if mixed else 0
         unattributed += 1 if entry['_unattributed'] else 0
-        undecided += 1 if entry['failed'] is None else 0
+        undecided += 1 if entry['failed'] is None and mixed else 0
+        ended += 1 if entry['failed'] is None and not mixed else 0
         unreadable += 1 if entry['_unreadable'] else 0
         # A text that has no UTF-8 bytes can not be uploaded: the rows are handed to CAS as a UTF-8 file. Half of
         # a surrogate pair in a request body is such a text, and it becomes a question mark as it does in a hash
@@ -1010,6 +1090,8 @@ def parse_log_file(file_path):
         SAS.logMessage(f"No request was read: 'Request: POST' was found in {unmatched_requests} line(s) that do not start as a log line ('<timestamp> - <logger> - <level> - '). The parser needs the lines as the containers write them, with nothing in front.", messageType='WARNING')
     if overlapped > 0:
         SAS.logMessage(f"{overlapped} request(s) were running at the same time as another request - of their container, or of another container whose lines are mixed with theirs in the file. The first lines of a request, the lines of the score code and the 'Response:' line name no request, so a line that the log does not decide was given to none of them: {unattributed} request(s) can have missing values, and failed is missing for {undecided} request(s).")
+    if ended > 0:
+        SAS.logMessage(f"{ended} request(s) were running where the lines of their container end - at the end of the file, or at the end of a part of it, where the time of the lines goes back. The log holds neither a response nor an error for them, and failed is missing for them.")
     if unreadable > 0:
         SAS.logMessage(f"{unreadable} request(s) hold a value that could not be read, for example a 'Request Data:' line that was cut off or options that are nested deeper than Python decodes. The rows were kept with what was read.")
     if replaced > 0:

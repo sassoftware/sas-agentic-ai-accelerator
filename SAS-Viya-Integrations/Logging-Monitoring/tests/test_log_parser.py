@@ -1373,17 +1373,20 @@ def test_request_that_is_still_running_takes_no_lines_of_the_next_container(monk
         log_line("2026-01-05 09:00:00", "api", "Response: Status Code 200"),
     ]
     run = run_parser(monkeypatch, _write(tmp_path, as_log(running, leftover, embedding_block(timestamp="2026-01-05 09:30:00"))))
+    del run.sas.messages[:]
     frame = run.namespace["parse_log_file"](run.sas.macro_variables["_log_path"])
 
     assert len(frame) == 2
     assert frame.loc[0, "user_prompt"] == "still running"
     assert all(missing(frame.loc[0, column]) for column in ("prompt_length", "output_length", "runtime", "response"))
     assert (frame.loc[1, "model"], frame.loc[1, "prompt_length"]) == ("demo_embedder", 17)
-    # The log holds no response for it, which is what failed says, and no error
-    assert missing(frame.loc[0, "status_code"]) and frame.loc[0, "failed"] == 1
+    # The log holds no response for it and no error: the lines of its container end while it is running,
+    # which does not say that it failed
+    assert missing(frame.loc[0, "status_code"]) and missing(frame.loc[0, "failed"])
     assert missing(frame.loc[0, "error_text"])
     assert frame.loc[0, "kind"] == "llm" and not missing(frame.loc[0, "transaction_id"])
-    assert run.sas.messages == []
+    assert frame.loc[1, "failed"] == 0
+    assert _end_note(run) == 1
 
 
 def test_request_to_another_model_is_the_next_container(monkeypatch, tmp_path):
@@ -1448,6 +1451,25 @@ def _overlap_counts(messages):
 def _overlap_note(run):
     assert [kind for kind, _ in run.sas.messages] == ["NOTE"], run.sas.messages
     return _overlap_counts(run.sas.messages)
+
+
+END_NOTE = re.compile(
+    r"(\d+) request\(s\) were running where the lines of their container end - at the end of the file, or at the end of a part "
+    r"of it, where the time of the lines goes back\. The log holds neither a response nor an error for them, and failed is "
+    r"missing for them\.")
+
+
+def _end_counts(messages):
+    """What the NOTE about requests the lines of their container end on counts. None when there is no such NOTE."""
+    found = [END_NOTE.fullmatch(message) for kind, message in messages if kind == "NOTE" and "lines of their container end" in message]
+    assert all(found), messages
+    assert len(found) <= 1
+    return int(found[0].group(1)) if found else None
+
+
+def _end_note(run):
+    assert [kind for kind, _ in run.sas.messages] == ["NOTE"], run.sas.messages
+    return _end_counts(run.sas.messages)
 
 
 def test_requests_that_overlap_in_one_container_stay_one_row_each(monkeypatch, tmp_path):
@@ -1942,11 +1964,251 @@ def test_request_that_was_cut_off_is_over_where_the_file_goes_on_later_than_its_
     frame = run.uploads[0]["frame"]
     assert list(frame["model"]) == ["model_x", "model_y", "model_y", "model_x"]
     assert list(frame["response"])[1:] == ["answer Y1", "answer Y2", "The capital of Austria is Vienna."]
-    assert list(frame["failed"]) == [1, 0, 0, 0]
+    # The lines of its container ended while it was running, which does not say that it failed
+    assert missing(frame.loc[0, "failed"]) and list(frame["failed"])[1:] == [0, 0, 0]
     # Its rest further down is the rest of a request that ended: it is added to no row
     assert missing(frame.loc[0, "response"]) and missing(frame.loc[0, "status_code"])
     assert "its answer" not in frame.to_csv()
+    assert _end_note(run) == 1
+
+
+# ---------------------------------------------------------------------------
+# Where the time goes back
+#
+# kubectl logs writes the lines of one container, and the collection script appends
+# container after container and collection after collection. Where a part ends the
+# time goes back, by as much as the collections reach back. Inside a part it can go
+# back by a second: a line is stamped when it is made and written a moment later.
+# ---------------------------------------------------------------------------
+
+def _stamped(unit, time):
+    """A log line, with the lines behind it that carry no time, under another time."""
+    return [time + unit[0][19:]] + unit[1:]
+
+
+def _counted(messages):
+    """The requests the two NOTEs count that say what the log does not decide."""
+    assert all(kind == "NOTE" for kind, _ in messages), messages
+    return (_overlap_counts(messages) or (0,))[0] + (_end_counts(messages) or 0)
+
+
+def _two_that_overlap():
+    """Two requests of one container, as (request, lines of one log line) in file order: the eight first lines
+    of the first, the eight of the second, the rest of the first, the rest of the second."""
+    first, second = log_units(_numbered(1)), log_units(_numbered(2))
+    return [(1, unit) for unit in first[:8]] + [(2, unit) for unit in second[:8]] + [(1, unit) for unit in first[8:]] + [(2, unit) for unit in second[8:]]
+
+
+@pytest.mark.parametrize("late", range(1, 32))
+def test_line_that_is_a_second_older_than_a_request_line_in_front_of_it_ends_no_request(monkeypatch, tmp_path, late):
+    """Two requests of one container overlap, every log line a second later than the one
+    before - and one line carries the second before the newest request line in front of it,
+    as a line that was made in one second and written in the next. Before, that line was
+    taken for the first line of the next container: everything running was dropped, and a
+    request that was answered became failed = 1, at two places without a NOTE."""
+    units = _two_that_overlap()
+    moments = [datetime(2026, 1, 5, 9, 15, 0).timestamp() + position for position in range(len(units))]
+    newest_request = max(position for position in range(late) if " - Request: POST" in units[position][1][0])
+    moments[late] = moments[newest_request] - 1
+    lines = [line for moment, (_, unit) in zip(moments, units) for line in _stamped(unit, datetime.fromtimestamp(moment).strftime("%Y-%m-%d %H:%M:%S"))]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(lines)))
+
+    frame = run.uploads[0]["frame"]
+    assert len(frame) == 2
+    lacking = 0
+    for number, (_, row) in zip((1, 2), frame.iterrows()):
+        found = _numbers_in(row)
+        # No value of the other request, and both were answered: failed is 0 or the log does not decide it
+        assert set(found.values()) <= {number}, (number, found)
+        assert missing(row["failed"]) or row["failed"] == 0, (number, row["failed"])
+        lacking += 1 if missing(row["failed"]) or not ANSWERED_HAS <= set(found) else 0
+    assert lacking == 0 or _counted(run.sas.messages) >= lacking
+
+
+def test_line_that_names_its_transaction_is_read_wherever_it_stands(monkeypatch, tmp_path):
+    """Two requests one behind the other, no overlap: the 'Response Data:' line of the first
+    is written behind the request line of the second and carries the second before it.
+    The line names its transaction, so nothing is in doubt. Before, the second request lost
+    every value and became failed = 1 without a NOTE."""
+    first, second = log_units(_numbered(1)), log_units(_numbered(2))
+    lines = lines_of([_stamped(unit, "2026-01-05 09:15:01") for unit in first[:8]]
+                     + [_stamped(unit, "2026-01-05 09:15:03") for unit in first[8:-1]]
+                     + [_stamped(second[0], "2026-01-05 09:15:04"), _stamped(first[-1], "2026-01-05 09:15:03")]
+                     + [_stamped(unit, "2026-01-05 09:15:04") for unit in second[1:]])
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(lines)))
+
+    frame = run.uploads[0]["frame"]
+    assert _hold_what_the_log_decides(frame, run.sas.messages, [1, 2], {1: False, 2: False}) == 0
+    assert list(frame["status_code"]) == [201, 202] and list(frame["failed"]) == [0, 0]
+    assert _numbers_in(frame.loc[1])["prompt_length"] == 2
+
+
+def test_response_line_that_was_written_late_is_given_to_no_request(monkeypatch, tmp_path):
+    """The same two requests, and the 'Response:' line of the first is late as well. It
+    names no request: where a part of the file begins in the middle of a request, such a
+    line is the line of a request of the next container. The first request keeps what was
+    read, its status and failed are missing and the NOTE counts it; the second has all its
+    values. Before, both became failed = 1 without a NOTE."""
+    first, second = log_units(_numbered(1)), log_units(_numbered(2))
+    lines = lines_of([_stamped(unit, "2026-01-05 09:15:01") for unit in first[:8]]
+                     + [_stamped(unit, "2026-01-05 09:15:03") for unit in first[8:-2]]
+                     + [_stamped(second[0], "2026-01-05 09:15:04")] + [_stamped(unit, "2026-01-05 09:15:03") for unit in first[-2:]]
+                     + [_stamped(unit, "2026-01-05 09:15:04") for unit in second[1:]])
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(lines)))
+
+    frame = run.uploads[0]["frame"]
+    assert (frame.loc[0, "response"], frame.loc[0, "prompt_length"]) == ("RESP1 answer", 11)
+    assert missing(frame.loc[0, "status_code"]) and missing(frame.loc[0, "failed"])
+    assert ANSWERED_HAS <= set(_numbers_in(frame.loc[1])) and set(_numbers_in(frame.loc[1]).values()) == {2}
+    assert (frame.loc[1, "status_code"], frame.loc[1, "failed"]) == (202, 0)
+    assert _overlap_note(run) == (2, 2, 1)
+
+
+@pytest.mark.parametrize("seconds, part_ends", [(1, False), (2, True), (3600, True)], ids=["one second", "two seconds", "an hour"])
+def test_next_part_of_the_file_begins_where_the_time_goes_back_by_more_than_a_second(monkeypatch, tmp_path, seconds, part_ends):
+    """A request is running, and the score lines that follow are older than its request
+    line. By more than a second they are the lines of the next container, which was cut
+    off in the middle of a request: the request ended with its part and the lines are the
+    lines of no request. By one second the log does not say which it is: the lines are
+    given to no request either, and the request goes on."""
+    running, rest = split_at_scoring(llm_block(timestamp="2026-01-05 10:00:00", finished="2026-01-05 10:00:05", user_prompt="still running", response="its own answer"))
+    older = (datetime(2026, 1, 5, 10, 0, 0) - pd.Timedelta(seconds=seconds)).strftime("%Y-%m-%d %H:%M:%S")
+    leftover = [log_line(older, "scoreModel", "prompt_length: 999"), log_line(older, "scoreModel", "response: the answer of another request")]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(running, leftover, rest)))
+
+    frame = run.uploads[0]["frame"]
+    assert len(frame) == 1 and frame.loc[0, "user_prompt"] == "still running"
+    assert "the answer of another request" not in frame.to_csv() and "999" not in frame.to_csv()
+    if part_ends:
+        # Its own rest further down is the rest of a request that ended: nothing of it is added
+        assert all(missing(frame.loc[0, column]) for column in ("prompt_length", "response", "status_code", "failed"))
+        assert _end_note(run) == 1
+    else:
+        assert (frame.loc[0, "prompt_length"], frame.loc[0, "response"], frame.loc[0, "status_code"], frame.loc[0, "failed"]) == (21, "its own answer", 200, 0)
+        assert _overlap_note(run) == (1, 1, 0)
+
+
+def test_request_the_file_ends_on_is_not_called_failed(monkeypatch, tmp_path):
+    """The log was collected while the last request was running. It holds neither a
+    response nor an error for it, which does not say that it failed. A request that did
+    log an error before the file ends failed."""
+    answered = llm_block(timestamp="2026-01-05 09:00:00", user_prompt="answered")
+    running = split_at_scoring(llm_block(timestamp="2026-01-05 09:01:00", user_prompt="still running"))[0]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(answered, running)))
+    frame = run.uploads[0]["frame"]
+    assert list(frame["user_prompt"]) == ["answered", "still running"]
+    assert frame.loc[0, "failed"] == 0 and missing(frame.loc[1, "failed"]) and missing(frame.loc[1, "status_code"])
+    assert _end_note(run) == 1
+
+    # Only its request line and its first lines: it is waiting for its transaction where the file ends
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(answered, running[:-3]), "waiting.log"))
+    assert missing(run.uploads[0]["frame"].loc[1, "failed"]) and _end_note(run) == 1
+
+    failing = failed_block("2026-01-05 09:01:00", "demo_llm", llm_inputs(user_prompt="failing"))
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(answered, failing[:-1]), "failing.log"))
+    frame = run.uploads[0]["frame"]
+    assert frame.loc[1, "failed"] == 1 and not missing(frame.loc[1, "error_text"])
     assert run.sas.messages == []
+
+
+def test_request_without_a_response_whose_container_went_on_failed(monkeypatch, tmp_path):
+    """What stays as it was: a request that has no response and no error where the next
+    request of its container begins did fail, and no NOTE is written for it."""
+    running = split_at_scoring(llm_block(timestamp="2026-01-05 09:00:00", user_prompt="never answered"))[0]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(running, llm_block(timestamp="2026-01-05 09:05:00", user_prompt="answered"))))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["failed"]) == [1, 0] and missing(frame.loc[0, "status_code"])
+    assert run.sas.messages == []
+
+
+def test_transaction_that_goes_on_behind_the_end_of_its_part_takes_no_line_and_gives_none_away(monkeypatch, tmp_path):
+    """The lines of two containers in a file that is no container after the other: the
+    request of the first is running, the lines of the second are hours older, and the rest
+    of the first follows in the middle of the second. The first request ended with its
+    part. Its transaction is still named further down, so it is followed: its score lines
+    are not taken for the lines of the one request that is running then. Before, the second
+    request got the token counts, the run time and the response of the first, without a NOTE."""
+    first = log_units(_numbered(1, model="model_x"))
+    second = log_units(_numbered(2, model="model_y"))
+    lines = lines_of([_stamped(unit, "2026-01-05 12:49:50") for unit in first[:8]]
+                     + [_stamped(unit, "2026-01-05 07:30:45") for unit in second[:8]]
+                     + [_stamped(unit, "2026-01-05 12:49:56") for unit in first[8:]]
+                     + [_stamped(unit, "2026-01-05 07:30:47") for unit in second[8:]])
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(lines)))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["model"]) == ["model_x", "model_y"]
+    assert set(_numbers_in(frame.loc[0]).values()) == {1} and set(_numbers_in(frame.loc[1]).values()) == {2}
+    # The first: what its first lines and its transaction say, and nothing of what stands behind the end of its part
+    assert all(missing(frame.loc[0, column]) for column in ("prompt_length", "output_length", "runtime", "response", "status_code", "failed"))
+    assert not missing(frame.loc[0, "transaction_id"])
+    # The second: its own values, read once the transaction of the first had ended
+    assert ANSWERED_HAS <= set(_numbers_in(frame.loc[1])) and (frame.loc[1, "status_code"], frame.loc[1, "failed"]) == (202, 0)
+    # Both are counted: the second ran while the transaction of the first was still named, the first ended with its part
+    assert _overlap_counts(run.sas.messages) == (1, 1, 0) and _end_counts(run.sas.messages) == 1
+
+
+def test_requests_whose_first_lines_stand_behind_older_lines_are_not_both_called_failed(monkeypatch, tmp_path):
+    """Two requests whose first lines are cut in two, the second halves four seconds older
+    than the request line in front of them - no container writes that, the file was put
+    together by hand. The part ends where the time goes back: the request that was waiting
+    there is not called failed, and the NOTE counts it. The first one had lost its first
+    lines to the request line of the second, which is a request that broke off."""
+    first, second = log_units(_numbered(1)), log_units(_numbered(2))
+    lines = lines_of([_stamped(unit, "2026-01-05 07:30:45") for unit in first[:2]]
+                     + [_stamped(unit, "2026-01-05 07:30:49") for unit in second[:2]]
+                     + [_stamped(unit, "2026-01-05 07:30:45") for unit in first[2:8]]
+                     + [_stamped(unit, "2026-01-05 07:30:47") for unit in first[8:]]
+                     + [_stamped(unit, "2026-01-05 07:30:49") for unit in second[2:8]]
+                     + [_stamped(unit, "2026-01-05 07:30:50") for unit in second[8:]])
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(lines)))
+
+    frame = run.uploads[0]["frame"]
+    assert len(frame) == 2
+    for number, (_, row) in zip((1, 2), frame.iterrows()):
+        assert set(_numbers_in(row).values()) <= {number}
+    assert frame.loc[0, "failed"] == 1 and missing(frame.loc[1, "failed"])
+    assert _end_note(run) == 1
+
+
+def test_seconds_that_go_back_by_one_between_requests_that_overlap_change_no_value(monkeypatch, tmp_path):
+    """Two or three requests of one container whose lines mix by chance, each line stamped
+    up to a second before its place in the file and never before the line of its own
+    request in front of it. What holds for the same lines with rising seconds holds here."""
+    run = run_parser(monkeypatch, _write(tmp_path, ""))
+    parse_file = run.namespace["parse_log_file"]
+    chance = random.Random(16)
+    went_back = 0
+    for _ in range(60):
+        count = chance.choice([2, 2, 3])
+        failed = {number: chance.random() < 0.25 for number in range(1, count + 1)}
+        waiting = [log_units(_numbered(number, failed[number])) for number in range(1, count + 1)]
+        lines, order, stamps = [], [], []
+        clock, newest = 0.0, {}
+        while any(waiting):
+            number = chance.choice([index for index, units in enumerate(waiting) if units])
+            unit = waiting[number].pop(0)
+            clock += chance.choice([0.0, 0.1, 0.3, 0.6, 1.0, 1.4])
+            second = max(int(clock - chance.choice([0.0, 0.0, 0.2, 0.5, 0.9])), newest.get(number, 0))
+            newest[number] = second
+            stamps.append(second)
+            if " - Request: POST" in unit[0]:
+                order.append(number + 1)
+            lines.extend(_stamped(unit, (datetime(2026, 1, 5, 9, 0, 0) + pd.Timedelta(seconds=second)).strftime("%Y-%m-%d %H:%M:%S")))
+        assert all(before - after <= 1 for before, after in zip(stamps, stamps[1:]))
+        went_back += sum(1 for before, after in zip(stamps, stamps[1:]) if after < before)
+        del run.sas.messages[:]
+        frame = parse_file(str(_write(tmp_path, as_log(lines))))
+        assert len(frame) == count
+        lacking = 0
+        for number, (_, row) in zip(order, frame.iterrows()):
+            found = _numbers_in(row)
+            assert set(found.values()) <= {number}, (number, found)
+            assert missing(row["failed"]) or row["failed"] == int(failed[number]), (number, row["failed"])
+            lacking += 1 if missing(row["failed"]) or not (FAILED_HAS if failed[number] else ANSWERED_HAS) <= set(found) else 0
+        assert lacking == 0 or _counted(run.sas.messages) >= lacking
+    assert went_back > 20
 
 
 # ---------------------------------------------------------------------------
@@ -1991,23 +2253,65 @@ def test_request_that_starts_inside_a_response_is_a_request(monkeypatch, tmp_pat
     assert _overlap_note(run) == (2, 0, 0)
 
 
-@pytest.mark.parametrize("quoted_time, status, failed", [("2026-01-05 09:15:00", 200, 0), ("2026-01-05 08:00:00", None, 1)],
-                         ids=["with the time of the request", "with an earlier time"])
-def test_response_that_quotes_a_request_line_and_its_headers_line_reads_as_a_request(monkeypatch, tmp_path, quoted_time, status, failed):
+@pytest.mark.parametrize("quoted_time, status", [
+    ("2026-01-05 09:15:00", 200), ("2026-01-05 09:15:10", 200), ("2026-01-05 09:15:30", 200), ("2026-01-05 09:14:59", 200),
+    ("2026-01-05 09:14:58", None), ("2026-01-05 08:00:00", None), ("2026-01-05 09:15:31", None), ("2026-01-06 09:15:00", None)],
+    ids=["with the time of the request line", "with a time while the request ran", "with the time of the Response line",
+         "one second before the request line", "two seconds before the request line", "an hour before",
+         "one second after the Response line", "a day later"])
+def test_response_that_quotes_a_request_line_and_its_headers_line_reads_as_a_request(monkeypatch, tmp_path, quoted_time, status):
     """What the lines do not tell apart: a response that holds a request line with a 'Request
     Headers:' line behind it, each at the start of a line as a container writes them. One
-    more row is written, and the response ends in front of the quoted lines. Quoted with a
-    time before the request, they read as the start of the next container's part of the
-    file, which ends the request without its 'Response:' line."""
+    more row is written, and the response ends in front of the quoted lines. The request
+    keeps its 'Response:' line where the quoted lines carry a time from one second before
+    its request line to the time of its 'Response:' line. Quoted with an earlier or a later
+    time, the lines of the request and the quoted ones are not in the order of one
+    container: its status and failed stay missing, which a NOTE counts - it is never
+    called failed for it."""
     quoted = [f"{quoted_time} - api - INFO - Request: POST /demo_llm",
               f"{quoted_time} - api - INFO - Request Headers: Host: quoted.example.com"]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        llm_block(finished="2026-01-05 09:15:30", response="Like this:\n" + "\n".join(quoted)),
+        llm_block(timestamp="2026-01-07 10:00:00", user_prompt="the next request", response="the next answer"))))
+
+    frame = run.uploads[0]["frame"]
+    assert len(frame) == 3
+    assert (frame.loc[0, "response"], frame.loc[0, "prompt_length"]) == ("Like this:", 21)
+    if status is None:
+        assert missing(frame.loc[0, "status_code"]) and missing(frame.loc[0, "failed"])
+    else:
+        assert (frame.loc[0, "status_code"], frame.loc[0, "failed"]) == (status, 0)
+    assert missing(frame.loc[1, "user_prompt"]) and missing(frame.loc[1, "status_code"]) and missing(frame.loc[1, "failed"])
+    assert (frame.loc[2, "response"], frame.loc[2, "status_code"], frame.loc[2, "failed"]) == ("the next answer", 200, 0)
+    # Both rows are counted, by one NOTE or by the other
+    counted = (_overlap_counts(run.sas.messages) or (0,))[0] + (_end_counts(run.sas.messages) or 0)
+    assert counted == 2 and all(kind == "NOTE" for kind, _ in run.sas.messages)
+
+
+@pytest.mark.parametrize("behind, rows", [([], 2), (["that was it"], 2),
+                                          (["2026-01-05 09:15:00 - scoreModel - INFO - prompt_length: 99999"], 1),
+                                          (["that was it", "2026-01-05 09:15:00 - scoreModel - INFO - prompt_length: 99999"], 1)],
+                         ids=["nothing", "a line of text", "a line that starts like a log line", "text and a line that starts like a log line"])
+def test_request_line_that_is_the_last_log_line_of_a_response_reads_as_a_request(monkeypatch, tmp_path, behind, rows):
+    """The other case the lines do not tell apart: a response that holds a request line and
+    behind it, up to the next line of the transaction, no further line that starts like a
+    log line - lines of text can follow. One more row is written and the response ends in
+    front of the request line. With one more line that starts like a log line behind it,
+    the request line is text of the response."""
+    quoted = ["2026-01-05 09:15:00 - api - INFO - Request: POST /x"] + behind
     run = run_parser(monkeypatch, _write(tmp_path, as_log(llm_block(response="Like this:\n" + "\n".join(quoted)))))
 
     frame = run.uploads[0]["frame"]
-    assert len(frame) == 2
-    assert (frame.loc[0, "response"], frame.loc[0, "prompt_length"]) == ("Like this:", 21)
-    assert (None if missing(frame.loc[0, "status_code"]) else frame.loc[0, "status_code"], frame.loc[0, "failed"]) == (status, failed)
-    assert missing(frame.loc[1, "user_prompt"]) and missing(frame.loc[1, "status_code"])
+    assert len(frame) == rows
+    assert (frame.loc[0, "status_code"], frame.loc[0, "failed"], frame.loc[0, "prompt_length"]) == (200, 0, 21)
+    if rows == 2:
+        assert frame.loc[0, "response"] == "Like this:"
+        assert frame.loc[1, "model"] == "x" and all(missing(frame.loc[1, column]) for column in ("user_prompt", "status_code", "failed"))
+        assert "that was it" not in frame.to_csv()
+        assert _overlap_note(run) == (2, 0, 1)
+    else:
+        assert frame.loc[0, "response"] == "Like this: " + " ".join(quoted)
+        assert run.sas.messages == []
 
 
 # ---------------------------------------------------------------------------
