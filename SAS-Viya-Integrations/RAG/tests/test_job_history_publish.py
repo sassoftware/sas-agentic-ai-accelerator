@@ -583,9 +583,10 @@ def test_a_store_that_refuses_the_read_leaves_a_reason_and_no_failed_run(tmp_pat
     reason = sas.macros["_rag_histError"]
     # nothing SAS would read as code: the reason stands in a statement, so
     # the quotation marks, the percent sign, the ampersand, the semicolon,
-    # the line break and the two marks of a comment are gone from it
-    assert reason == ("RuntimeError: relation rag_doc_events does not exist "
-                      "LINE 1: SELECT e.* / * 100 * / more")
+    # the line break and the two marks of a comment are gone from it - the
+    # way the logging programs write a text they did not make themselves
+    assert reason == ("RuntimeError: relation `rag_doc_events` does not exist, "
+                      "LINE 1: SELECT e.* / * 100pct * / + more")
     assert len(reason) <= 200
     # the counts and the columns are handed over only with the state read
     assert set(sas.macros) == {"_rag_histState", "_rag_histError"}
@@ -626,6 +627,113 @@ def test_a_label_that_is_not_plain_text_is_left_out(tmp_path, monkeypatch):
     assert list(labels) == ["run_id", "source_kind", "status", "error_text"]
     for value in sas.macros.values():
         assert not set(value) & set("'\"%&;\n"), value
+
+
+# What SAS would not take as text, each mark built from its halves so that
+# this file holds none either
+_START, _END = "/" + "*", "*" + "/"
+_REASONS = {
+    "the two marks of a comment": "Billing " + _START + " notes " + _END + " and more",
+    "the start of a comment": "open " + _START + " comment",
+    "a parenthesis without its partner": "closed ) only, and ( open",
+    "quotes": "it's a \"name\"",
+    "a semicolon and a statement": "x; %put ERROR: this ran as SAS code;",
+    "a reference to a macro variable": "R&D of &sysuserid. and &&x",
+    "a line break": "line one\nline two\r\nline three",
+    "a tab and a control character": "tab\there\x00\x1b[0m",
+    "2000 characters": "n" * 2000,
+    "all of it": "a'b\"c; %put ERROR: x; &y " + _START + " ) \n\t" + "z" * 2000,
+}
+
+
+class _RefusesWith:
+    """A store whose driver gives the reason of the test as its error."""
+
+    def __init__(self, reason):
+        self.reason, self.statements = reason, []
+
+    def cursor(self):
+        raise RuntimeError(self.reason)
+
+
+@pytest.mark.parametrize("hostile", list(_REASONS.values()), ids=list(_REASONS))
+def test_a_reason_of_any_wording_reaches_sas_as_text(tmp_path, hostile):
+    """The reason is the text of a driver or of the file system. It is
+    written into a macro variable and into a line of the log, so it holds
+    no quote, no macro trigger, no semicolon, no comment mark, no character
+    that is no text and no parenthesis without its partner, in 200
+    characters at most."""
+    sas, _, _ = _hand_over(tmp_path, store=_RefusesWith(hostile))
+    assert sas.macros["_rag_histState"] == "failed"
+    reason = sas.macros["_rag_histError"]
+    assert reason.startswith("RuntimeError: ") and len(reason) <= 200
+    for text in (reason, sas.log[0]):
+        assert not set(text) & set("'\"%&;"), text
+        assert _START not in text and _END not in text, text
+        assert all(character.isprintable() for character in text), text
+        depth = 0
+        for character in text:
+            depth += {"(": 1, ")": -1}.get(character, 0)
+            assert depth >= 0, text
+        assert depth == 0, text
+    assert sas.log == ["RAGINGEST rag history: not read for CAS (" + reason
+                       + ") - the ingestion itself is unaffected"]
+
+
+def _logging_escape():
+    """The escaping function of the logging programs, from the program that
+    the tests of that folder compare the others with: (the settings in front
+    of it, the function)."""
+    link = (RAG.parent / "Logging-Monitoring" / "Link-Logs-To-Models.sas") \
+        .read_text(encoding="utf-8").replace("\r\n", "\n")
+    block = link.split("\nsubmit;\n", 1)[1].split("\nendsubmit;", 1)[0]
+    tree = ast.parse(block)
+    settings = [node for node in tree.body if isinstance(node, ast.Assign)
+                and ast.unparse(node.targets[0]) in ("MESSAGE_LIMIT", "NOT_FOR_SAS")]
+    function = next(node for node in tree.body
+                    if isinstance(node, ast.FunctionDef) and node.name == "sas_safe")
+    return settings, function
+
+
+def test_the_reason_takes_the_escaping_function_of_the_logging_programs():
+    """sas_text of the job is sas_safe of Link-Logs-To-Models.sas, statement
+    for statement, with its two settings; only the name and the text of the
+    docstring differ. The reason of the history goes through it and through
+    nothing weaker."""
+    main = ast.parse(_python()).body[0]
+    settings = [node for node in main.body if isinstance(node, ast.Assign)
+                and ast.unparse(node.targets[0]) in ("MESSAGE_LIMIT", "NOT_FOR_SAS")]
+    function = next(node for node in main.body
+                    if isinstance(node, ast.FunctionDef) and node.name == "sas_text")
+    theirs_settings, theirs = _logging_escape()
+    assert [ast.unparse(node) for node in settings] \
+        == [ast.unparse(node) for node in theirs_settings]
+    assert ast.unparse(function.args) == ast.unparse(theirs.args)
+    assert isinstance(function.body[0].value, ast.Constant) \
+        and isinstance(theirs.body[0].value, ast.Constant)
+    assert [ast.unparse(node) for node in function.body[1:]] \
+        == [ast.unparse(node) for node in theirs.body[1:]]
+    # the one text of the handler that the program did not write
+    guard = next(node for node in ast.walk(main) if isinstance(node, ast.If)
+                 and ast.unparse(node.test) == "P['recordHistory'] != '0'")
+    handler = guard.body[1].handlers[0]
+    assert ast.unparse(handler.body[0]) \
+        == "reason = sas_text(f'{type(exc).__name__}: {exc}', 200)"
+    assert [ast.unparse(call.args[1]) for call in ast.walk(handler)
+            if isinstance(call, ast.Call) and ast.unparse(call.func) == "SAS.symput"] \
+        == ["'failed'", "reason or 'no reason given'"]
+
+
+def test_the_python_of_the_job_holds_no_comment_mark():
+    """Nothing SAS code reads as a comment stands inside the Python program,
+    should the block ever be read as SAS code - the test the pull of the log
+    chain has for its block. The program wrote both marks out to replace
+    them; the function it takes now builds them from their halves."""
+    block = _python()
+    assert _job().count("\nsubmit;\n") == 1 and _job().count("\nendsubmit;\n") == 1
+    assert "endsubmit" not in block
+    assert _START not in block and _END not in block
+    compile(block, "Ingest-Documents.sas (python)", "exec")
 
 
 def test_a_store_without_a_run_hands_over_none(tmp_path):

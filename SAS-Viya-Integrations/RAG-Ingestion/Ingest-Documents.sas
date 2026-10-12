@@ -465,6 +465,33 @@ def main():
     def M(msg):
         SAS.logMessage("RAGINGEST " + sas_safe(msg))
 
+    MESSAGE_LIMIT = 900
+    NOT_FOR_SAS = (("'", '`'), ('"', '`'), ('%', 'pct '), ('&', '+'), (';', ','), ('/' + '*', '/ *'), ('*' + '/', '* /'))
+
+    def sas_text(value, limit=MESSAGE_LIMIT):
+        """The escaping function of the logging programs (sas_safe of
+        Link-Logs-To-Models.sas, statement for statement), for a text this
+        program did not write itself: on one line, without a character that
+        is no text, without a quote, a macro trigger, a semicolon or a
+        comment mark, not longer than the limit and with its parentheses as
+        brackets when they do not pair up. The two comment marks are built
+        from their halves, so that this block holds neither."""
+        cleaned = ' '.join(str(value).split())
+        cleaned = ''.join(character if character.isprintable() else ' ' for character in cleaned)
+        for bad, replacement in NOT_FOR_SAS:
+            cleaned = cleaned.replace(bad, replacement)
+        cleaned = ' '.join(cleaned.split())
+        if len(cleaned) > limit:
+            cleaned = cleaned[:limit - 3].rstrip() + '...'
+        depth = 0
+        for character in cleaned:
+            depth += 1 if character == '(' else -1 if character == ')' else 0
+            if depth < 0:
+                break
+        if depth != 0:
+            cleaned = cleaned.replace('(', '[').replace(')', ']')
+        return cleaned
+
     # The saved ledger could not be loaded. Running on would read an empty
     # ledger, ingest every document as new and store the result over the
     # saved file; _rag_error already says what happened.
@@ -896,9 +923,7 @@ def main():
                 M(f"rag history: read for CAS, runs {handed[0][1]} and "
                   f"document events {handed[1][1]} of the collection")
             except Exception as exc:
-                reason = " ".join(sas_safe(
-                    f"{type(exc).__name__}: {exc}").replace("/*", "/ *")
-                    .replace("*/", "* /").split())[:200]
+                reason = sas_text(f"{type(exc).__name__}: {exc}", 200)
                 SAS.symput("_rag_histState", "failed")
                 SAS.symput("_rag_histError", reason or "no reason given")
                 M(f"rag history: not read for CAS ({reason}) - the "
