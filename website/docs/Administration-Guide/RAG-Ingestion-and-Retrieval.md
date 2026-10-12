@@ -1668,19 +1668,50 @@ beside the chunks they describe:
 They are not in CAS because a CAS table here is overwrite-in-place by
 construction, has no transactional append and no constraints, and an empty run
 deletes the saved file outright. The cost of that choice — history invisible to
-Visual Analytics — is paid explicitly: the Load step **publishes `rag_runs` and
-`rag_doc_events` to CAS** after each run as `<project>_RUNS` and
+Visual Analytics — is paid explicitly: both ingestion paths **publish `rag_runs`
+and `rag_doc_events` to CAS** after each run as `<project>_RUNS` and
 `<project>_DOC_EVENTS`. The database copy is authoritative; the CAS copy is
 disposable and rebuildable.
 
-Only *RAG - Load Vector Store*, the step of the flow, publishes the two
-CAS tables. A run of `Ingest-Documents.sas` — **Launch ingestion**, or the
-ingestion job of a setup — writes its row to the store and not to CAS, so
-the CAS copy shows that run after the next run of the flow. Measured on
-2026-10-11 on SAS Viya 2026.09: `<project>_RUNS` still had 3 rows after a
-job run on pgvector, and on SingleStore the store held four runs of a
-collection while the CAS copy held three. *RAG - Purge Documents* writes
-no row to either table ([retention and erasure](#retention-and-erasure)).
+*RAG - Load Vector Store*, the step of the flow, and `Ingest-Documents.sas` —
+**Launch ingestion**, or the ingestion job of a setup — publish the same two
+tables: every run the store holds for the collection (the newest 500) and
+their document events (the newest 5,000), not only the run that publishes,
+with the 35 and 10 columns, the measures as numbers and everything else as
+text, promoted and saved in the caslib of the pipeline tables. For the job
+`<project>` is its ledger table without the ending `_LEDGER`, which is the
+table prefix of a setup. A run that finds nothing to do publishes too, so one
+more run of a setup brings the runs before it into CAS, as far as the store
+recorded them.
+
+The job publishes since release 2.3.0; before, only the step did. Measured on
+2026-10-11 on SAS Viya 2026.09, with the job as it was: `<project>_RUNS` still
+had 3 rows after a job run on pgvector, and on SingleStore the store held four
+runs of a collection while the CAS copy held three. On 2026-10-11 and on
+2026-10-12 the pull of the log chain found the ledger of a setup that the
+Prompt Builder had ingested in memory and its `<project>_RUNS` not. What the
+job does since is **not run in SAS**: the tests run its Python against a
+stand-in for the store and compare the file it writes with what the step
+stages, and they hold the SAS statements of the upload as text.
+
+The two differ in three points. With the history switched off, and for a table
+the store holds no rows for, the step drops the CAS table and deletes its saved
+file (read from its program); the job leaves the table as it is. The job puts
+an upload in the place of a table only when it holds every row that was read.
+And a history the job cannot read or publish is a WARNING in its log —
+`WARNING: RAG ingestion: the run history ... was not published ...` — while the
+run stays one that went through; the next run publishes the history again. A
+run that published writes this line above its last line:
+
+```text
+NOTE: RAG ingestion: the run history was published to CAS, promoted and saved - <caslib>.<project>_RUNS with <n> rows and <caslib>.<project>_DOC_EVENTS with <m> rows.
+```
+
+The job definition `RAG Ingest - <setup>` holds a copy of `Ingest-Documents.sas`
+from the time the setup was manifested. After the RAG content is deployed
+again, **Manifest setup** has to run once for a setup before its job
+publishes. *RAG - Purge Documents* writes no row to either table
+([retention and erasure](#retention-and-erasure)).
 
 `started_at` of a run is the epoch in its run id, read as UTC, and the
 steps and the job take that epoch from the SAS clock of the compute

@@ -195,12 +195,15 @@ Every run is recorded. Two CAS tables appear next to your pipeline tables:
 Point Visual Analytics at them for corpus size over time, which documents keep
 failing, or what last month's ingestion cost.
 
-The two tables are written by **RAG - Load Vector Store**, the last ingestion
-step of the flow. A run that the Prompt Builder starts with **Launch
-ingestion**, and a run of the ingestion job of a setup, is recorded in the
-database of the vector store and reaches the two CAS tables with the next run
-of the flow. The administration guide has
-[where the history is kept](../Administration-Guide/RAG-Ingestion-and-Retrieval.md#run-history).
+The two tables are written by both ingestion paths: by **RAG - Load Vector
+Store**, the last ingestion step of the flow, and, from release 2.3.0 on, by a
+run that the Prompt Builder starts with **Launch ingestion** or by the
+ingestion job of a setup. Each run writes every run the vector store holds for
+the collection, so the tables hold the runs of both paths. A setup that was
+manifested with an earlier release needs **Manifest setup** once before its
+job writes them. The administration guide has
+[where the history is kept](../Administration-Guide/RAG-Ingestion-and-Retrieval.md#run-history),
+and what of this was measured on SAS Viya and what was not run there.
 
 ## Things worth knowing
 
