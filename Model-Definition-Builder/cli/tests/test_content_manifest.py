@@ -509,6 +509,29 @@ def test_the_two_setup_jobs_are_listed_with_the_parameters_their_programs_read(s
             "tables": ["LLM_LOGS", "PROMPT_EXPERIMENTS", "LLM_FACT_SHEET", "EMBEDDING_FACT_SHEET"]}}
 
 
+def test_the_jobs_that_run_as_their_user_carry_a_compute_context_that_is_the_sites(shipped):
+    """Start Here shows what its session may read, and Load-Accelerator-Tables
+    loads as its session: opened without `_contextName`, Start Here ran in the
+    SAS Job Execution compute context under a service account and every
+    request was answered 401 (the pass of 2026-10-12). Both job definitions
+    carry the parameter with the default the Prompt Builder job definition
+    has, and it is a site setting in all three - as `contentRoot` is where a
+    job reads one."""
+    page = shipped.find("Prompt Builder/SAS-LLM-Prompt-Builder-UI", "jobDefinition")
+    default = next(p for p in page.parameters if p["name"] == "_contextName")["default"]
+    assert default == "SAS Studio compute context"
+    for path in ("Start Here", "Data/Load-Accelerator-Tables", page.path):
+        entry = shipped.find(path, "jobDefinition")
+        context = [p for p in entry.parameters if p["name"] == "_contextName"]
+        assert len(context) == 1 and context[0]["default"] == default and context[0]["siteSetting"], path
+    for path in ("Start Here", "Data/Load-Accelerator-Tables"):
+        assert content.site_settings(shipped.find(path, "jobDefinition")) == ("_contextName", "contentRoot"), path
+    # and nothing else is one: every other parameter is the release's
+    marked = {p["name"] for e in shipped.objects() if e.kind == "jobDefinition" for p in e.parameters
+              if p["siteSetting"]}
+    assert marked == {content.CONTEXT_PARAMETER, content.CONTENT_ROOT_PARAMETER}
+
+
 def test_nothing_of_the_showcases_and_no_retired_object_is_listed(shipped):
     for entry in shipped.all_entries():
         assert never_ship(entry.path) is None, entry.path

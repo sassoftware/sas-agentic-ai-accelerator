@@ -46,15 +46,19 @@ entries:
   # Start Here writes one HTML page: the links and the installation check. It
   # reads release.json of the content root, so the page needs no checkout.
   # _output_type = html is what makes SAS Job Execution show what the program
-  # writes to _webout as a page.
+  # writes to _webout as a page. _contextName: the page shows what its session
+  # may read, so the job has to run as the user who opens it - in the SAS Job
+  # Execution compute context, which runs under a service account, every
+  # request of the page was answered 401 (measured on 2026-10-12).
   - path: Start Here
     kind: jobDefinition
     code: SAS-Viya-Integrations/Setup/Start-Here.sas
     description: Start page of the SAS Agentic AI Accelerator - links to the reports and the guides, and an installation check. Reads only.
     parameters:
+      - {name: _contextName, type: character, default: SAS Studio compute context, label: Context Name, siteSetting: true}
       - {name: _action, type: character, default: execute}
       - {name: _output_type, type: character, default: html}
-      - {name: contentRoot, type: character, default: /SAS Agentic AI Accelerator, label: Content root}
+      - {name: contentRoot, type: character, default: /SAS Agentic AI Accelerator, label: Content root, siteSetting: true}
       - {name: caslib, type: character, default: Public, label: CAS library of the report tables}
       - {name: casServer, type: character, default: cas-shared-default, label: CAS server}
       - {name: credentialDomain, type: character, default: agentic-ai-keys, label: Credential domain}
@@ -79,7 +83,7 @@ entries:
     form: LLM-Prompt-Builder/dist/index.html
     description: Prompt Builder HTML code that is built from the SAS Agentic AI Accelerator repository.
     parameters:
-      - {name: _contextName, type: character, default: SAS Studio compute context, label: Context Name}
+      - {name: _contextName, type: character, default: SAS Studio compute context, label: Context Name, siteSetting: true}
       - {name: _action, type: character, default: "prompts,form,execute"}
   - path: Prompt Builder/Optimize-Prompt-DSPy
     kind: jobDefinition
@@ -241,14 +245,17 @@ entries:
     kind: file
     generated: release-table
   # Loads the four files above into CAS; it includes Load-Fact-Sheets.sas from
-  # the folder Logging and Monitoring of the content root.
+  # the folder Logging and Monitoring of the content root. _contextName: the
+  # job reads the Data folder and loads into CAS as its session - that has to
+  # be the user who runs it.
   - path: Data/Load-Accelerator-Tables
     kind: jobDefinition
     code: SAS-Viya-Integrations/Setup/Load-Accelerator-Tables.sas
     description: Loads the release table and the three fact sheets from the Data folder into CAS (promoted and saved).
     parameters:
+      - {name: _contextName, type: character, default: SAS Studio compute context, label: Context Name, siteSetting: true}
       - {name: _action, type: character, default: execute}
-      - {name: contentRoot, type: character, default: /SAS Agentic AI Accelerator, label: Content root}
+      - {name: contentRoot, type: character, default: /SAS Agentic AI Accelerator, label: Content root, siteSetting: true}
       - {name: caslib, type: character, default: Public, label: CAS library}
       - {name: releaseTable, type: character, default: ACCELERATOR_RELEASES, label: Release table}
 
