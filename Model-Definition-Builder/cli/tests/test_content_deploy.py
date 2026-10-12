@@ -430,3 +430,44 @@ def test_a_manifest_that_cannot_be_used_stops_the_command_before_it_signs_in(com
     assert "  'RAG/generated/job.sas': 'generated' holds what the Prompt Builder generates for a site's own setups " \
            "and never ships\n" in text
     assert "  'Flows/Ingest': unknown kind 'dataFlow' (one of folder, file, step, jobDefinition, report)\n" in text
+
+
+# ---- the manifest of this repository -----------------------------------------
+def test_the_manifest_of_the_repository_deploys_and_passes_the_gate():
+    """The tests above run on a manifest of a few entries. This one takes the
+    list that ships: a dry run on an empty site names every entry of it and
+    writes nothing, a run creates everything but the two reports, a second run
+    finds all of it equal, and a package that holds what was deployed - plus
+    the reports as the package would bring them - passes the content gate.
+    Still no request reaches a server."""
+    from pathlib import Path
+
+    from content_fakes import package_of
+    from mdb.core.packages import package_differences
+
+    shipped = load_manifest(Path(__file__).resolve().parents[3])
+    entries = shipped.all_entries()
+    reports = [entry.path for entry in entries if entry.kind == "report"]
+    assert len(reports) == 2
+
+    viya = Viya()
+    dry = deploy(viya, shipped, dry_run=True, sleep=_no_sleep)
+    assert [outcome.entry.path for outcome in dry.outcomes] == [entry.path for entry in entries]
+    assert viya.wrote() == [] and dry.root_created
+    assert {path: status for path, status in _statuses(dry).items() if status != CREATED} == \
+        {path: NOT_DEPLOYED for path in reports}
+
+    first = deploy(viya, shipped, sleep=_no_sleep)
+    assert first.failed == [] and first.unlisted == []
+    assert first.count(CREATED) == len(entries) - 2 and first.count(NOT_DEPLOYED) == 2
+    # the two pages a site opens first are job definitions, not files
+    (start,) = viya.at(f"{shipped.content_root}/Start Here")
+    (release,) = viya.at(f"{shipped.content_root}/release.json")
+    assert start.startswith("/jobDefinitions/definitions/") and release.startswith("/files/files/")
+
+    written = len(viya.wrote())
+    second = deploy(viya, shipped, sleep=_no_sleep)
+    assert second.count(EQUAL) == len(entries) - 2 and second.failed == []
+    assert len(viya.wrote()) == written
+
+    assert package_differences(package_of(shipped).build(), shipped) == []
