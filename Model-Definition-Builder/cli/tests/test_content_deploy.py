@@ -836,21 +836,26 @@ def test_a_manifest_that_cannot_be_used_stops_the_command_before_it_signs_in(com
 
 
 # ---- the manifest of this repository -----------------------------------------
-def test_the_manifest_of_the_repository_deploys_and_passes_the_gate():
+def test_the_manifest_of_the_repository_deploys_and_passes_the_gate(monkeypatch):
     """The tests above run on a manifest of a few entries. This one takes the
     list that ships: a dry run on an empty site names every entry of it and
     writes nothing, a run creates everything but the two reports, a second run
     finds all of it equal, and a package that holds what was deployed - plus
-    the reports as the package would bring them - passes the content gate.
-    Still no request reaches a server."""
+    the reports as the package would bring them - passes the content gate, but
+    for the pictures of the usage report: their bytes are not in the
+    repository, only their hashes, and the package made here holds made-up
+    ones. Still no request reaches a server."""
     from pathlib import Path
 
     from content_fakes import package_of
     from mdb.core.packages import package_differences
 
+    # the commit release.json names is the checkout's - also where the tests run in an archive without git
+    monkeypatch.setattr(content, "checkout_commit", lambda root: ("c" * 40, "2026-10-12T09:31:55+02:00"))
+    monkeypatch.setattr(content, "commit_in_history", lambda root, commit: None)
     shipped = load_manifest(Path(__file__).resolve().parents[3])
     entries = shipped.all_entries()
-    reports = [entry.path for entry in entries if entry.kind == "report"]
+    reports = [entry for entry in entries if entry.kind == "report"]
     assert len(reports) == 2
 
     viya = Viya()
@@ -858,7 +863,7 @@ def test_the_manifest_of_the_repository_deploys_and_passes_the_gate():
     assert [outcome.entry.path for outcome in dry.outcomes] == [entry.path for entry in entries]
     assert viya.wrote() == [] and dry.root_created
     assert {path: status for path, status in _statuses(dry).items() if status != CREATED} == \
-        {path: NOT_DEPLOYED for path in reports}
+        {entry.path: NOT_DEPLOYED for entry in reports}
 
     first = deploy(viya, shipped)
     assert first.failed == [] and first.unlisted == []
@@ -873,4 +878,13 @@ def test_the_manifest_of_the_repository_deploys_and_passes_the_gate():
     assert second.count(EQUAL) == len(entries) - 2 and second.failed == []
     assert len(viya.wrote()) == written
 
-    assert package_differences(package_of(shipped).build(), shipped) == []
+    pictures = [(entry.path, listed["name"]) for entry in reports for listed in entry.files if listed["sha256"]]
+    assert pictures, "no report of the manifest lists a file with its hash"
+    import hashlib
+    differences = package_differences(package_of(shipped).build(), shipped)
+    # each made-up picture is not the one the entry lists, and so the listed one is not in the package
+    assert sorted(differences) == sorted(
+        [f"file '{name}' of report '{path}' is not the file its manifest entry lists (SHA-256 "
+         + hashlib.sha256(f"made up: {name}".encode("utf-8")).hexdigest() + ")" for path, name in pictures]
+        + [f"report '{path}': the file '{name}' its manifest entry lists is not in the package"
+           for path, name in pictures])

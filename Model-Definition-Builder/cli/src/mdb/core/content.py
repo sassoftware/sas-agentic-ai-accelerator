@@ -633,6 +633,45 @@ def settle_parameters(wanted: dict, live: Optional[dict], site_names=(), given: 
     return {**wanted, "parameters": parameters}
 
 
+def step_extras(expected: dict, actual: dict) -> list:
+    """What a packaged step holds beside its compared parts and must not:
+    sentences. The name and the type are those of the .step file, and a step
+    of the repository has no `properties` and no `arguments` - a package
+    whose step has one carries something no file of the checkout holds."""
+    expected = expected if isinstance(expected, dict) else {}
+    actual = actual if isinstance(actual, dict) else {}
+    problems = []
+    for key in ("name", "type"):
+        if (actual.get(key) or "") != (expected.get(key) or ""):
+            problems.append(f"is of {key} '{actual.get(key)}' in its body, the .step file says '{expected.get(key)}'")
+    for key in ("properties", "arguments"):
+        if (actual.get(key) or {}) != (expected.get(key) or {}):
+            problems.append(f"carries '{key}' the .step file does not have")
+    return problems
+
+
+def job_extras(expected: dict, actual: dict) -> list:
+    """What a packaged job definition holds beside its compared parts and
+    must not: sentences. One `form` property at most and no other property
+    (the comparison reads the first form only), and the name and the type the
+    manifest entry gives."""
+    expected = expected if isinstance(expected, dict) else {}
+    actual = actual if isinstance(actual, dict) else {}
+    problems = []
+    for key in ("name", "type"):
+        if (actual.get(key) or "") != (expected.get(key) or ""):
+            problems.append(f"is of {key} '{actual.get(key)}' in its body, its manifest entry says "
+                            f"'{expected.get(key)}'")
+    names = [str(p.get("name")) for p in actual.get("properties") or [] if isinstance(p, dict)]
+    if names.count("form") > 1:
+        problems.append(f"carries {names.count('form')} 'form' properties - a job definition has one form")
+    others = sorted({name for name in names if name != "form"})
+    if others:
+        problems.append(f"carries the propert{'ies' if len(others) > 1 else 'y'} {', '.join(others)}, which no "
+                        "entry of the manifest gives a job definition")
+    return problems
+
+
 class CheckoutSource:
     """What each entry of a manifest holds, read from the checkout: the
     source `mdb content-deploy` writes from. `mdb builders-import` hands the
@@ -766,31 +805,96 @@ GENERATORS: dict = {
 }
 
 
-def release_info_differences(expected: bytes, actual: bytes) -> list:
-    """How a release.json differs from the one the checkout gives, by its
-    entries: the commit and the date say when a folder was deployed and are
-    not compared."""
+def commit_in_history(repo_root, commit: str) -> Optional[bool]:
+    """Whether `commit` is HEAD or a commit HEAD descends from. None where
+    git cannot say: no checkout, no git, or a clone that does not hold the
+    commit (a shallow one)."""
+    if not commit or repo_root is None:
+        return None
+    try:
+        done = subprocess.run(["git", "-C", str(repo_root), "merge-base", "--is-ancestor", commit, "HEAD"],
+                              capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {0: True, 1: False}.get(done.returncode)
+
+
+#: The fields release.json has, and the fields of each of its entries.
+RELEASE_INFO_FIELDS = ("kind", "version", "commit", "date", "entries")
+RELEASE_ENTRY_FIELDS = ("path", "kind", "hash")
+
+
+def release_info_findings(expected: bytes, actual: bytes, repo_root=None) -> tuple:
+    """(what is wrong with a release.json, how it is behind the checkout).
+
+    Wrong, whatever the checkout holds: not readable, another `kind`, a field
+    release.json does not have, an entry listed twice. Behind the checkout -
+    a difference in content: another release than this mdb, no commit or one
+    that is not in the history of the checkout (only where git can say), an
+    entry the manifest has and the file does not or the other way round, and
+    another hash for an entry. The date is the commit's and is not compared.
+    """
     try:
         packaged = json.loads(actual.decode("utf-8"))
-        listed = {(e.get("path"), e.get("kind")): e.get("hash") for e in packaged.get("entries") or []}
+        if not isinstance(packaged, dict) or not isinstance(packaged.get("entries"), list):
+            raise ValueError("no object with entries")
+        listed: dict = {}
+        twice = []
+        for item in packaged["entries"]:
+            key = (item.get("path"), item.get("kind"))
+            if key in listed:
+                twice.append(key)
+            listed[key] = item.get("hash")
+        entry_fields = sorted({str(k) for item in packaged["entries"] for k in item} - set(RELEASE_ENTRY_FIELDS))
     except (ValueError, AttributeError, TypeError):
-        return ["is not a readable release.json"]
-    wanted = {(e["path"], e["kind"]): e["hash"] for e in json.loads(expected.decode("utf-8"))["entries"]}
-    problems = []
+        return ["is not a readable release.json"], []
+    wanted_info = json.loads(expected.decode("utf-8"))
+    wanted = {(e["path"], e["kind"]): e["hash"] for e in wanted_info["entries"]}
+    wrong, behind = [], []
+    if packaged.get("kind") != RELEASE_INFO_KIND:
+        wrong.append(f"is of kind '{packaged.get('kind')}', not '{RELEASE_INFO_KIND}'")
+    unknown = sorted(set(map(str, packaged)) - set(RELEASE_INFO_FIELDS))
+    if unknown:
+        wrong.append(f"carries the field(s) {', '.join(unknown)}, which release.json does not have")
+    if entry_fields:
+        wrong.append(f"carries the field(s) {', '.join(entry_fields)} in an entry, which an entry does not have")
+    for key in sorted(set(twice), key=str):
+        wrong.append(f"lists {key[1]} '{key[0]}' twice")
+    if packaged.get("version") != wanted_info.get("version"):
+        behind.append(f"names release '{packaged.get('version')}', this checkout is {wanted_info.get('version')}")
+    commit = packaged.get("commit")
+    if not commit:
+        behind.append("names no commit - the folder was deployed from something that is no git checkout")
+    elif commit_in_history(repo_root, str(commit)) is False:
+        behind.append(f"names the commit {str(commit)[:12]}, which is not in the history of this checkout")
     for key in sorted(set(wanted) - set(listed), key=str):
-        problems.append(f"does not list {key[1]} '{key[0]}'")
+        behind.append(f"does not list {key[1]} '{key[0]}'")
     for key in sorted(set(listed) - set(wanted), key=str):
-        problems.append(f"lists {key[1]} '{key[0]}', which the manifest does not")
+        behind.append(f"lists {key[1]} '{key[0]}', which the manifest does not")
     for key in sorted(set(wanted) & set(listed), key=str):
         if wanted[key] != listed[key]:
-            problems.append(f"holds another hash for {key[1]} '{key[0]}' than the checkout gives")
-    return problems
+            behind.append(f"holds another hash for {key[1]} '{key[0]}' than the checkout gives")
+    return wrong, behind
 
 
-def generated_differences(entry: Entry, expected: bytes, actual: bytes) -> list:
-    """How a generated file differs from what its generator writes now."""
+def release_info_differences(expected: bytes, actual: bytes, repo_root=None) -> list:
+    """Every way a release.json differs from the one the checkout gives:
+    `release_info_findings`, both lists."""
+    wrong, behind = release_info_findings(expected, actual, repo_root)
+    return wrong + behind
+
+
+def generated_findings(entry: Entry, expected: bytes, actual: bytes, repo_root=None) -> tuple:
+    """(what is wrong with a generated file, how it is behind what its
+    generator writes now)."""
     if entry.generated == RELEASE_INFO:
-        return release_info_differences(expected, actual)
+        return release_info_findings(expected, actual, repo_root)
     if lf_bytes(expected) != lf_bytes(actual):
-        return [f"differs from what the checkout generates ({len(actual)} vs {len(expected)} bytes)"]
-    return []
+        return [], [f"differs from what the checkout generates ({len(actual)} vs {len(expected)} bytes)"]
+    return [], []
+
+
+def generated_differences(entry: Entry, expected: bytes, actual: bytes, repo_root=None) -> list:
+    """How a generated file differs from what its generator writes now."""
+    wrong, behind = generated_findings(entry, expected, actual, repo_root)
+    return wrong + behind

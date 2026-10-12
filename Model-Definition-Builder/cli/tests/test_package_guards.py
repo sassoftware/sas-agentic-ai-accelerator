@@ -30,6 +30,8 @@ UI source posts, and the workflow that runs this suite starts on a change to
 any file a check here reads.
 """
 import base64
+import dataclasses
+import hashlib
 import io
 import json
 import re
@@ -48,8 +50,8 @@ from mdb.core.content import load_manifest, parse_manifest
 from mdb.core.options import MERGED_REPORT_LABELS
 from mdb.core.packages import (
     NEUTRAL_DEFAULTS, check_package, deflate, filter_package, legacy_objects, locate, missing_option_labels,
-    non_neutral_defaults, package_differences, package_objects, report_labels, report_option_copies,
-    reset_report_defaults,
+    non_neutral_defaults, package_differences, package_findings, package_objects, report_labels,
+    report_option_copies, reset_report_defaults,
 )
 from mdb.viya import transfer
 
@@ -370,15 +372,39 @@ def test_a_path_that_never_ships_is_refused_even_when_the_manifest_lists_it(repo
            "setups and never ships" in problems
 
 
-def test_the_images_of_a_listed_report_stay_with_it(manifest):
-    """A report's images are files that sit in no folder. One says itself
-    which report it belongs to; another is only named by the report."""
+PNG = b"\x89PNG\xff"
+
+
+def _listing(manifest, *files):
+    """The manifest with these files listed as the children of its report."""
+    index = next(i for i, entry in enumerate(manifest.entries) if entry.path == REPORT)
+    manifest.entries[index] = dataclasses.replace(manifest.entries[index], files=tuple(files))
+    return manifest
+
+
+def _with_pictures(manifest, extra=None):
+    """A package whose report has the two pictures its entry lists. One says
+    by a `parent` connector that it is the report's child, the other only by
+    its file resource - as the pictures of the usage report did."""
+    _listing(manifest, {"name": "background_blue.png", "sha256": hashlib.sha256(PNG).hexdigest()},
+             {"name": "sas-logo-wht.png", "sha256": None})
     built = package_of(manifest, change={REPORT: None})
-    loose = built.image("background_blue.png")
-    report = built.report(REPORT, ALL_NEUTRAL, images=[loose])
-    built.image("sas-logo-wht.png", report)
-    demo = built.report("RAG/LIVE_DEMO", {"viyaHost": "x"})
-    built.image("demo.png", demo)
+    report = built.report(REPORT, ALL_NEUTRAL)
+    for image in (built.image("background_blue.png", parent_uri=report), built.image("sas-logo-wht.png", report)):
+        built.attach(report, image)
+    if extra:
+        extra(built, report)
+    return built
+
+
+def test_the_pictures_of_a_listed_report_stay_with_it(manifest):
+    """A report's pictures are files that sit in no folder: children of the
+    report. The ones its entry lists stay; the picture of a report that is
+    not listed goes with it."""
+    def another_report(built, report):
+        demo = built.report("RAG/LIVE_DEMO", {"viyaHost": "x"})
+        built.image("demo.png", demo)
+    built = _with_pictures(manifest, another_report)
     package = built.build()
     result = filter_package(package, manifest, built.root_uri)
     assert sorted(line for line in result.kept if "belongs to" in line) == [
@@ -386,11 +412,83 @@ def test_the_images_of_a_listed_report_stay_with_it(manifest):
         f"file '{REPORT}/sas-logo-wht.png' (belongs to the report)"]
     assert sorted(result.dropped) == ["file 'demo.png' (belongs to report 'RAG/LIVE_DEMO')", "report 'RAG/LIVE_DEMO'"]
     assert package_differences(package, manifest) == []
-    # a report whose image was left behind is a difference
-    lost = package_of(manifest, change={REPORT: None})
+    # a report whose picture was left behind is a difference
+    lost = package_of(_listing(manifest), change={REPORT: None})
     lost.report(REPORT, ALL_NEUTRAL, images=["/files/files/e57e4290-7b82-44c4-a448-f74f4497145c"])
     assert package_differences(lost.build(), manifest) == [
         f"report '{REPORT}' depends on /files/files/e57e4290-7b82-44c4-a448-f74f4497145c, which is not in the package"]
+
+
+def test_a_child_of_a_report_that_its_entry_does_not_list_does_not_ship(manifest):
+    """Whatever said it belonged to a listed report stayed in the package and
+    was never looked at: a file `secrets.env` with a parent connector to the
+    Prompt Builder report passed the gate."""
+    def a_stray_child(built, report):
+        built.image("secrets.env", report, data=b"API_KEY=sk-live-123")
+    built = _with_pictures(manifest, a_stray_child)
+    assert package_differences(built.build(), manifest) == [
+        f"file 'secrets.env' belongs to report '{REPORT}' and is not among the files its manifest entry lists"]
+    package = built.build()
+    result = filter_package(package, manifest, built.root_uri)
+    assert result.dropped == [f"file 'secrets.env' (belongs to report '{REPORT}', whose manifest entry does not "
+                              "list it)"]
+    assert "secrets.env" not in json.dumps(package) and package_differences(package, manifest) == []
+
+
+def _repaint(built, name: str, data: bytes) -> None:
+    """Give the pictures of that name other bytes."""
+    for detail in built.details:
+        obj = detail["transferObject"]
+        if obj["summary"]["name"] == name:
+            body = json.loads(base64.b64decode(obj["content"]))
+            body["content"] = base64.b64encode(data).decode("ascii")
+            obj["content"] = base64.b64encode(json.dumps(body).encode("utf-8")).decode("ascii")
+
+
+def test_a_picture_is_held_to_the_hash_its_entry_gives(manifest):
+    """The bytes of a picture are in no file of the repository, so the hash
+    in the manifest is what the gate compares - content nobody checked."""
+    assert package_differences(_with_pictures(manifest).build(), manifest) == []
+    changed = _with_pictures(manifest)
+    _repaint(changed, "sas-logo-wht.png", b"another logo")
+    assert package_differences(changed.build(), manifest) == []          # listed without a hash: by its name
+    _repaint(changed, "background_blue.png", b"another picture")
+    assert package_differences(changed.build(), manifest) == [
+        f"file 'background_blue.png' of report '{REPORT}' is not the file its manifest entry lists (SHA-256 "
+        f"{hashlib.sha256(b'another picture').hexdigest()})",
+        f"report '{REPORT}': the file 'background_blue.png' its manifest entry lists is not in the package"]
+    # two files of one name and one hash, as the usage report has them: both listed, both there
+    _listing(manifest, *[{"name": "background_blue.png", "sha256": hashlib.sha256(PNG).hexdigest()}] * 2)
+    twice = package_of(manifest, change={REPORT: None})
+    report = twice.report(REPORT, ALL_NEUTRAL)
+    twice.attach(report, twice.image("background_blue.png", report))
+    assert package_differences(twice.build(), manifest) == [
+        f"report '{REPORT}': the file 'background_blue.png' its manifest entry lists is not in the package"]
+    twice.attach(report, twice.image("background_blue.png", parent_uri=report))
+    assert package_differences(twice.build(), manifest) == []
+
+
+def test_a_picture_from_a_folder_of_somebodys_is_not_a_child_of_the_report(manifest):
+    """A report can show a picture that sits in any folder of SAS Content.
+    That the report names it kept such a file in the package while its folder
+    was dropped: a file `holiday.png` from `Private Pictures`."""
+    built = package_of(manifest, change={REPORT: None}, above=("Top",))
+    pictures = built._folder_object("Private Pictures", next(
+        d["transferObject"]["summary"]["links"][0]["uri"] for d in built.details
+        if d["transferObject"]["summary"]["name"] == "Top"))
+    holiday = built._add("application/vnd.sas.file+json", "holiday.png", "/files/files/", _b64(
+        {"fileResource": {"name": "holiday.png"}, "content": _b64("a holiday")}), pictures)
+    loose = built.image("loose.png")                                   # in no folder, and nobody's child
+    report = built.report(REPORT, ALL_NEUTRAL, images=[holiday, loose])
+    package = built.build()
+    result = filter_package(package, manifest, built.root_uri)
+    assert sorted(line for line in result.dropped if "png" in line or "Private" in line) == [
+        "file 'holiday.png' (not below the content root)", "file 'loose.png' (not below the content root)",
+        "folder 'Private Pictures' (not below the content root)"]
+    assert "holiday.png" not in json.dumps(package) and "loose.png" not in json.dumps(package)
+    # and the report that shows them is then a difference: it lacks what it depends on
+    assert package_differences(package, manifest) == [
+        f"report '{REPORT}' depends on {uri}, which is not in the package" for uri in sorted([holiday, loose])]
 
 
 # ---- 4: the content gate ---------------------------------------------------------
@@ -501,6 +599,120 @@ def test_what_is_not_listed_is_named_whatever_it_is(manifest):
         "file 'orphan.png' is in the package but not below its content root"]
     assert package_differences({"transferDetails": []}, manifest) == [
         "the package holds no folder, so its objects have no place below a content root"]
+
+
+# ---- 4b: what the gate did not see ---------------------------------------------
+def test_a_second_object_at_a_listed_path_is_a_difference(manifest):
+    """One path holds one object. A second report, step or file at a listed
+    path was kept by the export and passed the gate - which only noted that
+    the path had been seen."""
+    built = package_of(manifest)
+    built.file("RAG/rag_core/__init__.py", b"CORE = 1\n")                      # the same bytes, a second time
+    built.step(STEP_PATH, as_registered(STEP))
+    built.report(REPORT, ALL_NEUTRAL)
+    assert package_differences(built.build(), manifest) == [
+        "file 'RAG/rag_core/__init__.py' is in the package 2 times - one path holds one object",
+        f"flowStep '{STEP_PATH}' is in the package 2 times - one path holds one object",
+        f"report '{REPORT}' is in the package 2 times - one path holds one object"]
+    assert not any(found.drift for found in package_findings(built.build(), manifest))
+
+
+def test_a_job_definition_holds_one_form_and_no_other_property(manifest):
+    """The comparison reads the first `form` property. A second one - the
+    page of another build - and a property nobody lists rode along."""
+    ui = content.job_definition_body(manifest, manifest.find("Prompt Builder/UI", "jobDefinition"))
+    more = {**ui, "properties": ui["properties"] + [
+        {"name": "form", "value": "<html>the bundle of another build</html>"},
+        {"name": "prompts", "value": "{}"}, {"name": "DeployedResourceName", "value": "x"}]}
+    assert package_differences(package_of(manifest, change={"Prompt Builder/UI": more}).build(), manifest) == [
+        "job definition 'Prompt Builder/UI' carries 2 'form' properties - a job definition has one form",
+        "job definition 'Prompt Builder/UI' carries the properties DeployedResourceName, prompts, which no entry "
+        "of the manifest gives a job definition"]
+    optimize = content.job_definition_body(manifest, manifest.find("Prompt Builder/Optimize", "jobDefinition"))
+    other = {**optimize, "type": "Batch", "properties": [{"name": "note", "value": "x"}]}
+    assert package_differences(package_of(manifest, change={"Prompt Builder/Optimize": other}).build(), manifest) == [
+        "job definition 'Prompt Builder/Optimize' is of type 'Batch' in its body, its manifest entry says 'Compute'",
+        "job definition 'Prompt Builder/Optimize' carries the property note, which no entry of the manifest gives "
+        "a job definition"]
+
+
+def test_a_step_holds_no_properties_and_no_arguments(manifest):
+    step = as_registered(STEP)
+    assert package_differences(package_of(manifest, change={STEP_PATH: {
+        **step, "properties": {"hidden": "1"}, "arguments": {"x": 1}, "type": "other"}}).build(), manifest) == [
+        f"step '{STEP_PATH}' is of type 'other' in its body, the .step file says 'code'",
+        f"step '{STEP_PATH}' carries 'properties' the .step file does not have",
+        f"step '{STEP_PATH}' carries 'arguments' the .step file does not have"]
+    # what the service writes itself is not content: another description, the local display fields
+    assert package_differences(package_of(manifest, change={STEP_PATH: {
+        **step, "description": "Another text.", "localDisplayName": "Einbetten", "localUi": "{}"}}).build(),
+        manifest) == []
+
+
+def test_the_body_of_an_object_is_named_like_its_summary(manifest):
+    """An object is found by the name of its summary. A body that says
+    another name is another object under a listed one."""
+    built = package_of(manifest)
+    for detail in built.details:
+        obj = detail["transferObject"]
+        if obj["summary"]["name"] in (STEP_NAME, "UI", "__init__.py") and obj["summary"]["type"] != "folder":
+            body = json.loads(base64.b64decode(obj["content"]))
+            if "fileResource" in body:
+                body["fileResource"]["name"] = "something_else.py"
+            else:
+                body["name"] = "Something Else"
+            obj["content"] = _b64(body)
+    assert package_differences(built.build(), manifest) == [
+        "file 'RAG/rag_core/__init__.py' is named 'something_else.py' in its body",
+        "file 'RAG/rag_core/adapters/__init__.py' is named 'something_else.py' in its body",
+        f"step '{STEP_PATH}' is of name 'Something Else' in its body, the .step file says '{STEP_NAME}'",
+        "job definition 'Prompt Builder/UI' is of name 'Something Else' in its body, its manifest entry says 'UI'"]
+
+
+def test_a_field_at_the_top_of_a_package_that_an_export_does_not_write_is_a_difference(manifest):
+    package = package_of(manifest).build()
+    package["createdBy"], package["links"] = "someone", []                     # what an export writes
+    assert package_differences(package, manifest) == []
+    package["authorization"], package["substitutions"] = [{"principal": "someone"}], {"x": "y"}
+    assert package_differences(package, manifest) == [
+        "the package carries the field(s) authorization, substitutions at its top, which an export does not write"]
+
+
+def test_the_gate_tells_content_that_is_behind_from_what_a_package_must_never_be(manifest, repo, monkeypatch):
+    """`drift` is a difference in content against the checkout - a file, a
+    step, a job definition, the two generated files. Everything else is not."""
+    stale = json.loads(content.release_info_bytes(manifest))
+    stale["version"] = "2.2.0"
+    ui = content.job_definition_body(manifest, manifest.find("Prompt Builder/UI", "jobDefinition"))
+    built = package_of(manifest, change={
+        "release.json": json.dumps(stale).encode("utf-8"),
+        "Data/ACCELERATOR_RELEASES.csv": b"another table\n",
+        "RAG/rag_core/__init__.py": b"CORE = 0\n",
+        STEP_PATH: as_registered({**STEP, "ui": "{ }"}),
+        "Prompt Builder/UI": {**ui, "parameters": ui["parameters"][:1]},
+        "Prompt Builder/Optimize": None, REPORT: None})
+    built.report(REPORT, {**ALL_NEUTRAL, "judgeModel": "gpt_5_mini"}, states=[ALL_NEUTRAL],
+                 host="viya4-example.internal.test", tables=())
+    built.file("RAG/notes.txt", "x")
+    built.grant("share", "a share", built.root_uri)
+    found = package_findings(built.build(), manifest)
+    assert [line.text for line in found if line.drift] == [
+        f"file 'release.json' names release '2.2.0', this checkout is {content.__version__}",
+        f"file 'Data/ACCELERATOR_RELEASES.csv' differs from what the checkout generates (14 vs "
+        f"{len(content.release_table_bytes(manifest))} bytes)",
+        "file 'RAG/rag_core/__init__.py' differs from src/rag_core/__init__.py (9 vs 9 bytes)",
+        f"step '{STEP_PATH}': 'ui' differs from src/{STEP_NAME}",
+        "job definition 'Prompt Builder/UI': 'parameters' differs from the parameters of its manifest entry"]
+    assert [line.text for line in found if not line.drift] == [
+        f"report '{REPORT}' names the host viya4-example.internal.test (1 time(s), in plain text)",
+        f"report '{REPORT}' carries 1 per-user report state(s)",
+        f"report '{REPORT}': the report: judgeModel is 'gpt_5_mini', expected ''",
+        f"report '{REPORT}' does not bind the table ACCELERATOR_RELEASES",
+        "file 'RAG/notes.txt' is in the package but not in the manifest",
+        "the package carries the authorization share 'a share'",
+        "jobDefinition 'Prompt Builder/Optimize' is in the manifest but not in the package"]
+    # as sentences, in the order of the package: what a release asks to be empty
+    assert package_differences(built.build(), manifest) == [line.text for line in found]
 
 
 def test_objects_and_report_labels_are_listed():

@@ -205,10 +205,18 @@ entries:
     source: SAS-Viya-Integrations/RAG/retrieve_context.py
 
   # ---- Logging and Monitoring -------------------------------------------------
+  # The four pictures of the report are files that are its children. Their
+  # names and hashes are as an export of 2026-10-12 held them; two of them are
+  # one picture under one name.
   - path: Logging and Monitoring/LLM Usage Report
     kind: report
     checks:
       tables: [LLM_LOGS, PROMPT_EXPERIMENTS, LLM_FACT_SHEET, EMBEDDING_FACT_SHEET]
+    files:
+      - {name: background_blue.png, sha256: b22fc6d5f1a0e183633fb6cd030431d03a9c3d13cf3e09055d574dad036b35f1}
+      - {name: background_blue.png, sha256: b22fc6d5f1a0e183633fb6cd030431d03a9c3d13cf3e09055d574dad036b35f1}
+      - {name: header-meridian.png, sha256: 90ac30878e65c72697c67b6733f7ddce62630a4ba32e9f218f7bf1f3bd81146e}
+      - {name: sas-logo-wht.png, sha256: 388d73a50cbcc27f03e55b1d17e207da6b27e9b6abd196ec4d04c0bc87193bb3}
   - path: Logging and Monitoring/LLM - Log Parser.step
     kind: step
     source: SAS-Viya-Integrations/Custom-Steps/LLM - Log Parser.step

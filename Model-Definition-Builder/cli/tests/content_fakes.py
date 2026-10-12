@@ -8,9 +8,14 @@ None of this is a test. The shapes are the ones read from the packages the
 repository shipped up to 2.2.x and from the requests of deploy-rag-content:
 
 * an object of a package says where it sits through a `parentFolder` connector
-  beside its transfer object; a file that belongs to a report through a
-  `parent` connector inside it, or not at all - then only the report's own
-  `image` connector names it;
+  beside its transfer object; a file that is a child of a report through a
+  `parent` connector inside it and through the `parentUri` of its file
+  resource - one of the four pictures of the usage report had only the
+  latter. A file a report merely shows (the target of its `image` connector)
+  can sit in any folder;
+* the root folder of a package that was exported from the root of SAS Content
+  has no parent: no `parentFolderUri` in its body, no `contentSourceLocation`.
+  A folder exported from below others carries both;
 * the requested items and the connectors name an object by the URI of its
   summary, not by the id of the transfer object;
 * the dataFlows service stores a step's ports its own way (no `id`, no
@@ -131,7 +136,7 @@ class Package:
     """Builds a transfer package object by object. `build()` gives the parsed
     package; every method returns the URI of what it added."""
 
-    def __init__(self, root: str = "SAS Agentic AI Accelerator", above: tuple = ()):
+    def __init__(self, root: str = "SAS Agentic AI Accelerator", above: tuple = (), location: str = ""):
         self._n = 0
         self.details: list = []
         self.uris: dict = {}            # path below the root -> uri
@@ -140,6 +145,12 @@ class Package:
             parent = self._folder_object(name, parent)
         self.root_uri = self._folder_object(root, parent)
         self.uris[""] = self.root_uri
+        if location:
+            # a root that was exported from below other folders, which the
+            # package no longer holds: it still says where it was
+            wrapper = self.details[-1]["transferObject"]
+            wrapper["contentSourceLocation"] = location
+            wrapper["content"] = b64({"folder": {"name": root, "parentFolderUri": "/folders/folders/above"}})
 
     def _id(self) -> str:
         self._n += 1
@@ -204,13 +215,25 @@ class Package:
             connector["relatedUris"] = [uri]
         return uri
 
-    def image(self, name: str, report_uri=None) -> str:
-        """A file that sits in no folder: an image of a report. With
-        `report_uri` it says so itself; without, only a report's `image`
-        connector does."""
+    def image(self, name: str, report_uri=None, parent_uri=None, data: bytes = b"\x89PNG\xff") -> str:
+        """A file that sits in no folder: a picture of a report. With
+        `report_uri` it is a child of that report and says so by a `parent`
+        connector, with `parent_uri` only by its file resource. With neither
+        it is no report's child: only a report's `image` connector names it."""
         inner = [{"id": self._id(), "type": "parent", "uri": report_uri, "relatedUris": []}] if report_uri else []
+        resource = {"name": name}
+        if report_uri or parent_uri:
+            resource["parentUri"] = report_uri or parent_uri
         return self._add("application/vnd.sas.file+json", name, "/files/files/",
-                         b64({"fileResource": {"name": name}, "content": b64(b"\x89PNG\xff")}), None, inner)
+                         b64({"fileResource": resource, "content": b64(data)}), None, inner)
+
+    def attach(self, report_uri: str, image_uri: str) -> None:
+        """Make a report show a file: an `image` connector of the report."""
+        for detail in self.details:
+            obj = detail["transferObject"]
+            if obj["summary"]["links"][0]["uri"] == report_uri:
+                obj["connectors"].append({"id": self._id(), "type": "image", "uri": image_uri,
+                                          "relatedUris": [report_uri], "forceMapping": False})
 
     def grant(self, kind: str, name: str, target: str) -> str:
         """An authorization rule or share on `target`."""
@@ -251,8 +274,14 @@ def package_of(manifest, change=None, **kwargs) -> Package:
         elif entry.kind == "jobDefinition":
             package.job(entry.path, content.job_definition_body(manifest, entry) if other is None else other)
         else:
-            package.report(entry.path, ALL_NEUTRAL if other is None else other,
-                           tables=entry.checks.get("tables", ()))
+            report = package.report(entry.path, ALL_NEUTRAL if other is None else other,
+                                    tables=entry.checks.get("tables", ()))
+            # the files its entry lists, as children of the report. Their
+            # bytes are made up, so an entry that gives a hash is not met.
+            for index, listed in enumerate(entry.files):
+                image = package.image(listed["name"], report if index % 2 else None, report,
+                                      data=f"made up: {listed['name']}".encode("utf-8"))
+                package.attach(report, image)
     return package
 
 

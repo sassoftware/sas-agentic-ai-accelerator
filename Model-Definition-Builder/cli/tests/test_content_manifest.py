@@ -416,6 +416,69 @@ def test_release_json_is_compared_by_its_entries(repo, monkeypatch):
         f"differs from what the checkout generates ({len(wanted) + 1} vs {len(wanted)} bytes)"]
 
 
+def test_release_json_is_held_to_its_kind_its_fields_its_release_and_its_commit(repo, monkeypatch):
+    """Start Here shows the release and the commit of release.json as what a
+    site runs. A file with another release, with a commit nobody can find, or
+    with a field of somebody's passed the gate, which read the entries only."""
+    monkeypatch.setattr(content, "checkout_commit", lambda root: ("c" * 40, "2026-10-12T08:00:00+02:00"))
+    manifest = load_manifest(repo)
+    entry = manifest.find("release.json", "file")
+    expected = content.file_bytes(manifest, entry)
+    info = json.loads(expected)
+
+    def findings(change, in_history=None):
+        monkeypatch.setattr(content, "commit_in_history", lambda root, commit: in_history)
+        return content.generated_findings(entry, expected, json.dumps({**info, **change}).encode("utf-8"), repo)
+
+    assert findings({}) == ([], [])
+    # what a release.json must never be - whatever the checkout holds
+    assert findings({"kind": "something/else"}) == (
+        ["is of kind 'something/else', not 'sas-agentic-ai-accelerator/release'"], [])
+    assert findings({"host": "viya.example.com", "owner": "me"}) == (
+        ["carries the field(s) host, owner, which release.json does not have"], [])
+    twice = info["entries"] + [dict(info["entries"][0], note="x")]
+    assert findings({"entries": twice}) == (
+        ["carries the field(s) note in an entry, which an entry does not have", "lists folder 'Data' twice"], [])
+    assert content.generated_findings(entry, expected, b"[]", repo) == (["is not a readable release.json"], [])
+    # how it is behind the checkout: content, which a release is strict about and a branch is not
+    assert findings({"version": "0.0.1"}) == ([], [f"names release '0.0.1', this checkout is {__version__}"])
+    assert findings({"commit": ""}) == (
+        [], ["names no commit - the folder was deployed from something that is no git checkout"])
+    assert findings({"commit": "deadbeef" * 5}, in_history=False) == (
+        [], ["names the commit deadbeefdead, which is not in the history of this checkout"])
+    # where git cannot say - no checkout, a shallow clone - the commit is not judged
+    assert findings({"commit": "deadbeef" * 5}, in_history=None) == ([], [])
+    assert findings({"commit": "deadbeef" * 5}, in_history=True) == ([], [])
+    # both lists, as one: what a release asks to be empty
+    monkeypatch.setattr(content, "commit_in_history", lambda root, commit: None)
+    assert content.generated_differences(entry, expected, json.dumps(
+        {**info, "kind": "x", "version": "0.0.1"}).encode("utf-8"), repo) == [
+        "is of kind 'x', not 'sas-agentic-ai-accelerator/release'",
+        f"names release '0.0.1', this checkout is {__version__}"]
+
+
+def test_git_says_whether_a_commit_is_in_the_history(tmp_path, monkeypatch):
+    asked = []
+
+    def run(command, **kwargs):
+        asked.append(command)
+        return type("Done", (), {"returncode": run.code, "stdout": "", "stderr": ""})()
+    monkeypatch.setattr(content.subprocess, "run", run)
+    run.code = 0
+    assert content.commit_in_history(tmp_path, "abc") is True
+    assert asked[-1] == ["git", "-C", str(tmp_path), "merge-base", "--is-ancestor", "abc", "HEAD"]
+    run.code = 1
+    assert content.commit_in_history(tmp_path, "abc") is False
+    run.code = 128                                           # git does not know the commit: a shallow clone
+    assert content.commit_in_history(tmp_path, "abc") is None
+    assert content.commit_in_history(tmp_path, "") is None and content.commit_in_history(None, "abc") is None
+
+    def no_git(*args, **kwargs):
+        raise FileNotFoundError("git")
+    monkeypatch.setattr(content.subprocess, "run", no_git)
+    assert content.commit_in_history(tmp_path, "abc") is None
+
+
 def test_the_commit_of_a_folder_that_is_no_checkout_is_empty(tmp_path, monkeypatch):
     assert content.checkout_commit(tmp_path / "nowhere") == ("", "")
 
@@ -544,6 +607,17 @@ def test_the_jobs_that_run_as_their_user_carry_a_compute_context_that_is_the_sit
     marked = {p["name"] for e in shipped.objects() if e.kind == "jobDefinition" for p in e.parameters
               if p["siteSetting"]}
     assert marked == {content.CONTEXT_PARAMETER, content.CONTENT_ROOT_PARAMETER}
+
+
+def test_the_pictures_of_the_usage_report_are_listed_with_their_hashes(shipped):
+    """A picture of a report has no source in the repository. Its name and
+    hash in the manifest are what the gate holds the package to."""
+    usage = shipped.find("Logging and Monitoring/LLM Usage Report", "report")
+    assert [listed["name"] for listed in usage.files] == [
+        "background_blue.png", "background_blue.png", "header-meridian.png", "sas-logo-wht.png"]
+    assert all(listed["sha256"] and len(listed["sha256"]) == 64 for listed in usage.files)
+    assert usage.files[0] == usage.files[1]
+    assert shipped.find("Prompt Builder/Prompt Builder", "report").files == ()
 
 
 def test_nothing_of_the_showcases_and_no_retired_object_is_listed(shipped):

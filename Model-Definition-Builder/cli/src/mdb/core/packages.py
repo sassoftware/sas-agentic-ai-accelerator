@@ -42,10 +42,13 @@ the manifest:
 * `filter_package` keeps the listed objects of an export and drops every
   other one with its entries in the package, and every authorization rule and
   share;
-* `package_differences` is the content gate: every listed object is in the
+* `package_findings` is the content gate: every listed object is in the
   package and equals the checkout, nothing else is in it, and each report
-  passes the checks its entry names. One sentence per difference; an empty
-  list is a pass.
+  passes the checks its entry names. One Difference per sentence, each
+  marked as `drift` (content that is behind the checkout - what happens to a
+  package between two exports) or not (what a package must never be);
+  `package_differences` gives all of them as sentences, and an empty list is
+  the pass a release asks for.
 
 `reset_report_defaults` writes the neutral option defaults into every copy of
 the Prompt Builder report, which is what makes an export from a configured
@@ -704,22 +707,51 @@ def locate(package: dict, root_uri: Optional[str] = None) -> tuple:
         if folder is not None:
             base = folder_path(folder)
             item.path = None if base is None else (f"{base}/{item.name}" if base else item.name)
-    # A file that belongs to a report sits in no folder. It says so itself (a
-    # `parent` connector), or only the report does: an image the report shows
-    # is the target of one of the report's own connectors.
+    # A file that belongs to a report sits in no folder: it is a CHILD of the
+    # report, and says so itself - by a `parent` connector, or by the
+    # `parentUri` of its file resource. That a report names a file (the
+    # target of one of its `image` connectors) does not make the file its
+    # child: such a file can sit in any folder and hold anything.
     for item in items:
         if item.path is None and item.kind == "file":
-            owner = by_uri.get(_connected(item.detail, "parent") or "")
+            owner = by_uri.get(_file_parent(item) or "")
             if owner is not None and owner.kind == "report" and owner.path is not None:
                 item.owner = owner.path
-    for report in items:
-        if report.kind != "report" or report.path is None:
-            continue
-        for connector in _connectors(report.detail):
-            target = by_uri.get(connector.get("uri") or "")
-            if target is not None and target.kind == "file" and target.path is None and target.owner is None:
-                target.owner = report.path
     return root_uri, items
+
+
+def _file_parent(item: "Located") -> Optional[str]:
+    """The URI of the object a packaged file says it is a child of."""
+    named = _connected(item.detail, "parent")
+    if named:
+        return named
+    resource = (_body(item.obj) or {}).get("fileResource")
+    return (resource.get("parentUri") or None) if isinstance(resource, dict) else None
+
+
+def package_root_path(package: dict, root_uri: Optional[str] = None) -> Optional[str]:
+    """The SAS Content path of the folder a package was exported from, or
+    None where the package does not say.
+
+    Read from the object of the root folder. A folder at the root of SAS
+    Content has no parent: its body names no `parentFolderUri` and the export
+    gives it no `contentSourceLocation` - so its path is its name. A folder
+    below others carries the path of its parent in `contentSourceLocation`.
+    (Both read from the packages of the releases up to 2.2.x and from an
+    export of a folder below a user's My Folder.)"""
+    _root, items = locate(package, root_uri)
+    folder = next((item for item in items if item.kind == "folder" and item.path == ""), None)
+    if folder is None:
+        return None
+    body = (_body(folder.obj) or {}).get("folder")
+    nested = bool(isinstance(body, dict) and body.get("parentFolderUri")) \
+        or _connected(folder.detail, "parentFolder") is not None
+    above = folder.obj.get("contentSourceLocation")
+    if not nested and not above:
+        return f"/{folder.name}"
+    if isinstance(above, str) and above.startswith("/"):
+        return f"{above.rstrip('/')}/{folder.name}"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -748,13 +780,15 @@ def filter_package(package: dict, manifest, root_uri: Optional[str] = None) -> F
 
     Kept: the content root folder, every object whose path and kind the
     manifest lists (the folders of the listed objects included), and the files
-    that belong to a listed report. Dropped: everything else - an object that
-    is not listed, an object that is not below the content root (a dependency
-    the export pulled in, a folder above the root), and every authorization
-    rule and share, whatever it is a rule for. A dropped object goes with its
-    entry in the package's requested items and with its mention in the
-    connectors of the objects that stay, so nothing in the package names it
-    any more.
+    that are children of a listed report and that its entry lists under
+    `files:`. Dropped: everything else - an object that is not listed, an
+    object that is not below the content root (a dependency the export pulled
+    in, a folder above the root, a picture a report shows from a folder of
+    somebody's), a child of a report that the report's entry does not list,
+    and every authorization rule and share, whatever it is a rule for. A
+    dropped object goes with its entry in the package's requested items and
+    with its mention in the connectors of the objects that stay, so nothing
+    in the package names it any more.
 
     The never-ship rule (core/content.py) is asked of every object that would
     be kept: one on such a path is dropped and returned in `refused`, listed
@@ -762,7 +796,7 @@ def filter_package(package: dict, manifest, root_uri: Optional[str] = None) -> F
     """
     result = FilterResult()
     _root, items = locate(package, root_uri)
-    listed_reports = {item.path for item in items
+    listed_reports = {item.path: _listed(manifest, item) for item in items
                       if item.kind == "report" and _listed(manifest, item) is not None
                       and not _content.never_ship(item.path)}
     kept: list = []
@@ -774,11 +808,14 @@ def filter_package(package: dict, manifest, root_uri: Optional[str] = None) -> F
             kept.append(item)
             continue
         if item.owner is not None:
-            if item.owner in listed_reports:
+            if item.owner not in listed_reports:
+                result.dropped.append(f"file '{item.name}' (belongs to report '{item.owner}')")
+            elif item.name not in {listed["name"] for listed in listed_reports[item.owner].files}:
+                result.dropped.append(f"file '{item.name}' (belongs to report '{item.owner}', whose manifest "
+                                      "entry does not list it)")
+            else:
                 kept.append(item)
                 result.kept.append(f"file '{item.owner}/{item.name}' (belongs to the report)")
-            else:
-                result.dropped.append(f"file '{item.name}' (belongs to report '{item.owner}')")
             continue
         if _listed(manifest, item) is None:
             result.dropped.append(item.shown if item.path is not None
@@ -789,7 +826,14 @@ def filter_package(package: dict, manifest, root_uri: Optional[str] = None) -> F
             continue
         kept.append(item)
         result.kept.append(item.shown)
+    _reduce(package, items, kept)
+    return result
 
+
+def _reduce(package: dict, items: list, kept: list) -> None:
+    """Make a parsed package hold `kept` of its `items` and nothing that
+    names another object: the requested items, the count, and the related
+    URIs of the connectors that stay."""
     kept_details = [item.detail for item in kept]
     gone = {item.uri for item in items if item.uri} - {item.uri for item in kept if item.uri}
     for detail in kept_details:
@@ -803,7 +847,6 @@ def filter_package(package: dict, manifest, root_uri: Optional[str] = None) -> F
         package["requestedItems"] = [uri for uri in package["requestedItems"] if uri in here]
     if isinstance(package.get("transferObjectCount"), int):
         package["transferObjectCount"] = len(kept_details)
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -860,85 +903,183 @@ def _report_differences(item: Located, entry, in_package: set, package_name: str
     return problems
 
 
+@dataclass
+class Difference:
+    """One sentence of the content gate.
+
+    `drift` is True for a difference in CONTENT against the checkout - a
+    file, a custom step, a job definition, one of the two generated files:
+    the package is the content of an earlier commit. Everything else is the
+    package being something it must never be, whatever the checkout holds."""
+
+    text: str
+    drift: bool = False
+
+
 def _object_differences(item: Located, entry, manifest) -> list:
-    """How a packaged file, step or job definition differs from the checkout."""
+    """How a packaged file, step or job definition differs from the
+    checkout: [Difference]."""
+    def wrong(text: str) -> Difference:
+        return Difference(text)
+
+    def behind(text: str) -> Difference:
+        return Difference(text, drift=True)
+
     body = _body(item.obj)
     if body is None:
-        return [f"{item.shown}: the packaged content is unreadable"]
+        return [wrong(f"{item.shown}: the packaged content is unreadable")]
     if entry.kind == "file":
         try:
             packaged = base64.b64decode(body.get("content") or "")
         except (binascii.Error, ValueError):
-            return [f"{item.shown}: the packaged content is unreadable"]
+            return [wrong(f"{item.shown}: the packaged content is unreadable")]
+        found = []
+        resource = body.get("fileResource") if isinstance(body.get("fileResource"), dict) else {}
+        if resource.get("name") not in (None, item.name):
+            found.append(wrong(f"file '{item.path}' is named '{resource.get('name')}' in its body"))
         expected = _content.file_bytes(manifest, entry)
         if entry.generated:
-            return [f"file '{item.path}' {problem}"
-                    for problem in _content.generated_differences(entry, expected, packaged)]
+            errors, drift = _content.generated_findings(entry, expected, packaged, manifest.repo_root)
+            return found + [wrong(f"file '{item.path}' {text}") for text in errors] \
+                + [behind(f"file '{item.path}' {text}") for text in drift]
         if _content.lf_bytes(packaged) != _content.lf_bytes(expected):
-            return [f"file '{item.path}' differs from {entry.source} "
-                    f"({len(_content.lf_bytes(packaged))} vs {len(_content.lf_bytes(expected))} bytes)"]
-        return []
+            found.append(behind(f"file '{item.path}' differs from {entry.source} "
+                                f"({len(_content.lf_bytes(packaged))} vs {len(_content.lf_bytes(expected))} bytes)"))
+        return found
     if entry.kind == "step":
-        return [f"step '{item.path}': '{part}' differs from {entry.source}"
-                for part in _content.step_differences(_content.step_body(manifest, entry), body)]
+        expected = _content.step_body(manifest, entry)
+        return [behind(f"step '{item.path}': '{part}' differs from {entry.source}")
+                for part in _content.step_differences(expected, body)] \
+            + [wrong(f"step '{item.path}' {text}") for text in _content.step_extras(expected, body)]
     sources = {"code": entry.code or "the code of a job definition that only serves a form",
                "form": entry.form or "no form", "parameters": "the parameters of its manifest entry"}
-    return [f"job definition '{item.path}': '{part}' differs from {sources[part]}"
-            for part in _content.job_differences(_content.job_definition_body(manifest, entry), body)]
+    expected = _content.job_definition_body(manifest, entry)
+    return [behind(f"job definition '{item.path}': '{part}' differs from {sources[part]}")
+            for part in _content.job_differences(expected, body)] \
+        + [wrong(f"job definition '{item.path}' {text}") for text in _content.job_extras(expected, body)]
 
 
-def package_differences(package: dict, manifest, package_name: str = "") -> list:
-    """The content gate: every difference between a package and the checkout,
-    one sentence each. An empty list means the package is the checkout's
-    content and nothing else:
+def _report_file_differences(report: Located, entry, children: list) -> list:
+    """How the files that are children of a packaged report differ from the
+    ones its manifest entry lists: sentences. A child is compared by its name
+    and, where the entry gives one, by the SHA-256 of its bytes - a report's
+    pictures have no source in the repository, so the hash is what stands in
+    the checkout."""
+    import hashlib
+    where = f"report '{report.path}'"
+    wanted = [dict(listed) for listed in entry.files]
+    problems = []
+    for child in children:
+        body = _body(child.obj) or {}
+        try:
+            digest = hashlib.sha256(base64.b64decode(body.get("content") or "")).hexdigest()
+        except (binascii.Error, ValueError):
+            problems.append(f"file '{child.name}' of {where}: the packaged content is unreadable")
+            continue
+        match = next((w for w in wanted if w["name"] == child.name and w["sha256"] in (None, digest)), None)
+        if match is not None:
+            wanted.remove(match)
+        elif any(w["name"] == child.name for w in entry.files):
+            problems.append(f"file '{child.name}' of {where} is not the file its manifest entry lists "
+                            f"(SHA-256 {digest})")
+        else:
+            problems.append(f"file '{child.name}' belongs to {where} and is not among the files its manifest "
+                            "entry lists")
+    problems += [f"{where}: the file '{w['name']}' its manifest entry lists is not in the package" for w in wanted]
+    return problems
 
-    * every entry of the manifest is in the package, at its path;
+
+#: The fields a transfer package has at its top, as the exports read so far
+#: carry them. Another one is something an export does not write.
+PACKAGE_FIELDS = ("createdBy", "creationTimeStamp", "description", "id", "links", "modifiedBy", "modifiedTimeStamp",
+                  "name", "options", "requestedItems", "transferDetails", "transferObjectCount", "version")
+
+
+def package_findings(package: dict, manifest, package_name: str = "") -> list:
+    """The content gate: every difference between a package and the checkout
+    as a Difference, in the order of the package. An empty list means the
+    package is the checkout's content and nothing else:
+
+    * every entry of the manifest is in the package, at its path, once;
     * a file equals the repository file (line endings aside), a generated file
-      what its generator writes now (release.json by its entries), a step the
+      what its generator writes now (release.json: its kind, its fields, the
+      release, the commit where git can say, and its entries), a step the
       .step file in `templates`, `ui` and `flowMetadata`, a job definition its
       program, its form and its parameters;
-    * a report passes its checks;
+    * a step has the name and type of its file and no `properties` or
+      `arguments`, a job definition the name and type of its entry, one form
+      at most and no other property;
+    * a report passes its checks, and the files that are its children are
+      the ones its entry lists, with the hash given there;
     * no object is in the package that the manifest does not list, none sits
-      on a path that never ships, and there is no authorization rule or share.
+      on a path that never ships, there is no authorization rule or share,
+      and the package has no field at its top that an export does not write.
+
+    Not compared, each for its reason: the description of a step or a job
+    definition and the display fields the dataFlows service derives
+    (`localDisplayName`, `localUi`) - text beside the content, which the
+    deploy does not hold a site to either; the ids, the links, the users and
+    the time stamps of the objects - they are those of the exporting system;
+    a line end (CRLF for LF) in a text file.
     """
     root, items = locate(package)
     if root is None:
-        return ["the package holds no folder, so its objects have no place below a content root"]
+        return [Difference("the package holds no folder, so its objects have no place below a content root")]
     problems: list = []
-    seen: set = set()
-    listed_reports = {item.path for item in items if item.kind == "report" and _listed(manifest, item) is not None}
+    seen: dict = {}
+    listed_reports = {item.path: item for item in items
+                      if item.kind == "report" and _listed(manifest, item) is not None}
     in_package = {item.uri for item in items if item.uri}
+    unknown = sorted(set(map(str, package)) - set(PACKAGE_FIELDS))
+    if unknown:
+        problems.append(Difference(f"the package carries the field(s) {', '.join(unknown)} at its top, which an "
+                                   "export does not write"))
     for item in items:
         if item.kind in GRANT_KINDS:
-            problems.append(f"the package carries the authorization {item.kind} '{item.name}'")
+            problems.append(Difference(f"the package carries the authorization {item.kind} '{item.name}'"))
             continue
         if item.path == "":
             continue
         if item.owner is not None:
             if item.owner not in listed_reports:
-                problems.append(f"file '{item.name}' belongs to report '{item.owner}', which is not in the manifest")
+                problems.append(Difference(
+                    f"file '{item.name}' belongs to report '{item.owner}', which is not in the manifest"))
             continue
         if item.path is None:
-            problems.append(f"{item.kind} '{item.name}' is in the package but not below its content root")
+            problems.append(Difference(f"{item.kind} '{item.name}' is in the package but not below its content root"))
             continue
         entry = _listed(manifest, item)
         if entry is None:
-            problems.append(f"{item.shown} is in the package but not in the manifest")
+            problems.append(Difference(f"{item.shown} is in the package but not in the manifest"))
             continue
-        seen.add((entry.kind, entry.path))
+        seen[(entry.kind, entry.path)] = seen.get((entry.kind, entry.path), 0) + 1
+        if seen[(entry.kind, entry.path)] > 1:
+            problems.append(Difference(f"{item.shown} is in the package {seen[(entry.kind, entry.path)]} times - "
+                                       "one path holds one object"))
+            continue
         forbidden = _content.never_ship(item.path)
         if forbidden:
-            problems.append(f"{item.shown}: {forbidden} and never ships")
+            problems.append(Difference(f"{item.shown}: {forbidden} and never ships"))
             continue
         if entry.kind == "report":
-            problems.extend(_report_differences(item, entry, in_package, package_name))
+            children = [child for child in items if child.owner == item.path]
+            problems.extend(Difference(text) for text in
+                            _report_differences(item, entry, in_package, package_name)
+                            + _report_file_differences(item, entry, children))
         elif entry.kind != "folder":
             try:
                 problems.extend(_object_differences(item, entry, manifest))
             except (OSError, ValueError) as exc:
-                problems.append(f"{item.shown}: cannot be compared with the checkout ({exc})")
+                problems.append(Difference(f"{item.shown}: cannot be compared with the checkout ({exc})"))
     for entry in manifest.all_entries():
         if (entry.kind, entry.path) not in seen:
-            problems.append(f"{entry.kind} '{entry.path}' is in the manifest but not in the package")
+            problems.append(Difference(f"{entry.kind} '{entry.path}' is in the manifest but not in the package"))
     return problems
+
+
+def package_differences(package: dict, manifest, package_name: str = "") -> list:
+    """`package_findings` as sentences: every difference, drift or not. What
+    a release asks of a package (`mdb package-check --release`, and an
+    export into the release file) is that this is empty."""
+    return [difference.text for difference in package_findings(package, manifest, package_name)]
 
