@@ -1226,7 +1226,8 @@ def test_the_about_tab_names_the_five_tables():
     for words in ("Prompt experiments", "Prompt optimizations", "RAG setups", "RAG runs", "Model catalog",
                   "modelID, runID, model", "modelID, optimizationId", "modelID, run_id"):
         assert words in about
-    assert by_id["textChangelog"]["text"].startswith("* Version: 2.0 (11OCT2026)")
+    assert by_id["textChangelog"]["text"].startswith("* Version: 2.1 (12OCT2026)")
+    assert "* Version: 2.0 (11OCT2026)" in by_id["textChangelog"]["text"]
     assert by_id["textChangelog"]["text"].endswith("* Version: 1.0 (09AUG2025)\n      - Initial version")
     # an About tab says what the step does, not what was or was not run
     texts = " ".join(control.get("text", "") for control in by_id.values())
