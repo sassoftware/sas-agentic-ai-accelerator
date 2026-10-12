@@ -589,3 +589,112 @@ def test_a_file_without_releases_is_refused(tmp_path):
     (tmp_path / "CHANGELOG.md").write_text("# Nothing here\n", encoding="utf-8")
     with pytest.raises(ValueError, match="release headings"):
         build_release_table(tmp_path / "CHANGELOG.md", tmp_path / "out.csv")
+
+
+# ---- the shape of "Upgrading from ..." ---------------------------------------
+# The parser reads that section by its shape: the paragraph under the heading
+# and every paragraph with a bold lead is an entry, and a numbered step is
+# added to the entry in front of it. A shape it does not know still parses and
+# no other test fails for it - a "####" heading, a table row or a link
+# definition becomes a row of the release table that starts with "#", "|" or
+# "[", and steps directly under a heading all fold into one paragraph.
+import re  # noqa: E402
+
+#: The blocks of the upgrade section of 2.3.0, in their order: what every site
+#: does, then one block for each thing a site may use.
+UPGRADE_BLOCKS = ("Everyone", "Prompt building", "Decision models", "RAG", "Logging")
+_STEP = re.compile(r"^(\d+)\.\s+\S")
+_STEP_NAMED = re.compile(r"\bsteps?\s+(\d+)(?:\s*(?:,|and|to|or)\s*(\d+))*", re.I)
+
+
+def _upgrade_sections(text: str) -> dict:
+    """{version: [lines of its "### Upgrading ..." section]} of a changelog."""
+    sections, version, inside = {}, None, False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            version, inside = line.split("]")[0].lstrip("# ["), False
+        elif line.startswith("### "):
+            inside = "upgrad" in line.lower()
+            if inside:
+                assert version not in sections, f"{version}: two upgrade headings"
+                sections[version] = []
+        elif inside:
+            sections[version].append(line)
+    return sections
+
+
+def _release_block(text: str, version: str) -> list:
+    lines, inside = [], False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            inside = line.startswith(f"## [{version}]")
+        elif inside:
+            lines.append(line)
+    return lines
+
+
+def test_the_upgrade_steps_of_every_release_are_numbered_without_a_gap():
+    sections = _upgrade_sections((REPO / "CHANGELOG.md").read_text(encoding="utf-8"))
+    assert "2.3.0" in sections
+    for version, lines in sections.items():
+        numbers = [int(m.group(1)) for m in map(_STEP.match, lines) if m]
+        assert numbers == list(range(1, len(numbers) + 1)), f"{version}: the steps are numbered {numbers}"
+        # a step under a heading with no paragraph in front of it is added to
+        # nothing, or to the entry of another section
+        first_step = next((i for i, line in enumerate(lines) if _STEP.match(line)), None)
+        if first_step is not None:
+            assert any(line.strip() for line in lines[:first_step]), f"{version}: steps without a paragraph above them"
+        for line in lines:
+            assert not line.startswith(("#", "|", "- ", "* ")) and not re.match(r"^\[[^\]]+\]:", line), \
+                f"{version}: a line of the upgrade section is a heading, a table row, a bullet or a link definition: {line[:60]!r}"
+
+
+def test_the_upgrade_section_of_2_3_0_has_each_block_once_and_in_order():
+    lines = _upgrade_sections((REPO / "CHANGELOG.md").read_text(encoding="utf-8"))["2.3.0"]
+    leads = [m.group(1) for m in (re.match(r"^\*\*([^*]+?)\.\*\*", line) for line in lines) if m]
+    assert leads == list(UPGRADE_BLOCKS)
+    # a step is one or two lines of the page, not a chapter: the long text is in the guides
+    steps = [line for line in lines if _STEP.match(line)]
+    assert steps and max(len(step) for step in steps) < 1000, max(len(step) for step in steps)
+    # every step of the blocks after the first is for the sites that use that part
+    position = {lead: next(i for i, line in enumerate(lines) if line.startswith(f"**{lead}.**")) for lead in leads}
+    assert all(line.strip() == "" or not _STEP.match(line) for line in lines[:position["Everyone"]])
+
+
+def test_no_upgrade_row_of_the_release_table_is_a_fragment_of_markdown(tmp_path):
+    rows, _ = build_release_table(REPO / "CHANGELOG.md", tmp_path / "releases.csv")
+    upgrade = [r for r in rows if r["change_type"] == "Upgrade"]
+    assert upgrade
+    for row in upgrade:
+        assert row["summary"] and not row["summary"].startswith(("#", "|", "[")), (row["version"], row["summary"])
+        assert not row["summary"][:1].isdigit() or not row["summary"].split(".")[0].isdigit(), (row["version"], row["summary"])
+    current = [r for r in upgrade if r["version"] == "2.3.0"]
+    summaries = list(dict.fromkeys(r["summary"] for r in current))
+    # the paragraph under the heading, the five blocks, and the closing paragraph about a first install
+    assert summaries[1:6] == list(UPGRADE_BLOCKS), summaries
+    assert len(summaries) == 7, summaries
+    # the steps are in the rows of their block, and no step made a row of its own
+    by_summary = {r["summary"]: r["detail"] for r in current}
+    assert "mdb builders-import" in by_summary["Everyone"]
+    assert "Manifest setup" in by_summary["RAG"] and "log collection script" in by_summary["Logging"]
+    assert "Manifest each of those decision templates again" in by_summary["Decision models"]
+
+
+def test_a_step_of_the_upgrade_that_an_entry_names_exists():
+    """An entry of 2.3.0 says "step 7 of the upgrade" or "Upgrading from 2.2.x:
+    steps 2 and 7"; the numbers have to be steps of the section as it is."""
+    text = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    steps = [line for line in _upgrade_sections(text)["2.3.0"] if _STEP.match(line)]
+    last = len(steps)
+    named = []
+    for line in _release_block(text, "2.3.0"):
+        for sentence in re.findall(r"Upgrading from 2\.2\.x:[^.]*\.|[^.]*of the upgrade[^.]*\.", line):
+            for match in _STEP_NAMED.finditer(sentence):
+                named += [int(n) for n in re.findall(r"\d+", match.group(0))]
+    assert named, "no entry names a step of the upgrade - the pattern of this test no longer finds them"
+    assert all(1 <= n <= last for n in named), (sorted(set(named)), last)
+    # inside the section a step names another one by its number as well
+    for step in steps:
+        own = int(_STEP.match(step).group(1))
+        for match in re.finditer(r"\bsteps? (\d+)\b", step):
+            assert 1 <= int(match.group(1)) <= last and int(match.group(1)) != own, step[:80]
