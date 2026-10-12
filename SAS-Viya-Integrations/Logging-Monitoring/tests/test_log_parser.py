@@ -290,7 +290,7 @@ def test_what_appending_found_is_handed_on_in_two_macro_variables(program):
     assert "%let _log_fixed_rename = ;\n%let _log_fixed_assign = ;\n%let _log_fixed_drop = ;\n" in before_the_macro
     clean_up = program[program.index("* Clean up;"):]
     assert ("%symdel _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded"
-            " _log_fixed_rename _log_fixed_assign _log_fixed_drop;") in clean_up
+            " _log_fixed_rename _log_fixed_assign _log_fixed_drop _log_append_syserr;") in clean_up
     # Replace mode never asks: the lookup runs in append mode only
     macro = _output_macro(program)
     assert macro.index("%if &_log_append_table. %then %do;") < macro.index("call symputx('_log_target_scope'")
@@ -335,18 +335,21 @@ def test_existing_rows_and_new_rows_become_one_table_beside_the_existing_one(pro
     read = 'set _llmtgt."&_log_target_table_name."n(&_log_fixed_rename. in=_log_existing_row) _llmsrc._TEMP_LLM_LOGS;'
     built = statements.index("data _llmtgt._TEMP_LLM_LOGS_ALL;")
     assert statements[built + 1].startswith("length timestamp 8 model varchar(*) ")
-    assert statements[statements.index(read):] == [read, "&_log_fixed_assign.", "&_log_fixed_drop.", "run;", "libname _llmtgt clear;", "libname _llmsrc clear;"]
+    assert statements[statements.index(read):] == [read, "&_log_fixed_assign.", "&_log_fixed_drop.", "run;", "%let _log_append_syserr = &syserr.;",
+                                                   "libname _llmtgt clear;", "libname _llmsrc clear;"]
     assert built < statements.index(read)
 
     # The swap takes that table where there was a table to append to, and the rows of the log otherwise
     staged = " ".join(swap[swap.index("%else %do;"):swap.index("table.tableExists result=staged")].split())
-    assert "%if &_log_target_scope. GE 1 %then %do; stagedTable = '_TEMP_LLM_LOGS_ALL'; %end;" in staged
+    assert "%if &_log_target_scope. GE 1 %then %do; stagedTable = '_TEMP_LLM_LOGS_ALL';" in staged
     assert ('%else %do; stagedTable = "&_log_target_table_name._NEW"; table.copyTable / table = {casLib = \'CASUSER\', name = \'_TEMP_LLM_LOGS\'}, '
             'casOut = {casLib = "&_log_target_table_lib.", name = stagedTable, replace = True}; %end;') in staged
     # The existing table is only dropped once its replacement exists
-    exists, drop, rename = (swap.index(text) for text in ("if staged.exists GE 1 then do;", "table.dropTable", "table.alterTable"))
+    exists, drop, rename = (swap.index(text) for text in ("if staged.exists GE 1 and stagedComplete then do;", "table.dropTable", "table.alterTable"))
     assert exists < drop < rename
-    assert swap.count("table.dropTable") == 2
+    # The existing table is dropped twice, and what a DATA step that did not finish left behind once
+    assert len(re.findall(r'table\.dropTable /\s+casLib = "&_log_target_table_lib\.",\s+name = "&_log_target_table_name\.",', swap)) == 2
+    assert swap.count("table.dropTable") == 3
     assert 'print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is.";' in swap[rename:]
 
 
@@ -522,7 +525,7 @@ def test_appending_to_a_table_whose_column_has_the_other_type_stops(monkeypatch,
     with pytest.raises(ValueError, match="Variable temperature has been defined as both numeric and character"):
         _appended_columns(code_file_program(), existing, uploaded)
     swap = _swap(code_file_program())
-    assert swap.index("if staged.exists GE 1 then do;") < swap.index("table.dropTable")
+    assert swap.index("if staged.exists GE 1 and stagedComplete then do;") < swap.index("table.dropTable")
 
 
 def test_replacing_writes_every_column(monkeypatch, tmp_path):
@@ -1699,3 +1702,102 @@ def test_text_columns_stay_text_after_the_parser_prepared_the_upload(monkeypatch
             assert pd.api.types.is_numeric_dtype(frame[column]), column
     # Every column the parser fills holds a value in at least one of these four rows
     assert [column for column in ALL_COLUMNS if frame[column].isna().all()] == ["top_k"] + LINK_COLUMNS
+
+
+# ---------------------------------------------------------------------------
+# The SAS code around the Python: messages, sessions, the result of the append
+# ---------------------------------------------------------------------------
+
+@BOTH_PROGRAMS
+def test_message_for_a_table_that_is_not_in_cas_names_it_by_what_both_programs_set(program):
+    """The code file sets the library and the name of the table, the step is handed them by
+    its output table control. &_log_target_table. is set by that control only."""
+    program = program()
+
+    assert 'putlog "ERROR: The table &_log_target_table_lib..&_log_target_table_name. is not a CAS table.";' in program
+    assert "&_log_target_table." not in program
+
+
+def test_every_macro_variable_the_code_file_reads_is_one_it_sets():
+    program = code_file_program()
+    program = program[:program.index("submit;")] + program[program.index("endsubmit;"):]
+
+    read = set(name.lower() for name in re.findall(r"&+(_log_\w+)", program))
+    assigned = set(name.lower() for name in re.findall(r"%let (_log_\w+)", program))
+    assigned |= set(name.lower() for name in re.findall(r"call symputx\('(_log_\w+)'", program))
+    assert read - assigned == set()
+    assert "_log_row_count" not in read - assigned and "SAS.symput('_log_row_count'" in code_file_program()
+
+
+def test_code_file_starts_its_cas_session_only_where_none_is_connected():
+    """Run behind Get-All-Prompts.sas or behind itself in one SAS session, a second
+    'cas mysess;' gives a WARNING that SAS Job Execution reports as the error of the job."""
+    code_file = code_file_program()
+    first_lines = [line.strip() for line in code_file[:code_file.index("libname public cas caslib='Public';")].split("\n")]
+
+    assert first_lines[-4:-1] == ["%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;", "cas mysess;", "%end;"]
+    # The session it started stays, as the librefs that are bound to it do: nothing ends it
+    assert "mysess terminate" not in code_file.lower().replace("llmlogmysess", "")
+
+
+@BOTH_PROGRAMS
+def test_append_asks_the_data_step_for_its_result_before_the_existing_table_is_dropped(program):
+    """The DATA step that appends can end with an error, and its table is then no table to
+    put in the place of the existing one. Its return code and its rows are looked at first."""
+    program = program()
+    step, swap = _append_step(program), " ".join(_swap(program).split())
+
+    # The return code is taken right behind the step, and it starts at 0 in every run
+    assert "    run;\n                %let _log_append_syserr = &syserr.;\n" in step
+    assert "%let _log_append_syserr = 0;\n" in program[:program.index("%macro _log_handle_output_table;")]
+    # The rows: of the existing table and of the new one from the listing of their caslib, of the log from CASUSER
+    assert 'table.tableInfo result=targetTables / casLib = "&_log_target_table_lib.";' in swap
+    assert ('if upcase(listedTable.Name) EQ upcase("&_log_target_table_name.") then do; existingRows = listedTable.Rows; '
+            "existingLabel = listedTable.Label; end;") in swap
+    assert "if upcase(listedTable.Name) EQ '_TEMP_LLM_LOGS_ALL' then stagedRows = listedTable.Rows;" in swap
+    assert "table.tableInfo result=uploadTables / casLib = 'CASUSER';" in swap
+    assert "if upcase(listedTable.Name) EQ '_TEMP_LLM_LOGS' then uploadedRows = listedTable.Rows;" in swap
+    refused = ("if &_log_append_syserr. GT 4 or existingRows LT 0 or uploadedRows LT 0 or stagedRows NE existingRows + uploadedRows "
+               "then stagedComplete = False;")
+    assert refused in swap
+    # A table that could not be counted is no reason to go on: the three counts start at -1
+    assert "existingRows = -1; uploadedRows = -1; stagedRows = -1;" in swap
+    # Only in append mode: a table that is copied has no DATA step to ask
+    assert swap.index("%if &_log_target_scope. GE 1 %then %do; stagedTable = '_TEMP_LLM_LOGS_ALL';") < swap.index(refused) < swap.index("%else %do; stagedTable =")
+    assert swap.index("stagedComplete = True;") < swap.index(refused) < swap.index("if staged.exists GE 1 and stagedComplete then do;") < swap.index("table.dropTable")
+
+
+@BOTH_PROGRAMS
+def test_append_that_did_not_finish_leaves_the_table_with_one_error_line(program):
+    swap = " ".join(_swap(program()).split())
+
+    otherwise = swap[swap.index("tableWritten = True; end; else do;"):swap.index("%if &_log_save_table. %then %do;")]
+    assert otherwise.count("print (error)") == 2 and otherwise.count("tableWritten = False;") == 1
+    in_append_mode = otherwise[otherwise.index("%if &_log_target_scope. GE 1 %then %do;"):otherwise.index("%else %do;")]
+    assert ('print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is. '
+            'The DATA step that appends ended with the return code &_log_append_syserr. and wrote " || (string) stagedRows || " rows, '
+            'the table held " || (string) existingRows || " and the log " || (string) uploadedRows || " (-1 stands for a table that was '
+            'not found).";') in in_append_mode
+    # What the step left behind is dropped, the existing table is not named in that branch
+    assert "table.dropTable / casLib = \"&_log_target_table_lib.\", name = '_TEMP_LLM_LOGS_ALL', quiet = True;" in in_append_mode
+    assert 'name = "&_log_target_table_name."' not in otherwise
+    # No message goes through %put with a semicolon in it
+    assert ";" not in re.sub(r'" \|\| \(string\) \w+ \|\| "', "", in_append_mode[in_append_mode.index('"The new table'):in_append_mode.index('.";')])
+
+
+@BOTH_PROGRAMS
+def test_appended_table_keeps_the_label_of_the_table_it_replaces(program):
+    """The DATA step writes a table without a label, so a table lost 'Extracted LLM Log
+    Data' with the first append. The label of the existing table is read before it is
+    dropped and set on the new one - the label of the parser where it had none."""
+    swap = " ".join(_swap(program()).split())
+
+    read, drop, rename = (swap.index(text) for text in ("existingLabel = listedTable.Label;", "table.dropTable", "rename ="))
+    label = ("%if &_log_target_scope. GE 1 %then %do; "
+             "/* A DATA step writes a table without a label. The new table gets the label the existing one had, and the label of a "
+             "table this program starts where it had none */ "
+             "if existingLabel EQ '' then existingLabel = 'Extracted LLM Log Data'; "
+             'table.alterTable / casLib = "&_log_target_table_lib.", name = "&_log_target_table_name.", label = existingLabel; %end;')
+    assert read < drop < rename < swap.index(label) < swap.index("table.promote")
+    # The label of a table that is started is the one the upload gives it
+    assert "label='Extracted LLM Log Data'," in program()

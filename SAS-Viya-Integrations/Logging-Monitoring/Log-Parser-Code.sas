@@ -2,7 +2,10 @@
     Copyright © 2024, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
     SPDX-License-Identifier: Apache-2.0
 ********************************************************************************/
-cas mysess;
+* A CAS session for the librefs below. A session that is connected is used as it is, as starting mysess a second time in one SAS session gives a WARNING. The session stays when the program ends, as the librefs do;
+%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;
+    cas mysess;
+%end;
 libname public cas caslib='Public';
 libname casuser cas caslib='casuser';
 
@@ -30,7 +33,7 @@ run;
 * Ensure that the output table is in CAS;
 %if &_log_target_table_engine. NE CAS %then %do;
     data _null_;
-        putlog "ERROR: The table &_log_target_table. is not a CAS table.";
+        putlog "ERROR: The table &_log_target_table_lib..&_log_target_table_name. is not a CAS table.";
         putlog 'ERROR: In order for this step to run your target table needs to be in CAS';
         abort 62;
     run;
@@ -68,6 +71,8 @@ quit;
 %let _log_fixed_rename = ;
 %let _log_fixed_assign = ;
 %let _log_fixed_drop = ;
+* The return code of the DATA step of append mode (SYSERR). The output macro sets it behind that step, and the new table only takes the place of the existing one when it is 0 or the 4 of a warning;
+%let _log_append_syserr = 0;
 
 proc python restart;
 submit;
@@ -916,6 +921,7 @@ run; quit;
                     &_log_fixed_assign.
                     &_log_fixed_drop.
                 run;
+                %let _log_append_syserr = &syserr.;
                 libname _llmtgt clear;
                 libname _llmsrc clear;
             %end;
@@ -929,8 +935,35 @@ run; quit;
             %end;
             %else %do;
                 /* The new table is built beside the existing one, which is only dropped once its replacement exists */
+                stagedComplete = True;
                 %if &_log_target_scope. GE 1 %then %do;
                     stagedTable = '_TEMP_LLM_LOGS_ALL';
+                    /* The DATA step that appended is asked for its result before its table takes the place of the
+                       existing one: its return code, and the rows it wrote against the rows of the two tables it
+                       read. The listing that counts the rows also gives the label of the existing table */
+                    existingRows = -1;
+                    uploadedRows = -1;
+                    stagedRows = -1;
+                    existingLabel = '';
+                    table.tableInfo result=targetTables /
+                        casLib = "&_log_target_table_lib.";
+                    if exists(targetTables, 'TableInfo') then do;
+                        do listedTable over targetTables.TableInfo;
+                            if upcase(listedTable.Name) EQ upcase("&_log_target_table_name.") then do;
+                                existingRows = listedTable.Rows;
+                                existingLabel = listedTable.Label;
+                            end;
+                            if upcase(listedTable.Name) EQ '_TEMP_LLM_LOGS_ALL' then stagedRows = listedTable.Rows;
+                        end;
+                    end;
+                    table.tableInfo result=uploadTables /
+                        casLib = 'CASUSER';
+                    if exists(uploadTables, 'TableInfo') then do;
+                        do listedTable over uploadTables.TableInfo;
+                            if upcase(listedTable.Name) EQ '_TEMP_LLM_LOGS' then uploadedRows = listedTable.Rows;
+                        end;
+                    end;
+                    if &_log_append_syserr. GT 4 or existingRows LT 0 or uploadedRows LT 0 or stagedRows NE existingRows + uploadedRows then stagedComplete = False;
                 %end;
                 %else %do;
                     stagedTable = "&_log_target_table_name._NEW";
@@ -942,7 +975,7 @@ run; quit;
                     casLib = "&_log_target_table_lib.",
                     name = stagedTable;
 
-                if staged.exists GE 1 then do;
+                if staged.exists GE 1 and stagedComplete then do;
                     /* Dropped twice, as a session table of that name hides a promoted one */
                     table.dropTable /
                         casLib = "&_log_target_table_lib.",
@@ -957,6 +990,16 @@ run; quit;
                         name = stagedTable,
                         rename = "&_log_target_table_name.";
 
+                    %if &_log_target_scope. GE 1 %then %do;
+                        /* A DATA step writes a table without a label. The new table gets the label the existing
+                           one had, and the label of a table this program starts where it had none */
+                        if existingLabel EQ '' then existingLabel = 'Extracted LLM Log Data';
+                        table.alterTable /
+                            casLib = "&_log_target_table_lib.",
+                            name = "&_log_target_table_name.",
+                            label = existingLabel;
+                    %end;
+
                     /* A table that was promoted when the rows were appended to it is promoted again */
                     %if &_log_promote_table. or &_log_target_scope. EQ 2 %then %do;
                         table.promote /
@@ -969,7 +1012,17 @@ run; quit;
                     tableWritten = True;
                 end;
                 else do;
-                    print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is.";
+                    %if &_log_target_scope. GE 1 %then %do;
+                        print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is. The DATA step that appends ended with the return code &_log_append_syserr. and wrote " || (string) stagedRows || " rows, the table held " || (string) existingRows || " and the log " || (string) uploadedRows || " (-1 stands for a table that was not found).";
+                        /* What the DATA step left behind is no table of anybody */
+                        table.dropTable /
+                            casLib = "&_log_target_table_lib.",
+                            name = '_TEMP_LLM_LOGS_ALL',
+                            quiet = True;
+                    %end;
+                    %else %do;
+                        print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is.";
+                    %end;
                     tableWritten = False;
                 end;
             %end;
@@ -1007,5 +1060,5 @@ run; quit;
     cas llmLogMySess terminate;
 %end;
 %sysmacdelete _log_handle_output_table;
-%symdel _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded _log_fixed_rename _log_fixed_assign _log_fixed_drop;
+%symdel _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded _log_fixed_rename _log_fixed_assign _log_fixed_drop _log_append_syserr;
 %symdel _log_path _log_target_table_engine _log_target_table_lib _log_target_table_name _log_append_table _log_promote_table _log_save_table;
