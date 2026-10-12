@@ -49,7 +49,16 @@
 %let _rcv_out_caslib  = Public;
 %let _rcv_out_table   = RAG_RUN_COST;
 
-cas _rcvSess;
+/* A CAS session that is connected is used as it is, and only a session this
+   program started is ended at its end. The option SESSREF keeps the name of
+   a session that was ended, so SESSFOUND is asked whether it is connected. */
+%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;
+    %let _rcv_clean_cas_session = 1;
+    cas _rcvSess;
+%end;
+%else %do;
+    %let _rcv_clean_cas_session = 0;
+%end;
 caslib _all_ assign;
 
 /* ---- stack every published run table into one ----------------------------
@@ -255,7 +264,9 @@ proc datasets lib=work nolist;
     delete _rcv_runs _rcv_runs_n _rcv_cost _rcv_facts _rcv_llm;
 run; quit;
 
-cas _rcvSess terminate;
+%if &_rcv_clean_cas_session. %then %do;
+    cas _rcvSess terminate;
+%end;
 %symdel _rcv_fact_caslib _rcv_runs_caslib _rcv_runs_tables _rcv_has_enrich
         _rcv_out_caslib _rcv_out_table _rcv_i _rcv_t _rcv_unpriced
-        _rcv_unpriced_llm / nowarn;
+        _rcv_unpriced_llm _rcv_clean_cas_session / nowarn;

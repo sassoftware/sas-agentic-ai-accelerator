@@ -8,7 +8,8 @@
     The tables created by this script are used in the provided SAS Visual
       Analytics report to help to provide accurate price information. Please
       update the prices, as no discounts or other special configs are assumed.
-      A CAS session will be created for you.
+      A CAS session is started for you when none is connected, and only
+      that session is ended again.
 
     LFS is short for Load Fact Sheets
 ********************************************************************************/
@@ -60,7 +61,15 @@ run; quit;
 filename _lfs_fs clear;
 
 * Load/Promote/Save to CAS;
-cas mySess;
+* Check if a CAS session exists;
+* The option SESSREF names the session the CAS actions run in and keeps the name of a session that was ended, so SESSFOUND is asked whether that session is connected. A session that is connected is used as it is: starting mySess a second time in one SAS session makes SAS warn that the session exists, and ending it takes the session from the librefs another program bound to it;
+%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;
+    %let _lfs_clean_cas_session = 1;
+    cas mySess;
+%end;
+%else %do;
+    %let _lfs_clean_cas_session = 0;
+%end;
 
 proc casUtil inCASLib="&_lfs_caslib." outCASLib="&_lfs_caslib.";
     dropTable casData='LLM_FACT_SHEET' quiet;
@@ -81,5 +90,7 @@ run; quit;
 proc datasets lib=work noList;
     delete _lfs_llm_fact_sheet _lfs_embedding_fact_sheet _lfs_decision_fact_sheet;
 run; quit;
-cas mySess terminate;
-%symdel _lfs_path _lfs_caslib;
+%if &_lfs_clean_cas_session. %then %do;
+    cas mySess terminate;
+%end;
+%symdel _lfs_path _lfs_caslib _lfs_clean_cas_session;
