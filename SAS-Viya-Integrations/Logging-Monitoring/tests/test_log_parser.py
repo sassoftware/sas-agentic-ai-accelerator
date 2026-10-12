@@ -7,7 +7,9 @@ Run with: python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests
 import hashlib
 import json
 import math
+import random
 import re
+import types
 from datetime import datetime
 
 import pandas as pd
@@ -26,9 +28,12 @@ from log_parser_harness import (
     embedding_block,
     failed_block,
     get_block,
+    in_file_order,
+    lines_of,
     llm_block,
     llm_inputs,
     log_line,
+    log_units,
     made_up_id,
     parse,
     python_block,
@@ -74,8 +79,9 @@ def missing(value):
 
 
 def text_hash(text):
-    """The hash the three programs know a text by: SHA-256 of the text with every run of white space made one blank."""
-    return hashlib.sha256(" ".join(text.split()).encode("utf-8")).hexdigest()
+    """The hash the three programs know a text by: SHA-256 of the text with every run of white space made one
+    blank. A character without UTF-8 bytes counts as a question mark, as it does in the programs."""
+    return hashlib.sha256(" ".join(text.split()).encode("utf-8", errors="replace")).hexdigest()
 
 
 def notes(run):
@@ -1422,12 +1428,25 @@ def test_log_lines_quoted_in_a_prompt_or_a_response_are_text(monkeypatch, tmp_pa
 # transaction a later line still names was running when the next one started.
 # ---------------------------------------------------------------------------
 
+OVERLAP_NOTE = re.compile(
+    r"(\d+) request\(s\) were running at the same time as another request - of their container, or of another container whose "
+    r"lines are mixed with theirs in the file\. The first lines of a request, the lines of the score code and the 'Response:' line "
+    r"name no request, so a line that the log does not decide was given to none of them: (\d+) request\(s\) can have missing "
+    r"values, and failed is missing for (\d+) request\(s\)\.")
+
+
+def _overlap_counts(messages):
+    """What the NOTE about requests that ran at the same time counts: those requests, the ones of them
+    that can have missing values, and the ones whose failed is missing. None when there is no such NOTE."""
+    found = [OVERLAP_NOTE.fullmatch(message) for kind, message in messages if kind == "NOTE" and "at the same time" in message]
+    assert all(found), messages
+    assert len(found) <= 1
+    return tuple(int(number) for number in found[0].groups()) if found else None
+
+
 def _overlap_note(run):
     assert [kind for kind, _ in run.sas.messages] == ["NOTE"], run.sas.messages
-    counts = re.fullmatch(r"(\d+) request\(s\) were running at the same time as another request of their container\. .*: "
-                          r"(\d+) request\(s\) were running when that happened and can have missing values\.", run.sas.messages[0][1])
-    assert counts, run.sas.messages[0][1]
-    return int(counts.group(1)), int(counts.group(2))
+    return _overlap_counts(run.sas.messages)
 
 
 def test_requests_that_overlap_in_one_container_stay_one_row_each(monkeypatch, tmp_path):
@@ -1451,7 +1470,8 @@ def test_requests_that_overlap_in_one_container_stay_one_row_each(monkeypatch, t
     assert list(frame["status_code"]) == [200, 200] and list(frame["failed"]) == [0, 0]
     assert all(missing(frame.loc[0, column]) for column in ("prompt_length", "output_length", "runtime", "response"))
     assert (frame.loc[1, "prompt_length"], frame.loc[1, "output_length"], frame.loc[1, "runtime"], frame.loc[1, "response"]) == (22, 9, 1.25, "answer B")
-    assert _overlap_note(run) == (2, 2)
+    # Both ran at the same time, both can lack a value, and the log says of both whether they failed
+    assert _overlap_note(run) == (2, 2, 0)
 
 
 def test_score_lines_of_two_running_requests_are_the_lines_of_neither(monkeypatch, tmp_path):
@@ -1469,7 +1489,7 @@ def test_score_lines_of_two_running_requests_are_the_lines_of_neither(monkeypatc
         assert all(missing(value) for value in frame[column]), column
     # The 'Response:' line stands in front of the 'Response Data:' line that names its transaction
     assert list(frame["status_code"]) == [200, 500] and list(frame["failed"]) == [0, 1]
-    assert _overlap_note(run) == (2, 2)
+    assert _overlap_note(run) == (2, 2, 0)
 
 
 def test_response_lines_that_are_not_followed_by_their_response_data_are_the_lines_of_neither(monkeypatch, tmp_path):
@@ -1485,13 +1505,13 @@ def test_response_lines_that_are_not_followed_by_their_response_data_are_the_lin
     assert all(missing(value) for value in frame["status_code"])
     assert all(missing(value) for value in frame["failed"])
     assert not any(missing(value) for value in frame["transaction_id"])
-    assert _overlap_note(run) == (2, 2)
+    assert _overlap_note(run) == (2, 2, 2)
 
     # A request behind them is read like any other
     run = run_parser(monkeypatch, _write(tmp_path, as_log(
         before_first, before_second, last_lines, llm_block(timestamp="2026-01-05 09:00:09", user_prompt="question C", status=201))))
     assert list(run.uploads[0]["frame"]["status_code"])[2] == 201
-    assert _overlap_note(run) == (2, 2)
+    assert _overlap_note(run) == (2, 2, 2)
 
 
 def test_error_of_a_request_that_overlaps_is_given_to_it_by_its_transaction(monkeypatch, tmp_path):
@@ -1508,7 +1528,7 @@ def test_error_of_a_request_that_overlaps_is_given_to_it_by_its_transaction(monk
     # With that the first request has ended, and the lines behind it are the lines of the second
     assert (frame.loc[1, "status_code"], frame.loc[1, "failed"], frame.loc[1, "response"], frame.loc[1, "prompt_length"]) == (200, 0, "answer B", 21)
     assert missing(frame.loc[1, "error_text"])
-    assert _overlap_note(run) == (2, 2)
+    assert _overlap_note(run) == (2, 2, 0)
 
 
 def test_requests_whose_first_lines_overlap_keep_their_request_line_only(monkeypatch, tmp_path):
@@ -1534,7 +1554,7 @@ def test_requests_whose_first_lines_overlap_keep_their_request_line_only(monkeyp
     assert "question" not in table and "answer" not in table and "prompt" not in table
     # The request behind them is read like any other
     assert (frame.loc[2, "user_prompt"], frame.loc[2, "response"], frame.loc[2, "status_code"], frame.loc[2, "failed"]) == ("question C", "answer C", 200, 0)
-    assert _overlap_note(run) == (2, 2)
+    assert _overlap_note(run) == (2, 2, 2)
 
     # The same where the file ends before the second transaction was logged: the one transaction that is there is not taken for either
     run = run_parser(monkeypatch, _write(tmp_path, as_log(
@@ -1542,7 +1562,7 @@ def test_requests_whose_first_lines_overlap_keep_their_request_line_only(monkeyp
     frame = run.uploads[0]["frame"]
     assert len(frame) == 2
     assert [column for column in ALL_COLUMNS if not frame[column].isna().all()] == ["timestamp", "model"]
-    assert _overlap_note(run) == (2, 2)
+    assert _overlap_note(run) == (2, 2, 2)
 
 
 def test_request_that_is_cut_off_in_its_first_lines_ends_at_the_next_request(monkeypatch, tmp_path):
@@ -1702,6 +1722,504 @@ def test_text_columns_stay_text_after_the_parser_prepared_the_upload(monkeypatch
             assert pd.api.types.is_numeric_dtype(frame[column]), column
     # Every column the parser fills holds a value in at least one of these four rows
     assert [column for column in ALL_COLUMNS if frame[column].isna().all()] == ["top_k"] + LINK_COLUMNS
+
+
+# ---------------------------------------------------------------------------
+# What the log decides and what it does not
+#
+# Only the lines of a transaction and the 'Response Data:' line name their request.
+# The tests below mix the lines of requests whose every value says which request it
+# is of, and hold three things: no row has a value of another request, failed is
+# what the request did or missing, and where a row lacks a value the NOTE says so.
+# ---------------------------------------------------------------------------
+
+def _numbered(number, failed=False, model="demo_llm", **more):
+    """A request whose every value carries its number."""
+    inputs = llm_inputs(f"SYS{number} system prompt", f"USR{number} user", "{temperature:0.%d,max_tokens:%d}" % (number, 100 + number))
+    transaction = f"0000000{number}-aaaa-bbbb-cccc-00000000000{number}"
+    if failed:
+        return failed_block("2026-01-05 09:15:00", model, inputs, error=f"HTTP 40{number}: err{number}", transaction=transaction,
+                            request_id=f"req{number}", **more)
+    return request_block("2026-01-05 09:15:00", model, inputs,
+                         [("prompt_length", 10 + number), ("output_length", 20 + number), ("run_time", number + 0.5),
+                          ("response", f"RESP{number} answer")],
+                         transaction=transaction, request_id=f"req{number}", status=200 + number, **more)
+
+
+def _numbers_in(row):
+    """The requests the values of a row are of, as {column: number of the request}."""
+    found = {}
+    for column, prefix in (("system_prompt", "SYS"), ("user_prompt", "USR"), ("response", "RESP"), ("request_id", "req")):
+        if isinstance(row[column], str):
+            found[column] = int(row[column][len(prefix)]) if row[column].startswith(prefix) else -1
+    if isinstance(row["transaction_id"], str):
+        found["transaction_id"] = int(row["transaction_id"][7])
+    for column, base in (("prompt_length", 10), ("output_length", 20), ("status_code", 200), ("max_tokens", 100)):
+        if not missing(row[column]):
+            found[column] = int(float(row[column])) - base
+    if not missing(row["runtime"]):
+        found["runtime"] = int(row["runtime"])
+    if not missing(row["temperature"]):
+        found["temperature"] = round(float(row["temperature"]) * 10)
+    if isinstance(row["error_text"], str) and row["error_text"].startswith("HTTP 40"):
+        found["error_text"] = int(row["error_text"][7])
+    return found
+
+
+ANSWERED_HAS = {"system_prompt", "user_prompt", "response", "request_id", "transaction_id", "prompt_length", "output_length",
+                "status_code", "max_tokens", "runtime", "temperature"}
+FAILED_HAS = {"system_prompt", "user_prompt", "request_id", "transaction_id", "max_tokens", "temperature", "error_text"}
+
+
+def _hold_what_the_log_decides(frame, messages, requests, failed):
+    """requests: the number of the request of each row; failed: {number: whether it failed}.
+    Returns the number of rows that lack a value their request has in the log."""
+    assert len(frame) == len(requests)
+    lacking = 0
+    for number, (_, row) in zip(requests, frame.iterrows()):
+        found = _numbers_in(row)
+        assert set(found.values()) <= {number}, (number, found)
+        assert missing(row["failed"]) or row["failed"] == int(failed[number]), (number, row["failed"])
+        if missing(row["failed"]) or not (FAILED_HAS if failed[number] else ANSWERED_HAS) <= set(found):
+            lacking += 1
+    counts = _overlap_counts(messages)
+    if lacking:
+        assert counts is not None, "values are missing and no NOTE says so"
+        assert counts[1] >= lacking or counts[0] >= lacking
+        assert counts[2] == sum(1 for value in frame["failed"] if missing(value))
+    assert [kind for kind, _ in messages if kind != "NOTE"] == []
+    return lacking
+
+
+def test_first_lines_of_a_second_request_in_front_of_the_first_transaction_leave_both_open(monkeypatch, tmp_path):
+    """Two requests arrive, and the container writes the first five lines of both before it
+    starts the first transaction. No line says which request that transaction is of: the
+    rows keep what their first lines say and nothing of the transactions."""
+    first, second = log_units(_numbered(1)), log_units(_numbered(2))
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        lines_of(first[:5]), lines_of(second[:5]), lines_of(first[5:]), lines_of(second[5:]))))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["system_prompt"]) == ["SYS1 system prompt", "SYS2 system prompt"]
+    assert list(frame["user_prompt"]) == ["USR1 user", "USR2 user"]
+    assert list(frame["request_id"]) == ["req1", "req2"]
+    assert list(frame["temperature"]) == [0.1, 0.2] and list(frame["kind"]) == ["llm", "llm"]
+    for column in ("transaction_id", "prompt_length", "output_length", "runtime", "response", "status_code", "failed", "error_text"):
+        assert all(missing(value) for value in frame[column]), column
+    assert _overlap_note(run) == (2, 2, 2)
+
+
+@pytest.mark.parametrize("first_failed, second_failed", [(False, True), (True, False), (True, True)],
+                         ids=["the second failed", "the first failed", "both failed"])
+def test_neither_of_two_requests_that_wait_for_a_transaction_is_called_failed(monkeypatch, tmp_path, first_failed, second_failed):
+    first, second = log_units(_numbered(1, first_failed)), log_units(_numbered(2, second_failed))
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        lines_of(first[:5]), lines_of(second[:5]), lines_of(first[5:]), lines_of(second[5:]))))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["user_prompt"]) == ["USR1 user", "USR2 user"]
+    for column in ("transaction_id", "status_code", "failed", "error_text", "response", "prompt_length"):
+        assert all(missing(value) for value in frame[column]), column
+    assert _overlap_note(run) == (2, 2, 2)
+
+
+def test_request_that_has_not_written_all_its_first_lines_is_not_given_the_transaction(monkeypatch, tmp_path):
+    """The first request has its five first lines, the second one three of them when the
+    transaction starts: a request writes its two 'Randomly generated' lines in front of its
+    transaction, so the transaction is the one of the first request, and both rows are whole."""
+    first, second = log_units(_numbered(1)), log_units(_numbered(2))
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        lines_of(first[:5]), lines_of(second[:3]), lines_of(first[5:]), lines_of(second[3:]))))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["transaction_id"]) == ["00000001-aaaa-bbbb-cccc-000000000001", "00000002-aaaa-bbbb-cccc-000000000002"]
+    assert list(frame["response"]) == ["RESP1 answer", "RESP2 answer"]
+    assert list(frame["prompt_length"]) == [11, 12] and list(frame["status_code"]) == [201, 202] and list(frame["failed"]) == [0, 0]
+    # Nothing is missing, and the SAS log still says that the two were there at the same time
+    assert _overlap_note(run) == (2, 0, 0)
+
+
+def test_requests_that_queue_for_one_worker_are_open_until_each_has_had_a_transaction(monkeypatch, tmp_path):
+    blocks = [log_units(_numbered(number)) for number in (1, 2, 3)]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        *(lines_of(block[:5]) for block in blocks), *(lines_of(block[5:]) for block in blocks), _numbered(4))))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["user_prompt"]) == ["USR1 user", "USR2 user", "USR3 user", "USR4 user"]
+    for column in ("transaction_id", "status_code", "failed", "response"):
+        assert all(missing(value) for value in frame.loc[:2, column]), column
+    # Three requests, three transactions: the request behind them is read like any other
+    assert (frame.loc[3, "transaction_id"], frame.loc[3, "response"], frame.loc[3, "status_code"], frame.loc[3, "failed"]) == \
+        ("00000004-aaaa-bbbb-cccc-000000000004", "RESP4 answer", 204, 0)
+    assert _overlap_note(run) == (3, 3, 3)
+
+
+@pytest.mark.parametrize("first_failed", [False, True], ids=["first answered", "first failed"])
+@pytest.mark.parametrize("second_failed", [False, True], ids=["second answered", "second failed"])
+@pytest.mark.parametrize("together", [3, 5, 8], ids=["request, headers, data", "the five first lines", "with its transaction"])
+def test_first_lines_of_a_second_request_at_every_place_between_the_lines_of_the_first(monkeypatch, tmp_path, together, first_failed, second_failed):
+    """The first lines of a second request stand at every place between two lines of the first
+    one, the rest of the second request behind the first. Whatever the place, no row gets a
+    value of the other request and no request is called failed that was answered."""
+    first, second = log_units(_numbered(1, first_failed)), log_units(_numbered(2, second_failed))
+    run = run_parser(monkeypatch, _write(tmp_path, ""))
+    parse_file = run.namespace["parse_log_file"]
+    whole = 0
+    for place in range(1, len(first) + 1):
+        lines = lines_of(first[:place]) + lines_of(second[:together]) + lines_of(first[place:]) + lines_of(second[together:])
+        del run.sas.messages[:]
+        frame = parse_file(str(_write(tmp_path, as_log(lines))))
+        lacking = _hold_what_the_log_decides(frame, run.sas.messages, [1, 2], {1: first_failed, 2: second_failed})
+        whole += 1 if lacking == 0 else 0
+    # Behind the last line of the first request the second one is a request of its own
+    assert whole >= 1
+    assert lacking == 0 and run.sas.messages == []
+
+
+@pytest.mark.parametrize("together", [8, 5, 3, 1], ids=["first lines and transaction together", "the five first lines together",
+                                                         "request, headers, data together", "every line on its own"])
+@pytest.mark.parametrize("models", [1, 3], ids=["one container", "a container each"])
+def test_requests_whose_lines_mix_in_any_order_keep_what_is_theirs(monkeypatch, tmp_path, together, models):
+    """Two or three requests whose lines mix by chance - of one container, or of a container
+    each as an export of a log store in the order of time holds them. Every request keeps
+    the order of its own lines, and every log line has a time of its own."""
+    run = run_parser(monkeypatch, _write(tmp_path, ""))
+    parse_file = run.namespace["parse_log_file"]
+    chance = random.Random(15 + together + models)
+    open_logs = 0
+    for _ in range(40):
+        count = chance.choice([2, 2, 3])
+        failed = {number: chance.random() < 0.25 for number in range(1, count + 1)}
+        waiting = []
+        for number in range(1, count + 1):
+            units = log_units(_numbered(number, failed[number], model="demo_llm" if models == 1 else f"demo_llm_{number}"))
+            waiting.append([lines_of(units[:together])] + units[together:])
+        mixed, order = [], []
+        while any(waiting):
+            number = chance.choice([index for index, units in enumerate(waiting) if units])
+            if " - Request: POST" in waiting[number][0][0]:
+                order.append(number + 1)
+            mixed.extend(waiting[number].pop(0))
+        lines, _ = in_file_order(mixed)
+        del run.sas.messages[:]
+        frame = parse_file(str(_write(tmp_path, as_log(lines))))
+        open_logs += 1 if _hold_what_the_log_decides(frame, run.sas.messages, order, failed) else 0
+    # These logs do hold requests the log does not tell apart
+    assert open_logs > 0
+
+
+def test_containers_whose_lines_are_mixed_in_one_file_are_not_called_failed(monkeypatch, tmp_path):
+    """An export of a log store in the order of time: the request of one container starts
+    while the request of another one is running. Before, the request to another model ended
+    the first one - a request that was answered became failed = 1 without a word."""
+    one = llm_block(timestamp="2026-01-05 09:00:00", finished="2026-01-05 09:00:03", model="model_x", user_prompt="question X", response="answer X")
+    other = llm_block(timestamp="2026-01-05 09:00:01", finished="2026-01-05 09:00:04", model="model_y", user_prompt="question Y", response="answer Y")
+    (before_one, after_one), (before_other, after_other) = split_at_scoring(one), split_at_scoring(other)
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(before_one, before_other, after_one, after_other)))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["model"]) == ["model_x", "model_y"]
+    assert list(frame["status_code"]) == [200, 200] and list(frame["failed"]) == [0, 0]
+    # The score lines of the first were written while both were running: they are the lines of neither
+    assert all(missing(frame.loc[0, column]) for column in ("prompt_length", "output_length", "runtime", "response"))
+    assert (frame.loc[1, "prompt_length"], frame.loc[1, "response"]) == (21, "answer Y")
+    assert _overlap_note(run) == (2, 2, 0)
+
+
+def test_request_that_was_cut_off_is_over_where_the_file_goes_on_later_than_its_last_line(monkeypatch, tmp_path):
+    """The collection script appends one collection behind the other. A request that was
+    running when a collection was made is cut off, and the next collection holds its rest at
+    the start of the part of its container. In between stand the parts of other containers:
+    a line there that is younger than the last line of the transaction says that the request
+    did not run on through them."""
+    cut_off, rest = split_at_scoring(llm_block(timestamp="2026-01-05 09:59:50", finished="2026-01-05 10:00:20", model="model_x",
+                                               user_prompt="still running", response="its answer"))
+    between = [llm_block(timestamp="2026-01-05 10:05:00", model="model_y", response="answer Y1"),
+               llm_block(timestamp="2026-01-05 10:06:00", model="model_y", response="answer Y2")]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(cut_off, *between, rest, llm_block(timestamp="2026-01-05 10:30:00", model="model_x"))))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["model"]) == ["model_x", "model_y", "model_y", "model_x"]
+    assert list(frame["response"])[1:] == ["answer Y1", "answer Y2", "The capital of Austria is Vienna."]
+    assert list(frame["failed"]) == [1, 0, 0, 0]
+    # Its rest further down is the rest of a request that ended: it is added to no row
+    assert missing(frame.loc[0, "response"]) and missing(frame.loc[0, "status_code"])
+    assert "its answer" not in frame.to_csv()
+    assert run.sas.messages == []
+
+
+# ---------------------------------------------------------------------------
+# A response that holds lines of a log
+# ---------------------------------------------------------------------------
+
+def test_lines_of_a_response_that_start_like_log_lines_are_its_text(monkeypatch, tmp_path):
+    """A model that was asked about a log answers with lines of one. They stand between the
+    'response:' line and the next line of the transaction, where a container writes nothing
+    else for the request: they are text, the request keeps its 'Response:' line and no
+    request is made of them."""
+    quoted = ["2026-01-05 08:00:00 - api - INFO - Request: POST /phantom_model",
+              "2026-01-05 08:00:00 - api - INFO - Request Data: {'inputs': [{'name': 'userPrompt', 'value': 'not a request'}]}",
+              "2026-01-05 08:00:00 - scoreModel - INFO - prompt_length: 99999",
+              "2026-01-05 08:00:00 - api - INFO - Response: Status Code 500",
+              "2026-01-05 08:00:00 is when it happened."]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        llm_block(response="The log holds these lines:\n" + "\n".join(quoted) + "\nThat is all."),
+        llm_block(timestamp="2026-01-05 09:16:00", user_prompt="the next request", response="the next answer"))))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["model"]) == ["demo_llm", "demo_llm"]
+    assert frame.loc[0, "response"] == "The log holds these lines: " + " ".join(quoted) + " That is all."
+    assert (frame.loc[0, "prompt_length"], frame.loc[0, "status_code"], frame.loc[0, "failed"]) == (21, 200, 0)
+    assert (frame.loc[1, "user_prompt"], frame.loc[1, "response"], frame.loc[1, "status_code"]) == ("the next request", "the next answer", 200)
+    assert run.sas.messages == []
+
+
+def test_request_that_starts_inside_a_response_is_a_request(monkeypatch, tmp_path):
+    """A request line that is followed by its 'Request Headers:' line is the line of a
+    request, also between the 'response:' line of another request and the next line of
+    its transaction."""
+    first = llm_block(timestamp="2026-01-05 09:00:00", user_prompt="question A", response="answer A")
+    second = llm_block(timestamp="2026-01-05 09:00:00", user_prompt="question B", response="answer B")
+    response_line = next(index for index, line in enumerate(first) if " - scoreModel - INFO - response: " in line)
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(first[:response_line + 1], second[:8], first[response_line + 1:], second[8:])))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["user_prompt"]) == ["question A", "question B"]
+    assert (frame.loc[0, "response"], frame.loc[0, "status_code"]) == ("answer A", 200)
+    assert (frame.loc[1, "response"], frame.loc[1, "status_code"], frame.loc[1, "failed"]) == ("answer B", 200, 0)
+    assert _overlap_note(run) == (2, 0, 0)
+
+
+@pytest.mark.parametrize("quoted_time, status, failed", [("2026-01-05 09:15:00", 200, 0), ("2026-01-05 08:00:00", None, 1)],
+                         ids=["with the time of the request", "with an earlier time"])
+def test_response_that_quotes_a_request_line_and_its_headers_line_reads_as_a_request(monkeypatch, tmp_path, quoted_time, status, failed):
+    """What the lines do not tell apart: a response that holds a request line with a 'Request
+    Headers:' line behind it, each at the start of a line as a container writes them. One
+    more row is written, and the response ends in front of the quoted lines. Quoted with a
+    time before the request, they read as the start of the next container's part of the
+    file, which ends the request without its 'Response:' line."""
+    quoted = [f"{quoted_time} - api - INFO - Request: POST /demo_llm",
+              f"{quoted_time} - api - INFO - Request Headers: Host: quoted.example.com"]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(llm_block(response="Like this:\n" + "\n".join(quoted)))))
+
+    frame = run.uploads[0]["frame"]
+    assert len(frame) == 2
+    assert (frame.loc[0, "response"], frame.loc[0, "prompt_length"]) == ("Like this:", 21)
+    assert (None if missing(frame.loc[0, "status_code"]) else frame.loc[0, "status_code"], frame.loc[0, "failed"]) == (status, failed)
+    assert missing(frame.loc[1, "user_prompt"]) and missing(frame.loc[1, "status_code"])
+
+
+# ---------------------------------------------------------------------------
+# Content that can not be read
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("options", ["[" * 100000, '{"a":' * 100000, "{a:" * 100000 + "1" + "}" * 100000],
+                         ids=["brackets", "JSON objects", "lists of options"])
+def test_options_that_are_nested_deeper_than_python_decodes_do_not_stop_the_file(monkeypatch, tmp_path, options):
+    """json.loads gives up on them with a RecursionError, which is no ValueError."""
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        llm_block(options=options), llm_block(timestamp="2026-01-05 09:16:00", options="{temperature:0.4}"))))
+
+    frame = run.uploads[0]["frame"]
+    assert run.row_count == "2"
+    assert (frame.loc[0, "kind"], frame.loc[0, "user_prompt"], frame.loc[0, "response"], frame.loc[0, "status_code"]) == \
+        ("llm", "What is the capital of Austria?", "The capital of Austria is Vienna.", 200)
+    assert frame.loc[0, "options"] == options
+    assert (frame.loc[1, "temperature"], frame.loc[1, "options"]) == (0.4, "{temperature:0.4}")
+
+
+def test_request_whose_content_raises_anything_keeps_its_row_with_what_was_read(monkeypatch, tmp_path):
+    """Whatever the content of one request does to the code that reads it, the file is read
+    to its end. Here the hash of one embedded text can not be taken."""
+    path = _write(tmp_path, as_log(
+        embedding_block(document="a text whose hash can not be taken", tokens=5),
+        embedding_block(timestamp="2026-01-05 09:26:00", document="another text", tokens=6)))
+    run = run_parser(monkeypatch, path)
+    hash_of = run.namespace["text_hash"]
+
+    def breaks_on_one_text(text):
+        if "can not be taken" in text:
+            raise OverflowError("made up")
+        return hash_of(text)
+
+    run.namespace["text_hash"] = breaks_on_one_text
+    del run.sas.messages[:]
+    frame = run.namespace["parse_log_file"](str(path))
+
+    assert len(frame) == 2
+    assert missing(frame.loc[0, "input_hash"]) and frame.loc[1, "input_hash"] == text_hash("another text")
+    # The inputs that could be read are there, and so is everything the other lines say
+    assert (frame.loc[0, "kind"], frame.loc[0, "embedding_mode"], frame.loc[0, "project"]) == ("embedding", "document", "handbook")
+    assert (frame.loc[0, "prompt_length"], frame.loc[0, "status_code"], frame.loc[0, "failed"]) == (5, 200, 0)
+    assert notes(run) == ["1 request(s) hold a value that could not be read, for example a 'Request Data:' line that was cut off or "
+                          "options that are nested deeper than Python decodes. The rows were kept with what was read."]
+
+
+def test_request_data_that_was_cut_off_is_counted_in_a_note(monkeypatch, tmp_path):
+    block = llm_block()
+    data_line = next(index for index, line in enumerate(block) if " - Request Data: " in line)
+    block[data_line] = block[data_line][:-25]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(block, llm_block(timestamp="2026-01-05 09:16:00"))))
+
+    assert run.row_count == "2"
+    assert len(notes(run)) == 1 and notes(run)[0].startswith("1 request(s) hold a value that could not be read, for example a 'Request Data:' line")
+
+
+@pytest.mark.parametrize("inputs, columns", [
+    (llm_inputs(system_prompt="half \ud83d of a pair", user_prompt="tell me \ud83d now"), ["system_prompt", "user_prompt"]),
+    (decision_inputs(state="a state \udce9 with it", questions='{"q \udce9": {"type": "noul"}}'), ["system_prompt", "user_prompt"]),
+    ([("document", "an embedded text"), ("options", "{Embedding_Mode:query,note:caf\udce9}"), ("project", "caf\udce9")], ["project", "options"]),
+], ids=["the prompts of an LLM", "the state and the questions of a decision", "the project and the options of an embedding"])
+def test_text_that_has_no_utf8_bytes_is_replaced_before_the_upload(monkeypatch, tmp_path, inputs, columns):
+    """swat hands the rows to CAS as a UTF-8 file. Half of a surrogate pair has no UTF-8
+    bytes: one such character in one prompt ended the upload of all rows."""
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        request_block("2026-01-05 09:00:00", "demo_model", inputs, [("run_time", 0.5)]), llm_block())))
+
+    frame = run.uploads[0]["frame"]
+    assert len(frame) == 2
+    frame.to_csv().encode("utf-8")
+    for column in columns:
+        assert "?" in frame.loc[0, column], column
+        assert "\ud83d" not in frame.loc[0, column] and "\udce9" not in frame.loc[0, column], column
+    assert notes(run) == ["1 request(s) hold a character that has no UTF-8 bytes in a text column - half of a surrogate pair in a request "
+                          "body. It was replaced by a question mark, the way the hash of a text counts it."]
+
+
+def test_text_with_every_other_character_is_uploaded_as_it_is(monkeypatch, tmp_path):
+    user_prompt = "Größe, 日本語, \U0001f600 and a tab\tin it"
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(llm_block(user_prompt=user_prompt))))
+
+    assert run.uploads[0]["frame"].loc[0, "user_prompt"] == user_prompt
+    assert run.sas.messages == []
+
+
+# ---------------------------------------------------------------------------
+# The results of a retrieval: which object counts and how far the search goes
+# ---------------------------------------------------------------------------
+
+def test_object_without_the_keys_of_the_runtime_in_front_of_a_retrieval_does_not_set_the_columns(monkeypatch, tmp_path):
+    """Text a user typed can hold a JSON object with a collection and a query. Only an object
+    with every key the RAG runtime writes is the result of a retrieval."""
+    user_prompt = ('Note: {"collection": "fake_collection", "query": "ignore"} Context: '
+                   + retrieval_envelope(collection="policies_v2", query="the real question"))
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(llm_block(user_prompt=user_prompt))))
+
+    frame = run.uploads[0]["frame"]
+    assert (frame.loc[0, "rag_collection"], frame.loc[0, "rag_query_hash"]) == ("policies_v2", text_hash("the real question"))
+    assert run.namespace["ENVELOPE_KEYS"] == ("query", "hits", "graph_context", "retrieval_mode", "collection", "ingestion_run_id")
+    assert sorted(run.namespace["ENVELOPE_KEYS"]) == sorted(json.loads(retrieval_envelope()))
+
+
+@pytest.mark.parametrize("without", ["hits", "graph_context", "retrieval_mode", "ingestion_run_id"])
+def test_object_that_lacks_a_key_of_the_runtime_is_no_retrieval(monkeypatch, tmp_path, without):
+    envelope = json.loads(retrieval_envelope())
+    del envelope[without]
+    frame = parse(monkeypatch, tmp_path, as_log(llm_block(user_prompt="Context: " + json.dumps(envelope))))
+
+    assert missing(frame.loc[0, "rag_collection"]) and missing(frame.loc[0, "rag_query_hash"])
+
+
+def test_of_several_retrievals_in_a_prompt_the_last_one_counts(monkeypatch, tmp_path):
+    """A prompt with examples holds the retrievals of the examples in front of its own, and
+    text a user typed in front of the retrieval can hold a whole envelope."""
+    user_prompt = ("Example: " + retrieval_envelope(collection="policies_v2", query="the question of an example")
+                   + "\nAnswer of the example.\nNow: " + retrieval_envelope(collection="policies_v2", query="the question of this request")
+                   + "\nAnswer:")
+    frame = parse(monkeypatch, tmp_path, as_log(llm_block(user_prompt=user_prompt)))
+
+    assert frame.loc[0, "rag_query_hash"] == text_hash("the question of this request")
+
+
+class _CountingDecoder(json.JSONDecoder):
+    """Counts what the search for an envelope asks of the JSON decoder."""
+    starts = 0
+    characters = 0
+
+    def raw_decode(self, text, position=0):
+        type(self).starts += 1
+        try:
+            value, end = super().raw_decode(text, position)
+        except ValueError as error:
+            type(self).characters += max(1, error.pos - position)
+            raise
+        type(self).characters += end - position
+        return value, end
+
+
+@pytest.mark.parametrize("junk", ["{" * 200000, '{"a": 1, ' * 60000, '{"a": [1, ' * 20000, '{"a":' * 100000, '{"a": 1} ' * 50000],
+                         ids=["opening braces", "objects that are not closed", "lists that are not closed", "nested objects", "small objects"])
+def test_search_for_a_retrieval_is_bounded(monkeypatch, tmp_path, junk):
+    """A prompt can be made up to keep the search busy: from every brace the decoder runs on
+    until the text stops being JSON. The search tries a limited number of braces and counts
+    the characters it decoded."""
+    run = run_parser(monkeypatch, _write(tmp_path, ""))
+    find, starts, characters = (run.namespace[name] for name in ("find_retrieval_envelope", "ENVELOPE_STARTS", "ENVELOPE_CHARACTERS"))
+    assert (starts, characters) == (500, 2000000)
+    envelope = retrieval_envelope(collection="policies_v2", query="made-up question")
+    _CountingDecoder.starts = _CountingDecoder.characters = 0
+    run.namespace["json"] = types.SimpleNamespace(JSONDecoder=_CountingDecoder, loads=json.loads, dumps=json.dumps)
+
+    # Behind the retrieval the junk changes nothing, in front of it the retrieval is not reached
+    assert find(envelope + " " + junk)["collection"] == "policies_v2"
+    assert find(junk + " " + envelope) is None
+    assert _CountingDecoder.starts <= 2 * starts
+    assert _CountingDecoder.characters <= 2 * (characters + len(junk) + len(envelope))
+
+
+def test_prompt_with_few_braces_in_front_of_its_retrieval_is_searched_to_its_end(monkeypatch, tmp_path):
+    user_prompt = ("{city} and {name} " * 100 + '{"note": "an object"} ' * 100
+                   + retrieval_envelope(collection="policies_v2", query="made-up question"))
+    frame = parse(monkeypatch, tmp_path, as_log(llm_block(user_prompt=user_prompt)))
+
+    assert frame.loc[0, "rag_collection"] == "policies_v2"
+
+
+# ---------------------------------------------------------------------------
+# Secrets the options can hold beyond a key under its name
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("sent, kept, secrets", [
+    ("{my_pass:hunter2,max_tokens:40}", "{my_pass:REDACTED,max_tokens:40}", ["hunter2"]),
+    ("{pw:hunter2}", "{pw:REDACTED}", ["hunter2"]),
+    ("{userPass:hunter2,PW:hunter3,temperature:0.2}", "{userPass:REDACTED,PW:REDACTED,temperature:0.2}", ["hunter"]),
+    ("{passphrase:made-up words}", "{passphrase:REDACTED}", ["made-up words"]),
+    ("{base_url:https://user:hunter2pass@models.example.com/v1,top_k:5}", "{base_url:https://REDACTED@models.example.com/v1,top_k:5}", ["hunter2pass", "user:"]),
+    ('{"base_url": "postgresql://rag:hunter2pass@db.example.com:5432/rag", "top_p": 0.9}',
+     '{"base_url": "postgresql://REDACTED@db.example.com:5432/rag", "top_p": 0.9}', ["hunter2pass"]),
+    ('{"headers": "Authorization: Bearer abc.def.ghi"}', '{"headers": "Authorization: REDACTED"}', ["abc.def.ghi", "Bearer"]),
+    ("{headers:X-Api-Key: made-up-one,temperature:0.2}", "{headers:X-Api-Key: REDACTED,temperature:0.2}", ["made-up-one"]),
+    ('{"note": "send it as bearer abc.def.ghi please", "max_tokens": 12}', '{"note": "send it as REDACTED please", "max_tokens": 12}', ["abc.def.ghi"]),
+    ("{temperature:0.2,client:{id:1,secret:s3cr3tvalue}}", "{temperature:0.2,client:{id:1,secret:REDACTED}}", ["s3cr3tvalue"]),
+    ("{client:{secret:s3cr3tvalue,id:1},temperature:0.2}", "{client:{secret:REDACTED,id:1},temperature:0.2}", ["s3cr3tvalue"]),
+    ("{a:{b:{API_KEY:made,up},c:[1,2]},max_tokens:7}", "{a:{b:{API_KEY:REDACTED},c:[1,2]},max_tokens:7}", ["made", "up}"]),
+], ids=["pass as a word of the name", "pw", "camel case and capitals", "passphrase", "the user and password of an address",
+        "an address in JSON", "a header in a JSON value", "a header in a value", "a bearer token in a sentence",
+        "the last name of a nested list", "the first name of a nested list", "a nested key with a comma"])
+def test_parser_redacts_the_secrets_inside_the_options(monkeypatch, tmp_path, sent, kept, secrets):
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(llm_block(options=sent))))
+
+    frame = run.uploads[0]["frame"]
+    assert frame.loc[0, "options"] == kept
+    for secret in secrets:
+        assert secret not in frame.to_csv(), secret
+    # What is kept reads as options the way what was sent did: the columns of the options are the same
+    read = run.namespace["read_options"]
+    for column in ("temperature", "top_p", "top_k", "max_tokens"):
+        assert read(kept).get(column) == read(sent).get(column), column
+    assert kept.count("{") == kept.count("}") and kept.count("[") == kept.count("]")
+
+
+@pytest.mark.parametrize("sent", [
+    "{bypass:true,compass:north,stopwords:and or,passes:3}",
+    "{endpoint:https://models.example.com/v1/chat/completions,mailto:someone@example.com}",
+    '{"stop": ["}", "]"], "temperature": 0.3}',
+    "{response_format:{type:json_object},temperature:0.1}",
+], ids=["words that hold pass and pw", "an address without credentials", "brackets as values", "a nested list without a secret"])
+def test_options_without_a_secret_are_kept_as_they_were_sent(monkeypatch, tmp_path, sent):
+    frame = parse(monkeypatch, tmp_path, as_log(llm_block(options=sent)))
+
+    assert frame.loc[0, "options"] == sent
 
 
 # ---------------------------------------------------------------------------

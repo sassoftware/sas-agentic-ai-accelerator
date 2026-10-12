@@ -80,6 +80,7 @@ import re
 import os
 import ast
 import json
+import bisect
 import hashlib
 from datetime import datetime
 try:
@@ -146,16 +147,38 @@ TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
 # it does with it. The 'Response Data:' line names the same id.
 TRANSACTION_LOGGER = 'transaction_'
 RESPONSE_TRANSACTION = re.compile(r"'transaction_id': '([^']+)'")
+# The first line of a transaction and the line that follows the score code. Both name the model
+FIRST_TRANSACTION_LINE = 'Score request received from POST'
+SCORED_LINE = re.compile(r'scoreModel function from the (\S+)\.py file')
+# The first lines a container writes for a request behind its request line, in their order.
+# The two 'Randomly generated' lines count where a log holds them.
+HEAD_LINES = ['Request Headers: ', 'Request Data: ']
+OPTIONAL_HEAD_LINES = ['Randomly generated client_id is', 'Randomly generated transaction_id is']
 # The headline of a decision as the score code logs it: '<answer> (<confidence>)'
 ANSWER_LINE = re.compile(r'(.*) \(([^()\s]+)\)', re.DOTALL)
 
 # An option whose name says that it holds a secret, and the shapes a secret has as a value
-KEY_NAME = re.compile(r'key|secret|password|passwd|pwd|credential|authorization|bearer|cookie', re.IGNORECASE)
+KEY_NAME = re.compile(r'key|secret|password|passwd|passphrase|pwd|credential|authorization|bearer|cookie', re.IGNORECASE)
+# The short names of a password say it as a word of the name only (my_pass, userPass, pw - not bypass)
+NAME_WORD = re.compile(r'[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+')
+KEY_WORDS = ('pass', 'pw')
 KEY_SHAPE = re.compile(r'(?:bearer|basic)\s+\S|(?:sk|pk|rk)-\S|eyJ[\w-]{8,}\.', re.IGNORECASE)
 KEY_IN_TEXT = re.compile(r'\bbearer\s+(?=[\w.~+/=*-]*\d)[\w.~+/=*-]{8,}|\b(?:sk|pk|rk)-[\w*.-]{6,}|\beyJ[\w-]{8,}\.[\w.-]+', re.IGNORECASE)
 LONG_RUN = re.compile(r'[A-Za-z0-9]{20,}')
+# A secret inside the value of an option: the user and the password of an address, a header
+# that carries one with everything behind its name, and what follows bearer or basic
+URL_CREDENTIALS = re.compile(r'(?<=://)[^\s/@:]*:[^\s/@]*@')
+HEADER_IN_VALUE = re.compile(r'((?:proxy-)?authorization|(?:set-)?cookie|x-api-key|api[-_]?key)(\s*[:=]\s*)\S.*', re.IGNORECASE | re.DOTALL)
+BEARER_IN_VALUE = re.compile(r'\b(?:bearer|basic)\s+\S+', re.IGNORECASE)
 REDACTED = 'REDACTED'
 ERROR_TEXT_LENGTH = 500
+
+# The results of a retrieval as the RAG runtime writes them into a prompt: one JSON object
+# with these keys (retrieve_context.py). A prompt is searched for it from a limited number
+# of opening braces, and the search ends when it has decoded a limited number of characters.
+ENVELOPE_KEYS = ('query', 'hits', 'graph_context', 'retrieval_mode', 'collection', 'ingestion_run_id')
+ENVELOPE_STARTS = 500
+ENVELOPE_CHARACTERS = 2000000
 
 def read_number(text):
     """
@@ -196,7 +219,27 @@ def is_key_name(name, value):
     name = name.strip().strip('"\'')
     if KEY_NAME.search(name):
         return True
+    if any(word.lower() in KEY_WORDS for word in NAME_WORD.findall(name)):
+        return True
     return 'token' in name.lower() and read_number(str(value).strip().strip('"\'')) is None
+
+def closing_of(text):
+    """
+    Returns what closes a list of options at the end of a value: its brackets and the blanks around them.
+    """
+    return text[len(text.rstrip('}] \t\r\n')):]
+
+def redact_embedded(text):
+    """
+    Returns a value with the secrets replaced that stand inside it, and whether what was
+    replaced runs to the end of the value: the user and the password of an address
+    (scheme://user:password@host), a header that carries a secret with all that follows
+    its name, and what follows bearer or basic.
+    """
+    text = URL_CREDENTIALS.sub(REDACTED + '@', text)
+    to_the_end = HEADER_IN_VALUE.search(text) is not None
+    text = HEADER_IN_VALUE.sub(lambda header: header.group(1) + header.group(2) + REDACTED + closing_of(header.group()), text)
+    return BEARER_IN_VALUE.sub(REDACTED, text), to_the_end
 
 def redact_value(value):
     """
@@ -206,8 +249,8 @@ def redact_value(value):
         return {name: REDACTED if is_key_name(str(name), item) else redact_value(item) for name, item in value.items()}
     if isinstance(value, list):
         return [redact_value(item) for item in value]
-    if isinstance(value, str) and looks_like_a_key(value):
-        return REDACTED
+    if isinstance(value, str):
+        return REDACTED if looks_like_a_key(value) else redact_embedded(value)[0]
     return value
 
 def read_options(options_str):
@@ -216,14 +259,15 @@ def read_options(options_str):
 
     The models take them as '{name:value,name:value}' or as JSON, and read them the
     same way: JSON first, otherwise every part between two commas that holds a colon.
+    Nested deeper than Python decodes, the options are read the second way.
     """
     text = options_str.strip()
     try:
         decoded = json.loads(text)
-    except ValueError:
-        decoded = None
-    if isinstance(decoded, dict):
-        return {str(name): value if isinstance(value, str) else json.dumps(value) for name, value in decoded.items()}
+        if isinstance(decoded, dict):
+            return {str(name): value if isinstance(value, str) else json.dumps(value) for name, value in decoded.items()}
+    except (ValueError, RecursionError):
+        pass
     if text.startswith('{') and text.endswith('}'):
         text = text[1:-1]  # Remove surrounding {}
     named = {}
@@ -233,10 +277,40 @@ def read_options(options_str):
             named[key.strip().strip('"\'')] = val.strip().strip('"\'')
     return named
 
+def redact_part(part):
+    """
+    Returns one 'name:value' of the options with its secret replaced, and whether the
+    value was replaced to its end - what follows up to the next name is then the rest
+    of the secret, which held a comma.
+
+    The value of an option can be a list of options of its own ('client:{id:1,secret:x}').
+    The name that decides is the one in front of the value, and the brackets that close
+    such a list stay where they were.
+    """
+    start = 0
+    colon = part.find(':')
+    while True:
+        # The value behind this colon opens a list that holds a name of its own: that name is the next one
+        opened = colon + 1
+        while opened < len(part) and part[opened].isspace():
+            opened += 1
+        inner = part.find(':', opened + 1) if part[opened:opened + 1] in ('{', '[') else -1
+        if inner == -1:
+            break
+        start, colon = opened + 1, inner
+    front, name, value = part[:start], part[start:colon], part[colon + 1:]
+    closing = closing_of(value)
+    plain = value[:len(value) - len(closing)]
+    if is_key_name(name.strip().lstrip('{['), plain) or looks_like_a_key(plain):
+        return front + name + ':' + REDACTED + closing, True
+    plain, to_the_end = redact_embedded(plain)
+    return front + name + ':' + plain + closing, to_the_end
+
 def redact_options(options_str):
     """
     Returns the options as they were sent, with the value of every option that is a
-    secret by its name (API_KEY, ...) or by its shape replaced by REDACTED.
+    secret by its name (API_KEY, ...) or by its shape replaced by REDACTED, and with
+    the secrets replaced that stand inside a value.
 
     The collection script does this for API_KEY before the log is written. The parser
     does it again, so a log that was collected another way brings no key into the table.
@@ -244,11 +318,12 @@ def redact_options(options_str):
     text = options_str.strip()
     try:
         decoded = json.loads(text)
-    except ValueError:
-        decoded = None
-    if isinstance(decoded, dict):
-        redacted = redact_value(decoded)
-        return text if redacted == decoded else json.dumps(redacted, ensure_ascii=False)
+        if isinstance(decoded, dict):
+            redacted = redact_value(decoded)
+            return text if redacted == decoded else json.dumps(redacted, ensure_ascii=False)
+    except (ValueError, RecursionError):
+        # No JSON, or JSON that is nested deeper than Python decodes: read as names and values
+        pass
 
     opening, closing = '', ''
     if text.startswith('{') and text.endswith('}'):
@@ -256,17 +331,16 @@ def redact_options(options_str):
     parts = []
     hidden = False
     for part in text.split(','):
-        name, colon, value = part.partition(':')
-        if not colon:
+        if ':' not in part:
             # A part without a colon is the rest of the value in front of it, which held a comma
-            if not hidden:
-                parts.append(REDACTED if looks_like_a_key(part) else part)
-        elif is_key_name(name, value) or looks_like_a_key(value):
-            parts.append(name + ':' + REDACTED)
-            hidden = True
+            if hidden and parts:
+                parts[-1] += closing_of(part).strip()
+            elif not hidden:
+                closers = closing_of(part)
+                parts.append(REDACTED + closers if looks_like_a_key(part[:len(part) - len(closers)]) else part)
         else:
-            parts.append(part)
-            hidden = False
+            redacted, hidden = redact_part(part)
+            parts.append(redacted)
     return opening + ','.join(parts) + closing
 
 def redact_text(text):
@@ -313,23 +387,30 @@ def read_request_headers(entry, header_lines):
         elif name == 'user-agent':
             entry['user_agent'] = user_agent_class(value)
 
+def is_envelope(value):
+    """
+    Returns whether a decoded JSON value is the envelope of a retrieval: an object with every
+    key the RAG runtime writes, a collection, a question that is a text and a list of hits.
+    """
+    return (isinstance(value, dict) and all(key in value for key in ENVELOPE_KEYS)
+            and isinstance(value['collection'], str) and value['collection'].strip() != ''
+            and isinstance(value['query'], str) and isinstance(value['hits'], list))
+
 def envelope_in(value):
     """
-    Returns the first object in a decoded JSON value that has a collection and a query, None if there is none.
+    Returns the last envelope of a retrieval in a decoded JSON value, None if there is none.
     """
-    if isinstance(value, dict):
-        if isinstance(value.get('collection'), str) and value['collection'].strip() and isinstance(value.get('query'), str):
-            return value
-        children = list(value.values())
-    elif isinstance(value, list):
-        children = value
-    else:
-        return None
-    for child in children:
-        found = envelope_in(child)
-        if found is not None:
-            return found
-    return None
+    found = None
+    waiting = [value]
+    while waiting:
+        item = waiting.pop()
+        if is_envelope(item):
+            found = item
+        elif isinstance(item, dict):
+            waiting.extend(reversed(list(item.values())))
+        elif isinstance(item, list):
+            waiting.extend(reversed(item))
+    return found
 
 def find_retrieval_envelope(text):
     """
@@ -337,24 +418,40 @@ def find_retrieval_envelope(text):
 
     The RAG runtime hands the results of a retrieval over as one JSON object that names
     the collection and the question ('query') beside the hits, and a prompt carries that
-    object somewhere in its text. It is decoded as JSON from each '{' on, so a question
+    object somewhere in its text. It is decoded as JSON from a '{' on, so a question
     with quotes, braces or line breaks in it is read as it was written.
+
+    Only an object with all the keys of the runtime counts, and of several the last one:
+    what a user typed in front of the retrieval of a prompt does not set the columns. The
+    search tries ENVELOPE_STARTS opening braces and decodes ENVELOPE_CHARACTERS characters
+    at most. A prompt that needs more keeps the envelope found by then, which can be none.
     """
-    if '"collection"' not in text or '"query"' not in text:
+    if any('"' + key + '"' not in text for key in ENVELOPE_KEYS):
         return None
     decoder = json.JSONDecoder()
+    found = None
+    starts = 0
+    decoded = 0
     position = text.find('{')
-    while position != -1:
+    while position != -1 and starts < ENVELOPE_STARTS and decoded < ENVELOPE_CHARACTERS:
+        starts += 1
         try:
             value, end = decoder.raw_decode(text, position)
-        except (ValueError, RecursionError):
+        except ValueError as error:
+            # Counted up to where the decoding gave up
+            decoded += max(1, getattr(error, 'pos', position) - position)
             position = text.find('{', position + 1)
             continue
+        except RecursionError:
+            decoded += len(text) - position
+            position = text.find('{', position + 1)
+            continue
+        decoded += end - position
         envelope = envelope_in(value)
         if envelope is not None:
-            return envelope
+            found = envelope
         position = text.find('{', end)
-    return None
+    return found
 
 def kind_of(input_names):
     """
@@ -374,7 +471,10 @@ def read_request_data(entry, request_data_str):
     Adds the inputs of a 'Request Data:' line to the entry of its request.
 
     The line holds the request body as a Python literal. A line that can not be read
-    (for example because it was cut off) leaves the entry as it is.
+    (for example because it was cut off, or because it is nested deeper than Python
+    reads) leaves the entry as it is, and an input that can not be read leaves the other
+    inputs of the request as they were read. Both mark the entry as one that holds a
+    value that could not be read.
 
     Args:
         entry (dict): The entry of the request the line belongs to.
@@ -382,9 +482,11 @@ def read_request_data(entry, request_data_str):
     """
     try:
         request_data = ast.literal_eval(request_data_str.strip())
-    except (ValueError, SyntaxError):
+    except Exception:
+        entry['_unreadable'] = True
         return
     if not isinstance(request_data, dict) or not isinstance(request_data.get('inputs'), list):
+        entry['_unreadable'] = True
         return
 
     input_names = set()
@@ -395,32 +497,40 @@ def read_request_data(entry, request_data_str):
         input_names.add(name)
         if item.get('value') is None:
             continue
-        value = str(item['value'])
-        if name in INPUT_COLUMNS:
-            entry[INPUT_COLUMNS[name]] = value
-        if name == 'userPrompt':
-            envelope = find_retrieval_envelope(value)
-            if envelope is not None:
-                entry['rag_collection'] = envelope['collection'].strip()
-                entry['rag_query_hash'] = text_hash(envelope['query'])
-        elif name == 'document':
-            entry['input_hash'] = text_hash(value)
-        elif name == 'project':
-            entry['project'] = value
-        elif name == 'options':
-            sent = read_options(value)
-            for key in OPTION_COLUMNS:
-                if key in sent:
-                    entry[key] = sent[key]
-            if 'max_tokens' not in sent:
-                for key in MAX_TOKENS_ALIASES:
-                    if key in sent:
-                        entry['max_tokens'] = sent[key]
-                        break
-            if 'Embedding_Mode' in sent:
-                entry['embedding_mode'] = sent['Embedding_Mode']
-            entry['options'] = redact_options(value)
+        try:
+            read_input(entry, name, str(item['value']))
+        except Exception:
+            entry['_unreadable'] = True
     entry['kind'] = kind_of(input_names)
+
+def read_input(entry, name, value):
+    """
+    Adds one input of a request to the entry of its request.
+    """
+    if name in INPUT_COLUMNS:
+        entry[INPUT_COLUMNS[name]] = value
+    if name == 'userPrompt':
+        envelope = find_retrieval_envelope(value)
+        if envelope is not None:
+            entry['rag_collection'] = envelope['collection'].strip()
+            entry['rag_query_hash'] = text_hash(envelope['query'])
+    elif name == 'document':
+        entry['input_hash'] = text_hash(value)
+    elif name == 'project':
+        entry['project'] = value
+    elif name == 'options':
+        sent = read_options(value)
+        for key in OPTION_COLUMNS:
+            if key in sent:
+                entry[key] = sent[key]
+        if 'max_tokens' not in sent:
+            for key in MAX_TOKENS_ALIASES:
+                if key in sent:
+                    entry['max_tokens'] = sent[key]
+                    break
+        if 'Embedding_Mode' in sent:
+            entry['embedding_mode'] = sent['Embedding_Mode']
+        entry['options'] = redact_options(value)
 
 def read_error(entry, message, more_lines):
     """
@@ -454,6 +564,15 @@ def transaction_of(logger, message):
             return match_transaction.group(1)
     return None
 
+def model_named(message):
+    """
+    Returns the model a line of a transaction names, None for a line that names none.
+    """
+    if message.startswith(FIRST_TRANSACTION_LINE):
+        return message[len(FIRST_TRANSACTION_LINE):].strip().strip('/') or None
+    match_model = SCORED_LINE.search(message)
+    return match_model.group(1) if match_model else None
+
 def parse_log_file(file_path):
     """
     Parses a structured application log file containing the request and response blocks
@@ -474,15 +593,29 @@ def parse_log_file(file_path):
 
     Each request block starts with 'Request: POST' and ends with its 'Response: Status Code'
     line or, for a request that failed, with the 'Error occurred in the model scoring function'
-    line of its transaction. A request that has neither ends before the next 'Request: POST'
-    or before the first line that is older than itself. Lines between two blocks belong to
-    no request and are skipped.
+    line of its transaction. A request that has neither ends at the next request line that no
+    line of its transaction follows, and before the first line that is older than itself or,
+    at a request line, younger than the last line of its transaction. Lines between two blocks
+    belong to no request and are skipped.
 
-    The lines of the score code and the 'Response: Status Code' line name no request. While
-    one request is running they are its lines. When a second request starts before the first
-    one has ended - which shows in a later line that names the transaction of the first -
-    such a line is given to neither, and the requests keep what the lines that name their
-    transaction say.
+    Only the lines of a transaction and the 'Response Data:' line name the request they belong
+    to. Every other line is given to a request where the lines around it leave one request it
+    can be the line of, and to none otherwise:
+
+    - The first lines of a request (headers, request data, the two 'Randomly generated' lines)
+      are the lines of the request whose request line stands in front of them, as long as no
+      other request line stands in between. A first line that no request is waiting for shows
+      that requests wrote their first lines at the same time: every request since the one whose
+      first lines broke off keeps its request line only.
+    - The first line of a transaction belongs to the one request of its model that has all its
+      first lines and no transaction yet. Where two such requests are waiting, the transaction
+      is the transaction of neither and both keep what their first lines say.
+    - The lines of the score code and the 'Response: Status Code' line are the lines of the one
+      transaction that is running. While a second one is running - of the same container or of
+      another one whose lines are mixed in - such a line is given to neither.
+    - The lines of a response up to the next line of its transaction are text, also where one of
+      them starts like a log line. A line that starts a request there is taken as one when a
+      'Request Headers:' line follows it.
 
     Args:
         file_path (str): Path to the log file to parse.
@@ -494,173 +627,306 @@ def parse_log_file(file_path):
     with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
         lines = f.readlines()
 
-    # The last line that names each transaction: a request that a later line still names is running
-    last_named = {}
-    for number, line in enumerate(lines):
-        match_line = LOG_LINE.match(line)
-        if match_line:
-            transaction = transaction_of(match_line.group(2), match_line.group(4))
-            if transaction is not None:
-                last_named[transaction] = number
+    # The log lines of the file as (first line, line behind its last, timestamp, logger, level, message).
+    # A message can span several lines (the request headers, a response, a traceback), it ends at the next line that starts with a timestamp
+    units = []
+    unmatched_requests = 0
+    i = 0
+    while i < len(lines):
+        match_line = LOG_LINE.match(lines[i].rstrip('\r\n'))
+        if not match_line:
+            # A request in a line that does not start as a log line, for example behind a prefix of the log pipeline
+            if 'Request: POST' in lines[i]:
+                unmatched_requests += 1
+            i += 1
+            continue
+        first = i
+        i += 1
+        while i < len(lines) and not LOG_TIMESTAMP.match(lines[i]):
+            i += 1
+        units.append((first, i) + match_line.groups())
+
+    # What is known of the file before a line is given to a request: the lines that name each transaction,
+    # the lines that start one, and which first lines the containers of this file write
+    named = {}
+    opened = {}
+    names_transactions = False
+    written = set()
+    for index, unit in enumerate(units):
+        logger, message = unit[3], unit[5]
+        transaction = transaction_of(logger, message)
+        if transaction is not None:
+            named.setdefault(transaction, []).append(index)
+            if logger.startswith(TRANSACTION_LOGGER):
+                names_transactions = True
+                if message.startswith(FIRST_TRANSACTION_LINE):
+                    opened.setdefault(transaction, []).append(index)
+        else:
+            written.update(start for start in OPTIONAL_HEAD_LINES if message.startswith(start))
+    head_lines = HEAD_LINES + [start for start in OPTIONAL_HEAD_LINES if start in written]
+    complete = len(head_lines)
+
+    def last_naming(transaction, index):
+        # The last line that names the transaction of the request that holds it at this line. A client can give
+        # its requests an id of its own, so the next 'Score request received' line of the id is another request
+        starts = opened.get(transaction, [])
+        position = bisect.bisect_right(starts, index)
+        limit = starts[position] if position < len(starts) else len(units)
+        names = named.get(transaction, [])
+        position = bisect.bisect_left(names, limit) - 1
+        return max(index, names[position]) if position >= 0 else index
 
     records = []
-    # The transactions that are running, oldest first. One of a request holds its entry.
-    # One that no request line was waiting for holds none: its lines are followed to
-    # know when it ends, and nothing is kept of it.
+    # The transactions that are running, oldest first. One of a request holds its entry. One that no
+    # request was waiting for holds none: its lines are followed to know when it ends, and nothing is kept of it
     running = []
-    # The requests that ended before a transaction line named them
-    displaced = []
-    # The 'Response:' lines that could not be given to a request and whose 'Response Data:' line is still to come
-    unpaired = 0
-    unmatched_requests = 0
+    # The requests whose first lines are read and that have no transaction yet
+    pending = []
+    # The entries of the requests whose first lines broke off at the request line of another request, and of every request since
+    stopped = []
+    doubted = []
+    # By model, the requests that are waiting for a transaction and can not be told apart any more: the ones that
+    # have all their first lines (waiting) and the ones whose first lines are not known to be theirs (blurred)
+    waiting = {}
+    blurred = {}
+    # The transactions a line has named so far
+    started = set()
+    # The 'Response:' lines that could not be given to a request and whose 'Response Data:' line is still to come,
+    # and the time of the newest request that can not be told apart
+    state = {'unpaired': 0, 'newest': ''}
 
-    def mark_overlap():
-        if len(running) > 1:
-            for slot in running:
-                if slot['entry'] is not None:
-                    slot['entry']['_overlapped'] = True
+    def flag(entry):
+        if entry is not None:
+            entry['_unattributed'] = True
 
-    def mark_unattributed():
-        for slot in running:
-            if slot['entry'] is not None:
-                slot['entry']['_unattributed'] = True
-
-    def forget(slot):
-        # What was read for this request may be the line of another one: only its request line is kept.
-        # The other one is a request that ended without a transaction when this one started
-        entry = slot['entry']
+    def wipe(entry):
+        # What was read for this request may be the line of another one: only its request line is kept
         for column in COLUMNS:
             if column not in ('timestamp', 'model'):
                 entry[column] = None
         entry['_errors'] = False
         entry['_unattributed'] = True
-        for other in slot['displaced']:
-            other['_unattributed'] = True
-        slot['entry'] = None
 
-    i = 0
-    while i < len(lines):
-        number = i
-        match_line = LOG_LINE.match(lines[i].rstrip('\r\n'))
-        i += 1
-        if not match_line:
-            # A request in a line that does not start as a log line, for example behind a prefix of the log pipeline
-            if 'Request: POST' in lines[number]:
-                unmatched_requests += 1
-            continue
-        timestamp, logger, level, message = match_line.groups()
-        # A message can span several lines (the request headers, a response, a traceback), it ends at the next line that starts with a timestamp
-        more_lines = []
-        while i < len(lines) and not LOG_TIMESTAMP.match(lines[i]):
-            more_lines.append(lines[i].strip())
-            i += 1
-        # A line that is older than a running request belongs to the next container's part of the file
-        if running and timestamp < max(slot['start'] for slot in running):
-            del running[:]
-            del displaced[:]
+    def guarded(read, entry, *arguments):
+        # One request whose content can not be read never stops the file: the row is kept with what was read
+        try:
+            read(entry, *arguments)
+        except Exception:
+            entry['_unreadable'] = True
+
+    def anonymous(counts, model=None):
+        return sum(counts.values()) if model is None else counts.get(model, 0)
+
+    def make_anonymous(counts, head):
+        counts[head['model']] = counts.get(head['model'], 0) + 1
+        state['newest'] = max(state['newest'], head['start'])
+
+    def next_part():
+        del running[:]
+        del pending[:]
+        del stopped[:]
+        del doubted[:]
+        waiting.clear()
+        blurred.clear()
+        state.update(unpaired=0, newest='')
+
+    def mark_overlap():
+        entries = [slot['entry'] for slot in running] + [head['entry'] for head in pending if head['scoring']]
+        if len(entries) + anonymous(waiting) + anonymous(blurred) > 1:
+            for entry in entries:
+                if entry is not None:
+                    entry['_overlapped'] = True
+
+    def mark_unattributed():
+        for slot in running:
+            flag(slot['entry'])
+
+    def retract():
+        # A first line that no request is waiting for: a request whose first lines broke off was not over, and its
+        # lines and the lines of the requests since can have been read as each other's. They keep their request line
+        in_doubt = set(id(entry) for entry in doubted)
+        for entry in stopped + doubted:
+            wipe(entry)
+        for slot in running:
+            if slot['entry'] is not None and id(slot['entry']) in in_doubt:
+                slot['entry'] = None
+        for head in list(pending):
+            if not head['scoring']:
+                pending.remove(head)
+            elif id(head['entry']) in in_doubt:
+                pending.remove(head)
+                make_anonymous(blurred, head)
+        for entry in stopped:
+            make_anonymous(blurred, {'model': entry['model'], 'start': entry['timestamp']})
+        del stopped[:]
+        del doubted[:]
+
+    def take_transaction(model, bindable):
+        # Returns the entry of the request a transaction that starts here belongs to, None where the log does not decide it
+        heads = [head for head in pending if head['scoring'] and (model is None or head['model'] in (None, model))]
+        ready = [head for head in heads if head['stage'] >= complete]
+        if not ready and len(heads) == 1:
+            # A container that does not write every first line: the one request of the model is the one
+            ready = heads
+        if bindable and len(ready) == 1 and anonymous(waiting, model) + anonymous(blurred, model) == 0:
+            pending.remove(ready[0])
+            return ready[0]['entry']
+        for head in heads:
+            flag(head['entry'])
+        for head in ready:
+            pending.remove(head)
+            make_anonymous(waiting, head)
+        # One of the requests that can not be told apart has its transaction now
+        for counts in (waiting, blurred):
+            for key in ([model] if model is not None else list(counts)):
+                if counts.get(key, 0) > 0:
+                    counts[key] -= 1
+                    return None
+        return None
+
+    def starts_a_request(position, closes):
+        # Whether a line that reads as a request line inside a response is one: its 'Request Headers:' line follows it.
+        # Where the line of the transaction or the end of the file follows, nothing says that it is none
+        while True:
+            position += 1
+            if position >= closes or position >= len(units):
+                return True
+            if units[position][5].startswith(HEAD_LINES[0]):
+                return True
+            if not units[position][5].startswith('Request: '):
+                return False
+
+    index = 0
+    while index < len(units):
+        first, behind, timestamp, logger, level, message = units[index]
+        more_lines = [line.strip() for line in lines[first + 1:behind]]
+        this = index
+        index += 1
+
+        # A line that is older than a request that is running belongs to the next container's part of the file
+        newest = [slot['start'] for slot in running] + [head['start'] for head in pending]
+        if anonymous(waiting) + anonymous(blurred) > 0:
+            newest.append(state['newest'])
+        if newest and timestamp < max(newest):
+            next_part()
+
+        kind = next((position for position, start in enumerate(head_lines) if message.startswith(start)), None)
 
         if message.startswith('Request: '):
             scoring_request = message.startswith('Request: POST')
             model = (message[len('Request: POST'):].strip().strip('/') or None) if scoring_request else None
-            # A container serves one model, so a request to another model is the next container's part of the file
-            if scoring_request and any(slot['model'] not in (None, model) for slot in running):
-                del running[:]
-                del displaced[:]
-            # A request ends here unless a later line names its transaction
-            still_running = []
-            for slot in running:
-                if slot['transaction'] is not None and last_named.get(slot['transaction'], -1) > number:
-                    still_running.append(slot)
-                elif slot['transaction'] is None and slot['entry'] is not None:
-                    displaced.append(slot['entry'])
-            running[:] = still_running
-            if not scoring_request:
-                continue
-            entry = dict.fromkeys(COLUMNS)
-            entry['timestamp'] = timestamp
-            entry['model'] = model
-            entry.update(_errors=False, _overlapped=False, _unattributed=False)
-            records.append(entry)
-            running.append({'entry': entry, 'transaction': None, 'model': model, 'start': timestamp,
-                            'headers': False, 'data': False, 'displaced': list(displaced)})
-            del displaced[:]
+            # A request ends here unless a later line names its transaction. Where the lines in between are
+            # younger than that line, it is the line of another part of the file and the request ended in this one
+            running[:] = [slot for slot in running if slot['last'] > this and slot['end'] >= timestamp]
+            # First lines that are not all there have broken off. A request that has them all is waiting for its
+            # transaction - unless the log names no transaction at all and is read by the order of its lines
+            for head in list(pending):
+                if not head['scoring']:
+                    pending.remove(head)
+                elif head['stage'] < complete or not names_transactions:
+                    pending.remove(head)
+                    stopped.append(head['entry'])
+            entry = None
+            if scoring_request:
+                entry = dict.fromkeys(COLUMNS)
+                entry['timestamp'] = timestamp
+                entry['model'] = model
+                entry.update(_errors=False, _overlapped=False, _unattributed=False, _unreadable=False)
+                records.append(entry)
+                if stopped:
+                    doubted.append(entry)
+            pending.append({'entry': entry, 'model': model, 'start': timestamp, 'stage': 0,
+                            'needs': complete if scoring_request else 1, 'scoring': scoring_request})
             mark_overlap()
-        elif message.startswith('Request Headers: ') or message.startswith('Request Data: '):
-            # The first lines of a request name nothing. They belong to the request that has no transaction yet
-            slot = next((slot for slot in running if slot['transaction'] is None and slot['entry'] is not None), None)
-            if slot is None:
-                continue
-            part = 'headers' if message.startswith('Request Headers: ') else 'data'
-            if slot[part]:
-                # A second line of the same kind is the line of another request
-                forget(slot)
-            elif part == 'headers':
-                read_request_headers(slot['entry'], [message[len('Request Headers: '):]] + more_lines)
-            else:
-                read_request_data(slot['entry'], message[len('Request Data: '):])
-            slot[part] = True
+        elif kind is not None:
+            # The first lines of a request name nothing. They belong to the request whose first lines have got this far
+            head = next((head for head in pending if head['stage'] == kind and kind < head['needs']), None)
+            if head is not None and anonymous(blurred) == 0:
+                head['stage'] += 1
+                if head['entry'] is not None and kind == 0:
+                    guarded(read_request_headers, head['entry'], [message[len(head_lines[0]):]] + more_lines)
+                elif head['entry'] is not None and kind == 1:
+                    guarded(read_request_data, head['entry'], message[len(head_lines[1]):])
+                if not head['scoring'] and head['stage'] >= head['needs']:
+                    pending.remove(head)
+            elif head is not None:
+                # A request whose first lines are not known to be its own can have written this line as well
+                pending.remove(head)
+                if head['scoring']:
+                    wipe(head['entry'])
+                    make_anonymous(blurred, head)
+            elif anonymous(blurred) == 0 and stopped:
+                retract()
         elif message.startswith('Response: Status Code'):
             # The line names no request, the 'Response Data:' line behind it names the transaction
-            transaction = None
-            if i < len(lines):
-                next_line = LOG_LINE.match(lines[i].rstrip('\r\n'))
-                if next_line:
-                    transaction = transaction_of('', next_line.group(4))
-            unpaired = min(unpaired, len(running))
+            transaction = transaction_of('', units[index][5]) if index < len(units) else None
+            state['unpaired'] = min(state['unpaired'], len(running))
             slot = None
-            if transaction is not None and unpaired == 0:
+            # In a log that names no transaction but in this line: the one request whose first lines were read
+            heads = [head for head in pending if head['scoring']]
+            head = None
+            if len(heads) == 1 and not running and not names_transactions and anonymous(waiting) + anonymous(blurred) == 0:
+                head = heads[0]
+            if transaction is not None and state['unpaired'] == 0:
                 slot = next((slot for slot in running if slot['transaction'] == transaction), None)
-                if slot is None and len(running) == 1 and running[0]['transaction'] is None:
-                    # A request without lines of a transaction: the 'Response Data:' line is the first to name it
-                    slot = running[0]
-                    slot['transaction'] = transaction
-                    if slot['entry'] is not None:
-                        slot['entry']['transaction_id'] = transaction
+                if slot is not None or transaction in started:
+                    head = None
             elif transaction is None and len(running) == 1:
-                slot = running[0]
-            elif running:
-                # Two 'Response:' lines in a row, or one that stands alone while several requests are running:
-                # the status is the status of none of them, and the next 'Response Data:' line is not the line of this one
-                unpaired += 1
-                mark_unattributed()
+                slot, head = running[0], None
+            elif transaction is None and not running:
+                pass
+            else:
+                head = None
+                if running:
+                    # Two 'Response:' lines in a row, or one that stands alone while several requests are running:
+                    # the status is the status of none of them, and the next 'Response Data:' line is not the line of this one
+                    state['unpaired'] += 1
+                    mark_unattributed()
             if slot is not None:
                 if slot['entry'] is not None:
                     slot['entry']['status_code'] = read_number(message[len('Response: Status Code'):])
                 running.remove(slot)
+            elif head is not None:
+                # The 'Response Data:' line is the first to name its transaction
+                head['entry']['status_code'] = read_number(message[len('Response: Status Code'):])
+                if transaction is not None:
+                    head['entry']['transaction_id'] = transaction
+                    started.add(transaction)
+                pending.remove(head)
         elif message.startswith('Response Data: '):
             # Reached with its transaction still running only when the 'Response:' line in front of it was not taken as its line
             slot = next((slot for slot in running if slot['transaction'] == transaction_of('', message)), None)
             if slot is not None:
-                if slot['entry'] is not None:
-                    slot['entry']['_unattributed'] = True
+                flag(slot['entry'])
                 running.remove(slot)
-                unpaired = max(0, unpaired - 1)
+                state['unpaired'] = max(0, state['unpaired'] - 1)
         elif logger.startswith(TRANSACTION_LOGGER):
             transaction = logger[len(TRANSACTION_LOGGER):]
+            opens = message.startswith(FIRST_TRANSACTION_LINE)
             slot = next((slot for slot in running if slot['transaction'] == transaction), None)
-            if slot is None:
-                slot = next((slot for slot in running if slot['transaction'] is None), None)
-                if slot is not None:
-                    slot['transaction'] = transaction
-                    if slot['entry'] is not None:
-                        slot['entry']['transaction_id'] = transaction
-                else:
-                    # A transaction no request line is waiting for. Either the file starts inside a request,
-                    # or two requests wrote their first lines at the same time: then the request that ended
-                    # without a transaction is still running, and the lines read for the one after it may be its lines
-                    for entry in displaced:
-                        entry['_unattributed'] = True
-                    del displaced[:]
-                    newest = next((slot for slot in reversed(running) if slot['entry'] is not None), None)
-                    if newest is not None and newest['displaced']:
-                        forget(newest)
-                    slot = {'entry': None, 'transaction': transaction, 'model': None, 'start': timestamp,
-                            'headers': True, 'data': True, 'displaced': []}
-                    running.append(slot)
-                    mark_overlap()
+            if slot is not None and opens:
+                # A second request under an id that is still running: no line tells the two apart from here on
+                flag(slot['entry'])
+                slot['entry'] = None
+                slot['last'] = last_naming(transaction, this)
+                slot['end'] = units[slot['last']][2]
+                take_transaction(model_named(message), False)
+            elif slot is None:
+                entry = None
+                if opens or transaction not in started:
+                    entry = take_transaction(model_named(message), True)
+                # Otherwise the rest of a request that ended further up, in another part of the file: nothing is kept of it
+                if entry is not None:
+                    entry['transaction_id'] = transaction
+                last = last_naming(transaction, this)
+                slot = {'entry': entry, 'transaction': transaction, 'start': entry['timestamp'] if entry is not None else timestamp,
+                        'last': last, 'end': units[last][2]}
+                running.append(slot)
+                mark_overlap()
+            started.add(transaction)
             if level == 'ERROR':
                 if slot['entry'] is not None:
-                    read_error(slot['entry'], message, more_lines)
+                    guarded(read_error, slot['entry'], message, more_lines)
                 # The last line a container writes for a request that failed, there is no 'Response:' line
                 if message.startswith('Error occurred in the model scoring function'):
                     running.remove(slot)
@@ -668,15 +934,24 @@ def parse_log_file(file_path):
             match_score = SCORE_LINE.match(message)
             if not match_score and level != 'ERROR':
                 continue
-            # The lines of the score code name no request: they are the lines of the one request that is running
-            if len(running) != 1:
+            # The lines of the score code name no request: they are the lines of the one transaction that is running
+            entry = None
+            if len(running) == 1:
+                entry = running[0]['entry']
+            elif running:
                 mark_unattributed()
-                continue
-            entry = running[0]['entry']
+            else:
+                heads = [head for head in pending if head['scoring']]
+                if len(heads) == 1 and not names_transactions and anonymous(waiting) + anonymous(blurred) == 0:
+                    # A log that names no transaction is read by the order of its lines
+                    entry = heads[0]['entry']
+                else:
+                    for head in heads:
+                        flag(head['entry'])
             if entry is None:
                 continue
             if level == 'ERROR':
-                read_error(entry, message, more_lines)
+                guarded(read_error, entry, message, more_lines)
                 continue
             key, value = match_score.groups()
             if key in METRIC_COLUMNS:
@@ -690,13 +965,25 @@ def parse_log_file(file_path):
                 else:
                     entry['answer'] = value.strip() or None
             else:
-                # The response of an LLM can span several lines
-                entry['response'] = ' '.join([value.strip()] + more_lines)
+                # The response of an LLM can span several lines, and one of them can start like a log line. While
+                # this is the only request around, everything up to the next line of its transaction is its text
+                slot = running[0] if running else None
+                if (slot is not None and slot['last'] > this and not pending and not stopped
+                        and anonymous(waiting) + anonymous(blurred) == 0):
+                    names = named[slot['transaction']]
+                    closes = names[bisect.bisect_right(names, this)]
+                    while index < closes and not (units[index][5].startswith('Request: ') and starts_a_request(index, closes)):
+                        index += 1
+                    behind = units[index][0] if index < len(units) else len(lines)
+                entry['response'] = ' '.join([value.strip()] + [line.strip() for line in lines[first + 1:behind]])
 
-    # A request failed when the log holds an error for it or no response. For a request that
-    # overlapped another one the log can hold a response that could not be given to it: nothing is said then
+    # A request failed when the log holds an error for it or no response. For a request that ran at the same
+    # time as another one the log can hold a response that could not be given to it: nothing is said then
     overlapped = 0
     unattributed = 0
+    undecided = 0
+    unreadable = 0
+    replaced = 0
     for entry in records:
         if entry['status_code'] is not None:
             entry['failed'] = 1 if entry['_errors'] or entry['status_code'] >= 400 else 0
@@ -704,12 +991,29 @@ def parse_log_file(file_path):
             entry['failed'] = 1
         overlapped += 1 if entry['_overlapped'] or entry['_unattributed'] else 0
         unattributed += 1 if entry['_unattributed'] else 0
+        undecided += 1 if entry['failed'] is None else 0
+        unreadable += 1 if entry['_unreadable'] else 0
+        # A text that has no UTF-8 bytes can not be uploaded: the rows are handed to CAS as a UTF-8 file. Half of
+        # a surrogate pair in a request body is such a text, and it becomes a question mark as it does in a hash
+        changed = False
+        for column in COLUMNS:
+            if isinstance(entry[column], str):
+                try:
+                    entry[column].encode('utf-8')
+                except UnicodeEncodeError:
+                    entry[column] = entry[column].encode('utf-8', errors='replace').decode('utf-8')
+                    changed = True
+        replaced += 1 if changed else 0
 
     # Requests that were all skipped must not pass as a log without requests
     if not records and unmatched_requests > 0:
         SAS.logMessage(f"No request was read: 'Request: POST' was found in {unmatched_requests} line(s) that do not start as a log line ('<timestamp> - <logger> - <level> - '). The parser needs the lines as the containers write them, with nothing in front.", messageType='WARNING')
     if overlapped > 0:
-        SAS.logMessage(f"{overlapped} request(s) were running at the same time as another request of their container. The lines of the score code and the 'Response:' line name no request, so a line that was written while more than one request was running was given to none of them: {unattributed} request(s) were running when that happened and can have missing values.")
+        SAS.logMessage(f"{overlapped} request(s) were running at the same time as another request - of their container, or of another container whose lines are mixed with theirs in the file. The first lines of a request, the lines of the score code and the 'Response:' line name no request, so a line that the log does not decide was given to none of them: {unattributed} request(s) can have missing values, and failed is missing for {undecided} request(s).")
+    if unreadable > 0:
+        SAS.logMessage(f"{unreadable} request(s) hold a value that could not be read, for example a 'Request Data:' line that was cut off or options that are nested deeper than Python decodes. The rows were kept with what was read.")
+    if replaced > 0:
+        SAS.logMessage(f"{replaced} request(s) hold a character that has no UTF-8 bytes in a text column - half of a surrogate pair in a request body. It was replaced by a question mark, the way the hash of a text counts it.")
 
     df = pd.DataFrame(records, columns=COLUMNS)
     return df

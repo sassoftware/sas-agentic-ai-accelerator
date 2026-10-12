@@ -13,6 +13,7 @@ import json
 import sys
 import types
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 
 INTEGRATIONS = Path(__file__).resolve().parents[2]
@@ -76,6 +77,9 @@ class FakeCAS:
         self.uploads = []
 
     def upload_frame(self, frame, casout=None, importoptions=None):
+        # swat hands the rows to CAS as a file it writes with to_csv(..., encoding='utf-8'), so a
+        # text that has no UTF-8 bytes ends the upload there. The stand-in encodes the rows as well.
+        frame.to_csv(index=False).encode("utf-8")
         self.uploads.append({"frame": frame.copy(), "casout": casout, "importoptions": importoptions})
         return object()
 
@@ -231,6 +235,44 @@ def split_at_scoring(block):
     """A block in two parts: what is logged before the score code runs, and the rest."""
     scoring = next(index for index, line in enumerate(block) if "The data was successfully formatted" in line) + 1
     return block[:scoring], block[scoring:]
+
+
+def is_log_line(line):
+    return line[:4].isdigit() and line[4:5] == "-" and " - " in line
+
+
+def log_units(block):
+    """A block as its log lines, each with the lines behind it that carry no timestamp (the
+    headers, a response that goes on, a traceback): what a container writes in one piece.
+    The first five are the request line, the headers, the request data and the two
+    'Randomly generated' lines, the three behind them the first lines of the transaction."""
+    units = []
+    for line in block:
+        if is_log_line(line):
+            units.append([line])
+        else:
+            units[-1].append(line)
+    return units
+
+
+def lines_of(units):
+    return [line for unit in units for line in unit]
+
+
+def in_file_order(lines, start="2026-01-05 09:00:00"):
+    """The lines with the times a file would show them with: every log line one second later
+    than the one before, whatever time its block was built with. Returns the lines and the
+    times of the request lines, in their order."""
+    moment = datetime.strptime(start, "%Y-%m-%d %H:%M:%S")
+    timed, request_times = [], []
+    for line in lines:
+        if is_log_line(line):
+            moment += timedelta(seconds=1)
+            line = moment.strftime("%Y-%m-%d %H:%M:%S") + line[19:]
+            if " - Request: POST" in line:
+                request_times.append(line[:19])
+        timed.append(line)
+    return timed, request_times
 
 
 def get_block(timestamp, path="/openapi.json"):
