@@ -1237,15 +1237,18 @@ def test_the_about_tab_names_the_five_tables():
     for words in ("Prompt experiments", "Prompt optimizations", "RAG setups", "RAG runs", "Model catalog",
                   "modelID, runID, model", "modelID, optimizationId", "modelID, run_id"):
         assert words in about
-    assert by_id["textChangelog"]["text"].startswith("* Version: 2.2 (12OCT2026)")
+    assert by_id["textChangelog"]["text"].startswith("* Version: 2.3 (12OCT2026)")
+    assert "\n* Version: 2.2 (12OCT2026)" in by_id["textChangelog"]["text"]
     assert "\n* Version: 2.1 (12OCT2026)" in by_id["textChangelog"]["text"] and "* Version: 2.0 (11OCT2026)" in by_id["textChangelog"]["text"]
-    # what version 2.2 says, beside the place of the program it is about
+    # what versions 2.2 and 2.3 say, beside the place of the program it is about
     program = step_program()
     assert "(SYSCC) to 1012 at its end" in about and "%let SYSCC = 1012;" in program
     for path in ("an output library that is no CAS library", "a table name that is refused", "projects that could not be listed",
                  "a table that was not written"):
         assert path in about, path
-    assert "carry the id as <id>#2" in about and "identifier = f'{identifier}#{held[identifier]}'" in program
+    assert "carry the id as <id>#2" in about and "def counted_optimization_ids(tracker):" in program
+    assert "A counter that would make the id of another entry of the tracker is passed over" in about
+    assert "entries without an optimizationId are counted the same way" in about
     assert "a quote shows as a backtick, % as pct, & as +, a semicolon as a comma" in about
     assert """NOT_FOR_SAS = (("'", '`'), ('"', '`'), ('%', 'pct '), ('&', '+'), (';', ','), ('/' + '*', '/ *'), ('*' + '/', '* /'))""" in program
     assert by_id["textChangelog"]["text"].endswith("* Version: 1.0 (09AUG2025)\n      - Initial version")
@@ -1493,9 +1496,81 @@ def test_an_optimization_id_that_two_entries_of_a_tracker_hold_is_counted_in_the
     assert [row["optimizationId"] for row in run.rows("optimizations") if row["modelID"] == model["id"]] == [1, 1, 2, 1]
     warnings = [warning for warning in run.sas.of_type("WARNING") if "optimizationId" in warning]
     assert warnings == [f"The file Prompt-Optimization-Tracker.json of the model Desk Answer ({model['id']}) holds the optimizationId 1 on more "
-                        "than one entry. In the model catalog the rows of a later entry carry the id with a counter, as in 1#2, so that no "
-                        "two rows of the catalog have the same key. The table of the optimizations holds the entries as the tracker has "
-                        "them, with the same id."]
+                        "than one entry. In the model catalog the rows of a later such entry carry the id with a counter, as in 1#2 - for an "
+                        "entry without an id the counter alone -, so that no two rows of the catalog have the same key. The table of the "
+                        "optimizations holds the entries as the tracker has them."]
+
+
+def _optimization_ids(monkeypatch, tmp_path, *identifiers):
+    """The pull of one model whose optimization tracker holds entries with these ids, each with a window of its own:
+    (the optimization_id of its catalog rows in the order of the entries, the WARNINGs about the tracker, all catalog keys)."""
+    viya = FakeViya()
+    project = viya.add_project("Service Desk", ["Prompt-Engineering"])
+    entries = []
+    for position, identifier in enumerate(identifiers):
+        entry = optimization_entry(1, startedAt=f"2026-02-{position + 1:02d}T08:00:00+00:00", finishedAt=f"2026-02-{position + 1:02d}T08:10:00+00:00",
+                                   judgeModel=None)
+        if identifier is None:
+            del entry["optimizationId"]
+        else:
+            entry["optimizationId"] = identifier
+        entries.append(entry)
+    viya.add_model(project, "Desk Answer", {
+        "Prompt-Experiment-Tracker.json": [header_row(1, "Answer briefly.", "{{question}}", [variable("question", "Why?")]), model_row(1, "demo_llm")],
+        "Prompt-Optimization-Tracker.json": entries})
+    run = run_pull(monkeypatch, tmp_path, viya)
+    rows = sorted(run.catalog(role="optimization"), key=lambda row: row["window_start"])
+    keys = [(row["modelID"], row["role"], row["runID"], row["optimization_id"], row["target_model"]) for row in run.rows("catalog")]
+    return [row["optimization_id"] for row in rows], [warning for warning in run.sas.of_type("WARNING") if "optimizationId" in warning], keys
+
+
+@pytest.mark.parametrize("identifiers, expected", [
+    ([1, 1, "1#2"], ["1", "1#3", "1#2"]),
+    (["1#2", 1, 1], ["1#2", "1", "1#3"]),
+    ([1, "1#2", "1#2", 1], ["1", "1#2", "1#2#2", "1#3"]),
+    ([7, 7, 7, "7#2", "7#3"], ["7", "7#4", "7#5", "7#2", "7#3"]),
+], ids=["the counter of the second entry is the id of the third", "the id that looks counted comes first",
+        "an id that looks counted is held twice", "two counters are ids of the tracker"])
+def test_a_counter_never_makes_the_id_of_another_entry(monkeypatch, tmp_path, identifiers, expected):
+    """An entry whose own id is the text another entry would get as its counter - the ids 1, 1 and 1#2 -
+    gave two catalog rows with one key again. The Prompt Builder numbers its optimizations, so such a
+    tracker is written by hand; the key holds for it all the same."""
+    counted, warnings, keys = _optimization_ids(monkeypatch, tmp_path, *identifiers)
+
+    assert counted == expected
+    assert len(set(counted)) == len(counted) and len(set(keys)) == len(keys)
+    assert len(warnings) == 1
+
+
+def test_entries_without_an_optimization_id_are_counted_and_named_as_such(monkeypatch, tmp_path):
+    """Entries without an optimizationId were counted like an id, and the WARNING listed an empty id:
+    'holds the optimizationId 1, on more than one entry'. They are still counted - each has a window of its
+    own and a key of its own - and the WARNING says how many there are."""
+    counted, warnings, keys = _optimization_ids(monkeypatch, tmp_path, None, 1, "", 1, None)
+
+    assert counted == ["", "1", "#2", "1#2", "#3"]
+    assert len(set(keys)) == len(keys)
+    assert len(warnings) == 1 and "holds the optimizationId 1 on more than one entry and 3 entries without an optimizationId. In the" in warnings[0]
+    assert "optimizationId 1, " not in warnings[0] and "optimizationId  " not in warnings[0]
+
+    # only entries without an id: no id is named
+    counted, warnings, _ = _optimization_ids(monkeypatch, tmp_path, None, None)
+    assert counted == ["", "#2"]
+    assert len(warnings) == 1 and ") holds 2 entries without an optimizationId. In the model catalog" in warnings[0]
+    # one entry without an id is no entry that is held twice
+    counted, warnings, _ = _optimization_ids(monkeypatch, tmp_path, None, 1, 2)
+    assert counted == ["", "1", "2"] and warnings == []
+
+
+def test_a_counted_id_fits_its_column(monkeypatch, tmp_path):
+    """optimization_id is a column of 16 bytes. An id that is longer is cut to it, and two that are equal in
+    those bytes are one id in the table: the second makes room for its counter."""
+    long_id = "optimization-of-monday"
+    counted, warnings, keys = _optimization_ids(monkeypatch, tmp_path, long_id, long_id, "optimization-of-tuesday")
+
+    assert counted == ["optimization-of-", "optimization-o#2", "optimization-o#3"]
+    assert all(len(identifier) <= 16 for identifier in counted) and len(set(keys)) == len(keys)
+    assert len(warnings) == 1 and long_id in warnings[0]
 
 
 @pytest.mark.parametrize("value, start, end", [

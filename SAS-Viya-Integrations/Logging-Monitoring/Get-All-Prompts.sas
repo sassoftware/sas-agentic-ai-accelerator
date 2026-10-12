@@ -858,6 +858,37 @@ def catalog_judge_rows(model, project, tracker):
     return rows
 
 
+def counted_optimization_ids(tracker):
+    """
+    The optimization_id of every entry of an optimization tracker in the catalog, in the order
+    of the entries: its optimizationId, and for an entry whose id an earlier entry holds the id
+    with a counter - <id>#2 for the second, <id>#3 for the third. A counter is passed over when
+    the id it would make is the optimizationId of an entry of the tracker or was given before:
+    of the ids 1, 1 and 1#2 the second entry is 1#3, so that no two entries have one id. An
+    entry without an optimizationId is counted the same way, its id is the counter alone: the
+    first has none, the second #2. The ids are compared as the column holds them: an id that is
+    longer than the column is cut to it, and makes room for its counter.
+    """
+    width = next(length for name, _, length in CATALOG_COLUMNS if name == 'optimization_id')
+    entries = [entry for entry in (tracker if isinstance(tracker, list) else [tracker] if isinstance(tracker, dict) else [])
+               if isinstance(entry, dict)]
+    own = [cut_text(run_text(entry.get('optimizationId')), width) for entry in entries]
+    taken = set(own)
+    held = {}
+    counted = []
+    for identifier in own:
+        held[identifier] = held.get(identifier, 0) + 1
+        if held[identifier] > 1:
+            first = identifier
+            identifier = cut_text(first, width - len(f'#{held[first]}')) + f'#{held[first]}'
+            while identifier in taken:
+                held[first] += 1
+                identifier = cut_text(first, width - len(f'#{held[first]}')) + f'#{held[first]}'
+            taken.add(identifier)
+        counted.append(identifier)
+    return counted
+
+
 def catalog_optimization_rows(model, project, tracker):
     """
     The catalog rows of the optimizations of a model: one per entry of its optimization tracker
@@ -877,14 +908,7 @@ def catalog_optimization_rows(model, project, tracker):
     """
     entries = tracker if isinstance(tracker, list) else [tracker] if isinstance(tracker, dict) else []
     rows = []
-    held = {}
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        identifier = run_text(entry.get('optimizationId'))
-        held[identifier] = held.get(identifier, 0) + 1
-        if held[identifier] > 1:
-            identifier = f'{identifier}#{held[identifier]}'
+    for entry, identifier in zip([entry for entry in entries if isinstance(entry, dict)], counted_optimization_ids(tracker)):
         baseline = entry.get('baselinePrompt') if isinstance(entry.get('baselinePrompt'), dict) else {}
         optimized = entry.get('optimizedPrompt') if isinstance(entry.get('optimizedPrompt'), dict) else {}
         called = []
@@ -910,12 +934,16 @@ def catalog_optimization_rows(model, project, tracker):
 
 def repeated_optimization_ids(tracker):
     """
-    The ids an optimization tracker holds on more than one entry, each once and in their order.
+    The ids an optimization tracker holds on more than one entry, each once and in their order,
+    and the number of its entries without an id when there is more than one of them (else 0).
+    An entry without an id is no id that is held twice, so it is counted and not listed.
     """
     entries = tracker if isinstance(tracker, list) else [tracker] if isinstance(tracker, dict) else []
     identifiers = [run_text(entry.get('optimizationId')) for entry in entries if isinstance(entry, dict)]
-    return [identifier for position, identifier in enumerate(identifiers)
-            if identifiers.count(identifier) > 1 and identifier not in identifiers[:position]]
+    repeated = [identifier for position, identifier in enumerate(identifiers)
+                if identifier and identifiers.count(identifier) > 1 and identifier not in identifiers[:position]]
+    without = identifiers.count('')
+    return repeated, without if without > 1 else 0
 
 
 def catalog_answer_row(model, project, role):
@@ -1203,13 +1231,19 @@ def pull(get_json, get_text, settings, say):
             # The calls the Prompt Builder makes for a prompt and not with it: its judges and its optimizations
             tables['catalog'].extend(catalog_judge_rows(model, project, tracker))
             tables['catalog'].extend(catalog_optimization_rows(model, project, optimizations))
-            repeated = repeated_optimization_ids(optimizations)
-            if repeated:
+            repeated, without = repeated_optimization_ids(optimizations)
+            if repeated or without:
+                found = []
+                if repeated:
+                    found.append(f"the optimizationId {', '.join(repeated[:5])}{' and others' if len(repeated) > 5 else ''} "
+                                 "on more than one entry")
+                if without:
+                    found.append(f"{without} entries without an optimizationId")
                 say('WARNING', f"The file {OPTIMIZATION_TRACKER} of the model {model.get('name')} ({model.get('id')}) holds "
-                               f"the optimizationId {', '.join(repeated[:5])}{' and others' if len(repeated) > 5 else ''} on more "
-                               "than one entry. In the model catalog the rows of a later entry carry the id with a counter, "
-                               "as in 1#2, so that no two rows of the catalog have the same key. The table of the optimizations "
-                               "holds the entries as the tracker has them, with the same id.")
+                               f"{' and '.join(found)}. In the model catalog the rows of a later such entry carry the id with "
+                               "a counter, as in 1#2 - for an entry without an id the counter alone -, so that no two rows of "
+                               "the catalog have the same key. The table of the optimizations holds the entries as the tracker "
+                               "has them.")
     say('NOTE', f"{len(projects)} project(s) with the tag {settings['tag']} and {model_count} model(s) in them were read.")
     for index, row in enumerate(tables['experiments']):
         row['unique_id'] = index + 1
