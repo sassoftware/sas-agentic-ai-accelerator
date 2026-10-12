@@ -28,7 +28,7 @@ The package is exported from the content folder of the maintainers' system **aft
 - seven tests of `mdb` are skipped with the reason *the package is exported from the owner's system after this round* — the six that read the shipped package and the one that wants the four packages of earlier releases gone;
 - those four packages are still in the repository. They are older than this page and are not what it describes.
 
-The commands of this section were tested with a SAS Viya system that is made up, and with packages made from the list of what ships. They have **not run against SAS Viya**.
+The commands of this section ran on the test system on 2026-10-12, in a test content root and as they were then, and what that run found changed the import. [What was measured, and what has not run](#the-package-on-sas-viya) has both.
 :::
 
 ### First install and upgrade {#first-install-and-upgrade}
@@ -44,29 +44,61 @@ mdb builders-import     # the content folder
 mdb builders-import
 ```
 
-Then open [Start Here](#start-here) and go through the lines of its installation check, run the commands of [Access to the content folder](#access-to-the-content-folder), and — on a first install — continue at [step 3](#3-provide-the-api-keys-via-the-credential-domain) (the credential domain), [step 4](#4-sas-environment-manager-configuration) (the Content Security Policy) and the optional object options of [step 5](#5-add-the-object-to-a-visual-analytics-report).
+Then open [Start Here](#start-here), in a compute context that runs as you:
+
+```
+https://<your SAS Viya host>/SASJobExecution/?_program=/SAS Agentic AI Accelerator/Start Here&_contextName=<a compute context that runs as you>
+```
+
+Go through the lines of its installation check, run the commands of [Access to the content folder](#access-to-the-content-folder), and — on a first install — continue at [step 3](#3-provide-the-api-keys-via-the-credential-domain) (the credential domain), [step 4](#4-sas-environment-manager-configuration) (the Content Security Policy) and the optional object options of [step 5](#5-add-the-object-to-a-visual-analytics-report).
 
 `mdb builders-import` does in one run what an import otherwise leaves to hand work afterwards:
 
 1. It loads the release table the Prompt Builder report binds to (`--no-releases` skips that).
-2. It reads the options of the Prompt Builder report that is on the site — and of the retired report `RAG Builder`, while that still exists — and keeps them in a file `builder-options-captured-<time>.json` in the current directory. Importing a report replaces the options an administrator set on the object, see [Preserving builder options across a report import](#preserving-builder-options-across-a-report-import); this is what makes an upgrade one command.
-3. It uploads the package and rewrites its **import mapping** before the job starts, so that nothing is edited after the fact: the data source of the Prompt Builder report is retargeted from the shipped `Public.ACCELERATOR_RELEASES` to `SAS_CAS_LIBRARY.SAS_RELEASES_TABLE` on your CAS server, and the placeholder host `https://your-sas-viya-host` in the Data-Driven Content URL becomes `SAS_VIYA_URL`. With `--report-caslib <library>` the other tables the reports read — `LLM_LOGS`, `LLM_FACT_SHEET`, `EMBEDDING_FACT_SHEET`, `PROMPT_EXPERIMENTS` — are pointed at the tables of the same name in that library; without it they stay bound to `Public`.
-4. It imports, waits for the job and names the failing task if there is one.
+2. It reads the options of the Prompt Builder report that is on the site — and of the retired report `RAG Builder`, while that still exists — and keeps them in a file `builder-options-captured-<time>.json` in the current directory. Importing a report replaces the options an administrator set on the object, see [Preserving builder options across a report import](#preserving-builder-options-across-a-report-import); this is what makes an upgrade one command. A report that is on the site and cannot be read stops the command here, before anything is imported.
+3. **The reports go through the SAS Viya transfer service**: the two reports, the files that are children of a report (the pictures of the usage report) and the folders they sit in, cut out of the package. The command rewrites the **import mapping** before the job starts, so that nothing is edited after the fact: the data source of the Prompt Builder report is retargeted from the shipped `Public.ACCELERATOR_RELEASES` to `SAS_CAS_LIBRARY.SAS_RELEASES_TABLE` on your CAS server, and the placeholder host `https://your-sas-viya-host` in the Data-Driven Content URL becomes `SAS_VIYA_URL`. With `--report-caslib <library>` the other tables the reports read — `LLM_LOGS`, `LLM_FACT_SHEET`, `EMBEDDING_FACT_SHEET`, `PROMPT_EXPERIMENTS` — are pointed at the tables of the same name in that library; without it they stay bound to `Public`. It waits for the job and reads every task of it: a task that did not end `completed` is printed and ends the run with exit code 1.
+4. **Every file, custom step and job definition is written in place**, by the requests `mdb content-deploy` sends, with the package as the source: an object that is at its path on your site is updated under the id it has there, and a missing one is created. One line per object says `equal`, `updated`, `created` or `FAILED` — see [What an upgrade does to what a site has](#an-upgrade-keeps-ids).
 5. It writes the options back: the ones it read; or, with `--options <file>`, a file saved with `mdb options-save` — the way to change a value before the import; or, on a site that has no Prompt Builder report yet, the values `mdb setup` discovers — the repository, the LLM and the embedding project ids, the SCR endpoint and the deployment type. On such a first install the three switches keep the defaults of the package, so RAG and prompt optimization are off until you enable them in [step 5](#5-add-the-object-to-a-visual-analytics-report). Either way every placeholder host that is left in the report becomes `SAS_VIYA_URL`.
 6. It writes `sas-viya-cli-content-commands.txt`, see [Access to the content folder](#access-to-the-content-folder).
 
-`mdb builders-import --dry-run` lists the objects and the mapping and imports nothing. A run that did not do everything ends with exit code 1 and prints the command to run next, on a line of its own; that command names the kept options file, so that the second run does not read the options again from a report the import may have replaced already. The kept files stay in the directory the command ran in. They hold option values and no key.
+`mdb builders-import --dry-run` says what a run would do and writes nothing: every request it sends, the sign-in aside, is a GET, nothing is uploaded, and its `mapping:` lines are what the package itself says about its tables and its host. A run that did not do everything ends with exit code 1 and prints the command to run next, on a line of its own; that command names the kept options file, so that the second run does not read the options again from a report the import may have replaced already. The kept files stay in the directory the command ran in. They hold option values and no key.
+
+Where a run stops:
+
+- **A report that is on the site and cannot be read**: `<report>: it is on this site and its content cannot be read (...)`, `Nothing was imported.` Run the command again when the report can be read, name the options with `--options <file>`, or pass `--no-options-capture` — then the imported report is configured from the deployment, and what an administrator set is gone.
+- **A task of the import job that did not end `completed`**: `the import job ended completed, and n of its tasks did not:` with a line per task. The options are not written into a report the command cannot be sure was replaced; the command to repeat names the kept options file.
+- **A write of the in-place part that is refused or gets no answer**: that object is `FAILED`, every object behind it is listed as `not attempted`, and `Stopped at the first write that failed: ...` says what was written before it. Nothing is removed, and a second run leaves what is equal by then as it is.
+
+### What an upgrade does to what a site has {#an-upgrade-keeps-ids}
+
+A custom step that a flow uses is referenced by its id, and so is a job definition behind a link or a schedule. The in-place part of the import therefore never replaces an object by a new one:
+
+```
+updated      step          RAG/steps/RAG - Embed Chunks.step  (templates; id <the id on your site> kept)
+updated      file          RAG/rag_core/tokens.py  (content replaced in place; id <the id on your site> kept)
+updated      jobDefinition Start Here  (code; id <the id on your site> kept)
+equal        step          RAG/steps/RAG - List Documents.step  (id <the id on your site>)
+created      file          Logging and Monitoring/Link-Logs-To-Models.sas  (id <a new id>)
+```
+
+- **An object at its path is updated under its own id**, whatever id the package carries for it — a site that got its content from an earlier package, from `mdb content-deploy` or from the earlier deploy script has other ids than the system the package was exported from. A file keeps its id too: its content is replaced, the file is not deleted. Nothing of the exporting system — an id, a link, a user — reaches your site with the in-place part.
+- **A second import changes nothing**: every line says `equal`, and nothing is written.
+- **Two objects of one name in one folder** are both named with their ids, and neither is written; the rest is brought and the run ends with exit code 1. Remove the one that is not used and run the command again.
+- **What is not at its path is not touched.** A step you registered in a folder of your own — the starter package of earlier releases put *LLM - Log Parser* into the folder `Custom Steps`, and a step may live in the folder of a user — stays as it is, and the import creates the step of this release at its path beside it. Update yours in place from a checkout with `mdb content-deploy --only "<its path in the manifest>" --to "<path or id of your step>"`, see [One part, somewhere else](./Model-Definition-Builder.md#one-part-somewhere-else).
+- **The settings of a site in a job definition stay.** `_contextName`, the compute context a job runs in, and `contentRoot` are values of your site: a job definition that exists keeps what it holds, a new one gets the default of the package (`SAS Studio compute context`, `/SAS Agentic AI Accelerator`). `mdb builders-import` writes a compute context into `_contextName` of `Start Here`, `Load-Accelerator-Tables` and `SAS-LLM-Prompt-Builder-UI` when it knows one: the one you pass with `--compute-context`, or the option **RAG: ingestion compute context** (`ragComputeContext`) of the options it writes back, which has to be a context that runs as the requesting user. It does not take `computeContext`, the context of the optimization job.
+
+**Another content folder.** `--content-root <folder>` brings everything but the reports into that folder and writes it into the parameter `contentRoot` of the two job definitions that have one. The reports are imported only into the folder the package was exported from, `/SAS Agentic AI Accelerator`, and only because that folder is at the root of SAS Content: the transfer service takes no target folder, and no mapping to another folder is known to work. With another content root the command says `Reports (...): NOT imported` with the reason and ends with exit code 1; `--no-reports` says that this is meant, and the transfer service is then not called at all.
 
 After an upgrade, reload the Prompt Builder report. On a site that had the report `RAG Builder`, the switch **Enable RAG setups** in the Options pane of the object is ticked and the `RAG:` options below it hold the values of the old report; the Setup card offers *RAG setup for a document collection* as a third kind, and an existing setup opens. If the RAG card is shown and cannot be chosen, the credential domain is `none` — see [The retired RAG Builder report](#the-retired-rag-builder-report). **Enable prompt optimization (DSPy)** shows what the report stored: ticked where optimization was enabled before.
 
 What an import does not bring, and what it replaces:
 
 - **No tables, no projects, no credentials, no option values.** A transfer package cannot carry CAS tables, SAS Model Manager projects, credentials or the option values of a site. `mdb setup` creates the repository and the projects, the command above writes the options, [Managing Credentials](./Managing-Credentials.md) has the credential domain, and the tables are loaded as [The tables of the reports](#load-accelerator-tables) says.
-- **A job definition holds a copy of its program and of its form.** An import replaces both, and the parameters with them: a compute context an administrator set in the parameter `_contextName` of `SAS-LLM-Prompt-Builder-UI` is set back to `SAS Studio compute context`. The job definition of a RAG setup that a site generated is not part of the package and keeps the ingestion program of the day it was manifested — see [After an upgrade: manifest every setup once](./RAG-Ingestion-and-Retrieval.md#after-an-upgrade).
+- **A job definition holds a copy of its program and of its form.** An import replaces both, and the parameters with them, except the two that are settings of a site: a compute context an administrator set in the parameter `_contextName` of `SAS-LLM-Prompt-Builder-UI` stays. The job definition of a RAG setup that a site generated is not part of the package and keeps the ingestion program of the day it was manifested — see [After an upgrade: manifest every setup once](./RAG-Ingestion-and-Retrieval.md#after-an-upgrade).
 - **The logging programs are replaced as files.** Settings that were written into `Log-Parser-Code.sas` or `Get-All-Prompts.sas` are gone with the old file; from release 2.3.0 on a site sets them in a program of its own — see [Settings that stay yours](./Logging-&-Monitoring.md#settings-that-stay-yours).
 - **An import removes nothing.** What a site has in the folder beside the content of the package stays, the retired report `RAG Builder` among it.
-- **One folder.** `mdb builders-import` cannot import into another folder than the one the package was exported from, `/SAS Agentic AI Accelerator`.
-- **Not measured:** whether an import replaces in place a custom step that a site registered by hand, under another id than the one in the package, or makes a second step of that name. `mdb content-deploy --dry-run` after the import says of every step whether it equals the checkout, with the id it has on the site.
+- **The reports go into one folder.** Everything else follows `--content-root`; the two reports are imported into `/SAS Agentic AI Accelerator` or not at all, see [What an upgrade does to what a site has](#an-upgrade-keeps-ids).
+- **The package is left on the server.** The command uploads the reduced package for the reports and does not delete it afterwards; it is listed under the packages of the transfer service.
 
 ### The content folder {#the-content-folder}
 
@@ -82,7 +114,9 @@ What the package brings, as `SAS-Viya-Integrations/package-manifest.yaml` lists 
 | `Data/` | `llm_fact_sheet.csv`, `embedding_fact_sheet.csv`, `decision_fact_sheet.csv`, `ACCELERATOR_RELEASES.csv`; the job definition `Load-Accelerator-Tables` |
 | `Custom Steps/` | *LLM - List Available LLMs*, *LLM - Get Options*, *LLM - Create LLM Call* and the four *MM -* steps |
 
-61 objects: 37 files, 18 custom steps, four job definitions and two reports. The folder names are the ones sites have had; `Start Here`, `release.json`, `Data/Load-Accelerator-Tables` and the folder `Custom Steps` are new in release 2.3.0.
+61 objects: 37 files, 18 custom steps, four job definitions and two reports. The folder names are the ones sites have had; `Start Here`, `release.json` and `Data/Load-Accelerator-Tables` are new in release 2.3.0, and so is the folder `Custom Steps` for a site that never imported the starter package of earlier releases. That package held *LLM - Log Parser* in `Custom Steps`; the step of this release is in `Logging and Monitoring`.
+
+*LLM - Get Options* ships, although its program is an earlier copy of *LLM - Create LLM Call* with the same lookup of the options and the same generated code: the repository lists it as a step of the accelerator, and a flow that holds it keeps its step after an import. *LLM - Create LLM Call* is version 1.1: with *Save the code to a filename?* ticked and no path chosen it writes the code to a temporary file and leaves the fileref `_slo_LLM` assigned, where version 1.0 held an ERROR line and an ABORT statement for that. This is read from the program and **not run in SAS**; for a model whose `options.json` holds a `values` list the step is expected to fail in PROC TRANSPOSE, which is not changed and not measured.
 
 **What never ships.** An object that the manifest does not list is not deployed, not exported and fails the check of the package when it is found in it. And whatever the manifest says, an object is refused where a part of its path has `Showcases` or `Example` in its name, is a folder named `generated`, or starts with `ZZ_VERIFY`:
 
@@ -90,7 +124,7 @@ What the package brings, as `SAS-Viya-Integrations/package-manifest.yaml` lists 
 - `RAG/generated`, where the Prompt Builder writes the ingestion job and the flow of a site's own RAG setups;
 - test objects.
 
-Not in the package either: the retired report `RAG Builder` and its job definition `RAG-Builder-UI`; model definitions, which reach a site with `mdb register`; the log collection script, which runs where `kubectl` runs; and the custom step *LLM - Get Prompt Experiments* of the repository, the step of August 2024 that reads the experiment tracker of one model — *LLM - Get All Prompts* is the step that pulls the experiments.
+Not in the package either: the retired report `RAG Builder` and its job definition `RAG-Builder-UI`; model definitions, which reach a site with `mdb register`; the log collection script, which runs where `kubectl` runs; and the custom step *LLM - Get Prompt Experiments* of the repository: it is the step of August 2024 that reads the experiment tracker of one model as one table and shows the options of a run as they are stored, where *LLM - Get All Prompts* pulls the experiments of every model and leaves out the options whose names say that they hold a secret. Its file stays in `Custom-Steps/` of the repository.
 
 A site that takes a fix from a checkout without waiting for a package uses `mdb content-deploy`, and maintainers build the package with it — see [The content folder: deploy, export, check](./Model-Definition-Builder.md#the-content-folder-deploy-export-check).
 
@@ -99,15 +133,19 @@ A site that takes a fix from a checkout without waiting for a package uses `mdb 
 `Start Here` is a job definition at the root of the content folder. Open it in a browser:
 
 ```
-https://<your SAS Viya host>/SASJobExecution/?_program=/SAS Agentic AI Accelerator/Start Here
+https://<your SAS Viya host>/SASJobExecution/?_program=/SAS Agentic AI Accelerator/Start Here&_contextName=<a compute context that runs as you>
 ```
+
+The page shows what its SAS session may read, so it is opened in a compute context that runs as you. The parameter `_contextName` of the job definition names that context - `SAS Studio compute context` as shipped; `mdb builders-import` writes the ingestion compute context of your options there, or the one you pass with `--compute-context` -, so the address works without the parameter where that context runs as you, and `&_contextName=` names another one for one request.
+
+Measured on SAS Viya 2026.09 on 2026-10-12, when the job definition did not have the parameter: opened without it the job ran in the `SAS Job Execution compute context`, which runs its sessions under a service account on that system. SAS Viya answered every request with 401, and the page read `13 ok, 0 missing, 15 not checked`, twelve of the fifteen lines with the advice to ask an administrator. With `&_contextName=SAS Studio compute context` the same page had 97 lines that were ok. Where every request is refused the page now has one line at its top in place of those lines: what it is, and that the page is opened with `&_contextName=`. It says that the session runs under a service account where the user of the SAS session is another one than the user SAS Job Execution started it for; neither is written to the page. The parameter in the job definition and this line are **not run in SAS**.
 
 The job writes one HTML page: what the accelerator is, links to the Prompt Builder report and the LLM Usage Report by the address they have on your system, links to these guides, and the **installation check**. Every line of the check has one of three states — `ok`, `missing`, `not checked` — with what was found and one sentence what to do:
 
 | Section | What is looked at |
 | --- | --- |
-| Release | `release.json` in the content root: release, commit and date |
-| Content | Every entry `release.json` lists: present in this content root or not. A custom step that was uploaded as a file is `missing`: it has to be registered |
+| Release | `release.json` in the content root: release, commit and date. The file is asked for at the Files service only |
+| Content | Every entry `release.json` lists: present in this content root or not. A custom step is registered - by the import of the package or by `mdb content-deploy` -, so a `.step` file that was uploaded to the folder is not the step: the step is `missing` while only that file is there, and the line of a registered step names a file of its name that lies beside it and says to delete it |
 | CAS tables of the reports | `ACCELERATOR_RELEASES` (Prompt Builder) and `LLM_LOGS`, `PROMPT_EXPERIMENTS`, `LLM_FACT_SHEET`, `EMBEDDING_FACT_SHEET` (LLM Usage Report): there or not, their rows, when they were loaded |
 | SAS Model Manager | The repository and the projects of the LLM, the embedding model and the decision model definitions, by their names, with the number of models of each |
 | Options of the Prompt Builder report | `modelRepositoryID`, `llmProjectID` and, with RAG switched on, `embeddingProjectID`: whether each names the object that was found by its name |
@@ -120,10 +158,17 @@ What holds for the page:
 
 - **It changes nothing.** Every request is a GET, and the one file the program writes is the page, in the WORK folder of its session.
 - **A site that lacks something gets a line, not a failed job.** A service that does not answer, a right the session lacks and a folder that is not there are lines of the page: `not checked` with the HTTP status, or `missing`. Where PROC PYTHON does not run in the compute context, the page says that and nothing else.
-- **It shows what its session may read.** In a compute context that runs under a service account that is the service account, and what the session may not read is `not checked` with the HTTP status. No token and no user id is written to the page, and of an answer that was refused only the status.
-- **The content root is a parameter.** The job definition checks the folder its parameter `contentRoot` names, `/SAS Agentic AI Accelerator` as shipped — add `&contentRoot=<folder>` to the address to check another one. The other parameters name the CAS library and the CAS server of the report tables (`caslib`, `casServer`), the credential domain, the repository and the three projects by the names `mdb setup` gives them, the compute contexts to look for and the address of the guides; `SAS-Viya-Integrations/Setup/README.md` lists them.
+- **It shows what its session may read.** Open it in a compute context that runs as you (`_contextName`). In a compute context that runs under a service account the session is the service account: what it may not read is `not checked` with the HTTP status, and a session that is refused everything gets one line at the top. No token and no user id is written to the page, and of an answer that was refused only the status.
+- **The content root is a parameter.** The job definition checks the folder its parameter `contentRoot` names: `/SAS Agentic AI Accelerator` as shipped, and the folder a deploy or an import was given with `--content-root`. Add `&contentRoot=<folder>` to the address to check another one. `_contextName` and `contentRoot` are the two settings of a site among the parameters. The other parameters name the CAS library and the CAS server of the report tables (`caslib`, `casServer`), the credential domain, the repository and the three projects by the names `mdb setup` gives them, the compute contexts to look for and the address of the guides; `SAS-Viya-Integrations/Setup/README.md` lists them.
 
-The Python of the program runs in the tests of the repository against a SAS Viya system that is made up. The program is **not run in SAS**, and how SAS Job Execution serves the page was not measured: that the service assigns the fileref `_webout` and shows what a job writes there as a page with the parameter `_output_type` = `html` is taken from a summary of the *SAS Job Execution Web Application User's Guide* and from no run.
+Measured on SAS Viya 2026.09 on 2026-10-12, with the program as it was then, from a test content root that `mdb content-deploy` had filled:
+
+- **The page is served as a page.** Opened the way a browser opens it, with `_contextName=SAS Studio compute context`, the job answered HTTP 200 with `text/html` and no `Content-Disposition`. The page began with `<!DOCTYPE html>` and held no script, link or image element.
+- **What it read.** `97 ok, 2 missing, 1 not checked`, with release 2.3.0, the commit and its date, and `70 of 72 entries of release.json are present in this content root` - the two that are missing are the reports, which a deploy does not bring. With copies of the two reports in the folder a run through the jobExecution API logged `the page holds 102 checks - 102 ok, 0 missing, 0 not checked`. Such a run has no `_webout`: the program says so in a NOTE and names the file in WORK, and no page of that run was kept.
+- **What is missing gets its line.** A file that was deleted: `missing | not in its folder`. A `.step` uploaded as a file in the place of a registered step: `missing | a file of that name is there, and no registered step`. A content root that does not exist: `Content root | missing | the folder was not found`, with the other sections filled. Against the content folder of the test system: `29 ok, 1 missing` - `release.json`, which that folder did not hold yet.
+- **It changed nothing and showed no secret.** A listing of the folder before and after a page differed in nothing. No page held a token, a password, a host name or an e-mail address, and the user id only inside the folder path the page was given; the publishing destinations are listed by their names.
+
+Not measured: the page for a user without administrator rights, and the program pasted into SAS Studio. Changed after that run and **not run in SAS**: the parameter `_contextName`, the one line for a session that is refused everything, the advice for a custom step, and the check of the address of `release.json`.
 
 ### The tables of the reports {#load-accelerator-tables}
 
@@ -135,14 +180,24 @@ A package cannot carry a CAS table. The two reports read five:
 | `LLM_FACT_SHEET`, `EMBEDDING_FACT_SHEET` | LLM Usage Report | `mdb load-facts`; or the job `Load-Accelerator-Tables`, which also loads `DECISION_FACT_SHEET` |
 | `LLM_LOGS`, `PROMPT_EXPERIMENTS` | LLM Usage Report | The log parser and the pull of your own system, see [Logging & Monitoring](./Logging-&-Monitoring.md) |
 
-`Data/Load-Accelerator-Tables` is a job definition for a site that imported the package without `mdb` — through SAS Environment Manager, for example — and so has neither the release table nor the fact sheets: it loads `ACCELERATOR_RELEASES` from `Data/ACCELERATOR_RELEASES.csv` and the three fact sheets from the files beside it, promoted and saved, into the CAS library of its parameter `caslib` (default `Public`). Its other parameters are `contentRoot` and `releaseTable`, the name of the release table.
+`Data/Load-Accelerator-Tables` is a job definition for a site that imported the package without `mdb` — through SAS Environment Manager, for example — and so has neither the release table nor the fact sheets: it loads `ACCELERATOR_RELEASES` from `Data/ACCELERATOR_RELEASES.csv` and the three fact sheets from the files beside it, promoted and saved, into the CAS library of its parameter `caslib` (default `Public`). Its other parameters are `_contextName` - a compute context that runs as you -, `contentRoot` and `releaseTable`, the name of the release table.
 
 - The fact sheets are loaded by `Load-Fact-Sheets.sas`, which the job includes from the folder `Logging and Monitoring` of the content root.
-- The release table gets the eleven columns of `mdb` in their order, the three numbers as DOUBLE and the eight text columns as VARCHAR. That is the layout a table has that `mdb load-releases` loaded: read from such a table on the test system on 2026-10-12, where the text columns were as long as the longest cell of each in the file.
+- The release table gets the eleven columns of `mdb` in their order, the three numbers as DOUBLE and the eight text columns as VARCHAR. Measured on the test system on 2026-10-12 against the table `mdb load-releases` loaded: 707 rows, the same eleven columns, types and lengths, and no difference in `PROC COMPARE`. One thing differs: the formatted length - the width CAS keeps for display - is 16 in the table of the job for the four text columns whose longest value is shorter than that (`version`, `release_date`, `change_type`, `builder_part`), and 6, 10, 8 and 8 in the table of `mdb`. A width of 16 cuts no value of these columns, and the page of the Prompt Builder reads nothing from the table; what a SAS Visual Analytics object shows with it was not measured.
 - A table that exists is replaced only by an upload that holds every row of its file. A file that is not in the folder, a first line with other columns and an upload that is short leave the table as it is, with a WARNING.
+- `Load-Fact-Sheets.sas` tries each sheet beside its table in the same way, but drops that trial again: it then drops the table and loads the sheet a second time. A fact sheet table is replaced only for a sheet CAS held completely, but a failure of CAS between the drop and the second load leaves the site without that table.
+- In a compute context that runs under a service account the log holds one NOTE that the session does not run as the user who started the job. **Not run in SAS.**
 - The job writes an ERROR line and sets `SYSCC` to 1012 when a parameter is refused, or when one of the four tables is not in the CAS library at its end.
 
-`mdb load-releases` and `mdb load-facts` load the same tables from a checkout and stay the way to load them from a workstation. The job is **not run in SAS**.
+`mdb load-releases` and `mdb load-facts` load the same tables from a checkout and stay the way to load them from a workstation.
+
+The job ran on the test system on 2026-10-12 from a test content root, with `caslib=casuser` and a release table of another name, so that no table of the system was written:
+
+- **As shipped, in a folder without `Load-Fact-Sheets.sas`**: the NOTE `the release table ... was loaded with 707 rows, promoted and saved`, the WARNING that `Load-Fact-Sheets.sas` was not found, then the ERROR line that names the three fact sheet tables as not in the CAS library, `SYSCC` 1012 and a failed job. A second run replaced the table. Without the CSV in the folder the table was left as it was, with the WARNING. `releaseTable=x;y` was refused with one ERROR line, and nothing was read or written.
+- **With the three fact sheet names replaced by test names** - three lines of the job code and fifteen of `Load-Fact-Sheets.sas`, nothing else: completed, no WARNING, `SYSCC` 0, the release table with 707 rows and the sheets with 30, 16 and 5 rows, promoted and saved. Without `decision_fact_sheet.csv` in the folder: the WARNING for that sheet, and the two others loaded. The comparison with the table of `mdb` above is of the table of this run, which read a copy of the CSV with LF line ends; for the job as shipped, which read the deployed file, 707 rows and equal column lengths were read.
+- Every job log of that run begins with three ERROR lines from the start of the SAS session about a connection to CAS on port 5570, in front of the first line of a program.
+
+Not run: the job with its own table names in `Public`.
 
 ### Access to the content folder {#access-to-the-content-folder}
 
@@ -152,7 +207,32 @@ The package carries no authorization rule and no share: who may read the folder 
 
 On a site that upgrades, this is also what gives the people who used the RAG Builder access to the folder `Prompt Builder`: the report and the job definition `SAS-LLM-Prompt-Builder-UI` that serve the RAG Builder now live there.
 
+### What was measured, and what has not run {#the-package-on-sas-viya}
+
+The commands of this section ran on SAS Viya 2026.09 on 2026-10-12, as they were that day, in a test content root below the folder of a user. The content folder of the system was only read.
+
+**What held.**
+
+- **`mdb content-deploy`**: the dry run, the run, a second run that found everything equal and wrote nothing, the update in place that keeps the id of a custom step and of a job definition, and objects outside the manifest that were left alone - see [The content folder: deploy, export, check](./Model-Definition-Builder.md#the-content-folder-deploy-export-check).
+- **`mdb package-export` and `mdb package-check`** on exports of the test root: an export without the reports was refused, one with copies of the two reports passed the check, and every change made by hand was named.
+- **Start Here** in the `SAS Studio compute context`, the job **Load-Accelerator-Tables** with its release table against the one `mdb` loads, and the **settings** of the logging programs set in front of an include ([Start Here](#start-here), [The tables of the reports](#load-accelerator-tables), [Settings that stay yours](./Logging-&-Monitoring.md#settings-that-stay-yours)).
+
+**What did not hold, and what the commands do since.**
+
+- **A package of a folder that is not at the root of SAS Content landed in a new folder at the root.** `mdb builders-import` of that day handed the whole package to the transfer service. The package had been exported from the test root, held no report, and was imported on the system it came from. Afterwards a new folder with the name of the test root existed at the root of SAS Content, and the five sub-folders of the test root, with everything in them, had it as their parent; the command had said `imported 71 object(s).`, `Done.` and ended with exit code 0. A copy of the package that was rewritten for a second test root arrived in a second new folder at the root, and the folder it was meant for stayed empty; the mapping the service returned for it held a version and nothing to name a folder with. This was seen for one test root, on the system the package was exported from, and no export that keeps the folders above its root was imported for comparison.
+- **A file of the same name under another id was not replaced.** In that import one file was in its folder under another id than the package names. The file in the folder kept its content and its id. The file of the package existed afterwards under the id of the package in no folder; its task said `was updated but cannot be added to the intended folder` and `An item named "tokens.py" of type "File" already exists in the folder "rag_core"`. Three of the 71 tasks ended `completedWithWarnings`, the job said `completed` with `errorCount` 0, and the command showed none of it. What was on the system under the ids of the package was written in place: 18 custom steps, 35 files and three job definitions kept their ids. A custom step or a job definition of the same name under another id was not measured.
+- **Since then** the command hands the transfer service only the reports and writes every file, custom step and job definition in place under the id it has on the site; it imports a report only into the folder the package was exported from, at the root of SAS Content; and it reads the tasks of the import job.
+- **Start Here opened without a compute context** ran under a service account and checked nothing - see [Start Here](#start-here). Both job definitions carry `_contextName` since.
+- **A sign-in the system refused** ended `mdb content-deploy` with a traceback; the same command ran a minute and a half later. `mdb` asks such a refusal again since.
+- **`Build-RAG-Cost-View.sas` with two run tables** failed and still said that its table was built - see [The Third Run](./Logging-&-Monitoring.md#the-third-run).
+
+**Not run against SAS Viya:** what was built after that run - the in-place part of `mdb builders-import` and its options `--content-root`, `--no-reports`, `--compute-context` and `--no-options-capture`; the update of the content of a file in place, which is written from the documentation of the Files service; the stop at the first write that fails; the settings of a site; `mdb content-deploy --to`; `mdb package-check --release` and the `drift:` lines; and the changes to the two job programs. **Never measured:** an import of a package that holds the reports, and with it the capture and the write-back of the options, the import mapping and the commands file - that needs a system whose Prompt Builder report may be written; an import of a package whose root folder is at the root of SAS Content, which is how every release so far was installed; and what the transfer service does with a folder or a report of the same name under another id.
+
 ### Importing without `mdb` {#importing-without-mdb}
+
+:::warning An import without `mdb` leaves everything to the transfer service
+Measured on 2026-10-12 (see [What was measured](#the-package-on-sas-viya)): the transfer service did not replace a file that was in the target folder under the same name with another id - it wrote the file of the package into no folder and reported its job as completed. An object has another id than the package names where it did not come from an import of a package of the same origin: created by `mdb content-deploy`, by the earlier deploy script, or by hand. After an import without `mdb`, read the tasks of the import job, and run `mdb content-deploy --dry-run` from a checkout of the release: it says of every file, custom step and job definition whether it equals the checkout.
+:::
 
 The one file imports like any transfer package. What `mdb builders-import` does beside the import is then hand work: the options of the Prompt Builder report are the defaults of the package afterwards — save them first, see [Preserving builder options across a report import](#preserving-builder-options-across-a-report-import) —, the tables stay bound to `Public`, the release table and the fact sheets are loaded by the job [Load-Accelerator-Tables](#load-accelerator-tables), and the access rules are yours to write.
 
@@ -248,7 +328,7 @@ Points worth knowing:
 - **The file records which deployment it came from.** Restoring it against a different SAS Viya URL still works — moving configuration between environments is a legitimate thing to do — but the command says so first, because doing it by accident is exactly the failure this guards against.
 - **Concurrent edits fail loudly.** The write is conditional on the report being unchanged since it was read, so a colleague editing the report in Visual Analytics at that moment causes an error rather than silently losing their work.
 
-- **A `401 Client Error` at the sign-in can pass.** Seen on 2026-10-11: one call of `mdb` ended with `401 Client Error` at the sign-in and went through when it was repeated; the sign-in service of that system refused password grants that overlapped that day. Repeat the command before looking for another cause.
+- **A sign-in that is refused can pass.** Seen on 2026-10-11 and again on 2026-10-12: a call of `mdb` ended with `401 Client Error` at the sign-in and went through when it was repeated; the sign-in service of that system refused password grants that overlapped. `mdb` asks a refused sign-in again, up to three times (`MDB_LOGIN_ATTEMPTS=1` switches that off), and a refusal that stays ends the command with one line and exit code 2: `SAS Viya at <url> refused the sign-in of <user> ... (asked 3 time(s)): HTTP 401 from /SASLogon/oauth/token.` The repeat of the 401 as that system sends it and the one line are **not run against SAS Viya**.
 
 Measured on 2026-10-11 on SAS Viya 2026.09 with the Prompt Builder report of this release, after the report had been saved once in SAS Visual Analytics with **Enable RAG setups** ticked: in a round of `mdb options-save` and `mdb options-restore`, the dry run of the restore named six options to write and none that the report lacks, and the restore wrote them.
 
@@ -273,7 +353,7 @@ What the fold does, and prints as it does it:
 
 The old report does not record whether anyone used it, so the fold switches RAG on at every site that had it. **A site that does not use RAG** runs `mdb options-save`, sets `"enableRag": "false"` in the `Prompt Builder` section of `builder-options.json` and imports with `mdb builders-import --options builder-options.json`, or clears **Enable RAG setups** in the Options pane afterwards. A 2.2.x file that was saved while no `RAG Builder` report existed holds only discovered values in its `RAG Builder` section; `enableRag` is then not set and RAG stays off.
 
-While a report named `RAG Builder` is still on the site, `options-restore` and `builders-import` say so on every run: it keeps serving the old standalone UI with its own options. Once the Prompt Builder report shows your RAG setups, delete the report **RAG Builder** and the job definition **RAG-Builder-UI** next to it (SAS Environment Manager → Content, or SAS Drive), and give the people who used it Read access to the **Prompt Builder** folder if they did not have it - see [Access to the content folder](#access-to-the-content-folder). `mdb` deletes nothing, and `mdb content-deploy` names the two objects among what is in the folder and not in the manifest. Afterwards bookmarks to that report and to the URL of `RAG-Builder-UI` are dead. A package that was exported before 2.3.0 still holds both objects, and importing one brings them back.
+While a report named `RAG Builder` is still on the site, `options-restore` and `builders-import` say so on every run: it keeps serving the old standalone UI with its own options. Once the Prompt Builder report shows your RAG setups, delete the report **RAG Builder** and the job definition **RAG-Builder-UI** next to it (SAS Environment Manager → Content, or SAS Drive), and give the people who used it Read access to the **Prompt Builder** folder if they did not have it - see [Access to the content folder](#access-to-the-content-folder). `mdb` deletes nothing; `mdb content-deploy` and the in-place part of `mdb builders-import` name the two objects - `RAG/RAG Builder (report)` and `RAG/RAG-Builder-UI (jobDefinition)` - among what is in the folder and not in the package. Afterwards bookmarks to that report and to the URL of `RAG-Builder-UI` are dead. A package that was exported before 2.3.0 still holds both objects, and importing one brings them back.
 
 ## 1. Get the single-file app
 
