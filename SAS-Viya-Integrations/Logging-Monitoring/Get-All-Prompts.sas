@@ -46,7 +46,9 @@
       work._gap_all_rag_runs
       work._gap_all_catalog
 
-    A CAS session called mySess is started for the run.
+    A CAS session called mySess is started for the run when the SAS session
+      has none that is connected, and it is ended again. A session that is
+      connected is used and left as it is.
 
     gap is short for:
       Get All Prompts
@@ -69,7 +71,15 @@
 %let _gap_out_rag_runs      = RAG_RUNS;
 %let _gap_out_catalog       = MODEL_CATALOG;
 
-cas mySess;
+* Check if a CAS session exists;
+* The option SESSREF names the session the CAS actions run in and keeps the name of a session that was ended, so SESSFOUND is asked whether that session is connected. Behind Log-Parser-Code.sas in one SAS session a session is connected: starting it again made SAS warn that the session exists, and ending it took the session from the librefs of that program;
+%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;
+    %let _gap_clean_cas_session = 1;
+    cas mySess;
+%end;
+%else %do;
+    %let _gap_clean_cas_session = 0;
+%end;
 
 * gap core - from here to the line that ends the core the custom step LLM - Get All Prompts runs the same lines;
 * Get the Viya Host URL;
@@ -1041,29 +1051,44 @@ def pull(get_json, get_text, settings, say):
         for model in models_of(project):
             contents = contents_of(model)
             names = [item.get('name') for item in contents if isinstance(item, dict)]
+            # Whether a WARNING of this model has said that it is left out of the catalog
+            explained = False
             if RAG_SETUP_FILE in names:
                 setup = file_of(model, contents, RAG_SETUP_FILE)
                 row = rag_setup_row(model, project, setup=setup if isinstance(setup, dict) else {})
             elif (text_of(model.get('name')).startswith(STEP_MODEL_PREFIX)
                   or model.get('algorithm') == STEP_MODEL_ALGORITHM or RAG_PIPELINE_FILE in names):
                 properties = model.get('properties')
+                unread = ''
                 if not isinstance(properties, list):
                     # The listing of the models does not have to carry the properties, the model does
                     try:
                         detail = get_json(f"/modelRepository/models/{model.get('id')}", MODEL_MEDIA_TYPE)
                         properties = detail.get('properties') if isinstance(detail, dict) else None
                     except Exception as error:
-                        say('WARNING', f"The properties of the model {model.get('name')} ({model.get('id')}) "
-                                       f"could not be read: {reason_of(error)}")
+                        unread = (f"The properties of the model {model.get('name')} ({model.get('id')}) "
+                                  f"could not be read: {reason_of(error)}")
                 row = rag_setup_row(model, project,
                                     pipeline=file_of(model, contents, RAG_PIPELINE_FILE, read=parse_pipeline_yaml),
                                     properties=property_map(properties))
+                if unread and text_of(row.get('collection')).strip():
+                    say('WARNING', unread)
+                elif unread:
+                    explained = True
+                    say('WARNING', unread + '. The setup has no collection without them and is left out of the model '
+                                            'catalog, where no request could be linked to it. Its row of the RAG '
+                                            'setups stays.')
             else:
                 say('NOTE', f"The model {model.get('name')} of the project {project.get('name')} holds no RAG setup "
                             "and is left out.")
                 continue
             tables['rag_setups'].append(row)
-            tables['catalog'].append(catalog_setup_row(row))
+            if text_of(row.get('collection')).strip():
+                tables['catalog'].append(catalog_setup_row(row))
+            elif not explained:
+                say('WARNING', f"The RAG setup {model.get('name')} ({model.get('id')}) names no collection and is left "
+                               "out of the model catalog, where no request could be linked to it. Its row of the RAG "
+                               "setups stays.")
     if settings['rag_tag']:
         say('NOTE', f"{len(rag_projects)} project(s) with the tag {settings['rag_tag']} and "
                     f"{len(tables['rag_setups'])} RAG setup(s) in them were read.")
@@ -1151,12 +1176,21 @@ def json_map(columns, lengths):
 def check_output_names(names):
     """
     Why the output tables can not be written under these names, '' when they can: every output
-    needs a name, and two outputs under one name would overwrite each other.
+    needs a name, two outputs under one name would overwrite each other, and a name has to be
+    one a CAS libref can address - the SAS code looks at every table it wrote through one, and
+    so does whoever reads the table in SAS. CAS itself takes a longer name: such a table was
+    written, promoted and saved and then reported as not written.
     """
     used = {}
     for output, name in names.items():
         if not name:
             return f'The output {output} has no table name.'
+        if len(name) > 32:
+            return (f'The table name {name} of the output {output} has {len(name)} characters. A SAS libref '
+                    'addresses a CAS table by a name of 32 characters at most, nothing was read or written.')
+        if not SAS_NAME.fullmatch(name):
+            return (f'The table name {name} of the output {output} is no SAS name: letters, digits and '
+                    'underscores, and no digit in front. Nothing was read or written.')
         if name.upper() in used:
             return f'The outputs {used[name.upper()]} and {output} have the same table name {name}.'
         used[name.upper()] = output
@@ -1636,7 +1670,9 @@ run; quit;
 * end of the gap core;
 
 * Clean up;
-cas mySess terminate;
+%if &_gap_clean_cas_session. %then %do;
+    cas mySess terminate;
+%end;
 %symdel _gap_tag _gap_rag_tag _gap_llm_project _gap_embedding_project _gap_decision_project
     _gap_out_caslib _gap_out_experiments _gap_out_optimizations _gap_out_rag_setups _gap_out_rag_runs
-    _gap_out_catalog / nowarn;
+    _gap_out_catalog _gap_clean_cas_session / nowarn;

@@ -39,7 +39,7 @@ CATALOG_CONTRACT = ["modelID", "projectID", "projectName", "name", "role", "runI
 
 
 def contract_hash(text):
-    return hashlib.sha256(" ".join(text.split()).encode("utf-8")).hexdigest()
+    return hashlib.sha256(" ".join(text.split()).encode("utf-8", errors="replace")).hexdigest()
 
 
 def prompt_viya():
@@ -1230,3 +1230,131 @@ def test_the_about_tab_names_the_five_tables():
     texts = " ".join(control.get("text", "") for control in by_id.values())
     assert "not run in SAS" not in texts and "not been run" not in texts
 
+
+# ---------------------------------------------------------------------------
+# The names of the output tables
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("setting, name, said", [
+    ("_gap_out_optimizations", "ZZ_VERIFY_R14_PROMPT_OPTIMIZATIONS",
+     "The table name ZZ_VERIFY_R14_PROMPT_OPTIMIZATIONS of the output optimizations has 34 characters. A SAS libref addresses a "
+     "CAS table by a name of 32 characters at most, nothing was read or written."),
+    ("_gap_out_catalog", "A" * 33,
+     "The table name " + "A" * 33 + " of the output catalog has 33 characters. A SAS libref addresses a CAS table by a name "
+     "of 32 characters at most, nothing was read or written."),
+    ("_gap_out_rag_runs", "RAG RUNS",
+     "The table name RAG RUNS of the output rag_runs is no SAS name: letters, digits and underscores, and no digit in front. "
+     "Nothing was read or written."),
+    ("_gap_out_experiments", "2026_EXPERIMENTS",
+     "The table name 2026_EXPERIMENTS of the output experiments is no SAS name: letters, digits and underscores, and no digit "
+     "in front. Nothing was read or written."),
+], ids=["34 characters", "33 characters", "a blank", "a digit in front"])
+def test_a_table_name_no_libref_can_address_ends_the_pull_before_it_reads(monkeypatch, tmp_path, setting, name, said):
+    """CAS takes a longer name. The table was written, promoted and saved, and the last step
+    of the program, which looks at it through a libref, reported it as not written."""
+    viya, _, _ = prompt_viya()
+    run = run_pull(monkeypatch, tmp_path, viya, {setting: name})
+
+    assert run.rc == "-1" and viya.requests == [] and list(tmp_path.iterdir()) == []
+    assert run.sas.of_type("ERROR") == [said]
+
+
+def test_a_table_name_of_32_characters_is_taken(monkeypatch, tmp_path):
+    viya, _, _ = prompt_viya()
+    names = {"_gap_out_experiments": "E" * 32, "_gap_out_optimizations": "_" + "o" * 31, "_gap_out_rag_setups": "S1",
+             "_gap_out_rag_runs": "r_2", "_gap_out_catalog": "ZZ_VERIFY_R15_MODEL_CATALOG"}
+    run = run_pull(monkeypatch, tmp_path, viya, names)
+
+    assert run.rc == "0" and run.sas.of_type("ERROR") == []
+
+
+def test_all_five_names_are_looked_at_before_anything_is_read(monkeypatch, tmp_path):
+    """The name that is too long is the one of the last table: nothing was asked of SAS Model Manager."""
+    viya, _, _ = prompt_viya()
+    check = functions(monkeypatch, tmp_path)["check_output_names"]
+    good = {"experiments": "A", "optimizations": "B", "rag_setups": "C", "rag_runs": "D", "catalog": "E"}
+
+    assert check(good) == ""
+    for output in good:
+        assert "has 40 characters" in check(dict(good, **{output: "T" * 40}))
+    program = python_block(code_file_program())
+    assert program.index("problem = check_output_names(") < program.index("tables = pull(get_json, get_text, settings, say)")
+
+
+# ---------------------------------------------------------------------------
+# A RAG setup without a collection
+# ---------------------------------------------------------------------------
+
+def test_a_setup_whose_properties_can_not_be_read_is_not_in_the_catalog(monkeypatch, tmp_path):
+    """SAS Model Manager answered the request for one model with HTTP 500. The row of such a
+    setup has no collection, and a row of the catalog without one can be linked to no request."""
+    viya, project, builder, step = rag_viya()
+    lost = viya.add_model(project, "RAG Retrieval - Content Sample", function="RAG", algorithm="RAG")
+    viya.failing.add(f"/modelRepository/models/{lost['id']}")
+    run = run_pull(monkeypatch, tmp_path, viya)
+
+    assert [row["name"] for row in run.rows("rag_setups")] == ["Staff Handbook", "RAG Retrieval - Travel Rules", "RAG Retrieval - Content Sample"]
+    assert run.rows("rag_setups")[2]["collection"] == ""
+    assert [row["name"] for row in run.catalog(role="rag")] == ["Staff Handbook", "RAG Retrieval - Travel Rules"]
+    assert [warning for warning in run.sas.of_type("WARNING") if "RAG" in warning] == [
+        f"The properties of the model RAG Retrieval - Content Sample ({lost['id']}) could not be read: RuntimeError: HTTP 500 for "
+        f"/modelRepository/models/{lost['id']}. The setup has no collection without them and is left out of the model catalog, "
+        "where no request could be linked to it. Its row of the RAG setups stays."]
+    # the run table of such a setup is not looked for either: it names no table
+    assert [row["modelID"] for row in run.rows("rag_run_sources")] == [builder["id"], step["id"]]
+
+
+def test_a_setup_whose_properties_can_not_be_read_but_whose_pipeline_file_names_the_collection_stays(monkeypatch, tmp_path):
+    viya, project, _, step = rag_viya()
+    viya.failing.add(f"/modelRepository/models/{step['id']}")
+    viya.details[step["id"]] = None
+    run = run_pull(monkeypatch, tmp_path, viya)
+
+    assert [row["collection"] for row in run.catalog(role="rag")] == ["handbook_v1", "travel_rules_v1"]
+    assert [warning for warning in run.sas.of_type("WARNING") if "RAG" in warning] == [
+        f"The properties of the model RAG Retrieval - Travel Rules ({step['id']}) could not be read: RuntimeError: HTTP 500 for "
+        f"/modelRepository/models/{step['id']}"]
+
+
+def test_a_setup_file_that_names_no_collection_is_not_in_the_catalog(monkeypatch, tmp_path):
+    viya = FakeViya()
+    project = viya.add_project("Knowledge", ["RAG-Engineering"])
+    empty = viya.add_model(project, "No Store", {"rag-setup.json": {"version": 1}})
+    broken = viya.add_model(project, "Broken", {"rag-setup.json": "{ not json"})
+    run = run_pull(monkeypatch, tmp_path, viya)
+
+    assert [row["name"] for row in run.rows("rag_setups")] == ["No Store", "Broken"]
+    assert run.catalog(role="rag") == []
+    warnings = [warning for warning in run.sas.of_type("WARNING") if "No project" not in warning]
+    assert len(warnings) == 3 and warnings[0] == (f"The RAG setup No Store ({empty['id']}) names no collection and is left out of the model catalog, "
+                           "where no request could be linked to it. Its row of the RAG setups stays.")
+    assert warnings[1].startswith("The file rag-setup.json of the model Broken ") and warnings[2].startswith(f"The RAG setup Broken ({broken['id']}) names no collection")
+
+
+# ---------------------------------------------------------------------------
+# The CAS session of the code file
+# ---------------------------------------------------------------------------
+
+def test_the_code_file_starts_a_cas_session_only_where_none_is_connected_and_ends_only_that_one():
+    """Behind Log-Parser-Code.sas in one SAS session, 'cas mySess;' gave the WARNING 'A session
+    with the name MYSESS already exists', which SAS Job Execution reports as the error of the
+    job, and 'cas mySess terminate;' ended the session the librefs of the parser were bound to."""
+    program = code_file_program()
+    head = program[:program.index(core(program))]
+    tail = program[program.index(core(program)) + len(core(program)):]
+
+    assert ("%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;\n"
+            "    %let _gap_clean_cas_session = 1;\n"
+            "    cas mySess;\n"
+            "%end;\n"
+            "%else %do;\n"
+            "    %let _gap_clean_cas_session = 0;\n"
+            "%end;\n") in head
+    statements = [line.strip() for line in sas_code(program).split("\n")]
+    assert [line for line in statements if line.lower().startswith("cas ")] == ["cas mySess;", "cas mySess terminate;"]
+    assert "%if &_gap_clean_cas_session. %then %do;\n    cas mySess terminate;\n%end;" in tail
+    assert "_gap_clean_cas_session / nowarn;" in tail
+    # the check is the one of the step and of the log parser
+    check = "%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;"
+    assert check in step_program().split(core(step_program()))[0]
+    assert check in (INTEGRATIONS / "Logging-Monitoring" / "Log-Parser-Code.sas").read_text(encoding="utf-8")
