@@ -83,6 +83,8 @@
 %else %do;
     %let _gap_clean_cas_session = 0;
 %end;
+* 1 once the run has written an ERROR line and left an output table unwritten. The last statement of the program reads it;
+%let _gap_failed = 0;
 
 * gap core - from here to the line that ends the core the custom step LLM - Get All Prompts runs the same lines;
 * Get the Viya Host URL;
@@ -1712,6 +1714,7 @@ run; quit;
     %end;
     %else %do;
         %put ERROR: The table &_gap_out_caslib..&_gap_name. was not written.;
+        %let _gap_failed = 1;
     %end;
 %mend _gap_written;
 
@@ -1720,6 +1723,7 @@ run; quit;
     %if %length(&_gap_out_caslib.) EQ 0 %then %return;
     %if &_gap_rc. NE 0 %then %do;
         %put ERROR: The experiments could not be read from SAS Model Manager, the output tables in &_gap_out_caslib. were left as they are.;
+        %let _gap_failed = 1;
         %return;
     %end;
 
@@ -1933,6 +1937,10 @@ run; quit;
 %if &_gap_clean_cas_session. %then %do;
     cas mySess terminate;
 %end;
+* A pull that wrote an ERROR line and left an output table unwritten ends with the condition code of a failed job, so that SAS Job Execution, a schedule and a flow report it as failed and not as completed. A pull with a WARNING - a model that could not be read, a setup that is left out - ends as before. Nothing follows but the macro variables that are deleted;
+%if &_gap_failed. EQ 1 %then %do;
+    %let SYSCC = 1012;
+%end;
 %symdel _gap_tag _gap_rag_tag _gap_llm_project _gap_embedding_project _gap_decision_project
     _gap_out_caslib _gap_out_experiments _gap_out_optimizations _gap_out_rag_setups _gap_out_rag_runs
-    _gap_out_catalog _gap_clean_cas_session / nowarn;
+    _gap_out_catalog _gap_clean_cas_session _gap_failed / nowarn;

@@ -1201,7 +1201,7 @@ def test_the_step_takes_its_settings_from_its_controls():
     code = sas_code(program)
 
     # no setting of a control is overwritten: the step only fills in a field that was left empty
-    assert re.findall(r"^%let (_gap_\w+)", head, flags=re.MULTILINE) == ["_gap_out_caslib", "_gap_out_experiments"]
+    assert re.findall(r"^%let (_gap_\w+)", head, flags=re.MULTILINE) == ["_gap_failed", "_gap_out_caslib", "_gap_out_experiments"]
     assert "%let _gap_out_experiments = &_gap_output_name.;" in head
     assert "%let _gap_out_caslib=%sysfunc(getlcaslib(&_gap_output_lib));" in head
     defaults = dict(re.findall(r"^%_gap_setting\((_gap_\w+),\s*(.*?)\);$", head, flags=re.MULTILINE))
@@ -1211,7 +1211,9 @@ def test_the_step_takes_its_settings_from_its_controls():
         "_gap_out_rag_setups": "RAG_SETUPS", "_gap_out_rag_runs": "RAG_RUNS", "_gap_out_catalog": "MODEL_CATALOG"}
     # an output table that is no CAS table: the step says so and leaves the library empty, so nothing is read or written
     assert head.index("%let _gap_out_caslib =;") < head.index('%if "%upcase(&_gap_output_engine)"="CAS" %then %do;')
-    assert 'putlog "ERROR: The selected output library does not point to a CASlib";' in head
+    assert ("%else %do;\n   %put ERROR: The selected output library does not point to a CASlib, nothing was read or written.;\n"
+            "   %let _gap_failed = 1;\n%end;\n") in head
+    assert "abort" not in head.lower()
     assert "%if %length(&_gap_out_caslib.) EQ 0 %then %return;" in code
     # the step starts a CAS session only when there is none, and ends the one it started
     assert "%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;" in head
@@ -1542,7 +1544,7 @@ def test_the_code_file_starts_a_cas_session_only_where_none_is_connected_and_end
     statements = [line.strip() for line in sas_code(program).split("\n")]
     assert [line for line in statements if line.lower().startswith("cas ")] == ["cas mySess;", "cas mySess terminate;"]
     assert "%if &_gap_clean_cas_session. %then %do;\n    cas mySess terminate;\n%end;" in tail
-    assert "_gap_clean_cas_session / nowarn;" in tail
+    assert "_gap_clean_cas_session _gap_failed / nowarn;" in tail
     # the check is the one of the step and of the log parser
     check = "%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;"
     assert check in step_program().split(core(step_program()))[0]

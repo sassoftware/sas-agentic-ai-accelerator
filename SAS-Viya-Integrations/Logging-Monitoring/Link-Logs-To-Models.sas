@@ -158,6 +158,8 @@ run; quit;
 %let _lnk_unchanged = 0;
 * 1 when the Python code refused the tables and wrote the ERROR line itself;
 %let _lnk_refused = 0;
+* 1 when the new table could not be put in the place of the log table. The last statement of the program reads it;
+%let _lnk_failed = 0;
 
 proc python restart;
 submit;
@@ -1583,6 +1585,7 @@ run; quit;
             else do;
                 print (error) "The new table could not be created, the table &_lnk_log_caslib..&_lnk_log_table. was left as it is.";
                 tableWritten = False;
+                call symputx('_lnk_failed', 1);
             end;
 
             /* A table that has a saved file is saved again: the file would bring back the table without its links */
@@ -1624,5 +1627,9 @@ run; quit;
 %end;
 %sysmacdelete _lnk_handle_output_table;
 %sysmacdelete _lnk_ensure_loaded;
-%symdel _lnk_clean_cas_session _casSessionUUID _lnk_row_count _lnk_unchanged _lnk_refused _lnk_ready _lnk_log_exists _lnk_catalog_exists _lnk_runs_exists _lnk_log_scope _lnk_log_saved;
+* A run that wrote an ERROR line and no table ends with the condition code of a failed job, so that SAS Job Execution and a schedule report it as failed and not as completed: a table that was not found, a table the program refused and rows that could not be linked leave _lnk_row_count below 0, and a new table that could not be put in place sets _lnk_failed. A run with a WARNING and a run that had no row to link end as before. Nothing follows but the macro variables that are deleted;
+%if &_lnk_row_count. LT 0 or &_lnk_failed. EQ 1 %then %do;
+    %let SYSCC = 1012;
+%end;
+%symdel _lnk_clean_cas_session _casSessionUUID _lnk_row_count _lnk_unchanged _lnk_refused _lnk_failed _lnk_ready _lnk_log_exists _lnk_catalog_exists _lnk_runs_exists _lnk_log_scope _lnk_log_saved;
 %symdel _lnk_log_caslib _lnk_log_table _lnk_catalog_caslib _lnk_catalog_table _lnk_runs_caslib _lnk_runs_table _lnk_redo_all _lnk_min_literal _lnk_utc_offset _lnk_query_window _lnk_promote_table _lnk_save_table;

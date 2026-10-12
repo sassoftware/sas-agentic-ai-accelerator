@@ -21,6 +21,8 @@ libname casuser cas caslib='casuser';
 * Check if the file is located on the SAS Server, if so extract the path;
 * 1 until one of the two checks below refuses the run. A refusal writes its one ERROR line and sets this to 0: no log is read and nothing is written behind it. An ABORT statement put SAS into syntax check mode instead, where the program went on and wrote a further ERROR line about a log it had not read;
 %let _log_ready = 1;
+* 1 once the program has written an ERROR line for a table it did not write: the saved table that could not be loaded, the new table that could not be created. The last statement of the program reads it;
+%let _log_failed = 0;
 data _null_;
    locationType = scan("&_log_path.", 1, ':');
    if lowCase(locationType) ne 'sasserver' then do;
@@ -1363,6 +1365,7 @@ run; quit;
                 /* Starting a new table here would end in a save over the file that could not be loaded */
                 print (error) "The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded, nothing was appended and the saved file was left as it is.";
                 tableWritten = False;
+                call symputx('_log_failed', '1');
             %end;
             %else %do;
                 /* The new table is built beside the existing one, which is only dropped once its replacement exists */
@@ -1445,6 +1448,7 @@ run; quit;
                 else do;
                     %if &_log_target_scope. GE 1 %then %do;
                         print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is. The DATA step that appends ended with the return code &_log_append_syserr. and wrote " || (string) stagedRows || " rows, the table held " || (string) existingRows || " and the log " || (string) uploadedRows || " (-1 stands for a table that was not found).";
+                        call symputx('_log_failed', '1');
                         /* What the DATA step left behind is no table of anybody */
                         table.dropTable /
                             casLib = "&_log_target_table_lib.",
@@ -1453,6 +1457,7 @@ run; quit;
                     %end;
                     %else %do;
                         print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is.";
+                        call symputx('_log_failed', '1');
                     %end;
                     tableWritten = False;
                 end;
@@ -1491,5 +1496,9 @@ run; quit;
     cas llmLogMySess terminate;
 %end;
 %sysmacdelete _log_handle_output_table;
-%symdel _log_ready _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded _log_fixed_rename _log_fixed_assign _log_fixed_drop _log_append_syserr;
+* A run that wrote an ERROR line and no table ends with the condition code of a failed job, so that SAS Job Execution, a schedule and a flow report it as failed and not as completed: a refusal and a log that could not be parsed leave _log_row_count below 0, and a table that could not be written sets _log_failed. A run with a WARNING and a log without requests end as before. Nothing follows but the macro variables that are deleted;
+%if &_log_row_count. LT 0 or &_log_failed. EQ 1 %then %do;
+    %let SYSCC = 1012;
+%end;
+%symdel _log_ready _log_failed _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded _log_fixed_rename _log_fixed_assign _log_fixed_drop _log_append_syserr;
 %symdel _log_path _log_target_table_engine _log_target_table_lib _log_target_table_name _log_append_table _log_promote_table _log_save_table;
