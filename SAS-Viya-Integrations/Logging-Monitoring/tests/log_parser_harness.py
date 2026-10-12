@@ -47,9 +47,11 @@ def python_block(sas_program):
 class FakeSAS:
     """Stands in for the SAS object PROC PYTHON provides."""
 
-    def __init__(self, log_path):
-        # _log_row_count starts at -1, as the SAS program sets it before PROC PYTHON
+    def __init__(self, log_path, ready="1"):
+        # _log_row_count starts at -1, as the SAS program sets it before PROC PYTHON, and _log_ready is 1
+        # unless one of its checks refused the run
         self.macro_variables = {
+            "_log_ready": ready,
             "_log_path": str(log_path),
             "_casSessionUUID": "00000000-0000-0000-0000-000000000000",
             "_log_row_count": "-1",
@@ -100,11 +102,12 @@ class ParserRun:
         return self.namespace["conn"].uploads
 
 
-def run_parser(monkeypatch, log_path, python=None):
+def run_parser(monkeypatch, log_path, python=None, ready="1"):
     """Executes the parser's Python against a log file and returns the ParserRun.
 
     An exception of the parser is raised to the caller, after the FakeSAS object was
-    attached to it as `sas`, so a test can still read the macro variables.
+    attached to it as `sas`, so a test can still read the macro variables. ready is
+    what the SAS program has set _log_ready to: "0" when one of its checks refused the run.
     """
     fake_swat = types.ModuleType("swat")
     fake_swat.CAS = FakeCAS
@@ -114,7 +117,7 @@ def run_parser(monkeypatch, log_path, python=None):
     # The parser sets this one itself; registering it here lets pytest restore it
     monkeypatch.setenv("CAS_CLIENT_SSL_CA_LIST", "")
 
-    sas = FakeSAS(log_path)
+    sas = FakeSAS(log_path, ready)
     namespace = {"SAS": sas, "__name__": "log_parser"}
     source = python if python is not None else python_block(code_file_program())
     try:

@@ -295,8 +295,10 @@ def test_what_appending_found_is_handed_on_in_two_macro_variables(program):
     assert "%let _log_target_scope = 0;\n%let _log_target_unloaded = 0;\n" in before_the_macro
     assert "%let _log_fixed_rename = ;\n%let _log_fixed_assign = ;\n%let _log_fixed_drop = ;\n" in before_the_macro
     clean_up = program[program.index("* Clean up;"):]
-    assert ("%symdel _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded"
-            " _log_fixed_rename _log_fixed_assign _log_fixed_drop _log_append_syserr;") in clean_up
+    deleted = next(line for line in clean_up.split("\n") if line.startswith("%symdel ") and "_log_target_scope" in line)
+    for name in ("_log_clean_cas_session", "_casSessionUUID", "_log_row_count", "_log_target_scope", "_log_target_unloaded",
+                 "_log_fixed_rename", "_log_fixed_assign", "_log_fixed_drop", "_log_append_syserr"):
+        assert f" {name}" in deleted, name
     # Replace mode never asks: the lookup runs in append mode only
     macro = _output_macro(program)
     assert macro.index("%if &_log_append_table. %then %do;") < macro.index("call symputx('_log_target_scope'")
@@ -736,7 +738,7 @@ def test_about_tab_says_that_the_log_file_is_read_on_the_sas_server():
     # Any other location ends the step before it reads a line
     refused = step_program()[:step_program().index("* Ensure that the output table is in CAS;")]
     assert "if lowCase(locationType) ne 'sasserver' then do;" in refused
-    assert "abort 10;" in refused
+    assert "call symputx('_log_ready', '0');" in refused and "abort" not in refused.lower().replace("an abort statement", "")
 
 
 def test_about_tab_names_every_column_and_what_the_program_does_with_it(monkeypatch, tmp_path):
@@ -2537,8 +2539,58 @@ def test_message_for_a_table_that_is_not_in_cas_names_it_by_what_both_programs_s
     its output table control. &_log_target_table. is set by that control only."""
     program = program()
 
-    assert 'putlog "ERROR: The table &_log_target_table_lib..&_log_target_table_name. is not a CAS table.";' in program
+    assert ("%put ERROR: The table &_log_target_table_lib..&_log_target_table_name. is not a CAS table. For this step to run "
+            "the target table needs to be in CAS, no log was read.;") in program
     assert "&_log_target_table." not in program
+
+
+def _sas_code(program):
+    """A program without its Python."""
+    return program[:program.index("submit;")] + program[program.index("endsubmit;"):]
+
+
+@BOTH_PROGRAMS
+def test_refusal_ends_the_run_with_its_one_line_and_without_an_abort(program):
+    """With a table that is no CAS table the parser wrote its ERROR lines and stopped its DATA step with
+    ABORT. SAS went on in syntax check mode, PROC PYTHON did not run, and the program wrote a further
+    'ERROR: The log could not be parsed' about a log it had not read. Both refusals now set
+    _log_ready to 0: the Python reads nothing and the macro of the output table returns."""
+    program = program()
+    code = _sas_code(program)
+
+    statements = [statement.strip().lower() for statement in code.split(";")]
+    assert not [statement for statement in statements if statement.split(" ")[0] == "abort"]
+    checks = code[code.index("* Check if the file is located on the SAS Server"):code.index("* Get the caslib name of the libname;")]
+    assert checks.index("%let _log_ready = 1;") < checks.index("data _null_;")
+    # Each refusal is one ERROR line and sets the flag
+    assert checks.count("ERROR:") == 2 and checks.count("putLog 'ERROR:") == 1 and checks.count("%put ERROR:") == 1
+    assert "call symputx('_log_ready', '0');" in checks
+    engine = checks[checks.index("%if &_log_target_table_engine. NE CAS %then %do;"):]
+    assert [line.strip() for line in engine.split("\n")[1:4]] == [
+        "%put ERROR: The table &_log_target_table_lib..&_log_target_table_name. is not a CAS table. For this step to run the target "
+        "table needs to be in CAS, no log was read.;",
+        "%let _log_ready = 0;", "%end;"]
+
+    # The macro returns before it can say that a log could not be parsed, and before it drops a table of the upload
+    macro = _output_macro(program)
+    returns = macro.index("%if &_log_ready. NE 1 %then %return;")
+    assert returns < macro.index("%if &_log_row_count. GT 0 %then %do;")
+    assert returns < macro.index("%put ERROR: The log could not be parsed") and returns < macro.index("table.dropTable")
+    assert " _log_ready" in next(line for line in code.split("\n") if line.startswith("%symdel ") and "_log_row_count" in line)
+
+
+def test_python_of_a_run_that_was_refused_reads_no_log(monkeypatch, tmp_path):
+    """_log_ready is 0: the file is not opened - this one does not exist -, nothing is uploaded and nothing is
+    said. _log_row_count stays what the SAS program set it to."""
+    run = run_parser(monkeypatch, tmp_path / "not there.log", ready="0")
+
+    assert run.row_count == "-1"
+    assert run.uploads == [] and run.sas.messages == []
+    assert "df" not in run.namespace
+
+    # The same file with a run that was not refused is the failed parse the last ERROR line is for
+    with pytest.raises(FileNotFoundError):
+        run_parser(monkeypatch, tmp_path / "not there.log")
 
 
 def test_every_macro_variable_the_code_file_reads_is_one_it_sets():

@@ -19,11 +19,13 @@ libname casuser cas caslib='casuser';
 %let _log_save_table = 1;
 
 * Check if the file is located on the SAS Server, if so extract the path;
+* 1 until one of the two checks below refuses the run. A refusal writes its one ERROR line and sets this to 0: no log is read and nothing is written behind it. An ABORT statement put SAS into syntax check mode instead, where the program went on and wrote a further ERROR line about a log it had not read;
+%let _log_ready = 1;
 data _null_;
    locationType = scan("&_log_path.", 1, ':');
    if lowCase(locationType) ne 'sasserver' then do;
       putLog 'ERROR: For this step to run please ensure the the selected file is located on the SAS Server.';
-      abort 10;
+      call symputx('_log_ready', '0');
    end;
    else do;
         call symputx('_log_path', scan("&_log_path.", 2, ':', 'MO'));
@@ -32,11 +34,8 @@ run;
 
 * Ensure that the output table is in CAS;
 %if &_log_target_table_engine. NE CAS %then %do;
-    data _null_;
-        putlog "ERROR: The table &_log_target_table_lib..&_log_target_table_name. is not a CAS table.";
-        putlog 'ERROR: In order for this step to run your target table needs to be in CAS';
-        abort 62;
-    run;
+    %put ERROR: The table &_log_target_table_lib..&_log_target_table_name. is not a CAS table. For this step to run the target table needs to be in CAS, no log was read.;
+    %let _log_ready = 0;
 %end;
 
 * Get the caslib name of the libname;
@@ -1140,92 +1139,95 @@ def parse_log_file(file_path):
     df = pd.DataFrame(records, columns=COLUMNS)
     return df
 
-df = parse_log_file(SAS.symget('_log_path'))
+# A run that one of the checks of the SAS code refused reads no log: _log_row_count stays -1, and the macro
+# that handles the output table returns before it says anything
+if SAS.symget('_log_ready') == '1':
+    df = parse_log_file(SAS.symget('_log_path'))
 
-# Ensure the timestamp is suited for SAS
-df['timestamp'] = pd.to_datetime(df['timestamp'], format=TIMESTAMP_FORMAT)
-sas_epoch = datetime(1960, 1, 1)
-df['timestamp'] = (df['timestamp'] - sas_epoch).dt.total_seconds()
+    # Ensure the timestamp is suited for SAS
+    df['timestamp'] = pd.to_datetime(df['timestamp'], format=TIMESTAMP_FORMAT)
+    sas_epoch = datetime(1960, 1, 1)
+    df['timestamp'] = (df['timestamp'] - sas_epoch).dt.total_seconds()
 
-# Ensure that numeric values are correct
-numeric_columns = ['temperature', 'top_p', 'top_k', 'max_tokens', 'prompt_length', 'output_length', 'runtime', 'status_code', 'failed', 'answer_confidence', 'match_candidates']
-for col in numeric_columns:
-    df[col] = pd.to_numeric(df[col], errors='coerce')
+    # Ensure that numeric values are correct
+    numeric_columns = ['temperature', 'top_p', 'top_k', 'max_tokens', 'prompt_length', 'output_length', 'runtime', 'status_code', 'failed', 'answer_confidence', 'match_candidates']
+    for col in numeric_columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
 
-# Add column labels
-labels = {
-    'timestamp': 'The datetime of the request',
-    'model': 'The name of the model used',
-    'system_prompt': 'The system prompt used by the request. For a decision model the questions',
-    'user_prompt': 'The user prompt used by the request. For a decision model the state',
-    'temperature': 'The setting of temperature. Missing means it was not present in the request',
-    'top_p': 'The setting of top p. Missing means it was not present in the request',
-    'top_k': 'The setting of top k. Missing means it was not present in the request',
-    'max_tokens': 'The setting of max new tokens. Missing means it was not present in the request',
-    'prompt_length': 'The amount of input tokens in the request',
-    'output_length': 'The amount of output tokens in the request',
-    'runtime': 'The time for the model to generate the response in seconds',
-    'response': 'The response of the model to the users request. For a decision model the answers',
-    'kind': 'The kind of the request: llm, embedding or decision',
-    'status_code': 'The HTTP status code of the response. Missing means the log holds no response for the request',
-    'failed': '1 if the log holds an error or no response for the request, otherwise 0',
-    'error_text': 'The first error the log holds for the request, shortened',
-    'transaction_id': 'The transaction ID the container gave the request',
-    'request_id': 'The X-Request-Id header of the request',
-    'user_agent': 'The kind of client that sent the request: python-requests, browser, SAS or other',
-    'embedding_mode': 'The Embedding_Mode option of a call to an embedding model: query or document',
-    'project': 'The project input of a call to an embedding model',
-    'input_hash': 'The SHA-256 hash of the text an embedding model was given. The text itself is not kept',
-    'answer': 'The answer of a decision model to its first question',
-    'answer_confidence': 'The confidence of the answer of a decision model to its first question',
-    'options': 'The options of the request as they were sent, with keys replaced by REDACTED',
-    'rag_collection': 'The collection of the retrieval whose results the user prompt holds',
-    'rag_query_hash': 'The SHA-256 hash of the question of the retrieval whose results the user prompt holds',
-    'model_id': 'The Model Manager ID of the model that answered. Empty until the logs are linked',
-    'caller_model_id': 'The Model Manager ID of the prompt, decision template or RAG setup that sent the request. Empty until the logs are linked',
-    'caller_project_id': 'The Model Manager ID of the project of the caller. Empty until the logs are linked',
-    'caller_kind': 'The kind of the caller: prompt, decision or rag. Empty until the logs are linked',
-    'caller_name': 'The name of the caller. Empty until the logs are linked',
-    'experiment_run_id': 'The run of the experiment tracker the request belongs to. Empty until the logs are linked',
-    'rag_model_id': 'The Model Manager ID of the RAG setup whose collection the user prompt holds. Empty until the logs are linked',
-    'match_method': 'How the caller was found. Empty until the logs are linked',
-    'match_candidates': 'The number of callers the request fits. Missing until the logs are linked'
-}
-
-# Set the format to display the timestamp correctly
-sas_formats = {
-    'timestamp': 'DATETIME20.'
-}
-
-# The type is stated for every column, so it never depends on what a log happens to
-# hold (a log of embedding calls only has no prompt and no response at all, and the
-# columns of the link are empty in every log)
-vars_metadata = []
-for col in df.columns:
-    var = {
-        'name': col,
-        'label': labels.get(col, col),
-        'type': 'double' if col == 'timestamp' or col in numeric_columns else 'varchar'
+    # Add column labels
+    labels = {
+        'timestamp': 'The datetime of the request',
+        'model': 'The name of the model used',
+        'system_prompt': 'The system prompt used by the request. For a decision model the questions',
+        'user_prompt': 'The user prompt used by the request. For a decision model the state',
+        'temperature': 'The setting of temperature. Missing means it was not present in the request',
+        'top_p': 'The setting of top p. Missing means it was not present in the request',
+        'top_k': 'The setting of top k. Missing means it was not present in the request',
+        'max_tokens': 'The setting of max new tokens. Missing means it was not present in the request',
+        'prompt_length': 'The amount of input tokens in the request',
+        'output_length': 'The amount of output tokens in the request',
+        'runtime': 'The time for the model to generate the response in seconds',
+        'response': 'The response of the model to the users request. For a decision model the answers',
+        'kind': 'The kind of the request: llm, embedding or decision',
+        'status_code': 'The HTTP status code of the response. Missing means the log holds no response for the request',
+        'failed': '1 if the log holds an error or no response for the request, otherwise 0',
+        'error_text': 'The first error the log holds for the request, shortened',
+        'transaction_id': 'The transaction ID the container gave the request',
+        'request_id': 'The X-Request-Id header of the request',
+        'user_agent': 'The kind of client that sent the request: python-requests, browser, SAS or other',
+        'embedding_mode': 'The Embedding_Mode option of a call to an embedding model: query or document',
+        'project': 'The project input of a call to an embedding model',
+        'input_hash': 'The SHA-256 hash of the text an embedding model was given. The text itself is not kept',
+        'answer': 'The answer of a decision model to its first question',
+        'answer_confidence': 'The confidence of the answer of a decision model to its first question',
+        'options': 'The options of the request as they were sent, with keys replaced by REDACTED',
+        'rag_collection': 'The collection of the retrieval whose results the user prompt holds',
+        'rag_query_hash': 'The SHA-256 hash of the question of the retrieval whose results the user prompt holds',
+        'model_id': 'The Model Manager ID of the model that answered. Empty until the logs are linked',
+        'caller_model_id': 'The Model Manager ID of the prompt, decision template or RAG setup that sent the request. Empty until the logs are linked',
+        'caller_project_id': 'The Model Manager ID of the project of the caller. Empty until the logs are linked',
+        'caller_kind': 'The kind of the caller: prompt, decision or rag. Empty until the logs are linked',
+        'caller_name': 'The name of the caller. Empty until the logs are linked',
+        'experiment_run_id': 'The run of the experiment tracker the request belongs to. Empty until the logs are linked',
+        'rag_model_id': 'The Model Manager ID of the RAG setup whose collection the user prompt holds. Empty until the logs are linked',
+        'match_method': 'How the caller was found. Empty until the logs are linked',
+        'match_candidates': 'The number of callers the request fits. Missing until the logs are linked'
     }
-    if col in sas_formats:
-        var['format'] = sas_formats[col]
-    vars_metadata.append(var)
 
-# Upload to the casuser and then return to SAS. A log without requests has nothing
-# to upload and the output table stays as it is.
-if len(df) > 0:
-    tbl = conn.upload_frame(
-        df,
-        casout=dict(
-            name='_TEMP_LLM_LOGS',
-            caslib='CASUSER',
-            label='Extracted LLM Log Data',
-            replace=True
-        ),
-        importoptions={'vars': vars_metadata}
-    )
+    # Set the format to display the timestamp correctly
+    sas_formats = {
+        'timestamp': 'DATETIME20.'
+    }
 
-put_number('_log_row_count', len(df))
+    # The type is stated for every column, so it never depends on what a log happens to
+    # hold (a log of embedding calls only has no prompt and no response at all, and the
+    # columns of the link are empty in every log)
+    vars_metadata = []
+    for col in df.columns:
+        var = {
+            'name': col,
+            'label': labels.get(col, col),
+            'type': 'double' if col == 'timestamp' or col in numeric_columns else 'varchar'
+        }
+        if col in sas_formats:
+            var['format'] = sas_formats[col]
+        vars_metadata.append(var)
+
+    # Upload to the casuser and then return to SAS. A log without requests has nothing
+    # to upload and the output table stays as it is.
+    if len(df) > 0:
+        tbl = conn.upload_frame(
+            df,
+            casout=dict(
+                name='_TEMP_LLM_LOGS',
+                caslib='CASUSER',
+                label='Extracted LLM Log Data',
+                replace=True
+            ),
+            importoptions={'vars': vars_metadata}
+        )
+
+    put_number('_log_row_count', len(df))
 endsubmit;
 run; quit;
 
@@ -1234,6 +1236,9 @@ run; quit;
 
 * Append, Replace, Copy and/or promote to CAS;
 %macro _log_handle_output_table;
+    /* A run that was refused has said so in its one ERROR line: there is no log that could not be parsed and no table to drop */
+    %if &_log_ready. NE 1 %then %return;
+
     %if &_log_row_count. GT 0 %then %do;
         %if &_log_append_table. %then %do;
             proc cas;
@@ -1486,5 +1491,5 @@ run; quit;
     cas llmLogMySess terminate;
 %end;
 %sysmacdelete _log_handle_output_table;
-%symdel _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded _log_fixed_rename _log_fixed_assign _log_fixed_drop _log_append_syserr;
+%symdel _log_ready _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded _log_fixed_rename _log_fixed_assign _log_fixed_drop _log_append_syserr;
 %symdel _log_path _log_target_table_engine _log_target_table_lib _log_target_table_name _log_append_table _log_promote_table _log_save_table;
