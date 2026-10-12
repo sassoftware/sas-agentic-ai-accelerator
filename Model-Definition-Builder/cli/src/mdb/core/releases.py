@@ -55,6 +55,7 @@ means what it meant, so (release_rank, item_rank) still counts a change once.
 from __future__ import annotations
 
 import csv
+import io
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -417,13 +418,21 @@ def rows_from(releases: list[Release]) -> list[dict]:
     return rows
 
 
+def csv_bytes(rows: list[dict]) -> bytes:
+    """The table as the CSV file `write_csv` writes, in memory: UTF-8, every
+    value quoted, the csv module's own line ends. `mdb content-deploy` puts
+    these bytes into the content folder as ACCELERATOR_RELEASES.csv."""
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=COLUMNS, quoting=csv.QUOTE_ALL)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({column: row.get(column, "") for column in COLUMNS})
+    return buffer.getvalue().encode("utf-8")
+
+
 def write_csv(rows: list[dict], path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=COLUMNS, quoting=csv.QUOTE_ALL)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({column: row.get(column, "") for column in COLUMNS})
+    path.write_bytes(csv_bytes(rows))
     return path
 
 

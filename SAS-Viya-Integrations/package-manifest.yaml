@@ -1,0 +1,236 @@
+# Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# What ships in the accelerator's SAS Content folder - the one list.
+#
+# `mdb content-deploy` brings a content folder to this list from the checkout,
+# `mdb package-export` keeps exactly these objects of an export, and
+# `mdb package-check` compares the transfer package named below with it.
+# An object that is not listed here is not deployed, not exported and fails
+# the check when it is found in the package.
+#
+# One entry per object: `path` below the content root, `kind`, and where the
+# object comes from in the repository.
+#
+#   folder         only for an empty folder or a description - the folders of
+#                  the entries below are implied
+#   file           source: <repository path>      or
+#                  generated: release-info | release-table   (mdb writes it)
+#   step           source: <repository path of the .step file>; the last part
+#                  of the path is the name the .step file holds
+#   jobDefinition  code: <repository path of the program>   and / or
+#                  form: <repository path of an HTML file>
+#                  parameters: [{name, type, default, label}]   description
+#   report         no source (the package is its only one);
+#                  checks: {optionSet: prompt-builder, tables: [...]}
+#
+# A path with Showcases, Example, a folder named generated or a name that
+# starts with ZZ_VERIFY is refused: such content never ships.
+version: 1
+contentRoot: /SAS Agentic AI Accelerator
+package: SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json
+
+entries:
+  # ---- the release of this folder ------------------------------------------
+  - path: release.json
+    kind: file
+    generated: release-info
+
+  # ---- Prompt Builder -------------------------------------------------------
+  - path: Prompt Builder/Prompt Builder
+    kind: report
+    checks:
+      optionSet: prompt-builder
+      tables: [ACCELERATOR_RELEASES]
+  - path: Prompt Builder/SAS-LLM-Prompt-Builder-UI
+    kind: jobDefinition
+    form: LLM-Prompt-Builder/dist/index.html
+    description: Prompt Builder HTML code that is built from the SAS Agentic AI Accelerator repository.
+    parameters:
+      - {name: _contextName, type: character, default: SAS Studio compute context, label: Context Name}
+      - {name: _action, type: character, default: "prompts,form,execute"}
+  - path: Prompt Builder/Optimize-Prompt-DSPy
+    kind: jobDefinition
+    code: SAS-Viya-Integrations/Prompt-Optimization/Optimize-Prompt-DSPy.sas
+    description: Optimize a Prompt Builder prompt with DSPy
+    parameters:
+      - {name: _action, type: character, default: execute}
+  - path: Prompt Builder/Create-Optimization-Dataset.sas
+    kind: file
+    source: SAS-Viya-Integrations/Prompt-Optimization/Create-Optimization-Dataset.sas
+
+  # ---- RAG: steps, rag_core, jobs, the retrieval model template ---------------
+  - path: RAG/steps/RAG - List Documents.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - List Documents.step
+  - path: RAG/steps/RAG - Extract Text.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Extract Text.step
+  - path: RAG/steps/RAG - Chunk Documents.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Chunk Documents.step
+  - path: RAG/steps/RAG - Enrich Chunks.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Enrich Chunks.step
+  - path: RAG/steps/RAG - Embed Chunks.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Embed Chunks.step
+  - path: RAG/steps/RAG - Load Vector Store.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Load Vector Store.step
+  - path: RAG/steps/RAG - Retrieve Context.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Retrieve Context.step
+  - path: RAG/steps/RAG - Register Setup.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Register Setup.step
+  - path: RAG/steps/RAG - Purge Documents.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Purge Documents.step
+
+  - path: RAG/rag_core/__init__.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/__init__.py
+  - path: RAG/rag_core/chunkers.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/chunkers.py
+  - path: RAG/rag_core/credentials.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/credentials.py
+  - path: RAG/rag_core/enrich.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/enrich.py
+  - path: RAG/rag_core/env.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/env.py
+  - path: RAG/rag_core/filters.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/filters.py
+  - path: RAG/rag_core/history.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/history.py
+  - path: RAG/rag_core/manifest.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/manifest.py
+  - path: RAG/rag_core/pricing.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/pricing.py
+  - path: RAG/rag_core/providers.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/providers.py
+  - path: RAG/rag_core/registration.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/registration.py
+  - path: RAG/rag_core/schema.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/schema.py
+  - path: RAG/rag_core/scr.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/scr.py
+  - path: RAG/rag_core/sources.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/sources.py
+  - path: RAG/rag_core/steps.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/steps.py
+  - path: RAG/rag_core/tokens.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/tokens.py
+  - path: RAG/rag_core/adapters/__init__.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/adapters/__init__.py
+  - path: RAG/rag_core/adapters/base.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/adapters/base.py
+  - path: RAG/rag_core/adapters/pgvector.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/adapters/pgvector.py
+  - path: RAG/rag_core/adapters/singlestore.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/adapters/singlestore.py
+  - path: RAG/rag_core/extractors/__init__.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/extractors/__init__.py
+  - path: RAG/rag_core/extractors/base.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/extractors/base.py
+  - path: RAG/rag_core/extractors/builtin.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/extractors/builtin.py
+
+  - path: RAG/jobs/Ingest-Documents.sas
+    kind: file
+    source: SAS-Viya-Integrations/RAG-Ingestion/Ingest-Documents.sas
+  - path: RAG/jobs/Test-Retrieval.sas
+    kind: file
+    source: SAS-Viya-Integrations/RAG-Ingestion/Test-Retrieval.sas
+  - path: RAG/models/retrieve_context.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/retrieve_context.py
+
+  # ---- Logging and Monitoring -------------------------------------------------
+  - path: Logging and Monitoring/LLM Usage Report
+    kind: report
+    checks:
+      tables: [LLM_LOGS, PROMPT_EXPERIMENTS, LLM_FACT_SHEET, EMBEDDING_FACT_SHEET]
+  - path: Logging and Monitoring/LLM - Log Parser.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/LLM - Log Parser.step
+  - path: Logging and Monitoring/LLM - Get All Prompts.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/LLM - Get All Prompts.step
+  - path: Logging and Monitoring/Log-Parser-Code.sas
+    kind: file
+    source: SAS-Viya-Integrations/Logging-Monitoring/Log-Parser-Code.sas
+  - path: Logging and Monitoring/Get-All-Prompts.sas
+    kind: file
+    source: SAS-Viya-Integrations/Logging-Monitoring/Get-All-Prompts.sas
+  - path: Logging and Monitoring/Link-Logs-To-Models.sas
+    kind: file
+    source: SAS-Viya-Integrations/Logging-Monitoring/Link-Logs-To-Models.sas
+  - path: Logging and Monitoring/Build-RAG-Cost-View.sas
+    kind: file
+    source: SAS-Viya-Integrations/Logging-Monitoring/Build-RAG-Cost-View.sas
+  - path: Logging and Monitoring/Load-Fact-Sheets.sas
+    kind: file
+    source: SAS-Viya-Integrations/Logging-Monitoring/Load-Fact-Sheets.sas
+
+  # ---- Data: what the reports' tables are loaded from --------------------------
+  - path: Data/llm_fact_sheet.csv
+    kind: file
+    source: LLM-Definitions/llm_fact_sheet.csv
+  - path: Data/embedding_fact_sheet.csv
+    kind: file
+    source: Embedding-Definitions/embedding_fact_sheet.csv
+  - path: Data/decision_fact_sheet.csv
+    kind: file
+    source: Decision-Definitions/decision_fact_sheet.csv
+  - path: Data/ACCELERATOR_RELEASES.csv
+    kind: file
+    generated: release-table
+
+  # ---- Custom Steps -----------------------------------------------------------
+  - path: Custom Steps/LLM - List Available LLMs.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/LLM - List Available LLMs.step
+  - path: Custom Steps/LLM - Get Options.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/LLM - Get Options.step
+  - path: Custom Steps/LLM - Create LLM Call.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/LLM - Create LLM Call.step
+  - path: Custom Steps/LLM - Get Prompt Experiments.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/LLM - Get Prompt Experiments.step
+  - path: Custom Steps/MM - Get All Repositories.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/MM - Get All Repositories.step
+  - path: Custom Steps/MM - Get Projects in Repository.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/MM - Get Projects in Repository.step
+  - path: Custom Steps/MM - Get Models in Project.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/MM - Get Models in Project.step
+  - path: Custom Steps/MM - Get Model Information.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/MM - Get Model Information.step
