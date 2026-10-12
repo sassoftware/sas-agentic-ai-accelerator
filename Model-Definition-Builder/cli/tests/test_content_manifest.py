@@ -380,11 +380,24 @@ def test_every_file_of_the_rag_runtime_is_listed(shipped):
     assert sorted(_listed(shipped, "file", "RAG/models")) == sorted(p.name for p in models.glob("*.py"))
 
 
+#: Steps of Custom-Steps/ that are in the repository and do not ship, each with
+#: the reason. A step that is neither listed in the manifest nor named here
+#: fails the test below, so leaving one out is a decision somebody wrote down.
+STEPS_NOT_SHIPPED = {
+    "LLM - Get Prompt Experiments.step":
+        "reads the Prompt-Experiment-Tracker.json of one model as the step of August 2024 did; "
+        "LLM - Get All Prompts is the step that pulls the experiments",
+}
+
+
 def test_every_custom_step_of_the_repository_is_listed_once(shipped):
     steps = REPO_ROOT / "SAS-Viya-Integrations" / "Custom-Steps"
     in_repo = sorted(p.name for p in steps.glob("*.step"))
     listed = sorted(e.name for e in shipped.objects() if e.kind == "step")
-    assert listed == in_repo
+    assert set(STEPS_NOT_SHIPPED) <= set(in_repo), "a step named as not shipped is not in the repository"
+    assert not set(STEPS_NOT_SHIPPED) & set(listed), "a step is listed and named as not shipped"
+    assert listed == [name for name in in_repo if name not in STEPS_NOT_SHIPPED]
+    in_repo = listed
     assert sorted(_listed(shipped, "step", "RAG/steps")) == [name for name in in_repo if name.startswith("RAG - ")]
     # the Builder looks the RAG steps up by name under <content root>/RAG/steps
     assert all(e.path.startswith(("RAG/steps/", "Logging and Monitoring/", "Custom Steps/"))
@@ -404,6 +417,29 @@ def test_the_paths_other_parts_of_the_product_read_are_the_listed_ones(shipped):
         assert shipped.find(path, "file") is not None, path
     assert shipped.find("Data/ACCELERATOR_RELEASES.csv", "file").generated == "release-table"
     assert shipped.find("release.json", "file").generated == "release-info"
+    # Load-Accelerator-Tables includes Load-Fact-Sheets.sas from this folder
+    assert shipped.find("Logging and Monitoring/Load-Fact-Sheets.sas", "file") is not None
+
+
+def test_the_two_setup_jobs_are_listed_with_the_parameters_their_programs_read(shipped):
+    """Start Here sits at the root of the content folder and Load-Accelerator-Tables
+    beside the files it loads. A parameter of the entry that the program does
+    not read, or a setting of the program that is no parameter, is a typo
+    nobody would see before the job runs."""
+    start = shipped.find("Start Here", "jobDefinition")
+    load = shipped.find("Data/Load-Accelerator-Tables", "jobDefinition")
+    assert start.code == "SAS-Viya-Integrations/Setup/Start-Here.sas" and start.form is None
+    assert load.code == "SAS-Viya-Integrations/Setup/Load-Accelerator-Tables.sas" and load.form is None
+    defaults = {p["name"]: p["default"] for p in start.parameters}
+    # without this SAS Job Execution opens ODS on _webout and the page is not the answer
+    assert defaults["_action"] == "execute" and defaults["_output_type"] == "html"
+    for entry, macro in ((start, "_sh_default"), (load, "_lat_default")):
+        program = shipped.source_path(entry.code).read_text(encoding="utf-8")
+        in_program = dict(re.findall(r"^%" + macro + r"\((\w+),\s*(.*?)\);\s*$", program, flags=re.M))
+        assert in_program, f"{entry.path}: no %{macro}(name, value) line found"
+        listed = {p["name"]: p["default"] for p in entry.parameters if not p["name"].startswith("_")}
+        assert listed == in_program, entry.path
+        assert listed["contentRoot"] == shipped.content_root
     reports = {e.path: e.checks for e in shipped.objects() if e.kind == "report"}
     assert reports == {
         "Prompt Builder/Prompt Builder": {"optionSet": "prompt-builder", "tables": ["ACCELERATOR_RELEASES"]},

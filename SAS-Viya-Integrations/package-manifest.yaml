@@ -31,7 +31,28 @@ contentRoot: /SAS Agentic AI Accelerator
 package: SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json
 
 entries:
-  # ---- the release of this folder ------------------------------------------
+  # ---- the first page, and the release of this folder ------------------------
+  # Start Here writes one HTML page: the links and the installation check. It
+  # reads release.json of the content root, so the page needs no checkout.
+  # _output_type = html is what makes SAS Job Execution show what the program
+  # writes to _webout as a page.
+  - path: Start Here
+    kind: jobDefinition
+    code: SAS-Viya-Integrations/Setup/Start-Here.sas
+    description: Start page of the SAS Agentic AI Accelerator - links to the reports and the guides, and an installation check. Reads only.
+    parameters:
+      - {name: _action, type: character, default: execute}
+      - {name: _output_type, type: character, default: html}
+      - {name: contentRoot, type: character, default: /SAS Agentic AI Accelerator, label: Content root}
+      - {name: caslib, type: character, default: Public, label: CAS library of the report tables}
+      - {name: casServer, type: character, default: cas-shared-default, label: CAS server}
+      - {name: credentialDomain, type: character, default: agentic-ai-keys, label: Credential domain}
+      - {name: repositoryName, type: character, default: LLM Repository, label: Model Manager repository}
+      - {name: llmProject, type: character, default: LLM Model Project, label: Project of the LLM definitions}
+      - {name: embeddingProject, type: character, default: Embedding Model Project, label: Project of the embedding model definitions}
+      - {name: decisionProject, type: character, default: Decision Model Project, label: Project of the decision model definitions}
+      - {name: computeContexts, type: character, default: "SAS Studio compute context|SAS Job Execution compute context", label: Compute contexts to look for}
+      - {name: guideUrl, type: character, default: "https://sassoftware.github.io/sas-agentic-ai-accelerator", label: Address of the guides}
   - path: release.json
     kind: file
     generated: release-info
@@ -208,8 +229,24 @@ entries:
   - path: Data/ACCELERATOR_RELEASES.csv
     kind: file
     generated: release-table
+  # Loads the four files above into CAS; it includes Load-Fact-Sheets.sas from
+  # the folder Logging and Monitoring of the content root.
+  - path: Data/Load-Accelerator-Tables
+    kind: jobDefinition
+    code: SAS-Viya-Integrations/Setup/Load-Accelerator-Tables.sas
+    description: Loads the release table and the three fact sheets from the Data folder into CAS (promoted and saved).
+    parameters:
+      - {name: _action, type: character, default: execute}
+      - {name: contentRoot, type: character, default: /SAS Agentic AI Accelerator, label: Content root}
+      - {name: caslib, type: character, default: Public, label: CAS library}
+      - {name: releaseTable, type: character, default: ACCELERATOR_RELEASES, label: Release table}
 
   # ---- Custom Steps -----------------------------------------------------------
+  # Not listed, and so not shipped: `LLM - Get Prompt Experiments.step`, the
+  # step of August 2024 that reads the Prompt-Experiment-Tracker.json of one
+  # model. `LLM - Get All Prompts` (Logging and Monitoring) is the step that
+  # pulls the experiments. The file stays in Custom-Steps/ of the repository;
+  # tests/test_content_manifest.py names it as the one step that is not listed.
   - path: Custom Steps/LLM - List Available LLMs.step
     kind: step
     source: SAS-Viya-Integrations/Custom-Steps/LLM - List Available LLMs.step
@@ -219,9 +256,6 @@ entries:
   - path: Custom Steps/LLM - Create LLM Call.step
     kind: step
     source: SAS-Viya-Integrations/Custom-Steps/LLM - Create LLM Call.step
-  - path: Custom Steps/LLM - Get Prompt Experiments.step
-    kind: step
-    source: SAS-Viya-Integrations/Custom-Steps/LLM - Get Prompt Experiments.step
   - path: Custom Steps/MM - Get All Repositories.step
     kind: step
     source: SAS-Viya-Integrations/Custom-Steps/MM - Get All Repositories.step
