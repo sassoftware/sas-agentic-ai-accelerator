@@ -1,5 +1,7 @@
 """What the Python of the three programs hands to SAS: Log-Parser-Code.sas, Get-All-Prompts.sas and
-Link-Logs-To-Models.sas, and the two custom steps that run the first two.
+Link-Logs-To-Models.sas, and the two custom steps that run the first two. Start-Here.sas of the
+folder Setup, the page with the installation check, carries the same function and is held to the
+same tests.
 
 SAS.logMessage writes its text into a statement of the macro language and SAS.symput into an
 assignment. There a semicolon ends the statement and the rest runs as code, a percent sign or an
@@ -9,6 +11,8 @@ the first tests read the call sites from the text of the programs, the others se
 through each program that would have ended up as code.
 """
 import ast
+import sys
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -17,13 +21,18 @@ import get_all_prompts_harness as pull
 import link_logs_harness as link
 import log_parser_harness as parser
 
-# The Python of the three programs and of the two steps
+# The harness of Start-Here.sas lives beside that program
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Setup" / "tests"))
+import start_here_harness as page  # noqa: E402
+
+# The Python of the three programs and of the two steps, and of the page
 SOURCES = {
     "Log-Parser-Code.sas": lambda: parser.python_block(parser.code_file_program()),
     "LLM - Log Parser.step": lambda: parser.python_block(parser.step_program()),
     "Get-All-Prompts.sas": lambda: pull.python_block(pull.code_file_program()),
     "LLM - Get All Prompts.step": lambda: pull.python_block(pull.step_program()),
     "Link-Logs-To-Models.sas": lambda: link.python_block(link.code_file_program()),
+    "Start-Here.sas": lambda: page.python_block(),
 }
 
 # What of the SAS object hands a text to SAS, with the places of the arguments that are that text,
@@ -135,7 +144,7 @@ def test_code_that_python_writes_for_cas_holds_names_as_names(name):
     (("\nimport ", "\nwrite_log(SAS)\nimport "), "the SAS object is handed on as it is"),
 ], ids=["a message as it is", "a message that is cut behind the function", "a message by its name", "a name of a macro variable as it is",
         "a value of a macro variable as it is", "another way to SAS", "the way to the log under another name", "the SAS object itself"])
-@pytest.mark.parametrize("name", ["Log-Parser-Code.sas", "Get-All-Prompts.sas", "Link-Logs-To-Models.sas"])
+@pytest.mark.parametrize("name", ["Log-Parser-Code.sas", "Get-All-Prompts.sas", "Link-Logs-To-Models.sas", "Start-Here.sas"])
 def test_a_call_that_bypasses_the_escaping_function_is_found(name, change, reason):
     """The test above holds only as long as it finds what it looks for: each of these changes to a program is one."""
     source = SOURCES[name]()
@@ -205,7 +214,7 @@ def test_names_are_hostile(hostile):
     assert breaks_a_statement(hostile) != []
 
 
-@pytest.mark.parametrize("name", ["Log-Parser-Code.sas", "Get-All-Prompts.sas", "Link-Logs-To-Models.sas"])
+@pytest.mark.parametrize("name", ["Log-Parser-Code.sas", "Get-All-Prompts.sas", "Link-Logs-To-Models.sas", "Start-Here.sas"])
 @pytest.mark.parametrize("hostile", list(HOSTILE.values()), ids=list(HOSTILE))
 def test_the_escaping_function_of_every_program_makes_a_hostile_name_safe(name, hostile):
     namespace = {}
@@ -357,3 +366,28 @@ def test_parser_message_for_missing_packages_is_text(monkeypatch, tmp_path):
     defined = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
     first_statement_that_can_fail = next(index for index, node in enumerate(tree.body) if isinstance(node, ast.Try))
     assert {"sas_safe", "say"} <= {node.name for node in tree.body[:first_statement_that_can_fail] if isinstance(node, ast.FunctionDef)}, defined[:5]
+
+
+@pytest.mark.parametrize("hostile", list(HOSTILE.values()), ids=list(HOSTILE))
+def test_start_here_hands_sas_text_whatever_the_system_and_the_parameters_hold(monkeypatch, tmp_path, hostile):
+    """The page of Start-Here.sas holds names of the system and of the parameters of its job. None of them
+    is handed to SAS: the one message holds the numbers of the checks, the one macro variable is 0 once
+    the page is written. A system and parameters full of hostile names leave both as they are."""
+    site = page.Site()
+    site.root = "/" + " ".join(hostile.split())[:200]
+    site.release["version"] = hostile
+    site.release["entries"].append({"path": "Data/" + hostile.replace("/", " "), "kind": hostile})
+    site.destinations.append({"name": hostile, "destinationType": hostile})
+    site.contexts.append({"name": hostile})
+    site.cas_servers.append(hostile)
+    site.options.update(computeContext=hostile, credentialDomain=hostile, modelRepositoryID=hostile)
+    settings = {name: hostile for name in page.DEFAULT_SETTINGS}
+    settings["contentRoot"] = site.root
+    run = page.run(monkeypatch, tmp_path, site, settings)
+
+    assert unsafe_messages(run.sas.messages) == []
+    assert [kind for kind, _ in run.sas.messages] == ["NOTE"] and run.sas.messages[0][1].startswith("Start Here: the page holds ")
+    handed = {name: value for name, value in run.sas.macro_variables.items() if name not in settings and name not in ("_sh_viyaHost", "_sh_work")}
+    assert handed == {"_sh_rc": "0"}
+    # the names are on the page, where they are text of another kind
+    assert run.page.count("<script") == 0 and (tmp_path / "start_here.html").is_file()
