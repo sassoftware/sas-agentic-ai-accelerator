@@ -1473,6 +1473,104 @@ def _package_objects(package: dict) -> list[tuple[str, str]]:
     return package_objects(package)
 
 
+def _content_manifest(ctx: "Context", check_sources: bool = True):
+    """The content manifest of the checkout. A manifest that cannot be used
+    ends the command with exit code 2 and one line per defect: nothing is
+    deployed, exported or checked against a list that is wrong."""
+    from .core.content import ManifestError, load_manifest
+    try:
+        return load_manifest(ctx.repo, check_sources=check_sources)
+    except ManifestError as exc:
+        console.print(f"[red]The content manifest cannot be used[/red] ({exc.where}):", highlight=False)
+        for problem in exc.problems:
+            console.print(f"  {problem}", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(2)
+
+
+@app.command("content-deploy")
+def content_deploy(
+    content_root: Optional[str] = typer.Option(
+        None, "--content-root",
+        help="SAS Content folder to bring to the state of the checkout (default: the content root the "
+             "manifest names, /SAS Agentic AI Accelerator)."),
+    only: Optional[list[str]] = typer.Option(
+        None, "--only",
+        help="Deploy only the entries at or below this path of the manifest (repeatable), e.g. --only RAG "
+             "for the RAG runtime. Default: every entry."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List what would change; write nothing."),
+):
+    """Bring a SAS Content folder to the state of this checkout, from the
+    content manifest (SAS-Viya-Integrations/package-manifest.yaml).
+
+    Entry by entry: a folder is created when it is missing; a file is
+    uploaded, and replaced when its bytes differ; a custom step is registered,
+    and an existing one is updated in place so that it keeps its id and the
+    flows that use it keep working; a job definition is created, or updated in
+    place with its program, its form and its parameters. Two files are written
+    by mdb itself: the release table as CSV, exactly as `mdb load-releases
+    --csv` writes it, and release.json - the release, the commit of the
+    checkout and its date, and every entry with its kind and content hash.
+
+    One line per entry says what happened: equal, updated, created - or
+    FAILED with the reason, after which the run goes on with the next entry
+    and ends with exit code 1. A report is not deployed: it reaches a site
+    with the transfer package, and its line says whether it is on the site.
+    A file that differs is replaced - its old copy is deleted, the new one
+    uploaded - and nothing else is removed. Nothing that is not in the
+    manifest is touched; what else sits in the folders of the manifest is
+    listed at the end.
+
+    This is how the folder the package is exported from gets its content, and
+    how a site takes a fix from a checkout without waiting for a package.
+    With --only a part of the folder is deployed and the rest is not looked
+    at: `--only RAG` is what the deploy-rag-content scripts run.
+    """
+    from .viya.content import CREATED, EQUAL, NOT_DEPLOYED, UPDATED, DeployError, deploy, selected
+    ctx = Context()
+    manifest = _content_manifest(ctx)
+    root = (content_root or manifest.content_root).rstrip("/")
+    if not root.startswith("/"):
+        console.print("[red]--content-root must be a SAS Content path, starting with a slash.[/red]")
+        raise typer.Exit(2)
+    only = [path.strip("/") for path in only or [] if path and path.strip("/")]
+    for path in only:
+        if not selected(manifest, [path])[1] and manifest.find(path, "folder") is None:
+            console.print(f"--only {path}: the manifest lists nothing at or below that path.", style="red",
+                          markup=False, highlight=False)
+            raise typer.Exit(2)
+
+    def emit(outcome) -> None:
+        note = f"  ({outcome.note})" if outcome.note else ""
+        console.print(f"  {outcome.status:<12} {outcome.entry.kind:<13} {outcome.entry.path}{note}",
+                      markup=False, highlight=False, soft_wrap=True)
+
+    with _viya_session() as session:
+        console.print(f"{'Dry run - nothing is written. What a run would do to' if dry_run else 'Deploying to'} "
+                      f"{root}" + (f" (only {', '.join(only)})" if only else "") + ":", markup=False, highlight=False)
+        try:
+            result = deploy(session, manifest, root, dry_run, emit, only=only)
+        except DeployError as exc:
+            console.print(str(exc), style="red", markup=False, highlight=False)
+            raise typer.Exit(1)
+    if result.unlisted:
+        console.print(f"\nNot in the manifest and left alone ({len(result.unlisted)}) - not deployed, and "
+                      "`mdb package-export` leaves them out:", highlight=False)
+        for line in result.unlisted:
+            console.print(f"  {line}", markup=False, highlight=False, soft_wrap=True)
+    counts = ", ".join(f"{result.count(status)} {status}" for status in (EQUAL, UPDATED, CREATED, NOT_DEPLOYED)
+                       if result.count(status))
+    console.print(f"\n{len(result.outcomes)} entries: {counts or 'nothing done'}"
+                  + (f", {len(result.failed)} FAILED" if result.failed else "") + ".", highlight=False)
+    if result.failed:
+        console.print("[red]Not every entry reached the folder.[/red] Fix what is reported above and run the "
+                      "command again: what is equal by then is left as it is.")
+        raise typer.Exit(1)
+    if dry_run:
+        console.print("Nothing was written.")
+    else:
+        console.print("[green]Done.[/green]")
+
+
 @app.command("package-export")
 def package_export(
     folder: str = typer.Option(
