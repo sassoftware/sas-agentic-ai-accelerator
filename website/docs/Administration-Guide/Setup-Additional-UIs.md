@@ -16,52 +16,168 @@ One single-file build, one Job Execution definition and one Data-Driven Content 
 The Prompt Builder is shipped as a **standalone application** in the [`LLM-Prompt-Builder`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/LLM-Prompt-Builder) directory of this repository. It has no dependency on the SAS Portal Framework for SAS Viya — it is a single self-contained HTML file that you embed directly in a SAS Visual Analytics report through SAS Job Execution. Up to release 2.2 the RAG Builder was a second application with a build, a job definition and a report of its own; all three are retired, and a site that still has them follows the upgrade steps of the 2.3.0 [changelog](https://github.com/sassoftware/sas-agentic-ai-accelerator/blob/main/CHANGELOG.md).
 :::
 
-## Shortcut: import the transfer package (optional)
+## Install or upgrade with the transfer package {#the-transfer-package}
 
-Rather than building the app and wiring it up by hand (steps 1–2), you can import the [`SAS-Agentic-AI-Accelerator-Prompt-Builder.json`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json) transfer package. It bundles the whole UI ready to run — the **Prompt Builder** folder, the **SAS Job Execution** definition that serves the single-file app, the optimization job and the **Visual Analytics report** that hosts the object. Import it and you can skip straight to [step 3](#3-provide-the-api-keys-via-the-credential-domain).
+The content folder `/SAS Agentic AI Accelerator` ships as **one transfer package**, `SAS-Agentic-AI-Accelerator.json` in the folder [`SAS-Viya-Integrations`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations) of the repository. It holds the Prompt Builder ready to run — the **Visual Analytics report** that hosts the object, the **SAS Job Execution** definition that serves the single-file app and the optimization job — and with it the RAG runtime, the logging programs with their two custom steps and the usage report, the files the tables of the reports are loaded from, and a first page with an installation check. Importing it takes the place of building the app and wiring it up by hand (steps 1–2 below).
 
-The package ships the report's Prompt Builder object pointing at a **placeholder host, `https://your-sas-viya-host`** — point it at your own environment before or after import.
+:::warning The package file of release 2.3.0 is not in the repository yet
+The package is exported from the content folder of the maintainers' system **after** the commit that describes it on this page. Until the file is in `SAS-Viya-Integrations/`:
 
-A second package holds the **RAG runtime** — the RAG custom steps, `rag_core`, the ingestion and retrieval-test jobs and the retrieval model template, and no UI. It is only needed where RAG setups are built; [RAG Ingestion and Retrieval](./RAG-Ingestion-and-Retrieval.md#what-gets-deployed) describes it.
+- `mdb builders-import` says that the checkout holds no package and ends with exit code 2;
+- `mdb package-check` says the same and ends with exit code 1;
+- seven tests of `mdb` are skipped with the reason *the package is exported from the owner's system after this round* — the six that read the shipped package and the one that wants the four packages of earlier releases gone;
+- those four packages are still in the repository. They are older than this page and are not what it describes.
 
-### Option A — `mdb builders-import` (recommended)
+The commands of this section were tested with a SAS Viya system that is made up, and with packages made from the list of what ships. They have **not run against SAS Viya**.
+:::
 
-With `mdb` installed and your `.env` filled in ([Setup SAS Model Manager](./Setup-SAS-Model-Manager.md#envSetup)), one command imports the Prompt Builder package and then the RAG runtime package, loads the release table the report binds to, points the Data-Driven Content URL and the host defaults at your server, and configures the object - from a file saved with `mdb options-save` when you pass one, else with the repository, the LLM and embedding projects, the SCR endpoint and the deployment type it discovers:
+### First install and upgrade {#first-install-and-upgrade}
+
+With `mdb` installed and your `.env` filled in ([Setup SAS Model Manager](./Setup-SAS-Model-Manager.md#envSetup)):
 
 ```bash
-mdb builders-import --dry-run                     # what would happen
-mdb builders-import                               # first install
-mdb builders-import --options builder-options.json   # upgrade: keep this site's options
+# first install
+mdb setup               # the repository, the projects, the release table, the authorization commands of the repository
+mdb builders-import     # the content folder
+
+# upgrade
+mdb builders-import
 ```
 
-Name package files to import only one (`mdb builders-import SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json`). Afterwards continue at [step 4](#4-sas-environment-manager-configuration) (the Content Security Policy) and, for a first install, set the optional object options in [step 5](#5-add-the-object-to-a-visual-analytics-report). Without `--options` the three switches keep the package's defaults, so RAG and prompt optimization are off until you enable them there.
+Then open [Start Here](#start-here) and go through the lines of its installation check, run the commands of [Access to the content folder](#access-to-the-content-folder), and — on a first install — continue at [step 3](#3-provide-the-api-keys-via-the-credential-domain) (the credential domain), [step 4](#4-sas-environment-manager-configuration) (the Content Security Policy) and the optional object options of [step 5](#5-add-the-object-to-a-visual-analytics-report).
 
-### Option B — SAS Environment Manager
+`mdb builders-import` does in one run what an import otherwise leaves to hand work afterwards:
 
-Import the JSON from **SAS Environment Manager → Content → Import**. Then correct the host in [step 5](#5-add-the-object-to-a-visual-analytics-report): open the report and update the Data-Driven Content object's base URL to your SAS Viya server.
+1. It loads the release table the Prompt Builder report binds to (`--no-releases` skips that).
+2. It reads the options of the Prompt Builder report that is on the site — and of the retired report `RAG Builder`, while that still exists — and keeps them in a file `builder-options-captured-<time>.json` in the current directory. Importing a report replaces the options an administrator set on the object, see [Preserving builder options across a report import](#preserving-builder-options-across-a-report-import); this is what makes an upgrade one command.
+3. It uploads the package and rewrites its **import mapping** before the job starts, so that nothing is edited after the fact: the data source of the Prompt Builder report is retargeted from the shipped `Public.ACCELERATOR_RELEASES` to `SAS_CAS_LIBRARY.SAS_RELEASES_TABLE` on your CAS server, and the placeholder host `https://your-sas-viya-host` in the Data-Driven Content URL becomes `SAS_VIYA_URL`. With `--report-caslib <library>` the other tables the reports read — `LLM_LOGS`, `LLM_FACT_SHEET`, `EMBEDDING_FACT_SHEET`, `PROMPT_EXPERIMENTS` — are pointed at the tables of the same name in that library; without it they stay bound to `Public`.
+4. It imports, waits for the job and names the failing task if there is one.
+5. It writes the options back: the ones it read; or, with `--options <file>`, a file saved with `mdb options-save` — the way to change a value before the import; or, on a site that has no Prompt Builder report yet, the values `mdb setup` discovers — the repository, the LLM and the embedding project ids, the SCR endpoint and the deployment type. On such a first install the three switches keep the defaults of the package, so RAG and prompt optimization are off until you enable them in [step 5](#5-add-the-object-to-a-visual-analytics-report). Either way every placeholder host that is left in the report becomes `SAS_VIYA_URL`.
+6. It writes `sas-viya-cli-content-commands.txt`, see [Access to the content folder](#access-to-the-content-folder).
 
-### Option C — SAS Viya CLI
+`mdb builders-import --dry-run` lists the objects and the mapping and imports nothing. A run that did not do everything ends with exit code 1 and prints the command to run next, on a line of its own; that command names the kept options file, so that the second run does not read the options again from a report the import may have replaced already. The kept files stay in the directory the command ran in. They hold option values and no key.
 
-Use the `sas-viya` command-line interface's `transfer` plugin. This assumes you have already installed the CLI, created a connection profile, logged in and installed the `transfer` plugin as described in [Introduction — SAS Viya CLI Setup](./Introduction.md#sas-viya-cli-setup). In the commands below substitute `https://viya.example.com` with your own SAS Viya URL.
+After an upgrade, reload the Prompt Builder report. On a site that had the report `RAG Builder`, the switch **Enable RAG setups** in the Options pane of the object is ticked and the `RAG:` options below it hold the values of the old report; the Setup card offers *RAG setup for a document collection* as a third kind, and an existing setup opens. If the RAG card is shown and cannot be chosen, the credential domain is `none` — see [The retired RAG Builder report](#the-retired-rag-builder-report). **Enable prompt optimization (DSPy)** shows what the report stored: ticked where optimization was enabled before.
 
-1. **Point the package at your host.** Replace the placeholder in the JSON so the imported report loads the app from your server (the percent-encoded program path after the host is left untouched):
+What an import does not bring, and what it replaces:
+
+- **No tables, no projects, no credentials, no option values.** A transfer package cannot carry CAS tables, SAS Model Manager projects, credentials or the option values of a site. `mdb setup` creates the repository and the projects, the command above writes the options, [Managing Credentials](./Managing-Credentials.md) has the credential domain, and the tables are loaded as [The tables of the reports](#load-accelerator-tables) says.
+- **A job definition holds a copy of its program and of its form.** An import replaces both, and the parameters with them: a compute context an administrator set in the parameter `_contextName` of `SAS-LLM-Prompt-Builder-UI` is set back to `SAS Studio compute context`. The job definition of a RAG setup that a site generated is not part of the package and keeps the ingestion program of the day it was manifested — see [After an upgrade: manifest every setup once](./RAG-Ingestion-and-Retrieval.md#after-an-upgrade).
+- **The logging programs are replaced as files.** Settings that were written into `Log-Parser-Code.sas` or `Get-All-Prompts.sas` are gone with the old file; from release 2.3.0 on a site sets them in a program of its own — see [Settings that stay yours](./Logging-&-Monitoring.md#settings-that-stay-yours).
+- **An import removes nothing.** What a site has in the folder beside the content of the package stays, the retired report `RAG Builder` among it.
+- **One folder.** `mdb builders-import` cannot import into another folder than the one the package was exported from, `/SAS Agentic AI Accelerator`.
+- **Not measured:** whether an import replaces in place a custom step that a site registered by hand, under another id than the one in the package, or makes a second step of that name. `mdb content-deploy --dry-run` after the import says of every step whether it equals the checkout, with the id it has on the site.
+
+### The content folder {#the-content-folder}
+
+What the package brings, as `SAS-Viya-Integrations/package-manifest.yaml` lists it — one entry per object, with the repository file it is a copy of:
+
+| Path below `/SAS Agentic AI Accelerator` | What |
+| --- | --- |
+| `Start Here` | Job definition: the first page, with the links and the installation check |
+| `release.json` | The release, the commit the folder was deployed from, and every object of the folder with a hash of its content |
+| `Prompt Builder/` | The report `Prompt Builder`; the job definitions `SAS-LLM-Prompt-Builder-UI` (the single-file app) and `Optimize-Prompt-DSPy`; `Create-Optimization-Dataset.sas` |
+| `RAG/` | `steps/` with the nine RAG custom steps, `rag_core/`, `jobs/` with `Ingest-Documents.sas` and `Test-Retrieval.sas`, `models/` with the retrieval model template |
+| `Logging and Monitoring/` | The report `LLM Usage Report` with its images; the custom steps *LLM - Log Parser* and *LLM - Get All Prompts*; `Log-Parser-Code.sas`, `Get-All-Prompts.sas`, `Link-Logs-To-Models.sas`, `Build-RAG-Cost-View.sas`, `Load-Fact-Sheets.sas` |
+| `Data/` | `llm_fact_sheet.csv`, `embedding_fact_sheet.csv`, `decision_fact_sheet.csv`, `ACCELERATOR_RELEASES.csv`; the job definition `Load-Accelerator-Tables` |
+| `Custom Steps/` | *LLM - List Available LLMs*, *LLM - Get Options*, *LLM - Create LLM Call* and the four *MM -* steps |
+
+61 objects: 37 files, 18 custom steps, four job definitions and two reports. The folder names are the ones sites have had; `Start Here`, `release.json`, `Data/Load-Accelerator-Tables` and the folder `Custom Steps` are new in release 2.3.0.
+
+**What never ships.** An object that the manifest does not list is not deployed, not exported and fails the check of the package when it is found in it. And whatever the manifest says, an object is refused where a part of its path has `Showcases` or `Example` in its name, is a folder named `generated`, or starts with `ZZ_VERIFY`:
+
+- showcase and example content — it lives outside the product, for instance in a folder `/SAS Agentic AI Accelerator Showcases` of a site, and is not in the repository;
+- `RAG/generated`, where the Prompt Builder writes the ingestion job and the flow of a site's own RAG setups;
+- test objects.
+
+Not in the package either: the retired report `RAG Builder` and its job definition `RAG-Builder-UI`; model definitions, which reach a site with `mdb register`; the log collection script, which runs where `kubectl` runs; and the custom step *LLM - Get Prompt Experiments* of the repository, the step of August 2024 that reads the experiment tracker of one model — *LLM - Get All Prompts* is the step that pulls the experiments.
+
+A site that takes a fix from a checkout without waiting for a package uses `mdb content-deploy`, and maintainers build the package with it — see [The content folder: deploy, export, check](./Model-Definition-Builder.md#the-content-folder-deploy-export-check).
+
+### Start Here: the first page and the installation check {#start-here}
+
+`Start Here` is a job definition at the root of the content folder. Open it in a browser:
+
+```
+https://<your SAS Viya host>/SASJobExecution/?_program=/SAS Agentic AI Accelerator/Start Here
+```
+
+The job writes one HTML page: what the accelerator is, links to the Prompt Builder report and the LLM Usage Report by the address they have on your system, links to these guides, and the **installation check**. Every line of the check has one of three states — `ok`, `missing`, `not checked` — with what was found and one sentence what to do:
+
+| Section | What is looked at |
+| --- | --- |
+| Release | `release.json` in the content root: release, commit and date |
+| Content | Every entry `release.json` lists: present in this content root or not. A custom step that was uploaded as a file is `missing`: it has to be registered |
+| CAS tables of the reports | `ACCELERATOR_RELEASES` (Prompt Builder) and `LLM_LOGS`, `PROMPT_EXPERIMENTS`, `LLM_FACT_SHEET`, `EMBEDDING_FACT_SHEET` (LLM Usage Report): there or not, their rows, when they were loaded |
+| SAS Model Manager | The repository and the projects of the LLM, the embedding model and the decision model definitions, by their names, with the number of models of each |
+| Options of the Prompt Builder report | `modelRepositoryID`, `llmProjectID` and, with RAG switched on, `embeddingProjectID`: whether each names the object that was found by its name |
+| Credentials | The credential domain of the provider keys, by its name. No entry of it is asked for |
+| Python packages | For each part what the Python of the compute context needs: `pandas`, `swat` and `requests` for logging; for the RAG runtime also `psycopg2-binary`, `singlestoredb`, `pypdfium2` and `markitdown`; `dspy`, `requests` and `optuna` for prompt optimization |
+| Publishing destinations | Whether one is defined, and their names |
+| Compute contexts | The contexts the options `computeContext` and `ragComputeContext` of the Prompt Builder name, and the ones the parameter `computeContexts` names |
+
+What holds for the page:
+
+- **It changes nothing.** Every request is a GET, and the one file the program writes is the page, in the WORK folder of its session.
+- **A site that lacks something gets a line, not a failed job.** A service that does not answer, a right the session lacks and a folder that is not there are lines of the page: `not checked` with the HTTP status, or `missing`. Where PROC PYTHON does not run in the compute context, the page says that and nothing else.
+- **It shows what its session may read.** In a compute context that runs under a service account that is the service account, and what the session may not read is `not checked` with the HTTP status. No token and no user id is written to the page, and of an answer that was refused only the status.
+- **The content root is a parameter.** The job definition checks the folder its parameter `contentRoot` names, `/SAS Agentic AI Accelerator` as shipped — add `&contentRoot=<folder>` to the address to check another one. The other parameters name the CAS library and the CAS server of the report tables (`caslib`, `casServer`), the credential domain, the repository and the three projects by the names `mdb setup` gives them, the compute contexts to look for and the address of the guides; `SAS-Viya-Integrations/Setup/README.md` lists them.
+
+The Python of the program runs in the tests of the repository against a SAS Viya system that is made up. The program is **not run in SAS**, and how SAS Job Execution serves the page was not measured: that the service assigns the fileref `_webout` and shows what a job writes there as a page with the parameter `_output_type` = `html` is taken from a summary of the *SAS Job Execution Web Application User's Guide* and from no run.
+
+### The tables of the reports {#load-accelerator-tables}
+
+A package cannot carry a CAS table. The two reports read five:
+
+| Table | Report | Loaded by |
+| --- | --- | --- |
+| `ACCELERATOR_RELEASES` | Prompt Builder | `mdb setup`, `mdb builders-import` and `mdb load-releases`; or the job `Load-Accelerator-Tables` |
+| `LLM_FACT_SHEET`, `EMBEDDING_FACT_SHEET` | LLM Usage Report | `mdb load-facts`; or the job `Load-Accelerator-Tables`, which also loads `DECISION_FACT_SHEET` |
+| `LLM_LOGS`, `PROMPT_EXPERIMENTS` | LLM Usage Report | The log parser and the pull of your own system, see [Logging & Monitoring](./Logging-&-Monitoring.md) |
+
+`Data/Load-Accelerator-Tables` is a job definition for a site that imported the package without `mdb` — through SAS Environment Manager, for example — and so has neither the release table nor the fact sheets: it loads `ACCELERATOR_RELEASES` from `Data/ACCELERATOR_RELEASES.csv` and the three fact sheets from the files beside it, promoted and saved, into the CAS library of its parameter `caslib` (default `Public`). Its other parameters are `contentRoot` and `releaseTable`, the name of the release table.
+
+- The fact sheets are loaded by `Load-Fact-Sheets.sas`, which the job includes from the folder `Logging and Monitoring` of the content root.
+- The release table gets the eleven columns of `mdb` in their order, the three numbers as DOUBLE and the eight text columns as VARCHAR. That is the layout a table has that `mdb load-releases` loaded: read from such a table on the test system on 2026-10-12, where the text columns were as long as the longest cell of each in the file.
+- A table that exists is replaced only by an upload that holds every row of its file. A file that is not in the folder, a first line with other columns and an upload that is short leave the table as it is, with a WARNING.
+- The job writes an ERROR line and sets `SYSCC` to 1012 when a parameter is refused, or when one of the four tables is not in the CAS library at its end.
+
+`mdb load-releases` and `mdb load-facts` load the same tables from a checkout and stay the way to load them from a workstation. The job is **not run in SAS**.
+
+### Access to the content folder {#access-to-the-content-folder}
+
+The package carries no authorization rule and no share: who may read the folder is decided on the site. The rules `mdb setup` writes cover the model repository, not this folder.
+
+`mdb builders-import` writes a file `sas-viya-cli-content-commands.txt` into the current directory (`--out <dir>` names another one, `--no-files` leaves it out): two `sas-viya authorization create-rule` commands that give the *LLM Consumers* group — the group the commands of `mdb setup` create — Read on the content folder and on what is in it, with the id of the folder filled in. The command runs neither. Review the file, replace the group if you use another, and run the two commands with the SAS Viya CLI.
+
+On a site that upgrades, this is also what gives the people who used the RAG Builder access to the folder `Prompt Builder`: the report and the job definition `SAS-LLM-Prompt-Builder-UI` that serve the RAG Builder now live there.
+
+### Importing without `mdb` {#importing-without-mdb}
+
+The one file imports like any transfer package. What `mdb builders-import` does beside the import is then hand work: the options of the Prompt Builder report are the defaults of the package afterwards — save them first, see [Preserving builder options across a report import](#preserving-builder-options-across-a-report-import) —, the tables stay bound to `Public`, the release table and the fact sheets are loaded by the job [Load-Accelerator-Tables](#load-accelerator-tables), and the access rules are yours to write.
+
+**SAS Environment Manager.** Import the JSON from **SAS Environment Manager → Content → Import**. Then correct the host in [step 5](#5-add-the-object-to-a-visual-analytics-report): open the report and update the Data-Driven Content object's base URL to your SAS Viya server.
+
+**SAS Viya CLI.** Use the `transfer` plugin of the `sas-viya` command-line interface. This assumes you have installed the CLI, created a connection profile, logged in and installed the plugin as described in [Introduction — SAS Viya CLI Setup](./Introduction.md#sas-viya-cli-setup). In the commands below substitute `https://viya.example.com` with your own SAS Viya URL.
+
+1. **Point the package at your host.** The package ships the Prompt Builder object pointing at the placeholder host `https://your-sas-viya-host`. Replace it in the JSON so that the imported report loads the app from your server (the percent-encoded program path after the host is left untouched):
 
    ```bash
    # bash / Linux / macOS
-   sed -i 's#https://your-sas-viya-host#https://viya.example.com#' SAS-Agentic-AI-Accelerator-Prompt-Builder.json
+   sed -i 's#https://your-sas-viya-host#https://viya.example.com#' SAS-Agentic-AI-Accelerator.json
    ```
 
    ```powershell
    # PowerShell / Windows
-   (Get-Content SAS-Agentic-AI-Accelerator-Prompt-Builder.json) `
+   (Get-Content SAS-Agentic-AI-Accelerator.json) `
      -replace 'https://your-sas-viya-host','https://viya.example.com' |
-     Set-Content SAS-Agentic-AI-Accelerator-Prompt-Builder.json
+     Set-Content SAS-Agentic-AI-Accelerator.json
    ```
 
 2. **Upload** the package — the command prints the new package's `id`:
 
    ```bash
-   sas-viya transfer packages upload --file SAS-Agentic-AI-Accelerator-Prompt-Builder.json
+   sas-viya transfer packages upload --file SAS-Agentic-AI-Accelerator.json
    ```
 
 3. **Import** it by that id:
@@ -74,7 +190,7 @@ Use the `sas-viya` command-line interface's `transfer` plugin. This assumes you 
 
    ```bash
    pkg=$(sas-viya --output json transfer packages upload \
-     --file SAS-Agentic-AI-Accelerator-Prompt-Builder.json | jq -r '.id')
+     --file SAS-Agentic-AI-Accelerator.json | jq -r '.id')
    sas-viya --output text transfer packages import --id "$pkg"
    ```
 
@@ -82,21 +198,21 @@ Use the `sas-viya` command-line interface's `transfer` plugin. This assumes you 
    upload` / `sas-viya transfer import` — they still work, marked deprecated.)
 
 :::note The host is a transfer substitution
-The placeholder lives in the package's `substitutions` block (the `VisualElement:ve9` value), which is exactly what SAS's import machinery is designed to remap. Editing the string before upload (step 1 above) is the simplest fix. Alternatively, remap it at import time with a **mapping file**: pass `--mapping mapping.json` to the upload and the CLI writes a JSON file whose `substitutions` block contains the `VisualElement:ve9` entry with the placeholder URL — edit that value to your host, then pass the same file to the import:
+The placeholder lives in the package's `substitutions` block, which is what SAS's import machinery is designed to remap. Editing the string before upload (step 1 above) is the simplest fix. Alternatively, remap it at import time with a **mapping file**: pass `--mapping mapping.json` to the upload and the CLI writes a JSON file whose `substitutions` block holds the entry with the placeholder URL — edit that value to your host, then pass the same file to the import:
 
 ```bash
-sas-viya transfer packages upload --file SAS-Agentic-AI-Accelerator-Prompt-Builder.json --mapping mapping.json
-# edit mapping.json: replace https://your-sas-viya-host in the VisualElement:ve9 value
+sas-viya transfer packages upload --file SAS-Agentic-AI-Accelerator.json --mapping mapping.json
+# edit mapping.json: replace https://your-sas-viya-host in the substitutions block
 sas-viya transfer packages import --id <package-id> --mapping mapping.json
 ```
 
 (`sas-viya transfer get-mapping --id <package-id>` regenerates the file for an already-uploaded package.) If you do neither, the report still imports; you then correct the object's base URL in [step 5](#5-add-the-object-to-a-visual-analytics-report).
 :::
 
-After import, continue at [step 3](#3-provide-the-api-keys-via-the-credential-domain) — the Job Execution definition and report already exist under **SAS Content > SAS Agentic AI Accelerator > Prompt Builder**.
+After the import, continue at [step 3](#3-provide-the-api-keys-via-the-credential-domain) — the Job Execution definition and the report already exist under **SAS Content > SAS Agentic AI Accelerator > Prompt Builder**.
 
 :::warning A package from before 2.3.0 brings the old RAG UI back
-Packages exported before release 2.3.0 hold a report named **RAG Builder** and a job definition **RAG-Builder-UI** — the standalone RAG UI that is retired. Importing such a file through SAS Environment Manager or the CLI puts both back. `mdb builders-import` names such a package before it imports it; use the packages of a current checkout.
+Packages exported before release 2.3.0 hold a report named **RAG Builder** and a job definition **RAG-Builder-UI** — the standalone RAG UI that is retired. Importing such a file through SAS Environment Manager or the CLI puts both back. `mdb builders-import` names such a package before it imports it; use the package of a current checkout.
 :::
 
 ## Preserving builder options across a report import
@@ -104,10 +220,10 @@ Packages exported before release 2.3.0 hold a report named **RAG Builder** and a
 :::danger Importing a report overwrites your configuration
 Every option you set on the Prompt Builder object — repository and project IDs, the SCR endpoint, the credential domain, the three switches, and for RAG the content root, the ingestion compute context and which vector stores the deployment offers — is stored **inside the Visual Analytics report**, not alongside it. A transfer package carries those values too, so importing a newer version of the report **replaces your settings with whatever the package was built against**.
 
-This does not fail loudly. The report still opens and the app still runs; it simply shows the package's defaults — RAG switched off, no project IDs. Save your options before importing.
+This does not fail loudly. The report still opens and the app still runs; it simply shows the package's defaults — RAG switched off, no project IDs. `mdb builders-import` reads the options before it imports and writes them back; for an import made any other way, save your options first.
 :::
 
-Two `mdb` commands cover this (see [Model Definition Builder](./Model-Definition-Builder.md) for installing the CLI and its `[viya]` extra):
+`mdb builders-import` without `--options` does both steps below by itself and keeps what it read in `builder-options-captured-<time>.json`. The two commands are for a file to keep with your deployment records, to edit before an import, to carry to another deployment, or for a package that is imported without `mdb` (see [Model Definition Builder](./Model-Definition-Builder.md) for installing the CLI and its `[viya]` extra):
 
 ```bash
 # BEFORE importing a new report package
@@ -125,7 +241,7 @@ mdb options-restore --file builder-options.json             # write it back
 Points worth knowing:
 
 - **The report is matched by name** (`Prompt Builder`). If you have renamed the report in your deployment, rename it in the file to match, or the restore skips it.
-- **An option the report does not have is reported, not inserted.** That usually means the option was renamed or removed in the newer version of the app — worth reading the message rather than ignoring it. When the missing option is one the current Prompt Builder report has, the report on the site is an older one: everything it can hold is still written, and the command ends with exit code 1 so that the gap is not taken for a finished restore — import the Prompt Builder package of this release and restore again. It is also why the shipped report already holds every option, including the ones that only show while a switch is on.
+- **An option the report does not have is reported, not inserted.** That usually means the option was renamed or removed in the newer version of the app — worth reading the message rather than ignoring it. When the missing option is one the current Prompt Builder report has, the report on the site is an older one: everything it can hold is still written, and the command ends with exit code 1 so that the gap is not taken for a finished restore — import the package of this release and restore again. It is also why the shipped report already holds every option, including the ones that only show while a switch is on.
 - **A switch is saved as the word `true` or `false`**, which is what its checkbox in the Options pane stores. A file saved with 2.2.x holds the same two words for `enableOptimization`, so it restores unchanged.
 - **`sslVerify` is saved and restored like every other option**, as the same two words. A file saved with 2.2.x does not name it, and nothing supplies a value for it: the imported report keeps its own default, which is ticked. A package is exported with the option ticked: on a report that would ship it switched off, `mdb package-export` ends with exit code 1 and writes nothing.
 - **API keys are deliberately not saved.** This file is meant to be kept with deployment paperwork and reviewed in a diff, which is no place for a provider key. The Prompt Builder reads its keys from the credential domain at run time — see [Managing Credentials](./Managing-Credentials.md).
@@ -142,7 +258,7 @@ On a brand-new environment with no live report to capture from, run `mdb options
 
 Up to release 2.2 the RAG Builder had a report of its own, named **RAG Builder**, with its own options. A site that upgrades still has it, and its options are carried into the Prompt Builder report by a **fold** that all three commands share:
 
-- `mdb options-save` reads the live `RAG Builder` report when one exists and writes **one** `Prompt Builder` section. Run it **before** the import and before deleting the old report — afterwards the new report holds its own defaults, and what the Prompt Builder report holds always wins over the old report. A site that imported first still has a way back while the old report exists: `options-save` names every value of the old report that it did not carry, with what the old report held. Copy the ones you want into `builder-options.json` and run `mdb options-restore`.
+- `mdb options-save` reads the live `RAG Builder` report when one exists and writes **one** `Prompt Builder` section. `mdb builders-import` without `--options` reads both reports the same way before it imports. Run `mdb options-save` **before** the import and before deleting the old report — afterwards the new report holds its own defaults, and what the Prompt Builder report holds always wins over the old report. A site that imported first still has a way back while the old report exists: `options-save` names every value of the old report that it did not carry, with what the old report held. Copy the ones you want into `builder-options.json` and run `mdb options-restore`.
 - `mdb options-restore` and `mdb builders-import --options` fold a file saved with 2.2.x, which has a `RAG Builder` section, in the same way before they write. Nothing is ever written to the retired report, and nothing is deleted.
 
 What the fold does, and prints as it does it:
@@ -155,9 +271,9 @@ What the fold does, and prints as it does it:
 | `enabledBackends` | Dropped — it has been unused since the per-store switches exist |
 | *(nothing)* | `enableRag` is set to `true` when the site had the report `RAG Builder` — live, or as the `RAG Builder` section of a file saved from one — and only if the Prompt Builder section does not hold an `enableRag` yet. The sign is a content root or a CAS server in the old section, which the report shipped with 2.2.x holds from the start |
 
-The old report does not record whether anyone used it, so the fold switches RAG on at every site that had it. **A site that does not use RAG** sets `"enableRag": "false"` in the `Prompt Builder` section of `builder-options.json` before restoring, or clears **Enable RAG setups** in the Options pane afterwards. A 2.2.x file that was saved while no `RAG Builder` report existed holds only discovered values in its `RAG Builder` section; `enableRag` is then not set and RAG stays off.
+The old report does not record whether anyone used it, so the fold switches RAG on at every site that had it. **A site that does not use RAG** runs `mdb options-save`, sets `"enableRag": "false"` in the `Prompt Builder` section of `builder-options.json` and imports with `mdb builders-import --options builder-options.json`, or clears **Enable RAG setups** in the Options pane afterwards. A 2.2.x file that was saved while no `RAG Builder` report existed holds only discovered values in its `RAG Builder` section; `enableRag` is then not set and RAG stays off.
 
-While a report named `RAG Builder` is still on the site, `options-restore` and `builders-import` say so on every run: it keeps serving the old standalone UI with its own options. Once the Prompt Builder report shows your RAG setups, delete the report **RAG Builder** and the job definition **RAG-Builder-UI** next to it (SAS Environment Manager → Content, or SAS Drive), and give the people who used it Read access to the **Prompt Builder** folder if they did not have it.
+While a report named `RAG Builder` is still on the site, `options-restore` and `builders-import` say so on every run: it keeps serving the old standalone UI with its own options. Once the Prompt Builder report shows your RAG setups, delete the report **RAG Builder** and the job definition **RAG-Builder-UI** next to it (SAS Environment Manager → Content, or SAS Drive), and give the people who used it Read access to the **Prompt Builder** folder if they did not have it - see [Access to the content folder](#access-to-the-content-folder). `mdb` deletes nothing, and `mdb content-deploy` names the two objects among what is in the folder and not in the manifest. Afterwards bookmarks to that report and to the URL of `RAG-Builder-UI` are dead. A package that was exported before 2.3.0 still holds both objects, and importing one brings them back.
 
 ## 1. Get the single-file app
 
@@ -236,7 +352,7 @@ kubectl get pods -n <your-namespace> -o name | grep -E 'pod/sas-job-execution|po
 
 ## 5. Add the object to a Visual Analytics report
 
-If you imported the SAS-Agentic-AI-Accelerator-Prompt-Builder.json package then open up the SAS Visual Analytics report under SAS Content > SAS Agentic AI Accelerator > Prompt Builder > Prompt Builder and then continue.
+If you imported the transfer package then open up the SAS Visual Analytics report under SAS Content > SAS Agentic AI Accelerator > Prompt Builder > Prompt Builder and then continue.
 
 1. In a Visual Analytics report, add a **Data-Driven Content** object and in the **Options** pane under Web Content enter the URL from the previous step or if you imported it update the base URL to your SAS Viya server.
 2. Assign the **release table** to the object: in the **Data** pane pick `Public.ACCELERATOR_RELEASES` (loaded by `mdb setup` or `mdb load-releases`; the library and name follow `SAS_CAS_LIBRARY` / `SAS_RELEASES_TABLE`) and add any of its columns to the object's role. A Data-Driven Content object does not render until it has a data assignment; the Prompt Builder itself reads nothing from it, and provider keys still come from the credential domain (step 3). The table carries the accelerator's changelog - one row per release and per change, with a `component` column - so the same report can show what changed for the Prompt Builder next to the object. A change to the Prompt Builder is one row for each part of it that it concerns, named in the column `builder_part` (`Prompt`, `Decision`, `RAG`): a page that lists the changes keeps its filter on `component` and gets a button bar on `builder_part`, with which a reader picks the part - see [The release table](./Model-Definition-Builder.md#the-release-table) for the rows and for what a page built before the column shows.
@@ -302,7 +418,7 @@ The report stores a switch as the word `true` or `false`. Up to release 2.2 **En
 | Properties-panel field | URL parameter | Default | Meaning |
 |---|---|---|---|
 | RAG: embedding model project ID | `embeddingProjectID` | *blank* | Model Manager project holding the registered embedding models. The RAG Builder lists that project instead of asking for a model name; without it no embedding model can be chosen and no setup can be saved. |
-| RAG: content root | `contentRoot` | `/SAS Agentic AI Accelerator/RAG` | SAS Content folder the `deploy-rag-content` scripts populated. Generated job definitions go to its `generated` subfolder unless a setup names another. |
+| RAG: content root | `contentRoot` | `/SAS Agentic AI Accelerator/RAG` | SAS Content folder that holds the RAG runtime - the folder `RAG` of the content folder, which the transfer package brings. Generated job definitions go to its `generated` subfolder unless a setup names another. |
 | RAG: CAS server | `casServer` | `cas-shared-default` | CAS server of the ingestion ledger and the pipeline tables. |
 | RAG: ingestion compute context | `ragComputeContext` | *blank* | SAS Compute context the ingestion job and the retrieval test run in. It **must run as the requesting user** — *SAS Studio compute context* does, the stock *SAS Job Execution compute context* does not. Launching and testing are refused until it is set. |
 | RAG: vector store TLS | `storeSslmode` | `prefer` | How the ingestion connects to the vector store: `prefer`, `require`, `verify-ca`, `verify-full`, `allow` or `disable`. Stores other than PostgreSQL read `disable` as no TLS and anything else as TLS on. |
