@@ -1442,6 +1442,46 @@ def test_the_key_of_the_catalog_tells_every_row_apart(monkeypatch, tmp_path):
     assert len(set(keys)) == len(keys) and {row["role"] for row in rows} == {"prompt", "judge", "optimization"}
 
 
+def test_an_optimization_id_that_two_entries_of_a_tracker_hold_is_counted_in_the_catalog(monkeypatch, tmp_path):
+    """Two entries of one tracker with the same optimizationId gave catalog rows with one key.
+    Each entry has a window of its own that its calls are found by, so none is left out: the
+    rows of the later entry carry the id with a counter, and a WARNING names the model."""
+    viya = FakeViya()
+    project = viya.add_project("Service Desk", ["Prompt-Engineering"])
+    model = viya.add_model(project, "Desk Answer", {
+        "Prompt-Experiment-Tracker.json": [header_row(1, "Answer briefly.", "{{question}}", [variable("question", "Why?")]),
+                                           model_row(1, "demo_llm")],
+        "Prompt-Optimization-Tracker.json": [
+            optimization_entry(1),
+            optimization_entry(1, startedAt="2026-02-05T08:00:00+00:00", finishedAt="2026-02-05T08:10:00+00:00"),
+            optimization_entry(2),
+            optimization_entry("1", startedAt="2026-02-06T08:00:00+00:00", finishedAt="2026-02-06T08:10:00+00:00", judgeModel=None),
+        ]})
+    other = viya.add_model(project, "Desk Summary", {
+        "Prompt-Experiment-Tracker.json": [header_row(1, "Summarise.", "{{text}}", [variable("text", "A text.")]), model_row(1, "demo_llm")],
+        "Prompt-Optimization-Tracker.json": [optimization_entry(1)]})
+    run = run_pull(monkeypatch, tmp_path, viya)
+    rows = run.catalog(role="optimization")
+
+    assert [(row["optimization_id"], row["target_model"], row["window_start"]) for row in rows if row["modelID"] == model["id"]] == [
+        ("1", "demo_llm", "2026-02-03T08:00:00Z"), ("1", "demo_judge", "2026-02-03T08:00:00Z"),
+        ("1#2", "demo_llm", "2026-02-05T08:00:00Z"), ("1#2", "demo_judge", "2026-02-05T08:00:00Z"),
+        ("2", "demo_llm", "2026-02-03T08:00:00Z"), ("2", "demo_judge", "2026-02-03T08:00:00Z"),
+        ("1#3", "demo_llm", "2026-02-06T08:00:00Z")]
+    # The same id in the tracker of another model is another key anyway
+    assert [row["optimization_id"] for row in rows if row["modelID"] == other["id"]] == ["1", "1"]
+    keys = [(row["modelID"], row["role"], row["runID"], row["optimization_id"], row["target_model"]) for row in run.rows("catalog")]
+    assert len(set(keys)) == len(keys)
+    assert all(len(row["optimization_id"]) <= 16 for row in rows)
+    # The table of the optimizations holds the entries as the tracker has them
+    assert [row["optimizationId"] for row in run.rows("optimizations") if row["modelID"] == model["id"]] == [1, 1, 2, 1]
+    warnings = [warning for warning in run.sas.of_type("WARNING") if "optimizationId" in warning]
+    assert warnings == [f"The file Prompt-Optimization-Tracker.json of the model Desk Answer ({model['id']}) holds the optimizationId 1 on more "
+                        "than one entry. In the model catalog the rows of a later entry carry the id with a counter, as in 1#2, so that no "
+                        "two rows of the catalog have the same key. The table of the optimizations holds the entries as the tracker has "
+                        "them, with the same id."]
+
+
 @pytest.mark.parametrize("value, start, end", [
     ("2026-10-11T17:34:11.250000+00:00", "2026-10-11T17:34:11Z", "2026-10-11T17:34:12Z"),
     ("2026-10-11T17:35:11+00:00", "2026-10-11T17:35:11Z", "2026-10-11T17:35:11Z"),

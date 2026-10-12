@@ -857,12 +857,22 @@ def catalog_optimization_rows(model, project, tracker):
     prompt of the calls to the target and into the user prompt of the calls to its judge - as
     long as it has not proposed another instruction. The templates are the optimized prompt
     where the tracker holds one.
+
+    optimization_id is the optimizationId of the entry and a part of the key of the catalog.
+    A tracker that holds an id on more than one entry would give rows with one key: the rows
+    of the second entry with an id carry it with a counter, <id>#2, of the third <id>#3. No
+    entry is left out, as each one has a window of its own that its calls are found by.
     """
     entries = tracker if isinstance(tracker, list) else [tracker] if isinstance(tracker, dict) else []
     rows = []
+    held = {}
     for entry in entries:
         if not isinstance(entry, dict):
             continue
+        identifier = run_text(entry.get('optimizationId'))
+        held[identifier] = held.get(identifier, 0) + 1
+        if held[identifier] > 1:
+            identifier = f'{identifier}#{held[identifier]}'
         baseline = entry.get('baselinePrompt') if isinstance(entry.get('baselinePrompt'), dict) else {}
         optimized = entry.get('optimizedPrompt') if isinstance(entry.get('optimizedPrompt'), dict) else {}
         called = []
@@ -881,9 +891,19 @@ def catalog_optimization_rows(model, project, tracker):
                 'resolved_system_hash': text_hash(started) if started else '',
                 'window_start': utc_text(entry.get('startedAt')),
                 'window_end': utc_text(entry.get('finishedAt'), later=True),
-                'optimization_id': run_text(entry.get('optimizationId')),
+                'optimization_id': identifier,
             }))
     return rows
+
+
+def repeated_optimization_ids(tracker):
+    """
+    The ids an optimization tracker holds on more than one entry, each once and in their order.
+    """
+    entries = tracker if isinstance(tracker, list) else [tracker] if isinstance(tracker, dict) else []
+    identifiers = [run_text(entry.get('optimizationId')) for entry in entries if isinstance(entry, dict)]
+    return [identifier for position, identifier in enumerate(identifiers)
+            if identifiers.count(identifier) > 1 and identifier not in identifiers[:position]]
 
 
 def catalog_answer_row(model, project, role):
@@ -1169,6 +1189,13 @@ def pull(get_json, get_text, settings, say):
             # The calls the Prompt Builder makes for a prompt and not with it: its judges and its optimizations
             tables['catalog'].extend(catalog_judge_rows(model, project, tracker))
             tables['catalog'].extend(catalog_optimization_rows(model, project, optimizations))
+            repeated = repeated_optimization_ids(optimizations)
+            if repeated:
+                say('WARNING', f"The file {OPTIMIZATION_TRACKER} of the model {model.get('name')} ({model.get('id')}) holds "
+                               f"the optimizationId {', '.join(repeated[:5])}{' and others' if len(repeated) > 5 else ''} on more "
+                               "than one entry. In the model catalog the rows of a later entry carry the id with a counter, "
+                               "as in 1#2, so that no two rows of the catalog have the same key. The table of the optimizations "
+                               "holds the entries as the tracker has them, with the same id.")
     say('NOTE', f"{len(projects)} project(s) with the tag {settings['tag']} and {model_count} model(s) in them were read.")
     for index, row in enumerate(tables['experiments']):
         row['unique_id'] = index + 1
