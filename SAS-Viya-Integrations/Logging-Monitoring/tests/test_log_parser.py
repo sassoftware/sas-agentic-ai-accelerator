@@ -763,8 +763,9 @@ def test_about_tab_names_every_column_and_what_the_program_does_with_it(monkeypa
 def test_about_tab_is_about_the_program_and_the_changelog_starts_with_this_version():
     texts = _about_tab()
 
-    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.2 (")
-    assert texts["textChangelog"].index("Version: 2.2") < texts["textChangelog"].index("Version: 2.1") < texts["textChangelog"].index("Version: 2.0")
+    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.3 (")
+    changelog = texts["textChangelog"]
+    assert changelog.index("Version: 2.3") < changelog.index("Version: 2.2") < changelog.index("Version: 2.1") < changelog.index("Version: 2.0")
     # What a release has not run yet is said in the changelog of the release, not in the step
     for name, text in texts.items():
         assert "not run in sas" not in text.lower(), name
