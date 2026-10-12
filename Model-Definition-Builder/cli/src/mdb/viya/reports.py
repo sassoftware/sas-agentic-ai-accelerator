@@ -19,18 +19,25 @@ def _failure(what: str, response) -> RuntimeError:
     return RuntimeError(f"{what}: HTTP {response.status_code} {response.text[:300]}")
 
 
-def find_report(session, name: str) -> Optional[dict]:
+def find_report(session, name: str, strict: bool = False) -> Optional[dict]:
     """The report with this exact name, or None.
 
     Filtered server-side and matched exactly here: `contains` would also
     return "Prompt Builder (old)" and picking the first hit would silently
     configure the wrong report.
+
+    A lookup the service does not answer gives None as well - unless
+    `strict`: then it is an error, for the caller that must not take "could
+    not ask" for "there is no such report" (`mdb builders-import`, before it
+    replaces a report).
     """
     response = session.get(
         "/reports/reports",
         params={"filter": f'eq(name,"{name}")', "limit": 20},
     )
     if not response.ok:
+        if strict:
+            raise _failure(f"Looking up the report '{name}' failed", response)
         return None
     for item in response.json().get("items", []):
         if item.get("name") == name:

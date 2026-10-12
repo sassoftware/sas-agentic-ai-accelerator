@@ -27,10 +27,10 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
+from content_fakes import STEP, STEP_NAME, Package, Viya, as_registered
 from mdb import cli
 from mdb.core.options import read_options
-from mdb.core.packages import deflate
-from mdb.viya import cas, registry, reports, transfer
+from mdb.viya import registry, reports, transfer
 
 
 def _xml(options: dict) -> str:
@@ -70,6 +70,10 @@ class Site:
         self.written: list = []
         #: True for a site whose report cannot be written (someone has it open)
         self.refuses = False
+        #: Reports that are on the site and whose content cannot be read, and
+        #: reports the service does not answer a lookup for.
+        self.unreadable: set = set()
+        self.unanswered: set = set()
 
     def options(self, name: str) -> dict:
         return read_options(self.reports[name])
@@ -86,11 +90,15 @@ def out(monkeypatch):
 @pytest.fixture
 def site(monkeypatch):
     def install(fake: Site) -> Site:
-        def find_report(session, name):
+        def find_report(session, name, strict=False):
             fake.looked_up.append(name)
+            if strict and name in fake.unanswered:
+                raise RuntimeError(f"Looking up the report '{name}' failed: HTTP 503")
             return {"id": name, "name": name} if name in fake.reports else None
 
         def get_content(session, report_id):
+            if report_id in fake.unreadable:
+                raise RuntimeError("Reading the report content failed: HTTP 503")
             fake.read.append(report_id)
             return fake.reports[report_id], '"etag"'
 
@@ -399,20 +407,54 @@ def test_a_dry_run_on_a_first_install_says_the_report_arrives(site, out):
 
 # ---- builders-import ---------------------------------------------------------
 PACKAGE_FILE = "SAS-Agentic-AI-Accelerator.json"
-MANIFEST = """version: 1
-contentRoot: /SAS Agentic AI Accelerator
+CONTENT_ROOT = "/SAS Agentic AI Accelerator"
+UI_PATH = "Prompt Builder/SAS-LLM-Prompt-Builder-UI"
+STEP_PATH = f"RAG/steps/{STEP_NAME}"
+FILE_PATH = "RAG/rag_core/__init__.py"
+MANIFEST = f"""version: 1
+contentRoot: {CONTENT_ROOT}
 package: SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json
 entries:
-  - {path: Prompt Builder/Prompt Builder, kind: report, checks: {optionSet: prompt-builder}}
-  - {path: RAG/rag_core/__init__.py, kind: file, source: not/in/this/checkout.py}
+  - {{path: Prompt Builder/Prompt Builder, kind: report, checks: {{optionSet: prompt-builder}}}}
+  - {{path: {FILE_PATH}, kind: file, source: not/in/this/checkout.py}}
+  - path: {UI_PATH}
+    kind: jobDefinition
+    form: not/in/this/checkout.html
+    parameters:
+      - {{name: _contextName, default: SAS Studio compute context, siteSetting: true}}
+      - {{name: _action, default: "prompts,form,execute"}}
 """
 
+#: The job definition of the page as a package carries it.
+UI_JOB = {"type": "Compute", "code": "/* SAS templated code goes here */",
+          "createdBy": "the exporter", "links": [{"rel": "self", "href": "/jobDefinitions/definitions/exported"}],
+          "parameters": [
+              {"version": 1, "name": "_contextName", "defaultValue": "SAS Studio compute context",
+               "type": "character", "required": False},
+              {"version": 1, "name": "_action", "defaultValue": "prompts,form,execute", "type": "character",
+               "required": False}],
+          "properties": [{"name": "form", "value": "<html>the page of the release</html>"}]}
 
-def _report_detail(name: str, options: dict) -> dict:
-    wrapper = {"object": {"name": name},
-               "transferableContent": {"content": _xml(options), "contentVersion": 1, "reportStates": None}}
-    return {"transferObject": {"summary": {"type": "report", "name": name},
-                               "content": deflate(json.dumps(wrapper, separators=(",", ":")))}}
+
+def _built(report: bool = True, **kwargs) -> Package:
+    """The package of a release, small: the page, a custom step, a file of
+    the RAG runtime and - unless it is left out - the Prompt Builder report
+    as the package brings it."""
+    built = Package(**kwargs)
+    built.job(UI_PATH, UI_JOB)
+    built.step(STEP_PATH, {**as_registered(STEP), "id": "exported-step", "createdBy": "the exporter"})
+    built.file(FILE_PATH, b"CORE = 2\n")
+    if report:
+        built.report("Prompt Builder/Prompt Builder", NEW_DEFAULTS)
+    return built
+
+
+def _retired_package() -> dict:
+    """A package of 2.2.x that somebody names: the standalone RAG UI."""
+    built = Package()
+    built.job("RAG/RAG-Builder-UI", UI_JOB)
+    built.report("RAG/RAG Builder", OLD_RAG, tables=())
+    return {**built.build(), "name": "RAG Builder"}
 
 
 def _other(kind: str, name: str) -> dict:
@@ -433,11 +475,15 @@ def _mapping() -> dict:
 
 @pytest.fixture
 def importing(monkeypatch, tmp_path, site, discovery, out):
-    """`mdb builders-import` against a fake transfer service. Returns a
-    function that writes the package into a fake checkout, runs the command
-    there and gives back (result, site, printed text). `run.imports` holds
-    the mapping each import was started with, by package name."""
-    from mdb.viya import content as viya_content
+    """`mdb builders-import` against a fake transfer service and a SAS Viya
+    that lives in memory. Returns a function that writes the package into a
+    fake checkout, runs the command there and gives back (result, site,
+    printed text). On `run`: `viya`, the system the files, steps and job
+    definitions are brought into in place; `imports`, the mapping each import
+    through the transfer service was started with, by package name;
+    `uploaded`, what was handed to the transfer service, by package name;
+    `tasks`, what the tasks of an import job answer (all completed unless a
+    test says otherwise)."""
     discovery({"llm": "llm-disc", "embedding": "emb-disc"})
     folder = tmp_path / "SAS-Viya-Integrations"
     folder.mkdir()
@@ -446,55 +492,51 @@ def importing(monkeypatch, tmp_path, site, discovery, out):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SAS_VIYA_URL", "https://site.example")
     monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=tmp_path, core=None))
-
-    class _Session:
-        hostname = "site.example"
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            return False
-
-    monkeypatch.setattr(cli, "_viya_session", lambda: _Session())
-    monkeypatch.setattr(cas, "resolve_server", lambda session, server: "cas-shared-default")
-    monkeypatch.setattr(transfer, "upload_package", lambda session, path: {"id": Path(path).name})
+    viya = Viya()
+    monkeypatch.setattr(cli, "_viya_session", lambda: viya)
     monkeypatch.setattr(transfer, "get_mapping", lambda session, package_id: _mapping())
-    monkeypatch.setattr(transfer, "delete_package", lambda session, uri: None)
     monkeypatch.setattr(transfer, "job_messages", lambda session, job: ["the folder is locked"])
-    monkeypatch.setattr(transfer, "wait_for_job", lambda session, uri, timeout=600: {"state": uri})
-    monkeypatch.setattr(viya_content, "find_folder", lambda session, path: {"id": "content-folder-1", "name": path})
+    monkeypatch.setattr(transfer, "wait_for_job",
+                        lambda session, uri, timeout=600: {"state": uri, "links": [{"rel": "self", "href": uri}]})
+    monkeypatch.setattr(transfer, "job_tasks", lambda session, job: list(run.tasks))
 
-    def run(fake: Site, *args, fails=False, extra=(), without_report=False):
+    def run(fake: Site, *args, fails=False, extra=(), without_report=False, package=None):
         fake = site(fake)
-        details = [_other("folder", "SAS Agentic AI Accelerator"), _other("folder", "Prompt Builder"),
-                   _other("jobDefinition", "SAS-LLM-Prompt-Builder-UI"), _other("flowStep", "RAG - Embed Chunks.step")]
-        if not without_report:
-            details.append(_report_detail("Prompt Builder", NEW_DEFAULTS))
-        package = {"name": "SAS Agentic AI Accelerator", "transferDetails": details}
+        package = package or _built(report=not without_report).build()
         (folder / PACKAGE_FILE).write_text(json.dumps(package), encoding="utf-8")
-        named = {"SAS Agentic AI Accelerator": package}
+        named = {package["name"]: package}
         for path, other in extra:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             Path(path).write_text(json.dumps(other), encoding="utf-8")
             named[other["name"]] = other
         failing = {fails} if isinstance(fails, str) else ({"SAS Agentic AI Accelerator"} if fails else set())
-        run.imports = {}
+        run.imports, run.uploaded = {}, {}
+
+        def upload_package_bytes(session, name, data):
+            handed = json.loads(data)
+            run.uploaded[handed["name"]] = handed
+            return {"id": handed["name"]}
 
         def start_import(session, name, package_uri, mapping=None, description=""):
             run.imports[name] = mapping
-            # an import that works puts the package's reports on the site
+            # an import that works puts the reports it was handed on the site
             if name not in failing:
-                for detail in named[name]["transferDetails"]:
+                for detail in run.uploaded[name]["transferDetails"]:
                     summary = detail["transferObject"]["summary"]
                     if summary["type"] == "report":
                         fake.reports[summary["name"]] = _xml(
                             NEW_DEFAULTS if summary["name"] == "Prompt Builder" else OLD_RAG)
+                        fake.unreadable.discard(summary["name"])       # the report that was there is replaced
             return {"links": [{"rel": "self", "href": "failed" if name in failing else "completed"}]}
 
+        monkeypatch.setattr(transfer, "upload_package_bytes", upload_package_bytes)
         monkeypatch.setattr(transfer, "start_import", start_import)
+        # what is given back is what THIS run printed
+        out.seek(0)
+        out.truncate()
         result = CliRunner().invoke(cli.app, ["builders-import", "--no-releases", *args])
         return result, fake, out.getvalue()
+    run.viya, run.tasks = viya, []
     return run
 
 
@@ -508,8 +550,24 @@ def test_import_restores_a_2_2_file_into_the_merged_report(importing, tmp_path):
     result, fake, text = importing(Site(**{"Prompt Builder": OLD_PROMPT, "RAG Builder": OLD_RAG}),
                                    "--options", str(options))
     assert result.exit_code == 0, text
-    assert f"{PACKAGE_FILE} - SAS Agentic AI Accelerator: 2 folder, 1 jobDefinition, 1 flowStep, 1 report" in text
-    assert "imported 5 object(s)." in text
+    assert f"{PACKAGE_FILE} - SAS Agentic AI Accelerator: 5 folder, 1 jobDefinition, 1 flowStep, 1 file, 1 report" \
+        in text
+    # the report, with the two folders it sits in, is what the transfer service was handed
+    assert "  Reports, through the transfer service (2 folder, 1 report): Prompt Builder/Prompt Builder\n" in text
+    assert "imported 3 object(s) through the transfer service." in text
+    handed = importing.uploaded["SAS Agentic AI Accelerator"]
+    assert sorted((d["transferObject"]["summary"]["type"], d["transferObject"]["summary"]["name"])
+                  for d in handed["transferDetails"]) == [
+        ("folder", "Prompt Builder"), ("folder", "SAS Agentic AI Accelerator"), ("report", "Prompt Builder")]
+    assert handed["transferObjectCount"] == 3 == len(handed["requestedItems"])
+    # everything else came in place, with the package as the source
+    assert f"  Files, custom steps and job definitions, in place in {CONTENT_ROOT}:\n" in text
+    assert "    7 entries: 7 created." in text
+    viya = importing.viya
+    assert viya.files[viya.at(f"{CONTENT_ROOT}/{FILE_PATH}")[0]] == b"CORE = 2\n"
+    assert viya.steps[viya.at(f"{CONTENT_ROOT}/{STEP_PATH}")[0]]["templates"] == STEP["templates"]
+    page, _ = viya.jobs[viya.at(f"{CONTENT_ROOT}/{UI_PATH}")[0]]
+    assert page["properties"] == [{"name": "form", "value": "<html>the page of the release</html>"}]
     restored = fake.options("Prompt Builder")
     assert restored["enableRag"] == "true" and restored["contentRoot"] == "/Team/RAG"
     assert restored["ragComputeContext"] == "SAS Studio compute context"
@@ -592,7 +650,7 @@ def test_a_failed_import_after_the_capture_names_the_kept_file(importing, tmp_pa
     assert fake.written == [] and fake.options("Prompt Builder") == OLD_PROMPT
     assert "Prompt Builder: its package did not import - options not restored." in text
     assert (f"then run:\nmdb builders-import --options {kept} --no-releases\n"
-            f"({PACKAGE_FILE} did not import - this imports again and writes the options back") in text
+            f"({PACKAGE_FILE} did not import in full - this imports again and writes the options back") in text
     assert "\nmdb options-restore" not in text and "Done." not in text
 
 
@@ -679,7 +737,8 @@ def test_a_package_without_the_report_leaves_the_report_alone(importing, no_disc
     asked = no_discovery()
     result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), without_report=True)
     assert result.exit_code == 0, text
-    assert "imported 4 object(s)" in text
+    assert "    7 entries: 7 created." in text and "transfer service" not in text
+    assert importing.uploaded == {} and importing.imports == {}
     assert asked == [] and fake.read == [] and fake.written == []
     assert fake.options("Prompt Builder") == TUNED and _captured_files(tmp_path) == []
     assert "No Builder report was imported - the options of a report on this site are left as they are." in text
@@ -762,9 +821,10 @@ def test_the_rules_of_the_content_folder_are_written_as_commands_to_review(impor
     written = (tmp_path / "rules" / "sas-viya-cli-content-commands.txt").read_text(encoding="utf-8")
     commands = [line for line in written.splitlines() if line.startswith("sas-viya ")]
     assert len(commands) == 2 and all(" -g LLMConsumers -p Read " in line for line in commands)
-    assert commands[0].startswith("sas-viya authorization create-rule -o /folders/folders/content-folder-1 ")
+    root_id = importing.viya.folder_id(CONTENT_ROOT)
+    assert root_id and commands[0].startswith(f"sas-viya authorization create-rule -o /folders/folders/{root_id} ")
     assert commands[1].startswith(
-        "sas-viya authorization create-rule --container-uri /folders/folders/content-folder-1 ")
+        f"sas-viya authorization create-rule --container-uri /folders/folders/{root_id} ")
     assert "/SAS Agentic AI Accelerator" in written and "sas-viya-cli-commands.txt" in written
     assert "Wrote sas-viya-cli-content-commands.txt" in text and "Review the file before running it." in text
     # the file mdb setup writes has another name and is not written over
@@ -931,9 +991,7 @@ def test_a_package_from_before_the_merge_is_named_as_such(importing, tmp_path):
     main = tmp_path / "SAS-Viya-Integrations" / PACKAGE_FILE
     result, fake, text = importing(
         Site(), str(main), str(old),
-        extra=[(old, {"name": "RAG Builder", "transferDetails": [
-            _other("folder", "RAG"), _other("jobDefinition", "RAG-Builder-UI"),
-            _report_detail("RAG Builder", OLD_RAG)]})])
+        extra=[(old, _retired_package())])
     assert result.exit_code == 0, text
     assert "RAG-Builder-of-2.2.json" in text
     assert ("This package predates 2.3.0: it carries report RAG Builder, jobDefinition RAG-Builder-UI"
@@ -953,3 +1011,418 @@ def test_a_dry_run_imports_nothing_and_counts_what_the_new_report_adds(importing
     assert text.count("dry run - nothing imported.") == 1
     assert text.count("arrive with the imported report and are written then") == 1
     assert "is not an option of this report version" not in text
+
+
+# ---- in place: a site whose objects have other ids ----------------------------------
+def _id(uri: str) -> str:
+    return uri.rsplit("/", 1)[-1]
+
+
+NO_CONTEXT = {**TUNED, "ragComputeContext": ""}
+
+
+def _site_with_its_own_objects(viya, root=CONTENT_ROOT) -> dict:
+    """A site that has the step, the file and the job definition of the
+    package at their paths - registered by a deploy of its own, so under ids
+    the package knows nothing of, and with the content of an earlier release.
+    Returns {path: uri}."""
+    return {
+        STEP_PATH: viya.put_member(f"{root}/{STEP_PATH}", "/dataFlows/steps/",
+                                   {**STEP, "templates": {"SAS": "%put the step of an earlier release;\n"}}),
+        FILE_PATH: viya.put_member(f"{root}/{FILE_PATH}", "/files/files/", b"CORE = 1\n"),
+        UI_PATH: viya.put_member(f"{root}/{UI_PATH}", "/jobDefinitions/definitions/", {
+            "name": "SAS-LLM-Prompt-Builder-UI", "type": "Compute", "code": UI_JOB["code"],
+            "parameters": [{**UI_JOB["parameters"][0], "defaultValue": "Team compute context"},
+                           UI_JOB["parameters"][1]],
+            "properties": [{"name": "form", "value": "<html>the page of an earlier release</html>"}]}),
+    }
+
+
+def test_an_object_registered_under_another_id_is_updated_in_place_and_keeps_its_id(importing, no_discovery):
+    """What the transfer service was measured not to do: a file that sat in
+    the folder under the same name with another id was left as it was, the
+    package's file was written into no folder, and the job ended completed.
+    Here the object at the path is the object that is written."""
+    no_discovery()
+    viya = importing.viya
+    mine = _site_with_its_own_objects(viya)
+    result, fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}))
+    assert result.exit_code == 0, text
+    # one line per entry, with the id the object has on THIS site
+    for line in (
+            f"    updated      step          {STEP_PATH}  (templates; id {_id(mine[STEP_PATH])} kept)\n",
+            f"    updated      file          {FILE_PATH}  (content replaced in place; id {_id(mine[FILE_PATH])} kept)\n",
+            f"    updated      jobDefinition {UI_PATH}  (form; id {_id(mine[UI_PATH])} kept)\n",
+            "    equal        folder        RAG/steps\n",
+            "    7 entries: 4 equal, 3 updated.\n"):
+        assert line in text, line
+    # the same objects, and one of each name
+    assert viya.ids(CONTENT_ROOT) == mine
+    assert viya.steps[mine[STEP_PATH]]["templates"] == STEP["templates"]
+    assert viya.files[mine[FILE_PATH]] == b"CORE = 2\n"
+    page, _etag = viya.jobs[mine[UI_PATH]]
+    assert page["properties"] == [{"name": "form", "value": "<html>the page of the release</html>"}]
+    # the id, the links and the user of the exporting system reached nothing
+    assert "exported" not in json.dumps([viya.steps, [body for body, _ in viya.jobs.values()]])
+    # the compute context the site set in the job definition is the site's: left as it is
+    assert page["parameters"][0]["defaultValue"] == "Team compute context"
+    # nothing was deleted, and no object was posted beside one that was there
+    assert {method for method, _path in viya.wrote()} == {"PUT"}
+    # a second import finds it all equal, under the same ids, and writes nothing
+    viya.calls.clear()
+    result, fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}))
+    assert result.exit_code == 0, text
+    assert f"    equal        step          {STEP_PATH}  (id {_id(mine[STEP_PATH])})\n" in text
+    assert f"    equal        file          {FILE_PATH}  (id {_id(mine[FILE_PATH])})\n" in text
+    assert "    7 entries: 7 equal.\n" in text and viya.wrote() == [] and viya.ids(CONTENT_ROOT) == mine
+
+
+def test_two_objects_of_one_name_on_the_site_are_named_and_the_rest_is_brought(importing, no_discovery):
+    no_discovery()
+    viya = importing.viya
+    mine = _site_with_its_own_objects(viya)
+    second = viya.put_member(f"{CONTENT_ROOT}/{STEP_PATH}", "/dataFlows/steps/", dict(STEP))
+    result, fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}))
+    assert result.exit_code == 1
+    assert (f"    FAILED       step          {STEP_PATH}  (2 registered steps of that name are in the folder (ids "
+            f"{_id(mine[STEP_PATH])}, {_id(second)}): none was changed") in text
+    assert "    7 entries: 4 equal, 2 updated, 1 FAILED." in text and "Stopped at" not in text
+    assert viya.steps[mine[STEP_PATH]]["templates"] == {"SAS": "%put the step of an earlier release;\n"}
+    assert viya.files[mine[FILE_PATH]] == b"CORE = 2\n"
+    assert f"({PACKAGE_FILE} did not import in full - this imports again" in text
+
+
+def test_the_in_place_part_stops_at_the_first_write_that_fails(importing, no_discovery):
+    """The reports are in, so their options are written back whatever comes
+    after; of the content the line says what was written and what was not."""
+    no_discovery()
+    viya = importing.viya
+    mine = _site_with_its_own_objects(viya)
+    viya.refuse[("PUT", "/files/files/")] = 500
+    result, fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}))
+    assert result.exit_code == 1
+    assert (f"    FAILED       file          {FILE_PATH}  (the file was left as it is: the update of its content "
+            "was refused (HTTP 500") in text
+    assert "    7 entries: 4 equal, 2 updated, 1 FAILED." in text
+    # the file is the last object of the package, so nothing stands behind it; what was written says so
+    assert (f"    Stopped at the first write that failed: file {FILE_PATH}. Written before it: 0 created, 2 "
+            "updated. Not attempted behind it: 0 entries. Nothing was removed.") in text
+    assert viya.files[mine[FILE_PATH]] == b"CORE = 1\n"
+    assert fake.written == ["Prompt Builder"] and fake.options("Prompt Builder")["llmProjectID"] == "llm-tuned"
+    assert "Not everything was imported and configured." in text
+    # an entry behind the one that failed is listed, not passed over
+    built = _built()
+    built.file("RAG/rag_core/later.py", b"LATER = 1\n")
+    result, fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), package=built.build())
+    assert "    not attempted file          RAG/rag_core/later.py\n" in text
+    assert "Not attempted behind it: 1 entry." in text and viya.at(f"{CONTENT_ROOT}/RAG/rag_core/later.py") == []
+
+
+# ---- where the content goes, and where the reports may ------------------------------
+ROOT2 = "/Users/me/My Folder/ZZ_VERIFY_R18/root2"
+START_JOB = {"type": "Compute", "code": "%put start here;\n", "parameters": [
+    {"version": 1, "name": "_contextName", "defaultValue": "SAS Studio compute context", "type": "character"},
+    {"version": 1, "name": "contentRoot", "defaultValue": CONTENT_ROOT, "type": "character"}]}
+
+
+def _never(what: str):
+    def fail(*args, **kwargs):
+        pytest.fail(f"the transfer service was called ({what})")
+    return fail
+
+
+def test_the_content_goes_to_the_root_that_is_named_and_the_reports_stay_out(importing, no_discovery, tmp_path):
+    """A pass inside a test root: everything but the reports is brought into
+    the folder, in place, and the transfer service is not called at all."""
+    asked = no_discovery()
+    viya = importing.viya
+    mine = _site_with_its_own_objects(viya, ROOT2)
+    built = _built()
+    built.job("Start Here", START_JOB)
+    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), "--content-root", ROOT2, "--no-reports",
+                                   "--no-files", package=built.build())
+    assert result.exit_code == 0, text
+    assert importing.uploaded == {} and importing.imports == {}
+    assert "  Reports (Prompt Builder/Prompt Builder): NOT imported - left out (--no-reports).\n" in text
+    assert f"  Files, custom steps and job definitions, in place in {ROOT2}:\n" in text
+    assert f"    updated      step          {STEP_PATH}  (templates; id {_id(mine[STEP_PATH])} kept)\n" in text
+    assert "    created      jobDefinition Start Here  (id " in text
+    assert "    8 entries: 4 equal, 3 updated, 1 created.\n" in text
+    assert viya.folder_id(CONTENT_ROOT) is None and {**viya.ids(ROOT2), **mine} == viya.ids(ROOT2)
+    # the root that was named is the root the job reads
+    start, _ = viya.jobs[viya.at(f"{ROOT2}/Start Here")[0]]
+    assert {p["name"]: p["defaultValue"] for p in start["parameters"]}["contentRoot"] == ROOT2
+    # no report was imported: the report of the site was not read, not written, and nothing was discovered
+    assert asked == [] and fake.read == [] and fake.written == [] and _captured_files(tmp_path) == []
+    assert "No Builder report was imported - the options of a report on this site are left as they are." in text
+    assert "Done." in text
+
+
+def test_a_report_is_not_imported_into_a_root_the_package_does_not_come_from(importing, no_discovery, tmp_path):
+    """The transfer service takes no target folder. With another content
+    root the reports would land in the folder of the package - so they are
+    not imported, the command says so, and the exit code says it too."""
+    no_discovery()
+    viya = importing.viya
+    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), "--content-root", "/Team/Accelerator")
+    assert result.exit_code == 1
+    assert importing.uploaded == {} and fake.read == [] and fake.written == [] and _captured_files(tmp_path) == []
+    assert ("  Reports (Prompt Builder/Prompt Builder): NOT imported - the package was exported from "
+            f"{CONTENT_ROOT} and its content goes to /Team/Accelerator: the transfer service imports a report "
+            "into the folder it was exported from, and no mapping to another folder is known to work.\n") in text
+    assert "--no-reports to bring everything but the reports" in text
+    # the content was brought all the same
+    assert "    7 entries: 7 created." in text and FILE_PATH in viya.tree("/Team/Accelerator")
+    assert "then run:\nmdb builders-import --content-root /Team/Accelerator --no-releases\n" in text
+
+
+def test_a_package_from_a_folder_below_others_never_reaches_the_transfer_service(importing, no_discovery):
+    """Measured: such a package lands in a NEW folder at the root of SAS
+    Content, named like its root, whatever folder it was meant for."""
+    no_discovery()
+    nested = _built(root="root1", location="/Users/me/My Folder/ZZ_VERIFY_R18").build()
+    for root in (None, "/Users/me/My Folder/ZZ_VERIFY_R18/root1"):
+        args = ["--content-root", root] if root else []
+        result, fake, text = importing(Site(), *args, package=nested)
+        assert result.exit_code == 1, text
+        assert importing.uploaded == {}
+        assert ("NOT imported - the package was exported from /Users/me/My Folder/ZZ_VERIFY_R18/root1, a folder "
+                "that is not at the root of SAS Content: the transfer service puts such a package into a new "
+                f"folder at the root of SAS Content (measured), not into {root or CONTENT_ROOT}.") in text
+    result, fake, text = importing(Site(), "--content-root", ROOT2, "--no-reports", package=nested)
+    assert result.exit_code == 0 and importing.uploaded == {}
+    # a root that does not say where it was exported from is not guessed either
+    silent = json.loads(json.dumps(nested))
+    del next(d for d in silent["transferDetails"]
+             if d["transferObject"]["summary"]["name"] == "root1")["transferObject"]["contentSourceLocation"]
+    result, fake, text = importing(Site(), package=silent)
+    assert result.exit_code == 1 and importing.uploaded == {}
+    assert "NOT imported - the package does not say which folder it was exported from." in text
+
+
+def test_the_refusal_of_a_root_is_a_rule_and_guesses_nothing():
+    root = "/SAS Agentic AI Accelerator"
+    assert cli._transfer_refusal(root, root) is None
+    assert "does not say" in cli._transfer_refusal(None, root)
+    assert "not at the root of SAS Content" in cli._transfer_refusal("/Users/me/root1", "/Users/me/root1")
+    assert "no mapping to another folder is known to work" in cli._transfer_refusal(root, "/Other Root")
+    assert "no mapping to another folder is known to work" in cli._transfer_refusal(root, root.lower())
+
+
+# ---- the tasks of the import job ----------------------------------------------------
+def test_a_task_that_ended_with_a_warning_is_printed_and_fails_the_run(importing, tmp_path):
+    """The job of the measured import ended `completed` with errorCount 0,
+    and mdb said "imported 71 object(s)". Three of its tasks had ended
+    completedWithWarnings: an object the service had written into no folder."""
+    importing.tasks = [
+        {"name": "SAS Agentic AI Accelerator", "resourceType": "folder", "state": "completed",
+         "message": "The resource was successfully imported."},
+        {"name": "Prompt Builder", "resourceType": "report", "state": "completedWithWarnings",
+         "message": "\n/reports/reports/exported was updated but cannot be added to the intended folder\n"
+                    "An item named \"Prompt Builder\" of type \"Report\" already exists in the folder "
+                    "\"Prompt Builder\".\n"},
+        {"name": "background.png", "resourceType": "application/vnd.sas.file+json", "state": "failed"}]
+    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}))
+    assert result.exit_code == 1
+    assert "    the import job ended completed, and 2 of its tasks did not:\n" in text
+    assert ("      report 'Prompt Builder': completedWithWarnings - /reports/reports/exported was updated but "
+            "cannot be added to the intended folder / An item named \"Prompt Builder\" of type \"Report\" already "
+            "exists in the folder \"Prompt Builder\".\n") in text
+    assert "      file 'background.png': failed\n" in text
+    assert "through the transfer service.\n" not in text and "Done." not in text
+    # the report the import was meant to bring is not known to be the one on the site: its options stay in the file
+    assert "Prompt Builder: its package did not import - options not restored." in text
+    assert fake.written == []
+    kept, = _captured_files(tmp_path)
+    assert f"then run:\nmdb builders-import --options {kept} --no-releases\n" in text
+    # the content was still brought in place
+    assert "    7 entries: 7 created." in text
+
+
+def test_an_import_whose_tasks_cannot_be_read_is_not_called_done(importing, monkeypatch):
+    def unreadable(session, job):
+        raise RuntimeError("Reading the tasks of the job completed failed: HTTP 503")
+    monkeypatch.setattr(transfer, "job_tasks", unreadable)
+    result, fake, text = importing(Site())
+    assert result.exit_code == 1 and "Reading the tasks of the job completed failed: HTTP 503" in text
+    assert "through the transfer service.\n" not in text
+
+
+# ---- the capture stops the command ---------------------------------------------------
+def _unreadable(**reports) -> Site:
+    fake = Site(**reports)
+    fake.unreadable = {"Prompt Builder"}
+    return fake
+
+
+def test_a_report_that_cannot_be_read_stops_the_command_before_anything_is_imported(importing, no_discovery,
+                                                                                    tmp_path):
+    """The capture exists so that an import does not cost a site its options.
+    A report that was there and could not be read was passed over: the
+    import replaced it, discovery configured the new one, and the run ended
+    `Done.` with exit code 0."""
+    asked = no_discovery()
+    viya = importing.viya
+    result, fake, text = importing(_unreadable(**{"Prompt Builder": TUNED}))
+    assert result.exit_code == 1
+    assert "Prompt Builder: it is on this site and its content cannot be read (Reading the report content failed: " \
+           "HTTP 503)." in text
+    assert "Nothing was imported." in text and "--options <file>" in text and "--no-options-capture" in text
+    # nothing: no upload, no import, no write in place, no file, no discovery, the report as it was
+    assert importing.uploaded == {} and importing.imports == {} and viya.wrote() == [] and viya.folders == {}
+    assert asked == [] and fake.written == [] and fake.options("Prompt Builder") == TUNED
+    assert _captured_files(tmp_path) == [] and "Done." not in text and "imported" not in text.replace(
+        "Nothing was imported.", "")
+    # a dry run stops the same way: it says what a run would do
+    result, fake, text = importing(_unreadable(**{"Prompt Builder": TUNED}), "--dry-run")
+    assert result.exit_code == 1 and "Nothing was imported." in text
+    # the retired report holds options too
+    fake = Site(**{"Prompt Builder": TUNED, "RAG Builder": OLD_RAG})
+    fake.unreadable = {"RAG Builder"}
+    result, fake, text = importing(fake)
+    assert result.exit_code == 1 and "RAG Builder: it is on this site and its content cannot be read" in text
+    # and a service that does not say whether the report is there is not "no report"
+    fake = Site()
+    fake.unanswered = {"Prompt Builder"}
+    result, fake, text = importing(fake)
+    assert result.exit_code == 1 and importing.uploaded == {}
+    assert "Prompt Builder: whether it is on this site could not be asked (Looking up the report 'Prompt Builder' " \
+           "failed: HTTP 503)." in text
+
+
+def test_the_two_ways_out_of_a_report_that_cannot_be_read(importing, tmp_path):
+    options = tmp_path / "builder-options.json"
+    options.write_text(json.dumps({"version": 1, "reports": {"Prompt Builder": {"llmProjectID": "llm-file"}}}),
+                       encoding="utf-8")
+    # the options are named: the report on the site is not read for them before the import
+    stuck = _unreadable(**{"Prompt Builder": TUNED})
+    result, fake, text = importing(stuck, "--options", str(options))
+    assert result.exit_code == 0, text
+    assert fake.options("Prompt Builder")["llmProjectID"] == "llm-file"
+    # or the import is asked to go on without them: the new report is configured from this deployment
+    result, fake, text = importing(_unreadable(**{"Prompt Builder": TUNED}), "--no-options-capture")
+    assert result.exit_code == 0, text
+    assert "Options: not read from the report on this site (--no-options-capture)." in text
+    assert fake.options("Prompt Builder")["llmProjectID"] == "llm-disc" and _captured_files(tmp_path) == []
+    # a package that brings no report replaces none: nothing is read, and nothing stops
+    result, fake, text = importing(_unreadable(**{"Prompt Builder": TUNED}), without_report=True)
+    assert result.exit_code == 0, text
+    # and options that are named for a report that still cannot be read are a line, not a traceback
+    result, fake, text = importing(_unreadable(**{"Prompt Builder": TUNED}), "--options", str(options),
+                                   without_report=True)
+    assert result.exit_code == 1 and result.exception.__class__ is SystemExit
+    assert "Prompt Builder: reading the report failed (Reading the report content failed: HTTP 503) - its options " \
+           "were not written." in text
+
+
+# ---- the compute context ---------------------------------------------------------------
+def _context(viya, root=CONTENT_ROOT) -> str:
+    page, _etag = viya.jobs[viya.at(f"{root}/{UI_PATH}")[0]]
+    return {p["name"]: p["defaultValue"] for p in page["parameters"]}["_contextName"]
+
+
+def test_the_compute_context_of_the_site_is_written_into_the_job_definitions(importing, no_discovery):
+    """Start Here without `_contextName` ran in the SAS Job Execution compute
+    context, under a service account, and checked nothing. The import writes
+    the context it knows runs as the user: the ingestion compute context of
+    the options it restores."""
+    no_discovery()
+    viya = importing.viya
+    _site_with_its_own_objects(viya)
+    assert _context(viya) == "Team compute context"
+    result, fake, text = importing(Site(**{"Prompt Builder": {**TUNED, "ragComputeContext": "RAG compute context"}}))
+    assert result.exit_code == 0, text
+    assert ("Compute context: RAG compute context (the ingestion compute context of the options) - written into "
+            "_contextName of the job definitions that have it.") in text
+    assert _context(viya) == "RAG compute context"
+    assert f"    updated      jobDefinition {UI_PATH}  (form, parameters; id " in text
+    # the one that is given wins
+    result, fake, text = importing(Site(**{"Prompt Builder": {**TUNED, "ragComputeContext": "RAG compute context"}}),
+                                   "--compute-context", "Given context")
+    assert result.exit_code == 0, text
+    assert "Compute context: Given context (--compute-context)" in text and _context(viya) == "Given context"
+    # a retired report's computeContext WAS the ingestion context: folded in, it counts
+    result, fake, text = importing(Site(**{"RAG Builder": {**OLD_RAG, "computeContext": "Old RAG context"}}))
+    assert result.exit_code == 0, text
+    assert _context(viya) == "Old RAG context"
+
+
+def test_the_context_of_the_optimization_job_is_not_taken_for_it(importing, no_discovery):
+    """`computeContext` is where the optimization job runs - commonly the
+    SAS Job Execution compute context, the very context Start Here checked
+    nothing in. It is never written into a job definition."""
+    no_discovery()
+    viya = importing.viya
+    _site_with_its_own_objects(viya)
+    options = {**TUNED, "computeContext": "SAS Job Execution compute context", "ragComputeContext": ""}
+    result, fake, text = importing(Site(**{"Prompt Builder": options}))
+    assert result.exit_code == 0, text
+    assert "Compute context:" not in text and _context(viya) == "Team compute context"
+    assert cli._known_context({"Prompt Builder": options}) == ""
+    assert cli._known_context({"Prompt Builder": {"ragComputeContext": " X "}}) == "X"
+    assert cli._known_context(None) == "" and cli._known_context({}) == ""
+    # only what was given is written: nothing, or the context and the root
+    assert cli._deploy_settings(None, "") == {} and cli._deploy_settings("/Root/", " C ") == {
+        "_contextName": "C", "contentRoot": "/Root"}
+
+
+# ---- a dry run asks, and nothing else ----------------------------------------------------
+#: Every request a dry run may make, as the command's own text lists them.
+DRY_RUN_REQUESTS = (
+    r"/casManagement/servers\?limit=100", r"/reports/reports", r"/reports/reports/[^/]+/content",
+    r"/folders/folders/@item", r"/folders/folders/[^/]+/members", r"/files/files/[^/]+/content",
+    r"/dataFlows/steps/[^/]+", r"/jobDefinitions/definitions/[^/]+")
+
+
+def test_a_dry_run_makes_get_requests_only(importing, no_discovery, monkeypatch, tmp_path):
+    """The dry run uploaded the package to the server and deleted it again:
+    two writes, to read a mapping. It now reads the mapping off the package.
+    Run here against a SAS Viya that answers every request itself - reports,
+    CAS servers, folders, files, steps, job definitions - so that every
+    request the command makes is one this test sees."""
+    import re
+    asked = no_discovery()
+    viya = importing.viya
+    mine = _site_with_its_own_objects(viya)
+    viya.reports = {"Prompt Builder": _xml(TUNED), "RAG Builder": _xml(OLD_RAG)}
+    before = json.dumps([viya.reports, viya.steps, {k: v.decode() for k, v in viya.files.items()},
+                         [body for body, _ in viya.jobs.values()], viya.tree(CONTENT_ROOT)], sort_keys=True)
+    folder = tmp_path / "SAS-Viya-Integrations"
+    (folder / PACKAGE_FILE).write_text(json.dumps(_built().build()), encoding="utf-8")
+    for name in ("upload_package_bytes", "upload_package", "start_import", "get_mapping", "delete_package",
+                 "start_export"):
+        monkeypatch.setattr(transfer, name, _never(name))
+    viya.calls.clear()
+    result = CliRunner().invoke(cli.app, ["builders-import", "--dry-run", "--report-caslib", "Monitoring"])
+    text = cli.console.file.getvalue()
+    assert result.exit_code == 0, text
+    # every request is a GET, and one of those the command names
+    assert {method for method, _path, _params in viya.calls} == {"GET"}
+    for _method, path, _params in viya.calls:
+        assert any(re.fullmatch(pattern, path) for pattern in DRY_RUN_REQUESTS), path
+    assert {next(p for p in DRY_RUN_REQUESTS if re.fullmatch(p, path)) for _m, path, _p in viya.calls} == \
+        set(DRY_RUN_REQUESTS)
+    # nothing changed anywhere, and nothing was left behind
+    assert json.dumps([viya.reports, viya.steps, {k: v.decode() for k, v in viya.files.items()},
+                       [body for body, _ in viya.jobs.values()], viya.tree(CONTENT_ROOT)], sort_keys=True) == before
+    assert asked == [] and _captured_files(tmp_path) == []
+    assert not (tmp_path / "sas-viya-cli-content-commands.txt").exists()
+    # and it says what a run would do
+    assert "Release table: would load Public.ACCELERATOR_RELEASES on cas-shared-default." in text
+    assert "Options: read from the report on this site; a run keeps them in a file and writes them back" in text
+    assert "  Reports, through the transfer service (2 folder, 1 report): Prompt Builder/Prompt Builder\n" in text
+    assert "    mapping: Prompt Builder: VisualElement:ve9 -> host site.example\n" in text
+    assert f"    updated      step          {STEP_PATH}  (templates; id {_id(mine[STEP_PATH])} kept)\n" in text
+    assert "    7 entries: 4 equal, 3 updated.\n" in text
+    assert text.count("dry run - nothing imported.") == 1 and "Done." not in text
+    assert "A report named 'RAG Builder' still exists on this site." in text
+
+
+def test_the_command_to_repeat_carries_the_new_options():
+    assert cli._import_command(None, None, None, None, None, True, cli.IMPORT_TIMEOUT, None, "/Team/Accelerator",
+                               "Team compute context", True, True) == (
+        'mdb builders-import --content-root /Team/Accelerator --compute-context "Team compute context" '
+        "--no-releases --no-reports --no-options-capture")
+    # with an options file in the line nothing is captured anyway
+    assert cli._import_command(None, Path("o.json"), None, None, None, False, cli.IMPORT_TIMEOUT,
+                               no_capture=True) == "mdb builders-import --options o.json"

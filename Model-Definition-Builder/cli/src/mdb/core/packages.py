@@ -53,6 +53,18 @@ the manifest:
 `reset_report_defaults` writes the neutral option defaults into every copy of
 the Prompt Builder report, which is what makes an export from a configured
 site shippable without a hand edit.
+
+THE PACKAGE AS A SOURCE. An import does not hand the whole package to the
+transfer service: that service was measured to leave a file alone that exists
+in the target folder under the same name with another id (the package's file
+then sits in no folder, and the job still ends completed), and to put a
+package whose root folder is not at the root of SAS Content into a new folder
+there. So `PackageSource` reads the files, custom steps and job definitions
+out of a package for the in-place write path of viya/content.py, and
+`reports_package` cuts out what is left for the transfer service: the
+reports, the files that are their children, and the folders they sit in.
+`package_root_path` says which folder a package was exported from, which
+decides whether its reports can be imported at all.
 """
 from __future__ import annotations
 
@@ -847,6 +859,206 @@ def _reduce(package: dict, items: list, kept: list) -> None:
         package["requestedItems"] = [uri for uri in package["requestedItems"] if uri in here]
     if isinstance(package.get("transferObjectCount"), int):
         package["transferObjectCount"] = len(kept_details)
+
+
+# ---------------------------------------------------------------------------
+# A package as the source of an import
+# ---------------------------------------------------------------------------
+#: What a registered step carries that belongs to the system it was read
+#: from, or that the service writes itself: not part of a step that is
+#: registered somewhere else.
+_STEP_INSTANCE_KEYS = ("id", "links", "version", "eTag", "createdBy", "modifiedBy", "creationTimeStamp",
+                       "modifiedTimeStamp", "localDisplayName", "localDescription", "localUi")
+_PARAMETER_KEYS = ("version", "name", "defaultValue", "type", "label", "required")
+
+
+class PackageSource:
+    """What a transfer package holds for each file, custom step and job
+    definition - the source `mdb builders-import` hands to the write path of
+    `mdb content-deploy` (viya/content.py), so that these objects reach a
+    site IN PLACE and not through the transfer service.
+
+    How the package holds each (read from exported packages):
+
+    * a file: the base64 of `{"fileResource": {...}, "content": "<base64 of
+      the file's bytes>"}` - the bytes are taken as they are;
+    * a custom step: the base64 of the step as the dataFlows service gives
+      it - `templates`, `ui`, `flowMetadata`, name and description, plus the
+      id, the links and the user of the exporting system, which are left out;
+    * a job definition: the base64 of the definition - `code`, `parameters`,
+      and the form as the property `form`.
+
+    The entries are the package's own: every such object below its root
+    folder, at the path the package gives it. Not brought this way, and
+    named in `left_out`: an authorization rule or share, an object that is
+    not below the root folder, an object on a path that never ships. Reports
+    and the files that are children of a report are `reports` / `children`:
+    they go through the transfer service or not at all.
+
+    `checkout` is the content manifest of the checkout, where there is one:
+    it says which parameters of a job definition are site settings.
+    """
+
+    name = "the package"
+
+    def __init__(self, package: dict, checkout=None, root_uri: Optional[str] = None):
+        self.package = package
+        self.checkout = checkout
+        self.root_uri, self.items = locate(package, root_uri)
+        self.root_path = package_root_path(package, root_uri)
+        self._at: dict = {}
+        self.left_out: list = []
+        self.reports: list = []
+        self.children: list = []
+        for item in self.items:
+            kind = MANIFEST_KIND.get(item.kind)
+            if item.kind in GRANT_KINDS:
+                self.left_out.append(f"{item.kind} '{item.name}' (mdb imports no authorization rule and no share)")
+            elif item.owner is not None:
+                self.children.append(item)
+            elif kind is None or item.path is None:
+                self.left_out.append(f"{item.kind} '{item.name}' (not below the root folder of the package)")
+            elif kind == "folder":
+                continue
+            elif _content.never_ship(item.path):
+                self.left_out.append(f"{item.shown} ({_content.never_ship(item.path)}, which never ships)")
+            elif kind == "report":
+                self.reports.append(item)
+            else:
+                self._at.setdefault((kind, item.path), []).append(item)
+        report_paths = {item.path for item in self.reports}
+        self.left_out += [f"file '{item.name}' (belongs to report '{item.owner}', which is not imported)"
+                          for item in self.children if item.owner not in report_paths]
+        self.children = [item for item in self.children if item.owner in report_paths]
+
+    @property
+    def has_content(self) -> bool:
+        """Whether the package holds a file, a step or a job definition to
+        bring in place."""
+        return bool(self._at)
+
+    def manifest(self, content_root: str) -> "_content.ContentManifest":
+        """The entries of the package as a manifest whose content root is
+        the folder they are brought into."""
+        entries = [_content.Entry(path=path, kind=kind) for kind, path in self._at]
+        entries += [_content.Entry(path=item.path, kind="report") for item in self.reports]
+        repo_root = self.checkout.repo_root if self.checkout is not None else Path(".")
+        return _content.ContentManifest(repo_root=repo_root, content_root=content_root.rstrip("/"),
+                                        package="", entries=entries)
+
+    def _packaged(self, entry) -> dict:
+        found = self._at.get((entry.kind, entry.path)) or []
+        if len(found) != 1:
+            raise ValueError(f"the package holds {len(found)} objects at this path - none is taken")
+        body = _body(found[0].obj)
+        if body is None:
+            raise ValueError("the packaged content is unreadable")
+        return body
+
+    def file_bytes(self, entry) -> bytes:
+        body = self._packaged(entry)
+        try:
+            return base64.b64decode(body.get("content") or "", validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("the packaged content is unreadable") from exc
+
+    def step_body(self, entry) -> dict:
+        body = {key: value for key, value in self._packaged(entry).items() if key not in _STEP_INSTANCE_KEYS}
+        body.setdefault("properties", {})
+        return body
+
+    def step_document(self, entry) -> bytes:
+        return json.dumps(self.step_body(entry), ensure_ascii=False).encode("utf-8")
+
+    def job_body(self, entry) -> dict:
+        body = self._packaged(entry)
+        wanted = {
+            "name": entry.name, "type": body.get("type") or "Compute", "code": body.get("code") or "",
+            "parameters": [{key: p[key] for key in _PARAMETER_KEYS if key in p}
+                           for p in body.get("parameters") or [] if isinstance(p, dict)],
+            "properties": [{"name": "form", "value": p.get("value") or ""} for p in body.get("properties") or []
+                           if isinstance(p, dict) and p.get("name") == "form"][:1],
+        }
+        if body.get("description"):
+            wanted["description"] = body["description"]
+        return wanted
+
+    def site_settings(self, entry) -> tuple:
+        listed = self.checkout.find(entry.path, "jobDefinition") if self.checkout is not None else None
+        return _content.site_settings(listed) if listed is not None else ()
+
+
+def reports_package(package: dict, root_uri: Optional[str] = None) -> tuple:
+    """(a copy of a package reduced to what the transfer service has to
+    bring, [what it holds as 'kind path']).
+
+    That is the reports below the root folder, the files that are children of
+    one, and the folders the reports sit in, up to the root. Files, custom
+    steps and job definitions are not in it: they are brought in place. The
+    package itself is not changed. The list is empty when the package holds
+    no report - then there is nothing to hand to the transfer service."""
+    reduced = json.loads(json.dumps(package))
+    _root, items = locate(reduced, root_uri)
+    reports = [item for item in items if item.kind == "report" and item.path and not _content.never_ship(item.path)]
+    if not reports:
+        return reduced, []
+    paths = {item.path for item in reports}
+    folders = {""}
+    for path in paths:
+        parts = path.split("/")[:-1]
+        folders.update("/".join(parts[:depth]) for depth in range(1, len(parts) + 1))
+    taken = {id(item) for item in reports}
+    kept = [item for item in items
+            if (item.kind == "folder" and item.path in folders) or id(item) in taken
+            or (item.owner is not None and item.owner in paths)]
+    _reduce(reduced, items, kept)
+    return reduced, [f"{item.kind} {item.path if item.path else (item.owner + '/' + item.name if item.owner else item.name)}"
+                     for item in kept]
+
+
+def mapping_preview(package: dict) -> dict:
+    """The import mapping a package would be given, as far as the package
+    itself says it: the tables its reports bind and their substitutions. A
+    dry run shows what `rehost_mapping` makes of this without asking the
+    transfer service, which only gives a mapping for a package that was
+    uploaded."""
+    tables, substitutions = [], []
+    for obj, summary in _reports(package):
+        for connector in obj.get("connectors") or []:
+            if isinstance(connector, dict) and connector.get("type") == "table" and connector.get("uri"):
+                spec = str(connector["uri"])
+                if spec not in [t["source"] for t in tables]:
+                    tables.append({"source": spec, "target": spec})
+        properties = [{"name": name, "value": value} for name, value in (obj.get("substitutions") or {}).items()]
+        if properties:
+            substitutions.append({"resourceName": summary.get("name"), "properties": properties})
+    return {"version": 1, "connectors": {"table": tables}, "substitutions": substitutions}
+
+
+def named_users(package: dict) -> dict:
+    """{user id: number of places} for every `createdBy` / `modifiedBy` a
+    package holds: its own, those of the object summaries and those inside
+    the bodies. An export names the people who made the objects; nothing
+    here removes them (see `mdb package-export`)."""
+    found: dict = {}
+
+    def walk(value) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in ("createdBy", "modifiedBy", "userName") and isinstance(item, str) and item:
+                    found[item] = found.get(item, 0) + 1
+                else:
+                    walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk({key: value for key, value in package.items() if key != "transferDetails"})
+    for detail in package.get("transferDetails") or []:
+        obj = detail.get("transferObject") or {}
+        walk(obj.get("summary") or {})
+        walk(_report_wrapper(obj).get("object") if _report_wrapper(obj) else _body(obj))
+    return found
 
 
 # ---------------------------------------------------------------------------

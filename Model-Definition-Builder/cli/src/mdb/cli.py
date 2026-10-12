@@ -1203,7 +1203,16 @@ def options_save(
                   "`mdb options-restore` after importing a report package.[/green]")
 
 
-def _capture_options(session, seeds: dict) -> dict:
+class _ReportUnreadable(RuntimeError):
+    """A Builder report is on the site (or may be) and its options cannot be
+    read."""
+
+    def __init__(self, report: str, reason):
+        self.report = report
+        super().__init__(f"{report}: {reason}")
+
+
+def _capture_options(session, seeds: dict, strict: bool = False) -> dict:
     """{report name: {option: value}} for the Builder report, as options-save
     writes it: what `seeds` discovered, overlaid with what the live reports
     hold.
@@ -1213,18 +1222,33 @@ def _capture_options(session, seeds: dict) -> dict:
     merged report's own values, then the retired report's, then discovery. A
     project id an admin once chose in the retired report beats the one this
     run would derive.
+
+    A report whose content cannot be read is passed over with a line - unless
+    `strict`: then it raises _ReportUnreadable, and so does a lookup the
+    reports service does not answer. That is for the caller about to replace
+    the report: options it could not read are options it would lose.
     """
     from .core.options import (BUILDER_REPORTS, LEGACY_REPORTS, fold_legacy, merge_seed,
                                read_options)
     from .viya.reports import find_report, get_content
     live: dict = {}
     for report_name in (*BUILDER_REPORTS, *sorted(LEGACY_REPORTS)):
-        report = find_report(session, report_name)
+        if strict:
+            try:
+                report = find_report(session, report_name, strict=True)
+            except Exception as exc:
+                raise _ReportUnreadable(report_name, f"whether it is on this site could not be asked ({exc})") \
+                    from exc
+        else:
+            report = find_report(session, report_name)
         if not report:
             continue
         try:
             content, _ = get_content(session, report["id"])
         except Exception as exc:
+            if strict:
+                raise _ReportUnreadable(report_name, f"it is on this site and its content cannot be read ({exc})") \
+                    from exc
             console.print(f"[yellow]{report_name}: content unreadable ({exc}).[/yellow]")
             continue
         live[report_name] = read_options(content)
@@ -1372,7 +1396,13 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
             else:
                 console.print(f"[yellow]{report_name}: no such report here - skipped.[/yellow]")
             continue
-        content, etag = get_content(session, report["id"])
+        try:
+            content, etag = get_content(session, report["id"])
+        except Exception as exc:
+            console.print(f"[red]{report_name}: reading the report failed ({exc}) - its options were not "
+                          "written.[/red]", highlight=False)
+            failures += 1
+            continue
         updated, result = write_options(content, values)
         updated, rehosted = rehost_content(updated, host) if host else (updated, 0)
         with_import = [label for label in result.missing if label in arriving.get(report_name, ())]
@@ -1830,7 +1860,8 @@ def _shell_word(value, windows: bool = os.name == "nt") -> str:
 
 
 def _import_command(packages, options, caslib, table, server, no_releases: bool, timeout: int,
-                    report_caslib=None) -> str:
+                    report_caslib=None, content_root=None, compute_context=None, no_reports: bool = False,
+                    no_capture: bool = False) -> str:
     """`mdb builders-import` with the arguments a run was given, for the line
     that tells an admin to run it again. An argument that was not given is
     left out, so the repeat reads the same environment the first run did -
@@ -1840,11 +1871,16 @@ def _import_command(packages, options, caslib, table, server, no_releases: bool,
     if options is not None:
         words += ["--options", _shell_word(options)]
     for flag, value in (("--caslib", caslib), ("--report-caslib", report_caslib), ("--table", table),
-                        ("--server", server)):
+                        ("--server", server), ("--content-root", content_root),
+                        ("--compute-context", compute_context)):
         if value:
             words += [flag, _shell_word(value)]
     if no_releases:
         words.append("--no-releases")
+    if no_reports:
+        words.append("--no-reports")
+    if no_capture and options is None:
+        words.append("--no-options-capture")
     if timeout != IMPORT_TIMEOUT:
         words += ["--timeout", str(timeout)]
     return " ".join(words)
@@ -1854,12 +1890,20 @@ def _live_options(session) -> dict:
     """{report name: {option: value}} as the Builder report on this site holds
     them now - a retired report folded in, as `mdb options-save
     --reports-only` records them. Empty when the site has neither report:
-    then there is nothing an import could overwrite."""
+    then there is nothing an import could overwrite.
+
+    Raises _ReportUnreadable when a report is on the site and cannot be read,
+    or when the reports service does not say whether it is: an import behind
+    that would replace a report whose options nobody holds."""
     from .core.options import BUILDER_REPORTS, LEGACY_REPORTS
     from .viya.reports import find_report
-    if not any(find_report(session, name) for name in (*BUILDER_REPORTS, *sorted(LEGACY_REPORTS))):
-        return {}
-    return _capture_options(session, {})
+    on_site = False
+    for name in (*BUILDER_REPORTS, *sorted(LEGACY_REPORTS)):
+        try:
+            on_site = bool(find_report(session, name, strict=True)) or on_site
+        except Exception as exc:
+            raise _ReportUnreadable(name, f"whether it is on this site could not be asked ({exc})") from exc
+    return _capture_options(session, {}, strict=True) if on_site else {}
 
 
 def _keep_captured(captured: dict) -> Path:
@@ -1886,6 +1930,47 @@ def _keep_captured(captured: dict) -> Path:
     return path
 
 
+def _transfer_refusal(package_root: Optional[str], target_root: str) -> Optional[str]:
+    """Why the reports of a package are NOT handed to the transfer service
+    for this content root, or None when they are.
+
+    The transfer service places an object by the folders the package holds,
+    and takes no target folder. Measured on 2026-10-12: a package whose root
+    folder was not at the root of SAS Content landed in a NEW folder of that
+    name at the root, and the folder it was meant for stayed empty. The one
+    mapping known to work is the one every release up to 2.2.x used: a root
+    folder at the root of SAS Content, imported into the folder of the same
+    path. Anything else is not guessed."""
+    if package_root is None:
+        return "the package does not say which folder it was exported from"
+    if package_root.count("/") != 1:
+        return (f"the package was exported from {package_root}, a folder that is not at the root of SAS Content: "
+                "the transfer service puts such a package into a new folder at the root of SAS Content "
+                f"(measured), not into {target_root}")
+    if package_root != target_root:
+        return (f"the package was exported from {package_root} and its content goes to {target_root}: the "
+                "transfer service imports a report into the folder it was exported from, and no mapping to "
+                "another folder is known to work")
+    return None
+
+
+def _known_context(saved: Optional[dict]) -> str:
+    """The compute context a site's options name for jobs that run as the
+    user who starts them: the option `ragComputeContext` of the Prompt
+    Builder report (with what a retired report held folded in). Empty when
+    the options name none.
+
+    Not `computeContext`: that is the context of the optimization job, which
+    a site commonly points at the SAS Job Execution compute context - a
+    context that runs under a service account, in which Start Here was
+    measured to check nothing."""
+    from .core.options import MERGED_REPORT, fold_legacy
+    if not saved:
+        return ""
+    folded, _messages = fold_legacy(json.loads(json.dumps(saved)))
+    return str((folded.get(MERGED_REPORT) or {}).get("ragComputeContext") or "").strip()
+
+
 @app.command("builders-import")
 def builders_import(
     packages: Optional[list[Path]] = typer.Argument(
@@ -1902,40 +1987,102 @@ def builders_import(
              "where a site does not keep them in the library the package names. Default: left as exported."),
     table: Optional[str] = typer.Option(None, "--table", "-t", help="Release table name (env: SAS_RELEASES_TABLE)."),
     server: Optional[str] = typer.Option(None, "--server", help="CAS server (env: SAS_CAS_SERVER)."),
+    content_root: Optional[str] = typer.Option(
+        None, "--content-root",
+        help="SAS Content folder the files, custom steps and job definitions of the package are brought into "
+             "(default: the content root the manifest names). The reports are imported only into the folder "
+             "the package was exported from, at the root of SAS Content."),
+    compute_context: Optional[str] = typer.Option(
+        None, "--compute-context",
+        help="Compute context written into the parameter _contextName of the job definitions that have one. "
+             "Default: the ingestion compute context of the options that are written back, when they name one."),
     no_releases: bool = typer.Option(False, "--no-releases", help="Do not (re)load the release table first."),
+    no_reports: bool = typer.Option(
+        False, "--no-reports",
+        help="Leave the reports of the package out: the transfer service is not called at all."),
+    no_options_capture: bool = typer.Option(
+        False, "--no-options-capture",
+        help="Do not read the options of the Prompt Builder report on the site before the import. The report "
+             "the package brings is then configured from this deployment, and what an administrator set is gone."),
     out: str = typer.Option(".", "--out", help="Directory for the authorization-rules file of the content folder."),
     no_files: bool = typer.Option(False, "--no-files", help="Do not write the authorization-rules file."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show the objects and the import mapping; import nothing."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Say what a run would do; every request but the sign-in is a GET."),
     timeout: int = typer.Option(IMPORT_TIMEOUT, "--timeout", help="Seconds to wait for each import job."),
 ):
-    """Import the accelerator's content folder into this deployment: load the
-    release table, import the one transfer package with its reports bound to
-    this deployment's tables and the Data-Driven Content URL pointing at this
-    server, write the Prompt Builder options back, and write the authorization
-    commands for the content folder.
+    """Bring the accelerator's content folder into this deployment from the
+    one transfer package: load the release table, import the reports, bring
+    the files, custom steps and job definitions in place, write the Prompt
+    Builder options back, and write the authorization commands for the folder.
 
-    What `sas-viya transfer upload` + `import` do, plus what an import
-    otherwise needs by hand afterwards. The Prompt Builder report's data
-    source is retargeted at SAS_CAS_LIBRARY.SAS_RELEASES_TABLE (the package
-    binds Public.ACCELERATOR_RELEASES), with --report-caslib the other tables
-    the reports read are pointed at the tables of the same name in that
-    library, and the placeholder host in the DDC URL becomes SAS_VIYA_URL -
-    all through the transfer service's import mapping, so nothing is edited
-    after the fact.
+    TWO WAYS IN, by kind of object. The REPORTS, with the files that are
+    children of a report (its pictures) and the folders they sit in, go
+    through the transfer service: the Prompt Builder report's data source is
+    retargeted at SAS_CAS_LIBRARY.SAS_RELEASES_TABLE (the package binds
+    Public.ACCELERATOR_RELEASES), with --report-caslib the other tables the
+    reports read are pointed at the tables of the same name in that library,
+    and the placeholder host in the DDC URL becomes SAS_VIYA_URL - all through
+    the import mapping. EVERY FILE, CUSTOM STEP AND JOB DEFINITION of the
+    package is brought IN PLACE, by the requests `mdb content-deploy` sends,
+    with the package as the source and no checkout needed for the content: an
+    object that exists at its path is updated under the id it has on this
+    site, whatever id the package carries, and a missing one is created. One
+    line per entry says equal, updated, created or FAILED. That is not left
+    to the transfer service because it was measured to leave a file alone
+    that exists in the folder under the same name with another id, to write
+    the package's file into no folder, and to report its job as completed.
 
-    The options of the Prompt Builder report are kept across the import. With
+    WHERE. --content-root names the folder for everything but the reports. A
+    report is imported only into the folder the package was exported from,
+    and only when that folder is at the root of SAS Content - the one mapping
+    known to work. Otherwise the reports are not imported and the command
+    says so (and ends with exit code 1 unless --no-reports says that is
+    meant): the transfer service takes no target folder, and a package from a
+    folder below others was measured to land in a new folder at the root.
+
+    WHAT A SITE SEES whose objects were registered under other ids - a step
+    its flows use, a file, a job definition: `updated ... (id <its own id>
+    kept)` where the content differs, `equal ... (id <its own id>)` where it
+    does not, and no second object of the name. A file keeps its id as well:
+    its content is replaced, the file is not deleted. Two objects of one name
+    in a folder are both named and neither is written.
+
+    THE OPTIONS of the Prompt Builder report are kept across the import. With
     --options the values of that file are written back. Without it, and when
     the report (or the retired report "RAG Builder") is on the site, its
     options are read before the import, kept in a file
     builder-options-captured-<time>.json in the current directory, and
-    written back afterwards - so an upgrade is this one command. On a site
-    without the report the values `mdb setup` discovers (repository, projects,
-    SCR endpoint, deployment type) are written, and either way every
-    remaining placeholder host in the report - the DDC URL and the option
-    defaults - becomes this deployment's host. A package that carries no
-    Prompt Builder report leaves the report on the site as it is. A dry run
-    reads and compares and writes nothing; without options it discovers
-    nothing, because discovery creates a missing repository or project.
+    written back afterwards - so an upgrade is this one command. When such a
+    report is on the site and cannot be read, the command stops BEFORE
+    anything is imported: name the options with --options <file>, or pass
+    --no-options-capture to import without them. On a site without the report
+    the values `mdb setup` discovers are written, and either way every
+    remaining placeholder host in the report becomes this deployment's host.
+    A package that brings no Prompt Builder report leaves the report on the
+    site as it is.
+
+    THE COMPUTE CONTEXT. Start Here and Load-Accelerator-Tables have to run
+    as the user who opens them, so their job definitions carry _contextName.
+    The import writes --compute-context there, else the ingestion compute
+    context (ragComputeContext) of the options it writes back; where it knows
+    neither, a job definition on the site keeps the context it has and a new
+    one gets the package's.
+
+    A RETIRED REPORT. The import removes nothing: the report "RAG Builder"
+    and the job definition RAG-Builder-UI of a 2.2.x site stay where they
+    are, the options of the report are folded into the Prompt Builder's, and
+    the command says that the report is still there until someone deletes it.
+
+    A DRY RUN writes nothing and uploads nothing. The requests it can make,
+    all of them GET (the sign-in aside): /casManagement/servers;
+    /reports/reports (looking a report up by its name) and
+    /reports/reports/{id}/content; /folders/folders/@item and
+    /folders/folders/{id}/members; /files/files/{id}/content;
+    /dataFlows/steps/{id}; /jobDefinitions/definitions/{id}. The transfer
+    service is not called, so the mapping lines of a dry run are what the
+    package itself says about its tables and substitutions. Without options
+    it discovers nothing, because discovery creates a missing repository or
+    project.
 
     The package carries no authorization rule. Like `mdb setup` for the model
     repository, the command writes the rules for the content folder as
@@ -1943,18 +2090,18 @@ def builders_import(
     none of them.
 
     A run that did not do everything ends with exit code 1 and the command to
-    repeat. An import removes nothing: the retired report "RAG Builder" and
-    the job definition RAG-Builder-UI of a 2.2.x site stay where they are
-    until someone deletes them, and the command says so while the report is
-    on the site.
+    repeat. The tasks of the import job are read to the end: one that ended
+    with a warning or an error is printed and counts. The in-place part stops
+    at the first write that fails and lists what it did not attempt.
     """
     from .core.options import BUILDER_REPORTS
-    from .core.packages import legacy_objects, report_labels
+    from .core.packages import (PackageSource, legacy_objects, mapping_preview, report_labels,
+                                reports_package)
     from .core.releases import DEFAULT_TABLE
     from .viya.cas import resolve_server
-    from .viya.transfer import (delete_package, get_mapping, host_of, job_messages, job_uri,
-                                rehost_mapping, start_import, table_spec, upload_package,
-                                wait_for_job)
+    from .viya.content import CREATED, EQUAL, NOT_ATTEMPTED, UPDATED, DeployError, deploy
+    from .viya.transfer import (get_mapping, host_of, job_messages, job_tasks, job_uri, rehost_mapping,
+                                start_import, table_spec, task_problems, upload_package_bytes, wait_for_job)
     ctx = Context()
     manifest = _content_manifest(ctx, check_sources=False)
     files = [Path(p) for p in packages] if packages else [manifest.package_path]
@@ -1966,16 +2113,25 @@ def builders_import(
                 console.print(f"[red]This checkout holds no {manifest.package} - the transfer package of the "
                               "release. Name a package file, or use a checkout that has it.[/red]", highlight=False)
             raise typer.Exit(2)
+    root = (content_root or manifest.content_root).rstrip("/")
+    if not root.startswith("/"):
+        console.print("[red]--content-root must be a SAS Content path, starting with a slash.[/red]")
+        raise typer.Exit(2)
     saved = None
     if options is not None:
         if not options.is_file():
             console.print(f"[red]{options} not found - run `mdb options-save` first.[/red]")
             raise typer.Exit(2)
         saved = json.loads(options.read_text(encoding="utf-8")).get("reports") or {}
-    # The command line as it was given, for the line that says how to go on -
-    # taken before `caslib` is replaced by its default.
-    given = _import_command(packages, options, caslib, table, server, no_releases, timeout, report_caslib)
+
+    def command(options_file) -> str:
+        """The command line as it was given, for the line that says how to
+        go on - with the options file a run kept, once there is one."""
+        return _import_command(packages, options_file, caslib_given, table, server, no_releases, timeout,
+                               report_caslib, content_root, compute_context, no_reports, no_options_capture)
+
     caslib_given = caslib
+    given = command(options)
     caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
     table_name = table or _releases_table()
     failures = 0
@@ -1986,17 +2142,39 @@ def builders_import(
     not_imported: list = []
     imported_any = False
     captured_file: Optional[Path] = None
-    loaded = [(path, json.loads(path.read_text(encoding="utf-8"))) for path in files]
+    # Per package: what it holds, and whether its reports go to the transfer
+    # service (`refusal` says why not).
+    plans = []
+    for path in files:
+        package = json.loads(path.read_text(encoding="utf-8"))
+        source = PackageSource(package, manifest)
+        refusal = None
+        if source.reports:
+            refusal = "left out (--no-reports)" if no_reports else _transfer_refusal(source.root_path, root)
+        plans.append((path, package, source, refusal))
     with _viya_session() as session:
         host = host_of(os.environ.get("SAS_VIYA_URL") or getattr(session, "hostname", "") or "")
         server_name = resolve_server(session, server or os.environ.get("SAS_CAS_SERVER"))
         releases_to = table_spec(server_name, caslib, table_name)
         # The site's options, read while the report that holds them is still
         # the site's own: the import replaces it. Only when a package brings a
-        # Builder report - one that brings none overwrites nothing.
-        brings_report = any(name in BUILDER_REPORTS for _path, package in loaded for name in report_labels(package))
-        if saved is None and brings_report:
-            live = _live_options(session)
+        # Builder report through the transfer service - anything else
+        # overwrites no report.
+        brings_report = any(name in BUILDER_REPORTS for _path, package, source, refusal in plans
+                            if source.reports and refusal is None for name in report_labels(package))
+        if saved is None and brings_report and no_options_capture:
+            console.print("Options: not read from the report on this site (--no-options-capture). The report the "
+                          "import brings is configured from this deployment.")
+        elif saved is None and brings_report:
+            try:
+                live = _live_options(session)
+            except _ReportUnreadable as exc:
+                console.print(f"[red]{exc}.[/red]", highlight=False)
+                console.print("[red]Nothing was imported.[/red] The import replaces this report, and options that "
+                              "cannot be read now are lost with it. Run the command again when the report can be "
+                              "read - or name the options yourself with --options <file> (`mdb options-save` "
+                              "writes one), or pass --no-options-capture to import without keeping them.")
+                raise typer.Exit(1)
             if live:
                 saved = live
                 if dry_run:
@@ -2004,10 +2182,18 @@ def builders_import(
                                   "writes them back after the import.")
                 else:
                     captured_file = _keep_captured(live)
-                    given = _import_command(packages, captured_file, caslib_given, table, server, no_releases,
-                                            timeout, report_caslib)
+                    given = command(captured_file)
                     console.print(f"Options: read from the report on this site and kept in {captured_file}; "
                                   "they are written back after the import.", highlight=False)
+        # The compute context for the job definitions: what was given, else
+        # what the options that are written back name.
+        context = (compute_context or "").strip() or _known_context(saved)
+        settings = _deploy_settings(content_root, context)
+        if context:
+            console.print(f"Compute context: {context} ("
+                          + ("--compute-context" if (compute_context or "").strip()
+                             else "the ingestion compute context of the options") + ") - written into "
+                          "_contextName of the job definitions that have it.", markup=False, highlight=False)
         if no_releases:
             console.print(f"Release table: not reloaded (--no-releases); reports bind to {releases_to}.")
         elif dry_run:
@@ -2020,7 +2206,7 @@ def builders_import(
             except (RuntimeError, ValueError) as exc:
                 console.print(f"[red]Release table not loaded: {exc}[/red]")
                 raise typer.Exit(1)
-        for path, package in loaded:
+        for path, package, source, refusal in plans:
             objects = _package_objects(package)
             counts: dict = {}
             for kind, _name in objects:
@@ -2033,46 +2219,111 @@ def builders_import(
                               "standalone RAG UI, which is part of the Prompt Builder now. Importing it brings "
                               "that UI back, and mdb does not configure its report. Use the package of a "
                               "2.3.0 checkout.[/yellow]")
-            carried = report_labels(package)
+            for line in source.left_out:
+                console.print(f"  not imported: {line}", markup=False, highlight=False, soft_wrap=True)
+            package_failed = False
+            if not source.reports and not source.has_content:
+                console.print("  Nothing of this package can be imported: no report, file, custom step or job "
+                              "definition of it sits below a root folder.", style="red", markup=False,
+                              highlight=False)
+                package_failed = True
+
+            # ---- the reports: through the transfer service, or not at all ----
+            names = ", ".join(item.path for item in source.reports)
+            carried = report_labels(package) if source.reports and refusal is None else {}
             arriving.update(carried)
-            try:
-                uploaded = upload_package(session, path)
-                mapping = get_mapping(session, uploaded["id"])
-            except RuntimeError as exc:
-                console.print(f"  [red]{exc}[/red]")
-                failures += 1
-                failed_reports.update(carried)
-                not_imported.append(path.name)
-                continue
-            mapping, changes = rehost_mapping(mapping, host, DEFAULT_TABLE, releases_to,
-                                              library=report_caslib or None, server=server_name)
-            for change in changes:
-                console.print(f"  mapping: {change}")
-            package_uri = f"/transfer/packages/{uploaded['id']}"
+            if not source.reports:
+                pass
+            elif refusal is not None:
+                console.print(f"  Reports ({names}): NOT imported - {refusal}.",
+                              style=None if no_reports else "red", markup=False, highlight=False, soft_wrap=True)
+                if not no_reports:
+                    console.print("    Import the package into the folder it was exported from, or pass "
+                                  "--no-reports to bring everything but the reports.", markup=False,
+                                  highlight=False)
+                    package_failed = True
+            else:
+                reduced, held = reports_package(package, source.root_uri)
+                kinds: dict = {}
+                for line in held:
+                    kinds[line.split(" ", 1)[0]] = kinds.get(line.split(" ", 1)[0], 0) + 1
+                holds = ", ".join(f"{n} {kind}" for kind, n in kinds.items())
+                console.print(f"  Reports, through the transfer service ({holds}): {names}", markup=False,
+                              highlight=False, soft_wrap=True)
+                if dry_run:
+                    _mapping, changes = rehost_mapping(mapping_preview(reduced), host, DEFAULT_TABLE, releases_to,
+                                                       library=report_caslib or None, server=server_name)
+                    for change in changes:
+                        console.print(f"    mapping: {change}")
+                else:
+                    try:
+                        uploaded = upload_package_bytes(
+                            session, path.name, (json.dumps(reduced, ensure_ascii=False) + "\n").encode("utf-8"))
+                        mapping = get_mapping(session, uploaded["id"])
+                        mapping, changes = rehost_mapping(mapping, host, DEFAULT_TABLE, releases_to,
+                                                          library=report_caslib or None, server=server_name)
+                        for change in changes:
+                            console.print(f"    mapping: {change}")
+                        job = start_import(session, package.get("name") or path.stem,
+                                           f"/transfer/packages/{uploaded['id']}", mapping)
+                        job = wait_for_job(session, job_uri(job), timeout=timeout)
+                        state = str(job.get("state", "")).lower()
+                        if state != "completed" or job.get("errorCount"):
+                            console.print(f"    [red]import ended {job.get('state')} with "
+                                          f"{job.get('errorCount', 0)} error(s):[/red]")
+                            for line in job_messages(session, job):
+                                console.print(f"      {line}", markup=False, highlight=False, soft_wrap=True)
+                            package_failed = True
+                        else:
+                            # the job says it ran; its tasks say what became of each object
+                            unfinished = task_problems(job_tasks(session, job))
+                            if unfinished:
+                                console.print(f"    [red]the import job ended completed, and {len(unfinished)} of "
+                                              "its tasks did not:[/red]")
+                                for line in unfinished:
+                                    console.print(f"      {line}", markup=False, highlight=False, soft_wrap=True)
+                                package_failed = True
+                            else:
+                                console.print(f"    [green]imported {len(held)} object(s) through the transfer "
+                                              "service.[/green]")
+                    except RuntimeError as exc:
+                        console.print(f"    [red]{exc}[/red]", highlight=False)
+                        package_failed = True
+                    if package_failed:
+                        failed_reports.update(carried)
+
+            # ---- everything else: in place, with the package as the source ----
+            if source.has_content:
+                console.print(f"  Files, custom steps and job definitions, in place in {root}:", markup=False,
+                              highlight=False)
+                try:
+                    result = deploy(session, source.manifest(root), root, dry_run,
+                                    lambda outcome: _emit_outcome(outcome, "    "), source=source,
+                                    settings=settings, reports=False)
+                except DeployError as exc:
+                    console.print(f"    {exc}", style="red", markup=False, highlight=False, soft_wrap=True)
+                    package_failed = True
+                else:
+                    tally = ", ".join(f"{result.count(status)} {status}"
+                                      for status in (EQUAL, UPDATED, CREATED, NOT_ATTEMPTED) if result.count(status))
+                    console.print(f"    {len(result.outcomes)} entries: {tally or 'nothing done'}"
+                                  + (f", {len(result.failed)} FAILED" if result.failed else "") + ".",
+                                  highlight=False)
+                    if result.stopped_at is not None:
+                        console.print(f"    {result.stop_line()}", style="red", markup=False, highlight=False,
+                                      soft_wrap=True)
+                    if result.unlisted:
+                        console.print(f"    Not in the package and left alone ({len(result.unlisted)}): "
+                                      + "; ".join(result.unlisted), markup=False, highlight=False, soft_wrap=True)
+                    if result.failed:
+                        package_failed = True
             if dry_run:
-                delete_package(session, package_uri)
                 console.print("  [cyan]dry run - nothing imported.[/cyan]")
-                continue
-            try:
-                job = start_import(session, package.get("name") or path.stem, package_uri, mapping)
-                job = wait_for_job(session, job_uri(job), timeout=timeout)
-            except RuntimeError as exc:
-                console.print(f"  [red]{exc}[/red]")
+            if package_failed:
                 failures += 1
-                failed_reports.update(carried)
                 not_imported.append(path.name)
-                continue
-            state = str(job.get("state", "")).lower()
-            if state != "completed" or job.get("errorCount"):
-                console.print(f"  [red]import ended {job.get('state')} with {job.get('errorCount', 0)} error(s):[/red]")
-                for line in job_messages(session, job):
-                    console.print(f"    {line}")
-                failures += 1
-                failed_reports.update(carried)
-                not_imported.append(path.name)
-                continue
-            imported_any = True
-            console.print(f"  [green]imported {len(objects)} object(s).[/green]")
+            elif not dry_run:
+                imported_any = True
         # The Builder reports this run brings (in a dry run: would bring).
         # Discovery configures those and no other: a report that was not
         # imported is the site's own, with values an admin may have tuned,
@@ -2108,8 +2359,9 @@ def builders_import(
             discovered = _discovered_options(session, ctx)
             values = {name: discovered.get(name, {}) for name in targets}
         if dry_run:
-            console.print("  [cyan](dry run: nothing is imported, so this compares with the reports as they "
-                          "are on the site now)[/cyan]")
+            if arriving:
+                console.print("  [cyan](dry run: nothing is imported, so this compares with the reports as they "
+                              "are on the site now)[/cyan]")
             failures += _restore_options(session, values, dry_run, host, arriving)
         else:
             # A report whose package did not import is left alone: what is on
@@ -2121,7 +2373,7 @@ def builders_import(
             failures += _restore_options(
                 session, {name: v for name, v in values.items() if name not in failed_reports}, dry_run, host)
         if imported_any and not no_files:
-            _write_content_rules(session, manifest.content_root, Path(out))
+            _write_content_rules(session, root, Path(out))
     kept = options if options is not None else captured_file
     if failures:
         if not dry_run:
@@ -2132,8 +2384,9 @@ def builders_import(
                 again, does = given, "it imports again and configures the report from this deployment"
             elif not_imported:
                 again = given
-                does = (f"{', '.join(not_imported)} did not import - this imports again and writes the "
-                        "options back; `mdb options-restore` imports nothing")
+                does = (f"{', '.join(not_imported)} did not import in full - this imports again and writes the "
+                        "options back; what is equal by then is left as it is, and `mdb options-restore` "
+                        "imports nothing")
             else:
                 again = f"mdb options-restore --file {_shell_word(kept)}"
                 does = "every package imported - only the options are left to write"

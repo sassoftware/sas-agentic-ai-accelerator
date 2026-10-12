@@ -55,6 +55,9 @@ from mdb.core.packages import (
 )
 from mdb.viya import transfer
 
+# what an import reads a package with
+from mdb.core.packages import PackageSource, mapping_preview, named_users, package_root_path, reports_package
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 STEP_PATH = f"RAG/steps/{STEP_NAME}"
 REPORT = "Prompt Builder/Prompt Builder"
@@ -713,6 +716,153 @@ def test_the_gate_tells_content_that_is_behind_from_what_a_package_must_never_be
         "jobDefinition 'Prompt Builder/Optimize' is in the manifest but not in the package"]
     # as sentences, in the order of the package: what a release asks to be empty
     assert package_differences(built.build(), manifest) == [line.text for line in found]
+
+
+# ---- 5: a package as the source of an import --------------------------------------
+def test_a_package_gives_what_each_of_its_objects_holds(manifest):
+    """`mdb builders-import` brings files, steps and job definitions in place
+    with the package as the source: the bytes of a file, the step without
+    what belongs to the exporting system, the job definition as the service
+    takes it."""
+    built = package_of(manifest)
+    for detail in built.details:                    # what an export adds to a step and a job definition
+        obj = detail["transferObject"]
+        if obj["summary"]["type"] in ("flowStep", "jobDefinition"):
+            body = json.loads(base64.b64decode(obj["content"]))
+            body.update({"id": "exported-id", "createdBy": "the exporter", "modifiedBy": "the exporter",
+                         "creationTimeStamp": "2026-10-12T12:03:52Z", "version": 2,
+                         "links": [{"rel": "self", "href": "/x/exported-id"}]})
+            obj["content"] = _b64(body)
+    source = PackageSource(built.build(), manifest)
+    listed = source.manifest("/Some/Root/")
+    assert listed.content_root == "/Some/Root"
+    assert sorted((e.kind, e.path) for e in listed.objects()) == sorted((e.kind, e.path) for e in manifest.objects())
+    assert [f.path for f in listed.folders()] == [f.path for f in manifest.folders()]
+    assert source.has_content and source.left_out == [] and source.root_path == CONTENT_ROOT
+    assert [item.path for item in source.reports] == [REPORT]
+
+    checkout = content.CheckoutSource(manifest)
+    for entry in listed.objects():
+        if entry.kind == "file":
+            assert source.file_bytes(entry) == checkout.file_bytes(manifest.find(entry.path, "file")), entry.path
+        elif entry.kind == "step":
+            body = source.step_body(entry)
+            assert content.step_differences(checkout.step_body(manifest.find(entry.path, "step")), body) == []
+            assert not {"id", "links", "createdBy", "modifiedBy", "version", "localUi"} & set(body)
+            assert body["name"] == STEP_NAME and body["properties"] == {}
+            assert json.loads(source.step_document(entry)) == body
+        elif entry.kind == "jobDefinition":
+            wanted = checkout.job_body(manifest.find(entry.path, "jobDefinition"))
+            body = source.job_body(entry)
+            assert content.job_differences(wanted, body) == [] and content.job_extras(wanted, body) == []
+            assert set(body) <= {"name", "type", "code", "parameters", "properties", "description"}
+            assert all(set(p) <= {"version", "name", "defaultValue", "type", "label", "required"}
+                       for p in body["parameters"])
+    # which parameters are the site's is read from the manifest of the checkout, where it lists the path
+    assert source.site_settings(listed.find("Prompt Builder/UI", "jobDefinition")) == ("_contextName",)
+    assert PackageSource(built.build()).site_settings(listed.find("Prompt Builder/UI", "jobDefinition")) == ()
+
+
+def test_what_a_package_holds_and_is_not_brought_in_place_is_named(manifest):
+    built = package_of(manifest, above=("Users",))
+    report = next(d["transferObject"]["summary"]["links"][0]["uri"] for d in built.details
+                  if d["transferObject"]["summary"]["type"] == "report")
+    built.image("logo.png", report)
+    built.image("orphan.png")
+    built.file("RAG/generated/pipeline.yaml", "steps: []\n")
+    built.file("RAG/rag_core/__init__.py", b"CORE = 9\n")                       # a second object at one path
+    built.grant("rule", "7cab3bd6", built.root_uri)
+    source = PackageSource(built.build(), manifest, built.root_uri)
+    assert source.left_out == [
+        "folder 'Users' (not below the root folder of the package)",
+        "file 'orphan.png' (not below the root folder of the package)",
+        "file 'RAG/generated/pipeline.yaml' ('generated' holds what the Prompt Builder generates for a site's own "
+        "setups, which never ships)",
+        "rule '7cab3bd6' (mdb imports no authorization rule and no share)"]
+    assert [item.name for item in source.children] == ["logo.png"]
+    listed = source.manifest(CONTENT_ROOT)
+    assert listed.find("RAG/generated/pipeline.yaml", "file") is None
+    # of two objects at one path none is taken
+    with pytest.raises(ValueError, match="the package holds 2 objects at this path - none is taken"):
+        source.file_bytes(listed.find("RAG/rag_core/__init__.py", "file"))
+    assert source.file_bytes(listed.find("RAG/rag_core/adapters/__init__.py", "file")) == b"ADAPTERS = 1\n"
+
+
+def test_the_folder_a_package_was_exported_from_is_read_from_its_root_folder(manifest):
+    """A folder at the root of SAS Content has no parent and no source
+    location; one below others has both. That is how the packages of 2.2.x
+    and an export from below a user's folder held it."""
+    assert package_root_path(package_of(manifest).build()) == CONTENT_ROOT
+    assert package_root_path(package_of(manifest, root="Accelerator").build()) == "/Accelerator"
+    nested = package_of(manifest, root="root1", location="/Users/me/My Folder/ZZ_VERIFY_R18")
+    assert package_root_path(nested.build()) == "/Users/me/My Folder/ZZ_VERIFY_R18/root1"
+    # a root that has a parent and does not say where: not known, and not guessed
+    silent = package_of(manifest, root="root1", location="/x").build()
+    del next(d for d in silent["transferDetails"]
+             if d["transferObject"]["summary"]["name"] == "root1")["transferObject"]["contentSourceLocation"]
+    assert package_root_path(silent) is None
+    assert package_root_path({"transferDetails": []}) is None
+
+
+def test_the_part_of_a_package_for_the_transfer_service_is_its_reports(manifest):
+    """The reports, the files that are their children and the folders they
+    sit in. Nothing else: files, steps and job definitions do not pass the
+    transfer service."""
+    built = _with_pictures(manifest)
+    package = built.build()
+    before = json.dumps(package, sort_keys=True)
+    reduced, held = reports_package(package, built.root_uri)
+    assert json.dumps(package, sort_keys=True) == before                    # the package itself is not changed
+    assert sorted(held) == sorted([
+        "folder SAS Agentic AI Accelerator", "folder Prompt Builder", f"report {REPORT}",
+        f"file {REPORT}/background_blue.png", f"file {REPORT}/sas-logo-wht.png"])
+    assert sorted(package_objects(reduced)) == [
+        ("file", "background_blue.png"), ("file", "sas-logo-wht.png"), ("folder", "Prompt Builder"),
+        ("folder", "SAS Agentic AI Accelerator"), ("report", "Prompt Builder")]
+    assert reduced["transferObjectCount"] == 5 == len(reduced["requestedItems"])
+    kept = {d["transferObject"]["summary"]["links"][0]["uri"] for d in reduced["transferDetails"]}
+    for uri in set(re.findall(r'"(/(?:files/files|reports/reports|folders/folders|dataFlows/steps|'
+                              r'jobDefinitions/definitions)/[0-9a-f-]+)"', json.dumps(reduced))):
+        assert uri in kept, uri
+    # a package without a report: nothing to hand over
+    assert reports_package(package_of(manifest, change={REPORT: None}).build())[1] == []
+
+
+def test_a_dry_run_reads_the_mapping_off_the_package(manifest):
+    """The transfer service gives a mapping only for a package that was
+    uploaded. A dry run uploads nothing, so it shows what the package says."""
+    from mdb.viya.transfer import rehost_mapping
+    built = package_of(manifest, change={REPORT: None})
+    built.report(REPORT, ALL_NEUTRAL, tables=("ACCELERATOR_RELEASES", "LLM_LOGS"))
+    preview = mapping_preview(built.build())
+    assert preview["connectors"]["table"] == [
+        {"source": f"server=cas-shared-default;library=Public;table={name}",
+         "target": f"server=cas-shared-default;library=Public;table={name}"}
+        for name in ("ACCELERATOR_RELEASES", "LLM_LOGS")]
+    assert preview["substitutions"] == [{"resourceName": "Prompt Builder", "properties": [
+        {"name": "VisualElement:ve9", "value": "https://your-sas-viya-host/SASJobExecution/"}]}]
+    _mapping, changes = rehost_mapping(preview, "site.example", "ACCELERATOR_RELEASES",
+                                       "server=cas-shared-default;library=Team;table=RELEASES")
+    assert changes == [
+        "Prompt Builder: VisualElement:ve9 -> host site.example",
+        "data source server=cas-shared-default;library=Public;table=ACCELERATOR_RELEASES -> "
+        "server=cas-shared-default;library=Team;table=RELEASES",
+        "data source server=cas-shared-default;library=Public;table=LLM_LOGS left as exported (not the release table)"]
+
+
+def test_the_user_ids_a_package_names_are_counted():
+    """An export names the people who made its objects: at its top, in every
+    summary, and inside the bodies - a report's behind the compression."""
+    wrapper = {"object": {"name": "Prompt Builder", "createdBy": "author", "modifiedBy": "editor"},
+               "transferableContent": {"content": "<SASReport/>", "contentVersion": 1, "reportStates": None}}
+    package = {"createdBy": "exporter", "modifiedBy": "exporter", "transferDetails": [
+        {"transferObject": {"summary": {"type": "report", "name": "Prompt Builder", "createdBy": "author",
+                                        "modifiedBy": "exporter"},
+                            "content": deflate(json.dumps(wrapper, separators=(",", ":")))}},
+        {"transferObject": {"summary": {"type": "folder", "name": "RAG", "createdBy": "exporter"},
+                            "content": _b64({"folder": {"createdBy": "exporter"}, "userName": "exporter"})}}]}
+    assert named_users(package) == {"exporter": 6, "author": 2, "editor": 1}
+    assert named_users({"transferDetails": []}) == {}
 
 
 def test_objects_and_report_labels_are_listed():
