@@ -8,9 +8,10 @@ zlib-compressed report content, and they reached a public repository. The
 tests below are written against that specific shape - a host that a grep
 cannot see.
 
-The last test is the one that matters in practice: it checks the packages this
-repository actually ships, so a re-export that reintroduces a host fails the
-suite rather than a review.
+`test_shipped_packages_name_no_environment` is the one that matters in
+practice: it checks every package file in SAS-Viya-Integrations/, whatever it
+is called, so an export that reintroduces a host fails the suite rather than
+a review. What a package must hold beside that is in test_package_guards.py.
 """
 import json
 from pathlib import Path
@@ -181,29 +182,6 @@ def test_shipped_packages_name_no_environment(package):
         for f in result.findings)
 
 
-def test_objects_that_do_not_belong_in_a_package_can_be_left_out():
-    """By name, whatever the type: the demo report someone parked in the
-    folder, a scratch job definition, a stray file."""
-    from mdb.core.packages import drop_objects
-    package = {
-        "transferObjectCount": 5,
-        "transferDetails": [
-            {"transferObject": {"summary": {"type": "folder", "name": "RAG"}}},
-            {"transferObject": {"summary": {"type": "flowStep", "name": "RAG - Embed Chunks.step"}}},
-            {"transferObject": {"summary": {"type": "report", "name": "LIVE_DEMO"}}},
-            {"transferObject": {"summary": {"type": "jobDefinition", "name": "Scratch-Job"}}},
-            {"transferObject": {"summary": {"type": "application/vnd.sas.file+json", "name": "notes.txt"}}},
-        ],
-    }
-    assert drop_objects(package, ["live_demo"]) == ["report LIVE_DEMO"]
-    assert drop_objects(package, ["Scratch-Job", "notes.txt"]) == [
-        "jobDefinition Scratch-Job", "application/vnd.sas.file+json notes.txt"]
-    assert [d["transferObject"]["summary"]["name"] for d in package["transferDetails"]] == [
-        "RAG", "RAG - Embed Chunks.step"]
-    assert package["transferObjectCount"] == 2
-    assert drop_objects(package, ["nothing here", ""]) == [] and package["transferObjectCount"] == 2
-
-
 # ---- what package-export says when a host is still there ------------------
 def test_a_failed_check_is_described_host_by_host(tmp_path):
     """package-export ends with this text when the rewrite left a host behind.
@@ -232,14 +210,20 @@ def test_package_export_reports_a_remaining_host_instead_of_crashing(tmp_path, m
     from rich.console import Console
     from typer.testing import CliRunner
 
+    from content_fakes import ALL_NEUTRAL, make_repo, package_of
     from mdb import cli
     from mdb.core import packages
+    from mdb.core.content import load_manifest
     from mdb.viya import transfer
 
-    exported = json.dumps(_package(deflate(_bird(INTERNAL))))
+    manifest = load_manifest(make_repo(tmp_path))
+    built = package_of(manifest, change={"Prompt Builder/Prompt Builder": None})
+    built.report("Prompt Builder/Prompt Builder", ALL_NEUTRAL, host=INTERNAL)
+    exported = json.dumps(built.build())
     job = {"state": "completed", "packageUri": "/transfer/packages/p1",
            "links": [{"rel": "self", "href": "/transfer/exportJobs/j1"}]}
-    monkeypatch.setattr(transfer, "folder_by_path", lambda session, path: {"id": "f1"})
+    monkeypatch.setattr(transfer, "folder_by_path",
+                        lambda session, path: {"id": built.root_uri.rsplit("/", 1)[-1]})
     monkeypatch.setattr(transfer, "start_export", lambda session, name, items: job)
     monkeypatch.setattr(transfer, "wait_for_job", lambda session, href, timeout=600: job)
     monkeypatch.setattr(transfer, "download_package", lambda session, uri: exported)
@@ -264,8 +248,8 @@ def test_package_export_reports_a_remaining_host_instead_of_crashing(tmp_path, m
     outcome = CliRunner().invoke(cli.app, ["package-export", "--out", str(target)])
     assert outcome.exit_code == 1, outcome.output
     assert not isinstance(outcome.exception, AttributeError)
-    assert (f"The export still names a host after the rewrite: Test Builder: {INTERNAL} x2 "
-            "in compressed report content") in out.getvalue()
+    assert (f"The export still names a host after the rewrite: Prompt Builder: {INTERNAL} x1 "
+            "in plain text") in out.getvalue()
     assert target.read_text(encoding="utf-8") == "the export before this one"
     assert "Nothing was written: exported.json is as it was before the export." in out.getvalue()
 

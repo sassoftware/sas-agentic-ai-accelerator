@@ -12,8 +12,9 @@ is one way an upgrade from 2.2.x could lose something:
   * the restore writing a 2.2.x file's RAG section into the retired report
     instead of the Prompt Builder;
   * one Model Manager project that cannot be discovered costing the other;
-  * one package that fails to import leaving the other one's report on
-    package defaults, or the command naming a way on that imports nothing;
+  * an import without an options file putting the package's defaults over
+    what the site had, or a failed run naming a way on that reads the
+    options again from a report the import already replaced;
   * a dry run burying its answer under a line per option the new report adds.
 """
 import io
@@ -28,8 +29,7 @@ from typer.testing import CliRunner
 
 from mdb import cli
 from mdb.core.options import read_options
-from mdb.core.packages import (LEGACY_RAG_PACKAGE, PROMPT_BUILDER_PACKAGE, RAG_RUNTIME_PACKAGE,
-                               deflate)
+from mdb.core.packages import deflate
 from mdb.viya import cas, registry, reports, transfer
 
 
@@ -68,6 +68,8 @@ class Site:
         self.looked_up: list = []
         self.read: list = []
         self.written: list = []
+        #: True for a site whose report cannot be written (someone has it open)
+        self.refuses = False
 
     def options(self, name: str) -> dict:
         return read_options(self.reports[name])
@@ -93,6 +95,8 @@ def site(monkeypatch):
             return fake.reports[report_id], '"etag"'
 
         def put_content(session, report_id, content, etag=None):
+            if fake.refuses:
+                raise RuntimeError("HTTP 412")
             fake.written.append(report_id)
             fake.reports[report_id] = content
 
@@ -394,6 +398,16 @@ def test_a_dry_run_on_a_first_install_says_the_report_arrives(site, out):
 
 
 # ---- builders-import ---------------------------------------------------------
+PACKAGE_FILE = "SAS-Agentic-AI-Accelerator.json"
+MANIFEST = """version: 1
+contentRoot: /SAS Agentic AI Accelerator
+package: SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json
+entries:
+  - {path: Prompt Builder/Prompt Builder, kind: report, checks: {optionSet: prompt-builder}}
+  - {path: RAG/rag_core/__init__.py, kind: file, source: not/in/this/checkout.py}
+"""
+
+
 def _report_detail(name: str, options: dict) -> dict:
     wrapper = {"object": {"name": name},
                "transferableContent": {"content": _xml(options), "contentVersion": 1, "reportStates": None}}
@@ -405,14 +419,31 @@ def _other(kind: str, name: str) -> dict:
     return {"transferObject": {"summary": {"type": kind, "name": name}, "content": ""}}
 
 
+def _mapping() -> dict:
+    """The import mapping the transfer service gives for the package: the
+    tables its two reports bind, and the Data-Driven Content URL."""
+    def table(name):
+        return {"source": f"server=cas-shared-default;library=Public;table={name}",
+                "target": f"server=cas-shared-default;library=Public;table={name}"}
+    return {"version": 1,
+            "connectors": {"table": [table("ACCELERATOR_RELEASES"), table("LLM_LOGS"), table("LLM_FACT_SHEET")]},
+            "substitutions": [{"resourceName": "Prompt Builder", "properties": [
+                {"name": "VisualElement:ve9", "value": "https://your-sas-viya-host/SASJobExecution/"}]}]}
+
+
 @pytest.fixture
 def importing(monkeypatch, tmp_path, site, discovery, out):
     """`mdb builders-import` against a fake transfer service. Returns a
-    function that writes the two shipped packages into a fake checkout, runs
-    the command and gives back (result, site, printed text)."""
+    function that writes the package into a fake checkout, runs the command
+    there and gives back (result, site, printed text). `run.imports` holds
+    the mapping each import was started with, by package name."""
+    from mdb.viya import content as viya_content
     discovery({"llm": "llm-disc", "embedding": "emb-disc"})
     folder = tmp_path / "SAS-Viya-Integrations"
     folder.mkdir()
+    # only the list is read: an importer's checkout need not hold every source
+    (folder / "package-manifest.yaml").write_text(MANIFEST, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SAS_VIYA_URL", "https://site.example")
     monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=tmp_path, core=None))
 
@@ -428,37 +459,47 @@ def importing(monkeypatch, tmp_path, site, discovery, out):
     monkeypatch.setattr(cli, "_viya_session", lambda: _Session())
     monkeypatch.setattr(cas, "resolve_server", lambda session, server: "cas-shared-default")
     monkeypatch.setattr(transfer, "upload_package", lambda session, path: {"id": Path(path).name})
-    monkeypatch.setattr(transfer, "get_mapping", lambda session, package_id: {})
+    monkeypatch.setattr(transfer, "get_mapping", lambda session, package_id: _mapping())
     monkeypatch.setattr(transfer, "delete_package", lambda session, uri: None)
     monkeypatch.setattr(transfer, "job_messages", lambda session, job: ["the folder is locked"])
     monkeypatch.setattr(transfer, "wait_for_job", lambda session, uri, timeout=600: {"state": uri})
+    monkeypatch.setattr(viya_content, "find_folder", lambda session, path: {"id": "content-folder-1", "name": path})
 
-    def run(fake: Site, *args, runtime_name=RAG_RUNTIME_PACKAGE, runtime_fails=False, prompt_fails=False,
-            runtime_objects=()):
+    def run(fake: Site, *args, fails=False, extra=(), without_report=False):
         fake = site(fake)
-        prompt = {"name": "Prompt Builder", "transferDetails": [
-            _other("folder", "Prompt Builder"), _other("jobDefinition", "SAS-LLM-Prompt-Builder-UI"),
-            _report_detail("Prompt Builder", NEW_DEFAULTS)]}
-        runtime = {"name": "RAG Runtime", "transferDetails": [
-            _other("folder", "RAG"), _other("flowStep", "RAG - Embed Chunks.step"), *runtime_objects]}
-        (folder / PROMPT_BUILDER_PACKAGE).write_text(json.dumps(prompt), encoding="utf-8")
-        (folder / runtime_name).write_text(json.dumps(runtime), encoding="utf-8")
-        fails = {"Prompt Builder": prompt_fails, "RAG Runtime": runtime_fails}
+        details = [_other("folder", "SAS Agentic AI Accelerator"), _other("folder", "Prompt Builder"),
+                   _other("jobDefinition", "SAS-LLM-Prompt-Builder-UI"), _other("flowStep", "RAG - Embed Chunks.step")]
+        if not without_report:
+            details.append(_report_detail("Prompt Builder", NEW_DEFAULTS))
+        package = {"name": "SAS Agentic AI Accelerator", "transferDetails": details}
+        (folder / PACKAGE_FILE).write_text(json.dumps(package), encoding="utf-8")
+        named = {"SAS Agentic AI Accelerator": package}
+        for path, other in extra:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_text(json.dumps(other), encoding="utf-8")
+            named[other["name"]] = other
+        failing = {fails} if isinstance(fails, str) else ({"SAS Agentic AI Accelerator"} if fails else set())
+        run.imports = {}
 
         def start_import(session, name, package_uri, mapping=None, description=""):
-            # an import that works puts the package's report on the site
-            if not fails[name]:
-                for detail in (prompt if name == "Prompt Builder" else runtime)["transferDetails"]:
+            run.imports[name] = mapping
+            # an import that works puts the package's reports on the site
+            if name not in failing:
+                for detail in named[name]["transferDetails"]:
                     summary = detail["transferObject"]["summary"]
                     if summary["type"] == "report":
                         fake.reports[summary["name"]] = _xml(
                             NEW_DEFAULTS if summary["name"] == "Prompt Builder" else OLD_RAG)
-            return {"links": [{"rel": "self", "href": "failed" if fails[name] else "completed"}]}
+            return {"links": [{"rel": "self", "href": "failed" if name in failing else "completed"}]}
 
         monkeypatch.setattr(transfer, "start_import", start_import)
         result = CliRunner().invoke(cli.app, ["builders-import", "--no-releases", *args])
         return result, fake, out.getvalue()
     return run
+
+
+def _captured_files(tmp_path) -> list:
+    return sorted(path.name for path in tmp_path.glob("builder-options-captured-*.json"))
 
 
 def test_import_restores_a_2_2_file_into_the_merged_report(importing, tmp_path):
@@ -467,21 +508,24 @@ def test_import_restores_a_2_2_file_into_the_merged_report(importing, tmp_path):
     result, fake, text = importing(Site(**{"Prompt Builder": OLD_PROMPT, "RAG Builder": OLD_RAG}),
                                    "--options", str(options))
     assert result.exit_code == 0, text
-    # the Prompt Builder package first, then the runtime
-    assert text.index(PROMPT_BUILDER_PACKAGE) < text.index(RAG_RUNTIME_PACKAGE)
+    assert f"{PACKAGE_FILE} - SAS Agentic AI Accelerator: 2 folder, 1 jobDefinition, 1 flowStep, 1 report" in text
+    assert "imported 5 object(s)." in text
     restored = fake.options("Prompt Builder")
     assert restored["enableRag"] == "true" and restored["contentRoot"] == "/Team/RAG"
     assert restored["ragComputeContext"] == "SAS Studio compute context"
     assert restored["llmProjectID"] == "llm-live"
     assert fake.written == ["Prompt Builder"]
+    # the file that was named is the source: nothing was read from the report, nothing kept in a second file
+    assert fake.read == ["Prompt Builder"] and _captured_files(tmp_path) == []
     # the retired report is still on the site, untouched, and the command says so once
     assert fake.options("RAG Builder") == OLD_RAG
     assert text.count("A report named 'RAG Builder' still exists on this site.") == 1
+    assert "Nothing was deleted." in text
     assert "This package predates 2.3.0" not in text
     assert "Done." in text and "Properties panel" not in text
 
 
-def test_a_first_install_is_configured_from_discovery_with_rag_off(importing):
+def test_a_first_install_is_configured_from_discovery_with_rag_off(importing, tmp_path):
     result, fake, text = importing(Site())
     assert result.exit_code == 0, text
     configured = fake.options("Prompt Builder")
@@ -493,41 +537,106 @@ def test_a_first_install_is_configured_from_discovery_with_rag_off(importing):
     assert configured["enableRag"] == "false" and configured["enableDecision"] == "true"
     assert "retired" not in text
     assert "so RAG is off until it is enabled - set them in the Options pane" in text
+    # there was no report to read options from, and no file is left behind for it
+    assert "Options: read from the report" not in text and _captured_files(tmp_path) == []
 
 
-def test_a_failed_runtime_import_still_restores_the_report(importing, tmp_path):
-    """The runtime package imports second. If it fails, the Prompt Builder
-    report was already replaced - without the restore every user gets
-    'Configuration required'."""
+# ---- an upgrade is one command: the options are kept without a file ----------
+def test_an_upgrade_without_options_keeps_what_the_site_had(importing, no_discovery, tmp_path):
+    """The import replaces the report and with it every option an admin set.
+    Without --options the command reads them first - the retired report's
+    too - and writes them back, so `mdb builders-import` alone is an upgrade."""
+    asked = no_discovery()
+    result, fake, text = importing(Site(**{"Prompt Builder": OLD_PROMPT, "RAG Builder": OLD_RAG}))
+    assert result.exit_code == 0, text
+    kept, = _captured_files(tmp_path)
+    assert f"Options: read from the report on this site and kept in {kept}; they are written back after the import." \
+        in text
+    assert f"Writing back the options the report held before the import ({kept}):" in text
+    restored = fake.options("Prompt Builder")
+    assert restored["llmProjectID"] == "llm-live" and restored["modelRepositoryID"] == "repo-live"
+    assert restored["SCREndpoint"] == "https://site.example/llm" and restored["enableOptimization"] == "true"
+    # what the retired report held is folded in, as `mdb options-save` folds it
+    assert restored["enableRag"] == "true" and restored["contentRoot"] == "/Team/RAG"
+    assert restored["embeddingProjectID"] == "emb-live" and restored["storeSslmode"] == "disable"
+    assert restored["ragComputeContext"] == "SAS Studio compute context"
+    # nothing was discovered: the report had its values, and discovery creates what is missing
+    assert asked == []
+    assert "keep the package's defaults" not in text and "Done." in text
+    # the kept file is an options file like any other
+    document = json.loads((tmp_path / kept).read_text(encoding="utf-8"))
+    assert document["kind"] == "sas-agentic-ai-accelerator/builder-options"
+    assert document["deployment"] == "https://site.example" and list(document["reports"]) == ["Prompt Builder"]
+    assert document["reports"]["Prompt Builder"]["llmProjectID"] == "llm-live"
+    # the retired report is still there: the import removed nothing, and the command says so
+    assert fake.options("RAG Builder") == OLD_RAG
+    assert text.count("A report named 'RAG Builder' still exists on this site.") == 1
+
+
+def test_a_site_with_only_the_retired_report_keeps_its_rag_options(importing, no_discovery, tmp_path):
+    no_discovery()
+    result, fake, text = importing(Site(**{"RAG Builder": OLD_RAG}))
+    assert result.exit_code == 0, text
+    restored = fake.options("Prompt Builder")
+    assert restored["contentRoot"] == "/Team/RAG" and restored["enableRag"] == "true"
+    assert restored["embeddingProjectID"] == "emb-live" and len(_captured_files(tmp_path)) == 1
+
+
+def test_a_failed_import_after_the_capture_names_the_kept_file(importing, tmp_path):
+    """The repeat must not read the options again: had the import replaced
+    the report before it failed, a second capture would be of the package's
+    defaults. The line names the file the first run kept."""
+    result, fake, text = importing(Site(**{"Prompt Builder": OLD_PROMPT}), fails=True)
+    assert result.exit_code == 1
+    kept, = _captured_files(tmp_path)
+    assert fake.written == [] and fake.options("Prompt Builder") == OLD_PROMPT
+    assert "Prompt Builder: its package did not import - options not restored." in text
+    assert (f"then run:\nmdb builders-import --options {kept} --no-releases\n"
+            f"({PACKAGE_FILE} did not import - this imports again and writes the options back") in text
+    assert "\nmdb options-restore" not in text and "Done." not in text
+
+
+def test_options_that_could_not_be_written_back_are_still_in_the_kept_file(importing, tmp_path):
+    """The import went through and the write-back did not. The site is on the
+    package's defaults; what it had is in the file, and the line says how to
+    put it back."""
+    site_with_a_locked_report = Site(**{"Prompt Builder": OLD_PROMPT})
+    site_with_a_locked_report.refuses = True
+    result, fake, text = importing(site_with_a_locked_report)
+    assert result.exit_code == 1
+    kept, = _captured_files(tmp_path)
+    assert "Prompt Builder: writing the report failed (HTTP 412)." in text
+    assert fake.options("Prompt Builder")["llmProjectID"] == ""              # the package's default
+    assert (f"then run:\nmdb options-restore --file {kept}\n(every package imported - only the options are left "
+            "to write)") in text
+    assert json.loads((tmp_path / kept).read_text(encoding="utf-8"))["reports"]["Prompt Builder"]["llmProjectID"] \
+        == "llm-live"
+
+
+def test_two_runs_keep_two_files(importing, tmp_path):
+    """A kept file is never written over: the report a second run reads may
+    already be the imported one."""
+    importing(Site(**{"Prompt Builder": OLD_PROMPT}))
+    importing(Site(**{"Prompt Builder": TUNED}))
+    kept = [json.loads((tmp_path / name).read_text(encoding="utf-8"))["reports"]["Prompt Builder"]["llmProjectID"]
+            for name in _captured_files(tmp_path)]
+    assert sorted(kept) == ["llm-live", "llm-tuned"]
+
+
+def test_a_failed_import_leaves_the_old_report_alone(importing, tmp_path):
     options = tmp_path / "builder-options.json"
     options.write_text(json.dumps({"version": 1, "reports": SAVED_2_2}), encoding="utf-8")
-    result, fake, text = importing(Site(**{"Prompt Builder": OLD_PROMPT}), "--options", str(options),
-                                   runtime_fails=True)
+    result, fake, text = importing(Site(**{"Prompt Builder": OLD_PROMPT}), "--options", str(options), fails=True)
     assert result.exit_code == 1
     assert "import ended failed" in text and "the folder is locked" in text
-    assert fake.options("Prompt Builder")["llmProjectID"] == "llm-live"
-    assert fake.options("Prompt Builder")["enableRag"] == "true"
-    assert "Not everything was imported and configured." in text
-    # options-restore would leave the runtime package unimported for good
-    assert (f"then run:\nmdb builders-import --options {cli._shell_word(options)} --no-releases\n"
-            f"({RAG_RUNTIME_PACKAGE} did not import - this imports again and writes the options back") in text
-    assert "\nmdb options-restore" not in text
-    assert "Done." not in text
-
-
-def test_a_failed_prompt_builder_import_leaves_the_old_report_alone(importing, tmp_path):
-    options = tmp_path / "builder-options.json"
-    options.write_text(json.dumps({"version": 1, "reports": SAVED_2_2}), encoding="utf-8")
-    result, fake, text = importing(Site(**{"Prompt Builder": OLD_PROMPT}), "--options", str(options),
-                                   prompt_fails=True)
-    assert result.exit_code == 1
     assert fake.written == [] and fake.options("Prompt Builder") == OLD_PROMPT
     assert "Prompt Builder: its package did not import - options not restored." in text
     assert "not an option of this report version" not in text
     # the report on the site is the 2.2.x one: a restore alone cannot reach it
     assert (f"then run:\nmdb builders-import --options {cli._shell_word(options)} --no-releases\n"
-            f"({PROMPT_BUILDER_PACKAGE} did not import") in text
-    assert "\nmdb options-restore" not in text
+            f"({PACKAGE_FILE} did not import") in text
+    assert "\nmdb options-restore" not in text and "Done." not in text
+    assert "Not everything was imported and configured." in text
 
 
 @pytest.fixture
@@ -550,7 +659,7 @@ def no_discovery(monkeypatch):
 
 def test_a_failed_first_install_discovers_nothing_and_says_how_to_go_on(importing, no_discovery):
     asked = no_discovery()
-    result, fake, text = importing(Site(), prompt_fails=True)
+    result, fake, text = importing(Site(), fails=True)
     assert result.exit_code == 1 and asked == []
     assert fake.written == [] and "Prompt Builder" not in fake.reports
     assert "No Builder report was imported" in text
@@ -562,97 +671,168 @@ TUNED = {**NEW_DEFAULTS, "viyaHost": "https://site.example", "SCREndpoint": "htt
          "enableRag": "true"}
 
 
-def test_importing_the_runtime_package_alone_leaves_the_report_alone(importing, no_discovery, tmp_path):
-    """`mdb builders-import <runtime package>` is the step after a rag_core
-    fix. The package carries no report, so the Prompt Builder report on the
-    site is not this run's to configure: discovery would put the derived
-    project ids and SCR endpoint over the ones an admin chose."""
+# ---- a package that carries no report leaves the report alone -----------------
+def test_a_package_without_the_report_leaves_the_report_alone(importing, no_discovery, tmp_path):
+    """A package exported from a folder that holds no report - a test folder
+    that `mdb content-deploy` filled. The Prompt Builder report on the site
+    is not this run's to read, to configure or to write."""
     asked = no_discovery()
-    runtime = tmp_path / "SAS-Viya-Integrations" / RAG_RUNTIME_PACKAGE
-    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), str(runtime))
+    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), without_report=True)
     assert result.exit_code == 0, text
-    assert PROMPT_BUILDER_PACKAGE not in text and "imported 2 object(s)" in text
+    assert "imported 4 object(s)" in text
     assert asked == [] and fake.read == [] and fake.written == []
-    assert fake.options("Prompt Builder") == TUNED
+    assert fake.options("Prompt Builder") == TUNED and _captured_files(tmp_path) == []
     assert "No Builder report was imported - the options of a report on this site are left as they are." in text
     # and nothing about package defaults of a report that was not imported
     assert "Done." in text and "keep the package's defaults" not in text
 
 
-def test_the_runtime_package_alone_still_names_a_retired_report(importing, no_discovery, tmp_path):
+def test_a_package_without_the_report_still_names_a_retired_report(importing, no_discovery):
     no_discovery()
-    runtime = tmp_path / "SAS-Viya-Integrations" / RAG_RUNTIME_PACKAGE
-    result, fake, text = importing(Site(**{"Prompt Builder": TUNED, "RAG Builder": OLD_RAG}), str(runtime))
+    result, fake, text = importing(Site(**{"Prompt Builder": TUNED, "RAG Builder": OLD_RAG}), without_report=True)
     assert result.exit_code == 0, text
     assert text.count("A report named 'RAG Builder' still exists on this site.") == 1
     assert fake.written == []
 
 
-def test_options_named_with_the_runtime_package_alone_are_restored_all_the_same(importing, tmp_path):
+def test_options_named_with_a_package_without_the_report_are_restored_all_the_same(importing, tmp_path):
     """--options is an instruction, whatever was imported."""
     options = tmp_path / "builder-options.json"
     options.write_text(json.dumps({"version": 1, "reports": {"Prompt Builder": {"llmProjectID": "llm-file"}}}),
                        encoding="utf-8")
-    runtime = tmp_path / "SAS-Viya-Integrations" / RAG_RUNTIME_PACKAGE
-    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), str(runtime), "--options", str(options))
+    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), "--options", str(options), without_report=True)
     assert result.exit_code == 0, text
     assert fake.options("Prompt Builder")["llmProjectID"] == "llm-file"
     assert fake.options("Prompt Builder")["embeddingProjectID"] == "emb-tuned"
 
 
 def test_a_restore_that_cannot_reach_the_report_does_not_end_with_done(importing, tmp_path):
-    """The runtime package alone with a 2.2.x options file, on a site whose
+    """A package without the report with a 2.2.x options file, on a site whose
     Prompt Builder report is still the 2.2.x one: nothing of the RAG part can
     be written. The exit code has to say so - the next step of the upgrade is
     deleting the retired report."""
     options = tmp_path / "builder-options.json"
     options.write_text(json.dumps({"version": 1, "reports": SAVED_2_2}), encoding="utf-8")
-    runtime = tmp_path / "SAS-Viya-Integrations" / RAG_RUNTIME_PACKAGE
     result, fake, text = importing(Site(**{"Prompt Builder": OLD_PROMPT, "RAG Builder": OLD_RAG}),
-                                   str(runtime), "--options", str(options))
+                                   "--options", str(options), without_report=True)
     assert result.exit_code == 1
     assert "enableRag" not in fake.options("Prompt Builder")
     assert "Prompt Builder: 7 option(s) the Prompt Builder reads cannot be written" in text
     assert "Not everything was imported and configured." in text and "Done." not in text
-    # the package that was named imported: what is left is the options
+    # the package imported: what is left is the options
     assert (f"then run:\nmdb options-restore --file {cli._shell_word(options)}\n(every package imported - "
             "only the options are left to write)") in text
     assert "\nmdb builders-import" not in text
 
 
+# ---- the tables of the reports -------------------------------------------------
+def test_the_release_table_is_bound_and_the_other_tables_are_left_as_exported(importing):
+    result, fake, text = importing(Site(), "--caslib", "Team", "--table", "RELEASES")
+    assert result.exit_code == 0, text
+    targets = {c["source"].rsplit("=", 1)[-1]: c["target"]
+               for c in importing.imports["SAS Agentic AI Accelerator"]["connectors"]["table"]}
+    assert targets == {"ACCELERATOR_RELEASES": "server=cas-shared-default;library=Team;table=RELEASES",
+                       "LLM_LOGS": "server=cas-shared-default;library=Public;table=LLM_LOGS",
+                       "LLM_FACT_SHEET": "server=cas-shared-default;library=Public;table=LLM_FACT_SHEET"}
+    assert "mapping: data source server=cas-shared-default;library=Public;table=LLM_LOGS left as exported" in text
+    assert "mapping: Prompt Builder: VisualElement:ve9 -> host site.example" in text
+
+
+def test_the_other_tables_are_retargeted_where_the_site_asks_for_it(importing):
+    """A site that keeps LLM_LOGS and the fact sheets in a library of its own:
+    the usage report is bound there, table by table and under the same names."""
+    result, fake, text = importing(Site(), "--report-caslib", "Monitoring")
+    assert result.exit_code == 0, text
+    targets = {c["source"].rsplit("=", 1)[-1]: c["target"]
+               for c in importing.imports["SAS Agentic AI Accelerator"]["connectors"]["table"]}
+    assert targets == {"ACCELERATOR_RELEASES": "server=cas-shared-default;library=Public;table=ACCELERATOR_RELEASES",
+                       "LLM_LOGS": "server=cas-shared-default;library=Monitoring;table=LLM_LOGS",
+                       "LLM_FACT_SHEET": "server=cas-shared-default;library=Monitoring;table=LLM_FACT_SHEET"}
+    assert ("mapping: data source server=cas-shared-default;library=Public;table=LLM_LOGS -> "
+            "server=cas-shared-default;library=Monitoring;table=LLM_LOGS") in text
+    assert "left as exported" not in text
+
+
+# ---- the rules of the content folder -------------------------------------------
+def test_the_rules_of_the_content_folder_are_written_as_commands_to_review(importing, tmp_path):
+    """The package carries no authorization rule. Like `mdb setup` for the
+    repository, the command writes the commands and runs none."""
+    result, fake, text = importing(Site(), "--out", str(tmp_path / "rules"))
+    assert result.exit_code == 0, text
+    written = (tmp_path / "rules" / "sas-viya-cli-content-commands.txt").read_text(encoding="utf-8")
+    commands = [line for line in written.splitlines() if line.startswith("sas-viya ")]
+    assert len(commands) == 2 and all(" -g LLMConsumers -p Read " in line for line in commands)
+    assert commands[0].startswith("sas-viya authorization create-rule -o /folders/folders/content-folder-1 ")
+    assert commands[1].startswith(
+        "sas-viya authorization create-rule --container-uri /folders/folders/content-folder-1 ")
+    assert "/SAS Agentic AI Accelerator" in written and "sas-viya-cli-commands.txt" in written
+    assert "Wrote sas-viya-cli-content-commands.txt" in text and "Review the file before running it." in text
+    # the file mdb setup writes has another name and is not written over
+    assert sorted(p.name for p in (tmp_path / "rules").iterdir()) == ["sas-viya-cli-content-commands.txt"]
+
+
+def test_no_rules_file_without_an_import_or_when_it_is_not_wanted(importing, tmp_path):
+    result, _, text = importing(Site(), "--no-files")
+    assert result.exit_code == 0 and not (tmp_path / "sas-viya-cli-content-commands.txt").exists()
+    result, _, text = importing(Site(), "--dry-run")
+    assert result.exit_code == 0 and not (tmp_path / "sas-viya-cli-content-commands.txt").exists()
+    result, _, text = importing(Site(), fails=True)
+    assert result.exit_code == 1 and not (tmp_path / "sas-viya-cli-content-commands.txt").exists()
+    result, _, text = importing(Site())
+    assert result.exit_code == 0 and (tmp_path / "sas-viya-cli-content-commands.txt").is_file()
+
+
+def test_the_rules_carry_a_placeholder_where_the_folder_is_not_found():
+    text = registry.content_rules_text("/Team/Accelerator", None)
+    assert "-o /folders/folders/<content-folder-id> " in text and "/Team/Accelerator" in text
+
+
+# ---- the package of the checkout -----------------------------------------------
+def test_without_a_package_in_the_checkout_the_command_says_so(importing, tmp_path, monkeypatch):
+    importing(Site())                                           # sets the fake checkout up
+    (tmp_path / "SAS-Viya-Integrations" / PACKAGE_FILE).unlink()
+    monkeypatch.setattr(cli, "_viya_session", lambda: pytest.fail("signed in without a package to import"))
+    before = len(cli.console.file.getvalue())
+    result = CliRunner().invoke(cli.app, ["builders-import"])
+    text = cli.console.file.getvalue()[before:]
+    assert result.exit_code == 2
+    assert "This checkout holds no SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json" in text
+    result = CliRunner().invoke(cli.app, ["builders-import", str(tmp_path / "elsewhere.json")])
+    assert result.exit_code == 2 and "elsewhere.json not found." in cli.console.file.getvalue()
+
+
 def test_the_command_to_repeat_is_the_one_that_was_run(importing, tmp_path):
-    """Packages that were named and flags that were given are in the line: a
-    repeat without them would import other packages, or bind the report to
-    another release table."""
+    """A package that was named and flags that were given are in the line: a
+    repeat without them would import another package, or bind the reports to
+    other tables."""
     options = tmp_path / "builder-options.json"
     options.write_text(json.dumps({"version": 1, "reports": SAVED_2_2}), encoding="utf-8")
-    runtime = tmp_path / "SAS-Viya-Integrations" / RAG_RUNTIME_PACKAGE
-    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), str(runtime), "--options", str(options),
-                                   "--caslib", "Team", "--table", "RELEASES", "--timeout", "30",
-                                   runtime_fails=True)
+    package = tmp_path / "SAS-Viya-Integrations" / PACKAGE_FILE
+    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), str(package), "--options", str(options),
+                                   "--caslib", "Team", "--report-caslib", "Monitoring", "--table", "RELEASES",
+                                   "--timeout", "30", fails=True)
     assert result.exit_code == 1
-    assert (f"then run:\nmdb builders-import {cli._shell_word(runtime)} --options {cli._shell_word(options)} "
-            "--caslib Team --table RELEASES --no-releases --timeout 30\n(") in text
+    assert (f"then run:\nmdb builders-import {cli._shell_word(package)} --options {cli._shell_word(options)} "
+            "--caslib Team --report-caslib Monitoring --table RELEASES --no-releases --timeout 30\n(") in text
 
 
 @pytest.mark.parametrize("width", [80, 120, 40])
 def test_the_command_to_repeat_is_one_line_on_a_terminal_of_any_width(importing, monkeypatch, out, tmp_path, width):
     """The line is selected and pasted. Wrapped by the console at the width
     of the terminal it is several commands, and the first of them - `mdb
-    builders-import` alone - imports the default packages without the options
+    builders-import` alone - imports the default package without the options
     file. A directory named like a Rich style tag has to stay in it too."""
     monkeypatch.setattr(cli, "console", Console(file=out, width=width, force_terminal=False))
     options = tmp_path / "builder-options.json"
     options.write_text(json.dumps({"version": 1, "reports": SAVED_2_2}), encoding="utf-8")
-    runtime = tmp_path / "pkgs[old]" / "RAG[old].json"
-    runtime.parent.mkdir()
-    runtime.write_text(json.dumps({"name": "RAG Runtime", "transferDetails": [_other("folder", "RAG")]}),
-                       encoding="utf-8")
-    prompt = tmp_path / "SAS-Viya-Integrations" / PROMPT_BUILDER_PACKAGE
-    result, fake, text = importing(Site(**{"Prompt Builder": OLD_PROMPT}), str(prompt), str(runtime),
-                                   "--options", str(options), runtime_fails=True)
+    other = tmp_path / "pkgs[old]" / "RAG[old].json"
+    main = tmp_path / "SAS-Viya-Integrations" / PACKAGE_FILE
+    result, fake, text = importing(
+        Site(**{"Prompt Builder": OLD_PROMPT}), str(main), str(other), "--options", str(options),
+        extra=[(other, {"name": "A test folder", "transferDetails": [_other("folder", "RAG")]})],
+        fails="A test folder")
     assert result.exit_code == 1
-    command = (f"mdb builders-import {cli._shell_word(prompt)} {cli._shell_word(runtime)} "
+    command = (f"mdb builders-import {cli._shell_word(main)} {cli._shell_word(other)} "
                f"--options {cli._shell_word(options)} --no-releases")
     assert len(command) > width and "pkgs[old]/RAG[old].json" in command
     lines = text.splitlines()
@@ -662,7 +842,7 @@ def test_the_command_to_repeat_is_one_line_on_a_terminal_of_any_width(importing,
     assert lines[at - 1].endswith("run:")
     assert "".join(lines[at + 1:]).replace(" ", "").startswith("(RAG[old].jsondidnotimport")
     # and what is pasted is what was run
-    assert shlex.split(command)[2:] == [prompt.as_posix(), runtime.as_posix(), "--options", options.as_posix(),
+    assert shlex.split(command)[2:] == [main.as_posix(), other.as_posix(), "--options", options.as_posix(),
                                         "--no-releases"]
 
 
@@ -671,6 +851,8 @@ def test_the_command_to_repeat_quotes_a_path_with_a_space():
     packages, options = Path("my packages") / "p.json", Path("my files") / "o.json"
     assert cli._import_command([packages], options, None, None, "cas a", True, cli.IMPORT_TIMEOUT) == (
         'mdb builders-import "my packages/p.json" --options "my files/o.json" --server "cas a" --no-releases')
+    assert cli._import_command(None, None, "Team", None, None, False, cli.IMPORT_TIMEOUT, "My Logs") == (
+        'mdb builders-import --caslib Team --report-caslib "My Logs"')
 
 
 @pytest.mark.parametrize("value, word", [
@@ -707,11 +889,12 @@ def test_an_argument_with_both_kinds_of_quote_is_quoted_for_the_shell_of_the_pla
 def test_the_command_to_repeat_leaves_out_an_empty_value():
     """`--caslib ""` is read as not given by the run. Printed as `--caslib`
     with nothing behind it, the repeat takes the next flag as the name."""
-    assert cli._import_command(None, None, "", "", "", True, cli.IMPORT_TIMEOUT) == \
+    assert cli._import_command(None, None, "", "", "", True, cli.IMPORT_TIMEOUT, "") == \
         "mdb builders-import --no-releases"
 
 
-def test_a_dry_run_without_options_discovers_nothing(importing, no_discovery):
+# ---- a dry run -------------------------------------------------------------------
+def test_a_dry_run_without_options_discovers_nothing(importing, no_discovery, tmp_path):
     """`--dry-run` is documented as "import nothing". Discovery creates the
     repository and the projects when they are missing, so on a first install
     a dry run that discovers is a dry run that writes."""
@@ -721,27 +904,38 @@ def test_a_dry_run_without_options_discovers_nothing(importing, no_discovery):
     assert asked == [] and fake.written == [] and "Prompt Builder" not in fake.reports
     assert "Would configure the imported report from this deployment" in text
     assert "Prompt Builder: not on this site yet - it arrives with the import." in text
-    assert text.count("dry run - nothing imported.") == 2 and "Done." not in text
+    assert text.count("dry run - nothing imported.") == 1 and "Done." not in text
+    assert importing.imports == {} and _captured_files(tmp_path) == []
 
 
-def test_a_dry_run_without_options_on_a_site_with_the_report_claims_no_match(importing, no_discovery):
-    """Nothing was discovered, so nothing was compared: the line that says a
-    report already matches would be about no option at all."""
+def test_a_dry_run_on_a_site_with_the_report_reads_its_options_and_keeps_no_file(importing, no_discovery, tmp_path):
+    """The options are the report's own, so comparing the report with them
+    would say "already matches" about nothing. The dry run says what a run
+    does with them, and leaves no file and no write behind."""
     asked = no_discovery()
     result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), "--dry-run")
     assert result.exit_code == 0, text
     assert asked == [] and fake.written == [] and fake.options("Prompt Builder") == TUNED
-    assert "Would configure the imported report" in text and "already matches" not in text
+    assert "Prompt Builder: 17 options (report)." in text
+    assert ("Options: read from the report on this site; a run keeps them in a file and writes them back after "
+            "the import.") in text
+    assert "already matches" not in text and "Would configure the imported report" not in text
+    assert _captured_files(tmp_path) == [] and importing.imports == {}
 
 
-def test_a_package_from_before_the_merge_is_named_as_such(importing):
-    """The fallback file name, with the standalone UI still inside: imported,
-    because that is what the checkout ships, and said out loud."""
+def test_a_package_from_before_the_merge_is_named_as_such(importing, tmp_path):
+    """A package of an earlier release that somebody names, with the
+    standalone UI still inside: imported, because it was asked for, and said
+    out loud."""
+    old = tmp_path / "old" / "RAG-Builder-of-2.2.json"
+    main = tmp_path / "SAS-Viya-Integrations" / PACKAGE_FILE
     result, fake, text = importing(
-        Site(), runtime_name=LEGACY_RAG_PACKAGE,
-        runtime_objects=(_other("jobDefinition", "RAG-Builder-UI"), _report_detail("RAG Builder", OLD_RAG)))
+        Site(), str(main), str(old),
+        extra=[(old, {"name": "RAG Builder", "transferDetails": [
+            _other("folder", "RAG"), _other("jobDefinition", "RAG-Builder-UI"),
+            _report_detail("RAG Builder", OLD_RAG)]})])
     assert result.exit_code == 0, text
-    assert LEGACY_RAG_PACKAGE in text
+    assert "RAG-Builder-of-2.2.json" in text
     assert ("This package predates 2.3.0: it carries report RAG Builder, jobDefinition RAG-Builder-UI"
             in text)
     # the report it brought is on the site now: retired, and not configured
@@ -756,7 +950,6 @@ def test_a_dry_run_imports_nothing_and_counts_what_the_new_report_adds(importing
                                    "--options", str(options), "--dry-run")
     assert result.exit_code == 0, text
     assert fake.written == [] and fake.options("Prompt Builder") == OLD_PROMPT
-    assert text.count("dry run - nothing imported.") == 2
+    assert text.count("dry run - nothing imported.") == 1
     assert text.count("arrive with the imported report and are written then") == 1
     assert "is not an option of this report version" not in text
-    assert "Done." not in text

@@ -6,7 +6,7 @@ name: Verify generated model definitions
 # managed definition and fails if the committed files differ, and it runs the
 # mdb test suite (generation determinism, fleet fidelity, template-subset lint).
 #
-# It also guards the exported transfer packages under SAS-Viya-Integrations/,
+# It also guards the exported transfer package under SAS-Viya-Integrations/,
 # which is why that path is watched here: an export always reintroduces the
 # exporting deployment's hostname, and all but one occurrence is hidden inside
 # zlib-compressed report content where no diff review will show it.
@@ -17,15 +17,19 @@ name: Verify generated model definitions
 # the Logging & Monitoring guide against the pod label of the deployment
 # templates - hence those paths.
 #
-# The two Builder packages are second copies of files the repository holds as
-# source, and the mdb test suite compares them: the Prompt Builder package
-# with LLM-Prompt-Builder/dist/index.html and with the option names
-# src/va/ddc.ts and src/objects/rag-backends.ts post, the RAG runtime package
-# with RAG/, RAG-Ingestion/ and the RAG custom steps. Each of those is watched
-# so that the change that makes a package stale is the one that fails - a
-# rebuilt dist/index.html needs the Prompt Builder package exported again.
-# CHANGELOG.md is watched because the release table is built from it.
-# The two lists below are the same; tests/test_package_guards.py reads them.
+# The one transfer package is the content folder, and almost all of it is a
+# second copy of files the repository holds as source. Which files, and where
+# each sits in the package, is listed in SAS-Viya-Integrations/package-manifest.yaml;
+# `mdb package-check` and the mdb test suite compare the package with them:
+# LLM-Prompt-Builder/dist/index.html (and the option names src/va/ddc.ts and
+# src/objects/rag-backends.ts post), RAG/, RAG-Ingestion/, Prompt-Optimization/,
+# Logging-Monitoring/, the custom steps and the fact sheets in the definition
+# folders. Each of those is watched so that the change that makes the package
+# stale is the one that fails - a rebuilt dist/index.html needs the content
+# folder deployed and the package exported again. CHANGELOG.md is watched
+# because the release table, in CAS and in the package, is built from it.
+# The two lists below are the same; tests/test_package_guards.py reads them
+# and the manifest, and fails for a source that no path here covers.
 
 on:
   push:
@@ -37,8 +41,10 @@ on:
       - "Decision-Definitions/**"
       - "Model-Definition-Builder/**"
       - "SAS-Viya-Integrations/*.json"
+      - "SAS-Viya-Integrations/package-manifest.yaml"
       - "SAS-Viya-Integrations/RAG/**"
       - "SAS-Viya-Integrations/RAG-Ingestion/**"
+      - "SAS-Viya-Integrations/Prompt-Optimization/**"
       - "SAS-Viya-Integrations/Custom-Steps/**"
       - "SAS-Viya-Integrations/Other/**"
       - "LLM-Prompt-Builder/dist/index.html"
@@ -56,8 +62,10 @@ on:
       - "Decision-Definitions/**"
       - "Model-Definition-Builder/**"
       - "SAS-Viya-Integrations/*.json"
+      - "SAS-Viya-Integrations/package-manifest.yaml"
       - "SAS-Viya-Integrations/RAG/**"
       - "SAS-Viya-Integrations/RAG-Ingestion/**"
+      - "SAS-Viya-Integrations/Prompt-Optimization/**"
       - "SAS-Viya-Integrations/Custom-Steps/**"
       - "SAS-Viya-Integrations/Other/**"
       - "LLM-Prompt-Builder/dist/index.html"
@@ -89,8 +97,13 @@ jobs:
         run: mdb generate --all --check
       - name: Validate managed definitions
         run: mdb validate --all
-      - name: Transfer packages name no environment
-        run: mdb package-check
+      - name: The transfer package is the content of the checkout
+        # The content gate: every entry of package-manifest.yaml is in the
+        # package and equals its source, nothing else is in it, and no report
+        # names a host or carries a user's state. --allow-missing is for the
+        # time before the package of the release is in the repository; it
+        # goes with the commit that adds the file.
+        run: mdb package-check --allow-missing
       - name: mdb test suite
         run: python -m pytest Model-Definition-Builder/cli/tests -q
       - name: RAG runtime test suite

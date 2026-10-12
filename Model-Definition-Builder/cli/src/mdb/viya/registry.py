@@ -237,6 +237,27 @@ def authorization_rules_text(repository_id: Optional[str], repository_folder_id:
     )
 
 
+def content_rules_text(content_root: str, folder_id: Optional[str]) -> str:
+    """The sas-viya-cli-content-commands.txt content: the authorization rules
+    for the accelerator's content folder, as commands to review. The transfer
+    package carries no rule, so who may read the folder is decided on the
+    site; these two rules give the LLM Consumers group - the group the
+    commands of `authorization_rules_text` create - Read on the folder and on
+    what is in it. The folder id is filled in when known."""
+    folder = folder_id or "<content-folder-id>"
+    return (
+        "# This script is written for Windows, update the commands accordingly\n"
+        "# Each command comes with a description, please read it and the documentation before running anything\n\n"
+        f"# The content folder {content_root} holds the Prompt Builder, the reports, the custom steps and the RAG runtime.\n"
+        "# The transfer package carries no authorization rule, so who may read the folder is decided here.\n"
+        "# The LLM Consumers group is created by the commands in sas-viya-cli-commands.txt, which mdb setup writes -\n"
+        "# if you do not want to use this group, replace the name in both commands.\n\n"
+        "# Create two rules that let the LLM Consumers read the content folder and what is in it\n"
+        f'sas-viya authorization create-rule -o /folders/folders/{folder} -g LLMConsumers -p Read -d "Enables the LLM Consumers to open the SAS Agentic AI Accelerator content folder" --reason "You are not part of the LLM Consumers group"\n'
+        f'sas-viya authorization create-rule --container-uri /folders/folders/{folder} -g LLMConsumers -p Read -d "Enables the LLM Consumers to read the content of the SAS Agentic AI Accelerator content folder" --reason "You are not part of the LLM Consumers group"\n'
+    )
+
+
 def builder_seed(repository_id: Optional[str], project_ids: dict,
                  scr_endpoint: str, deployment_type: str) -> dict:
     """The Prompt Builder quick-start seed (llm-prompt-builder.json): the

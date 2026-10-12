@@ -1,49 +1,61 @@
 # Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""What the two shipped Builder packages must hold.
+"""What the one shipped package must hold, and how an export becomes it.
 
-A package is a second copy of things the repository holds as source - the UI
-bundle, rag_core, the jobs, the steps - plus a report whose option labels and
-defaults nothing else in the repository describes. Exporting one is a manual
-step against a live environment, so every way it can go stale is checked
-here instead of by whoever exports next:
+The package is the content folder as a transfer package. Almost everything in
+it is a second copy of something the repository holds as source - the UI
+bundle, the job programs, rag_core, the custom steps - plus two reports whose
+option labels and defaults nothing else in the repository describes.
+Exporting it is a step against a live environment, so every way it can go
+wrong is checked here instead of by whoever exports next:
 
   1. the Prompt Builder report holds every option label of the merged UI
      (`mdb options-restore` cannot add one);
-  2. its defaults are neutral in the report AND in every per-user state;
-  3. the UI job definition serves the committed LLM-Prompt-Builder/dist/index.html;
-  4. the RAG runtime package carries no UI, and every file and step in it
-     equals the repository's.
+  2. its defaults are neutral in the report AND in every per-user state - and
+     an export resets them in every copy;
+  3. an export is reduced to what the content manifest lists: an object that
+     is not listed, an authorization rule, a share, a Showcases folder and a
+     `generated` folder do not get into the file;
+  4. the content gate: every listed object is in the package and equals the
+     checkout, and nothing else is in it.
 
-The first half tests the checks themselves on fabricated packages. The second
-half runs them over the files in SAS-Viya-Integrations/. The two packages
-exported for 2.2.x cannot pass - the report has no RAG labels, and the RAG
-package still carries the standalone RAG UI - so for exactly those two
-exports, known by their package id, a failing check is an expected failure
-that is named in the test report. Every other package fails the suite: a
-re-export gets a new id, whatever is wrong with it.
+The first parts test these on fabricated packages. Then the gate runs over the
+package file of this repository. That file is exported from the owner's
+system, from a content folder that `mdb content-deploy` brought to the
+checkout; while it is not in the checkout, the tests that read it are skipped
+and say so.
 
 The last part guards the guards: the option labels asked for are the ones the
 UI source posts, and the workflow that runs this suite starts on a change to
 any file a check here reads.
 """
 import base64
+import io
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
+from typer.testing import CliRunner
 
+from content_fakes import (ALL_NEUTRAL, CONTENT_ROOT, PACKAGE, STEP, STEP_NAME, Package, as_registered, make_repo,
+                           package_of)
+from mdb import cli
+from mdb.core import content
+from mdb.core.content import load_manifest, parse_manifest
 from mdb.core.options import MERGED_REPORT_LABELS
 from mdb.core.packages import (
-    LEGACY_RAG_PACKAGE, NEUTRAL_DEFAULTS, PROMPT_BUILDER_PACKAGE, RAG_RUNTIME_PACKAGE,
-    RUNTIME_SOURCES, UI_BUNDLE, UI_JOB_DEFINITION, check_package, deflate, form_mismatch,
-    legacy_objects, missing_option_labels, non_neutral_defaults, package_objects,
-    report_labels, report_option_copies, runtime_content_drift, runtime_ui_objects,
-    shipped_builder_packages,
+    NEUTRAL_DEFAULTS, check_package, deflate, filter_package, legacy_objects, locate, missing_option_labels,
+    non_neutral_defaults, package_differences, package_objects, report_labels, report_option_copies,
+    reset_report_defaults,
 )
+from mdb.viya import transfer
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+STEP_PATH = f"RAG/steps/{STEP_NAME}"
+REPORT = "Prompt Builder/Prompt Builder"
 
 
 # ---- fabricated packages --------------------------------------------------
@@ -83,22 +95,12 @@ def _file(name: str, folder: str, text: str) -> dict:
         "content": _b64({"fileResource": {"name": name}, "content": _b64(text)})}}
 
 
-def _step(name: str, folder: str, body: dict) -> dict:
-    return {"transferObject": {
-        "summary": {"type": "flowStep", "name": name},
-        "contentSourceLocation": folder,
-        "content": _b64({"name": name, **body})}}
-
-
 def _folder(name: str) -> dict:
     return {"transferObject": {"summary": {"type": "folder", "name": name}, "content": _b64({"folder": {}})}}
 
 
 def _package(*details) -> dict:
     return {"name": "test", "transferObjectCount": len(details), "transferDetails": list(details)}
-
-
-ALL_NEUTRAL = {label: NEUTRAL_DEFAULTS.get(label, "x") for label in MERGED_REPORT_LABELS}
 
 
 # ---- 1: the labels ----------------------------------------------------------
@@ -182,314 +184,442 @@ def test_a_label_the_report_does_not_have_is_not_judged():
         "the report: x is '1', expected '0'"]
 
 
-# ---- 3: the UI bundle -------------------------------------------------------
-def test_the_form_must_be_the_given_bundle():
-    html = "<!DOCTYPE html>\n<html>ü</html>\n"
-    assert form_mismatch(_package(_job_definition(UI_JOB_DEFINITION, html)), html) == []
-    # line endings are not content: a Windows checkout reads the same file with CRLF
-    assert form_mismatch(_package(_job_definition(UI_JOB_DEFINITION, html)), html.replace("\n", "\r\n")) == []
-    problems = form_mismatch(_package(_job_definition(UI_JOB_DEFINITION, html + "<!-- old -->")), html)
-    assert len(problems) == 1 and "is not the given UI bundle" in problems[0]
-    # sizes are bytes, as a file listing shows them: the umlaut counts twice
-    assert "(44 bytes)" in problems[0] and "(32 bytes)" in problems[0]
+# ---- 2b: an export resets the defaults, in every copy --------------------------
+TUNED = {**ALL_NEUTRAL, "modelRepositoryID": "042c4094-82b2-4453-a692-28bf311b35b4", "llmProjectID": "c645a9d3",
+         "embeddingProjectID": "538b5482", "judgeModel": "gpt_5_mini", "enableRag": "true",
+         "enableOptimization": "true", "minOptimizeSamples": "10", "storeSslmode": "disable",
+         "modelCardReportURI": "/reports/reports/1f08db8d-0000-4000-8000-000000000000", "sslVerify": "false"}
 
 
-def test_a_missing_job_definition_or_form_is_a_problem():
-    assert form_mismatch(_package(_folder("x")), "html") == [
-        f"the package holds no job definition named '{UI_JOB_DEFINITION}'"]
-    bare = {"transferObject": {"summary": {"type": "jobDefinition", "name": UI_JOB_DEFINITION},
-                               "content": _b64({"properties": []})}}
-    assert form_mismatch(_package(bare), "html") == [
-        f"job definition '{UI_JOB_DEFINITION}' has no 'form' property"]
+def test_the_defaults_are_reset_in_all_four_copies_of_the_report():
+    """The report and three per-user states: four copies of the XML, each
+    with every default. A reset of the report alone leaves the exporting
+    site's ids and its judge model in the other three."""
+    other = {**ALL_NEUTRAL, "enableRag": "true", "judgeModel": "claude"}
+    package = _package(_folder("Prompt Builder"), _report("Prompt Builder", TUNED, states=[TUNED, ALL_NEUTRAL, other]))
+    package["description"] = "  spacing   preserved  "
+    text = json.dumps(package, indent=2)
+    assert len(report_option_copies(package)) == 4 and len(non_neutral_defaults(package)) == 10 + 10 + 2
+
+    fixed, reset = reset_report_defaults(text)
+    changed = sorted(label for label in TUNED if TUNED[label] != ALL_NEUTRAL[label])
+    assert reset == {"the report": changed, "report state 1": changed,
+                     "report state 3": ["enableRag", "judgeModel"]}
+    after = json.loads(fixed)
+    assert report_option_copies(after) == [ALL_NEUTRAL] * 4
+    assert non_neutral_defaults(after) == [] and missing_option_labels(after, MERGED_REPORT_LABELS) == []
+    # nothing but the report content changed
+    assert after["description"] == package["description"]
+    assert after["transferDetails"][0] == package["transferDetails"][0]
+    assert after["transferDetails"][1]["transferObject"]["summary"] == package["transferDetails"][1]["transferObject"]["summary"]
+    # and a report that is neutral comes back byte for byte
+    assert reset_report_defaults(fixed) == (fixed, {})
 
 
-# ---- 4: the runtime package -------------------------------------------------
+def test_a_reset_writes_only_what_the_report_holds_and_only_that_report():
+    """A label the report lacks is not inserted - whether it is there is the
+    first check's question - and no other report is touched."""
+    old = {"viyaHost": "https://your-sas-viya-host", "llmProjectID": "c645a9d3", "enableOptimization": "true"}
+    package = _package(_report("Prompt Builder", old), _report("LLM Usage Report", {"judgeModel": "theirs"}))
+    fixed, reset = reset_report_defaults(json.dumps(package))
+    assert reset == {"the report": ["enableOptimization", "llmProjectID"]}
+    after = json.loads(fixed)
+    assert report_option_copies(after) == [{"viyaHost": "https://your-sas-viya-host", "llmProjectID": "",
+                                            "enableOptimization": "false"}]
+    assert report_option_copies(after, "LLM Usage Report") == [{"judgeModel": "theirs"}]
+    # a report without the JSON wrapper (bare XML behind the envelope) is reset as well
+    bare = _package({"transferObject": {"summary": {"type": "report", "name": "Prompt Builder"},
+                                        "content": deflate(_report_xml(TUNED))}})
+    fixed, reset = reset_report_defaults(json.dumps(bare))
+    assert sorted(reset) == ["the report"] and report_option_copies(json.loads(fixed)) == [ALL_NEUTRAL]
+
+
+# ---- 3: an export is reduced to what the manifest lists ------------------------
 @pytest.fixture
-def runtime_repo(tmp_path):
-    """A repository with a little of each kind of runtime content."""
-    files = {
-        "SAS-Viya-Integrations/RAG/rag_core/__init__.py": "CORE = 1\n",
-        "SAS-Viya-Integrations/RAG/rag_core/adapters/__init__.py": "ADAPTERS = 1\n",
-        "SAS-Viya-Integrations/RAG/retrieve_context.py": "def score(): pass\n",
-        "SAS-Viya-Integrations/RAG/tests/test_x.py": "# not deployed\n",
-        "SAS-Viya-Integrations/RAG-Ingestion/Ingest-Documents.sas": "%put ingest;\r\n",
-        "SAS-Viya-Integrations/Custom-Steps/RAG - Embed Chunks.step": json.dumps(
-            {"name": "RAG - Embed Chunks.step", "templates": {"SAS": "%put embed;\n"}, "ui": "{\n}"}),
-        "SAS-Viya-Integrations/Custom-Steps/LLM - Get Options.step": json.dumps(
-            {"name": "LLM - Get Options.step", "templates": {"SAS": ""}, "ui": "{}"}),
-    }
-    for relative, text in files.items():
-        path = tmp_path / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(text.encode("utf-8"))
-    return tmp_path
+def repo(tmp_path, monkeypatch):
+    monkeypatch.setattr(content, "checkout_commit", lambda root: ("abc123", "2026-10-12T09:31:55+02:00"))
+    return make_repo(tmp_path)
 
 
-ROOT = "/SAS Agentic AI Accelerator/RAG"
+@pytest.fixture
+def manifest(repo):
+    return load_manifest(repo)
 
 
-def _runtime(**changes) -> dict:
-    parts = {
-        "core": _file("__init__.py", f"{ROOT}/rag_core", "CORE = 1\n"),
-        "adapters": _file("__init__.py", f"{ROOT}/rag_core/adapters", "ADAPTERS = 1\n"),
-        "model": _file("retrieve_context.py", f"{ROOT}/models", "def score(): pass\n"),
-        "job": _file("Ingest-Documents.sas", f"{ROOT}/jobs", "%put ingest;\n"),
-        "step": _step("RAG - Embed Chunks.step", f"{ROOT}/steps",
-                      {"templates": {"SAS": "%put embed;\n"}, "ui": "{\n}", "localUi": "ignored"}),
-    }
-    parts.update(changes)
-    return _package(_folder("RAG"), _folder("rag_core"), *[p for p in parts.values() if p is not None])
+def _paths(package: dict) -> list:
+    return sorted(f"{item.kind} {item.path if item.path is not None else '(' + item.name + ')'}"
+                  for item in locate(package)[1])
 
 
-def test_a_runtime_package_equal_to_the_repository_passes(runtime_repo):
-    """Two files called __init__.py are told apart by where they were
-    exported from, a CRLF checkout is not a difference, and neither the
-    tests folder nor another product's step is expected in the package."""
-    package = _runtime()
-    assert runtime_content_drift(package, runtime_repo) == []
-    assert runtime_ui_objects(package) == []
+def test_objects_are_located_by_the_packages_own_connectors(manifest):
+    """Two files called __init__.py are told apart by the folder each sits
+    in, and the path is the one below the content root - whatever the root
+    is called."""
+    built = package_of(manifest, root="A test root")
+    package = built.build()
+    root, items = locate(package)
+    assert root == built.root_uri
+    assert _paths(package) == sorted(
+        [f"{'flowStep' if e.kind == 'step' else e.kind} {e.path}" for e in manifest.all_entries()] + ["folder "])
+    assert next(item for item in items if item.path == "").name == "A test root"
+
+
+def test_a_root_below_other_folders_is_found_when_it_is_named(manifest):
+    """An export of a nested folder brings the folders above it. With the
+    exported folder named they are outside the root; without it the root is
+    the one folder that has no parent in the package."""
+    built = package_of(manifest, above=("Users", "me", "ZZ_VERIFY_R17"))
+    package = built.build()
+    root, items = locate(package, built.root_uri)
+    assert root == built.root_uri
+    assert sorted(item.name for item in items if item.path is None) == ["Users", "ZZ_VERIFY_R17", "me"]
+    assert next(item for item in items if item.path == REPORT).kind == "report"
+    # unnamed, the top folder is taken for the root - and nothing is where the manifest has it
+    guessed, items = locate(package)
+    assert guessed != built.root_uri
+    assert next(item for item in items if item.kind == "report").path == f"me/ZZ_VERIFY_R17/SAS Agentic AI Accelerator/{REPORT}"
+
+
+def test_a_package_without_an_object_for_its_root_folder_is_read_all_the_same(manifest):
+    """Every object still names the folder it sits in. Whether an export of a
+    top-level folder carries an object for that folder itself was not
+    measured, so neither answer may change what the gate says."""
+    built = package_of(manifest)
+    package = built.build()
+    package["transferDetails"] = [d for d in package["transferDetails"]
+                                  if d["transferObject"]["summary"]["links"][0]["uri"] != built.root_uri]
+    root, items = locate(package)
+    assert root == built.root_uri and "" not in [item.path for item in items]
+    assert next(item for item in items if item.kind == "report").path == REPORT
+    assert package_differences(package, manifest) == []
+    result = filter_package(package, manifest, built.root_uri)
+    assert result.dropped == [] and package_differences(package, manifest) == []
+
+
+def test_an_export_keeps_what_the_manifest_lists_and_nothing_else(manifest):
+    built = package_of(manifest)
+    report_uri = built.uris.get(REPORT) or next(
+        d["transferObject"]["summary"]["links"][0]["uri"] for d in built.details
+        if d["transferObject"]["summary"]["type"] == "report")
+    demo = built.report("RAG/LIVE_DEMO", {"viyaHost": "x"})                       # another user's report
+    built.job("RAG/generated/RAG Ingest - Motor Policy Documents", {"code": "x"})  # what the Builder generated
+    built.file("RAG/rag_core/notes.py", "x = 1\n")                               # a stray file in a listed folder
+    built.file("Showcases/Motor Claims/policy.md", "# policy\n")
+    built.file("Example Use Cases/Tax Fraud/training_data.csv", "a,b\n")
+    built.step("ZZ_VERIFY_steps/RAG - Embed Chunks.step", STEP)
+    built.job("RAG/RAG-Builder-UI", {"code": "x"})                                # the retired standalone UI
+    built.grant("rule", "7cab3bd6", built.root_uri)
+    built.grant("rule", "9da8fe35", report_uri)
+    built.grant("share", "Share on LLM Usage Report", demo)
+    package = built.build()
+    before = len(package["transferDetails"])
+    result = filter_package(package, manifest, built.root_uri)
+
+    assert sorted(result.dropped) == sorted([
+        "report 'RAG/LIVE_DEMO'", "folder 'RAG/generated'",
+        "jobDefinition 'RAG/generated/RAG Ingest - Motor Policy Documents'",
+        "file 'RAG/rag_core/notes.py'", "folder 'Showcases'", "folder 'Showcases/Motor Claims'",
+        "file 'Showcases/Motor Claims/policy.md'", "folder 'Example Use Cases'", "folder 'Example Use Cases/Tax Fraud'",
+        "file 'Example Use Cases/Tax Fraud/training_data.csv'", "folder 'ZZ_VERIFY_steps'",
+        "flowStep 'ZZ_VERIFY_steps/RAG - Embed Chunks.step'", "jobDefinition 'RAG/RAG-Builder-UI'",
+        "rule '7cab3bd6'", "rule '9da8fe35'", "share 'Share on LLM Usage Report'"])
+    assert result.refused == []
+    assert len(package["transferDetails"]) == before - 16 == package["transferObjectCount"]
+    # what is left is the manifest, and the gate has nothing to say about it
+    assert _paths(package) == _paths(package_of(manifest).build())
+    assert package_differences(package, manifest) == []
     assert legacy_objects(package) == []
+    # nothing in the package names a dropped object any more
+    left = json.dumps(package)
+    kept = {d["transferObject"]["summary"]["links"][0]["uri"] for d in package["transferDetails"]}
+    assert set(package["requestedItems"]) == kept
+    for uri in set(re.findall(r'"(/(?:files/files|reports/reports|folders/folders|dataFlows/steps|'
+                              r'jobDefinitions/definitions|authorization/\w+)/[0-9a-f-]+)"', left)):
+        assert uri in kept, uri
 
 
-def test_a_runtime_package_under_another_content_root_is_located_all_the_same(runtime_repo):
-    moved = json.loads(json.dumps(_runtime()).replace(ROOT, "/Projects/Team A/Retrieval"))
-    assert runtime_content_drift(moved, runtime_repo) == []
+def test_a_path_that_never_ships_is_refused_even_when_the_manifest_lists_it(repo, manifest):
+    """The loader refuses such a manifest. This is the second lock: a list
+    that got past it - built in code, or by a loader that changed - still
+    does not get the object out."""
+    listed = parse_manifest({
+        "version": 1, "contentRoot": CONTENT_ROOT, "package": PACKAGE,
+        "entries": [{"path": "RAG/rag_core/__init__.py", "kind": "file", "source": "src/rag_core/__init__.py"}]}, repo)
+    for path in ("Showcases/Motor Claims/policy.sas", "RAG/generated/job.sas", "Data/ZZ_VERIFY_x.sas"):
+        listed.entries.append(content.Entry(path=path, kind="file", source="src/optimize.sas"))
+    built = Package()
+    built.file("RAG/rag_core/__init__.py", "CORE = 1\n")
+    for path in ("Showcases/Motor Claims/policy.sas", "RAG/generated/job.sas", "Data/ZZ_VERIFY_x.sas"):
+        built.file(path, "%put optimize;\n%put done;\n")
+    package = built.build()
+    result = filter_package(package, listed, built.root_uri)
+    # the folders such a path runs through are refused with it
+    assert result.refused == [
+        "folder 'Showcases': 'Showcases' is showcase content",
+        "folder 'Showcases/Motor Claims': 'Showcases' is showcase content",
+        "file 'Showcases/Motor Claims/policy.sas': 'Showcases' is showcase content",
+        "folder 'RAG/generated': 'generated' holds what the Prompt Builder generates for a site's own setups",
+        "file 'RAG/generated/job.sas': 'generated' holds what the Prompt Builder generates for a site's own setups",
+        "file 'Data/ZZ_VERIFY_x.sas': 'ZZ_VERIFY_x.sas' is a test object"]
+    assert result.dropped == []
+    assert [f"{item.kind} {item.path}" for item in locate(package)[1] if item.kind == "file"] == [
+        "file RAG/rag_core/__init__.py"]
+    # and the gate says the same of a package that holds one
+    problems = package_differences(built.build(), listed)
+    assert "file 'RAG/generated/job.sas': 'generated' holds what the Prompt Builder generates for a site's own " \
+           "setups and never ships" in problems
 
 
-def test_a_file_behind_the_repository_is_named(runtime_repo):
-    package = _runtime(adapters=_file("__init__.py", f"{ROOT}/rag_core/adapters", "ADAPTERS = 0\n"))
-    assert runtime_content_drift(package, runtime_repo) == [
-        "file 'rag_core/adapters/__init__.py' differs from the repository (13 vs 13 characters)"]
+def test_the_images_of_a_listed_report_stay_with_it(manifest):
+    """A report's images are files that sit in no folder. One says itself
+    which report it belongs to; another is only named by the report."""
+    built = package_of(manifest, change={REPORT: None})
+    loose = built.image("background_blue.png")
+    report = built.report(REPORT, ALL_NEUTRAL, images=[loose])
+    built.image("sas-logo-wht.png", report)
+    demo = built.report("RAG/LIVE_DEMO", {"viyaHost": "x"})
+    built.image("demo.png", demo)
+    package = built.build()
+    result = filter_package(package, manifest, built.root_uri)
+    assert sorted(line for line in result.kept if "belongs to" in line) == [
+        f"file '{REPORT}/background_blue.png' (belongs to the report)",
+        f"file '{REPORT}/sas-logo-wht.png' (belongs to the report)"]
+    assert sorted(result.dropped) == ["file 'demo.png' (belongs to report 'RAG/LIVE_DEMO')", "report 'RAG/LIVE_DEMO'"]
+    assert package_differences(package, manifest) == []
+    # a report whose image was left behind is a difference
+    lost = package_of(manifest, change={REPORT: None})
+    lost.report(REPORT, ALL_NEUTRAL, images=["/files/files/e57e4290-7b82-44c4-a448-f74f4497145c"])
+    assert package_differences(lost.build(), manifest) == [
+        f"report '{REPORT}' depends on /files/files/e57e4290-7b82-44c4-a448-f74f4497145c, which is not in the package"]
 
 
-def test_a_step_whose_code_or_ui_differs_is_named(runtime_repo):
-    package = _runtime(step=_step("RAG - Embed Chunks.step", f"{ROOT}/steps",
-                                  {"templates": {"SAS": "%put old;\n"}, "ui": "{ }"}))
-    assert runtime_content_drift(package, runtime_repo) == [
-        "step 'steps/RAG - Embed Chunks.step': 'templates' differs from the repository .step",
-        "step 'steps/RAG - Embed Chunks.step': 'ui' differs from the repository .step"]
+# ---- 4: the content gate ---------------------------------------------------------
+def test_a_package_that_is_the_checkout_passes(manifest):
+    assert package_differences(package_of(manifest).build(), manifest) == []
+    # under another root too, with CRLF where the checkout has LF
+    crlf = content.file_bytes(manifest, manifest.find("RAG/rag_core/__init__.py", "file")).replace(b"\n", b"\r\n")
+    moved = package_of(manifest, change={"RAG/rag_core/__init__.py": crlf}, root="Retrieval")
+    assert package_differences(moved.build(), manifest) == []
 
 
-def test_what_is_missing_and_what_rides_along_are_both_named(runtime_repo):
-    package = _runtime(model=None,
-                       extra=_file("pipeline.yaml", f"{ROOT}/generated/demo", "steps: []\n"),
-                       stray=_file("notes.py", f"{ROOT}/rag_core", "x = 1\n"))
-    problems = runtime_content_drift(package, runtime_repo)
-    assert len(problems) == 3
-    assert problems[0].startswith("file 'pipeline.yaml' is in the package but is not runtime content")
-    assert "generated/demo" in problems[0]
-    assert problems[1].startswith("file 'rag_core/notes.py' is in the package but is not runtime content")
-    assert problems[2] == "'models/retrieve_context.py' is in the repository but not in the package"
+def test_a_file_that_differs_or_is_missing_is_named(manifest):
+    package = package_of(manifest, change={"RAG/rag_core/__init__.py": b"CORE = 0\n",
+                                           "RAG/rag_core/adapters/__init__.py": None}).build()
+    assert package_differences(package, manifest) == [
+        "file 'RAG/rag_core/__init__.py' differs from src/rag_core/__init__.py (9 vs 9 bytes)",
+        "file 'RAG/rag_core/adapters/__init__.py' is in the manifest but not in the package"]
 
 
-def test_a_ui_in_the_runtime_package_is_named():
-    package = _runtime(report=_report("RAG Builder", {"viyaHost": "x"}),
-                       ui=_job_definition("RAG-Builder-UI", "<html>"),
-                       other=_job_definition("Scratch", "<html>"))
-    assert runtime_ui_objects(package) == [
-        "the runtime package carries report 'RAG Builder'",
-        "the runtime package carries jobDefinition 'RAG-Builder-UI'",
-        "the runtime package carries jobDefinition 'Scratch'"]
-    # of those, the two that say "exported before 2.3.0"
-    assert legacy_objects(package) == ["report RAG Builder", "jobDefinition RAG-Builder-UI"]
+def test_a_step_is_compared_in_its_program_its_form_and_its_ports(manifest):
+    stale = as_registered({**STEP, "templates": {"SAS": "%put old;\n"}, "ui": "{ }"})
+    assert package_differences(package_of(manifest, change={STEP_PATH: stale}).build(), manifest) == [
+        f"step '{STEP_PATH}': 'templates' differs from src/{STEP_NAME}",
+        f"step '{STEP_PATH}': 'ui' differs from src/{STEP_NAME}"]
+    ports = as_registered(STEP)
+    ports["flowMetadata"]["outputPorts"][0]["maxEntries"] = 2
+    assert package_differences(package_of(manifest, change={STEP_PATH: ports}).build(), manifest) == [
+        f"step '{STEP_PATH}': 'flowMetadata' differs from src/{STEP_NAME}"]
+    assert package_differences(package_of(manifest, change={STEP_PATH: None}).build(), manifest) == [
+        f"step '{STEP_PATH}' is in the manifest but not in the package"]
+    # a step that was uploaded as a file is not the step
+    as_file = package_of(manifest, change={STEP_PATH: None})
+    as_file.file(STEP_PATH, json.dumps(STEP))
+    assert package_differences(as_file.build(), manifest) == [
+        f"file '{STEP_PATH}' is in the package but not in the manifest",
+        f"step '{STEP_PATH}' is in the manifest but not in the package"]
 
 
-# ---- which packages are shipped ---------------------------------------------
+def test_a_job_definition_is_compared_in_its_code_its_form_and_its_parameters(manifest):
+    ui = content.job_definition_body(manifest, manifest.find("Prompt Builder/UI", "jobDefinition"))
+    optimize = content.job_definition_body(manifest, manifest.find("Prompt Builder/Optimize", "jobDefinition"))
+    older = {**ui, "properties": [{"name": "form", "value": "<html>the build before</html>"}],
+             "parameters": ui["parameters"][:1]}
+    package = package_of(manifest, change={"Prompt Builder/UI": older,
+                                           "Prompt Builder/Optimize": {**optimize, "code": "%put before;\n"}}).build()
+    assert package_differences(package, manifest) == [
+        "job definition 'Prompt Builder/UI': 'form' differs from src/index.html",
+        "job definition 'Prompt Builder/UI': 'parameters' differs from the parameters of its manifest entry",
+        "job definition 'Prompt Builder/Optimize': 'code' differs from src/optimize.sas"]
+    package = package_of(manifest, change={"Prompt Builder/UI": {**ui, "code": "<html>pasted as code</html>"},
+                                           "Prompt Builder/Optimize": None}).build()
+    assert package_differences(package, manifest) == [
+        "job definition 'Prompt Builder/UI': 'code' differs from the code of a job definition that only serves a form",
+        "jobDefinition 'Prompt Builder/Optimize' is in the manifest but not in the package"]
+
+
+def test_the_generated_files_are_regenerated_and_compared(manifest, monkeypatch):
+    table = content.release_table_bytes(manifest)
+    stale = json.loads(content.release_info_bytes(manifest))
+    stale["commit"], stale["date"] = "an older commit", "2026-10-01T00:00:00+02:00"
+    package = package_of(manifest, change={"release.json": json.dumps(stale).encode("utf-8")}).build()
+    assert package_differences(package, manifest) == []                 # commit and date are not compared
+    next(e for e in stale["entries"] if e["path"] == STEP_PATH)["hash"] = "sha256:" + "0" * 64
+    package = package_of(manifest, change={"release.json": json.dumps(stale).encode("utf-8"),
+                                           "Data/ACCELERATOR_RELEASES.csv": table[:-40]}).build()
+    assert package_differences(package, manifest) == [
+        f"file 'release.json' holds another hash for step '{STEP_PATH}' than the checkout gives",
+        f"file 'Data/ACCELERATOR_RELEASES.csv' differs from what the checkout generates ({len(table) - 40} vs "
+        f"{len(table)} bytes)"]
+
+
+def test_a_report_is_checked_by_what_its_entry_names(manifest):
+    def problems(options=ALL_NEUTRAL, **kwargs):
+        built = package_of(manifest, change={REPORT: None})
+        built.report(REPORT, options, **kwargs)
+        return package_differences(built.build(), manifest)
+
+    assert problems() == []
+    short = {k: v for k, v in ALL_NEUTRAL.items() if k not in ("ragComputeContext", "enable_pgvector")}
+    assert problems(short) == [f"report '{REPORT}': the report lacks 2 option label(s): ragComputeContext, enable_pgvector"]
+    assert problems({**ALL_NEUTRAL, "judgeModel": "gpt_5_mini"}) == [
+        f"report '{REPORT}': the report: judgeModel is 'gpt_5_mini', expected ''"]
+    assert problems(states=[ALL_NEUTRAL, {**ALL_NEUTRAL, "enableRag": "true"}]) == [
+        f"report '{REPORT}' carries 2 per-user report state(s)",
+        f"report '{REPORT}': report state 2: enableRag is 'true', expected 'false'"]
+    assert problems(tables=("ACCELERATOR_RELEASES", "HMEQ")) == [
+        f"report '{REPORT}' binds the table HMEQ, which its manifest entry does not name"]
+    assert problems(tables=()) == [f"report '{REPORT}' does not bind the table ACCELERATOR_RELEASES"]
+    assert problems(host="viya4-example.internal.test") == [
+        f"report '{REPORT}' names the host viya4-example.internal.test (1 time(s), in plain text)"]
+    assert package_differences(package_of(manifest, change={REPORT: None}).build(), manifest) == [
+        f"report '{REPORT}' is in the manifest but not in the package"]
+
+
+def test_what_is_not_listed_is_named_whatever_it_is(manifest):
+    built = package_of(manifest)
+    built.report("RAG/LIVE_DEMO", {"viyaHost": "x"})
+    built.file("RAG/generated/pipeline.yaml", "steps: []\n")
+    built.grant("rule", "7cab3bd6", built.root_uri)
+    built.grant("share", "Share on LLM Usage Report", built.root_uri)
+    built.image("orphan.png")
+    assert package_differences(built.build(), manifest) == [
+        "report 'RAG/LIVE_DEMO' is in the package but not in the manifest",
+        "folder 'RAG/generated' is in the package but not in the manifest",
+        "file 'RAG/generated/pipeline.yaml' is in the package but not in the manifest",
+        "the package carries the authorization rule '7cab3bd6'",
+        "the package carries the authorization share 'Share on LLM Usage Report'",
+        "file 'orphan.png' is in the package but not below its content root"]
+    assert package_differences({"transferDetails": []}, manifest) == [
+        "the package holds no folder, so its objects have no place below a content root"]
+
+
 def test_objects_and_report_labels_are_listed():
     package = _package(_folder("Prompt Builder"), _report("Prompt Builder", {"viyaHost": "x", "enableRag": "false"}),
-                       _file("a.py", ROOT, ""), _job_definition("UI", ""))
+                       _file("a.py", "/SAS Agentic AI Accelerator/RAG", ""), _job_definition("UI", ""))
     assert package_objects(package) == [("folder", "Prompt Builder"), ("report", "Prompt Builder"),
                                         ("file", "a.py"), ("jobDefinition", "UI")]
     assert report_labels(package) == {"Prompt Builder": {"viyaHost", "enableRag"}}
     assert report_labels(_package(_folder("x"))) == {}
+    retired = _package(_report("RAG Builder", {"viyaHost": "x"}), _job_definition("RAG-Builder-UI", "<html>"),
+                       _job_definition("Scratch", "<html>"))
+    assert legacy_objects(retired) == ["report RAG Builder", "jobDefinition RAG-Builder-UI"]
 
 
-def test_the_default_packages_are_an_ordered_list_not_a_pattern(tmp_path):
-    """The Prompt Builder first, then the runtime - under its new file name,
-    or under the one it had while it carried a UI when that is what the
-    checkout holds. Nothing else in the folder is picked up."""
-    folder = tmp_path / "SAS-Viya-Integrations"
-    folder.mkdir()
-    assert shipped_builder_packages(tmp_path) == []
-    for name in (LEGACY_RAG_PACKAGE, PROMPT_BUILDER_PACKAGE, "SAS Agentic AI Accelerator.json",
-                 "SAS-Agentic-AI-Accelerator-Some-Other-Builder.json"):
-        (folder / name).write_text("{}", encoding="utf-8")
-    assert [p.name for p in shipped_builder_packages(tmp_path)] == [PROMPT_BUILDER_PACKAGE, LEGACY_RAG_PACKAGE]
-    (folder / RAG_RUNTIME_PACKAGE).write_text("{}", encoding="utf-8")
-    assert [p.name for p in shipped_builder_packages(tmp_path)] == [PROMPT_BUILDER_PACKAGE, RAG_RUNTIME_PACKAGE]
-    (folder / PROMPT_BUILDER_PACKAGE).unlink()
-    assert [p.name for p in shipped_builder_packages(tmp_path)] == [RAG_RUNTIME_PACKAGE]
-    assert (PROMPT_BUILDER_PACKAGE, RAG_RUNTIME_PACKAGE, LEGACY_RAG_PACKAGE) == (
-        "SAS-Agentic-AI-Accelerator-Prompt-Builder.json",
-        "SAS-Agentic-AI-Accelerator-RAG-Runtime.json",
-        "SAS-Agentic-AI-Accelerator-RAG-Builder.json")
-
-
-# ---- the packages this repository actually ships ----------------------------
-def _shipped(name_filter) -> list:
-    return [p for p in shipped_builder_packages(REPO_ROOT) if name_filter(p.name)]
-
-
-PROMPT_PACKAGES = _shipped(lambda name: name == PROMPT_BUILDER_PACKAGE)
-RUNTIME_PACKAGES = _shipped(lambda name: name != PROMPT_BUILDER_PACKAGE)
+# ---- the package this repository ships ---------------------------------------
+NOT_EXPORTED_YET = "the package is exported from the owner's system after this round"
 
 
 @pytest.fixture(scope="module")
-def loaded():
-    cache: dict = {}
-
-    def load(path: Path) -> dict:
-        if path not in cache:
-            cache[path] = json.loads(path.read_text(encoding="utf-8"))
-        return cache[path]
-    return load
+def shipped_manifest():
+    return load_manifest(REPO_ROOT)
 
 
-#: The package ids of the two exports committed for 2.2.x: the Prompt Builder
-#: and the RAG Builder package. An id belongs to one export - the transfer
-#: service mints a new one every time, and `mdb package-export` keeps it - so
-#: this names two files and nothing else. Remove it with the re-export.
-PRE_MERGE_EXPORTS = frozenset({
-    "5b466ee8-501d-4cac-b252-4dacac324f8e",
-    "237f03e0-864b-46b4-a213-e999bdff231d",
-})
+@pytest.fixture(scope="module")
+def shipped(shipped_manifest):
+    """The package file of this repository, parsed. While the checkout does
+    not hold it, a test that needs it is skipped with the reason."""
+    path = shipped_manifest.package_path
+    if not path.is_file():
+        pytest.skip(NOT_EXPORTED_YET)
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _predates_merge(package: dict) -> bool:
-    """One of the two exports made before 2.3.0, by its id. Not by what is
-    wrong with it: a report without the RAG labels, or a runtime package with
-    the standalone UI inside, is also what a re-export gone wrong looks like,
-    and that is what the checks are for."""
-    return package.get("id") in PRE_MERGE_EXPORTS
+def _shipped_report(shipped: dict) -> dict:
+    assert "Prompt Builder" in report_labels(shipped), "the package holds no report named 'Prompt Builder'"
+    return shipped
 
 
-def _settle(package: dict, path: Path, problems: list) -> None:
-    """Pass, fail, or - for one of the two exports from before 2.3.0 - an
-    expected failure that names what the re-export has to fix."""
-    if not problems:
-        return
-    text = f"{path.name}: " + "; ".join(problems)
-    if _predates_merge(package):
-        pytest.xfail(f"exported before 2.3.0 - {text}")
-    pytest.fail(text)
+def test_shipped_prompt_builder_report_holds_every_option(shipped):
+    assert missing_option_labels(_shipped_report(shipped), MERGED_REPORT_LABELS) == []
 
 
-def test_only_the_two_exports_from_before_the_merge_are_excused():
-    """A package is excused for being one of two known files, never for the
-    defect it has: the same report under any other id fails."""
-    old_report = {k: v for k, v in ALL_NEUTRAL.items() if k in ("viyaHost", "llmProjectID", "enableOptimization")}
-    package = _package(_report("Prompt Builder", old_report))
-    path = Path(PROMPT_BUILDER_PACKAGE)
-    problems = missing_option_labels(package, MERGED_REPORT_LABELS)
-    assert problems and "enableRag" in problems[0]
-    with pytest.raises(pytest.fail.Exception, match="lacks 25 option label"):
-        _settle({**package, "id": "0b0d0f6e-a-re-export-without-the-va-save"}, path, problems)
-    with pytest.raises(pytest.fail.Exception):
-        _settle(package, path, problems)                        # no id at all
-    for known in PRE_MERGE_EXPORTS:
-        with pytest.raises(pytest.xfail.Exception, match="exported before 2.3.0"):
-            _settle({**package, "id": known}, path, problems)
-    _settle({**package, "id": "anything"}, path, [])            # nothing wrong: nothing raised
+def test_shipped_prompt_builder_report_has_neutral_defaults(shipped):
+    assert non_neutral_defaults(_shipped_report(shipped)) == []
 
 
-def test_the_retired_ui_in_a_newly_exported_runtime_package_fails():
-    """The RAG folder exported under the new file name with the old report and
-    job definition still in it."""
-    package = {**_runtime(report=_report("RAG Builder", {"viyaHost": "x"}),
-                          ui=_job_definition("RAG-Builder-UI", "<html>")),
-               "id": "6c1e2a54-a-new-export"}
-    assert legacy_objects(package)
-    with pytest.raises(pytest.fail.Exception, match="RAG-Builder-UI"):
-        _settle(package, Path(RAG_RUNTIME_PACKAGE), runtime_ui_objects(package))
+def test_shipped_reports_have_no_user_states_and_name_no_host(shipped_manifest, shipped):
+    result = check_package(shipped_manifest.package_path)
+    assert [f"report '{s.report}' carries {s.states} per-user report state(s)" for s in result.states] == []
+    assert [f"{f.report} names {f.host}" for f in result.findings] == []
+    assert result.reports_checked == len([e for e in shipped_manifest.objects() if e.kind == "report"])
 
 
-@pytest.mark.parametrize("path", PROMPT_PACKAGES, ids=lambda p: p.name)
-def test_shipped_prompt_builder_report_holds_every_option(path, loaded):
-    package = loaded(path)
-    _settle(package, path, missing_option_labels(package, MERGED_REPORT_LABELS))
+def test_shipped_prompt_builder_ui_is_the_committed_bundle(shipped_manifest, shipped):
+    entry = shipped_manifest.find("Prompt Builder/SAS-LLM-Prompt-Builder-UI", "jobDefinition")
+    item = next((i for i in locate(shipped)[1] if i.kind == "jobDefinition" and i.path == entry.path), None)
+    assert item is not None, f"the package holds no job definition at '{entry.path}'"
+    body = json.loads(base64.b64decode(item.obj["content"]))
+    assert content.job_differences(content.job_definition_body(shipped_manifest, entry), body) == []
 
 
-@pytest.mark.parametrize("path", PROMPT_PACKAGES, ids=lambda p: p.name)
-def test_shipped_prompt_builder_report_has_neutral_defaults(path, loaded):
-    package = loaded(path)
-    _settle(package, path, non_neutral_defaults(package))
+def test_shipped_package_carries_no_rule_no_share_and_no_retired_ui(shipped):
+    kinds = [kind for kind, _name in package_objects(shipped)]
+    assert "rule" not in kinds and "share" not in kinds
+    assert legacy_objects(shipped) == []
 
 
-@pytest.mark.parametrize("path", PROMPT_PACKAGES, ids=lambda p: p.name)
-def test_shipped_prompt_builder_report_has_no_user_states(path, loaded):
-    package = loaded(path)
-    states = check_package(path).states
-    _settle(package, path, [f"report '{s.report}' carries {s.states} per-user report state(s)" for s in states])
+def test_shipped_package_equals_the_repository(shipped_manifest, shipped):
+    """The content gate, as `mdb package-check` runs it: every entry of the
+    manifest is in the package and equals the checkout, nothing else is."""
+    assert package_differences(shipped, shipped_manifest, shipped_manifest.package_path.name) == []
 
 
-@pytest.mark.parametrize("path", PROMPT_PACKAGES, ids=lambda p: p.name)
-def test_shipped_prompt_builder_ui_is_the_committed_bundle(path, loaded):
-    package = loaded(path)
-    bundle = REPO_ROOT.joinpath(*UI_BUNDLE)
-    if not bundle.is_file():
-        pytest.skip(f"{bundle} is not built in this checkout")
-    # newline="" keeps the file's own line endings; the comparison ignores them
-    with bundle.open(encoding="utf-8", newline="") as handle:
-        html = handle.read()
-    _settle(package, path, form_mismatch(package, html))
+def test_the_reason_a_package_test_is_skipped_is_the_agreed_one():
+    assert NOT_EXPORTED_YET == "the package is exported from the owner's system after this round"
 
 
-@pytest.mark.parametrize("path", RUNTIME_PACKAGES, ids=lambda p: p.name)
-def test_shipped_runtime_package_carries_no_ui(path, loaded):
-    package = loaded(path)
-    _settle(package, path, runtime_ui_objects(package))
+def _transfer_packages_below(folder: Path) -> list:
+    """Every transfer package file below a folder, by what the file holds."""
+    found = []
+    for path in sorted(folder.rglob("*.json")):
+        if "node_modules" in path.parts:
+            continue
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(document, dict) and "transferDetails" in document:
+            found.append(path.relative_to(REPO_ROOT).as_posix())
+    return found
 
 
-@pytest.mark.parametrize("path", RUNTIME_PACKAGES, ids=lambda p: p.name)
-def test_shipped_runtime_package_equals_the_repository(path, loaded):
-    package = loaded(path)
-    _settle(package, path, runtime_content_drift(package, REPO_ROOT))
+def test_the_release_package_is_the_only_package_once_it_is_there(shipped_manifest):
+    """One package ships. The four files of the earlier releases stay until
+    the commit that adds the new one, and go with it: next to it they would be
+    four stale copies that some guide still names."""
+    found = _transfer_packages_below(REPO_ROOT / "SAS-Viya-Integrations")
+    if not shipped_manifest.package_path.is_file():
+        assert shipped_manifest.package not in found
+        pytest.skip(NOT_EXPORTED_YET)
+    assert found == [shipped_manifest.package]
 
 
-def test_every_vector_store_the_ui_offers_has_its_switch_among_the_required_labels():
-    """The UI posts one `enable_<backend>` option per row of RAG_BACKENDS.
-    A store added there needs its label in the shipped report - and so in
-    MERGED_REPORT_LABELS, or the first check above would never ask for it."""
-    import re
-    source = REPO_ROOT / "LLM-Prompt-Builder" / "src" / "objects" / "rag-backends.ts"
-    if not source.is_file():
-        pytest.skip(f"{source} is not in this checkout")
-    table = re.search(r"export const RAG_BACKENDS\b.*?=\s*\[(.*?)\n\];", source.read_text(encoding="utf-8"), re.S)
-    keys = re.findall(r"\bkey:\s*'([A-Za-z0-9_]+)'", table.group(1)) if table else []
-    if not keys:
-        pytest.skip("RAG_BACKENDS is not declared the way this test reads it")
-    assert [f"enable_{key}" for key in keys if f"enable_{key}" not in MERGED_REPORT_LABELS] == []
+def test_no_code_knows_the_file_names_of_the_earlier_packages():
+    """`mdb builders-import` imports the one file. A name of an earlier
+    package left in the code would be a second default somebody trips over."""
+    source = REPO_ROOT / "Model-Definition-Builder" / "cli" / "src" / "mdb"
+    text = "\n".join(path.read_text(encoding="utf-8") for path in sorted(source.rglob("*.py")))
+    for name in ("SAS-Agentic-AI-Accelerator-Prompt-Builder", "SAS-Agentic-AI-Accelerator-RAG-Runtime",
+                 "SAS-Agentic-AI-Accelerator-RAG-Builder", "LLM Usage Report.json", "SAS Agentic AI Accelerator.json"):
+        assert name not in text, name
 
 
-def test_both_builder_packages_are_shipped():
-    """The parametrised checks above run over whatever is found; this is what
-    notices when one of the two files is not there at all - and when a third
-    is: the runtime package under its old name left next to the new one, or
-    the RAG content root exported under a name nothing imports."""
-    names = [p.name for p in shipped_builder_packages(REPO_ROOT)]
-    assert names[:1] == [PROMPT_BUILDER_PACKAGE]
-    assert names[1:] in ([RAG_RUNTIME_PACKAGE], [LEGACY_RAG_PACKAGE])
-    folder = REPO_ROOT / "SAS-Viya-Integrations"
-    assert sorted(p.name for p in folder.glob("SAS-Agentic-AI-Accelerator-*.json")) == sorted(names)
-    if (folder / RAG_RUNTIME_PACKAGE).is_file():
-        assert not (folder / LEGACY_RAG_PACKAGE).exists()
-
-
-# ---- package-export: what it refuses, and what it does not write ------------
+# ---- package-export: what it writes, what it refuses ---------------------------
 @pytest.fixture
-def exporting(monkeypatch, tmp_path):
+def exporting(monkeypatch, repo):
     """`mdb package-export` against a fake transfer service. Returns a
     function that runs the command on a given export and gives back (result,
-    printed text, the SAS-Viya-Integrations folder of the fake checkout)."""
-    import io
-    from types import SimpleNamespace
-
-    from rich.console import Console
-    from typer.testing import CliRunner
-
-    from mdb import cli
-    from mdb.viya import transfer
-
+    printed text, the file the command writes by default, the exports made)."""
     class _Session:
         def __enter__(self):
             return self
@@ -500,146 +630,271 @@ def exporting(monkeypatch, tmp_path):
     out = io.StringIO()
     exported: list = []
     monkeypatch.setattr(cli, "_viya_session", lambda: _Session())
-    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=tmp_path))
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=repo))
     monkeypatch.setattr(cli, "console", Console(file=out, width=1000, force_terminal=False))
     job = {"state": "completed", "packageUri": "/transfer/packages/p1",
            "links": [{"rel": "self", "href": "/transfer/exportJobs/j1"}]}
-    monkeypatch.setattr(transfer, "folder_by_path", lambda session, path: {"id": "f1"})
-    monkeypatch.setattr(transfer, "start_export", lambda session, name, items: exported.append(name) or job)
+    monkeypatch.setattr(transfer, "start_export", lambda session, name, items: exported.append((name, items)) or job)
     monkeypatch.setattr(transfer, "wait_for_job", lambda session, href, timeout=600: job)
     monkeypatch.setattr(transfer, "delete_package", lambda session, uri: None)
 
-    def run(package: dict, *args):
-        monkeypatch.setattr(transfer, "download_package", lambda session, uri: json.dumps(package))
+    def run(built: Package, *args):
+        out.seek(0)
+        out.truncate()
+        del exported[:]
+        monkeypatch.setattr(transfer, "folder_by_path",
+                            lambda session, path: {"id": built.root_uri.rsplit("/", 1)[-1]})
+        monkeypatch.setattr(transfer, "download_package", lambda session, uri: json.dumps(built.build(), indent=2))
         result = CliRunner().invoke(cli.app, ["package-export", *args])
-        return result, out.getvalue(), tmp_path / "SAS-Viya-Integrations", exported
+        return result, out.getvalue(), repo / "SAS-Viya-Integrations" / "SAS-Agentic-AI-Accelerator.json", exported
     return run
-
-
-RAG_FOLDER = ("--folder", "/SAS Agentic AI Accelerator/RAG")
-
-
-def test_export_of_the_two_shipped_packages_ends_clean(exporting):
-    result, text, folder, _ = exporting({**_package(_folder("Prompt Builder"), _report("Prompt Builder", ALL_NEUTRAL),
-                                                    _job_definition(UI_JOB_DEFINITION, "<html>")), "id": "new-1"})
-    assert result.exit_code == 0, text
-    assert json.loads((folder / PROMPT_BUILDER_PACKAGE).read_text(encoding="utf-8"))["id"] == "new-1"
-    result, text, folder, _ = exporting({**_runtime(), "id": "new-2"}, *RAG_FOLDER, "--name", "RAG Runtime")
-    assert result.exit_code == 0, text
-    assert (folder / RAG_RUNTIME_PACKAGE).is_file()
-    assert text.count("Review the diff, then commit it") == 2 and "must not be committed" not in text
-
-
-def test_export_of_the_rag_folder_under_its_own_name_is_refused_before_it_starts(exporting, tmp_path):
-    """Without --name the RAG content root gives ...-RAG.json: a file
-    `mdb builders-import` never reads, next to a runtime package that stays
-    as it was. Nothing is exported and nothing written."""
-    result, text, folder, exported = exporting(_runtime(), *RAG_FOLDER)
-    assert result.exit_code == 2
-    assert exported == [] and not folder.exists()
-    assert "does not read SAS-Agentic-AI-Accelerator-RAG.json" in text
-    assert 'Pass --name "RAG Runtime" for the RAG content root, or --out' in text
-    # --out is the way to export any other folder, or under any other name
-    elsewhere = tmp_path / "scratch" / "rag.json"
-    result, text, _, exported = exporting(_runtime(), *RAG_FOLDER, "--out", str(elsewhere))
-    assert result.exit_code == 0, text
-    assert exported == ["RAG"] and elsewhere.is_file()
-
-
-def test_export_with_the_retired_ui_inside_is_not_written(exporting):
-    """The RAG folder as a 2.2.x site has it: the standalone report and its
-    job definition still in it. The command says what it found, writes
-    nothing and does not end with exit code 0."""
-    retired = _runtime(report=_report("RAG Builder", {"viyaHost": "x"}),
-                       ui=_job_definition("RAG-Builder-UI", "<html>"))
-    result, text, folder, _ = exporting(retired, *RAG_FOLDER, "--name", "RAG Runtime")
-    assert result.exit_code == 1
-    assert not folder.exists()
-    assert "The package carries report RAG Builder, jobDefinition RAG-Builder-UI" in text
-    assert f"Nothing was written: there is no {RAG_RUNTIME_PACKAGE}." in text
-    assert "Review the diff" not in text and "Wrote" not in text
-    # left out by name, the same export is a runtime package
-    result, text, folder, _ = exporting(retired, *RAG_FOLDER, "--name", "RAG Runtime",
-                                        "--exclude", "RAG Builder", "--exclude", "RAG-Builder-UI")
-    assert result.exit_code == 0, text
-    assert legacy_objects(json.loads((folder / RAG_RUNTIME_PACKAGE).read_text(encoding="utf-8"))) == []
-
-
-def test_export_of_a_report_the_exporter_did_not_reset_or_save_fails(exporting):
-    """Two things only the exporting site can put right, and the export is
-    where the exporter is looking: an option default that is the site's own,
-    and a report that was not saved with the merged UI."""
-    tuned = {**ALL_NEUTRAL, "judgeModel": "gpt_5_mini", "minOptimizeSamples": "10"}
-    result, text, folder, _ = exporting(_package(_report("Prompt Builder", tuned)))
-    assert result.exit_code == 1 and not folder.exists()
-    assert "report 'Prompt Builder' - the report: judgeModel is 'gpt_5_mini', expected ''" in text
-    assert "report 'Prompt Builder' - the report: minOptimizeSamples is '10', expected '30'" in text
-    assert f"Nothing was written: there is no {PROMPT_BUILDER_PACKAGE}." in text
-    unsaved = {k: v for k, v in ALL_NEUTRAL.items() if not k.startswith(("enableRag", "enable_", "rag"))}
-    result, text, _, _ = exporting(_package(_report("Prompt Builder", unsaved)))
-    assert result.exit_code == 1 and not folder.exists()
-    assert "report 'Prompt Builder' - the report lacks 4 option label(s): enableRag, ragComputeContext, " \
-           "enable_pgvector, enable_singlestore" in text
-
-
-#: An export that is fit to ship, and the file `mdb builders-import` reads by
-#: default as it sits in a checkout before the export.
-def _fit(options: dict, states=()) -> dict:
-    return {**_package(_folder("Prompt Builder"), _report("Prompt Builder", options, states),
-                       _job_definition(UI_JOB_DEFINITION, "<html>")), "id": "new-1"}
 
 
 SHIPPED_BEFORE = '{"id": "the package of the last release"}\n'
 
 
-@pytest.mark.parametrize("label, value", [
-    ("sslVerify", "false"), ("sslVerify", "False"), ("sslVerify", "0"), ("sslVerify", ""),
-    *[(label, f"{neutral}-of-the-site") for label, neutral in NEUTRAL_DEFAULTS.items() if label != "sslVerify"]])
-def test_an_export_with_a_default_of_the_site_leaves_the_shipped_package_alone(exporting, tmp_path, label, value):
+def test_an_export_of_a_folder_that_is_the_checkout_is_written(exporting, manifest):
+    built = package_of(manifest)
+    result, text, target, exported = exporting(built)
+    assert result.exit_code == 0, text
+    assert exported == [("SAS Agentic AI Accelerator", [built.root_uri])]
+    written = json.loads(target.read_text(encoding="utf-8"))
+    assert package_differences(written, manifest) == []
+    assert target.read_bytes().endswith(b"\n") and b"\r" not in target.read_bytes()
+    assert "Wrote" in text and "15 objects: 7 folder, 4 file, 1 flowStep, 2 jobDefinition, 1 report; 0 left out" in text
+    assert "Review the diff, then commit it" in text and "left out:" not in text
+
+
+def test_an_export_from_a_configured_site_is_made_shippable(exporting, manifest):
+    """The folder as the owner's system has it: the report holds the site's
+    option values and the user's saved view, the host is the site's, and next
+    to the shipped content sit a generated job, another user's report and
+    the rules of the site. None of it is in the file, and nobody edited it."""
+    built = package_of(manifest, change={REPORT: None})
+    built.report(REPORT, TUNED, states=[TUNED], host="viya4-example.internal.test")
+    built.report("RAG/LIVE_DEMO", {"viyaHost": "https://viya4-example.internal.test"})
+    built.job("RAG/generated/RAG Ingest - Motor Policy Documents", {"code": "x"})
+    built.grant("rule", "7cab3bd6", built.root_uri)
+    result, text, target, _ = exporting(built)
+    assert result.exit_code == 0, text
+    for line in ("  left out: report 'RAG/LIVE_DEMO'\n", "  left out: folder 'RAG/generated'\n",
+                 "  left out: jobDefinition 'RAG/generated/RAG Ingest - Motor Policy Documents'\n",
+                 "  left out: rule '7cab3bd6'\n",
+                 "  removed 1 per-user report state(s) from report 'Prompt Builder'\n",
+                 "  replaced viya4-example.internal.test with the placeholder (1 occurrence(s))\n"):
+        assert line in text, line
+    assert "  reset 10 option default(s) of the report to the neutral values: embeddingProjectID, enableOptimization, " \
+           "enableRag, judgeModel, llmProjectID, minOptimizeSamples, modelCardReportURI, modelRepositoryID, " \
+           "sslVerify, storeSslmode\n" in text
+    written = json.loads(target.read_text(encoding="utf-8"))
+    assert report_option_copies(written) == [ALL_NEUTRAL]
+    assert "viya4-example" not in target.read_text(encoding="utf-8") and check_package(target).ok
+    assert package_differences(written, manifest) == []
+    assert "4 left out" in text
+
+
+def test_an_export_that_differs_from_the_checkout_leaves_the_shipped_package_alone(exporting, manifest):
     """The target is the file `mdb builders-import` reads when no package is
-    named. Written first and judged afterwards, a report that switches TLS
-    verification off - or RAG on, or names the site's judge model - is in
-    the checkout with exit code 1 behind it, and the next import from that
+    named. Written first and judged afterwards, a stale step is in the
+    checkout with exit code 1 behind it, and the next import from that
     checkout brings it to a site without a line about it."""
-    shipped = tmp_path / "SAS-Viya-Integrations" / PROMPT_BUILDER_PACKAGE
-    shipped.parent.mkdir()
-    shipped.write_text(SHIPPED_BEFORE, encoding="utf-8", newline="\n")
-    result, text, _, _ = exporting(_fit({**ALL_NEUTRAL, label: value}))
+    built = package_of(manifest, change={STEP_PATH: as_registered({**STEP, "templates": {"SAS": "%put old;\n"}}),
+                                         "RAG/rag_core/adapters/__init__.py": None})
+    target = manifest.package_path
+    target.write_text(SHIPPED_BEFORE, encoding="utf-8", newline="\n")
+    result, text, target, _ = exporting(built)
     assert result.exit_code == 1
-    assert shipped.read_bytes() == SHIPPED_BEFORE.encode("utf-8")
-    assert sorted(p.name for p in shipped.parent.iterdir()) == [PROMPT_BUILDER_PACKAGE]
-    # the option, the value, and the copy of the report it was found in
-    assert (f"report 'Prompt Builder' - the report: {label} is '{value}', "
-            f"expected '{NEUTRAL_DEFAULTS[label]}'") in text
-    assert f"Nothing was written: {PROMPT_BUILDER_PACKAGE} is as it was before the export." in text
+    assert target.read_bytes() == SHIPPED_BEFORE.encode("utf-8")
+    assert f"  step '{STEP_PATH}': 'templates' differs from src/{STEP_NAME}\n" in text
+    assert "  file 'RAG/rag_core/adapters/__init__.py' is in the manifest but not in the package\n" in text
+    assert "2 difference(s) between the export and the checkout." in text and "`mdb content-deploy`" in text
+    assert "Nothing was written: SAS-Agentic-AI-Accelerator.json is as it was before the export." in text
     assert "Wrote" not in text and "Review the diff" not in text
 
 
-def test_an_export_to_a_named_file_is_not_written_either(exporting, tmp_path):
-    """--out may name the shipped file, or one that is copied over it."""
-    elsewhere = tmp_path / "scratch" / "prompt-builder.json"
-    result, text, _, _ = exporting(_fit({**ALL_NEUTRAL, "sslVerify": "false"}), "--out", str(elsewhere))
-    assert result.exit_code == 1 and not elsewhere.exists() and not elsewhere.parent.exists()
-    assert "the report: sslVerify is 'false', expected 'true'" in text
-    assert "Nothing was written: there is no prompt-builder.json." in text
+def test_an_export_of_a_report_that_was_not_saved_with_the_current_ui_is_not_written(exporting, manifest):
+    """What only the exporting site can put right: a default can be reset, a
+    label the report lacks cannot be added."""
+    unsaved = {k: v for k, v in TUNED.items() if not k.startswith(("enableRag", "enable_", "rag"))}
+    built = package_of(manifest, change={REPORT: None})
+    built.report(REPORT, unsaved)
+    result, text, target, _ = exporting(built)
+    assert result.exit_code == 1 and not target.exists()
+    assert f"  report '{REPORT}': the report lacks 4 option label(s): enableRag, ragComputeContext, enable_pgvector, " \
+           "enable_singlestore\n" in text
+    assert "is '" not in text                           # the defaults it holds were reset, and are no finding
+    assert "Nothing was written: there is no SAS-Agentic-AI-Accelerator.json." in text
 
 
-def test_a_default_of_the_site_in_a_user_state_goes_with_the_state(exporting):
-    """A state is removed from the export before it is judged, so what one
-    user saved - verification off, in a view of their own - neither reaches
-    the file nor stops the export: nobody but that user can reset it."""
-    off = {**ALL_NEUTRAL, "sslVerify": "false", "enableRag": "true"}
-    result, text, folder, _ = exporting(_fit(ALL_NEUTRAL, states=[off, off]))
+def test_an_export_of_another_root_needs_a_file_of_its_own(exporting, manifest, repo):
+    """A test folder is not the release. Its export is written where --out
+    says, and the file `mdb builders-import` reads is not touched."""
+    root = "/Users/me/My Folder/ZZ_VERIFY_R17/root"
+    built = package_of(manifest, root="root", above=("Users", "me", "My Folder", "ZZ_VERIFY_R17"))
+    result, text, target, exported = exporting(built, "--content-root", root)
+    assert result.exit_code == 2 and exported == [] and not target.exists()
+    assert f"{root} is not the content root of the release ({CONTENT_ROOT})" in text and "Pass --out" in text
+
+    elsewhere = repo / "scratch" / "r17.json"
+    result, text, target, exported = exporting(built, "--content-root", root, "--out", str(elsewhere))
     assert result.exit_code == 0, text
-    assert "removed 2 per-user report state(s) from report 'Prompt Builder'" in text
-    written = json.loads((folder / PROMPT_BUILDER_PACKAGE).read_text(encoding="utf-8"))
-    assert report_option_copies(written) == [ALL_NEUTRAL]
-    # and with the report itself off, the states do not hide it
-    result, text, folder, _ = exporting(_fit(off, states=[ALL_NEUTRAL]))
+    assert exported == [("root", [built.root_uri])] and not target.exists()
+    written = json.loads(elsewhere.read_text(encoding="utf-8"))
+    assert package_differences(written, manifest) == []
+    # the folders above the root were part of the export and are not part of the file
+    folders = [name for kind, name in package_objects(written) if kind == "folder"]
+    assert "root" in folders and not {"Users", "me", "My Folder", "ZZ_VERIFY_R17"} & set(folders)
+    assert "  left out: folder 'ZZ_VERIFY_R17' (not below the content root)\n" in text
+
+
+def test_a_test_folder_without_reports_is_exported_with_its_differences_allowed(exporting, manifest, repo):
+    """`mdb content-deploy` brings no report, so a test folder holds none and
+    its export differs from the checkout by exactly that."""
+    root = "/Users/me/My Folder/ZZ_VERIFY_R17/root"
+    built = package_of(manifest, change={REPORT: None}, root="root")
+    elsewhere = repo / "scratch" / "r17.json"
+    result, text, _, _ = exporting(built, "--content-root", root, "--out", str(elsewhere))
+    assert result.exit_code == 1 and not elsewhere.exists()
+    assert f"  report '{REPORT}' is in the manifest but not in the package\n" in text
+    result, text, _, _ = exporting(built, "--content-root", root, "--out", str(elsewhere), "--allow-differences")
+    assert result.exit_code == 0, text
+    assert "1 difference(s) to the checkout - written all the same (--allow-differences): this is not a package " \
+           "of the release." in text
+    assert elsewhere.is_file()
+    # never for the file of the release
+    result, text, target, exported = exporting(built, "--allow-differences")
+    assert result.exit_code == 2 and exported == [] and not target.exists()
+    assert "--allow-differences needs --out" in text
+    result, text, target, exported = exporting(built, "--allow-differences", "--out", str(target))
+    assert result.exit_code == 2 and exported == [] and not target.exists()
+
+
+def test_an_export_of_the_showcases_folder_is_refused_before_it_starts(exporting, manifest, repo):
+    built = package_of(manifest, root="SAS Agentic AI Accelerator Showcases")
+    result, text, _, exported = exporting(built, "--content-root", "/SAS Agentic AI Accelerator Showcases",
+                                          "--out", str(repo / "showcases.json"))
+    assert result.exit_code == 2 and exported == [] and not (repo / "showcases.json").exists()
+    assert "'SAS Agentic AI Accelerator Showcases' is showcase or example content, which never ships" in text
+
+
+def test_a_listed_path_that_never_ships_stops_the_export(exporting, manifest, monkeypatch):
+    """The second lock, at the command: a manifest object that names such a
+    path - the loader would have refused it - does not get it written."""
+    manifest.entries.append(content.Entry(path="RAG/generated/job.sas", kind="file", source="src/optimize.sas"))
+    monkeypatch.setattr(cli, "_content_manifest", lambda ctx, check_sources=True: manifest)
+    built = package_of(manifest)
+    result, text, target, _ = exporting(built)
+    assert result.exit_code == 1 and not target.exists()
+    assert "  never ships, although the manifest lists it: file 'RAG/generated/job.sas': 'generated' holds what the " \
+           "Prompt Builder generates for a site's own setups\n" in text
+
+
+# ---- package-check: the gate as a command ---------------------------------------
+@pytest.fixture
+def checking(monkeypatch, repo):
+    """`mdb package-check` in the fake checkout. Returns a function that runs
+    the command and gives back (result, printed text, the package file of
+    the checkout)."""
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=repo))
+    monkeypatch.setattr(cli, "console", Console(file=out, width=1000, force_terminal=False))
+    monkeypatch.setattr(cli, "_viya_session", lambda: pytest.fail("the check reads files and signs in nowhere"))
+
+    def run(*args):
+        out.seek(0)
+        out.truncate()
+        result = CliRunner().invoke(cli.app, ["package-check", *args])
+        return result, out.getvalue(), repo / "SAS-Viya-Integrations" / "SAS-Agentic-AI-Accelerator.json"
+    return run
+
+
+def test_the_check_says_when_the_checkout_holds_no_package(checking):
+    """The state of the repository until the package is exported: not a pass.
+    --allow-missing is for the workflow that runs before that day."""
+    result, text, target = checking()
+    assert result.exit_code == 1 and not target.exists()
+    assert "There is no SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json in this checkout: nothing was checked." \
+        in text
+    result, text, _ = checking("--allow-missing")
+    assert result.exit_code == 0 and "nothing was checked." in text
+    # a file that is named and is not there is a mistake either way
+    result, text, _ = checking("--allow-missing", str(target))
+    assert result.exit_code == 2 and "not a file" in text
+
+
+def test_the_check_passes_a_package_that_is_the_checkout(checking, manifest):
+    result, text, target = checking()
+    target.write_text(json.dumps(package_of(manifest).build(), indent=2), encoding="utf-8", newline="\n")
+    result, text, _ = checking()
+    assert result.exit_code == 0, text
+    assert "1 package(s): every entry of the manifest is in the package and equals the checkout, and nothing else " \
+           "is in it." in text
+    # --allow-missing allows a missing file, not a wrong one
+    result, text, _ = checking("--allow-missing")
+    assert result.exit_code == 0, text
+
+
+def test_the_check_prints_one_line_per_difference_and_fails(checking, manifest, repo):
+    built = package_of(manifest, change={"RAG/rag_core/__init__.py": b"CORE = 0\n", "Prompt Builder/Optimize": None})
+    built.report("RAG/LIVE_DEMO", {"viyaHost": "x"})
+    built.grant("rule", "7cab3bd6", built.root_uri)
+    target = manifest.package_path
+    target.write_text(json.dumps(built.build()), encoding="utf-8")
+    before = target.read_bytes()
+    result, text, _ = checking()
     assert result.exit_code == 1
-    assert "report 'Prompt Builder' - the report: sslVerify is 'false', expected 'true'" in text
-    assert report_option_copies(json.loads((folder / PROMPT_BUILDER_PACKAGE).read_text(encoding="utf-8"))) == \
-        [ALL_NEUTRAL]
+    assert text.splitlines()[:4] == [
+        "SAS-Agentic-AI-Accelerator.json: file 'RAG/rag_core/__init__.py' differs from src/rag_core/__init__.py "
+        "(9 vs 9 bytes)",
+        "SAS-Agentic-AI-Accelerator.json: report 'RAG/LIVE_DEMO' is in the package but not in the manifest",
+        "SAS-Agentic-AI-Accelerator.json: the package carries the authorization rule '7cab3bd6'",
+        "SAS-Agentic-AI-Accelerator.json: jobDefinition 'Prompt Builder/Optimize' is in the manifest but not in "
+        "the package"]
+    assert "4 difference(s) between the package and the checkout." in text
+    assert target.read_bytes() == before                                    # a check writes nothing
+    # --allow-missing is no way around a difference
+    assert checking("--allow-missing")[0].exit_code == 1
+    # and a change of the checkout is a difference of the package that was fine before
+    target.write_text(json.dumps(package_of(manifest).build()), encoding="utf-8")
+    assert checking()[0].exit_code == 0
+    (repo / "src/optimize.sas").write_text("%put a fix;\n", encoding="utf-8")
+    result, text, _ = checking()
+    assert result.exit_code == 1
+    assert "job definition 'Prompt Builder/Optimize': 'code' differs from src/optimize.sas" in text
+    assert "file 'release.json' holds another hash for jobDefinition 'Prompt Builder/Optimize'" in text
+
+
+def test_fix_rewrites_what_can_be_rewritten_in_the_file(checking, manifest, repo):
+    """A host, a user's state and an option default are in the file and can
+    be put right there. Content cannot: that is the folder's to fix."""
+    built = package_of(manifest, change={REPORT: None, "RAG/rag_core/__init__.py": b"CORE = 0\n"})
+    built.report(REPORT, TUNED, states=[TUNED], host="viya4-example.internal.test")
+    elsewhere = repo / "scratch.json"
+    elsewhere.write_text(json.dumps(built.build(), indent=2), encoding="utf-8", newline="\n")
+    result, text, target = checking(str(elsewhere))
+    assert result.exit_code == 1 and not target.exists()
+    # the file, the host, the state, and ten defaults of the site in each of the two copies
+    assert "23 difference(s)" in text and "names the host viya4-example.internal.test" in text
+
+    result, text, _ = checking(str(elsewhere), "--fix")
+    assert result.exit_code == 1
+    assert "scratch.json: reset 10 option default(s) of the report: " in text
+    assert "scratch.json: reset 10 option default(s) of report state 1: " in text
+    assert "scratch.json: removed 1 per-user report state(s) from report 'Prompt Builder'" in text
+    assert "scratch.json: viya4-example.internal.test -> your-sas-viya-host (1)" in text
+    assert text.splitlines()[-2] == \
+        "scratch.json: file 'RAG/rag_core/__init__.py' differs from src/rag_core/__init__.py (9 vs 9 bytes)"
+    assert "1 difference(s) between the package and the checkout." in text
+    assert report_option_copies(json.loads(elsewhere.read_text(encoding="utf-8"))) == [ALL_NEUTRAL]
+
+
+def test_a_manifest_that_cannot_be_used_ends_the_check_with_its_defects(checking, repo):
+    path = repo / "SAS-Viya-Integrations" / "package-manifest.yaml"
+    path.write_text(path.read_text(encoding="utf-8")
+                    + "  - {path: Showcases/Motor Claims/x.sas, kind: file, source: src/optimize.sas}\n", encoding="utf-8")
+    result, text, _ = checking()
+    assert result.exit_code == 2
+    assert "  'Showcases/Motor Claims/x.sas': 'Showcases' is showcase content and never ships\n" in text
 
 
 # ---- the guards' own inputs --------------------------------------------------
@@ -705,21 +960,37 @@ def test_the_required_labels_are_the_options_the_ui_posts():
     assert posted == list(MERGED_REPORT_LABELS)
 
 
+def test_every_vector_store_the_ui_offers_has_its_switch_among_the_required_labels():
+    """The UI posts one `enable_<backend>` option per row of RAG_BACKENDS.
+    A store added there needs its label in the shipped report - and so in
+    MERGED_REPORT_LABELS, or the first check above would never ask for it."""
+    import re
+    source = REPO_ROOT / "LLM-Prompt-Builder" / "src" / "objects" / "rag-backends.ts"
+    if not source.is_file():
+        pytest.skip(f"{source} is not in this checkout")
+    table = re.search(r"export const RAG_BACKENDS\b.*?=\s*\[(.*?)\n\];", source.read_text(encoding="utf-8"), re.S)
+    keys = re.findall(r"\bkey:\s*'([A-Za-z0-9_]+)'", table.group(1)) if table else []
+    if not keys:
+        pytest.skip("RAG_BACKENDS is not declared the way this test reads it")
+    assert [f"enable_{key}" for key in keys if f"enable_{key}" not in MERGED_REPORT_LABELS] == []
+
+
 def test_the_workflow_starts_on_every_file_a_check_reads():
-    """Each check here compares a package, or the label list, with a file of
-    the repository. A pull request that changes only that file - a rebuilt UI
-    bundle, a RAG step, a new vector store, an option added in ddc.ts - makes
-    the package or the list stale, and has to start the workflow that runs
-    this suite, or the failure shows up on somebody else's change."""
+    """The gate compares the package with files of the repository, and the
+    label list with the UI source. A pull request that changes only such a
+    file - a rebuilt UI bundle, a RAG step, a logging program, a fact sheet,
+    an option added in ddc.ts - makes the package or the list stale, and has
+    to start the workflow that runs this suite, or the failure shows up on
+    somebody else's change."""
     workflow = REPO_ROOT / ".github" / "workflows" / "verify-model-definitions.yml"
     if not workflow.is_file():
         pytest.skip(f"{workflow} is not in this checkout")
-    read_here = ["/".join(UI_BUNDLE), "LLM-Prompt-Builder/src/va/ddc.ts",
-                 "LLM-Prompt-Builder/src/objects/rag-backends.ts",
-                 f"SAS-Viya-Integrations/{PROMPT_BUILDER_PACKAGE}", f"SAS-Viya-Integrations/{RAG_RUNTIME_PACKAGE}",
+    manifest = load_manifest(REPO_ROOT)
+    read_here = ["LLM-Prompt-Builder/src/va/ddc.ts", "LLM-Prompt-Builder/src/objects/rag-backends.ts",
+                 manifest.package, "SAS-Viya-Integrations/package-manifest.yaml",
                  "Model-Definition-Builder/cli/tests/test_package_guards.py",
-                 "CHANGELOG.md"]                    # test_releases.py builds the release table from it
-    read_here += ["/".join(source["path"]) + "/a file" for source in RUNTIME_SOURCES.values()]
+                 "CHANGELOG.md"]                    # the release table in the package is built from it
+    read_here += manifest.sources()
 
     def covered(path: str, patterns: list) -> bool:
         folder = path.rsplit("/", 1)[0]
@@ -734,3 +1005,5 @@ def test_the_workflow_starts_on_every_file_a_check_reads():
         patterns = re.findall(r'^\s+- "([^"]+)"\s*$', block, re.M)
         assert patterns, f"no quoted path filter under {trigger}"
         assert [path for path in read_here if not covered(path, patterns)] == [], trigger
+    # and the gate itself is a step of the workflow
+    assert re.search(r"^\s+run: mdb package-check\b", text, re.M)

@@ -1167,7 +1167,10 @@ def options_save(
     pointing at somebody else's environment.
 
     Run this BEFORE importing a report package, and `mdb options-restore`
-    after.
+    after. `mdb builders-import` does both by itself when it is given no
+    options file: it reads the report before the import, keeps what it read
+    in a file of its own and writes it back. Saving first is for a file to
+    keep, to edit before the import, or to carry to another deployment.
 
     A site upgrading from 2.2.x still has the retired report named "RAG
     Builder". Its options are read too and folded into the Prompt Builder
@@ -1388,7 +1391,7 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
                           f"be written ({', '.join(unwritten)}) - the report "
                           + ("the import brings" if report_name in arriving else "on this site")
                           + " is from before 2.3.0, or was not saved with the merged UI. Import the "
-                          "Prompt Builder package of this release, then restore again.[/red]")
+                          "package of this release (`mdb builders-import`), then restore again.[/red]")
         for label, value in result.rejected.items():
             console.print(f"[red]  {report_name}: '{label}' is a checkbox in this report and '{value}' says "
                           "neither on nor off - not written. Use true or false.[/red]")
@@ -1460,19 +1463,6 @@ def _discovered_options(session, ctx: "Context") -> dict:
     return {name: merge_seed(seed, None) for name, seed in _discovered_seeds(session, ctx).items()}
 
 
-def _shipped_builder_packages(ctx: "Context") -> list[Path]:
-    """The packages builders-import imports when none is named: the Prompt
-    Builder, then the RAG runtime."""
-    from .core.packages import shipped_builder_packages
-    return shipped_builder_packages(ctx.repo)
-
-
-def _package_objects(package: dict) -> list[tuple[str, str]]:
-    """(type, name) of every object a package carries."""
-    from .core.packages import package_objects
-    return package_objects(package)
-
-
 def _content_manifest(ctx: "Context", check_sources: bool = True):
     """The content manifest of the checkout. A manifest that cannot be used
     ends the command with exit code 2 and one line per defect: nothing is
@@ -1485,6 +1475,12 @@ def _content_manifest(ctx: "Context", check_sources: bool = True):
         for problem in exc.problems:
             console.print(f"  {problem}", markup=False, highlight=False, soft_wrap=True)
         raise typer.Exit(2)
+
+
+def _package_objects(package: dict) -> list[tuple[str, str]]:
+    """(type, name) of every object a package carries."""
+    from .core.packages import package_objects
+    return package_objects(package)
 
 
 @app.command("content-deploy")
@@ -1573,69 +1569,72 @@ def content_deploy(
 
 @app.command("package-export")
 def package_export(
-    folder: str = typer.Option(
-        "/SAS Agentic AI Accelerator/Prompt Builder", "--folder",
-        help="SAS Content folder to export: the Prompt Builder folder, or the RAG content root "
-             "(/SAS Agentic AI Accelerator/RAG) with --name \"RAG Runtime\"."),
+    content_root: Optional[str] = typer.Option(
+        None, "--content-root",
+        help="SAS Content folder to export (default: the content root the manifest names, "
+             "/SAS Agentic AI Accelerator). Any other folder needs --out."),
     name: Optional[str] = typer.Option(None, "--name", help="Package name (default: the folder's name)."),
     out: Optional[Path] = typer.Option(
         None, "--out", "-o",
-        help="Where to write the package (default: SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-<Folder-Name>.json)."),
+        help="Where to write the package (default: the file the manifest names, "
+             "SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json)."),
     keep: bool = typer.Option(False, "--keep", help="Leave the exported package on the server too."),
-    exclude: Optional[list[str]] = typer.Option(
-        None, "--exclude", "-x",
-        help="Object name to leave out of the package (repeatable), whatever its type - a demo report, a scratch "
-             "job definition or a file that lives in the folder but must not ship."),
+    allow_differences: bool = typer.Option(
+        False, "--allow-differences",
+        help="Write the package although it differs from the checkout or lacks an entry of the manifest - "
+             "for a test folder that holds no report. Needs --out; the release file is never written that way."),
     timeout: int = typer.Option(600, "--timeout", help="Seconds to wait for the export job."),
 ):
-    """Export a SAS Content folder to a transfer package and write it into the
-    repository with the exporting environment's hostname removed.
+    """Export the content folder to the one transfer package of the release.
 
-    Replaces the three manual steps - export in SAS Environment Manager or
-    with `sas-viya transfer export`, copy the file over the shipped one, run
-    `mdb package-check --fix`. The export includes dependencies and
-    authorization rules, as the shipped packages do; the hostname rewrite
-    reaches into the compressed report content, and the result is checked
-    before it is written. A report's saved per-user states are removed: each
-    is a full copy of the report with a user id, and none belongs in a shipped
-    package. Re-export after every change to the Prompt Builder's report, job
-    definition or options, and the RAG runtime after every change to a RAG
-    step, job or rag_core.
+    The folder is exported with its dependencies, and then reduced to what the
+    content manifest lists: every other object is dropped with its entries in
+    the package - a generated artifact, a report somebody parked in the
+    folder, a dependency from outside it - and so is every authorization rule
+    and share. In the Prompt Builder report the option defaults are reset to
+    the neutral values in every copy of the report, the per-user states are
+    removed, and the exporting environment's hostname becomes the placeholder,
+    also inside the compressed report content.
 
-    Without --out the file must be one of the two `mdb builders-import`
-    reads, so the RAG content root needs --name "RAG Runtime"; any other
-    name is refused before anything is exported. The command ends with exit
-    code 1 and writes nothing - the file from before stays as it is - when
-    the package still names a host after the rewrite, when it still carries
-    the retired standalone RAG UI, or when its Prompt Builder report lacks an
-    option of the merged UI or holds a default of the exporting site: a judge
-    model, RAG switched on, TLS verification for manifested models switched
-    off. Each is named with the option and the value found. A default in a
-    per-user state is not judged: the state is removed.
+    What would be written is then compared with the checkout
+    (`mdb package-check` asks the same): every entry of the manifest is there
+    and equals its source, and nothing else is. The command writes nothing and
+    ends with exit code 1 - the file from before stays as it is - when a
+    difference is left, when the package still names a host, or when an object
+    sits on a path that never ships (Showcases, Example, a folder named
+    generated, a name starting with ZZ_VERIFY), listed or not. Bring the
+    folder to the checkout with `mdb content-deploy` first; a report that lacks
+    an option of the current UI has to be saved once with that UI in SAS Visual
+    Analytics.
     """
-    import re as _re
-    from .core.options import MERGED_REPORT, MERGED_REPORT_LABELS
-    from .core.packages import (ALLOWED_HOSTS, PROMPT_BUILDER_PACKAGE, RAG_RUNTIME_PACKAGE, check_text,
-                                describe_findings, legacy_objects, missing_option_labels,
-                                non_neutral_defaults, report_labels, sanitise_text, strip_report_states)
+    from .core.content import content_root_problem
+    from .core.packages import (ALLOWED_HOSTS, check_text, describe_findings, filter_package,
+                                package_differences, reset_report_defaults, sanitise_text,
+                                strip_report_states)
     from .viya.transfer import (delete_package, download_package, folder_by_path, job_messages,
                                 start_export, wait_for_job)
     ctx = Context()
-    exclude = [n for n in (exclude or []) if n and n.strip()]
-    package_name = name or folder.rstrip("/").rsplit("/", 1)[-1]
-    target = out or (ctx.repo / "SAS-Viya-Integrations" /
-                     f"SAS-Agentic-AI-Accelerator-{_re.sub(r'[^A-Za-z0-9]+', '-', package_name).strip('-')}.json")
-    if out is None and target.name not in (PROMPT_BUILDER_PACKAGE, RAG_RUNTIME_PACKAGE):
-        # The RAG content root without --name gives ...-RAG.json: a file
-        # nothing imports, next to a runtime package that then stays stale.
-        console.print(f"[red]`mdb builders-import` does not read {target.name}: it reads {PROMPT_BUILDER_PACKAGE} "
-                      f"and {RAG_RUNTIME_PACKAGE}. Pass --name \"RAG Runtime\" for the RAG content root, or "
-                      "--out to write the package somewhere else. Nothing was exported.[/red]")
+    manifest = _content_manifest(ctx)
+    root = (content_root or manifest.content_root).rstrip("/")
+    target = out or manifest.package_path
+    if out is None and root != manifest.content_root:
+        console.print(f"[red]{root} is not the content root of the release ({manifest.content_root}): an export "
+                      f"of it is not written to {manifest.package}. Pass --out to write it somewhere else. "
+                      "Nothing was exported.[/red]", highlight=False)
         raise typer.Exit(2)
+    if allow_differences and (out is None or target.resolve() == manifest.package_path.resolve()):
+        console.print(f"[red]--allow-differences needs --out, and not {manifest.package}: the release file is "
+                      "only written when it equals the checkout. Nothing was exported.[/red]", highlight=False)
+        raise typer.Exit(2)
+    if content_root_problem(root):
+        console.print(f"[red]{root}: {content_root_problem(root)}. Nothing was exported.[/red]", highlight=False)
+        raise typer.Exit(2)
+    package_name = name or root.rsplit("/", 1)[-1]
     with _viya_session() as session:
         try:
-            folder_obj = folder_by_path(session, folder)
-            console.print(f"Exporting [bold]{folder}[/bold] as package [bold]{package_name}[/bold] ...")
+            folder_obj = folder_by_path(session, root)
+            console.print(f"Exporting [bold]{root}[/bold] as package [bold]{package_name}[/bold] ...",
+                          highlight=False)
             job = start_export(session, package_name, [f"/folders/folders/{folder_obj['id']}"])
             job = wait_for_job(session, next(l["href"] for l in job["links"] if l["rel"] == "self"), timeout=timeout)
         except RuntimeError as exc:
@@ -1650,23 +1649,21 @@ def package_export(
         text = download_package(session, package_uri)
         if not keep:
             delete_package(session, package_uri)
-    if exclude:
-        from .core.packages import drop_objects
-        parsed = json.loads(text)
-        dropped = drop_objects(parsed, exclude)
-        missing = sorted({n for n in exclude if n.strip().lower() not in {d.split(" ", 1)[1].lower() for d in dropped}})
-        for name in dropped:
-            console.print(f"  left out: {name}")
-        if missing:
-            console.print(f"[red]--exclude names nothing in the export: {', '.join(missing)}[/red]")
-            raise typer.Exit(1)
-        text = json.dumps(parsed, indent=2, ensure_ascii=False) + chr(10)
+    parsed = json.loads(text)
+    filtered = filter_package(parsed, manifest, f"/folders/folders/{folder_obj['id']}")
+    for line in filtered.dropped:
+        console.print(f"  left out: {line}", markup=False, highlight=False, soft_wrap=True)
+    text = json.dumps(parsed, indent=2, ensure_ascii=False) + chr(10)
     try:
+        text, reset = reset_report_defaults(text)
         text, states = strip_report_states(text)
         text, fixed = sanitise_text(text, target.name, ALLOWED_HOSTS)
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
+    for copy_name, labels in reset.items():
+        console.print(f"  reset {len(labels)} option default(s) of {copy_name} to the neutral values: "
+                      f"{', '.join(labels)}", highlight=False)
     for report_name, n in states.items():
         console.print(f"  removed {n} per-user report state(s) from report '{report_name}'")
     for host, n in fixed.items():
@@ -1675,36 +1672,42 @@ def package_export(
     # target is the package `mdb builders-import` reads when none is named,
     # and a package that is written and then found unfit is imported by the
     # next run from this checkout, whatever the exit code said. What is
-    # judged is what would be written - the per-user states are gone by now.
+    # judged is what would be written.
     package = json.loads(text)
     unfit = False
+    for line in filtered.refused:
+        console.print(f"  never ships, although the manifest lists it: {line}", style="red", markup=False,
+                      highlight=False, soft_wrap=True)
+        unfit = True
     result = check_text(text, target.name, ALLOWED_HOSTS)
     if not result.ok:
         console.print(f"[red]The export still names a host after the rewrite: {describe_findings(result)}[/red]")
         unfit = True
-    # What only the exporting site can put right.
-    retired = legacy_objects(package)
-    if retired:
-        console.print(f"[red]The package carries {', '.join(retired)} - the standalone RAG UI that is retired. "
-                      "Delete them from the folder and export again, or leave them out with --exclude.[/red]")
+    differences = [] if not result.ok else package_differences(package, manifest, target.name)
+    for line in differences:
+        console.print(f"  {line}", style="yellow" if allow_differences else "red", markup=False, highlight=False,
+                      soft_wrap=True)
+    if differences and allow_differences:
+        console.print(f"[yellow]{len(differences)} difference(s) to the checkout - written all the same "
+                      "(--allow-differences): this is not a package of the release.[/yellow]")
+    elif differences:
+        console.print(f"[red]{len(differences)} difference(s) between the export and the checkout.[/red] Run "
+                      "`mdb content-deploy` to bring the folder to the checkout, and for a report open it in "
+                      "SAS Visual Analytics with the current UI and save it; then export again.")
         unfit = True
-    if MERGED_REPORT in report_labels(package):
-        problems = missing_option_labels(package, MERGED_REPORT_LABELS) + non_neutral_defaults(package)
-        for problem in problems:
-            console.print(f"[red]  report '{MERGED_REPORT}' - {problem}[/red]")
-        if problems:
-            console.print("[red]Open the report in SAS Visual Analytics with the current UI, set these options "
-                          "to their defaults in the Options pane, save the report and export again.[/red]")
-            unfit = True
     if unfit:
         console.print("[red]Nothing was written: " + (
             f"{target.name} is as it was before the export." if target.exists() else
-            f"there is no {target.name}.") + "[/red]")
+            f"there is no {target.name}.") + "[/red]", highlight=False)
         raise typer.Exit(1)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8", newline="\n")
-    kinds = ", ".join(f"{kind} {name}" for kind, name in _package_objects(package))
-    console.print(f"[green]Wrote {target} ({package.get('transferObjectCount', '?')} objects: {kinds}).[/green]")
+    counts: dict = {}
+    for kind, _name in _package_objects(package):
+        counts[kind] = counts.get(kind, 0) + 1
+    console.print(f"[green]Wrote {target}[/green] ({package.get('transferObjectCount', '?')} objects: "
+                  + ", ".join(f"{n} {kind}" for kind, n in counts.items()) + f"; {len(filtered.dropped)} left out).",
+                  highlight=False)
     console.print("Review the diff, then commit it with the CHANGELOG entry that explains the change.")
 
 
@@ -1739,16 +1742,18 @@ def _shell_word(value, windows: bool = os.name == "nt") -> str:
     return "'" + text.replace("'", "''" if windows else "'\\''") + "'"
 
 
-def _import_command(packages, options, caslib, table, server, no_releases: bool, timeout: int) -> str:
+def _import_command(packages, options, caslib, table, server, no_releases: bool, timeout: int,
+                    report_caslib=None) -> str:
     """`mdb builders-import` with the arguments a run was given, for the line
     that tells an admin to run it again. An argument that was not given is
     left out, so the repeat reads the same environment the first run did -
-    and so is an empty --caslib, --table or --server, which the run reads as
-    not given."""
+    and so is an empty --caslib, --report-caslib, --table or --server, which
+    the run reads as not given."""
     words = ["mdb", "builders-import", *(_shell_word(path) for path in packages or [])]
     if options is not None:
         words += ["--options", _shell_word(options)]
-    for flag, value in (("--caslib", caslib), ("--table", table), ("--server", server)):
+    for flag, value in (("--caslib", caslib), ("--report-caslib", report_caslib), ("--table", table),
+                        ("--server", server)):
         if value:
             words += [flag, _shell_word(value)]
     if no_releases:
@@ -1758,53 +1763,103 @@ def _import_command(packages, options, caslib, table, server, no_releases: bool,
     return " ".join(words)
 
 
+def _live_options(session) -> dict:
+    """{report name: {option: value}} as the Builder report on this site holds
+    them now - a retired report folded in, as `mdb options-save
+    --reports-only` records them. Empty when the site has neither report:
+    then there is nothing an import could overwrite."""
+    from .core.options import BUILDER_REPORTS, LEGACY_REPORTS
+    from .viya.reports import find_report
+    if not any(find_report(session, name) for name in (*BUILDER_REPORTS, *sorted(LEGACY_REPORTS))):
+        return {}
+    return _capture_options(session, {})
+
+
+def _keep_captured(captured: dict) -> Path:
+    """Write options captured before an import to a file of their own in the
+    current directory and return its path.
+
+    The import replaces the report, so from that moment the captured values
+    exist only in this process. A run that stops between the import and the
+    write-back would leave a site on the package's defaults with nothing to
+    restore from - and a second run would capture those defaults. The file is
+    what `mdb options-restore --file` and `mdb builders-import --options`
+    read. Its name carries the time, so no run overwrites another's.
+    """
+    import datetime as _datetime
+    from .core.options import options_file
+    stamp = _datetime.datetime.now(_datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    path = Path(f"builder-options-captured-{stamp}.json")
+    counter = 1
+    while path.exists():
+        counter += 1
+        path = Path(f"builder-options-captured-{stamp}-{counter}.json")
+    path.write_text(json.dumps(options_file(os.environ.get("SAS_VIYA_URL", ""), captured), indent=2) + "\n",
+                    encoding="utf-8")
+    return path
+
+
 @app.command("builders-import")
 def builders_import(
     packages: Optional[list[Path]] = typer.Argument(
-        None, help="Transfer package files (default: the two packages this repository ships - "
-                   "the Prompt Builder and the RAG runtime)."),
+        None, help="Transfer package files (default: the one package this repository ships, "
+                   "SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json)."),
     options: Optional[Path] = typer.Option(
         None, "--options",
-        help="A builder-options.json from `mdb options-save` to write back after the import."),
+        help="A builder-options.json from `mdb options-save` to write back after the import. Without it the "
+             "options of the Prompt Builder report on the site are captured before the import and written back."),
     caslib: Optional[str] = typer.Option(None, "--caslib", "-l", help="CAS library of the release table (env: SAS_CAS_LIBRARY)."),
+    report_caslib: Optional[str] = typer.Option(
+        None, "--report-caslib",
+        help="CAS library of the other tables the reports read (LLM_LOGS, the fact sheets, PROMPT_EXPERIMENTS), "
+             "where a site does not keep them in the library the package names. Default: left as exported."),
     table: Optional[str] = typer.Option(None, "--table", "-t", help="Release table name (env: SAS_RELEASES_TABLE)."),
     server: Optional[str] = typer.Option(None, "--server", help="CAS server (env: SAS_CAS_SERVER)."),
     no_releases: bool = typer.Option(False, "--no-releases", help="Do not (re)load the release table first."),
+    out: str = typer.Option(".", "--out", help="Directory for the authorization-rules file of the content folder."),
+    no_files: bool = typer.Option(False, "--no-files", help="Do not write the authorization-rules file."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show the objects and the import mapping; import nothing."),
     timeout: int = typer.Option(IMPORT_TIMEOUT, "--timeout", help="Seconds to wait for each import job."),
 ):
-    """Import the Prompt Builder and RAG runtime transfer packages into this
-    deployment: load the release table, import each package with its report
-    bound to that table and its Data-Driven Content URL pointing at this
-    server, then write back saved builder options.
+    """Import the accelerator's content folder into this deployment: load the
+    release table, import the one transfer package with its reports bound to
+    this deployment's tables and the Data-Driven Content URL pointing at this
+    server, write the Prompt Builder options back, and write the authorization
+    commands for the content folder.
 
-    What `sas-viya transfer upload` + `import` do, plus the two things an
-    import otherwise needs by hand afterwards: the report's data source is
-    retargeted at SAS_CAS_LIBRARY.SAS_RELEASES_TABLE (the shipped packages
-    bind Public.ACCELERATOR_RELEASES) and the placeholder host in the DDC URL
-    becomes SAS_VIYA_URL - both through the transfer service's import mapping,
-    so nothing is edited after the fact. Afterwards the Prompt Builder report
-    is configured: with --options the site's saved values are written back;
-    without it the values `mdb setup` discovers (repository, projects, SCR
-    endpoint, deployment type) are, and either way every remaining
-    placeholder host in the report - the DDC URL and the option defaults -
-    becomes this deployment's host. A first install needs no hand edits.
-    Without --options only a report this run imported is configured: naming
-    the runtime package alone leaves the Prompt Builder report as it is. A
-    dry run without --options discovers nothing, because discovery creates a
-    missing repository or project.
+    What `sas-viya transfer upload` + `import` do, plus what an import
+    otherwise needs by hand afterwards. The Prompt Builder report's data
+    source is retargeted at SAS_CAS_LIBRARY.SAS_RELEASES_TABLE (the package
+    binds Public.ACCELERATOR_RELEASES), with --report-caslib the other tables
+    the reports read are pointed at the tables of the same name in that
+    library, and the placeholder host in the DDC URL becomes SAS_VIYA_URL -
+    all through the transfer service's import mapping, so nothing is edited
+    after the fact.
 
-    The Prompt Builder package carries the UI (its RAG part included), the
-    optimization job and the report; the RAG runtime package carries the RAG
-    custom steps, rag_core, the jobs and the retrieval model, and no UI. The
-    options are restored whenever the package that carries the report
-    imported, even if the other one failed. A run that did not do everything
-    ends with exit code 1 and the command to repeat: this one, with the same
-    arguments, when a package did not import; `mdb options-restore` when every
-    package imported and only the options could not all be written. A package
-    exported before 2.3.0 still holds the standalone RAG UI (a report named
-    "RAG Builder" and the job definition RAG-Builder-UI): the command says so,
-    and says so when such a report is still on the site. It deletes nothing.
+    The options of the Prompt Builder report are kept across the import. With
+    --options the values of that file are written back. Without it, and when
+    the report (or the retired report "RAG Builder") is on the site, its
+    options are read before the import, kept in a file
+    builder-options-captured-<time>.json in the current directory, and
+    written back afterwards - so an upgrade is this one command. On a site
+    without the report the values `mdb setup` discovers (repository, projects,
+    SCR endpoint, deployment type) are written, and either way every
+    remaining placeholder host in the report - the DDC URL and the option
+    defaults - becomes this deployment's host. A package that carries no
+    Prompt Builder report leaves the report on the site as it is. A dry run
+    reads and compares and writes nothing; without options it discovers
+    nothing, because discovery creates a missing repository or project.
+
+    The package carries no authorization rule. Like `mdb setup` for the model
+    repository, the command writes the rules for the content folder as
+    commands to review - sas-viya-cli-content-commands.txt in --out - and runs
+    none of them.
+
+    A run that did not do everything ends with exit code 1 and the command to
+    repeat. An import removes nothing: the retired report "RAG Builder" and
+    the job definition RAG-Builder-UI of a 2.2.x site stay where they are
+    until someone deletes them, and the command says so while the report is
+    on the site.
     """
     from .core.options import BUILDER_REPORTS
     from .core.packages import legacy_objects, report_labels
@@ -1814,13 +1869,15 @@ def builders_import(
                                 rehost_mapping, start_import, table_spec, upload_package,
                                 wait_for_job)
     ctx = Context()
-    files = [Path(p) for p in packages] if packages else _shipped_builder_packages(ctx)
-    if not files:
-        console.print("[red]No package given and none shipped under SAS-Viya-Integrations/.[/red]")
-        raise typer.Exit(2)
+    manifest = _content_manifest(ctx, check_sources=False)
+    files = [Path(p) for p in packages] if packages else [manifest.package_path]
     for path in files:
         if not path.is_file():
-            console.print(f"[red]{path} not found.[/red]")
+            if packages:
+                console.print(f"[red]{path} not found.[/red]", highlight=False)
+            else:
+                console.print(f"[red]This checkout holds no {manifest.package} - the transfer package of the "
+                              "release. Name a package file, or use a checkout that has it.[/red]", highlight=False)
             raise typer.Exit(2)
     saved = None
     if options is not None:
@@ -1830,7 +1887,8 @@ def builders_import(
         saved = json.loads(options.read_text(encoding="utf-8")).get("reports") or {}
     # The command line as it was given, for the line that says how to go on -
     # taken before `caslib` is replaced by its default.
-    given = _import_command(packages, options, caslib, table, server, no_releases, timeout)
+    given = _import_command(packages, options, caslib, table, server, no_releases, timeout, report_caslib)
+    caslib_given = caslib
     caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
     table_name = table or _releases_table()
     failures = 0
@@ -1839,10 +1897,30 @@ def builders_import(
     arriving: dict = {}
     failed_reports: set = set()
     not_imported: list = []
+    imported_any = False
+    captured_file: Optional[Path] = None
+    loaded = [(path, json.loads(path.read_text(encoding="utf-8"))) for path in files]
     with _viya_session() as session:
         host = host_of(os.environ.get("SAS_VIYA_URL") or getattr(session, "hostname", "") or "")
         server_name = resolve_server(session, server or os.environ.get("SAS_CAS_SERVER"))
         releases_to = table_spec(server_name, caslib, table_name)
+        # The site's options, read while the report that holds them is still
+        # the site's own: the import replaces it. Only when a package brings a
+        # Builder report - one that brings none overwrites nothing.
+        brings_report = any(name in BUILDER_REPORTS for _path, package in loaded for name in report_labels(package))
+        if saved is None and brings_report:
+            live = _live_options(session)
+            if live:
+                saved = live
+                if dry_run:
+                    console.print("Options: read from the report on this site; a run keeps them in a file and "
+                                  "writes them back after the import.")
+                else:
+                    captured_file = _keep_captured(live)
+                    given = _import_command(packages, captured_file, caslib_given, table, server, no_releases,
+                                            timeout, report_caslib)
+                    console.print(f"Options: read from the report on this site and kept in {captured_file}; "
+                                  "they are written back after the import.", highlight=False)
         if no_releases:
             console.print(f"Release table: not reloaded (--no-releases); reports bind to {releases_to}.")
         elif dry_run:
@@ -1855,16 +1933,18 @@ def builders_import(
             except (RuntimeError, ValueError) as exc:
                 console.print(f"[red]Release table not loaded: {exc}[/red]")
                 raise typer.Exit(1)
-        for path in files:
-            package = json.loads(path.read_text(encoding="utf-8"))
+        for path, package in loaded:
             objects = _package_objects(package)
+            counts: dict = {}
+            for kind, _name in objects:
+                counts[kind] = counts.get(kind, 0) + 1
             console.print(f"\n[bold]{path.name}[/bold] - {package.get('name')}: "
-                          + ", ".join(f"{kind} '{name}'" for kind, name in objects))
+                          + ", ".join(f"{n} {kind}" for kind, n in counts.items()), highlight=False)
             retired = legacy_objects(package)
             if retired:
                 console.print(f"  [yellow]This package predates 2.3.0: it carries {', '.join(retired)} - the "
                               "standalone RAG UI, which is part of the Prompt Builder now. Importing it brings "
-                              "that UI back, and mdb does not configure its report. Use the packages of a "
+                              "that UI back, and mdb does not configure its report. Use the package of a "
                               "2.3.0 checkout.[/yellow]")
             carried = report_labels(package)
             arriving.update(carried)
@@ -1877,7 +1957,8 @@ def builders_import(
                 failed_reports.update(carried)
                 not_imported.append(path.name)
                 continue
-            mapping, changes = rehost_mapping(mapping, host, DEFAULT_TABLE, releases_to)
+            mapping, changes = rehost_mapping(mapping, host, DEFAULT_TABLE, releases_to,
+                                              library=report_caslib or None, server=server_name)
             for change in changes:
                 console.print(f"  mapping: {change}")
             package_uri = f"/transfer/packages/{uploaded['id']}"
@@ -1903,14 +1984,23 @@ def builders_import(
                 failed_reports.update(carried)
                 not_imported.append(path.name)
                 continue
+            imported_any = True
             console.print(f"  [green]imported {len(objects)} object(s).[/green]")
         # The Builder reports this run brings (in a dry run: would bring).
         # Discovery configures those and no other: a report that was not
         # imported is the site's own, with values an admin may have tuned,
-        # and importing the runtime package alone must not rewrite it.
+        # and a package without the report must not rewrite it.
         targets = [name for name in BUILDER_REPORTS if name in arriving and name not in failed_reports]
-        if saved is not None:
-            console.print(f"\nRestoring builder options from {options}:")
+        if saved is not None and options is None and dry_run:
+            # Read from the report itself a moment ago: comparing the report
+            # with its own values would say "already matches" about nothing.
+            values = {}
+        elif saved is not None:
+            if options is not None:
+                console.print(f"\nRestoring builder options from {options}:", highlight=False)
+            else:
+                console.print("\nWriting back the options the report held before the import"
+                              + (f" ({captured_file}):" if captured_file else ":"), highlight=False)
             values = _fold_saved(saved)
         elif not targets:
             # Nothing arrived that discovery could configure, so nothing is
@@ -1943,6 +2033,9 @@ def builders_import(
                                   "restored.[/yellow]")
             failures += _restore_options(
                 session, {name: v for name, v in values.items() if name not in failed_reports}, dry_run, host)
+        if imported_any and not no_files:
+            _write_content_rules(session, manifest.content_root, Path(out))
+    kept = options if options is not None else captured_file
     if failures:
         if not dry_run:
             # The command that finishes the job. `mdb options-restore` writes
@@ -1955,7 +2048,7 @@ def builders_import(
                 does = (f"{', '.join(not_imported)} did not import - this imports again and writes the "
                         "options back; `mdb options-restore` imports nothing")
             else:
-                again = f"mdb options-restore --file {_shell_word(options)}"
+                again = f"mdb options-restore --file {_shell_word(kept)}"
                 does = "every package imported - only the options are left to write"
             console.print("\n[red]Not everything was imported and configured.[/red] Fix what is reported "
                           "above, then run:")
@@ -1977,106 +2070,110 @@ def builders_import(
                      "from a tuned deployment."))
 
 
+#: The file `mdb builders-import` writes the content folder's rules to.
+CONTENT_RULES_FILE = "sas-viya-cli-content-commands.txt"
+
+
+def _write_content_rules(session, content_root: str, out_dir: Path) -> None:
+    """Write the authorization commands for the content folder, with the
+    folder's id filled in when the folder is found. Nothing is run."""
+    from .viya.content import DeployError, find_folder
+    from .viya.registry import content_rules_text
+    try:
+        folder = find_folder(session, content_root)
+    except DeployError:
+        folder = None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / CONTENT_RULES_FILE).write_text(
+        content_rules_text(content_root, (folder or {}).get("id")), encoding="utf-8")
+    console.print(f"Wrote {CONTENT_RULES_FILE} to {out_dir}/ - the package carries no authorization rule, "
+                  f"and these commands give the LLM Consumers group Read on {content_root}. Review the file "
+                  "before running it.", highlight=False)
+
+
 @app.command("package-check")
 def package_check(
     files: Optional[list[str]] = typer.Argument(
-        None, help="Transfer packages to check (default: the ones this repo ships)"),
+        None, help="Transfer packages to check (default: the one this repository ships)"),
     fix: bool = typer.Option(
         False, "--fix",
-        help="Rewrite any host found to the placeholder instead of only reporting it"),
+        help="Before the check, rewrite what can be rewritten in the file: hosts to the placeholder, "
+             "per-user report states removed, the Prompt Builder option defaults to the neutral values"),
+    allow_missing: bool = typer.Option(
+        False, "--allow-missing",
+        help="End with exit code 0 when the package of the release is not in the checkout"),
 ):
-    """Check exported transfer packages do not name the environment that built them.
+    """Check that the transfer package is the content of this checkout and
+    nothing else - the gate a package passes before it ships.
 
-    A VA report keeps its options inside its own content, so an export always
-    carries the exporting deployment's hostname - in `viyaHost`, in
-    `SCREndpoint`, and in the Data-Driven Content URL. Re-exporting brings all
-    of it back, however carefully the last copy was cleaned.
+    Against the content manifest (SAS-Viya-Integrations/package-manifest.yaml):
+    every entry is in the package at its path and equals its source - a file
+    its repository file, a generated file what mdb generates now (release.json
+    by its entries), a custom step the .step file in `templates`, `ui` and
+    `flowMetadata`, a job definition its program, its form and its parameters;
+    no object is in the package that the manifest does not list; and there is
+    no authorization rule and no share.
 
-    It keeps getting through because the export stores report content as
-    `TRUE###<base64 zlib>`. Exactly one occurrence, the DDC URL lifted into
-    the substitution map, is plain text; the rest are inside the compressed
-    blob where no grep and no base64 scan will find them. A package can look
-    clean in review and still name an internal host seven times.
+    A report has no source in the repository, so it is checked by what its
+    entry names - the option labels of the current UI with their neutral
+    defaults in every copy, the CAS tables it binds - and, every report, for
+    two things an export brings along: a host other than the documented
+    placeholder or a known public address, also inside the compressed report
+    content where no search finds it, and per-user report states, each a full
+    copy of the report with a user id.
 
-    So this asks the question backwards: every host a report names must be the
-    documented placeholder or a known public address. Anything else fails,
-    whoever exported it - which is what lets this run in CI, on a machine that
-    has no .env and no idea which deployment produced the file.
-
-    Run it before committing a re-exported package; `--fix` does the rewrite.
-
-    A report is also exported with every user's saved view of it: a full copy
-    of the report per user, with that user's id and every option default
-    again. `mdb package-export` removes them; a package that still has some
-    is reported here, and `--fix` removes them.
+    One line per difference, and exit code 1 when there is one. `--fix`
+    rewrites the hosts, the states and the option defaults in the file; a
+    difference in content is fixed in the folder (`mdb content-deploy`) and by
+    exporting again. While the checkout holds no package of the release the
+    command says so and ends with exit code 1, or 0 with --allow-missing.
     """
-    from .core.packages import (ALLOWED_HOSTS, PLACEHOLDER_HOST, check_package,
-                                default_packages, sanitise_package, strip_report_states)
+    from .core.packages import (PLACEHOLDER_HOST, package_differences, reset_report_defaults,
+                                sanitise_text, strip_report_states)
+    ctx = Context()
+    manifest = _content_manifest(ctx)
+    if files:
+        targets = [Path(f) for f in files]
+    else:
+        targets = [manifest.package_path]
+        if not targets[0].is_file():
+            console.print(f"[{'yellow' if allow_missing else 'red'}]There is no {manifest.package} in this "
+                          f"checkout: nothing was checked.[/{'yellow' if allow_missing else 'red'}]",
+                          highlight=False)
+            raise typer.Exit(0 if allow_missing else 1)
 
-    targets = [Path(f) for f in files] if files else default_packages(find_repo_root())
-    if not targets:
-        console.print("[yellow]No transfer packages found to check.[/yellow]")
-        raise typer.Exit(0)
-
-    findings: list = []
-    states: list = []
-    checked = reports = 0
+    total = 0
     for path in targets:
         if not path.is_file():
-            console.print(f"[red]{path}: not a file[/red]")
+            console.print(f"[red]{path}: not a file[/red]", highlight=False)
             raise typer.Exit(2)
-        result = check_package(path)
-        checked += result.packages_checked
-        reports += result.reports_checked
-        findings.extend(result.findings)
-        states.extend(result.states)
-
-    if states and fix:
-        for path in targets:
-            text, removed = strip_report_states(path.read_text(encoding="utf-8"))
-            if not removed:
-                continue
-            path.write_text(text, encoding="utf-8", newline="")
+        text = path.read_text(encoding="utf-8")
+        if fix:
+            before = text
+            text, reset = reset_report_defaults(text)
+            text, removed = strip_report_states(text)
+            text, fixed = sanitise_text(text, path.name)
+            for copy_name, labels in reset.items():
+                console.print(f"  {path.name}: reset {len(labels)} option default(s) of {copy_name}: "
+                              f"{', '.join(labels)}", highlight=False)
             for report_name, n in sorted(removed.items()):
-                console.print(f"  {path.name}: removed {n} per-user report state(s) from report '{report_name}'")
-    else:
-        for found in states:
-            console.print(f"[yellow]{found.package}: report '{found.report}' carries {found.states} per-user "
-                          "report state(s) - a full copy of the report and a user id each. `mdb package-export` "
-                          "removes them; so does --fix.[/yellow]")
-
-    if not findings:
-        console.print(f"[green]{checked} package(s), {reports} report(s): "
-                      f"no host named beyond the placeholder.[/green]")
-        raise typer.Exit(0)
-
-    table = Table(title="Hosts named by a transfer package")
-    for column in ("Package", "Report", "Host", "Count", "Where"):
-        table.add_column(column)
-    for f in findings:
-        table.add_row(f.package, f.report, f.host, str(f.occurrences), f.where)
-    console.print(table)
-
-    if not fix:
-        console.print(
-            f"\n[red]{len(findings)} host(s) would ship with these packages.[/red] "
-            f"Re-run with --fix to rewrite them to '{PLACEHOLDER_HOST}', or add a "
-            "genuinely public address to ALLOWED_HOSTS in mdb.core.packages.")
+                console.print(f"  {path.name}: removed {n} per-user report state(s) from report '{report_name}'",
+                              highlight=False)
+            for host, n in sorted(fixed.items()):
+                console.print(f"  {path.name}: {host} -> {PLACEHOLDER_HOST} ({n})", highlight=False)
+            if text != before:
+                path.write_text(text, encoding="utf-8", newline="")
+        differences = package_differences(json.loads(text), manifest, path.name)
+        for line in differences:
+            console.print(f"{path.name}: {line}", markup=False, highlight=False, soft_wrap=True)
+        total += len(differences)
+    if total:
+        console.print(f"[red]{total} difference(s) between the package and the checkout.[/red] A host, a "
+                      "per-user state or an option default is rewritten by --fix; anything else is put right "
+                      "in the content folder (`mdb content-deploy`) and by `mdb package-export`.")
         raise typer.Exit(1)
-
-    for path in targets:
-        text, fixed = sanitise_package(path)
-        if not fixed:
-            continue
-        path.write_text(text, encoding="utf-8", newline="")
-        for host, n in sorted(fixed.items()):
-            console.print(f"  {path.name}: {host} -> {PLACEHOLDER_HOST} ({n})")
-
-    after = [f for path in targets for f in check_package(path).findings]
-    if after:
-        console.print("[red]Still named after the rewrite - not fixed.[/red]")
-        raise typer.Exit(1)
-    console.print("[green]Rewritten, and re-checked clean.[/green]")
+    console.print(f"[green]{len(targets)} package(s): every entry of the manifest is in the package and equals "
+                  "the checkout, and nothing else is in it.[/green]")
 
 
 @app.command()
