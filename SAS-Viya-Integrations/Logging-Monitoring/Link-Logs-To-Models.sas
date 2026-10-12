@@ -1666,7 +1666,7 @@ run; quit;
 %end;
 %sysmacdelete _lnk_handle_output_table;
 %sysmacdelete _lnk_ensure_loaded;
-* A run that wrote an ERROR line and no table ends with the condition code of a failed job, so that SAS Job Execution and a schedule report it as failed and not as completed: a table that was not found, a table the program refused and rows that could not be linked leave _lnk_row_count below 0, and a new table that could not be put in place sets _lnk_failed. A run with a WARNING and a run that had no row to link end as before. Nothing follows but the macro variables that are deleted;
+* A run that wrote an ERROR line and no table ends with the condition code of a failed job, as a SAS error leaves it: SAS Job Execution reports the job as failed, and in the SAS session of a job the DATA steps behind the program do not run until the condition code is set back to 0. A table that was not found, a table the program refused and rows that could not be linked leave _lnk_row_count below 0, and a new table that could not be put in place sets _lnk_failed. A run with a WARNING and a run that had no row to link end as before. Nothing follows but the macro variables that are deleted;
 %if &_lnk_row_count. LT 0 or &_lnk_failed. EQ 1 %then %do;
     %let SYSCC = 1012;
 %end;

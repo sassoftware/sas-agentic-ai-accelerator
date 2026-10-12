@@ -1523,7 +1523,7 @@ run; quit;
     cas llmLogMySess terminate;
 %end;
 %sysmacdelete _log_handle_output_table;
-* A run that wrote an ERROR line and no table ends with the condition code of a failed job, so that SAS Job Execution, a schedule and a flow report it as failed and not as completed: a refusal and a log that could not be parsed leave _log_row_count below 0, and a table that could not be written sets _log_failed. A run with a WARNING and a log without requests end as before. Nothing follows but the macro variables that are deleted;
+* A run that wrote an ERROR line and no table ends with the condition code of a failed job, as a SAS error leaves it: SAS Job Execution reports the job as failed, and in the SAS session of a job the DATA steps behind the program do not run until the condition code is set back to 0 - in the code of a flow the first of them is the end action of the flow. A refusal and a log that could not be parsed leave _log_row_count below 0, and a table that could not be written sets _log_failed. A run with a WARNING and a log without requests end as before. Nothing follows but the macro variables that are deleted;
 %if &_log_row_count. LT 0 or &_log_failed. EQ 1 %then %do;
     %let SYSCC = 1012;
 %end;

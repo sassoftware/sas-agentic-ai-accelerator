@@ -2015,7 +2015,7 @@ run; quit;
 %if &_gap_clean_cas_session. %then %do;
     cas mySess terminate;
 %end;
-* A pull that wrote an ERROR line and left an output table unwritten ends with the condition code of a failed job, so that SAS Job Execution, a schedule and a flow report it as failed and not as completed. A pull with a WARNING - a model that could not be read, a setup that is left out - ends as before. Nothing follows but the macro variables that are deleted;
+* A pull that wrote an ERROR line and left an output table unwritten ends with the condition code of a failed job, as a SAS error leaves it: SAS Job Execution reports the job as failed, and in the SAS session of a job the DATA steps behind the program do not run until the condition code is set back to 0. A pull with a WARNING - a model that could not be read, a setup that is left out - ends as before. Nothing follows but the macro variables that are deleted;
 %if &_gap_failed. EQ 1 %then %do;
     %let SYSCC = 1012;
 %end;

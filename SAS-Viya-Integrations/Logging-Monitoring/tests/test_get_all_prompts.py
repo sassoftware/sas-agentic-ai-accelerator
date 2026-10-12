@@ -1257,6 +1257,26 @@ def test_the_about_tab_names_the_five_tables():
     assert "not run in SAS" not in texts and "not been run" not in texts
 
 
+def test_the_about_tab_says_of_the_condition_code_what_was_measured():
+    """The tab said that the condition code keeps a flow or a job from ending as completed. What a
+    step with SYSCC 1012 did was then measured on SAS Viya (12OCT2026) with the flow code of this
+    step: the job failed, and the end action of the flow behind the step went into syntax check mode."""
+    by_id = controls(step_ui()["pages"])
+    about = by_id["textAbout"]["text"]
+    tail = step_program().split(core(step_program()))[1]
+
+    assert "does not end as completed" not in about and "report it as failed" not in tail
+    for measured in (
+            "Such a step behaves like any SAS error: the job it runs in fails, and later DATA steps of the SAS session do not run until SYSCC is reset.",
+            "Measured on SAS Viya Stable 2026.09 (12OCT2026) with the code SAS Studio generated for a flow of this step and an output table in WORK",
+            "the first DATA step behind the step - the end action of the flow itself - went into syntax check mode (OBS=0)",
+            "the log held _FLW_ACTION_START_ for the step and neither _FLW_ACTION_TABLE_ nor _FLW_ACTION_END_"):
+        assert measured in about, measured
+    assert "in the code of a flow the first of them is the end action of the flow" in tail
+    changelog = by_id["textChangelog"]["text"].split("* Version: 2.2 (12OCT2026)")[0]
+    assert changelog.count("\n      - ") == 2 and "what was measured" in changelog
+
+
 # ---------------------------------------------------------------------------
 # The names of the output tables
 # ---------------------------------------------------------------------------

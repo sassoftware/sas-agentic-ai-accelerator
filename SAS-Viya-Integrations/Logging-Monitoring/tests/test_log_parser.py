@@ -767,10 +767,10 @@ def test_about_tab_names_every_column_and_what_the_program_does_with_it(monkeypa
 def test_about_tab_is_about_the_program_and_the_changelog_starts_with_this_version():
     texts = _about_tab()
 
-    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.4 (")
+    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.5 (")
     changelog = texts["textChangelog"]
-    assert (changelog.index("Version: 2.4") < changelog.index("Version: 2.3") < changelog.index("Version: 2.2") < changelog.index("Version: 2.1")
-            < changelog.index("Version: 2.0"))
+    assert (changelog.index("Version: 2.5") < changelog.index("Version: 2.4") < changelog.index("Version: 2.3") < changelog.index("Version: 2.2")
+            < changelog.index("Version: 2.1") < changelog.index("Version: 2.0"))
     # What a release has not run yet is said in the changelog of the release, not in the step
     for name, text in texts.items():
         assert "not run in sas" not in text.lower(), name
@@ -801,6 +801,35 @@ def test_about_tab_says_what_version_2_4_does(monkeypatch, tmp_path):
         assert path in about, path
     assert "abort" not in step.lower().replace("an abort statement", "")
     assert "a quote shows as a backtick" in about and "('\"', '`')" in step
+
+
+def test_about_tab_says_of_the_condition_code_what_was_measured():
+    """Version 2.5. The tab said that the condition code keeps a flow or a job from ending as
+    completed. What a run with SYSCC 1012 did was then measured on SAS Viya (12OCT2026): the job
+    failed, the first DATA step behind the program went into syntax check mode - in the code of a
+    flow that is the end action of the flow - and a reset of SYSCC let later steps run. The tab
+    says that, and the comment in front of the statement does."""
+    about = _about_tab()["textAbout"]
+    step = step_program()
+
+    assert "does not end as completed" not in about
+    for measured in (
+            "Such a run behaves like any SAS error: the job the step runs in fails, and later DATA steps of the SAS session do not run until SYSCC is reset.",
+            "Measured on SAS Viya Stable 2026.09 (12OCT2026) with Log-Parser-Code.sas, which holds the program of the step, in SAS Job Execution jobs",
+            "the first DATA step behind the program went into syntax check mode (OBS=0) and did not run, while macro statements and PROC CAS behind it ran",
+            "With %let syscc = 0; behind the program that DATA step ran and the job ended as completed.",
+            "the first DATA step behind a step is the end action of the flow itself",
+            "the log held _FLW_ACTION_START_ and neither _FLW_ACTION_TABLE_ nor _FLW_ACTION_END_"):
+        assert measured in about, measured
+    comment = [line for line in step.split("\n") if line.startswith("* A run that wrote an ERROR line and no table ends with the condition code")]
+    assert len(comment) == 1
+    assert "report it as failed and not as completed" not in comment[0] and "a schedule" not in comment[0]
+    assert ("as a SAS error leaves it: SAS Job Execution reports the job as failed, and in the SAS session of a job the DATA steps behind the "
+            "program do not run until the condition code is set back to 0 - in the code of a flow the first of them is the end action of the flow.") in comment[0]
+    # the same comment stands in the code file, which holds the program of the step
+    assert comment[0] in code_file_program()
+    assert _about_tab()["textChangelog"].startswith(
+        "* Version: 2.5 (12OCT2026) - The About tab says of a run that ends with the condition code 1012 what was measured")
 
 
 # ---------------------------------------------------------------------------

@@ -167,6 +167,41 @@ def test_nothing_but_an_error_line_sets_what_the_condition_reads(name):
     assert flag in next(line for line in reversed(lines) if line.startswith(("%symdel", "_gap_out_catalog")) and flag in line)
 
 
+@ALL_PROGRAMS
+def test_the_comment_of_the_statement_says_what_the_condition_code_did_where_it_was_measured(name):
+    """Measured on SAS Viya on 2026-10-12, in SAS Job Execution jobs: a program that ended with SYSCC
+    1012 gave a failed job, and the first DATA step behind it in the same SAS session went into
+    syntax check mode and did not run - in the code of a flow that step is the end action of the
+    flow. With the condition code set back to 0 behind the program the next step ran and the job
+    ended as completed. The comment claimed what a schedule and a flow report, which nobody
+    looked at."""
+    code = sas_code(PROGRAMS[name]())
+    comment = code.split(f"%if {CONDITIONS[name]} %then %do;\n    %let SYSCC = ")[0].rstrip().split("\n")[-1]
+
+    assert "as a SAS error leaves it: SAS Job Execution reports the job as failed" in comment
+    assert "do not run until the condition code is set back to 0" in comment
+    for claim in ("a schedule", "report it as failed and not as completed", "a flow report"):
+        assert claim not in comment, claim
+    # what a flow does is said where a flow can run the program: the parser and the two steps
+    assert ("in the code of a flow the first of them is the end action of the flow" in comment) == \
+        (name in ("Log-Parser-Code.sas", "LLM - Log Parser.step", "LLM - Get All Prompts.step"))
+
+
+def test_the_readme_says_of_the_condition_code_what_was_measured():
+    readme = " ".join((INTEGRATIONS / "Logging-Monitoring" / "README.md").read_text(encoding="utf-8").split())
+
+    for claim in ("so that SAS Job Execution, a schedule or a flow does not report it as completed", "a schedule or a flow"):
+        assert claim not in readme, claim
+    for measured in (
+            "Such a run behaves like any SAS error: the job fails, and later DATA steps of the SAS session do not run until `SYSCC` is reset.",
+            "Measured on SAS Viya 2026.09 on 2026-10-12, in SAS Job Execution jobs",
+            "went into syntax check mode (`OBS=0`) and did not run, while macro statements and PROC CAS behind it ran",
+            "With `%let syscc = 0;` behind the program that DATA step ran and the job ended as completed",
+            "the log held `_FLW_ACTION_START_` and neither `_FLW_ACTION_TABLE_` nor `_FLW_ACTION_END_`",
+            "What SAS Studio shows for such a node was not looked at."):
+        assert measured in readme, measured
+
+
 def test_the_step_of_the_pull_refuses_a_library_that_is_no_cas_library_without_an_abort():
     """The step wrote its ERROR line in a DATA step and stopped it with ABORT, which left SAS in syntax
     check mode for everything behind it. It now says so in one line and sets what the last statement reads."""
