@@ -673,6 +673,12 @@ def test_no_upgrade_row_of_the_release_table_is_a_fragment_of_markdown(tmp_path)
     # the paragraph under the heading, the five blocks, and the closing paragraph about a first install
     assert summaries[1:6] == list(UPGRADE_BLOCKS), summaries
     assert len(summaries) == 7, summaries
+    # the Changelog page of the report filters on the component Prompt Builder and
+    # has a button per part: every block is there, under every button
+    for summary in summaries:
+        parts = [r["builder_part"] for r in current if r["summary"] == summary]
+        assert {r["component"] for r in current if r["summary"] == summary} == {BUILDER}, summary
+        assert parts == list(PARTS), (summary, parts)
     # the steps are in the rows of their block, and no step made a row of its own
     by_summary = {r["summary"]: r["detail"] for r in current}
     assert "mdb builders-import" in by_summary["Everyone"]
