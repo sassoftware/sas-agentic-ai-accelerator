@@ -185,10 +185,86 @@ def test_an_entry_of_another_kind_than_the_object_of_its_name_is_missing(monkeyp
 
     step = one(lines, "Logging and Monitoring/LLM - Log Parser.step (step)")
     assert (step["state"], step["found"]) == (MISSING, "a file of that name is there, and no registered step")
-    assert "registers the step" in step["todo"]
+    assert "both register the step" in step["todo"]
     report = one(lines, "Prompt Builder/Prompt Builder (report)")
     assert (report["state"], report["found"]) == (MISSING, "the object of that name is a folder")
     assert reports["Prompt Builder"] == ""
+
+
+# ---------------------------------------------------------------------------
+# A step is registered by a command, never by an upload
+# ---------------------------------------------------------------------------
+
+STEP = "Logging and Monitoring/LLM - Log Parser.step"
+REGISTER = "Import the package of the accelerator again, or run mdb content-deploy: both register the step. "
+
+
+def test_the_advice_for_a_step_that_is_missing_names_the_commands_and_not_an_upload(monkeypatch, tmp_path):
+    """Measured on 2026-10-12: a .step file uploaded in the place of a registered step is a file of the
+    folder and no step, and mdb content-deploy then registers the step and leaves that file beside
+    it. So no advice of the page may be read as 'upload the step file'."""
+    site = Site()
+    site.remove(STEP)
+    lines, _ = lines_of(monkeypatch, tmp_path, site)
+    missing = one(lines, STEP + " (step)")
+
+    assert (missing["state"], missing["found"]) == (MISSING, "not in its folder")
+    assert missing["todo"] == REGISTER + "Uploading its .step file to the folder does not."
+
+    # the file was uploaded: the commands register the step, and the file has to go by hand
+    site.add(STEP, "file")
+    lines, _ = lines_of(monkeypatch, tmp_path, site)
+    uploaded = one(lines, STEP + " (step)")
+    assert (uploaded["state"], uploaded["found"]) == (MISSING, "a file of that name is there, and no registered step")
+    assert uploaded["todo"] == (REGISTER + "Then delete the file of that name, which neither of them removes: a step file that was "
+                                           "uploaded opens empty in SAS Studio.")
+
+    # a step whose folder is not there gets the same advice as a step that is not in its folder
+    site.remove("Logging and Monitoring")
+    lines, _ = lines_of(monkeypatch, tmp_path, site)
+    assert one(lines, STEP + " (step)")["todo"] == missing["todo"]
+    # and an object that is no step is not told about steps
+    assert one(lines, "Logging and Monitoring/Log-Parser-Code.sas (file)")["todo"] == "Import the package of the accelerator again, or run mdb content-deploy."
+
+
+@pytest.mark.parametrize("first", ["file", "step"])
+def test_a_registered_step_with_an_uploaded_file_beside_it_is_present(monkeypatch, tmp_path, first):
+    """What the folder holds after the advice of before was followed: two members of one name, a
+    registered step and a file. The step is there whichever of the two the folder lists first."""
+    site = Site()
+    site.remove(STEP)
+    for kind in (first, "step" if first == "file" else "file"):
+        site.add(STEP, kind)
+    lines, _ = lines_of(monkeypatch, tmp_path, site)
+    entry = one(lines, STEP + " (step)")
+
+    assert [member["contentType"] for member in site.folders[site.folder_ids["Logging and Monitoring"]] if member["name"] == STEP.split("/")[1]] \
+        == (["file", "flowStep"] if first == "file" else ["flowStep", "file"])
+    assert (entry["state"], entry["found"]) == (OK, "present, and a file of that name lies beside it")
+    assert entry["todo"] == "Delete the file of that name: it is a step file that was uploaded, not the step."
+    assert {other["state"] for other in lines} == {OK}
+
+
+def test_no_advice_of_the_page_tells_to_upload_something(monkeypatch, tmp_path):
+    """Every sentence the program can give as what to do, read from its text: an upload is named
+    only as what does not register a step and as what a file beside a step is."""
+    tree = ast.parse(harness.python_block())
+    documentation = {id(node.body[0].value) for node in ast.walk(tree)
+                     if isinstance(node, (ast.FunctionDef, ast.Module)) and node.body and isinstance(node.body[0], ast.Expr)}
+    sentences = [node.value for node in ast.walk(tree)
+                 if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in documentation]
+    namespace = load(monkeypatch, tmp_path).namespace
+    of_steps = [namespace[name] for name in ("STEP_MISSING", "STEP_UPLOADED", "STEP_BESIDE")]
+
+    assert of_steps == [
+        REGISTER + "Uploading its .step file to the folder does not.",
+        REGISTER + "Then delete the file of that name, which neither of them removes: a step file that was uploaded opens empty in SAS Studio.",
+        "Delete the file of that name: it is a step file that was uploaded, not the step."]
+    assert sorted(sentence for sentence in sentences if re.search(r"upload", sentence, flags=re.IGNORECASE)) == sorted(of_steps)
+    assert not [sentence for sentence in sentences if re.search(r"\bupload (it|the|a|its)\b", sentence, flags=re.IGNORECASE)]
+    # each of the two that say how a step comes into the folder names the import and the command
+    for advice in of_steps[:2]:
+        assert "mdb content-deploy" in advice and "Import the package of the accelerator again" in advice
 
 
 def test_a_step_is_found_with_or_without_the_ending_of_its_file(monkeypatch, tmp_path):

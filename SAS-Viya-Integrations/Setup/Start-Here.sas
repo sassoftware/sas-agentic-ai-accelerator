@@ -158,6 +158,13 @@ REPORT_CONTENT = 'application/vnd.sas.report.content+xml'
 OPTION = re.compile(r'<PromptDefinition\b[^>]*\blabel="([^"]+)"[^>]*>(.*?)</PromptDefinition>', re.DOTALL)
 OPTION_VALUE = re.compile(r'<(String|Boolean)\b[^>]*>(.*?)</\1>', re.DOTALL)
 TEXT_LIMIT = 600
+# What to do about a step that is not registered. A step is registered by the import and by mdb
+# content-deploy; its file, uploaded to the folder, is no step and stays beside the step
+STEP_MISSING = ('Import the package of the accelerator again, or run mdb content-deploy: both register the step. '
+                'Uploading its .step file to the folder does not.')
+STEP_UPLOADED = ('Import the package of the accelerator again, or run mdb content-deploy: both register the step. Then delete the file of '
+                 'that name, which neither of them removes: a step file that was uploaded opens empty in SAS Studio.')
+STEP_BESIDE = 'Delete the file of that name: it is a step file that was uploaded, not the step.'
 
 
 # ---------------------------------------------------------------------------
@@ -252,19 +259,28 @@ def segment(text):
 # ---------------------------------------------------------------------------
 
 def members_of(get, folder_uri):
-    """(status, {name: (kind of member, uri)}) of one folder."""
+    """(status, {name: [(kind of member, uri), ...]}) of one folder. A folder can hold two
+    members of one name when they are of two kinds: a registered step, and a file that was
+    uploaded under the name of the step."""
     status, items = list_all(get, folder_uri + '/members')
     found = {}
     for item in items:
         name = item.get('name')
-        if isinstance(name, str) and name not in found:
-            found[name] = (str(item.get('contentType') or item.get('type') or ''), str(item.get('uri') or ''))
+        if isinstance(name, str):
+            found.setdefault(name, []).append((str(item.get('contentType') or item.get('type') or ''), str(item.get('uri') or '')))
     return status, found
 
 
+def member(members, name, kinds):
+    """(kind, uri) of the member of that name: the first of one of these kinds, else the first
+    of that name, else two empty texts."""
+    named = members.get(name) or []
+    return ([found for found in named if found[0] in kinds] or named or [('', '')])[0]
+
+
 def read_root(get, root):
-    """The members of the content root, as {'': (status, {name: (kind, uri)})}: the folders are
-    kept by their path below the root, and the root itself is the empty path."""
+    """The members of the content root, as {'': (status, {name: [(kind, uri), ...]})}: the folders
+    are kept by their path below the root, and the root itself is the empty path."""
     status, folder = read_json(get, '/folders/folders/@item?path=' + segment(root))
     root_id = folder.get('id') if isinstance(folder, dict) else None
     if status == 200 and not root_id:
@@ -282,7 +298,7 @@ def read_folders(get, listings, wanted):
         if parent_status != 200:
             listings[path] = (parent_status, {})
             continue
-        kind, uri = parent_members.get(name, ('', ''))
+        kind, uri = member(parent_members, name, ('folder',))
         if kind != 'folder' or not uri.startswith('/folders/folders/'):
             listings[path] = (404, {})
             continue
@@ -312,7 +328,7 @@ def release_of(get, listings):
     if status != 200:
         state, found = not_read(status, 'the content root')
         return None, [line(section, 'Content root', state, found, ask_again(status))]
-    kind, uri = members.get(RELEASE_FILE, ('', ''))
+    kind, uri = member(members, RELEASE_FILE, ('file',))
     deploy = 'Import the package of the accelerator again, or run mdb content-deploy, which writes the file.'
     if not uri or kind != 'file':
         return None, [line(section, RELEASE_FILE, MISSING, 'not in the content root', deploy)]
@@ -353,7 +369,7 @@ def entry_line(path, kind, listings):
     folder, _, name = path.rpartition('/')
     status, members = listings.get(folder, (404, {}))
     what = f'{path} ({kind})' if kind else path
-    deploy = 'Import the package of the accelerator again, or run mdb content-deploy.'
+    deploy = STEP_MISSING if kind == 'step' else 'Import the package of the accelerator again, or run mdb content-deploy.'
     if status == 404:
         return line(section, what, MISSING, 'its folder is not in the content root', deploy)
     if status != 200:
@@ -361,16 +377,17 @@ def entry_line(path, kind, listings):
         return line(section, what, state, found, ask_again(status))
     names = [name] + ([name + '.step'] if kind == 'step' and not name.endswith('.step') else [])
     names += [name[:-5]] if kind == 'step' and name.endswith('.step') else []
-    present = [members[candidate] for candidate in names if candidate in members]
+    present = [found for candidate in names for found in members.get(candidate, [])]
     if not present:
         return line(section, what, MISSING, 'not in its folder', deploy)
     wanted = MEMBER_TYPES.get(kind)
-    fitting = [member for member in present if wanted is None or member[0] in wanted]
-    if fitting:
+    uploaded = kind == 'step' and any(found[0] == 'file' for found in present)
+    if [found for found in present if wanted is None or found[0] in wanted]:
+        if uploaded:
+            return line(section, what, OK, 'present, and a file of that name lies beside it', STEP_BESIDE)
         return line(section, what, OK, 'present')
-    if kind == 'step' and present[0][0] == 'file':
-        return line(section, what, MISSING, 'a file of that name is there, and no registered step',
-                    'Run mdb content-deploy, which registers the step: a step file that was uploaded opens empty in SAS Studio.')
+    if uploaded:
+        return line(section, what, MISSING, 'a file of that name is there, and no registered step', STEP_UPLOADED)
     return line(section, what, MISSING, f'the object of that name is a {present[0][0] or "member of another kind"}', deploy)
 
 
@@ -408,7 +425,7 @@ def builder_options(get, listings):
     """(the options of the Prompt Builder report or None, why they could not be read, what to do about it)."""
     folder, _, name = BUILDER_REPORT.rpartition('/')
     status, members = listings.get(folder, (404, {}))
-    kind, uri = members.get(name, ('', '')) if status == 200 else ('', '')
+    kind, uri = member(members, name, ('report',)) if status == 200 else ('', '')
     bring = 'Import the package of the accelerator, then open this page again.'
     if status not in (200, 404):
         return None, not_read(status, 'the folder of the report')[1], ask_again(status)
@@ -658,7 +675,7 @@ def check_installation(get, settings, installed=is_installed, version=version_of
     for label, path in REPORTS:
         folder, _, name = path.rpartition('/')
         status, members = listings.get(folder, (404, {}))
-        kind, uri = members.get(name, ('', '')) if status == 200 else ('', '')
+        kind, uri = member(members, name, ('report',)) if status == 200 else ('', '')
         reports[label] = uri if kind == 'report' and re.fullmatch(r'/reports/reports/[0-9A-Za-z-]+', uri) else ''
     options, why, todo = builder_options(get, listings)
     lines += table_lines(get, settings['casServer'], settings['caslib'])
