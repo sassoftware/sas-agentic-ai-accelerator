@@ -28,7 +28,6 @@
     lnk is short for:
       Link
 *********************************************************************************/
-cas mysess;
 
 * The log table the parser wrote. Its link columns are filled in place;
 %let _lnk_log_caslib = Public;

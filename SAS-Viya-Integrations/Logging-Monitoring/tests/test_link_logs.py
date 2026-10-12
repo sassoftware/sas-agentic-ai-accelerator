@@ -140,6 +140,19 @@ def test_swap_of_the_table_is_the_one_of_the_parser():
     assert swap.index("%if &_lnk_save_table. %then %do;") < swap.index("table.save")
 
 
+def test_program_starts_a_cas_session_only_when_none_is_connected_and_ends_only_its_own():
+    """A session that is connected is used and left alone. 'cas mysess;' in front of the check started a second
+    session under a name that existed - a WARNING in the log and an error code on the job."""
+    program = code_file_program()
+    statements = re.findall(r"^\s*(cas\s+\w+.*;)$", program, flags=re.MULTILINE | re.IGNORECASE)
+    assert statements == ["cas lnkMySess;", "cas lnkMySess terminate;"]
+    check = "%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;\n    %let _lnk_clean_cas_session = 1;\n    cas lnkMySess;\n%end;"
+    assert check in program
+    assert "%if &_lnk_clean_cas_session. %then %do;\n    cas lnkMySess terminate;\n%end;" in program
+    # Nothing asks CAS for anything before the check
+    assert program.index(check) < program.index("proc cas;")
+
+
 # ---------------------------------------------------------------------------
 # Templates and questions
 # ---------------------------------------------------------------------------
