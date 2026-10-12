@@ -2188,34 +2188,53 @@ def package_check(
              "per-user report states removed, the Prompt Builder option defaults to the neutral values"),
     allow_missing: bool = typer.Option(
         False, "--allow-missing",
-        help="End with exit code 0 when the package of the release is not in the checkout"),
+        help="End with exit code 0 when the package of the release is not in the checkout (not with --release)"),
+    release: bool = typer.Option(
+        False, "--release",
+        help="The gate of a release: every difference is an error, also a difference in content against the "
+             "checkout. What the release procedure and the workflow of a tag run."),
 ):
-    """Check that the transfer package is the content of this checkout and
-    nothing else - the gate a package passes before it ships.
+    """Check the transfer package against this checkout - the gate a package
+    passes before it ships.
 
     Against the content manifest (SAS-Viya-Integrations/package-manifest.yaml):
-    every entry is in the package at its path and equals its source - a file
-    its repository file, a generated file what mdb generates now (release.json
-    by its entries), a custom step the .step file in `templates`, `ui` and
-    `flowMetadata`, a job definition its program, its form and its parameters;
-    no object is in the package that the manifest does not list; and there is
-    no authorization rule and no share.
+    every entry is in the package at its path, once, and equals its source - a
+    file its repository file, a generated file what mdb generates now
+    (release.json: its kind, the release, its commit and its entries), a
+    custom step the .step file in `templates`, `ui` and `flowMetadata`, a job
+    definition its program, its form and its parameters; no object is in the
+    package that the manifest does not list; and there is no authorization
+    rule and no share.
 
     A report has no source in the repository, so it is checked by what its
     entry names - the option labels of the current UI with their neutral
-    defaults in every copy, the CAS tables it binds - and, every report, for
-    two things an export brings along: a host other than the documented
-    placeholder or a known public address, also inside the compressed report
-    content where no search finds it, and per-user report states, each a full
-    copy of the report with a user id.
+    defaults in every copy, the CAS tables it binds, the files that are its
+    children with their hashes - and, every report, for two things an export
+    brings along: a host other than the documented placeholder or a known
+    public address, also inside the compressed report content where no search
+    finds it, and per-user report states, each a full copy of the report with
+    a user id.
 
-    One line per difference, and exit code 1 when there is one. `--fix`
+    STRICT FOR A RELEASE, LENIENT BETWEEN RELEASES. The package is exported
+    from a system and so is always the content of some earlier commit: a
+    changelog entry, a fact sheet row or a fix to a program makes it differ
+    from the checkout until someone exports again. Without --release such a
+    difference in CONTENT - a file, a custom step, a job definition, one of
+    the two generated files - is a line that starts with `drift:` and does
+    not fail. What the package must never be still fails: an object outside
+    the manifest or twice at one path, a rule, a share, a host, a per-user
+    state, a report default that is not neutral, a missing entry, a path that
+    never ships, a property or a field nothing in the checkout gives it. With
+    --release every difference is an error: that is what the release
+    procedure runs after the export, and the workflow on a tag.
+
+    One line per difference, and exit code 1 when one of them fails. `--fix`
     rewrites the hosts, the states and the option defaults in the file; a
     difference in content is fixed in the folder (`mdb content-deploy`) and by
     exporting again. While the checkout holds no package of the release the
     command says so and ends with exit code 1, or 0 with --allow-missing.
     """
-    from .core.packages import (PLACEHOLDER_HOST, package_differences, reset_report_defaults,
+    from .core.packages import (PLACEHOLDER_HOST, package_findings, reset_report_defaults,
                                 sanitise_text, strip_report_states)
     ctx = Context()
     manifest = _content_manifest(ctx)
@@ -2224,12 +2243,13 @@ def package_check(
     else:
         targets = [manifest.package_path]
         if not targets[0].is_file():
-            console.print(f"[{'yellow' if allow_missing else 'red'}]There is no {manifest.package} in this "
-                          f"checkout: nothing was checked.[/{'yellow' if allow_missing else 'red'}]",
+            allowed = allow_missing and not release
+            console.print(f"[{'yellow' if allowed else 'red'}]There is no {manifest.package} in this "
+                          f"checkout: nothing was checked.[/{'yellow' if allowed else 'red'}]",
                           highlight=False)
-            raise typer.Exit(0 if allow_missing else 1)
+            raise typer.Exit(0 if allowed else 1)
 
-    total = 0
+    total = drifted = 0
     for path in targets:
         if not path.is_file():
             console.print(f"[red]{path}: not a file[/red]", highlight=False)
@@ -2250,15 +2270,26 @@ def package_check(
                 console.print(f"  {path.name}: {host} -> {PLACEHOLDER_HOST} ({n})", highlight=False)
             if text != before:
                 path.write_text(text, encoding="utf-8", newline="")
-        differences = package_differences(json.loads(text), manifest, path.name)
-        for line in differences:
-            console.print(f"{path.name}: {line}", markup=False, highlight=False, soft_wrap=True)
-        total += len(differences)
+        for difference in package_findings(json.loads(text), manifest, path.name):
+            if difference.drift and not release:
+                drifted += 1
+                console.print(f"drift: {path.name}: {difference.text}", markup=False, highlight=False,
+                              soft_wrap=True)
+            else:
+                total += 1
+                console.print(f"{path.name}: {difference.text}", markup=False, highlight=False, soft_wrap=True)
     if total:
         console.print(f"[red]{total} difference(s) between the package and the checkout.[/red] A host, a "
                       "per-user state or an option default is rewritten by --fix; anything else is put right "
-                      "in the content folder (`mdb content-deploy`) and by `mdb package-export`.")
+                      "in the content folder (`mdb content-deploy`) and by `mdb package-export`."
+                      + (f" ({drifted} more line(s) are drift and do not fail.)" if drifted else ""))
         raise typer.Exit(1)
+    if drifted:
+        console.print(f"[yellow]{len(targets)} package(s): {drifted} difference(s) in content to the checkout - "
+                      "drift, which does not fail between releases.[/yellow] The package holds the content of an "
+                      "earlier commit; everything else about it is as it has to be. For a release the folder "
+                      "is deployed and exported again, and `mdb package-check --release` has to pass.")
+        return
     console.print(f"[green]{len(targets)} package(s): every entry of the manifest is in the package and equals "
                   "the checkout, and nothing else is in it.[/green]")
 

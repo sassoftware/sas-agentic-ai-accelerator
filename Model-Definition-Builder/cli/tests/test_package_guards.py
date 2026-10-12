@@ -766,12 +766,17 @@ def test_shipped_reports_have_no_user_states_and_name_no_host(shipped_manifest, 
     assert result.reports_checked == len([e for e in shipped_manifest.objects() if e.kind == "report"])
 
 
-def test_shipped_prompt_builder_ui_is_the_committed_bundle(shipped_manifest, shipped):
+def test_shipped_prompt_builder_ui_is_a_job_definition_with_one_form(shipped_manifest, shipped):
+    """That the page in the package is the committed bundle is content: it
+    is behind as soon as the UI is rebuilt, until the next export, and that
+    is drift. What must hold at any commit is that the page is there as a job
+    definition that serves one form."""
     entry = shipped_manifest.find("Prompt Builder/SAS-LLM-Prompt-Builder-UI", "jobDefinition")
     item = next((i for i in locate(shipped)[1] if i.kind == "jobDefinition" and i.path == entry.path), None)
     assert item is not None, f"the package holds no job definition at '{entry.path}'"
     body = json.loads(base64.b64decode(item.obj["content"]))
-    assert content.job_differences(content.job_definition_body(shipped_manifest, entry), body) == []
+    assert content.job_extras(content.job_definition_body(shipped_manifest, entry), body) == []
+    assert [p["name"] for p in body["properties"]] == ["form"] and body["code"] == content.FORM_ONLY_CODE
 
 
 def test_shipped_package_carries_no_rule_no_share_and_no_retired_ui(shipped):
@@ -780,10 +785,13 @@ def test_shipped_package_carries_no_rule_no_share_and_no_retired_ui(shipped):
     assert legacy_objects(shipped) == []
 
 
-def test_shipped_package_equals_the_repository(shipped_manifest, shipped):
-    """The content gate, as `mdb package-check` runs it: every entry of the
-    manifest is in the package and equals the checkout, nothing else is."""
-    assert package_differences(shipped, shipped_manifest, shipped_manifest.package_path.name) == []
+def test_shipped_package_is_nothing_it_must_not_be(shipped_manifest, shipped):
+    """The content gate, as `mdb package-check` runs it between releases:
+    every entry of the manifest is in the package, nothing else is, and what
+    differs from the checkout is content only - drift, which the release
+    procedure and the workflow of a tag hold to zero with `--release`."""
+    found = package_findings(shipped, shipped_manifest, shipped_manifest.package_path.name)
+    assert [line.text for line in found if not line.drift] == []
 
 
 def test_the_reason_a_package_test_is_skipped_is_the_agreed_one():
@@ -1055,25 +1063,73 @@ def test_the_check_prints_one_line_per_difference_and_fails(checking, manifest, 
     before = target.read_bytes()
     result, text, _ = checking()
     assert result.exit_code == 1
+    # a file with other content is drift; the three others are what a package must never be
     assert text.splitlines()[:4] == [
-        "SAS-Agentic-AI-Accelerator.json: file 'RAG/rag_core/__init__.py' differs from src/rag_core/__init__.py "
-        "(9 vs 9 bytes)",
+        "drift: SAS-Agentic-AI-Accelerator.json: file 'RAG/rag_core/__init__.py' differs from "
+        "src/rag_core/__init__.py (9 vs 9 bytes)",
         "SAS-Agentic-AI-Accelerator.json: report 'RAG/LIVE_DEMO' is in the package but not in the manifest",
         "SAS-Agentic-AI-Accelerator.json: the package carries the authorization rule '7cab3bd6'",
         "SAS-Agentic-AI-Accelerator.json: jobDefinition 'Prompt Builder/Optimize' is in the manifest but not in "
         "the package"]
-    assert "4 difference(s) between the package and the checkout." in text
+    assert "3 difference(s) between the package and the checkout." in text
+    assert "(1 more line(s) are drift and do not fail.)" in text
     assert target.read_bytes() == before                                    # a check writes nothing
     # --allow-missing is no way around a difference
     assert checking("--allow-missing")[0].exit_code == 1
-    # and a change of the checkout is a difference of the package that was fine before
+    # for a release every line is an error, and none is called drift
+    result, text, _ = checking("--release")
+    assert result.exit_code == 1 and "drift" not in text
+    assert "4 difference(s) between the package and the checkout." in text
+
+
+def test_between_releases_a_change_of_the_checkout_is_drift_and_does_not_fail(checking, manifest, repo):
+    """The package is exported from a system, so it holds the content of the
+    commit it was exported at. With every difference an error, a fix to a
+    program, a changelog entry or a fact sheet row made the workflow and six
+    tests fail for every contributor until somebody with access to that
+    system exported again."""
+    target = manifest.package_path
     target.write_text(json.dumps(package_of(manifest).build()), encoding="utf-8")
-    assert checking()[0].exit_code == 0
+    assert checking()[0].exit_code == 0 and checking("--release")[0].exit_code == 0
+    # a fix to a program, a changelog entry, a file of the runtime, a step
     (repo / "src/optimize.sas").write_text("%put a fix;\n", encoding="utf-8")
+    (repo / "CHANGELOG.md").write_bytes((repo / "CHANGELOG.md").read_bytes() + b"\n- **RAG runtime: a fix.** Text.\n")
+    (repo / "src/rag_core/__init__.py").write_bytes(b"CORE = 2\n")
+    (repo / f"src/{STEP_NAME}").write_text(json.dumps({**STEP, "ui": "{}"}), encoding="utf-8")
+    result, text, _ = checking()
+    assert result.exit_code == 0, text
+    lines = text.splitlines()
+    drift = [line for line in lines if line.startswith("drift: ")]
+    assert len(drift) == 8 and all(line.startswith("drift: SAS-Agentic-AI-Accelerator.json: ") for line in drift)
+    for expected in (
+            "job definition 'Prompt Builder/Optimize': 'code' differs from src/optimize.sas",
+            "file 'RAG/rag_core/__init__.py' differs from src/rag_core/__init__.py (9 vs 9 bytes)",
+            f"step '{STEP_PATH}': 'ui' differs from src/{STEP_NAME}",
+            "file 'release.json' holds another hash for jobDefinition 'Prompt Builder/Optimize' than the checkout gives",
+            "file 'release.json' holds another hash for file 'Data/ACCELERATOR_RELEASES.csv' than the checkout gives"):
+        assert f"drift: SAS-Agentic-AI-Accelerator.json: {expected}" in lines, expected
+    assert any("file 'Data/ACCELERATOR_RELEASES.csv' differs from what the checkout generates" in line for line in drift)
+    assert "1 package(s): 8 difference(s) in content to the checkout - drift, which does not fail between releases." \
+        in text
+    assert "every entry of the manifest is in the package and equals the checkout" not in text
+    # the same package fails the gate of a release, line for line
+    result, text, _ = checking("--release")
+    assert result.exit_code == 1 and "drift" not in text
+    assert "8 difference(s) between the package and the checkout." in text
+    # and structure fails between releases as it did: an entry added to the manifest is not in the package
+    path = repo / "SAS-Viya-Integrations" / "package-manifest.yaml"
+    path.write_text(path.read_text(encoding="utf-8")
+                    + "  - {path: RAG/jobs/New.sas, kind: file, source: src/optimize.sas}\n", encoding="utf-8")
     result, text, _ = checking()
     assert result.exit_code == 1
-    assert "job definition 'Prompt Builder/Optimize': 'code' differs from src/optimize.sas" in text
-    assert "file 'release.json' holds another hash for jobDefinition 'Prompt Builder/Optimize'" in text
+    assert "SAS-Agentic-AI-Accelerator.json: folder 'RAG/jobs' is in the manifest but not in the package" in text
+    assert "SAS-Agentic-AI-Accelerator.json: file 'RAG/jobs/New.sas' is in the manifest but not in the package" in text
+    assert "2 difference(s) between the package and the checkout." in text
+
+
+def test_a_release_is_not_checked_against_a_package_that_is_missing(checking):
+    result, text, target = checking("--release", "--allow-missing")
+    assert result.exit_code == 1 and not target.exists() and "nothing was checked." in text
 
 
 def test_fix_rewrites_what_can_be_rewritten_in_the_file(checking, manifest, repo):
@@ -1085,10 +1141,11 @@ def test_fix_rewrites_what_can_be_rewritten_in_the_file(checking, manifest, repo
     elsewhere.write_text(json.dumps(built.build(), indent=2), encoding="utf-8", newline="\n")
     result, text, target = checking(str(elsewhere))
     assert result.exit_code == 1 and not target.exists()
-    # the file, the host, the state, and ten defaults of the site in each of the two copies
-    assert "23 difference(s)" in text and "names the host viya4-example.internal.test" in text
+    # the host, the state, and ten defaults of the site in each of the two copies - and the file, which is drift
+    assert "22 difference(s)" in text and "names the host viya4-example.internal.test" in text
+    assert "(1 more line(s) are drift and do not fail.)" in text
 
-    result, text, _ = checking(str(elsewhere), "--fix")
+    result, text, _ = checking(str(elsewhere), "--fix", "--release")
     assert result.exit_code == 1
     assert "scratch.json: reset 10 option default(s) of the report: " in text
     assert "scratch.json: reset 10 option default(s) of report state 1: " in text
@@ -1098,6 +1155,10 @@ def test_fix_rewrites_what_can_be_rewritten_in_the_file(checking, manifest, repo
         "scratch.json: file 'RAG/rag_core/__init__.py' differs from src/rag_core/__init__.py (9 vs 9 bytes)"
     assert "1 difference(s) between the package and the checkout." in text
     assert report_option_copies(json.loads(elsewhere.read_text(encoding="utf-8"))) == [ALL_NEUTRAL]
+    # what is left is content, which the file cannot be fixed for and which does not fail between releases
+    result, text, _ = checking(str(elsewhere))
+    assert result.exit_code == 0
+    assert "drift: scratch.json: file 'RAG/rag_core/__init__.py' differs from src/rag_core/__init__.py" in text
 
 
 def test_a_manifest_that_cannot_be_used_ends_the_check_with_its_defects(checking, repo):
@@ -1219,3 +1280,26 @@ def test_the_workflow_starts_on_every_file_a_check_reads():
         assert [path for path in read_here if not covered(path, patterns)] == [], trigger
     # and the gate itself is a step of the workflow
     assert re.search(r"^\s+run: mdb package-check\b", text, re.M)
+
+
+def test_the_workflow_runs_the_lenient_gate_on_a_branch_and_the_strict_one_on_a_tag():
+    """Between releases a difference in content is drift and must not turn a
+    contributor's pull request red. A release is tagged, and a tag is held to
+    the strict gate - with the history, which the commit of release.json is
+    looked up in."""
+    workflow = REPO_ROOT / ".github" / "workflows" / "verify-model-definitions.yml"
+    if not workflow.is_file():
+        pytest.skip(f"{workflow} is not in this checkout")
+    text = workflow.read_text(encoding="utf-8")
+    steps = re.split(r"\n      - (?=name:|uses:)", text.split("    steps:", 1)[1])
+    gates = [step for step in steps if re.search(r"^\s+run: mdb package-check\b", step, re.M)]
+    assert len(gates) == 2
+    lenient, strict = (gates if "--release" in gates[1] else gates[::-1])
+    assert "--release" not in re.search(r"run: (mdb package-check.*)", lenient).group(1)
+    assert "if: startsWith(github.ref, 'refs/tags/')" not in lenient
+    assert re.search(r"run: mdb package-check --release\s*$", strict, re.M)
+    assert "if: startsWith(github.ref, 'refs/tags/')" in strict
+    # a pushed tag starts the workflow, whatever paths the commit touched
+    push = text.split("pull_request:", 1)[0]
+    assert re.search(r"^    tags:\n      - '\[0-9\]\+\.\[0-9\]\+\.\[0-9\]\+'$", push, re.M)
+    assert re.search(r"fetch-depth: 0", text)

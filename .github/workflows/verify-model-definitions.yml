@@ -25,16 +25,31 @@ name: Verify generated model definitions
 # src/objects/rag-backends.ts post), RAG/, RAG-Ingestion/, Prompt-Optimization/,
 # Logging-Monitoring/, Setup/, the custom steps and the fact sheets in the
 # definition folders. Each of those is watched so that the change that makes the package
-# stale is the one that fails - a rebuilt dist/index.html needs the content
-# folder deployed and the package exported again. CHANGELOG.md is watched
-# because the release table, in CAS and in the package, is built from it.
+# stale is the one that says so. CHANGELOG.md is watched because the release
+# table, in CAS and in the package, is built from it.
 # The two lists below are the same; tests/test_package_guards.py reads them
 # and the manifest, and fails for a source that no path here covers.
+#
+# The gate is LENIENT on a branch and STRICT on a tag. The package is exported
+# from a SAS Viya system, so between two exports it is the content of an
+# earlier commit: a changelog entry, a fact sheet row, a fix to a program or a
+# rebuilt dist/index.html makes it differ from the checkout. On a push to main
+# and on a pull request such a difference in content is printed as a line
+# starting with "drift:" and does not fail - a contributor has no access to
+# the system the package is exported from. What a package must never be still
+# fails there: an object outside the manifest, a rule, a share, a host, a
+# per-user state, a report default that is not neutral, a missing entry. A
+# release is tagged with its version, and on a tag the gate is
+# `mdb package-check --release`: every difference is an error, drift included.
 
 on:
   push:
     branches:
       - main
+    # a release tag (2.3.0): the strict gate. Path filters are not applied to
+    # a pushed tag, so a tag always starts the workflow.
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
     paths:
       - "LLM-Definitions/**"
       - "Embedding-Definitions/**"
@@ -90,6 +105,11 @@ jobs:
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v7
+        with:
+          # the whole history: release.json in the package names the commit
+          # the content folder was deployed from, and the gate of a release
+          # looks it up in the history of the tag
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
@@ -99,13 +119,19 @@ jobs:
         run: mdb generate --all --check
       - name: Validate managed definitions
         run: mdb validate --all
-      - name: The transfer package is the content of the checkout
-        # The content gate: every entry of package-manifest.yaml is in the
-        # package and equals its source, nothing else is in it, and no report
-        # names a host or carries a user's state. --allow-missing is for the
-        # time before the package of the release is in the repository; it
-        # goes with the commit that adds the file.
+      - name: The transfer package is nothing it must not be
+        # The content gate, lenient: every entry of package-manifest.yaml is
+        # in the package, nothing else is in it, and no report names a host
+        # or carries a user's state. A difference in content against the
+        # checkout is a "drift:" line and does not fail. --allow-missing is
+        # for the time before the package of the release is in the
+        # repository; it goes with the commit that adds the file.
         run: mdb package-check --allow-missing
+      - name: The transfer package of a release equals the checkout
+        # The gate of a release, on a tag only: every difference is an
+        # error, and a package that is missing is one.
+        if: startsWith(github.ref, 'refs/tags/')
+        run: mdb package-check --release
       - name: mdb test suite
         run: python -m pytest Model-Definition-Builder/cli/tests -q
       - name: RAG runtime test suite
