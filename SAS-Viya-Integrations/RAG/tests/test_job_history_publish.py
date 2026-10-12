@@ -6,9 +6,10 @@ The run history is kept in the vector store. RAG - Load Vector Store copies
 it to CAS after every run, as <project>_RUNS and <project>_DOC_EVENTS, and
 was the only one that did: the job recorded its run in the store and
 published nothing. A setup the Prompt Builder ingested with its job
-therefore had a ledger in CAS and no run table - found on a live system,
-where the pull of the log chain had no runs for such a setup and none of its
-document embeddings could be given to an ingestion run.
+therefore had a ledger in CAS and no run table. Measured on a test system on
+2026-10-12: the pull of the log chain found the run table of such a setup
+not in memory and took one run from its ledger, the newest, which is all a
+ledger names.
 
 The job now publishes the two tables itself: the Python program reads from
 the store what the step reads and writes it to WORK, and SAS uploads the two
@@ -478,6 +479,11 @@ def test_the_columns_the_job_publishes_are_the_columns_of_the_step(
     assert labelled == [(name + "_S", list(columns))]
     assert dict(_pairs(sas.macros["_rag_hist%sLabels" % kind], "|", "=")) \
         == steps.column_labels(columns)
+    # both lists stand in macro statements: names, the two types, the
+    # characters that split them, and plain text for a label
+    assert re.fullmatch(r"[A-Za-z0-9_]+:(varchar|double)( [A-Za-z0-9_]+:(varchar|double))*",
+                        handed)
+    assert re.fullmatch(r"[A-Za-z0-9_ .\-=|]+", sas.macros["_rag_hist%sLabels" % kind])
     # and the macro takes the two lists apart by these characters
     table = _macro("_rag_history_table")
     for call in ("%scan(&_rag_hvars., &_rag_hi., %str( ))",
