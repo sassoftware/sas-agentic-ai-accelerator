@@ -254,6 +254,111 @@ def test_only_the_password_grant_is_repeated(env, monkeypatch, tmp_path):
     env.delenv(s.USER_ENV)
     env.delenv(s.PASSWORD_ENV)
     env.setenv(s.TOKEN_ENV, "not-a-jwt")
-    with pytest.raises(AuthenticationError):
+    with pytest.raises(s.ViyaSignInError, match="refused the access token"):
         s.create_session()
     assert calls == [(URL,)]
+
+
+# -- the refusal as it arrives from sasctl ---------------------------------------------
+
+class HTTPError(IOError):
+    """requests.HTTPError, as sasctl lets it through from the token request:
+    told by its name, its response and the address the response is from."""
+
+    def __init__(self, message, status=None, url=None):
+        super().__init__(message)
+        if status is not None:
+            self.response = types.SimpleNamespace(status_code=status, url=url)
+
+
+TOKEN_URL = f"{URL}/SASLogon/oauth/token"
+
+
+def _refused_grant():
+    """What `mdb content-deploy` ended with on the test system on 2026-10-12:
+    raise_for_status() inside sasctl's _request_token_with_oauth."""
+    return HTTPError(f"401 Client Error:  for url: {TOKEN_URL}#password", 401, TOKEN_URL)
+
+
+def test_the_refused_grant_is_recognised_as_sasctl_passes_it_on():
+    assert s._refused_sign_in(_refused_grant())
+    assert s._refused_sign_in(AuthenticationError("Authentication failed"))
+    # read from the message where the exception carries no response
+    assert s._refused_sign_in(HTTPError(f"401 Client Error:  for url: {TOKEN_URL}#password"))
+    # not a refused sign-in: another status of the token address, a 401 of another address, another exception
+    assert not s._refused_sign_in(HTTPError(f"503 Server Error: for url: {TOKEN_URL}", 503, TOKEN_URL))
+    assert not s._refused_sign_in(HTTPError(f"401 Client Error: for url: {URL}/folders/folders", 401,
+                                            f"{URL}/folders/folders"))
+    assert not s._refused_sign_in(ConnectionError("no route to host"))
+    assert not s._refused_sign_in(ValueError(f"401 Client Error:  for url: {TOKEN_URL}"))
+
+
+def test_a_grant_refused_with_401_is_asked_again(env):
+    """The live defect: the repeat knew sasctl's AuthenticationError only, so
+    the 401 that really arrived was passed on at the first try."""
+    waited, asked = [], []
+
+    def make():
+        asked.append(1)
+        if len(asked) < 2:
+            raise _refused_grant()
+        return "session"
+    assert s._sign_in(make, sleep=waited.append) == "session"
+    assert len(asked) == 2 and waited == [2]
+
+
+def test_a_refused_sign_in_ends_with_a_sentence_and_no_traceback(env, monkeypatch):
+    """Refused every time, the sign-in is a ViyaConfigError - what every
+    command turns into one red line and exit code 2 - and the sentence holds
+    neither the password nor a stack."""
+    asked = []
+
+    class Session:
+        def __init__(self, *args, **kwargs):
+            asked.append(args)
+            raise _refused_grant()
+
+    monkeypatch.setitem(sys.modules, "sasctl", types.SimpleNamespace(Session=Session))
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    env.setenv(s.URL_ENV, URL)
+    env.setenv(s.USER_ENV, "u")
+    env.setenv(s.PASSWORD_ENV, "s3cret-p")
+    with pytest.raises(s.ViyaSignInError) as caught:
+        s.create_session()
+    assert isinstance(caught.value, s.ViyaConfigError) and len(asked) == 3
+    message = str(caught.value)
+    assert message.startswith(f"SAS Viya at {URL} refused the sign-in of u with SAS_VIYA_USER + SAS_VIYA_PASSWORD "
+                              "(asked 3 time(s)): HTTP 401 from /SASLogon/oauth/token. Check the credentials")
+    assert "s3cret-p" not in message and "Traceback" not in message
+    # anything else is still passed on as it is: a server that is not there is no refusal
+    class Unreachable:
+        def __init__(self, *args, **kwargs):
+            raise ConnectionError("no route to host")
+
+    monkeypatch.setitem(sys.modules, "sasctl", types.SimpleNamespace(Session=Unreachable))
+    with pytest.raises(ConnectionError):
+        s.create_session()
+
+
+def test_the_command_line_shows_the_refusal_as_one_line(env, monkeypatch):
+    """Through a command: exit code 2 and the sentence, as for credentials
+    that are missing - no traceback reaches the user."""
+    from typer.testing import CliRunner
+
+    from mdb import cli
+
+    class Session:
+        def __init__(self, *args, **kwargs):
+            raise _refused_grant()
+
+    monkeypatch.setitem(sys.modules, "sasctl", types.SimpleNamespace(Session=Session))
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    monkeypatch.setattr(cli, "Context", lambda: types.SimpleNamespace(repo=Path(__file__).resolve().parents[3]))
+    env.setenv(s.URL_ENV, URL)
+    env.setenv(s.USER_ENV, "u")
+    env.setenv(s.PASSWORD_ENV, "s3cret-p")
+    result = CliRunner().invoke(cli.app, ["content-deploy", "--dry-run"])
+    assert result.exit_code == 2 and not isinstance(result.exception, HTTPError)
+    printed = " ".join(result.output.split())
+    assert "refused the sign-in of u" in printed and "HTTP 401 from /SASLogon/oauth/token" in printed
+    assert "Traceback" not in result.output and "s3cret-p" not in result.output

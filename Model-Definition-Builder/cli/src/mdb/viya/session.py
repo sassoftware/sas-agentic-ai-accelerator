@@ -45,6 +45,11 @@ class ViyaConfigError(RuntimeError):
     pass
 
 
+class ViyaSignInError(ViyaConfigError):
+    """SAS Viya refused the credentials. A command ends with its sentence,
+    as it does for credentials that are missing."""
+
+
 @dataclass(frozen=True)
 class CliLogin:
     """What the SAS Viya CLI left behind for one profile."""
@@ -212,10 +217,23 @@ def create_session():
         import urllib3
 
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    if auth.method == "password":
-        session = _sign_in(lambda: Session(auth.url, auth.user, auth.password, verify_ssl=verify))
-    else:
-        session = Session(auth.url, token=auth.token, verify_ssl=verify)
+    try:
+        if auth.method == "password":
+            session = _sign_in(lambda: Session(auth.url, auth.user, auth.password, verify_ssl=verify))
+        else:
+            session = Session(auth.url, token=auth.token, verify_ssl=verify)
+    except Exception as exc:
+        if not _refused_sign_in(exc):
+            raise
+        # A refusal is an answer, not a defect of mdb: one sentence, no traceback.
+        if auth.method == "password":
+            how = (f"the sign-in of {auth.user} with {USER_ENV} + {PASSWORD_ENV} (asked {_attempts()} time(s))")
+        else:
+            how = f"the access token ({TOKEN_ENV if auth.method == 'token' else 'the SAS Viya CLI login'})"
+        raise ViyaSignInError(
+            f"SAS Viya at {auth.url} refused {how}: {_refusal(exc)}. Check the credentials - or use another way "
+            f"in: {THE_THREE_WAYS}."
+        ) from exc
     session.auth_summary = auth.summary
     return session
 
@@ -228,11 +246,48 @@ LOGIN_WAIT = (2, 5)
 LOGIN_ATTEMPTS_ENV = "MDB_LOGIN_ATTEMPTS"
 
 
+#: The address the password grant is sent to; a 401 from it is a refused sign-in.
+TOKEN_PATH = "/SASLogon/oauth/token"
+
+
 def _refused_sign_in(exc: Exception) -> bool:
-    """Whether an exception is the password grant answered 401: sasctl raises
-    its AuthenticationError for it. Recognised by name, so that this module
-    needs no import of sasctl to say so."""
-    return type(exc).__name__ == "AuthenticationError"
+    """Whether an exception is a sign-in that SAS Viya refused.
+
+    sasctl has two ways of saying so, and both were seen: its own
+    AuthenticationError, and - for the password grant, as it arrived on the
+    test system - the HTTPError of requests for the 401 that
+    /SASLogon/oauth/token answered, raised from inside sasctl
+    (`401 Client Error: for url: https://<host>/SASLogon/oauth/token#password`).
+    Both are recognised by name and by what they carry, so that this module
+    imports neither sasctl nor requests to say so. A 401 from any other
+    address, and any other status of the token address, is not a refused
+    sign-in.
+    """
+    if type(exc).__name__ == "AuthenticationError":
+        return True
+    if type(exc).__name__ != "HTTPError":
+        return False
+    response = getattr(exc, "response", None)
+    url = str(getattr(response, "url", "") or getattr(getattr(exc, "request", None), "url", "") or "")
+    status = getattr(response, "status_code", None)
+    if status is None and str(exc).startswith("401 "):
+        status = 401
+    return status == 401 and TOKEN_PATH in (url or str(exc))
+
+
+def _refusal(exc: Exception) -> str:
+    """What a refused sign-in says, without the address of the token
+    endpoint spelled out twice and without anything that was sent."""
+    if type(exc).__name__ == "HTTPError":
+        return f"HTTP 401 from {TOKEN_PATH}"
+    return str(exc).strip().rstrip(".") or type(exc).__name__
+
+
+def _attempts() -> int:
+    try:
+        return max(1, int(_env(LOGIN_ATTEMPTS_ENV) or LOGIN_ATTEMPTS))
+    except ValueError:
+        return LOGIN_ATTEMPTS
 
 
 def _sign_in(make, attempts: int | None = None, sleep=None):
@@ -248,10 +303,7 @@ def _sign_in(make, attempts: int | None = None, sleep=None):
     import time
 
     if attempts is None:
-        try:
-            attempts = int(_env(LOGIN_ATTEMPTS_ENV) or LOGIN_ATTEMPTS)
-        except ValueError:
-            attempts = LOGIN_ATTEMPTS
+        attempts = _attempts()
     attempts = max(1, attempts)
     sleep = sleep or time.sleep
     for attempt in range(1, attempts + 1):
