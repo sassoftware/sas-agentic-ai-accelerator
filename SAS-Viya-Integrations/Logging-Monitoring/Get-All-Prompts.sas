@@ -32,12 +32,15 @@
                             (key: modelID, optimizationId)
       RAG_SETUPS            one row per RAG setup (key: modelID)
       RAG_RUNS              the ingestion runs of every setup whose
-                            <tables_prefix>_RUNS table is in memory
+                            <tables_prefix>_RUNS table is in memory, and
+                            for a setup without one the runs its
+                            <tables_prefix>_LEDGER table still names
                             (key: modelID, run_id)
       MODEL_CATALOG         one row per model and pattern, the table the
                             link program reads (key: modelID, role, runID,
-                            target_model)
+                            optimization_id, target_model)
     An output without rows is written as well, with all its columns.
+    A table name is a SAS name of 32 characters at most.
 
     The same tables stay in WORK:
       work._gap_all_data            (PROMPT_EXPERIMENTS)
@@ -88,8 +91,9 @@
 %let _gap_work = %sysfunc(pathname(work));
 * The Python step sets this to 0 as its last statement, so -1 means that the reading did not finish;
 %let _gap_rc = -1;
-* Whether the run table of a RAG setup is in memory, set once per setup;
+* Whether the run table of a RAG setup is in memory, and whether its ledger is, set once per setup;
 %let _gap_runs_exists = 0;
+%let _gap_ledger_exists = 0;
 
 proc python restart;
 submit;
@@ -98,7 +102,7 @@ import hashlib
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 try:
     import requests
@@ -175,10 +179,11 @@ RAG_SETUP_COLUMNS = [
     ('configuration', 'c', 64), ('runs_table', 'c', 64), ('createdBy', 'c', 256), ('modifiedBy', 'c', 256),
 ]
 
-# The run tables that are looked for, one row per setup: this one stays in WORK
+# The run tables that are looked for, one row per setup: this one stays in WORK. The ledger and
+# the embedding model are what the runs of a setup are read from where it has no run table
 RAG_RUN_SOURCE_COLUMNS = [
     ('modelID', 'c', 36), ('projectID', 'c', 36), ('tables_caslib', 'c', 64), ('runs_table', 'c', 64),
-    ('collection', 'c', 128),
+    ('collection', 'c', 128), ('ledger_table', 'c', 64), ('embedding_model', 'c', 128),
 ]
 
 # What a <prefix>_RUNS table holds (RUN_COLUMNS and RUN_NUMERIC of rag_core/history.py). The run
@@ -198,8 +203,13 @@ RAG_RUN_COLUMNS = (
     [('modelID', 'c', 36), ('projectID', 'c', 36)]
     + [(name, 'c', length) for name, length in RAG_RUN_TEXTS]
     + [(name, 'n', 8) for name in RAG_RUN_NUMBERS]
-    + [('source_caslib', 'c', 64), ('source_table', 'c', 64)]
+    + [('source_caslib', 'c', 64), ('source_table', 'c', 64),
+       # Where a row is from: the run table of its setup, or the ledger of a setup that has none
+       ('run_source', 'c', 16)]
 )
+# What run_source holds
+RUN_FROM_TABLE = 'run table'
+RUN_FROM_LEDGER = 'ledger'
 
 CATALOG_COLUMNS = [
     ('modelID', 'c', 36), ('projectID', 'c', 36), ('projectName', 'c', 256), ('name', 'c', 256),
@@ -210,6 +220,10 @@ CATALOG_COLUMNS = [
     # setup (builder, step) - and the hashes of the prompts as sent, taken of the whole text. The
     # link program reads the three when the table has them.
     ('template_source', 'c', 16), ('resolved_system_hash', 'c', 64), ('resolved_user_hash', 'c', 64),
+    # What tells two requests with the same prompts apart: on the row of a run and model what the
+    # tracker holds of that call, on the row of an optimization its time (UTC) and its id
+    ('run_time', 'n', 8), ('prompt_length', 'n', 8), ('output_length', 'n', 8),
+    ('window_start', 'c', 20), ('window_end', 'c', 20), ('optimization_id', 'c', 16),
 ]
 
 # The tables that are handed to SAS as a file, by the key their macro variables and files carry
@@ -227,7 +241,10 @@ OPTION_NUMBERS = ['temperature', 'top_p', 'top_k', 'max_tokens', 'thinking_budge
 OPTION_TEXTS = ['reasoning_effort', 'input_type', 'normalize']
 # An option whose name says that its value is a secret and is not copied into the output: the names
 # the log parser goes by. A name with token in it does when its value is no number (max_tokens is a number).
-SECRET_OPTION = re.compile(r'key|secret|password|passwd|pwd|credential|authorization|bearer|cookie', re.IGNORECASE)
+SECRET_OPTION = re.compile(r'key|secret|password|passwd|passphrase|pwd|credential|authorization|bearer|cookie', re.IGNORECASE)
+# The short names of a password say it as a word of the name only (my_pass, userPass, pw - not bypass)
+NAME_WORD = re.compile(r'[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+')
+SECRET_WORDS = ('pass', 'pw')
 
 # What the regular expressions of JavaScript match with \s. The Prompt Builder fills a
 # {{variable}} in with such an expression, and Python counts other characters as blanks.
@@ -322,6 +339,19 @@ def sas_datetime(value):
         offset = int(hours) * 3600 + int(minutes) * 60
         seconds += -offset if sign == '+' else offset
     return seconds
+
+
+def utc_text(value, later=False):
+    """
+    A timestamp of a tracker as the text a window is written with: 2026-01-05T09:15:00Z, in UTC and
+    to the second - the second before a fraction, or the one after it for the end of a window.
+    Nothing for a value that is no timestamp.
+    """
+    seconds = sas_datetime(value)
+    if seconds is None:
+        return ''
+    whole = int(seconds // 1) + (1 if later and seconds != seconds // 1 else 0)
+    return (SAS_EPOCH + timedelta(seconds=whole)).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
 def run_text(value):
@@ -446,7 +476,8 @@ def redacted_options(options):
         key, colon, value = part.partition(':')
         name = key.strip(' {"\'')
         plain = value.strip().rstrip('}').strip().strip('"\'')
-        if colon and (SECRET_OPTION.search(name) or ('token' in name.lower() and number_of(plain) is None)):
+        if colon and (SECRET_OPTION.search(name) or any(word.lower() in SECRET_WORDS for word in NAME_WORD.findall(name))
+                      or ('token' in name.lower() and number_of(plain) is None)):
             closing = '}' if index == len(parts) - 1 and value.rstrip().endswith('}') else ''
             parts[index] = key + ':REDACTED' + closing
     return ','.join(parts)
@@ -762,6 +793,93 @@ def catalog_run_rows(model, project, tracker):
                 'resolved_user_prompt': user,
                 'resolved_system_hash': text_hash(system),
                 'resolved_user_hash': text_hash(user),
+                # What the tracker measured of this call. The log holds the same run time for the
+                # request, which tells the request of this run from another one with the same prompts
+                'run_time': answer.get('run_time'),
+                'prompt_length': answer.get('prompt_length'),
+                'output_length': answer.get('output_length'),
+            }))
+    return rows
+
+
+def judge_models(header):
+    """
+    The models that judged a run, from its header row: the judge, or the panel of a council and
+    its chairman. Each name once, in that order.
+    """
+    names = [text_of(header.get('judge_model'))]
+    names += text_of(header.get('judge_panel')).split(',')
+    names.append(text_of(header.get('judge_chairman_model')))
+    found = []
+    for name in names:
+        if name.strip() and name.strip() not in found:
+            found.append(name.strip())
+    return found
+
+
+def catalog_judge_rows(model, project, tracker):
+    """
+    The catalog rows of the judge calls of a model: one per run that was judged and model that
+    judged it. The Prompt Builder sends a judge the task of the run - its system prompt and its
+    user prompt as they were sent - inside the user prompt of the judge call, so the two
+    resolved prompts are texts the logged user prompt of such a call holds. target_model is
+    the judge, the model the call went to.
+    """
+    rows = []
+    for run in tracker_runs(tracker):
+        header = run['header']
+        if header is None:
+            continue
+        system, user = resolved_prompts(header)
+        for judge in judge_models(header):
+            rows.append(dict(model_columns(model, project), **{
+                'role': 'judge',
+                'runID': run_text(run['run']),
+                'target_model': judge,
+                'resolved_system_prompt': system,
+                'resolved_user_prompt': user,
+                'resolved_system_hash': text_hash(system),
+                'resolved_user_hash': text_hash(user),
+            }))
+    return rows
+
+
+def catalog_optimization_rows(model, project, tracker):
+    """
+    The catalog rows of the optimizations of a model: one per entry of its optimization tracker
+    and model the optimization called - the target models, and the judge when it had one.
+
+    The calls of an optimization are found by their model and their time: window_start and
+    window_end are when the job started and finished, in UTC. resolved_system_prompt holds the
+    system prompt the optimization started from, which the optimizer writes into the system
+    prompt of the calls to the target and into the user prompt of the calls to its judge - as
+    long as it has not proposed another instruction. The templates are the optimized prompt
+    where the tracker holds one.
+    """
+    entries = tracker if isinstance(tracker, list) else [tracker] if isinstance(tracker, dict) else []
+    rows = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        baseline = entry.get('baselinePrompt') if isinstance(entry.get('baselinePrompt'), dict) else {}
+        optimized = entry.get('optimizedPrompt') if isinstance(entry.get('optimizedPrompt'), dict) else {}
+        called = []
+        for name in text_of(entry.get('targetModel')).split(',') + [text_of(entry.get('judgeModel'))]:
+            if name.strip() and name.strip() not in called:
+                called.append(name.strip())
+        started = text_of(baseline.get('systemPrompt'))
+        for name in called:
+            rows.append(dict(model_columns(model, project), **{
+                'role': 'optimization',
+                'runID': '',
+                'target_model': name,
+                'system_template': optimized.get('systemPrompt'),
+                'user_template': optimized.get('userPrompt'),
+                'resolved_system_prompt': started,
+                'resolved_system_hash': text_hash(started) if started else '',
+                'window_start': utc_text(entry.get('startedAt')),
+                'window_end': utc_text(entry.get('finishedAt'), later=True),
+                'optimization_id': run_text(entry.get('optimizationId')),
             }))
     return rows
 
@@ -914,9 +1032,16 @@ def rag_run_sources(setups):
                             "named in SAS code and was left out")
             continue
         collection = text_of(setup.get('collection')).strip()
+        ledger = text_of(setup.get('tables_prefix')).strip() + '_LEDGER'
+        model = text_of(setup.get('embedding_model')).strip()
         rows.append({
             'modelID': setup['modelID'], 'projectID': setup['projectID'], 'tables_caslib': caslib,
             'runs_table': table,
+            # The ingestion job of a setup of the Prompt Builder publishes no run table. Its ledger
+            # names the run that listed each document, which is where the SAS code below takes the
+            # runs from. A name that can not stand in SAS code is left out
+            'ledger_table': ledger if SAS_NAME.fullmatch(ledger) else '',
+            'embedding_model': model if re.fullmatch(r'[A-Za-z0-9_.\-]+', model) else '',
             # rag_runs is shared by every collection of a vector store, and a published run table can hold
             # more than one of them: only the runs of the setup's own collection are taken. A collection
             # that can not stand in SAS code is no filter
@@ -1033,12 +1158,15 @@ def pull(get_json, get_text, settings, say):
             contents = contents_of(model)
             tracker = file_of(model, contents, EXPERIMENT_TRACKER)
             tables['experiments'].extend(experiment_rows(model, project, tracker, settings['viya_host']))
-            tables['optimizations'].extend(
-                optimization_rows(model, project, file_of(model, contents, OPTIMIZATION_TRACKER)))
+            optimizations = file_of(model, contents, OPTIMIZATION_TRACKER)
+            tables['optimizations'].extend(optimization_rows(model, project, optimizations))
             template = catalog_template_row(model, project, tracker, manifested_of(model, contents))
             if template:
                 tables['catalog'].append(template)
             tables['catalog'].extend(catalog_run_rows(model, project, tracker))
+            # The calls the Prompt Builder makes for a prompt and not with it: its judges and its optimizations
+            tables['catalog'].extend(catalog_judge_rows(model, project, tracker))
+            tables['catalog'].extend(catalog_optimization_rows(model, project, optimizations))
     say('NOTE', f"{len(projects)} project(s) with the tag {settings['tag']} and {model_count} model(s) in them were read.")
     for index, row in enumerate(tables['experiments']):
         row['unique_id'] = index + 1
@@ -1321,13 +1449,92 @@ run; quit;
     %end;
 %mend _gap_read;
 
+* Takes the runs of one RAG setup from its ledger, for a setup whose run table is not in memory.
+  The ingestion job of a setup of the Prompt Builder keeps its runs in the vector store and
+  publishes the ledger only. A row of the ledger names the run that listed its document last
+  (run_id) and when the row was written (updated_at), and the id of a run holds the second the
+  run started in - run-<seconds since 1970>-<digits>, which is where rag_core takes the start
+  of a run from. Every run the ledger still names gives one row, from that start to the latest
+  of its rows. The macro runs inside _gap_stack_rag_runs and reads the setup from its variables.
+  The ledger is read, never loaded or changed;
+%macro _gap_runs_of_ledger;
+    %local _gap_lhave _gap_lruns;
+
+    libname _gaprn cas caslib="&_gap_rs_caslib.";
+
+    proc contents data=_gaprn.&_gap_rs_ledger. out=work._gap_runs_columns(keep=name) noprint;
+    run;
+
+    %let _gap_lhave =;
+    proc sql noprint;
+        select upcase(name) into :_gap_lhave separated by ' ' from work._gap_runs_columns;
+    quit;
+
+    %if %sysfunc(indexw(%str( &_gap_lhave.), RUN_ID)) EQ 0 or %sysfunc(indexw(%str( &_gap_lhave.), UPDATED_AT)) EQ 0 %then %do;
+        %put NOTE: The run table &_gap_rs_caslib..&_gap_rs_table. is not in memory and the table &_gap_rs_caslib..&_gap_rs_ledger. has no columns run_id and updated_at, its runs are not in &_gap_out_rag_runs..;
+    %end;
+    %else %do;
+        * The two columns as text, whatever the ledger holds them as;
+        data work._gap_ledger_rows;
+            length _gap_run $64 _gap_at $40;
+            set _gaprn.&_gap_rs_ledger.(keep=run_id updated_at rename=(run_id=_gap_s1 updated_at=_gap_s2));
+            _gap_run = cats(_gap_s1);
+            _gap_at = cats(_gap_s2);
+            if _gap_run NE '';
+            keep _gap_run _gap_at;
+        run;
+
+        proc sql;
+            create table work._gap_ledger_runs as
+                select _gap_run, max(_gap_at) as _gap_last length=40
+                    from work._gap_ledger_rows
+                        group by _gap_run;
+        quit;
+
+        data work._gap_runs_one;
+            length &_gap_length_rag_runs.;
+            set work._gap_ledger_runs;
+            call missing(of &_gap_runs_texts. &_gap_runs_numbers.);
+            modelID = "&_gap_rs_model.";
+            projectID = "&_gap_rs_project.";
+            run_id = _gap_run;
+            collection = "&_gap_rs_collection.";
+            embed_model = "&_gap_rs_embed.";
+            * The id of a run holds the second it started in, in UTC;
+            _gap_epoch = input(scan(_gap_run, 2, '-'), ?? best32.);
+            if 1000000000 < _gap_epoch < 4000000000 then
+                started_at = translate(put(_gap_epoch + '01JAN1970:00:00:00'dt, e8601dt19.), ' ', 'T');
+            * A row of the ledger is written with the time 2026-01-05T09:15:00Z;
+            if _gap_last NE '' then finished_at = translate(substr(_gap_last, 1, 19), ' ', 'T');
+            source_caslib = "&_gap_rs_caslib.";
+            source_table = "&_gap_rs_ledger.";
+            run_source = "ledger";
+            drop _gap_run _gap_last _gap_epoch;
+        run;
+
+        %let _gap_lruns = 0;
+        proc sql noprint;
+            select count(*) into :_gap_lruns trimmed from work._gap_runs_one;
+        quit;
+
+        proc append base=work._gap_all_rag_runs data=work._gap_runs_one;
+        run;
+
+        %put NOTE: The run table &_gap_rs_caslib..&_gap_rs_table. is not in memory. &_gap_lruns. run(s) were taken from the ledger &_gap_rs_caslib..&_gap_rs_ledger. - the runs its rows still name, each from the start its id holds to the latest of its rows.;
+    %end;
+
+    libname _gaprn clear;
+%mend _gap_runs_of_ledger;
+
 * Stacks the <tables_prefix>_RUNS table of every RAG setup into work._gap_all_rag_runs. Only a
   table that is in memory is read: nothing is loaded and no table of a setup is changed. A run
   table is published by the release that wrote it, so a column can be missing or be text where
-  a later release writes a number - every column is read as what RAG_RUNS holds it as;
+  a later release writes a number - every column is read as what RAG_RUNS holds it as. A setup
+  whose run table is not in memory gives the runs its ledger still names, if that is in memory;
 %macro _gap_stack_rag_runs;
     %local _gap_i _gap_j _gap_col _gap_columns _gap_texts _gap_have _gap_keep _gap_rename
-        _gap_rs_model _gap_rs_project _gap_rs_caslib _gap_rs_table _gap_rs_collection;
+        _gap_rs_model _gap_rs_project _gap_rs_caslib _gap_rs_table _gap_rs_collection
+        _gap_rs_ledger _gap_rs_embed;
 
     data work._gap_all_rag_runs;
         length &_gap_length_rag_runs.;
@@ -1346,12 +1553,16 @@ run; quit;
             call symputx('_gap_rs_caslib', tables_caslib, 'L');
             call symputx('_gap_rs_table', runs_table, 'L');
             call symputx('_gap_rs_collection', collection, 'L');
+            call symputx('_gap_rs_ledger', ledger_table, 'L');
+            call symputx('_gap_rs_embed', embedding_model, 'L');
         run;
 
         * -1 the caslib is not known to this session, 0 the table is not in memory, 1 or 2 it is;
         %let _gap_runs_exists = 0;
+        %let _gap_ledger_exists = 0;
         proc cas;
             runsExist = -1;
+            ledgerExists = 0;
             if upcase("&_gap_rs_caslib.") EQ 'CASUSER' then runsExist = 0;
             table.caslibInfo result=casLibraries;
             do casLibrary over casLibraries.CASLibInfo;
@@ -1362,15 +1573,27 @@ run; quit;
                     casLib = "&_gap_rs_caslib.",
                     name = "&_gap_rs_table.";
                 runsExist = runTable.exists;
+                %if %length(&_gap_rs_ledger.) GT 0 %then %do;
+                    table.tableExists result=ledgerTable /
+                        casLib = "&_gap_rs_caslib.",
+                        name = "&_gap_rs_ledger.";
+                    ledgerExists = ledgerTable.exists;
+                %end;
             end;
             call symputx('_gap_runs_exists', runsExist);
+            call symputx('_gap_ledger_exists', ledgerExists);
         quit;
 
         %if &_gap_runs_exists. LT 0 %then %do;
             %put NOTE: The CAS library &_gap_rs_caslib. of the run table &_gap_rs_table. is not available in this session, its runs are not in &_gap_out_rag_runs..;
         %end;
         %else %if &_gap_runs_exists. EQ 0 %then %do;
-            %put NOTE: The run table &_gap_rs_caslib..&_gap_rs_table. is not in memory, its runs are not in &_gap_out_rag_runs..;
+            %if &_gap_ledger_exists. GT 0 %then %do;
+                %_gap_runs_of_ledger;
+            %end;
+            %else %do;
+                %put NOTE: The run table &_gap_rs_caslib..&_gap_rs_table. is not in memory, its runs are not in &_gap_out_rag_runs..;
+            %end;
         %end;
         %else %do;
             libname _gaprn cas caslib="&_gap_rs_caslib.";
@@ -1405,6 +1628,7 @@ run; quit;
                     projectID = "&_gap_rs_project.";
                     source_caslib = "&_gap_rs_caslib.";
                     source_table = "&_gap_rs_table.";
+                    run_source = "run table";
                     %do _gap_j = 1 %to %sysfunc(countw(&_gap_columns., %str( )));
                         %let _gap_col = %scan(&_gap_columns., &_gap_j., %str( ));
                         %if %sysfunc(indexw(%str( &_gap_have.), %upcase(&_gap_col.))) EQ 0 %then %do;
@@ -1433,7 +1657,7 @@ run; quit;
     %end;
 
     proc datasets lib=work nolist nowarn;
-        delete _gap_runs_one _gap_runs_columns;
+        delete _gap_runs_one _gap_runs_columns _gap_ledger_rows _gap_ledger_runs;
     quit;
 %mend _gap_stack_rag_runs;
 
@@ -1617,7 +1841,8 @@ run; quit;
                 embed_model = 'Embedding Model'
                 enrich_model = 'Enrichment LLM'
                 source_caslib = 'CAS Library of the Run Table'
-                source_table = 'Run Table';
+                source_table = 'Run Table'
+                run_source = 'Where the Run Is From (run table or ledger)';
         modify _gap_all_catalog;
             label modelID = 'Model ID'
                 projectID = 'Project ID'
@@ -1633,7 +1858,13 @@ run; quit;
                 collection = 'Collection'
                 template_source = 'Where the Template or the Setup Is From'
                 resolved_system_hash = 'Hash of the System Prompt as Sent'
-                resolved_user_hash = 'Hash of the User Prompt as Sent';
+                resolved_user_hash = 'Hash of the User Prompt as Sent'
+                run_time = 'Run Time of the Call in the Run (s)'
+                prompt_length = 'Prompt Length of the Call in the Run (tokens)'
+                output_length = 'Output Length of the Call in the Run (tokens)'
+                window_start = 'Start of the Optimization (UTC)'
+                window_end = 'End of the Optimization (UTC)'
+                optimization_id = 'Optimization ID';
     quit;
 
     libname _gapout cas caslib="&_gap_out_caslib.";
@@ -1659,11 +1890,12 @@ run; quit;
 %_gap_write_tables;
 
 %sysmacdelete _gap_read;
+%sysmacdelete _gap_runs_of_ledger;
 %sysmacdelete _gap_stack_rag_runs;
 %sysmacdelete _gap_publish;
 %sysmacdelete _gap_written;
 %sysmacdelete _gap_write_tables;
-%symdel _gap_viyaHost _gap_work _gap_rc _gap_runs_exists _gap_runs_texts _gap_runs_numbers
+%symdel _gap_viyaHost _gap_work _gap_rc _gap_runs_exists _gap_ledger_exists _gap_runs_texts _gap_runs_numbers
     _gap_rows_experiments _gap_rows_optimizations _gap_rows_rag_setups _gap_rows_rag_run_sources _gap_rows_catalog
     _gap_length_experiments _gap_length_optimizations _gap_length_rag_setups _gap_length_rag_run_sources
     _gap_length_catalog _gap_length_rag_runs / nowarn;

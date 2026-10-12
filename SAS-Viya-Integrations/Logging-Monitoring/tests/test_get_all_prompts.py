@@ -711,12 +711,14 @@ def test_the_run_tables_to_look_for(monkeypatch, tmp_path):
 
     assert run.rows("rag_run_sources") == [
         {"modelID": builder["id"], "projectID": project["id"], "tables_caslib": "Public",
-         "runs_table": "HANDBOOK_RUNS", "collection": "handbook_v1"},
+         "runs_table": "HANDBOOK_RUNS", "collection": "handbook_v1", "ledger_table": "HANDBOOK_LEDGER",
+         "embedding_model": "demo_embedder"},
         {"modelID": step["id"], "projectID": project["id"], "tables_caslib": "Public",
-         "runs_table": "TRAVEL_RUNS", "collection": "travel_rules_v1"},
+         "runs_table": "TRAVEL_RUNS", "collection": "travel_rules_v1", "ledger_table": "TRAVEL_LEDGER",
+         "embedding_model": "demo_embedder"},
         # a caslib with a blank can be named, a collection that can not stand in SAS code is no filter
         {"modelID": run.rows("rag_setups")[3]["modelID"], "projectID": project["id"], "tables_caslib": "My Lib",
-         "runs_table": "ODD_RUNS", "collection": ""},
+         "runs_table": "ODD_RUNS", "collection": "", "ledger_table": "ODD_LEDGER", "embedding_model": "demo_embedder"},
     ]
     assert run.sas.of_type("WARNING")[:2] == [
         "The run table Public.9 LIVES_RUNS of the RAG setup Bad Prefix can not be named in SAS code and was left out",
@@ -734,8 +736,8 @@ def test_the_columns_of_a_run_table_are_the_ones_rag_core_writes(monkeypatch, tm
     assert sorted(namespace["RAG_RUN_NUMBERS"]) == sorted(history.RUN_NUMERIC)
     assert sorted(texts + namespace["RAG_RUN_NUMBERS"]) == sorted(history.RUN_COLUMNS)
     names = [name for name, _, _ in namespace["RAG_RUN_COLUMNS"]]
-    assert names[:2] == ["modelID", "projectID"] and names[-2:] == ["source_caslib", "source_table"]
-    assert len(set(names)) == len(names) == len(history.RUN_COLUMNS) + 4
+    assert names[:2] == ["modelID", "projectID"] and names[-3:] == ["source_caslib", "source_table", "run_source"]
+    assert len(set(names)) == len(names) == len(history.RUN_COLUMNS) + 5
 
 
 # ---------------------------------------------------------------------------
@@ -911,7 +913,7 @@ def test_an_output_without_rows_still_has_its_columns(monkeypatch, tmp_path):
     rag_runs = re.findall(r"(\w+) (\$\d+|8)", run.macro("_gap_length_rag_runs"))
     assert rag_runs[:3] == [("modelID", "$36"), ("projectID", "$36"), ("run_id", "$64")]
     assert run.macro("_gap_runs_texts").split()[0] == "run_id" and "embed_seconds" in run.macro("_gap_runs_numbers").split()
-    assert sorted(name for name, _ in rag_runs[2:-2]) == \
+    assert sorted(name for name, _ in rag_runs[2:-3]) == \
         sorted(run.macro("_gap_runs_texts").split() + run.macro("_gap_runs_numbers").split())
 
 
@@ -1282,6 +1284,173 @@ def test_all_five_names_are_looked_at_before_anything_is_read(monkeypatch, tmp_p
 
 
 # ---------------------------------------------------------------------------
+# What tells two requests with the same prompts apart, and the calls made for a prompt
+# ---------------------------------------------------------------------------
+
+NEW_CATALOG_COLUMNS = [("run_time", "n", 8), ("prompt_length", "n", 8), ("output_length", "n", 8),
+                       ("window_start", "c", 20), ("window_end", "c", 20), ("optimization_id", "c", 16)]
+
+
+def test_the_catalog_has_the_columns_that_were_added_behind_the_others(monkeypatch, tmp_path):
+    columns = functions(monkeypatch, tmp_path)["CATALOG_COLUMNS"]
+
+    assert columns[-6:] == NEW_CATALOG_COLUMNS
+    assert [name for name, _, _ in columns[:15]] == CATALOG_CONTRACT + ["template_source", "resolved_system_hash", "resolved_user_hash"]
+    assert len(columns) == 21
+
+
+def test_a_run_row_of_the_catalog_holds_what_the_tracker_measured_of_the_call(monkeypatch, tmp_path):
+    """Two runs with the same prompts are two rows that differ in nothing a request shows -
+    but in the run time of the call, which the log holds for the request as well."""
+    viya = FakeViya()
+    project = viya.add_project("Service Desk", ["Prompt-Engineering"])
+    viya.add_model(project, "Desk Answer", {"Prompt-Experiment-Tracker.json": [
+        header_row(1, "You are terse.", "Why?", []),
+        model_row(1, "demo_llm", run_time=13.098, prompt_length=412, output_length=96),
+        model_row(1, "other_llm", run_time="39.838", prompt_length=None, output_length="77"),
+        header_row(2, "You are terse.", "Why?", []),
+        model_row(2, "demo_llm", run_time=15.004, prompt_length=412, output_length=101),
+    ]})
+    runs = [row for row in run_pull(monkeypatch, tmp_path, viya).catalog(role="prompt") if row["runID"]]
+
+    assert [(row["runID"], row["target_model"], row["run_time"], row["prompt_length"], row["output_length"]) for row in runs] == [
+        ("1", "demo_llm", 13.098, 412, 96), ("1", "other_llm", 39.838, None, 77.0), ("2", "demo_llm", 15.004, 412, 101)]
+    assert runs[0]["resolved_user_hash"] == runs[2]["resolved_user_hash"]
+    assert all(row["window_start"] == row["window_end"] == row["optimization_id"] == "" for row in runs)
+
+
+def test_rows_that_are_no_run_have_no_run_time(monkeypatch, tmp_path):
+    rows = run_pull(monkeypatch, tmp_path, prompt_viya()[0]).rows("catalog") + run_pull(monkeypatch, tmp_path, rag_viya()[0]).rows("catalog")
+
+    others = [row for row in rows if not (row["role"] == "prompt" and row["runID"])]
+    assert {row["role"] for row in others} == {"prompt", "rag"}
+    assert all(row["run_time"] is None and row["prompt_length"] is None and row["output_length"] is None for row in others)
+
+
+def judged_viya():
+    viya = FakeViya()
+    project = viya.add_project("Service Desk", ["Prompt-Engineering"])
+    tracker = [
+        header_row(1, "You answer questions about {{topic}}.", "Question: {{question}}",
+                   [variable("topic", "travel expenses"), variable("question", "Who signs a claim?")],
+                   judge_model="demo_judge", judge_mode="single", judge_confidence="high"),
+        model_row(1, "demo_llm", judge_rank=1, judge_best=1), model_row(1, "other_llm", judge_rank=2),
+        header_row(2, "You answer questions about {{topic}}.", "Question: {{question}}",
+                   [variable("topic", "travel expenses"), variable("question", "Is a taxi refunded?")]),
+        model_row(2, "demo_llm"),
+        header_row(3, "", "Question: {{question}}", [variable("question", "Why?")], judge_model="", judge_mode="council",
+                   judge_panel="judge_a, judge_b,judge_a", judge_chairman_model="judge_c"),
+        model_row(3, "demo_llm"),
+    ]
+    model = viya.add_model(project, "Desk Answer", {"Prompt-Experiment-Tracker.json": tracker})
+    return viya, project, model
+
+
+def test_a_run_that_was_judged_has_a_catalog_row_for_every_model_that_judged_it(monkeypatch, tmp_path):
+    """The Prompt Builder sends the judge the task of the run inside the user prompt of the judge
+    call: '== TASK: SYSTEM PROMPT ==', the system prompt as it was sent, '== TASK: USER PROMPT
+    ==', the user prompt as it was sent, and the candidates. The row holds the two texts, and
+    the judge as the model the call went to."""
+    viya, project, model = judged_viya()
+    rows = run_pull(monkeypatch, tmp_path, viya).catalog(role="judge")
+
+    assert [(row["runID"], row["target_model"]) for row in rows] == [
+        ("1", "demo_judge"), ("3", "judge_a"), ("3", "judge_b"), ("3", "judge_c")]
+    first = rows[0]
+    assert (first["modelID"], first["projectID"], first["projectName"], first["name"]) == \
+        (model["id"], project["id"], "Service Desk", "Desk Answer")
+    assert (first["resolved_system_prompt"], first["resolved_user_prompt"]) == \
+        ("You answer questions about travel expenses.", "Question: Who signs a claim?")
+    assert first["resolved_system_hash"] == contract_hash("You answer questions about travel expenses.")
+    assert (rows[1]["resolved_system_prompt"], rows[1]["resolved_user_prompt"]) == ("", "Question: Why?")
+    # the call of a judge is no call of the run: no template, no measurement of a call, no window
+    for row in rows:
+        assert (row["system_template"], row["user_template"], row["template_source"], row["collection"]) == ("", "", "", "")
+        assert (row["run_time"], row["window_start"], row["window_end"], row["optimization_id"]) == (None, "", "", "")
+
+
+def test_the_texts_of_a_judge_row_stand_in_the_prompt_the_builder_sends_its_judge(monkeypatch, tmp_path):
+    """The user prompt of the judge call, put together the way judge-api.ts of the Prompt Builder does it."""
+    viya, _, _ = judged_viya()
+    row = run_pull(monkeypatch, tmp_path, viya).catalog(role="judge")[0]
+    source = (INTEGRATIONS.parent / "LLM-Prompt-Builder" / "src" / "api" / "judge-api.ts").read_text(encoding="utf-8")
+    for line in ("'== TASK: SYSTEM PROMPT ==',", "systemPrompt || '(none)',", "'== TASK: USER PROMPT ==',", "userPrompt || '(none)',",
+                 "'== CANDIDATE RESPONSES ==',"):
+        assert line in source, line
+
+    sent = "\n".join(["== TASK: SYSTEM PROMPT ==", "You answer questions about travel expenses.", "", "== TASK: USER PROMPT ==",
+                      "Question: Who signs a claim?", "", "== CANDIDATE RESPONSES ==", "[A]\nThe line manager.", "",
+                      "Return the JSON object now."])
+    assert row["resolved_system_prompt"] in sent and row["resolved_user_prompt"] in sent
+
+
+def test_an_optimization_has_a_catalog_row_for_every_model_it_called(monkeypatch, tmp_path):
+    viya = FakeViya()
+    project = viya.add_project("Service Desk", ["Prompt-Engineering"])
+    model = viya.add_model(project, "Desk Answer", {
+        "Prompt-Experiment-Tracker.json": [header_row(1, "Answer briefly.", "{{question}}", [variable("question", "Why?")]),
+                                           model_row(1, "demo_llm")],
+        "Prompt-Optimization-Tracker.json": [
+            optimization_entry(1),
+            optimization_entry(2, targetModel="demo_llm, other_llm", judgeModel=None, optimizedPrompt=None, type="comparison",
+                               startedAt="2026-02-04T09:00:00+01:00", finishedAt=None, status="failed"),
+            optimization_entry(3, targetModel="demo_judge", judgeModel="demo_judge", baselinePrompt=None),
+        ]})
+    rows = run_pull(monkeypatch, tmp_path, viya).catalog(role="optimization")
+
+    assert [(row["optimization_id"], row["target_model"]) for row in rows] == [
+        ("1", "demo_llm"), ("1", "demo_judge"), ("2", "demo_llm"), ("2", "other_llm"), ("3", "demo_judge")]
+    first = rows[0]
+    assert (first["modelID"], first["projectID"], first["name"], first["runID"]) == (model["id"], project["id"], "Desk Answer", "")
+    # the window is the time of the job in UTC, to the second and never shorter than the job was
+    assert (first["window_start"], first["window_end"]) == ("2026-02-03T08:00:00Z", "2026-02-03T08:12:31Z")
+    # what the optimizer writes into its calls until it proposes another instruction, and what it ended with
+    assert (first["resolved_system_prompt"], first["resolved_user_prompt"]) == ("Answer briefly.", "")
+    assert first["resolved_system_hash"] == contract_hash("Answer briefly.") and first["resolved_user_hash"] == ""
+    assert (first["system_template"], first["user_template"]) == ("Answer in one sentence.", "{{question}}")
+    # an optimization that did not finish has a start and no end, and a time with an offset is brought to UTC
+    assert (rows[2]["window_start"], rows[2]["window_end"], rows[2]["system_template"]) == ("2026-02-04T08:00:00Z", "", "")
+    assert (rows[4]["resolved_system_prompt"], rows[4]["resolved_system_hash"]) == ("", "")
+    assert all(row["run_time"] is None for row in rows)
+
+
+def test_the_system_prompt_an_optimization_started_from_is_what_the_optimizer_sends(monkeypatch, tmp_path):
+    """Optimize-Prompt-DSPy.sas makes the system prompt of the template the instruction of its
+    DSPy signature and the task its judge is shown, and writes the same text into the tracker."""
+    source = (INTEGRATIONS / "Prompt-Optimization" / "Optimize-Prompt-DSPy.sas").read_text(encoding="utf-8")
+
+    assert 'signature = dspy.Signature(signature_str, str(source_header.get("systemPrompt") or ""))' in source
+    assert 'judge_verdict = make_judge(judge_options, str(source_header.get("systemPrompt") or ""))' in source
+    assert '"== TASK ==\\n" + (str(task_system_prompt) or "(none)") +' in source
+    assert source.count('"systemPrompt": str(source_header.get("systemPrompt") or ""),') == 2
+    assert 'started_at = datetime.now(timezone.utc).isoformat()' in source
+    assert source.count('tracker_entry["finishedAt"] = datetime.now(timezone.utc).isoformat()') >= 3
+
+
+def test_the_key_of_the_catalog_tells_every_row_apart(monkeypatch, tmp_path):
+    viya, _, _ = judged_viya()
+    viya.add_file(viya.models[viya.projects[0]["id"]][0], "Prompt-Optimization-Tracker.json",
+                  [optimization_entry(1), optimization_entry(2), optimization_entry(3, judgeModel=None)])
+    rows = run_pull(monkeypatch, tmp_path, viya).rows("catalog")
+
+    keys = [(row["modelID"], row["role"], row["runID"], row["optimization_id"], row["target_model"]) for row in rows]
+    assert len(set(keys)) == len(keys) and {row["role"] for row in rows} == {"prompt", "judge", "optimization"}
+
+
+@pytest.mark.parametrize("value, start, end", [
+    ("2026-10-11T17:34:11.250000+00:00", "2026-10-11T17:34:11Z", "2026-10-11T17:34:12Z"),
+    ("2026-10-11T17:35:11+00:00", "2026-10-11T17:35:11Z", "2026-10-11T17:35:11Z"),
+    ("2026-10-11T19:34:11.5+02:00", "2026-10-11T17:34:11Z", "2026-10-11T17:34:12Z"),
+    ("2026-10-11T17:34:11Z", "2026-10-11T17:34:11Z", "2026-10-11T17:34:11Z"),
+    ("", "", ""), (None, "", ""), ("yesterday", "", ""),
+], ids=["a fraction", "a whole second", "an offset", "Z", "empty", "none", "no timestamp"])
+def test_a_window_is_written_in_utc_to_the_second(monkeypatch, tmp_path, value, start, end):
+    utc_text = functions(monkeypatch, tmp_path)["utc_text"]
+
+    assert (utc_text(value), utc_text(value, later=True)) == (start, end)
+
+
+# ---------------------------------------------------------------------------
 # A RAG setup without a collection
 # ---------------------------------------------------------------------------
 
@@ -1332,6 +1501,23 @@ def test_a_setup_file_that_names_no_collection_is_not_in_the_catalog(monkeypatch
 
 
 # ---------------------------------------------------------------------------
+# The options: the names of a secret the log parser goes by
+# ---------------------------------------------------------------------------
+
+def test_the_options_of_a_run_lose_a_password_under_its_short_names(monkeypatch, tmp_path):
+    namespace = functions(monkeypatch, tmp_path)
+    redacted = namespace["redacted_options"]
+
+    assert redacted("{my_pass:hunter2,pw:hunter3,userPass:hunter4,passphrase:made up,temperature:0.2}") == \
+        "{my_pass:REDACTED,pw:REDACTED,userPass:REDACTED,passphrase:REDACTED,temperature:0.2}"
+    assert redacted("{bypass:true,stopwords:and,max_tokens:40}") == "{bypass:true,stopwords:and,max_tokens:40}"
+    # the same names in both programs
+    parser = (INTEGRATIONS / "Logging-Monitoring" / "Log-Parser-Code.sas").read_text(encoding="utf-8")
+    assert f"KEY_NAME = re.compile(r'{namespace['SECRET_OPTION'].pattern}', re.IGNORECASE)" in parser
+    assert f"KEY_WORDS = {namespace['SECRET_WORDS']!r}" in parser
+
+
+# ---------------------------------------------------------------------------
 # The CAS session of the code file
 # ---------------------------------------------------------------------------
 
@@ -1358,3 +1544,105 @@ def test_the_code_file_starts_a_cas_session_only_where_none_is_connected_and_end
     check = "%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;"
     assert check in step_program().split(core(step_program()))[0]
     assert check in (INTEGRATIONS / "Logging-Monitoring" / "Log-Parser-Code.sas").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# The runs of a setup that has no run table
+# ---------------------------------------------------------------------------
+
+def _ledger_macro():
+    code = sas_code(code_file_program())
+    return code[code.index("%macro _gap_runs_of_ledger;"):code.index("%mend _gap_runs_of_ledger;")]
+
+
+def _stack_macro():
+    code = sas_code(code_file_program())
+    return code[code.index("%macro _gap_stack_rag_runs;"):code.index("%mend _gap_stack_rag_runs;")]
+
+
+def test_the_ingestion_job_publishes_its_ledger_and_no_run_table():
+    """Why a setup of the Prompt Builder has no <prefix>_RUNS table: Ingest-Documents.sas loads,
+    promotes and saves the ledger and writes its runs into the vector store. What a row of the
+    ledger holds of a run is its id and the time the row was written."""
+    job = (INTEGRATIONS / "RAG-Ingestion" / "Ingest-Documents.sas").read_text(encoding="utf-8")
+
+    published = re.findall(r'(?:promote|save) casdata="&(\w+)\.(\w*)"', job)
+    assert published and {name for name, _ in published} == {"ledgerTable"}
+    assert "_RUNS" not in job
+    assert "%let _rag_runId = run-%sysfunc(compress(%sysfunc(putn(&_rag_now., 12.))))-&_rag_digits.;" in job
+    assert "%let _rag_now = %sysevalf(%sysfunc(datetime()) - 315619200);" in job
+    monkey_path = str(INTEGRATIONS / "RAG")
+    import sys
+    sys.path.insert(0, monkey_path)
+    try:
+        from rag_core import history, steps
+    finally:
+        sys.path.remove(monkey_path)
+    assert steps.LEDGER_COLUMNS[-2:] == ["run_id", "updated_at"]
+    # rag_core takes the start of a run from its id, and the pull does the same in SAS
+    assert history.started_at_from_run_id("run-1791740981-1738645981") == "2026-10-11 17:49:41"
+    ledger = _ledger_macro()
+    assert "_gap_epoch = input(scan(_gap_run, 2, '-'), ?? best32.);" in ledger
+    assert "if 1000000000 < _gap_epoch < 4000000000 then" in ledger
+    assert "started_at = translate(put(_gap_epoch + '01JAN1970:00:00:00'dt, e8601dt19.), ' ', 'T');" in ledger
+    assert "if not 1_000_000_000 < seconds < 4_000_000_000:" in (INTEGRATIONS / "RAG" / "rag_core" / "history.py").read_text(encoding="utf-8")
+
+
+def test_a_setup_without_a_run_table_gives_the_runs_its_ledger_names(monkeypatch, tmp_path):
+    stack, ledger = _stack_macro(), _ledger_macro()
+
+    # both tables are looked for, the ledger only where the setup names one
+    assert "call symputx('_gap_rs_ledger', ledger_table, 'L');" in stack and "call symputx('_gap_rs_embed', embedding_model, 'L');" in stack
+    looked = " ".join(stack[stack.index("proc cas;"):stack.index("quit;", stack.index("proc cas;"))].split())
+    assert ('%if %length(&_gap_rs_ledger.) GT 0 %then %do; table.tableExists result=ledgerTable / casLib = "&_gap_rs_caslib.", '
+            'name = "&_gap_rs_ledger."; ledgerExists = ledgerTable.exists; %end;') in looked
+    assert "call symputx('_gap_ledger_exists', ledgerExists);" in looked
+    # the ledger is read only where the run table is not in memory
+    branch = " ".join(stack[stack.index("%else %if &_gap_runs_exists. EQ 0 %then %do;"):stack.index("%else %do;\n            libname _gaprn")].split())
+    assert branch.startswith("%else %if &_gap_runs_exists. EQ 0 %then %do; %if &_gap_ledger_exists. GT 0 %then %do; %_gap_runs_of_ledger; %end; "
+                             "%else %do; %put NOTE: The run table &_gap_rs_caslib..&_gap_rs_table. is not in memory, its runs are not in")
+    # one row per run the ledger names, from the start its id holds to its latest row
+    statements = " ".join(ledger.split())
+    assert "set _gaprn.&_gap_rs_ledger.(keep=run_id updated_at rename=(run_id=_gap_s1 updated_at=_gap_s2));" in statements
+    assert "select _gap_run, max(_gap_at) as _gap_last length=40 from work._gap_ledger_rows group by _gap_run;" in statements
+    assert "if _gap_last NE '' then finished_at = translate(substr(_gap_last, 1, 19), ' ', 'T');" in statements
+    for assignment in ('modelID = "&_gap_rs_model.";', 'projectID = "&_gap_rs_project.";', "run_id = _gap_run;",
+                       'collection = "&_gap_rs_collection.";', 'embed_model = "&_gap_rs_embed.";',
+                       'source_caslib = "&_gap_rs_caslib.";', 'source_table = "&_gap_rs_ledger.";'):
+        assert assignment in statements, assignment
+    assert "length &_gap_length_rag_runs.;" in statements and "call missing(of &_gap_runs_texts. &_gap_runs_numbers.);" in statements
+    assert "proc append base=work._gap_all_rag_runs data=work._gap_runs_one;" in statements
+    # a ledger of another shape is said and left
+    assert ("%if %sysfunc(indexw(%str( &_gap_lhave.), RUN_ID)) EQ 0 or %sysfunc(indexw(%str( &_gap_lhave.), UPDATED_AT)) EQ 0 "
+            "%then %do;") in statements
+    # nothing loads, saves, drops or changes a table of a setup
+    for action in ("loadTable", "table.save", "dropTable", "alterTable", "table.promote", "load casData", "casOut", "casutil"):
+        assert action not in ledger and action not in stack, action
+    assert "libname _gaprn clear;" in ledger
+    assert "delete _gap_runs_one _gap_runs_columns _gap_ledger_rows _gap_ledger_runs;" in stack
+    assert "%sysmacdelete _gap_runs_of_ledger;" in code_file_program()
+
+
+def test_every_run_says_where_it_is_from(monkeypatch, tmp_path):
+    namespace = functions(monkeypatch, tmp_path)
+
+    assert (namespace["RUN_FROM_TABLE"], namespace["RUN_FROM_LEDGER"]) == ("run table", "ledger")
+    assert namespace["RAG_RUN_COLUMNS"][-1] == ("run_source", "c", 16)
+    assert f'run_source = "{namespace["RUN_FROM_TABLE"]}";' in _stack_macro()
+    assert f'run_source = "{namespace["RUN_FROM_LEDGER"]}";' in _ledger_macro()
+    assert _stack_macro().count("run_source = ") == 1 and _ledger_macro().count("run_source = ") == 1
+    # the times of a row of either kind are written the way the link program reads them
+    assert "moment.strftime(\"%Y-%m-%d %H:%M:%S\")" in (INTEGRATIONS / "RAG" / "rag_core" / "history.py").read_text(encoding="utf-8")
+
+
+def test_the_ledger_and_the_embedding_model_of_a_setup_are_handed_to_the_sas_code(monkeypatch, tmp_path):
+    viya, project, builder, step = rag_viya()
+    viya.add_model(project, "Long Prefix", {"rag-setup.json": rag_setup("long_v1", prefix="P" * 26, caslib="Public")})
+    viya.add_model(project, "Odd Model", {"rag-setup.json": rag_setup(
+        "odd_v1", prefix="ODD", embedding={"model": 'em"bed', "dims": 3})})
+    rows = run_pull(monkeypatch, tmp_path, viya).rows("rag_run_sources")
+
+    assert [(row["runs_table"], row["ledger_table"], row["embedding_model"]) for row in rows] == [
+        ("HANDBOOK_RUNS", "HANDBOOK_LEDGER", "demo_embedder"), ("TRAVEL_RUNS", "TRAVEL_LEDGER", "demo_embedder"),
+        # a ledger name of more than 32 characters and a model name that can not stand in SAS code are left out
+        ("P" * 26 + "_RUNS", "", "demo_embedder"), ("ODD_RUNS", "ODD_LEDGER", "")]
