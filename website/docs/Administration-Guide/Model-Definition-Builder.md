@@ -113,38 +113,63 @@ mdb unregister <model_id>            # delete a registered model from Model Mana
 mdb endpoints --json                 # SCR endpoint manifest for CI and testing
 mdb options-save                     # save this deployment's Prompt Builder options to a file
 mdb options-restore                  # write them back after importing a report package
-mdb builders-import [pkg...]         # import the Prompt Builder and RAG runtime packages:
-                                     # release table, host, data-source binding and saved
-                                     # options in one run
-mdb package-export --folder <path>   # export a SAS Content folder into the repository, host removed.
-                                     # Without --out only for the two Builder packages; any
-                                     # other folder needs --out <file>
+mdb builders-import                  # import the content folder - the one transfer package:
+                                     # release table, host, data-source binding and the
+                                     # options of the Prompt Builder report in one run
+mdb content-deploy                   # bring a SAS Content folder to the state of the checkout
+mdb package-export                   # maintainers: export the content folder to the one package
+mdb package-check                    # compare the package with the checkout
 ```
 
 On a fresh environment, `mdb setup` creates the `LLM Repository` and the LLM/Embedding Model Projects (idempotent — existing objects are left untouched), and `mdb register` performs the same check automatically for the kind it registers, so you do not have to run setup explicitly. `mdb setup` also writes the authorization-group rules (`sas-viya-cli-commands.txt`) and one seed file, `llm-prompt-builder.json` — the repository ID, the LLM project ID, the embedding project ID, the SCR endpoint and the deployment type, each under the name of the Prompt Builder option it is the value for. It is the single entry point for bootstrapping the environment. Once the Prompt Builder is configured, `mdb options-save` supersedes the seed file: it starts from the same discovered values and overlays what the live report actually holds, so what you keep is your deployment as configured rather than as bootstrapped — see [Preserving builder options across a report import](./Setup-Additional-UIs.md#preserving-builder-options-across-a-report-import).
 
 `--update` removes the old delete-and-re-register workaround: after `mdb generate`, one command refreshes the registered model while keeping its ID, history (a new model version is created) and project placement. Both kinds use one implementation — embedding models register into the Embedding Model Project with the same content roles and fact-sheet enrichment. Each registered model also stores its `definition.yaml` as model content, so the source of truth travels with the model.
 
-## Importing and exporting the Builder packages
+## The content folder: deploy, export, check
 
-`mdb builders-import` imports the two transfer packages shipped under `SAS-Viya-Integrations/` (or the files you name) into the deployment in `.env`: first the **Prompt Builder** package - the UI for all three kinds, the optimization job and the report - then the **RAG runtime** package - the RAG custom steps, `rag_core`, the jobs and the retrieval model, and no UI. It does in one run what an import otherwise leaves to hand work afterwards:
+The content folder `/SAS Agentic AI Accelerator` ships as one transfer package, `SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json`. What it holds is listed in `SAS-Viya-Integrations/package-manifest.yaml`: one entry per object with its path below the content root, its kind - folder, file, custom step, job definition, report - and the repository file it is a copy of. [The content folder](./Setup-Additional-UIs.md#the-content-folder) has the layout and what never ships. Four commands act on that list:
 
-1. loads the release table (`mdb load-releases`; `--no-releases` skips it),
-2. uploads each package and rewrites its **import mapping** before the job starts: the report's data-source connector is retargeted from the shipped `Public.ACCELERATOR_RELEASES` to `SAS_CAS_LIBRARY.SAS_RELEASES_TABLE` on your CAS server, and the placeholder host in the Data-Driven Content URL becomes `SAS_VIYA_URL` - nothing is edited after the fact,
-3. imports and waits for the job, naming the failing task if there is one,
-4. configures the imported report: with `--options builder-options.json` the site's saved values are written back (see [Preserving builder options across a report import](./Setup-Additional-UIs.md#preserving-builder-options-across-a-report-import)); without it the values `mdb setup` discovers - the repository, the LLM and the embedding project ids, `SAS_SCR_ENDPOINT`, `SAS_DEPLOYMENT_TYPE` - are; and either way every placeholder host left in the report (the Data-Driven Content URL, the `viyaHost` and `SCREndpoint` defaults) becomes `SAS_VIYA_URL`. A first install needs no edits in Visual Analytics beyond the optional settings - the credential domain, the judge model, and the switches for decision templates, prompt optimization and RAG, which keep the package's defaults, so RAG is off until it is enabled.
+```bash
+mdb builders-import [<file>...] [--options <file>] [--report-caslib <lib>] [--dry-run]   # import the package into a site
+mdb content-deploy [--content-root <path>] [--only <path>] [--dry-run]                   # bring a content folder to the state of the checkout
+mdb package-export [--content-root <path>] [--out <file>]                                # export the content folder to the one package
+mdb package-check [<file>...] [--fix] [--allow-missing]                                  # compare the package with the checkout
+```
 
-`--dry-run` lists the objects and the mapping changes and imports nothing; because nothing is imported it compares the saved options with the report as it is on the site now, and sums up in one line the options that only arrive with the new report. Other data sources a package binds are left as exported and reported: retargeting a report at a table with different columns breaks its data items.
+These commands were tested with a SAS Viya system that is made up - the transfer service, the Files, dataFlows and jobDefinitions services and the sign-in - and have **not run against SAS Viya**. The package file of release 2.3.0 is exported after the commit that describes it here; until it is in the repository `mdb package-check` says that the checkout holds no package and ends with exit code 1, or 0 with `--allow-missing`, and seven tests of `mdb` are skipped with the reason *the package is exported from the owner's system after this round*.
 
-Three things the command says rather than does:
+**`mdb builders-import`** is the command of a site: [First install and upgrade](./Setup-Additional-UIs.md#first-install-and-upgrade) describes it. Three things it says rather than does:
 
-- **A package from before 2.3.0.** Such a file still holds the report `RAG Builder` and the job definition `RAG-Builder-UI`, the standalone RAG UI that is now part of the Prompt Builder. The command names it as predating 2.3.0, because importing it brings that UI back and `mdb` does not configure its report.
+- **A package from before 2.3.0** that somebody names. Such a file still holds the report `RAG Builder` and the job definition `RAG-Builder-UI`, the standalone RAG UI that is now part of the Prompt Builder. The command names it as predating 2.3.0, because importing it brings that UI back and `mdb` does not configure its report.
 - **A report named `RAG Builder` that is still on the site.** It is retired, keeps serving the old UI with its own options, and is neither written to nor deleted; the message says how to remove it. See [the retired RAG Builder report](./Setup-Additional-UIs.md#the-retired-rag-builder-report).
-- **A package that failed to import.** The options are still written back when the package that carries the report imported, and the exit code stays 1. Once the cause is fixed, run `mdb builders-import` again with the same `--options` file: it imports the package and restores. `mdb options-restore --file ...` writes the options and imports nothing, so it is the command to repeat only when every package imported and the report could not be written. The run ends with the command to repeat for its case, with the packages and flags it was given, on a line of its own that can be selected and pasted into PowerShell or bash: paths are spelled with forward slashes, and an argument a shell would read something into is quoted.
+- **A run that did not do everything.** The exit code is 1 and the run ends with the command to repeat for its case, with the files and flags it was given, on a line of its own that can be selected and pasted into PowerShell or bash: paths are spelled with forward slashes, and an argument a shell would read something into is quoted. Where the package imported and only the options could not be written, that command is `mdb options-restore --file <the kept file>`, which writes the options and imports nothing.
 
-`mdb package-export --folder "/SAS Agentic AI Accelerator/Prompt Builder"` is the other direction, for maintainers: it exports the folder (dependencies and rules included, as the shipped packages are), downloads the package, rewrites the exporting environment's hostname to the placeholder inside the compressed report content, removes the report's per-user states (each is a full copy of the report with a user id), checks the result and writes `SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-Prompt-Builder.json`. The runtime package is exported from the content root under its own name: `mdb package-export --folder "/SAS Agentic AI Accelerator/RAG" --name "RAG Runtime"` writes `SAS-Agentic-AI-Accelerator-RAG-Runtime.json`. `--name`, `--out`, `--keep` (leave the package on the server) and `--exclude <object name>` (leave out something that lives in the folder but must not ship, such as a demo report) adjust that. Without `--out` the command works only for these two targets, the files `mdb builders-import` reads: for any other folder or name it stops with exit code 2 before anything is exported, and `--out <file>` is how such a folder is exported. An export that is not fit to ship is judged before it is written: the command ends with exit code 1 and writes nothing — the file from before stays byte for byte as it was, with `--out` as well — when the package still names a host after the rewrite, when it still carries the retired RAG UI, or when its Prompt Builder report lacks an option of the current UI or holds a default that is not the neutral one — a judge model, a model card report, or **Verify TLS certificates in manifested models** switched off. Each finding is named with the option, the value found and the expected one; reset it in the Options pane, save the report and export again (`--keep` leaves the exported package on the server to look at). A value that sits only in a per-user state of the report is not judged, because the state is removed and does not reach the file. It replaces the three manual steps - export in SAS Environment Manager, copy the file, `mdb package-check --fix`. (In Git Bash on Windows prefix the command with `MSYS_NO_PATHCONV=1`, or run it from PowerShell: the shell otherwise rewrites the `/SAS Agentic AI Accelerator/...` argument into a Windows path before `mdb` sees it.)
+**`mdb content-deploy`** makes a content folder hold what the checkout holds, without a package. It creates the folders, uploads the files, registers the custom steps and updates a step that exists in place (`PUT /dataFlows/steps/{id}`), so that the step keeps its id and saved flows keep working, and creates the job definitions or updates them in place - the program as `code`, the page as the property `form`, the parameters. It writes two files itself: `Data/ACCELERATOR_RELEASES.csv`, the release table as `mdb load-releases --csv` writes it, and `release.json`. It does not deploy the two reports, which are authored in SAS Visual Analytics and reach a site with the package.
 
-The two packages are re-exported after every change to what they hold - the Prompt Builder package after a change to the UI bundle, the report or its options, the runtime package after a change to a RAG step, a job or `rag_core` - and the `mdb` test suite compares them with the repository: the report must hold every option the UI reads, the option defaults must be neutral (no project ids, RAG and optimization off), the job definition must hold the committed `dist/index.html`, and the runtime package must equal the repository files and carry no UI object. `mdb package-check` looks for leftover hostnames and warns about per-user report states; `--fix` removes both.
+- One line per entry says `equal`, `updated`, `created`, or `FAILED` with the reason; a run with a failure goes on with the next entry and ends with exit code 1. `--dry-run` writes nothing and says what a run would do.
+- A file that differs is replaced: its old copy is deleted and the new one uploaded. Nothing else is removed. What sits in a folder of the list and is not listed is named at the end and left alone.
+- An upload that is answered 409 right after that delete - measured with the earlier deploy script, see [What gets deployed](./RAG-Ingestion-and-Retrieval.md#what-gets-deployed) - is tried again up to five times, and a file that is still missing then is reported as deleted and not uploaded.
+- A repository file is uploaded with LF line ends whatever the checkout holds, so that the same file has the same hash from every checkout.
+- A custom step is compared in its program, its form and its ports; a change of its description alone is not deployed.
+- The parameters of a job definition are written as the manifest has them. A compute context a site set in the parameter `_contextName` of `SAS-LLM-Prompt-Builder-UI` is set back to `SAS Studio compute context`, and the parameter `contentRoot` of `Start Here` and of `Load-Accelerator-Tables` stays `/SAS Agentic AI Accelerator` whatever `--content-root` names.
+- `--only RAG` deploys the RAG runtime alone, which is what `deploy-rag-content.ps1` / `.sh` run.
+
+`release.json` holds the release, the commit of the checkout the folder was deployed from with the date of that commit, and every entry of the manifest with its kind and - for a file, a custom step and a job definition - a SHA-256 hash of its content. The page [Start Here](./Setup-Additional-UIs.md#start-here) reads it.
+
+**`mdb package-export`** is for maintainers. It exports the content folder with its dependencies and keeps what the list names: every other object of the export is dropped with its entries in the package - a generated artifact, a report somebody parked in the folder, a dependency from outside it -, and so is every authorization rule and share. The images of a listed report stay with it. In every copy of the Prompt Builder report it resets the option defaults to the neutral values - no project ids, RAG and optimization off, **Verify TLS certificates in manifested models** on -, it removes the per-user states of the reports (each is a full copy of the report with a user id) and rewrites the exporting host to `your-sas-viya-host`, also inside the compressed report content. What would be written is compared with the checkout first; the command writes nothing and ends with exit code 1 - the file from before stays byte for byte - when a difference is left, when the package still names a host, or when an object sits on a path that never ships. An export of another folder than the content root needs `--out`, and `--allow-differences`, with `--out` only, writes the export of a test folder that holds no report. (In Git Bash on Windows prefix a command that names a content folder with `MSYS_NO_PATHCONV=1`, or run it from PowerShell: the shell otherwise rewrites the `/SAS Agentic AI Accelerator/...` argument into a Windows path before `mdb` sees it.)
+
+**`mdb package-check`** is the same comparison on the file in the repository, and a step of the workflow `verify-model-definitions.yml`. Every entry of the manifest has to be in the package and equal its source - a file its repository file, line ends aside; a generated file what `mdb` generates now, `release.json` by its entries; a custom step the `.step` file in `templates`, `ui` and `flowMetadata`; a job definition its program, its form and its parameters. Nothing else may be in the package, there may be no authorization rule and no share, and a report must name no host, carry no per-user state and pass the checks of its entry: for the Prompt Builder report every option the UI reads with its neutral default, and for both reports the CAS tables they bind. One line per difference, and exit code 1. `--fix` rewrites hosts, states and option defaults in the file; a difference in content is fixed in the folder, with `mdb content-deploy`, and by exporting again.
+
+### Releasing the package
+
+The package is built on the system whose content folder holds the two reports, in this order:
+
+1. **Finish `CHANGELOG.md`**: the date of the release, and for release 2.3.0 the sentences that say the package file is not in the repository yet - they stand in the changelog, in *Deploying the Builder UIs*, on this page and in the README of `SAS-Viya-Integrations`. The release table in the package is made from the changelog, and its hash is in `release.json`: a change to the changelog after the export makes `mdb package-check` fail until the folder is deployed and exported again. Commit.
+2. **`mdb content-deploy --dry-run`**, then **`mdb content-deploy`**: the folder holds the files, the custom steps and the job definitions of the checkout. Run it again; every line says `equal`.
+3. **The reports.** In SAS Visual Analytics, open the Prompt Builder report and save it once if the UI of the release has an option the report does not hold yet - the export refuses a report that lacks one.
+4. **`mdb package-export`** writes `SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json`, or prints one line per difference and leaves the file as it was.
+5. **`mdb package-check`** ends with exit code 0.
+6. **Commit the one file.** The commit that adds the package of release 2.3.0 also removes the four packages of earlier releases - `SAS-Agentic-AI-Accelerator-Prompt-Builder.json`, `SAS-Agentic-AI-Accelerator-RAG-Builder.json`, `SAS Agentic AI Accelerator.json` and `Logging-Monitoring/LLM Usage Report.json` - and takes `--allow-missing` out of the workflow. A test of `mdb` fails while the one package and one of the four earlier files are in the repository together.
 
 ## Deployment YAML and CI pipelines
 
@@ -223,6 +248,11 @@ data assignment before it renders: the Prompt Builder object is assigned this
 table, and a report author can filter it by `component` to show what changed
 for the Builder next to it. `mdb load-releases --csv out.csv`
 writes the table without contacting SAS Viya, for a look at the rows.
+`mdb content-deploy` writes the same file into the content folder as
+`Data/ACCELERATOR_RELEASES.csv`, and the job `Data/Load-Accelerator-Tables`
+of that folder loads it into CAS with the columns and types of this table -
+for a site that imported the package without `mdb`, see
+[The tables of the reports](./Setup-Additional-UIs.md#load-accelerator-tables).
 
 The component is read from the wording with keyword lists, in a fixed order:
 the first component an entry names is the one it is filed under, the Prompt
@@ -353,7 +383,7 @@ shows them - read from the table as CSV, not measured in SAS Visual
 Analytics.
 
 `mdb load-releases` changes the table and not the report: the page with the
-button bar comes with the Prompt Builder package a maintainer exports after
+button bar comes with the transfer package a maintainer exports after
 building it, and until that report is imported a site has the new table under
 the page it had. On that page a `Prompt Builder` entry that concerns two or
 three parts is two or three rows of the table, equal in everything the page
