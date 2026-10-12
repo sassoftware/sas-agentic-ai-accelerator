@@ -1033,6 +1033,23 @@ def test_an_export_of_a_folder_that_is_the_checkout_is_written(exporting, manife
     assert target.read_bytes().endswith(b"\n") and b"\r" not in target.read_bytes()
     assert "Wrote" in text and "15 objects: 7 folder, 4 file, 1 flowStep, 2 jobDefinition, 1 report; 0 left out" in text
     assert "Review the diff, then commit it" in text and "left out:" not in text
+    assert "Keep this file out of the repository" not in text and "names the user id" not in text
+
+
+def test_an_export_says_which_users_it_names_and_leaves_them(exporting, manifest):
+    """An export carries createdBy / modifiedBy of whoever made the objects.
+    That a package without them imports was not shown, so they stay - and the
+    command says who is in the file."""
+    built = package_of(manifest)
+    for detail in built.details:
+        detail["transferObject"]["summary"]["createdBy"] = "the.exporter"
+        detail["transferObject"]["summary"]["modifiedBy"] = "a.colleague"
+    result, text, target, _ = exporting(built)
+    assert result.exit_code == 0, text
+    assert ("  The file names the user id(s) a.colleague, the.exporter in createdBy / modifiedBy (30 place(s): the "
+            "package, its objects and their bodies), and the exported folder in contentSourceLocation. They are "
+            "left as the export wrote them.\n") in text
+    assert "the.exporter" in target.read_text(encoding="utf-8")
 
 
 def test_an_export_from_a_configured_site_is_made_shippable(exporting, manifest):
@@ -1111,6 +1128,11 @@ def test_an_export_of_another_root_needs_a_file_of_its_own(exporting, manifest, 
     assert exported == [("root", [built.root_uri])] and not target.exists()
     written = json.loads(elsewhere.read_text(encoding="utf-8"))
     assert package_differences(written, manifest) == []
+    # it equals the checkout, and still is not the file of the release: nothing to commit
+    assert "Review the diff" not in text
+    assert text.rstrip().splitlines()[-1] == (
+        "The file equals the checkout and is not the release file "
+        "(SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json): there is nothing to commit.")
     # the folders above the root were part of the export and are not part of the file
     folders = [name for kind, name in package_objects(written) if kind == "folder"]
     assert "root" in folders and not {"Users", "me", "My Folder", "ZZ_VERIFY_R17"} & set(folders)
@@ -1131,6 +1153,11 @@ def test_a_test_folder_without_reports_is_exported_with_its_differences_allowed(
     assert "1 difference(s) to the checkout - written all the same (--allow-differences): this is not a package " \
            "of the release." in text
     assert elsewhere.is_file()
+    # the last line says what to do with such a file - not to commit it, as it did
+    assert "commit it" not in text and "Review the diff" not in text
+    assert text.rstrip().splitlines()[-1] == (
+        f"Keep this file out of the repository. `mdb builders-import {cli._shell_word(elsewhere)} --content-root "
+        "<folder> --no-reports` brings what it holds into a test folder.")
     # never for the file of the release
     result, text, target, exported = exporting(built, "--allow-differences")
     assert result.exit_code == 2 and exported == [] and not target.exists()

@@ -1714,8 +1714,8 @@ def package_export(
     also inside the compressed report content.
 
     What would be written is then compared with the checkout
-    (`mdb package-check` asks the same): every entry of the manifest is there
-    and equals its source, and nothing else is. The command writes nothing and
+    (`mdb package-check --release` asks the same): every entry of the manifest
+    is there and equals its source, and nothing else is. The command writes nothing and
     ends with exit code 1 - the file from before stays as it is - when a
     difference is left, when the package still names a host, or when an object
     sits on a path that never ships (Showcases, Example, a folder named
@@ -1723,9 +1723,20 @@ def package_export(
     folder to the checkout with `mdb content-deploy` first; a report that lacks
     an option of the current UI has to be saved once with that UI in SAS Visual
     Analytics.
+
+    Of the files a report brings along, those stay that are children of the
+    report and that its manifest entry lists; a picture the report shows from
+    a folder of its own is left out, and the report is then a difference.
+
+    The export names people: `createdBy` / `modifiedBy` of the package, of
+    every object and inside the bodies, and `contentSourceLocation`, the path
+    of the exported folder. They are left as the export wrote them - every
+    package up to 2.2.x carried them, and that the transfer service imports a
+    package without them was not shown - and the command says which user ids
+    the file holds.
     """
     from .core.content import content_root_problem
-    from .core.packages import (ALLOWED_HOSTS, check_text, describe_findings, filter_package,
+    from .core.packages import (ALLOWED_HOSTS, check_text, describe_findings, filter_package, named_users,
                                 package_differences, reset_report_defaults, sanitise_text,
                                 strip_report_states)
     from .viya.transfer import (delete_package, download_package, folder_by_path, job_messages,
@@ -1825,7 +1836,23 @@ def package_export(
     console.print(f"[green]Wrote {target}[/green] ({package.get('transferObjectCount', '?')} objects: "
                   + ", ".join(f"{n} {kind}" for kind, n in counts.items()) + f"; {len(filtered.dropped)} left out).",
                   highlight=False)
-    console.print("Review the diff, then commit it with the CHANGELOG entry that explains the change.")
+    users = named_users(package)
+    if users:
+        console.print(f"  The file names the user id(s) {', '.join(sorted(users))} in createdBy / modifiedBy "
+                      f"({sum(users.values())} place(s): the package, its objects and their bodies), and the "
+                      "exported folder in contentSourceLocation. They are left as the export wrote them.",
+                      markup=False, highlight=False, soft_wrap=True)
+    # What to do with the file depends on what it is: only the release file,
+    # written without a difference, is something to commit.
+    if target.resolve() == manifest.package_path.resolve():
+        console.print("Review the diff, then commit it with the CHANGELOG entry that explains the change.")
+    elif differences:
+        console.print("Keep this file out of the repository. `mdb builders-import "
+                      f"{_shell_word(target)} --content-root <folder> --no-reports` brings what it holds into a "
+                      "test folder.", markup=False, highlight=False, soft_wrap=True)
+    else:
+        console.print(f"The file equals the checkout and is not the release file ({manifest.package}): there is "
+                      "nothing to commit.", markup=False, highlight=False, soft_wrap=True)
 
 
 #: Seconds `mdb builders-import` waits for one import job unless told otherwise.
