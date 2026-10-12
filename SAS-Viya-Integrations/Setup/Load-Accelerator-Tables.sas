@@ -22,7 +22,14 @@
  * THE RELEASE TABLE is loaded here. Its columns, their order and their types
  * are the ones mdb load-releases leaves in CAS: the text columns VARCHAR, the
  * three numbers DOUBLE. CAS reads the file itself, so no value passes a SAS
- * variable and none is cut to its length.
+ * variable and none is cut to its length. The upload names the name and the
+ * type of every column and no length. Measured on 2026-10-12 against the
+ * table mdb load-releases loaded from the same changelog: the same eleven
+ * columns, types and lengths, and one difference - the width for display
+ * that CAS keeps beside the length (the formatted length) is 16 here for the
+ * four text columns whose longest value is shorter than that (version,
+ * release_date, change_type, builder_part), and 6, 10, 8 and 8 there, the
+ * lengths of those values. A width of 16 cuts no value of these columns.
  *
  * A TABLE THAT EXISTS is replaced only by one that loaded completely: the
  * file is uploaded beside the table as <table>_NEW, a table of the CAS

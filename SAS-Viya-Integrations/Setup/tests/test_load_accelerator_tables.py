@@ -170,6 +170,36 @@ def test_cas_reads_the_file_with_the_options_of_the_ingestion_job():
     assert "%let _lat_n = %sysfunc(countw(&_lat_vars., %str( )));" in release and "%do _lat_i = 1 %to &_lat_n.;" in release
 
 
+def test_the_width_cas_keeps_for_display_cuts_no_value(release_file):
+    """Measured on 2026-10-12, the table of the job against the table `mdb load-releases` loaded from the
+    same file: 707 rows, eleven columns with the same types and lengths, and one difference - the
+    formatted length, the width CAS keeps for display beside the length, was 16 in the table of the job
+    for version, release_date, change_type and builder_part, and 6, 10, 8 and 8 in the table of mdb.
+    The upload names no length, so CAS decides both. Why the difference changes nothing: the four are
+    the text columns whose longest value is shorter than 16 bytes, so a width of 16 shows every value
+    whole - and the page of the Prompt Builder reads nothing from the table it is assigned."""
+    _, _, rows = release_file
+    columns = columns_of_the_program()
+    longest = {name: max(len(str(row[name]).encode("utf-8")) for row in rows) for name, kind in columns if kind == "varchar"}
+    short = {name: length for name, length in longest.items() if length < 16}
+
+    assert short == {"version": 6, "release_date": 10, "change_type": 8, "builder_part": 8}
+    assert all(length >= 16 for name, length in longest.items() if name not in short)
+    # the upload names the name and the type of a column, and nothing else of it
+    release = macro("_lat_release_table")
+    upload = release[release.index("upload path ="):release.index("table.tableExists")]
+    assert re.findall(r"(\w+) = \"%scan", upload) == ["name", "type"]
+    assert not re.search(r"length|format", upload, flags=re.IGNORECASE)
+    # the header says what was measured
+    header = " ".join(program().split("*/")[0].replace("\n *", " ").split())
+    assert ("the width for display that CAS keeps beside the length (the formatted length) is 16 here for the four text columns whose "
+            "longest value is shorter than that (version, release_date, change_type, builder_part), and 6, 10, 8 and 8 there, the lengths "
+            "of those values. A width of 16 cuts no value of these columns.") in header
+    # and the page of the Prompt Builder is assigned the table and reads nothing from it
+    builder = (REPOSITORY / "LLM-Prompt-Builder" / "README.md").read_text(encoding="utf-8")
+    assert "a DDC object renders only with a data assignment; the app reads nothing" in " ".join(builder.split())
+
+
 # ---------------------------------------------------------------------------
 # A table that exists is replaced only by one that loaded completely
 # ---------------------------------------------------------------------------
