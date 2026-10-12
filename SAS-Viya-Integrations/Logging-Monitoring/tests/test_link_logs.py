@@ -143,10 +143,76 @@ def test_swap_of_the_table_is_the_one_of_the_parser():
     twice, renamed, promoted and saved under the same name."""
     swap = output_macro()
     actions = re.findall(r"^\s*table\.(\w+)", swap, flags=re.MULTILINE)
-    assert actions == ["tableExists", "dropTable", "dropTable", "alterTable", "promote", "save", "dropTable", "dropTable"]
+    # Behind the swap: what is done for a table that was loaded and not linked, and the two staging tables that are dropped
+    assert actions == ["tableExists", "dropTable", "dropTable", "alterTable", "promote", "save", "promote", "tableExists", "dropTable", "dropTable"]
     assert 'rename = "&_lnk_log_table."' in swap
     assert swap.index("%if &_lnk_promote_table. or &_lnk_log_scope. EQ 2 %then %do;") < swap.index("table.promote")
     assert swap.index("%if &_lnk_save_table. or &_lnk_log_saved. %then %do;") < swap.index("table.save")
+
+
+# The condition under which the program puts a log table in place that it loaded and did not link
+LOADED_AND_NOT_LINKED = "%if (&_lnk_unchanged. EQ 1 or &_lnk_row_count. EQ 0) and &_lnk_log_scope. EQ 0 and &_lnk_log_exists. EQ 1 %then %do;"
+
+
+def loaded_and_not_linked(**macro_variables):
+    """Whether the program puts the loaded table in place, for the values its macro variables have behind the Python."""
+    expression = LOADED_AND_NOT_LINKED[len("%if "):-len(" %then %do;")]
+    for name, value in macro_variables.items():
+        expression = expression.replace(f"&{name}.", str(int(value)))
+    assert "&" not in expression, expression
+    return bool(eval(expression.replace(" EQ ", " == ")))
+
+
+def test_log_table_that_was_loaded_from_its_saved_file_and_not_linked_is_put_in_place():
+    """After a restart of the CAS server the log table is a saved file and no table in memory. The program
+    loads it to link it. A run that then has nothing to link builds no table, and the loaded one was a
+    table of the CAS session of the program: gone when that session ended, where a run that links leaves
+    a promoted table. It is promoted now as _lnk_promote_table says, the saved file is not written again,
+    and one line of the SAS log says what was done."""
+    program = code_file_program()
+    macro = output_macro()
+
+    assert macro.count(LOADED_AND_NOT_LINKED) == 1
+    # Loaded by this program: not in memory when the scope was asked, which is before the macro that loads, and in memory behind it
+    assert program.index("call symputx('_lnk_log_scope', found.exists);") < program.index("%_lnk_ensure_loaded(&_lnk_log_caslib., &_lnk_log_table., _lnk_log_exists);")
+    assert 'casOut = {casLib = "&_lnk_lib.", name = "&_lnk_name."};' in program
+    # The run that links nothing, and the table without rows: the two runs that end with a NOTE and build no table
+    assert loaded_and_not_linked(_lnk_unchanged=1, _lnk_row_count=6, _lnk_log_scope=0, _lnk_log_exists=1)
+    assert loaded_and_not_linked(_lnk_unchanged=0, _lnk_row_count=0, _lnk_log_scope=0, _lnk_log_exists=1)
+    # Not for a table that was in memory, as a session table or promoted: it is left as it is
+    assert not loaded_and_not_linked(_lnk_unchanged=1, _lnk_row_count=6, _lnk_log_scope=1, _lnk_log_exists=1)
+    assert not loaded_and_not_linked(_lnk_unchanged=1, _lnk_row_count=6, _lnk_log_scope=2, _lnk_log_exists=1)
+    # Not for a run that linked rows - the swap puts the new table in place - nor for one that ended with an ERROR line
+    assert not loaded_and_not_linked(_lnk_unchanged=0, _lnk_row_count=6, _lnk_log_scope=0, _lnk_log_exists=1)
+    assert not loaded_and_not_linked(_lnk_unchanged=0, _lnk_row_count=-1, _lnk_log_scope=0, _lnk_log_exists=1)
+    assert not loaded_and_not_linked(_lnk_unchanged=0, _lnk_row_count=-1, _lnk_log_scope=0, _lnk_log_exists=0)
+
+    block = macro[macro.index(LOADED_AND_NOT_LINKED):]
+    block = block[:block.index("\n    proc cas;\n        table.dropTable /\n                casLib = 'CASUSER',")]
+    # It stands behind the three ways the macro can go, so behind the swap of a run that linked
+    assert macro.index("%put ERROR: The rows could not be linked") < macro.index(LOADED_AND_NOT_LINKED)
+    # Promoted where the option says so, with the action of the swap, and asked what the table is afterwards
+    assert re.findall(r"^\s*table\.(\w+)", block, flags=re.MULTILINE) == ["promote", "tableExists"]
+    assert re.findall(r"%if (.*) %then %do;\n\s*proc cas;\n\s*table\.promote /", block) == ["&_lnk_promote_table."]
+    assert ('table.promote /\n                    casLib = "&_lnk_log_caslib.",\n                    name = "&_lnk_log_table.",\n'
+            '                    targetLib = "&_lnk_log_caslib.",\n                    target = "&_lnk_log_table.",\n                    quiet = True;') in block
+    assert "call symputx('_lnk_log_scope', found.exists);" in block
+    # Nothing was linked, so the saved file holds what the table holds: it is not written, and nothing is dropped or renamed
+    assert not re.search(r"table\.save|dropTable|rename|loadTable", block)
+    # One line for each way it can end, none of them an ERROR line: a run with nothing to link is no failed job
+    lines = re.findall(r"^\s*%put (\w+): (.*);$", block, flags=re.MULTILINE)
+    assert [kind for kind, _ in lines] == ["NOTE", "WARNING", "NOTE"]
+    assert re.findall(r"^        %(?:else )?(?:%?if (.*) %then )?%do;$", block, flags=re.MULTILINE) == ["&_lnk_promote_table.", "&_lnk_log_scope. EQ 2", "&_lnk_promote_table.", ""]
+    promoted, not_promoted, not_asked = [message for _, message in lines]
+    assert promoted == ("The table &_lnk_log_caslib..&_lnk_log_table. was not in memory. It was loaded from its saved file and promoted as it was loaded, "
+                        "the saved file was left as it is.")
+    for message in (not_promoted, not_asked):
+        assert message.startswith("The table &_lnk_log_caslib..&_lnk_log_table. was not in memory. It was loaded from its saved file and ")
+        assert "so it is a table of this CAS session and gone when the session ends. The saved file was left as it is." in message
+    assert "could not be promoted" in not_promoted and "not promoted, as _lnk_promote_table is not 1" in not_asked
+    # A message of the SAS code holds nothing that ends its statement or starts a macro call but the variables it names
+    for message in (promoted, not_promoted, not_asked):
+        assert not re.search(r"[;%'\"]", message) and set(re.findall(r"&(\w+)\.", message)) == {"_lnk_log_caslib", "_lnk_log_table"}
 
 
 def test_promoted_table_stays_promoted_and_a_saved_one_is_saved_again_whatever_the_options_say():
@@ -155,7 +221,8 @@ def test_promoted_table_stays_promoted_and_a_saved_one_is_saved_again_whatever_t
     asked before anything is loaded or dropped: the parser does the same when it appends."""
     program = code_file_program()
     swap = output_macro()
-    # The only two conditions the promotion and the save stand under
+    # The only two conditions the promotion and the save of a linked table stand under
+    swap = swap[:swap.index(LOADED_AND_NOT_LINKED)]
     assert re.findall(r"%if (.*) %then %do;\n\s*table\.promote", swap) == ["&_lnk_promote_table. or &_lnk_log_scope. EQ 2"]
     assert re.findall(r"%if (.*) %then %do;\n\s*if tableWritten then do;\n\s*table\.save", swap) == ["&_lnk_save_table. or &_lnk_log_saved."]
 
@@ -1745,7 +1812,8 @@ def test_run_that_links_no_row_leaves_the_table_as_it_is(monkeypatch):
     # The SAS program swaps the table only for a run that built one, and has no ERROR line for a run that did not
     macro = output_macro()
     assert re.findall(r"^    %(?:else %)?if (.*) %then %do;$", macro, flags=re.MULTILINE) == [
-        "&_lnk_row_count. GT 0 and &_lnk_unchanged. NE 1", "&_lnk_row_count. EQ 0", "&_lnk_row_count. LT 0 and &_lnk_ready. EQ 1 and &_lnk_refused. NE 1"]
+        "&_lnk_row_count. GT 0 and &_lnk_unchanged. NE 1", "&_lnk_row_count. EQ 0", "&_lnk_row_count. LT 0 and &_lnk_ready. EQ 1 and &_lnk_refused. NE 1",
+        LOADED_AND_NOT_LINKED[len("%if "):-len(" %then %do;")]]
     assert "%let _lnk_unchanged = 0;" in code_file_program()
 
     redo = run_program(monkeypatch, showcase_tables(linked), _lnk_redo_all="1")

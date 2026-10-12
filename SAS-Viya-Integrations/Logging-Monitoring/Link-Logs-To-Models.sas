@@ -1607,6 +1607,37 @@ run; quit;
         %put ERROR: The rows could not be linked, the table &_lnk_log_caslib..&_lnk_log_table. was left as it is.;
     %end;
 
+    /* A run that built no new table - every row has a match_method, or the table has no rows - leaves the log table
+       as it is. A table that was not in memory and that this program loaded from its saved file is a table of this
+       CAS session then, and gone when the session ends: it is put in place the way a linked table is, promoted
+       where _lnk_promote_table says so. Nothing was linked, so the saved file holds what the table holds and is
+       not written again */
+    %if (&_lnk_unchanged. EQ 1 or &_lnk_row_count. EQ 0) and &_lnk_log_scope. EQ 0 and &_lnk_log_exists. EQ 1 %then %do;
+        %if &_lnk_promote_table. %then %do;
+            proc cas;
+                table.promote /
+                    casLib = "&_lnk_log_caslib.",
+                    name = "&_lnk_log_table.",
+                    targetLib = "&_lnk_log_caslib.",
+                    target = "&_lnk_log_table.",
+                    quiet = True;
+                table.tableExists result=found /
+                    casLib = "&_lnk_log_caslib.",
+                    name = "&_lnk_log_table.";
+                call symputx('_lnk_log_scope', found.exists);
+            run; quit;
+        %end;
+        %if &_lnk_log_scope. EQ 2 %then %do;
+            %put NOTE: The table &_lnk_log_caslib..&_lnk_log_table. was not in memory. It was loaded from its saved file and promoted as it was loaded, the saved file was left as it is.;
+        %end;
+        %else %if &_lnk_promote_table. %then %do;
+            %put WARNING: The table &_lnk_log_caslib..&_lnk_log_table. was not in memory. It was loaded from its saved file and could not be promoted, so it is a table of this CAS session and gone when the session ends. The saved file was left as it is.;
+        %end;
+        %else %do;
+            %put NOTE: The table &_lnk_log_caslib..&_lnk_log_table. was not in memory. It was loaded from its saved file and not promoted, as _lnk_promote_table is not 1, so it is a table of this CAS session and gone when the session ends. The saved file was left as it is.;
+        %end;
+    %end;
+
     proc cas;
         table.dropTable /
                 casLib = 'CASUSER',
