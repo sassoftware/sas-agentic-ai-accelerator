@@ -20,9 +20,20 @@
 #                  of the path is the name the .step file holds
 #   jobDefinition  code: <repository path of the program>   and / or
 #                  form: <repository path of an HTML file>
-#                  parameters: [{name, type, default, label}]   description
+#                  parameters: [{name, type, default, label, siteSetting}]
+#                  description
 #   report         no source (the package is its only one);
 #                  checks: {optionSet: prompt-builder, tables: [...]}
+#                  files: [{name, sha256}] - the files that are children of
+#                  the report (its pictures); the hash is what the check
+#                  compares, because their bytes are not in the repository
+#
+# A parameter with `siteSetting: true` holds a value of the site: the compute
+# context a job runs in (_contextName), the content root it reads
+# (contentRoot). The default is what a new job definition gets; on a site that
+# has the job definition a deploy and an import leave the site's value alone,
+# unless they are given one (--compute-context, --content-root). The package
+# of a release holds the defaults.
 #
 # A path with Showcases, Example, a folder named generated or a name that
 # starts with ZZ_VERIFY is refused: such content never ships.

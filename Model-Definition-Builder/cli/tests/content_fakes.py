@@ -72,13 +72,14 @@ entries:
     form: src/index.html
     description: The page.
     parameters:
-      - {{name: _contextName, default: SAS Studio compute context, label: Context Name}}
+      - {{name: _contextName, default: SAS Studio compute context, label: Context Name, siteSetting: true}}
       - {{name: _action, default: "prompts,form,execute"}}
   - path: Prompt Builder/Optimize
     kind: jobDefinition
     code: src/optimize.sas
     parameters:
       - {{name: _action, default: execute}}
+      - {{name: contentRoot, default: {CONTENT_ROOT}, siteSetting: true}}
   - path: Prompt Builder/Prompt Builder
     kind: report
     checks:

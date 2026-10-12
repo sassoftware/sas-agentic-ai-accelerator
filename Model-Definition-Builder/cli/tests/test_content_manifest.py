@@ -68,7 +68,8 @@ def test_the_manifest_loads_with_its_folders_implied(repo):
     assert manifest.find("RAG/rag_core", "folder").implied
     assert manifest.find("Prompt Builder/UI", "jobDefinition").parameters[0] == {
         "name": "_contextName", "type": "character", "default": "SAS Studio compute context",
-        "label": "Context Name", "required": False}
+        "label": "Context Name", "required": False, "siteSetting": True}
+    assert manifest.find("Prompt Builder/UI", "jobDefinition").parameters[1]["siteSetting"] is False
     # a path is one object of one kind
     assert manifest.find("Prompt Builder/UI", "report") is None
     assert manifest.sources() == ["src/rag_core/__init__.py", "src/rag_core/adapters/__init__.py",
@@ -189,6 +190,32 @@ def test_every_defect_is_reported_at_once(repo):
     ]
 
 
+def test_a_site_setting_and_the_files_of_a_report_are_checked(repo):
+    document = _document()
+    document["entries"] += [
+        {"path": "Jobs/C", "kind": "jobDefinition", "code": "src/optimize.sas",
+         "parameters": [{"name": "_contextName", "siteSetting": "yes"}]},
+        {"path": "Reports/R", "kind": "report", "files": [
+            {"name": "a.png", "sha256": "ABC"}, {"sha256": "0" * 64}, {"name": "b.png", "size": 3}]},
+        {"path": "Reports/S", "kind": "report", "files": "a.png"},
+        {"path": "Data/x.csv", "kind": "file", "source": "src/optimize.sas", "files": []},
+    ]
+    assert _problems(repo, document) == [
+        "'Jobs/C': parameter '_contextName': siteSetting is true or false",
+        "'Reports/R': file 'a.png': sha256 is 64 lower-case hexadecimal digits",
+        "'Reports/R': a file of a report needs a name",
+        "'Reports/R': file 'b.png' has unknown field(s) size",
+        "'Reports/S': files must be a list",
+        "'Data/x.csv': a file has no field(s) files (it takes source, generated)",
+    ]
+    listed = parse_manifest(_with({"path": "Reports/R", "kind": "report", "files": [
+        {"name": "a.png", "sha256": "0" * 64}, {"name": "a.png", "sha256": "0" * 64}, {"name": "live.png"}]}), repo)
+    # one name may stand twice, and a file that is not static has no hash
+    assert listed.find("Reports/R", "report").files == (
+        {"name": "a.png", "sha256": "0" * 64}, {"name": "a.png", "sha256": "0" * 64},
+        {"name": "live.png", "sha256": None})
+
+
 def test_the_top_of_the_manifest_is_checked_too(repo):
     assert _problems(repo, {"version": 1, "contentRoot": "SAS Agentic AI Accelerator", "package": "p.zip",
                             "entries": [], "owner": "me"}) == [
@@ -264,6 +291,41 @@ def test_a_job_definition_is_its_program_its_form_and_its_parameters(repo):
     tuned["parameters"][0]["defaultValue"] = "Team compute context"
     assert content.job_differences(ui, tuned) == ["parameters"]
     assert content.job_differences(optimize, {**optimize, "properties": [{"name": "form", "value": "x"}]}) == ["form"]
+
+
+def test_a_site_setting_keeps_the_value_of_the_site(repo):
+    """`_contextName` and `contentRoot` are values of a site. What is
+    compared with a site, and written there, holds the site's value - unless
+    a value was given, which wins, also for a parameter that is not marked."""
+    manifest = load_manifest(repo)
+    entry = manifest.find("Prompt Builder/UI", "jobDefinition")
+    assert content.site_settings(entry) == ("_contextName",)
+    assert content.site_settings(manifest.find("Prompt Builder/Optimize", "jobDefinition")) == ("contentRoot",)
+    wanted = content.job_definition_body(manifest, entry)
+    live = json.loads(json.dumps(wanted))
+    live["parameters"][0]["defaultValue"] = "Team compute context"
+    live["parameters"][1]["defaultValue"] = "form,execute"
+
+    def values(body):
+        return [p["defaultValue"] for p in body["parameters"]]
+
+    # compared as the checkout has it, the site's context is a difference; settled, it is not
+    assert content.job_differences(wanted, live) == ["parameters"]
+    settled = content.settle_parameters(wanted, live, content.site_settings(entry))
+    assert values(settled) == ["Team compute context", "prompts,form,execute"]
+    assert values(wanted) == ["SAS Studio compute context", "prompts,form,execute"]          # not changed itself
+    assert {key: value for key, value in settled.items() if key != "parameters"} == \
+        {key: value for key, value in wanted.items() if key != "parameters"}
+    # a new definition, and one that lacks the parameter: the default
+    assert values(content.settle_parameters(wanted, None, ("_contextName",))) == values(wanted)
+    assert values(content.settle_parameters(wanted, {"parameters": []}, ("_contextName",))) == values(wanted)
+    # a value that was given is written whatever the site holds
+    given = content.settle_parameters(wanted, live, ("_contextName",), {"_contextName": "Other context"})
+    assert values(given)[0] == "Other context"
+    assert values(content.settle_parameters(wanted, None, (), {"_action": "execute", "notThere": "x"})) == [
+        "SAS Studio compute context", "execute"]
+    assert values(content.settle_parameters(wanted, live, ("_contextName",), {"_contextName": None})) == [
+        "Team compute context", "prompts,form,execute"]
 
 
 # ---- the two files mdb writes -----------------------------------------------

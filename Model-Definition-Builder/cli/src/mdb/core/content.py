@@ -29,12 +29,22 @@ THE KINDS.
                     step is registered through /dataFlows/steps, not uploaded.
     jobDefinition   `code: <repository path of the program>`, optional
                     `form: <repository path of an HTML file>`, optional
-                    `parameters:` (name, type, default, label) and
-                    `description`. A job definition holds a COPY of its
+                    `parameters:` (name, type, default, label, siteSetting)
+                    and `description`. A job definition holds a COPY of its
                     program and of its form.
     report          no repository source: a report is authored in SAS Visual
                     Analytics and the package is its only source. `checks:`
-                    names what `mdb package-check` asks of it.
+                    names what `mdb package-check` asks of it, `files:` the
+                    files that are children of the report (its images), each
+                    with a name and, for a static file, its SHA-256.
+
+A SITE SETTING. A parameter marked `siteSetting: true` holds a value of the
+site, not of the release: the compute context a job runs in (`_contextName`),
+the content root a job reads (`contentRoot`). Its default in the manifest is
+what a NEW job definition gets. On a site that has the job definition the
+value is the site's: a deploy and an import leave it as it is and do not
+count it as a difference, unless they are given the value to write
+(`--compute-context`, `--content-root`).
 
 This module holds the manifest and what each entry is expected to be - the
 bytes of a file, the compared parts of a step and of a job definition - so that
@@ -64,12 +74,20 @@ FIELDS = {
     "file": ("source", "generated"),
     "step": ("source",),
     "jobDefinition": ("code", "form", "parameters", "description"),
-    "report": ("checks",),
+    "report": ("checks", "files"),
 }
 
 #: What a job definition parameter may carry, and the types SAS Job Execution knows.
-PARAMETER_FIELDS = ("name", "type", "default", "label", "required")
+PARAMETER_FIELDS = ("name", "type", "default", "label", "required", "siteSetting")
 PARAMETER_TYPES = ("character", "numeric", "date")
+
+#: The two site settings mdb can be given a value for, by the name of the
+#: parameter: the compute context of a job and the content root it reads.
+CONTEXT_PARAMETER = "_contextName"
+CONTENT_ROOT_PARAMETER = "contentRoot"
+
+#: What an entry of `files:` of a report may carry.
+REPORT_FILE_FIELDS = ("name", "sha256")
 
 #: What `checks:` of a report may carry. `optionSet` names a set of option
 #: labels and neutral defaults mdb knows (OPTION_SETS); `tables` the CAS tables
@@ -151,6 +169,8 @@ class Entry:
     parameters: tuple = ()
     description: str = ""
     checks: dict = field(default_factory=dict, hash=False, compare=False)
+    #: The files that are children of a report: ({"name", "sha256" or None}, ...).
+    files: tuple = field(default=(), hash=False, compare=False)
     #: True for a folder no entry names: the folder of a listed object.
     implied: bool = False
 
@@ -264,7 +284,36 @@ def _parameters(raw, where: str, problems: list) -> tuple:
             "name": item["name"], "type": kind,
             "default": "" if default is None else (str(default).lower() if isinstance(default, bool) else str(default)),
             "label": str(item.get("label") or ""), "required": bool(item.get("required", False)),
+            "siteSetting": item.get("siteSetting", False) is True,
         })
+        if not isinstance(item.get("siteSetting", False), bool):
+            problems.append(f"{where}: parameter '{item['name']}': siteSetting is true or false")
+    return tuple(result)
+
+
+def _report_files(raw, where: str, problems: list) -> tuple:
+    """The `files:` of a report entry: a name and, where the file is static,
+    the SHA-256 of its bytes. One name may stand twice - a report can hold two
+    files of one name."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        problems.append(f"{where}: files must be a list")
+        return ()
+    result = []
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"].strip():
+            problems.append(f"{where}: a file of a report needs a name")
+            continue
+        unknown = sorted(set(item) - set(REPORT_FILE_FIELDS))
+        if unknown:
+            problems.append(f"{where}: file '{item['name']}' has unknown field(s) {', '.join(map(str, unknown))}")
+        digest = item.get("sha256")
+        if digest is not None and (not isinstance(digest, str) or len(digest) != 64
+                                   or any(c not in "0123456789abcdef" for c in digest)):
+            problems.append(f"{where}: file '{item['name']}': sha256 is 64 lower-case hexadecimal digits")
+            digest = None
+        result.append({"name": item["name"], "sha256": digest})
     return tuple(result)
 
 
@@ -397,6 +446,7 @@ def parse_manifest(document, repo_root, where="package-manifest.yaml", check_sou
             values["parameters"] = _parameters(raw.get("parameters"), where_entry, problems)
         elif kind == "report":
             values["checks"] = _checks(raw.get("checks"), where_entry, problems)
+            values["files"] = _report_files(raw.get("files"), where_entry, problems)
         if "description" in raw and kind in ("folder", "jobDefinition"):
             if not isinstance(raw["description"], str):
                 problems.append(f"{where_entry}: description must be text")
@@ -550,6 +600,37 @@ def job_differences(expected: dict, actual: dict) -> list:
     """The JOB_PARTS in which two job definitions differ."""
     one, other = job_view(expected), job_view(actual)
     return [part for part in JOB_PARTS if one[part] != other[part]]
+
+
+def site_settings(entry: Entry) -> tuple:
+    """The names of the parameters of a job definition entry that hold a
+    value of the site (`siteSetting: true`)."""
+    return tuple(p["name"] for p in entry.parameters if p.get("siteSetting"))
+
+
+def settle_parameters(wanted: dict, live: Optional[dict], site_names=(), given: Optional[dict] = None) -> dict:
+    """The job definition to compare with a site and to write there: `wanted`
+    with the value each site setting has on THAT site.
+
+    * a parameter mdb was given a value for (`given`, by name) takes it;
+    * else a parameter named in `site_names` keeps the value the definition
+      on the site holds (`live`), so it is no difference and is written back
+      as it was;
+    * else - a new definition, or one that lacks the parameter - the default.
+
+    Everything else of `wanted` is returned as it is."""
+    given = {name: value for name, value in (given or {}).items() if value is not None}
+    on_site = {p.get("name"): p.get("defaultValue") for p in (live or {}).get("parameters") or []
+               if isinstance(p, dict)}
+    parameters = []
+    for parameter in wanted.get("parameters") or []:
+        name = parameter.get("name")
+        if name in given:
+            parameter = {**parameter, "defaultValue": str(given[name])}
+        elif name in site_names and on_site.get(name) is not None:
+            parameter = {**parameter, "defaultValue": str(on_site[name])}
+        parameters.append(parameter)
+    return {**wanted, "parameters": parameters}
 
 
 def _sha256(data: bytes) -> str:
