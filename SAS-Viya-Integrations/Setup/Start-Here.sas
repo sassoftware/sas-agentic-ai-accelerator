@@ -7,9 +7,21 @@
  *
  * The program of the job definition "Start Here" at the root of the content
  * folder. Run from SAS Job Execution it writes ONE HTML page to the browser:
- * no script, no file from another host, its style inline. The page is what
- * the SAS session that built it may read - in a compute context that runs
- * under a service account that is the service account.
+ * no script, no file from another host, its style inline.
+ *
+ * THE PAGE SHOWS WHAT ITS SAS SESSION MAY READ, so it is opened in a compute
+ * context that runs under the identity of the person who opens it: the job
+ * definition names that context in its parameter _contextName, and a request
+ * can name another one - .../SASJobExecution/?_program=<content root>/Start
+ * Here, followed by the parameter _contextName with the name of the context.
+ * Measured on 2026-10-12, without the parameter: the job ran in the SAS Job
+ * Execution compute context under a service account, SAS Viya answered
+ * every request with 401, and the page had 15 lines that were not checked.
+ * Where every request is refused the page says so in one line at its top,
+ * with what to do, in place of those lines; and it says in that line that
+ * the session does not run as the person who opened it where the user of
+ * the session (SYSUSERID) is another one than the user the session was
+ * started for (SYS_COMPUTE_SESSION_OWNER, which SAS Job Execution sets).
  *
  * WHAT IT CHECKS, each as one line with ok / missing / not checked and one
  * sentence what to do:
@@ -41,6 +53,8 @@
  * Parameters of the job definition:
  *   _action          execute
  *   _output_type     html - the job writes the page itself, to _webout
+ *   _contextName     the compute context the job runs in: one that runs under
+ *                    the identity of the person who opens the page
  *   contentRoot      the content folder (default /SAS Agentic AI Accelerator)
  *   caslib           CAS library of the tables of the reports (Public)
  *   casServer        CAS server (cas-shared-default)
@@ -75,6 +89,16 @@
 %_sh_default(computeContexts, SAS Studio compute context|SAS Job Execution compute context);
 %_sh_default(guideUrl, https://sassoftware.github.io/sas-agentic-ai-accelerator);
 %sysmacdelete _sh_default;
+
+/* Whose session this is. SAS Job Execution hands a job the user its session
+   was started for (SYS_COMPUTE_SESSION_OWNER) and the compute context it
+   runs in (_contextName); SYSUSERID is the user the session runs as. The
+   Python program reads the three as text - no statement here resolves one -
+   and asks only for what the session has: a program run in SAS Studio may
+   have neither of the first two. It compares the two users and writes
+   neither to the page. */
+%let _sh_hasOwner = %symexist(SYS_COMPUTE_SESSION_OWNER);
+%let _sh_hasContext = %symexist(_contextName);
 
 /* An error must not leave a batch session checking syntax only: the page is
    written by a DATA step behind PROC PYTHON, and behind an error such a step
@@ -158,8 +182,17 @@ REPORT_CONTENT = 'application/vnd.sas.report.content+xml'
 OPTION = re.compile(r'<PromptDefinition\b[^>]*\blabel="([^"]+)"[^>]*>(.*?)</PromptDefinition>', re.DOTALL)
 OPTION_VALUE = re.compile(r'<(String|Boolean)\b[^>]*>(.*?)</\1>', re.DOTALL)
 TEXT_LIMIT = 600
+# The two answers of a service that refuses the session: no sign-in it takes, and no right
+REFUSED = (401, 403)
+# The section of the one line that stands for every request, where SAS Viya refused them all
+SESSION = 'SAS session of this page'
 # What a file of the Files service is addressed by
 FILE_URI = re.compile(r'/files/files/[0-9A-Za-z-]+')
+ASK_ADMINISTRATOR = 'Ask an administrator to open this page, or for the right to read it.'
+# How the page is opened under the identity of the person who opens it. The parameter is written
+# with the character it starts with in an address, which this block holds as a number only
+AS_YOURSELF = ('Open this page in a compute context that runs as you: add ' + chr(38) + '_contextName=<the name of that compute context> '
+               'to the address of this page, or set the context in the parameter _contextName of the job definition.')
 # What to do about a step that is not registered. A step is registered by the import and by mdb
 # content-deploy; its file, uploaded to the folder, is no step and stays beside the step
 STEP_MISSING = ('Import the package of the accelerator again, or run mdb content-deploy: both register the step. '
@@ -184,7 +217,7 @@ def not_read(status, what):
     that is lacking and a service that does not answer are not checked, and neither is a failure."""
     if status == 404:
         return MISSING, 'not found'
-    if status in (401, 403):
+    if status in REFUSED:
         return NOT_CHECKED, f'{what} may not be read by this session (HTTP {status})'
     if status == 0:
         return NOT_CHECKED, f'{what}: the service did not answer'
@@ -195,9 +228,69 @@ def not_read(status, what):
 
 def ask_again(status):
     """What to do about a request that was not answered with 200 or 404."""
-    if status in (401, 403):
-        return 'Ask an administrator to open this page, or for the right to read it.'
+    if status in REFUSED:
+        return ASK_ADMINISTRATOR
     return 'Open this page again. If the line stays, look at the state of the service in SAS Environment Manager.'
+
+
+# ---------------------------------------------------------------------------
+# The SAS session that builds the page
+# ---------------------------------------------------------------------------
+
+def session_of(session_user, opened_by, context):
+    """What is known of the SAS session: whether it runs as another user than the one it was
+    started for, and its compute context. The two user ids are compared here and go no
+    further - neither is a text of the page."""
+    runs_as, started_for = text_of(session_user).lower(), text_of(opened_by).lower()
+    return {'other': bool(runs_as and started_for and runs_as != started_for), 'context': text_of(context)}
+
+
+def recorded(get, statuses):
+    """get, with the status of every answer kept: 0 for a request that got no answer."""
+    def asked(path, accept):
+        try:
+            status, body = get(path, accept)
+        except Exception:
+            statuses.append(0)
+            raise
+        statuses.append(status)
+        return status, body
+    return asked
+
+
+def one_line_for_a_refused_session(lines, statuses, session):
+    """Where SAS Viya refused every request of the session, the lines that would say so one by
+    one - and the ones that were not looked for because of them - are taken out, and one line
+    at the top stands for them: what it is and what to do. Measured on 2026-10-12 for a job that
+    ran under a service account: 15 lines that were not checked, 12 of them with the advice to
+    ask an administrator. The line counts as the checks it stands for."""
+    if not statuses or any(status not in REFUSED for status in statuses):
+        return lines
+    kept = [entry for entry in lines if entry['state'] != NOT_CHECKED]
+    codes = ' and '.join(str(status) for status in sorted(set(statuses)))
+    where = ' of the compute context ' + session['context'] if session['context'] else ''
+    if session['other']:
+        found = f'SAS Viya refused every request of this page (HTTP {codes}): its SAS session runs under a service account{where}, not as you'
+        todo = AS_YOURSELF
+    else:
+        found = f'SAS Viya refused every request of this page (HTTP {codes})' + (', which ran in the compute context ' + session['context']
+                                                                                 if session['context'] else '')
+        todo = 'Open this page again. If the line stays, ' + AS_YOURSELF[0].lower() + AS_YOURSELF[1:]
+    entry = line(SESSION, 'Requests to SAS Viya', NOT_CHECKED, found, todo)
+    entry['count'] = max(len(lines) - len(kept), 1)
+    return [entry] + kept
+
+
+def as_the_session_may_read(lines, session):
+    """In a session that runs as another user than the one who opened the page, the advice of a
+    line that was refused is to open the page as oneself: asking an administrator is no advice
+    for an administrator whose page a service account built."""
+    if not session['other']:
+        return lines
+    for entry in lines:
+        if entry['todo'] == ASK_ADMINISTRATOR:
+            entry['todo'] = AS_YOURSELF[:-1] + ' - or ask for the right the session lacks.'
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -759,13 +852,31 @@ def rows_of(lines):
 
 
 def counts_of(lines):
-    return {state: sum(1 for entry in lines if entry['state'] == state) for state in (OK, MISSING, NOT_CHECKED)}
+    """The checks of each state. The one line of a session that was refused counts as the
+    checks it stands for."""
+    return {state: sum(entry.get('count', 1) for entry in lines if entry['state'] == state) for state in (OK, MISSING, NOT_CHECKED)}
 
 
-def render_page(settings, lines, reports):
+def render_page(settings, lines, reports, session=None):
     """The page as HTML text. Every text of it goes through shown()."""
     counts = counts_of(lines)
+    session = session or {'other': False, 'context': ''}
+    refused = next((entry for entry in lines if entry['section'] == SESSION), None)
     release = next((entry for entry in lines if entry['section'] == 'Release'), None)
+    if refused:
+        said = refused['found'] + '. ' + refused['todo']
+    else:
+        said = release['what'] + ': ' + release['found'] + '.' if release else ''
+    if refused:
+        # the line at the top has said whose session it is and what to do
+        whose = ''
+    elif session['other']:
+        whose = ('This page was built by a SAS session that does not run as you'
+                 + (', in the compute context ' + session['context'] if session['context'] else '')
+                 + ': it shows what that session may read. ' + AS_YOURSELF + ' ')
+    else:
+        whose = ('The page shows what the SAS session that built it may read: in a compute context that runs under a service account '
+                 'that is the service account. ')
     guide = settings['guideUrl'].rstrip('/')
     page = ['<!DOCTYPE html>', '<html lang="en">', '<head>', '<meta charset="utf-8">',
             '<meta name="viewport" content="width=device-width, initial-scale=1">',
@@ -780,16 +891,17 @@ def render_page(settings, lines, reports):
         uri = reports.get(label, '')
         if uri:
             page.append('<li>' + link('Open the report ' + label, '/SASVisualAnalytics/?reportUri=' + quote(uri, safe=''), here=True) + '</li>')
+        elif refused:
+            page.append('<li>' + shown('The report ' + label + ' could not be looked for.') + '</li>')
         else:
             page.append('<li>' + shown('The report ' + label + ' was not found in ' + settings['contentRoot'] + '.') + '</li>')
     for label, path in GUIDES:
         page.append('<li>' + link(label, guide + '/' + path) + '</li>')
     page += ['</ul>', '<h2>Installation check</h2>',
-             '<p class="summary">' + shown(f'{counts[OK]} ok, {counts[MISSING]} missing, {counts[NOT_CHECKED]} not checked. '
-                                           + (release['what'] + ': ' + release['found'] + '.' if release else '')) + '</p>',
-             '<p class="note">' + shown('Content root ' + settings['contentRoot'] + '. The page shows what the SAS session that built it '
-                                        'may read: in a compute context that runs under a service account that is the service account. '
-                                        'It changed nothing: it only read.') + '</p>']
+             '<p class="summary">' + shown(f'{counts[OK]} ok, {counts[MISSING]} missing, {counts[NOT_CHECKED]} not checked. ' + said,
+                                           2 * TEXT_LIMIT) + '</p>',
+             '<p class="note">' + shown('Content root ' + settings['contentRoot'] + '. ' + whose + 'It changed nothing: it only read.',
+                                        2 * TEXT_LIMIT) + '</p>']
     sections = []
     for entry in lines:
         if entry['section'] not in sections:
@@ -869,6 +981,10 @@ def start_here():
     base = setting('_sh_viyaHost').rstrip('/')
     token = os.environ.get('SAS_SERVICES_TOKEN', '')
     verify = os.environ.get('SSLCALISTLOC') or os.environ.get('CAS_CLIENT_SSL_CA_LIST') or True
+    # the user the session was started for and its compute context are asked for only where the session has them
+    session = session_of(setting('SYSUSERID'), setting('SYS_COMPUTE_SESSION_OWNER') if setting('_sh_hasOwner') == '1' else '',
+                         setting('_contextName') if setting('_sh_hasContext') == '1' else '')
+    statuses = []
 
     def get(path, accept):
         if requests is None:
@@ -877,7 +993,8 @@ def start_here():
         return response.status_code, response.content
 
     try:
-        lines, reports = check_installation(get, settings)
+        lines, reports = check_installation(recorded(get, statuses), settings)
+        lines = as_the_session_may_read(one_line_for_a_refused_session(lines, statuses, session), session)
     except Exception as error:
         # A check that this program did not foresee is a line of the page as well
         lines, reports = [line('Installation check', 'The checks', NOT_CHECKED, 'they ended early with ' + type(error).__name__,
@@ -886,9 +1003,15 @@ def start_here():
         lines.insert(0, line('Installation check', 'Python package requests', MISSING, 'not installed, so SAS Viya could not be asked',
                              'Have requests installed into the Python of this compute context.'))
     with open(os.path.join(setting('_sh_work'), PAGE_FILE), 'w', encoding='utf-8', newline='\n') as file:
-        file.write(render_page(settings, lines, reports))
+        file.write(render_page(settings, lines, reports, session))
     counts = counts_of(lines)
-    say('NOTE', f'Start Here: the page holds {len(lines)} checks - {counts[OK]} ok, {counts[MISSING]} missing, {counts[NOT_CHECKED]} not checked.')
+    say('NOTE', f'Start Here: the page holds {sum(counts.values())} checks - {counts[OK]} ok, {counts[MISSING]} missing, '
+                f'{counts[NOT_CHECKED]} not checked.')
+    refused = [entry for entry in lines if entry['section'] == SESSION]
+    if refused:
+        # the log takes no ampersand, so the parameter is named and not written as in an address
+        say('NOTE', 'Start Here: ' + refused[0]['found'] + '. Open the page in a compute context that runs as you: the parameter '
+                    '_contextName, in the address of the page or in the job definition, names the context.')
     hand_over('_sh_rc', '0')
 
 
@@ -929,7 +1052,7 @@ run; quit;
             put '<html lang="en"><head><meta charset="utf-8"><title>SAS Agentic AI Accelerator - Start Here</title></head><body>';
             put '<h1>SAS Agentic AI Accelerator</h1>';
             put '<p>The installation check could not run: the Python program of this page did not finish in this compute context.</p>';
-            put '<p>The page needs PROC PYTHON. Run the job in a compute context whose Python is configured, for example by adding the parameter _contextName to the job definition, and look at the log of this job for the reason.</p>';
+            put '<p>The page needs PROC PYTHON. Open it in a compute context whose Python is configured and that runs as you: the parameter _contextName, in the address of this page or in the job definition, names the context. The log of this job has the reason.</p>';
             put '<p>The guides: <a href="https://sassoftware.github.io/sas-agentic-ai-accelerator" rel="noopener noreferrer">https://sassoftware.github.io/sas-agentic-ai-accelerator</a></p>';
             put '</body></html>';
         run;
@@ -945,4 +1068,4 @@ run; quit;
    error page for a job that failed. */
 options &_sh_syntaxcheck.;
 %let syscc = 0;
-%symdel _sh_viyaHost _sh_work _sh_rc _sh_syntaxcheck / nowarn;
+%symdel _sh_viyaHost _sh_work _sh_rc _sh_syntaxcheck _sh_hasOwner _sh_hasContext / nowarn;

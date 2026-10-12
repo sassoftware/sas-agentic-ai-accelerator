@@ -440,6 +440,208 @@ def test_an_answer_that_is_no_json_is_a_line(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# A session that runs under a service account: one line at the top
+# ---------------------------------------------------------------------------
+
+AS_YOURSELF = ("Open this page in a compute context that runs as you: add &_contextName=<the name of that compute context> to the address "
+               "of this page, or set the context in the parameter _contextName of the job definition.")
+ASK = "Ask an administrator to open this page, or for the right to read it."
+
+
+def refusing(prefix, status):
+    """A complete installation whose services answer every path that starts this way with a status."""
+    site = Site()
+    site.refuse(prefix, status)
+    return site
+
+
+def work(tmp_path, name):
+    """A WORK folder of its own for one of several runs of a test: each run writes its page there."""
+    folder = tmp_path / name
+    folder.mkdir()
+    return folder
+
+
+def summary_of(page):
+    """The paragraph at the top of the installation check."""
+    return re.search(r'<p class="summary">(.*?)</p>', page).group(1).replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+
+
+def not_checked_rows(page):
+    return re.findall(r'<tr><td>(.*?)</td><td class="state unchecked">', page)
+
+
+def test_a_session_under_a_service_account_that_is_refused_everything_gets_one_line(monkeypatch, tmp_path):
+    """Measured on 2026-10-12: opened without the parameter _contextName the job ran in the SAS Job
+    Execution compute context under a service account, every request was answered 401, and the page
+    read '13 ok, 0 missing, 15 not checked': fifteen lines, twelve of which advised to ask an
+    administrator. The made-up system gives the same fifteen lines; the page now has one, at its
+    top, with what it is and what to do."""
+    site = Site()
+    site.refuse("/", 401)
+    lines, _ = lines_of(monkeypatch, tmp_path, site)
+    assert [entry["state"] for entry in lines].count(NOT_CHECKED) == 15 and [entry["state"] for entry in lines].count(OK) == 13
+    assert [entry["todo"] for entry in lines].count(ASK) == 12        # the page of before
+
+    done = run(monkeypatch, tmp_path, refusing("/", 401), harness.SERVICE_ACCOUNT_SESSION)
+    said = ("SAS Viya refused every request of this page (HTTP 401): its SAS session runs under a service account of the compute context "
+            "SAS Job Execution compute context, not as you")
+
+    assert done.rc == "0"
+    assert summary_of(done.page) == "13 ok, 0 missing, 15 not checked. " + said + ". " + AS_YOURSELF
+    # one row stands for the fifteen, and it is the first row of the page
+    assert not_checked_rows(done.page) == ["Requests to SAS Viya"]
+    rows = re.findall(r'<tr><td>(.*?)</td><td class="state (\w+)">', done.page)
+    assert rows[0] == ("Requests to SAS Viya", "unchecked") and [css for _, css in rows[1:]] == ["ok"] * 13
+    assert "Ask an administrator" not in done.page and "may not be read by this session" not in done.page
+    assert done.page.index("SAS session of this page") < done.page.index("Python packages: Logging and Monitoring")
+    # a report that could not be looked for is not said to be missing from the folder
+    assert "<li>The report Prompt Builder could not be looked for.</li>" in done.page and "was not found in" not in done.page
+    # the log has the counts and the same sentence, without the character an address takes
+    assert done.sas.messages == [
+        ("NOTE", "Start Here: the page holds 28 checks - 13 ok, 0 missing, 15 not checked."),
+        ("NOTE", "Start Here: " + said + ". Open the page in a compute context that runs as you: the parameter _contextName, in the address "
+                 "of the page or in the job definition, names the context.")]
+    # neither user is on the page or in the log
+    everything = done.page + " ".join(message for _, message in done.sas.messages)
+    assert "svc4410" not in everything and "uid7781" not in everything
+
+
+@pytest.mark.parametrize("session, what", [
+    ({}, "SAS Viya refused every request of this page (HTTP 401)"),
+    (harness.OWN_SESSION, "SAS Viya refused every request of this page (HTTP 401), which ran in the compute context SAS Studio compute context"),
+    (dict(harness.OWN_SESSION, SYSUSERID="UID7781"),
+     "SAS Viya refused every request of this page (HTTP 401), which ran in the compute context SAS Studio compute context"),
+], ids=["a session that names neither", "the user who opened the page", "the same user in other letters"])
+def test_a_session_that_is_refused_everything_and_runs_as_the_user_says_no_service_account(monkeypatch, tmp_path, session, what):
+    done = run(monkeypatch, tmp_path, refusing("/", 401), session)
+
+    assert summary_of(done.page) == ("13 ok, 0 missing, 15 not checked. " + what + ". Open this page again. If the line stays, "
+                                     + AS_YOURSELF[0].lower() + AS_YOURSELF[1:])
+    assert not_checked_rows(done.page) == ["Requests to SAS Viya"] and "service account" not in summary_of(done.page)
+
+
+def test_the_one_line_names_the_answers_that_refused(monkeypatch, tmp_path):
+    done = run(monkeypatch, tmp_path, refusing("/", 403), harness.SERVICE_ACCOUNT_SESSION)
+    assert "refused every request of this page (HTTP 403): its SAS session runs under a service account" in summary_of(done.page)
+
+    site = refusing("/", 401)
+    site.refuse("/casManagement/", 403)
+    site.prefixes = dict(sorted(site.prefixes.items(), key=lambda item: -len(item[0])))
+    done = run(monkeypatch, tmp_path, site, harness.SERVICE_ACCOUNT_SESSION)
+    assert "refused every request of this page (HTTP 401 and 403): its SAS session" in summary_of(done.page)
+    assert not_checked_rows(done.page) == ["Requests to SAS Viya"]
+
+    # a session whose compute context is not known says the same without it
+    done = run(monkeypatch, tmp_path, refusing("/", 401), dict(harness.SERVICE_ACCOUNT_SESSION, _sh_hasContext="0"))
+    assert "(HTTP 401): its SAS session runs under a service account, not as you. " in summary_of(done.page)
+
+
+@pytest.mark.parametrize("answered", ["/folders/", "/compute/", "/credentials/"])
+def test_one_request_that_is_answered_keeps_every_line(monkeypatch, tmp_path, answered):
+    """The one line stands for a session nothing answers. Where a service answers, each line says what it found."""
+    site = Site()
+    for prefix in SERVICES:
+        if prefix != answered:
+            site.refuse(prefix, 401)
+    lines, _ = lines_of(monkeypatch, tmp_path, site)
+    done = run(monkeypatch, tmp_path, site)
+
+    assert "Requests to SAS Viya" not in done.page and "refused every request" not in done.page
+    assert len(not_checked_rows(done.page)) >= [entry["state"] for entry in lines].count(NOT_CHECKED) > 5
+    assert ASK in done.page
+    assert re.search(r"\d+ ok, \d+ missing, \d+ not checked\. (release\.json|Content root): ", summary_of(done.page))
+
+
+@pytest.mark.parametrize("status", [0, 500, 503, 404])
+def test_a_session_that_is_not_refused_but_fails_keeps_every_line(monkeypatch, tmp_path, status):
+    """401 and 403 are a session SAS Viya refuses. A service that is down, a request without an answer and a
+    system without the accelerator are other things, and the page says them line by line."""
+    loaded = load(monkeypatch, tmp_path, settings=harness.SERVICE_ACCOUNT_SESSION, packages=ALL_PACKAGES)
+    functions = loaded.namespace
+    statuses = []
+
+    def answer(path, accept="application/json"):
+        if status == 0:
+            raise ConnectionError("no answer")
+        return status, b"{}"
+
+    lines, _ = functions["check_installation"](functions["recorded"](answer, statuses), dict(harness.DEFAULT_SETTINGS))
+    session = functions["session_of"]("svc4410", "uid7781", "SAS Job Execution compute context")
+
+    assert statuses and set(statuses) == {status}
+    assert functions["one_line_for_a_refused_session"](lines, statuses, session) is lines
+    # and so do a refusal among other answers, and a run that asked nothing
+    assert functions["one_line_for_a_refused_session"](lines, [401, 401, status], session) is lines
+    assert functions["one_line_for_a_refused_session"](lines, [], session) is lines
+    assert functions["one_line_for_a_refused_session"](lines, [401, 403, 401], session) is not lines
+
+
+def test_in_a_session_of_another_user_a_refused_line_advises_to_open_the_page_as_oneself(monkeypatch, tmp_path):
+    """A service account that may read the folders and not CAS: the lines stay, and their advice is no longer
+    to ask an administrator. The note under the summary says whose session built the page."""
+    site = Site()
+    for prefix in ("/casManagement/", "/modelPublish/"):
+        site.refuse(prefix, 403)
+    as_user = run(monkeypatch, work(tmp_path, 'own'), site, harness.OWN_SESSION)
+    other = run(monkeypatch, work(tmp_path, 'other'), site, harness.SERVICE_ACCOUNT_SESSION)
+
+    assert as_user.page.count(ASK) == 6 and "does not run as you" not in as_user.page
+    assert "in a compute context that runs under a service account that is the service account" in as_user.page
+    advice = (AS_YOURSELF[:-1] + " - or ask for the right the session lacks.").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    assert ASK not in other.page and other.page.count("<td>" + advice + "</td>") == 6
+    note = re.search(r'<p class="note">(.*?)</p>', other.page).group(1).replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    assert note == (f"Content root {ROOT}. This page was built by a SAS session that does not run as you, in the compute context SAS Job "
+                    "Execution compute context: it shows what that session may read. " + AS_YOURSELF + " It changed nothing: it only read.")
+    assert "svc4410" not in other.page and "uid7781" not in other.page
+    # the rows and their states are the same for both sessions
+    states_of = lambda page: re.findall(r'<td class="state (\w+)">', page)
+    assert states_of(as_user.page) == states_of(other.page)
+
+
+def test_the_two_users_are_compared_and_go_no_further(monkeypatch, tmp_path):
+    functions = load(monkeypatch, tmp_path).namespace
+    session_of = functions["session_of"]
+
+    assert session_of("svc4410", "uid7781", "A context") == {"other": True, "context": "A context"}
+    assert session_of("uid7781", "UID7781 ", " A context ") == {"other": False, "context": "A context"}
+    # a session that does not name one of the two is not said to be another user's
+    for runs_as, started_for in (("svc4410", ""), ("", "uid7781"), ("", ""), ("svc4410", None), (None, None)):
+        assert session_of(runs_as, started_for, "")["other"] is False
+    # what the page is handed holds no user: a flag and the name of the context
+    assert set(session_of("svc4410", "uid7781", "A context")) == {"other", "context"}
+
+
+def test_the_session_is_asked_only_for_what_it_has(monkeypatch, tmp_path):
+    """SAS Job Execution sets SYS_COMPUTE_SESSION_OWNER and _contextName; a program run in SAS Studio may
+    have neither. The SAS code looks with %symexist, and the Python reads a variable only behind its flag."""
+    code = re.sub(r"/\*.*?\*/", "", harness.sas_code(), flags=re.DOTALL)
+    assert "%let _sh_hasOwner = %symexist(SYS_COMPUTE_SESSION_OWNER);" in code and "%let _sh_hasContext = %symexist(_contextName);" in code
+    assert code.index("%let _sh_hasContext = %symexist(_contextName);") < code.index("proc python restart;")
+    # no statement of the SAS code resolves one of the three
+    for name in ("sysuserid", "SYS_COMPUTE_SESSION_OWNER", "_contextName"):
+        assert not re.search("&" + name, code, flags=re.IGNORECASE), name
+
+    without = run(monkeypatch, work(tmp_path, 'studio'))
+    assert "SYSUSERID" in without.sas.asked
+    assert "SYS_COMPUTE_SESSION_OWNER" not in without.sas.asked and "_contextName" not in without.sas.asked
+    with_both = run(monkeypatch, work(tmp_path, 'job'), settings=harness.OWN_SESSION)
+    assert {"SYSUSERID", "SYS_COMPUTE_SESSION_OWNER", "_contextName"} <= set(with_both.sas.asked)
+    # a page of a session that runs as its user is the page of before: no line about the session
+    assert "SAS session of this page" not in with_both.page and without.page == with_both.page
+
+
+def test_the_header_and_the_page_without_python_name_the_parameter():
+    header = harness.program().split("*/")[0]
+    assert re.search(r"^ \*   _contextName     the compute context the job runs in", header, flags=re.MULTILINE)
+    assert "Measured on 2026-10-12, without the parameter: the job ran in the SAS Job\n * Execution compute context under a service account" in header
+    code = re.sub(r"/\*.*?\*/", "", harness.sas_code(), flags=re.DOTALL)
+    fallback = " ".join(re.findall(r"put '(.*)';", code))
+    assert "the parameter _contextName, in the address of this page or in the job definition, names the context" in fallback
+    assert "adding the parameter _contextName to the job definition" not in fallback
+
+
+# ---------------------------------------------------------------------------
 # The file release.json is asked for at the Files service only
 # ---------------------------------------------------------------------------
 
@@ -819,9 +1021,9 @@ def test_the_parameters_of_the_job_and_what_the_program_takes_without_them():
     assert set(read) == set(defaults)
     below = re.sub(r"/\*.*?\*/", "", code.split("%sysmacdelete _sh_default;")[1], flags=re.DOTALL)
     assert re.findall(r"&(\w+)", below) and set(re.findall(r"&(\w+)", below)) == {"_sh_rc", "_sh_work", "_sh_syntaxcheck"}
-    # the header names every parameter, and the two of SAS Job Execution
+    # the header names every parameter, and the three of SAS Job Execution
     header = code.split("*/")[0]
-    for parameter in list(defaults) + ["_action", "_output_type"]:
+    for parameter in list(defaults) + ["_action", "_output_type", "_contextName"]:
         assert re.search(rf"\b{parameter}\b", header), parameter
     assert "_output_type     html" in header
 
@@ -858,7 +1060,8 @@ def test_the_job_ends_as_completed_whatever_the_session_could_not_do():
 
     assert statements.index("%let _sh_syntaxcheck = %sysfunc(getoption(syntaxcheck));") + 1 == statements.index("options nosyntaxcheck;")
     assert statements.index("options nosyntaxcheck;") < statements.index("proc python restart;") < statements.index("%_sh_send;")
-    assert statements[-3:] == ["options &_sh_syntaxcheck.;", "%let syscc = 0;", "%symdel _sh_viyaHost _sh_work _sh_rc _sh_syntaxcheck / nowarn;"]
+    assert statements[-3:] == ["options &_sh_syntaxcheck.;", "%let syscc = 0;",
+                               "%symdel _sh_viyaHost _sh_work _sh_rc _sh_syntaxcheck _sh_hasOwner _sh_hasContext / nowarn;"]
     assert "%let _sh_rc = -1;" in statements and statements.index("%let _sh_rc = -1;") < statements.index("proc python restart;")
     # no ABORT, and no statement that ends the session
     assert not re.search(r"\babort\b|%abort|endsas", code, flags=re.IGNORECASE)

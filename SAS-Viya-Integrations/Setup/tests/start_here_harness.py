@@ -63,16 +63,34 @@ def sas_code(sas_program=None):
     return text[:text.index("submit;")] + text[text.index("endsubmit;"):]
 
 
+# The macro variables of a job that SAS Job Execution started for one user in a compute context that
+# runs under a service account - what was measured on 2026-10-12 without the parameter _contextName:
+# the session had SYS_COMPUTE_SESSION_OWNER (the user who opened the page) and _CONTEXTNAME. The two
+# flags are what the SAS code of the program sets with %symexist.
+SERVICE_ACCOUNT_SESSION = {"SYSUSERID": "svc4410", "SYS_COMPUTE_SESSION_OWNER": "uid7781", "_sh_hasOwner": "1",
+                           "_contextName": "SAS Job Execution compute context", "_sh_hasContext": "1"}
+# The same job in a compute context that runs as the user who opened the page
+OWN_SESSION = {"SYSUSERID": "uid7781", "SYS_COMPUTE_SESSION_OWNER": "uid7781", "_sh_hasOwner": "1",
+               "_contextName": "SAS Studio compute context", "_sh_hasContext": "1"}
+
+
 class FakeSAS:
-    """Stands in for the SAS object PROC PYTHON provides."""
+    """Stands in for the SAS object PROC PYTHON provides. It keeps the name of every macro
+    variable that is read: the program asks for the user a session was started for and for
+    its compute context only where the SAS code found them in the session."""
 
     def __init__(self, work, settings=None):
-        self.macro_variables = dict(DEFAULT_SETTINGS, _sh_viyaHost=VIYA_HOST, _sh_work=str(work), _sh_rc="-1")
+        self.macro_variables = dict(DEFAULT_SETTINGS, _sh_viyaHost=VIYA_HOST, _sh_work=str(work), _sh_rc="-1", SYSUSERID="uid7781",
+                                    _sh_hasOwner="0", _sh_hasContext="0")
         self.macro_variables.update(settings or {})
         self.messages = []
+        self.asked = []             # the name of every macro variable that was read, in their order
 
     def symget(self, name):
-        return self.macro_variables.get(name)
+        self.asked.append(name)
+        if name not in self.macro_variables:
+            raise KeyError("a macro variable that is not set: " + name)
+        return self.macro_variables[name]
 
     def symput(self, name, value):
         self.macro_variables[name] = value

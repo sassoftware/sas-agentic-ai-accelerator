@@ -11,6 +11,7 @@ the first tests read the call sites from the text of the programs, the others se
 through each program that would have ended up as code.
 """
 import ast
+import re
 import sys
 from pathlib import Path
 
@@ -387,7 +388,31 @@ def test_start_here_hands_sas_text_whatever_the_system_and_the_parameters_hold(m
 
     assert unsafe_messages(run.sas.messages) == []
     assert [kind for kind, _ in run.sas.messages] == ["NOTE"] and run.sas.messages[0][1].startswith("Start Here: the page holds ")
-    handed = {name: value for name, value in run.sas.macro_variables.items() if name not in settings and name not in ("_sh_viyaHost", "_sh_work")}
+    handed = {name: value for name, value in run.sas.macro_variables.items() if name not in settings and name not in SESSION_OF_START_HERE}
     assert handed == {"_sh_rc": "0"}
     # the names are on the page, where they are text of another kind
     assert run.page.count("<script") == 0 and (tmp_path / "start_here.html").is_file()
+
+
+# What the SAS code and the SAS session hand the Python of Start-Here.sas beside the parameters of the job
+SESSION_OF_START_HERE = ("_sh_viyaHost", "_sh_work", "SYSUSERID", "SYS_COMPUTE_SESSION_OWNER", "_contextName", "_sh_hasOwner", "_sh_hasContext")
+
+
+@pytest.mark.parametrize("hostile", list(HOSTILE.values()), ids=list(HOSTILE))
+def test_start_here_names_a_compute_context_of_any_wording_as_text(monkeypatch, tmp_path, hostile):
+    """Where SAS Viya refuses every request of the session, a second message names the compute context of the
+    job - the one text of a request that reaches the SAS log. The parameter _contextName comes with the
+    request, so it is hostile here, and so are the two users, which are compared and written nowhere."""
+    site = page.Site()
+    site.refuse("/", 401)
+    session = dict(page.SERVICE_ACCOUNT_SESSION, _contextName=hostile, SYSUSERID="svc " + hostile, SYS_COMPUTE_SESSION_OWNER="uid " + hostile)
+    run = page.run(monkeypatch, tmp_path, site, session)
+
+    assert unsafe_messages(run.sas.messages) == []
+    assert [kind for kind, _ in run.sas.messages] == ["NOTE", "NOTE"]
+    # the parentheses of the message are brackets where the name of the context holds one without its partner
+    assert re.match(r"Start Here: SAS Viya refused every request of this page [(\[]HTTP 401[)\]]: its SAS session runs under a service account "
+                    r"of the compute context ", run.sas.messages[1][1])
+    handed = {name: value for name, value in run.sas.macro_variables.items() if name not in page.DEFAULT_SETTINGS and name not in SESSION_OF_START_HERE}
+    assert handed == {"_sh_rc": "0"}
+    assert "svc " not in run.page and "uid " not in run.page and run.page.count("<script") == 0
