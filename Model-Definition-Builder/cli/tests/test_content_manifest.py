@@ -123,9 +123,9 @@ def test_two_entries_with_one_path_are_refused(repo):
 
 
 @pytest.mark.parametrize("path, reason", [
-    ("Showcases/Motor Claims/decision.sas", "'Showcases' is showcase content"),
+    ("Showcases/Some Use Case/decision.sas", "'Showcases' is showcase content"),
     ("Example Use Cases/notes.sas", "'Example Use Cases' is example content"),
-    ("Examples/Structured Output/x.sas", "'Examples' is example content"),
+    ("Examples/Third Use Case/x.sas", "'Examples' is example content"),
     ("RAG/generated/job.sas", "'generated' holds what the Prompt Builder generates for a site's own setups"),
     ("RAG/Generated/job.sas", "'Generated' holds what the Prompt Builder generates for a site's own setups"),
     ("Data/ZZ_VERIFY_releases.sas", "'ZZ_VERIFY_releases.sas' is a test object"),

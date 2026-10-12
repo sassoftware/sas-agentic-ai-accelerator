@@ -302,10 +302,10 @@ def test_an_export_keeps_what_the_manifest_lists_and_nothing_else(manifest):
         d["transferObject"]["summary"]["links"][0]["uri"] for d in built.details
         if d["transferObject"]["summary"]["type"] == "report")
     demo = built.report("RAG/LIVE_DEMO", {"viyaHost": "x"})                       # another user's report
-    built.job("RAG/generated/RAG Ingest - Motor Policy Documents", {"code": "x"})  # what the Builder generated
+    built.job("RAG/generated/RAG Ingest - Site Documents", {"code": "x"})  # what the Builder generated
     built.file("RAG/rag_core/notes.py", "x = 1\n")                               # a stray file in a listed folder
-    built.file("Showcases/Motor Claims/policy.md", "# policy\n")
-    built.file("Example Use Cases/Tax Fraud/training_data.csv", "a,b\n")
+    built.file("Showcases/Some Use Case/policy.md", "# policy\n")
+    built.file("Example Use Cases/Another Use Case/training_data.csv", "a,b\n")
     built.step("ZZ_VERIFY_steps/RAG - Embed Chunks.step", STEP)
     built.job("RAG/RAG-Builder-UI", {"code": "x"})                                # the retired standalone UI
     built.grant("rule", "7cab3bd6", built.root_uri)
@@ -317,10 +317,10 @@ def test_an_export_keeps_what_the_manifest_lists_and_nothing_else(manifest):
 
     assert sorted(result.dropped) == sorted([
         "report 'RAG/LIVE_DEMO'", "folder 'RAG/generated'",
-        "jobDefinition 'RAG/generated/RAG Ingest - Motor Policy Documents'",
-        "file 'RAG/rag_core/notes.py'", "folder 'Showcases'", "folder 'Showcases/Motor Claims'",
-        "file 'Showcases/Motor Claims/policy.md'", "folder 'Example Use Cases'", "folder 'Example Use Cases/Tax Fraud'",
-        "file 'Example Use Cases/Tax Fraud/training_data.csv'", "folder 'ZZ_VERIFY_steps'",
+        "jobDefinition 'RAG/generated/RAG Ingest - Site Documents'",
+        "file 'RAG/rag_core/notes.py'", "folder 'Showcases'", "folder 'Showcases/Some Use Case'",
+        "file 'Showcases/Some Use Case/policy.md'", "folder 'Example Use Cases'", "folder 'Example Use Cases/Another Use Case'",
+        "file 'Example Use Cases/Another Use Case/training_data.csv'", "folder 'ZZ_VERIFY_steps'",
         "flowStep 'ZZ_VERIFY_steps/RAG - Embed Chunks.step'", "jobDefinition 'RAG/RAG-Builder-UI'",
         "rule '7cab3bd6'", "rule '9da8fe35'", "share 'Share on LLM Usage Report'"])
     assert result.refused == []
@@ -345,19 +345,19 @@ def test_a_path_that_never_ships_is_refused_even_when_the_manifest_lists_it(repo
     listed = parse_manifest({
         "version": 1, "contentRoot": CONTENT_ROOT, "package": PACKAGE,
         "entries": [{"path": "RAG/rag_core/__init__.py", "kind": "file", "source": "src/rag_core/__init__.py"}]}, repo)
-    for path in ("Showcases/Motor Claims/policy.sas", "RAG/generated/job.sas", "Data/ZZ_VERIFY_x.sas"):
+    for path in ("Showcases/Some Use Case/policy.sas", "RAG/generated/job.sas", "Data/ZZ_VERIFY_x.sas"):
         listed.entries.append(content.Entry(path=path, kind="file", source="src/optimize.sas"))
     built = Package()
     built.file("RAG/rag_core/__init__.py", "CORE = 1\n")
-    for path in ("Showcases/Motor Claims/policy.sas", "RAG/generated/job.sas", "Data/ZZ_VERIFY_x.sas"):
+    for path in ("Showcases/Some Use Case/policy.sas", "RAG/generated/job.sas", "Data/ZZ_VERIFY_x.sas"):
         built.file(path, "%put optimize;\n%put done;\n")
     package = built.build()
     result = filter_package(package, listed, built.root_uri)
     # the folders such a path runs through are refused with it
     assert result.refused == [
         "folder 'Showcases': 'Showcases' is showcase content",
-        "folder 'Showcases/Motor Claims': 'Showcases' is showcase content",
-        "file 'Showcases/Motor Claims/policy.sas': 'Showcases' is showcase content",
+        "folder 'Showcases/Some Use Case': 'Showcases' is showcase content",
+        "file 'Showcases/Some Use Case/policy.sas': 'Showcases' is showcase content",
         "folder 'RAG/generated': 'generated' holds what the Prompt Builder generates for a site's own setups",
         "file 'RAG/generated/job.sas': 'generated' holds what the Prompt Builder generates for a site's own setups",
         "file 'Data/ZZ_VERIFY_x.sas': 'ZZ_VERIFY_x.sas' is a test object"]
@@ -673,12 +673,12 @@ def test_an_export_from_a_configured_site_is_made_shippable(exporting, manifest)
     built = package_of(manifest, change={REPORT: None})
     built.report(REPORT, TUNED, states=[TUNED], host="viya4-example.internal.test")
     built.report("RAG/LIVE_DEMO", {"viyaHost": "https://viya4-example.internal.test"})
-    built.job("RAG/generated/RAG Ingest - Motor Policy Documents", {"code": "x"})
+    built.job("RAG/generated/RAG Ingest - Site Documents", {"code": "x"})
     built.grant("rule", "7cab3bd6", built.root_uri)
     result, text, target, _ = exporting(built)
     assert result.exit_code == 0, text
     for line in ("  left out: report 'RAG/LIVE_DEMO'\n", "  left out: folder 'RAG/generated'\n",
-                 "  left out: jobDefinition 'RAG/generated/RAG Ingest - Motor Policy Documents'\n",
+                 "  left out: jobDefinition 'RAG/generated/RAG Ingest - Site Documents'\n",
                  "  left out: rule '7cab3bd6'\n",
                  "  removed 1 per-user report state(s) from report 'Prompt Builder'\n",
                  "  replaced viya4-example.internal.test with the placeholder (1 occurrence(s))\n"):
@@ -891,10 +891,10 @@ def test_fix_rewrites_what_can_be_rewritten_in_the_file(checking, manifest, repo
 def test_a_manifest_that_cannot_be_used_ends_the_check_with_its_defects(checking, repo):
     path = repo / "SAS-Viya-Integrations" / "package-manifest.yaml"
     path.write_text(path.read_text(encoding="utf-8")
-                    + "  - {path: Showcases/Motor Claims/x.sas, kind: file, source: src/optimize.sas}\n", encoding="utf-8")
+                    + "  - {path: Showcases/Some Use Case/x.sas, kind: file, source: src/optimize.sas}\n", encoding="utf-8")
     result, text, _ = checking()
     assert result.exit_code == 2
-    assert "  'Showcases/Motor Claims/x.sas': 'Showcases' is showcase content and never ships\n" in text
+    assert "  'Showcases/Some Use Case/x.sas': 'Showcases' is showcase content and never ships\n" in text
 
 
 # ---- the guards' own inputs --------------------------------------------------
