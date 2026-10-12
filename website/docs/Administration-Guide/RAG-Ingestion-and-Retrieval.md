@@ -48,35 +48,39 @@ Two ways put the runtime there:
 ./SAS-Viya-Integrations/Other/deploy-rag-content.sh
 ```
 
-The script calls `mdb content-deploy --only RAG` (see
-[The content folder: deploy, export, check](./Model-Definition-Builder.md#the-content-folder-deploy-export-check)).
+The script calls `mdb content-deploy --only RAG --to <the RAG content root>`
+(see [One part, somewhere else](./Model-Definition-Builder.md#one-part-somewhere-else)).
 It needs the Model Definition Builder installed and a sign-in it can use — a
 token, a password grant or the login of the SAS Viya CLI. The folder it deploys
 into is `/SAS Agentic AI Accelerator/RAG`; `-ContentRoot` (PowerShell) or `-r`
-(bash) names another one, which has to be a folder named `RAG`, because the
-list of what ships places the runtime in `RAG` of a content root. `-DryRun` /
-`-n` lists what would change and writes nothing. The script as a caller of
-`mdb` has **not run against SAS Viya**.
+(bash) names another one: the RAG content root itself, a folder of any name,
+which is what the option **RAG: content root** of the Prompt Builder holds.
+A site with such a content root deploys the runtime there after an import,
+because the import brings it into the folder `RAG` of the content folder.
+`-DryRun` / `-n` lists what would change and writes nothing. The script as a
+caller of `mdb` has **not run against SAS Viya**.
 
 **Nothing is ever fetched from the internet at run time**, so both ways work
 in an air-gapped deployment: the SAS Content folder is the distribution
 channel, not GitHub.
 
-If a deploy ends with a line that says `FAILED`, run it again before anything
-else. A file is replaced by deleting it and uploading the new copy, so a file
-whose upload failed can be missing from the folder until a run has completed.
-Measured on 2026-10-11 on SAS Viya 2026.09 with `deploy-rag-content.ps1` as
-it was then — a script that uploaded the files itself —, against a content
-folder that held the runtime of release 2.0: the first run stopped after four
-files with `(409) Conflict` on the upload of a file (`POST /files/files`)
-whose old copy it had just deleted, and left that file missing. The same
-upload was answered 201 a minute later, and a second run of the script
-completed with *Deployed 35 files*. All nine steps had kept their ids, and
-every file equalled the checkout afterwards. A third run later the same day
-went through at the first attempt. `mdb content-deploy` repeats an upload
-that is answered 409 up to five times, goes on with the next entry after a
-failure, and reports a file that is still missing as deleted and not
-uploaded; that repeat has not run against SAS Viya.
+If a deploy ends with a line that says `FAILED`, read the line
+`Stopped at the first write that failed: ...` under it and run the deploy
+again: it stops at the first write that is refused or gets no answer, lists
+what it did not attempt, and removes nothing, so the folder holds the file
+it had or the new one. Up to release 2.2 a file was replaced by deleting it
+and uploading the new copy. Measured on 2026-10-11 on SAS Viya 2026.09 with
+`deploy-rag-content.ps1` as it was then — a script that uploaded the files
+itself —, against a content folder that held the runtime of release 2.0:
+the first run stopped after four files with `(409) Conflict` on the upload
+of a file (`POST /files/files`) whose old copy it had just deleted, and left
+that file missing. The same upload was answered 201 a minute later, and a
+second run of the script completed with *Deployed 35 files*. All nine steps
+had kept their ids, and every file equalled the checkout afterwards. A third
+run later the same day went through at the first attempt.
+`mdb content-deploy` deletes no file: it replaces the content of a file that
+differs in place, under the id the file has. That update has **not run
+against SAS Viya**.
 
 :::note Why a deploy and not a manual upload
 A `.step` file uploaded as a plain Content file renders as an empty step
@@ -1969,7 +1973,7 @@ PostgreSQL, on/off for SingleStore) and defaults to enabled.
 | The log of the ingestion job holds *NOTE: RAG ingestion: rag_ledger_in.json of an earlier run of this SAS session was deleted from WORK* | The program ran before in the same SAS session. The file is the export of that run and is removed so that this run cannot read it; nothing is wrong. A job started by SAS Job Execution has a WORK of its own and does not write the line. The line comes once for each of the two files that is there, `rag_ledger_in.json` and `rag_ledger_lock.json` (measured on 2026-10-11) |
 | The ingestion job ends with *… of an earlier run of this SAS session could not be deleted from WORK - stopped, because the run would read the ledger of that run as its own* | The export of an earlier run is still in WORK and SAS could not delete it. Start a new SAS session and run the job there. The log of such a run also holds three ERROR messages of `PROC JSON` above its milestone, on six log lines - *ERROR: Invalid file, …/rag_ledger_in.json.*, *ERROR: Due to the previous error, the JSON output file is incomplete and invalid, …* and *ERROR: The JSON writer is in an error state at this point and no more items may be inserted.* They have the same cause: the export still runs after the delete failed, and writes to the file that is in the way. Measured on 2026-10-11 with a directory of that name in WORK; by the code, the last line names the lock instead of the file where another run holds a fresh lock at that moment |
 | **Test retrieval** says *The probe failed: the Python environment of this compute context lacks the requests package* | The Python of the compute context named in `ragComputeContext` has no `requests` — see [Python packages](#python-packages). Up to release 2.2 the page showed a probe that returned no chunks in that case. The line the page reads - *RAGRETRIEVE FAILED the Python environment of this compute context lacks the requests package - see the RAG administration guide* - was measured on 2026-10-11 in a session in which the import of `requests` was made to fail; the text of the page was not run in SAS, because the test system has no compute context without the package |
-| `deploy-rag-content` stops with *(409) Conflict* on the upload of a file | Seen on 2026-10-11 with `deploy-rag-content.ps1`, on a content folder that held an earlier runtime: the Files service refused the upload of a file whose old copy the script had just deleted, and answered the same upload with 201 a minute later. Run the script again - the second run completed. Until a run has completed, the file the script stopped at is missing from the folder. The script calls `mdb content-deploy` since release 2.3.0, which repeats such an upload up to five times and reports a file that is still missing as *DELETED and NOT uploaded*; that repeat has not run against SAS Viya — see [what gets deployed](#what-gets-deployed) |
+| `deploy-rag-content` stops with *(409) Conflict* on the upload of a file | Seen on 2026-10-11 with `deploy-rag-content.ps1`, on a content folder that held an earlier runtime: the Files service refused the upload of a file whose old copy the script had just deleted, and answered the same upload with 201 a minute later. Run the script again - the second run completed. Until a run has completed, the file the script stopped at is missing from the folder. The script calls `mdb content-deploy` since release 2.3.0, which deletes no file - it replaces the content of a file that differs in place - and stops at the first write that fails; that has not run against SAS Viya — see [what gets deployed](#what-gets-deployed) |
 | The Load step logs *rag history: not recorded (… must be owner of table rag_runs* | The store user of the ingestion may not alter `rag_runs`, which release 2.3.0 widens by the column `docs_excluded`. The ingestion itself is not affected. Let the owner of the table run an ingestion, or run `ALTER TABLE rag_runs ADD COLUMN docs_excluded integer DEFAULT 0` once — see [run history](#run-history) |
 | A job generated by *RAG - Register Setup* ends with *ERROR: RAG ingestion failed - a step of this run reported an error (its ERROR line is above) and the steps after it were skipped.* | A step of the flow failed. The line is written by the job, not by a step: the ERROR of the step that failed is above it — see *The job generated from a flow* under [the checkbox of the custom step](#tls-register-setup-step) |
 | `retrieval_status` of a retrieval model in a decision says *no vector-store credentials resolved* | The runtime the decision runs in has no `<BACKEND>_RAG_USER` and `<BACKEND>_RAG_PW` — see [the retrieval model in a decision](#the-retrieval-model-in-a-decision) |
