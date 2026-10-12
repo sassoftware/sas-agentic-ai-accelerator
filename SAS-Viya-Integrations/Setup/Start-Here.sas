@@ -158,6 +158,8 @@ REPORT_CONTENT = 'application/vnd.sas.report.content+xml'
 OPTION = re.compile(r'<PromptDefinition\b[^>]*\blabel="([^"]+)"[^>]*>(.*?)</PromptDefinition>', re.DOTALL)
 OPTION_VALUE = re.compile(r'<(String|Boolean)\b[^>]*>(.*?)</\1>', re.DOTALL)
 TEXT_LIMIT = 600
+# What a file of the Files service is addressed by
+FILE_URI = re.compile(r'/files/files/[0-9A-Za-z-]+')
 # What to do about a step that is not registered. A step is registered by the import and by mdb
 # content-deploy; its file, uploaded to the folder, is no step and stays beside the step
 STEP_MISSING = ('Import the package of the accelerator again, or run mdb content-deploy: both register the step. '
@@ -332,6 +334,10 @@ def release_of(get, listings):
     deploy = 'Import the package of the accelerator again, or run mdb content-deploy, which writes the file.'
     if not uri or kind != 'file':
         return None, [line(section, RELEASE_FILE, MISSING, 'not in the content root', deploy)]
+    # the member names where its file is: only a file of the Files service is asked for, as only
+    # a folder of the Folders service and a report of the Reports service are
+    if not FILE_URI.fullmatch(uri):
+        return None, [line(section, RELEASE_FILE, MISSING, 'the member of that name is no file of the Files service', deploy)]
     status, body = read_bytes(get, uri + '/content', '/'.join(['*', '*']))
     if status != 200:
         state, found = not_read(status, RELEASE_FILE)

@@ -440,6 +440,31 @@ def test_an_answer_that_is_no_json_is_a_line(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# The file release.json is asked for at the Files service only
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("uri", ["/identities/users/@currentUser", "https://other.example.org/files/files/abc", "/files/files/../../identities/users",
+                                 "/files/files/abc/../../../credentials/domains/agentic-ai-keys/users/uid7781/secrets", "/reports/reports/abc",
+                                 "/files/files/", "//other.example.org/files/files/abc"])
+def test_a_release_file_that_is_no_file_of_the_files_service_is_not_asked_for(monkeypatch, tmp_path, uri):
+    """The member of the folder names where its file is. The uri of a folder and of a report were held to
+    their service before they were asked for; the one of release.json is held to /files/files/ as well."""
+    site = Site()
+    site.member("release.json")["uri"] = uri
+    before = len(site.requests)
+    lines, _ = lines_of(monkeypatch, tmp_path, site)
+    release = one(lines, "release.json")
+
+    assert (release["state"], release["found"]) == (MISSING, "the member of that name is no file of the Files service")
+    assert "mdb content-deploy" in release["todo"]
+    asked = [path for path, _ in site.requests[before:]]
+    assert not [path for path in asked if path.startswith(("/files", "/identities", "/reports/reports/abc")) or "secrets" in path or "example.org" in path]
+    assert [entry for entry in lines if entry["section"] == "Content"] == []
+    # a uri of the Files service is asked for as before
+    assert set(states(lines_of(monkeypatch, tmp_path, Site())[0], "Release").values()) == {OK}
+
+
+# ---------------------------------------------------------------------------
 # The Python packages
 # ---------------------------------------------------------------------------
 
