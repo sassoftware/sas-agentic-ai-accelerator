@@ -2,7 +2,7 @@
     Copyright © 2024, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
     SPDX-License-Identifier: Apache-2.0
 ********************************************************************************/
-* A CAS session for the librefs below. A session that is connected is used as it is, as starting mysess a second time in one SAS session gives a WARNING. The session stays when the program ends, as the librefs do;
+* A CAS session for the librefs below. A session that is connected is used as it is: starting mysess a second time in one SAS session makes SAS warn that the session exists. The session stays when the program ends, and so do the librefs;
 %if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;
     cas mysess;
 %end;
