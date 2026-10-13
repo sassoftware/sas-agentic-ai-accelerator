@@ -1761,7 +1761,8 @@ def package_export(
         None, "--out", "-o",
         help="Where to write the package (default: the file the manifest names, "
              "SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json)."),
-    keep: bool = typer.Option(False, "--keep", help="Leave the exported package on the server too."),
+    keep: bool = typer.Option(False, "--keep", help="Leave the exported package and the record of the export job "
+                                                    "on the server too."),
     allow_differences: bool = typer.Option(
         False, "--allow-differences",
         help="Write the package although it differs from the checkout or lacks an entry of the manifest - "
@@ -1794,6 +1795,12 @@ def package_export(
     report and that its manifest entry lists; a picture the report shows from
     a folder of its own is left out, and the report is then a difference.
 
+    What the export leaves on the server - the package and the record of the
+    export job - is deleted unless --keep. A delete that is refused or gets
+    no answer does not cost the file: it is still written and checked, a line
+    names what is left with its id and how to delete it, and the command
+    ends with exit code 3 (1 stays "nothing was written").
+
     The export names people: `createdBy` / `modifiedBy` of the package, of
     every object and inside the bodies, and `contentSourceLocation`, the path
     of the exported folder. They are left as the export wrote them - every
@@ -1805,8 +1812,8 @@ def package_export(
     from .core.packages import (ALLOWED_HOSTS, check_text, describe_findings, filter_package, named_users,
                                 package_differences, reset_report_defaults, sanitise_text,
                                 strip_report_states)
-    from .viya.transfer import (delete_package, download_package, folder_by_path, job_messages,
-                                start_export, wait_for_job)
+    from .viya.transfer import (delete_job, delete_package, download_package, folder_by_path, job_messages,
+                                leftover_line, start_export, wait_for_job)
     ctx = Context()
     manifest = _content_manifest(ctx)
     root = (content_root or manifest.content_root).rstrip("/")
@@ -1840,9 +1847,30 @@ def package_export(
                 console.print(f"  {line}")
             raise typer.Exit(1)
         package_uri = job["packageUri"]
-        text = download_package(session, package_uri)
+        try:
+            text = download_package(session, package_uri)
+        except RuntimeError as exc:
+            text = None
+            console.print(f"{exc}", style="red", markup=False, highlight=False, soft_wrap=True)
+        # What the export left on the server is deleted - the package and the
+        # record of the export job. A delete that fails does not cost the
+        # file: it is still written and checked, and the line names what is
+        # left and how to delete it.
+        leftovers = []
         if not keep:
-            delete_package(session, package_uri)
+            export_job = next((link.get("href") for link in job.get("links") or [] if link.get("rel") == "self"),
+                              None) or f"/transfer/exportJobs/{job.get('id')}"
+            for uri, what, delete in ((package_uri, "package", delete_package),
+                                      (export_job, "export job record", delete_job)):
+                try:
+                    delete(session, uri)
+                except RuntimeError as exc:
+                    leftovers.append(f"{leftover_line(uri, what)} ({exc})")
+    for line in leftovers:
+        console.print(f"  {line}.", style="yellow", markup=False, highlight=False, soft_wrap=True)
+    if text is None:
+        console.print("[red]Nothing was written: the package could not be downloaded.[/red]")
+        raise typer.Exit(1)
     parsed = json.loads(text)
     filtered = filter_package(parsed, manifest, f"/folders/folders/{folder_obj['id']}")
     for line in filtered.dropped:
@@ -1911,7 +1939,13 @@ def package_export(
     # What to do with the file depends on what it is: only the release file,
     # written without a difference, is something to commit.
     if target.resolve() == manifest.package_path.resolve():
-        console.print("Review the diff, then commit it with the CHANGELOG entry that explains the change.")
+        # The changelog is finished before the deploy: release.json and the
+        # release table were made from this checkout, and a changelog edit
+        # after the export makes `mdb package-check --release` fail.
+        console.print("Run `mdb package-check --release`, then commit this file - and nothing else with it: the "
+                      "changelog and every source the manifest names stay as they were at the deploy (release.json "
+                      "names that commit, and the release table was made from that changelog). Tag the commit that "
+                      "adds the file.", markup=False, highlight=False, soft_wrap=True)
     elif differences:
         console.print("Keep this file out of the repository. `mdb builders-import "
                       f"{_shell_word(target)} --content-root <folder> --no-reports` brings what it holds into a "
@@ -1919,6 +1953,10 @@ def package_export(
     else:
         console.print(f"The file equals the checkout and is not the release file ({manifest.package}): there is "
                       "nothing to commit.", markup=False, highlight=False, soft_wrap=True)
+    if leftovers:
+        console.print(f"[yellow]{target.name} was written and checked; {len(leftovers)} object(s) of the export are "
+                      "left on the server (named above). Exit code 3.[/yellow]", highlight=False)
+        raise typer.Exit(3)
 
 
 #: Seconds `mdb builders-import` waits for one import job unless told otherwise.

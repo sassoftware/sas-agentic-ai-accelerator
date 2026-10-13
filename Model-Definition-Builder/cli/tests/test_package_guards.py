@@ -1110,7 +1110,10 @@ def exporting(monkeypatch, repo):
            "links": [{"rel": "self", "href": "/transfer/exportJobs/j1"}]}
     monkeypatch.setattr(transfer, "start_export", lambda session, name, items: exported.append((name, items)) or job)
     monkeypatch.setattr(transfer, "wait_for_job", lambda session, href, timeout=600: job)
-    monkeypatch.setattr(transfer, "delete_package", lambda session, uri: None)
+    deleted: list = []
+    monkeypatch.setattr(transfer, "delete_package", lambda session, uri: deleted.append(uri))
+    monkeypatch.setattr(transfer, "delete_job", lambda session, uri: deleted.append(uri))
+    exported_deleted = deleted
 
     def run(built: Package, *args):
         out.seek(0)
@@ -1119,8 +1122,10 @@ def exporting(monkeypatch, repo):
         monkeypatch.setattr(transfer, "folder_by_path",
                             lambda session, path: {"id": built.root_uri.rsplit("/", 1)[-1]})
         monkeypatch.setattr(transfer, "download_package", lambda session, uri: json.dumps(built.build(), indent=2))
+        del deleted[:]
         result = CliRunner().invoke(cli.app, ["package-export", *args])
         return result, out.getvalue(), repo / "SAS-Viya-Integrations" / "SAS-Agentic-AI-Accelerator.json", exported
+    run.deleted = exported_deleted
     return run
 
 
@@ -1136,8 +1141,66 @@ def test_an_export_of_a_folder_that_is_the_checkout_is_written(exporting, manife
     assert package_differences(written, manifest) == []
     assert target.read_bytes().endswith(b"\n") and b"\r" not in target.read_bytes()
     assert "Wrote" in text and "15 objects: 7 folder, 4 file, 1 flowStep, 2 jobDefinition, 1 report; 0 left out" in text
-    assert "Review the diff, then commit it" in text and "left out:" not in text
+    assert "left out:" not in text
     assert "Keep this file out of the repository" not in text and "names the user id" not in text
+    # review-18: the last line said to commit the file "with the CHANGELOG entry that explains the change" - a
+    # changelog edit after the export fails the gate of the release
+    assert text.rstrip().splitlines()[-1] == (
+        "Run `mdb package-check --release`, then commit this file - and nothing else with it: the changelog and every "
+        "source the manifest names stay as they were at the deploy (release.json names that commit, and the release "
+        "table was made from that changelog). Tag the commit that adds the file.")
+    assert "CHANGELOG entry" not in text
+    # what the export left on the server is deleted: the package and the record of the export job
+    assert exporting.deleted == ["/transfer/packages/p1", "/transfer/exportJobs/j1"]
+
+
+def test_an_export_whose_package_cannot_be_deleted_still_writes_the_file(exporting, manifest, monkeypatch):
+    """live-18: when the DELETE of the export package raised, the command
+    ended in a traceback, wrote no file although the package had been
+    downloaded, and left the package on the server without a word."""
+    def refused(session, uri):
+        raise RuntimeError(f"deleting the package {uri} was refused: HTTP 403")
+    monkeypatch.setattr(transfer, "delete_package", refused)
+    built = package_of(manifest)
+    result, text, target, _ = exporting(built)
+    assert result.exit_code == 3, text
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert package_differences(json.loads(target.read_text(encoding="utf-8")), manifest) == []
+    assert ("  the transfer package p1 is left on the server - delete it with `sas-viya transfer delete --id p1`, or "
+            "DELETE /transfer/packages/p1 (deleting the package /transfer/packages/p1 was refused: HTTP 403).") in text
+    assert ("SAS-Agentic-AI-Accelerator.json was written and checked; 1 object(s) of the export are left on the "
+            "server (named above). Exit code 3.") in text
+    # the job record is still deleted
+    assert exporting.deleted == ["/transfer/exportJobs/j1"]
+    # a download that fails writes nothing - and what the export left is deleted all the same
+    monkeypatch.setattr(transfer, "delete_package", lambda session, uri: exporting.deleted.append(uri))
+
+    def unreadable(session, uri):
+        raise RuntimeError(f"Downloading the package {uri} failed: HTTP 503")
+    monkeypatch.setattr(transfer, "download_package", unreadable)
+    target.unlink()
+    result = CliRunner().invoke(cli.app, ["package-export"])
+    assert result.exit_code == 1 and not target.exists()
+    assert exporting.deleted[-2:] == ["/transfer/packages/p1", "/transfer/exportJobs/j1"]
+
+
+def test_the_delete_of_a_transfer_object_says_when_it_was_refused():
+    from mdb.viya.transfer import delete_job, delete_package
+
+    class Session:
+        def __init__(self, answer):
+            self.answer = answer
+
+        def delete(self, uri):
+            if isinstance(self.answer, Exception):
+                raise self.answer
+            return SimpleNamespace(ok=self.answer < 400, status_code=self.answer, text="no")
+    delete_package(Session(204), "/transfer/packages/p1")
+    with pytest.raises(RuntimeError, match=r"deleting the package /transfer/packages/p1 was refused: HTTP 403 no"):
+        delete_package(Session(403), "/transfer/packages/p1")
+    with pytest.raises(RuntimeError, match=r"no answer to the delete of the job record /transfer/exportJobs/j1 "
+                                           r"\(TimeoutError: read timed out\)"):
+        delete_job(Session(TimeoutError("read timed out")), "/transfer/exportJobs/j1")
 
 
 def test_an_export_says_which_users_it_names_and_leaves_them(exporting, manifest):
@@ -1200,7 +1263,7 @@ def test_an_export_that_differs_from_the_checkout_leaves_the_shipped_package_alo
     assert "  file 'RAG/rag_core/adapters/__init__.py' is in the manifest but not in the package\n" in text
     assert "2 difference(s) between the export and the checkout." in text and "`mdb content-deploy`" in text
     assert "Nothing was written: SAS-Agentic-AI-Accelerator.json is as it was before the export." in text
-    assert "Wrote" not in text and "Review the diff" not in text
+    assert "Wrote" not in text and "then commit this file" not in text
 
 
 def test_an_export_of_a_report_that_was_not_saved_with_the_current_ui_is_not_written(exporting, manifest):
@@ -1233,7 +1296,7 @@ def test_an_export_of_another_root_needs_a_file_of_its_own(exporting, manifest, 
     written = json.loads(elsewhere.read_text(encoding="utf-8"))
     assert package_differences(written, manifest) == []
     # it equals the checkout, and still is not the file of the release: nothing to commit
-    assert "Review the diff" not in text
+    assert "then commit this file" not in text
     assert text.rstrip().splitlines()[-1] == (
         "The file equals the checkout and is not the release file "
         "(SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json): there is nothing to commit.")
@@ -1258,7 +1321,7 @@ def test_a_test_folder_without_reports_is_exported_with_its_differences_allowed(
            "of the release." in text
     assert elsewhere.is_file()
     # the last line says what to do with such a file - not to commit it, as it did
-    assert "commit it" not in text and "Review the diff" not in text
+    assert "commit it" not in text and "then commit this file" not in text
     assert text.rstrip().splitlines()[-1] == (
         f"Keep this file out of the repository. `mdb builders-import {cli._shell_word(elsewhere)} --content-root "
         "<folder> --no-reports` brings what it holds into a test folder.")
