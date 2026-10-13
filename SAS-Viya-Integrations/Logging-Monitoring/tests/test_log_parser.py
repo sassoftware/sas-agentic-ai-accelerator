@@ -10,7 +10,7 @@ import math
 import random
 import re
 import types
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -767,9 +767,9 @@ def test_about_tab_names_every_column_and_what_the_program_does_with_it(monkeypa
 def test_about_tab_is_about_the_program_and_the_changelog_starts_with_this_version():
     texts = _about_tab()
 
-    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.5 (")
+    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.6 (")
     changelog = texts["textChangelog"]
-    assert (changelog.index("Version: 2.5") < changelog.index("Version: 2.4") < changelog.index("Version: 2.3") < changelog.index("Version: 2.2")
+    assert (changelog.index("Version: 2.6") < changelog.index("Version: 2.5") < changelog.index("Version: 2.4") < changelog.index("Version: 2.3") < changelog.index("Version: 2.2")
             < changelog.index("Version: 2.1") < changelog.index("Version: 2.0"))
     # What a release has not run yet is said in the changelog of the release, not in the step
     for name, text in texts.items():
@@ -828,8 +828,8 @@ def test_about_tab_says_of_the_condition_code_what_was_measured():
             "program do not run until the condition code is set back to 0 - in the code of a flow the first of them is the end action of the flow.") in comment[0]
     # the same comment stands in the code file, which holds the program of the step
     assert comment[0] in code_file_program()
-    assert _about_tab()["textChangelog"].startswith(
-        "* Version: 2.5 (12OCT2026) - The About tab says of a run that ends with the condition code 1012 what was measured")
+    assert "* Version: 2.5 (12OCT2026) - The About tab says of a run that ends with the condition code 1012 what was measured" in (
+        _about_tab()["textChangelog"])
 
 
 # ---------------------------------------------------------------------------
@@ -1516,8 +1516,9 @@ def _overlap_note(run):
 
 END_NOTE = re.compile(
     r"(\d+) request\(s\) were running where the lines of their container end - at the end of the file, or at the end of a part "
-    r"of it, where the time of the lines goes back\. The log holds neither a response nor an error for them, and failed is "
-    r"missing for them\.")
+    r"of it: where the collection script wrote its line in front of the lines of the next container, or, in a file without "
+    r"such lines, where the time of the lines goes back\. The log holds neither a response nor an error for them, and failed "
+    r"is missing for them\.")
 
 
 def _end_counts(messages):
@@ -2368,65 +2369,304 @@ def test_request_that_starts_inside_a_response_is_a_request(monkeypatch, tmp_pat
     assert _overlap_note(run) == (2, 0, 0)
 
 
-@pytest.mark.parametrize("quoted_time, status", [
-    ("2026-01-05 09:15:00", 200), ("2026-01-05 09:15:10", 200), ("2026-01-05 09:15:30", 200), ("2026-01-05 09:14:59", 200),
-    ("2026-01-05 09:14:58", None), ("2026-01-05 08:00:00", None), ("2026-01-05 09:15:31", None), ("2026-01-06 09:15:00", None)],
-    ids=["with the time of the request line", "with a time while the request ran", "with the time of the Response line",
-         "one second before the request line", "two seconds before the request line", "an hour before",
-         "one second after the Response line", "a day later"])
-def test_response_that_quotes_a_request_line_and_its_headers_line_reads_as_a_request(monkeypatch, tmp_path, quoted_time, status):
-    """What the lines do not tell apart: a response that holds a request line with a 'Request
-    Headers:' line behind it, each at the start of a line as a container writes them. One
-    more row is written, and the response ends in front of the quoted lines. The request
-    keeps its 'Response:' line where the quoted lines carry a time from one second before
-    its request line to the time of its 'Response:' line. Quoted with an earlier or a later
-    time, the lines of the request and the quoted ones are not in the order of one
-    container: its status and failed stay missing, which a NOTE counts - it is never
-    called failed for it."""
-    quoted = [f"{quoted_time} - api - INFO - Request: POST /demo_llm",
-              f"{quoted_time} - api - INFO - Request Headers: Host: quoted.example.com"]
+# What the parser writes for a response whose text holds a request line that is then not known: the response is missing
+UNKNOWN_RESPONSE_NOTE = ("1 request(s) have no response: a line that reads as a request line stands in their response, in front of the "
+                         "next line of their transaction, and nothing behind it in its part says whether it is a line of the response or "
+                         "a request that came in while the response was written and that the end of the part cut off. It was read as a "
+                         "line of the response.")
+QUOTED_TIMES = ["2026-01-05 09:15:00", "2026-01-05 09:15:10", "2026-01-05 09:15:30", "2026-01-05 09:14:59", "2026-01-05 09:14:58",
+                "2026-01-05 08:00:00", "2026-01-05 09:15:31", "2026-01-06 09:15:00"]
+QUOTED_TIME_IDS = ["with the time of the request line", "with a time while the request ran", "with the time of the Response line",
+                   "one second before the request line", "two seconds before the request line", "an hour before",
+                   "one second after the Response line", "a day later"]
+
+
+@pytest.mark.parametrize("headers", [True, False], ids=["with a Request Headers line behind it", "without one"])
+@pytest.mark.parametrize("quoted_time", QUOTED_TIMES, ids=QUOTED_TIME_IDS)
+def test_response_that_quotes_a_request_line_is_whole_where_a_later_request_got_its_transaction(monkeypatch, tmp_path, quoted_time, headers):
+    """A response that holds a request line - with a 'Request Headers:' line behind it, or with no
+    further line that starts like a log line up to the next line of the transaction - at the
+    start of a line as a container writes them, with any time. The line gets no transaction,
+    no error, no status and no response of its own, and a request that came later got its
+    transaction, which a container gives a request at once: it is a line of the response. The
+    response is whole, no row is written for the quoted line, and the request keeps its status
+    - also where the quoted time is older or younger than the request. Up to release 2.3.0 of
+    before this round one more row was written and the response ended in front of the quoted
+    lines, and with an earlier or a later time the status of the request was missing."""
+    quoted = [f"{quoted_time} - api - INFO - Request: POST /demo_llm"]
+    if headers:
+        quoted.append(f"{quoted_time} - api - INFO - Request Headers: Host: quoted.example.com")
     run = run_parser(monkeypatch, _write(tmp_path, as_log(
         llm_block(finished="2026-01-05 09:15:30", response="Like this:\n" + "\n".join(quoted)),
         llm_block(timestamp="2026-01-07 10:00:00", user_prompt="the next request", response="the next answer"))))
 
     frame = run.uploads[0]["frame"]
-    assert len(frame) == 3
-    assert (frame.loc[0, "response"], frame.loc[0, "prompt_length"]) == ("Like this:", 21)
-    if status is None:
-        assert missing(frame.loc[0, "status_code"]) and missing(frame.loc[0, "failed"])
-    else:
-        assert (frame.loc[0, "status_code"], frame.loc[0, "failed"]) == (status, 0)
-    assert missing(frame.loc[1, "user_prompt"]) and missing(frame.loc[1, "status_code"]) and missing(frame.loc[1, "failed"])
-    assert (frame.loc[2, "response"], frame.loc[2, "status_code"], frame.loc[2, "failed"]) == ("the next answer", 200, 0)
-    # Both rows are counted, by one NOTE or by the other
-    counted = (_overlap_counts(run.sas.messages) or (0,))[0] + (_end_counts(run.sas.messages) or 0)
-    assert counted == 2 and all(kind == "NOTE" for kind, _ in run.sas.messages)
+    assert len(frame) == 2
+    assert frame.loc[0, "response"] == "Like this: " + " ".join(quoted)
+    assert (frame.loc[0, "prompt_length"], frame.loc[0, "status_code"], frame.loc[0, "failed"]) == (21, 200, 0)
+    assert (frame.loc[1, "user_prompt"], frame.loc[1, "response"], frame.loc[1, "status_code"], frame.loc[1, "failed"]) == (
+        "the next request", "the next answer", 200, 0)
+    assert run.sas.messages == []
 
 
-@pytest.mark.parametrize("behind, rows", [([], 2), (["that was it"], 2),
-                                          (["2026-01-05 09:15:00 - scoreModel - INFO - prompt_length: 99999"], 1),
-                                          (["that was it", "2026-01-05 09:15:00 - scoreModel - INFO - prompt_length: 99999"], 1)],
-                         ids=["nothing", "a line of text", "a line that starts like a log line", "text and a line that starts like a log line"])
-def test_request_line_that_is_the_last_log_line_of_a_response_reads_as_a_request(monkeypatch, tmp_path, behind, rows):
-    """The other case the lines do not tell apart: a response that holds a request line and
-    behind it, up to the next line of the transaction, no further line that starts like a
-    log line - lines of text can follow. One more row is written and the response ends in
-    front of the request line. With one more line that starts like a log line behind it,
-    the request line is text of the response."""
+@pytest.mark.parametrize("behind, quoted_as_text", [([], False), (["that was it"], False),
+                                                    (["2026-01-05 09:15:00 - api - INFO - Request Headers: Host: quoted.example.com"], False),
+                                                    (["2026-01-05 09:15:00 - scoreModel - INFO - prompt_length: 99999"], True),
+                                                    (["that was it", "2026-01-05 09:15:00 - scoreModel - INFO - prompt_length: 99999"], True)],
+                         ids=["nothing", "a line of text", "a Request Headers line", "a line that starts like a log line",
+                              "text and a line that starts like a log line"])
+def test_request_line_at_the_end_of_a_response_with_nothing_behind_it_leaves_the_response_unknown(monkeypatch, tmp_path, behind, quoted_as_text):
+    """The case the lines do not tell apart: a request line in a response, at the end of the
+    file - or of its part -, with nothing behind it that says whether it is a line of the
+    response or a request that came in while the response was written and that the end of the
+    file cut off before its transaction began. Two files with these lines, one of a model that
+    quoted them and one of a container whose collection ended there, are the same line for
+    line (test_the_two_files_that_need_different_answers_are_the_same_line_for_line). It is
+    read as a line of the response and no row is written for it; the response is missing, and
+    a NOTE counts it - the request keeps its status. A line that starts like a log line behind
+    it and is no first line of a request makes it text, as before."""
     quoted = ["2026-01-05 09:15:00 - api - INFO - Request: POST /x"] + behind
     run = run_parser(monkeypatch, _write(tmp_path, as_log(llm_block(response="Like this:\n" + "\n".join(quoted)))))
 
     frame = run.uploads[0]["frame"]
-    assert len(frame) == rows
+    assert len(frame) == 1
     assert (frame.loc[0, "status_code"], frame.loc[0, "failed"], frame.loc[0, "prompt_length"]) == (200, 0, 21)
-    if rows == 2:
-        assert frame.loc[0, "response"] == "Like this:"
-        assert frame.loc[1, "model"] == "x" and all(missing(frame.loc[1, column]) for column in ("user_prompt", "status_code", "failed"))
-        assert "that was it" not in frame.to_csv()
-        assert _overlap_note(run) == (2, 0, 1)
-    else:
+    if quoted_as_text:
         assert frame.loc[0, "response"] == "Like this: " + " ".join(quoted)
         assert run.sas.messages == []
+    else:
+        assert missing(frame.loc[0, "response"])
+        assert "that was it" not in frame.to_csv() and "/x" not in frame.to_csv()
+        assert run.sas.messages == [("NOTE", UNKNOWN_RESPONSE_NOTE)]
+
+
+def _quoted_or_cut_off():
+    """The lines of a response whose text ends with a request line and its 'Request Headers:'
+    line, and the rest of the request, up to the end of the file: what a model writes that
+    quotes them, and what a container writes for a request that came in while the response was
+    written, whose transaction would begin behind the end of the collection."""
+    response = llm_block(response="The answer.")
+    response_line = next(index for index, line in enumerate(response) if " - scoreModel - INFO - response: " in line)
+    request = llm_block(model="demo_llm", user_prompt="a request that came in")
+    return response[:response_line + 1], request[:8], response[response_line + 1:]
+
+
+def test_the_two_files_that_need_different_answers_are_the_same_line_for_line(monkeypatch, tmp_path):
+    """The proof that the case above is not decided by any rule: a container that got a request
+    while it wrote the response of another one, collected before the transaction of the request
+    began, writes the response line, the request line, its 'Request Headers:' and 'Request Data:'
+    lines and the two 'Randomly generated' lines, and the rest of the first request. A model that
+    quotes those lines in its response gives the same lines. Built both ways the two files are
+    the same, byte for byte - and one needs a row for the request that came in and the response
+    'The answer.', the other no such row and the response with the quoted lines. Neither row
+    nor response is written then: the parser writes no value of the other reading."""
+    head, request, tail = _quoted_or_cut_off()
+    cut_off = as_log(head, request, tail)
+    # The model answers with the lines of the request behind its first sentence
+    quoted = as_log(llm_block(response="The answer.\n" + "\n".join(request)))
+    assert cut_off == quoted
+
+    run = run_parser(monkeypatch, _write(tmp_path, cut_off))
+    frame = run.uploads[0]["frame"]
+    assert len(frame) == 1
+    assert (frame.loc[0, "status_code"], frame.loc[0, "failed"]) == (200, 0) and missing(frame.loc[0, "response"])
+    assert "a request that came in" not in frame.to_csv()
+    assert run.sas.messages == [("NOTE", UNKNOWN_RESPONSE_NOTE)]
+
+
+def test_request_that_came_in_during_a_response_and_got_its_transaction_stays_a_request(monkeypatch, tmp_path):
+    """The other side of the rule: the same lines, and the transaction of the request that came
+    in begins behind the end of the first request. It is a request, the response ends in front
+    of its request line, and both requests have all their values."""
+    head, request, tail = _quoted_or_cut_off()
+    rest = llm_block(model="demo_llm", user_prompt="a request that came in", response="the second answer")[8:]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(head, request, tail, rest)))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["user_prompt"]) == ["What is the capital of Austria?", "a request that came in"]
+    assert (frame.loc[0, "response"], frame.loc[0, "status_code"], frame.loc[0, "failed"]) == ("The answer.", 200, 0)
+    assert (frame.loc[1, "response"], frame.loc[1, "status_code"], frame.loc[1, "failed"]) == ("the second answer", 200, 0)
+
+
+def test_a_quoted_request_line_that_scores_nothing_leaves_the_response_unknown(monkeypatch, tmp_path):
+    """A request line for a GET - the health check of a container - gets no transaction whether it is a request
+    or a line of the response: nothing decides it, also where later requests got their transactions."""
+    quoted = ["2026-01-05 09:15:00 - api - INFO - Request: GET /openapi.json",
+              "2026-01-05 09:15:00 - api - INFO - Request Headers: Host: quoted.example.com"]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(
+        llm_block(response="Like this:\n" + "\n".join(quoted)),
+        llm_block(timestamp="2026-01-05 09:16:00", user_prompt="the next request", response="the next answer"))))
+
+    frame = run.uploads[0]["frame"]
+    assert len(frame) == 2 and missing(frame.loc[0, "response"]) and (frame.loc[0, "status_code"], frame.loc[0, "failed"]) == (200, 0)
+    assert frame.loc[1, "response"] == "the next answer"
+    assert run.sas.messages == [("NOTE", UNKNOWN_RESPONSE_NOTE)]
+
+
+def test_a_response_data_line_of_another_transaction_ends_a_response(monkeypatch, tmp_path):
+    """The 'Response Data:' line of a request whose 'Response:' line came earlier can be written while the
+    response of the next request is: it names its transaction, and it is no text of that response."""
+    first = llm_block(timestamp="2026-01-05 09:00:00", user_prompt="question A", response="answer A")
+    second = llm_block(timestamp="2026-01-05 09:00:00", user_prompt="question B", response="answer B")
+    response_data = first[-1]
+    assert response_data.startswith("2026-01-05 09:00:00 - api - INFO - Response Data: ")
+    response_line = next(index for index, line in enumerate(second) if " - scoreModel - INFO - response: " in line)
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(first[:-1], second[:response_line + 1], [response_data],
+                                                          second[response_line + 1:])))
+
+    frame = run.uploads[0]["frame"]
+    assert list(frame["response"]) == ["answer A", "answer B"]
+    assert list(frame["status_code"]) == [200, 200]
+
+
+# ---------------------------------------------------------------------------
+# The line the collection script writes in front of the lines of every container
+# ---------------------------------------------------------------------------
+
+def collected(pod, at="2026-01-05T10:00:00Z", container="scr"):
+    return f"#=# llm-log-collection pod={pod} container={container} collected={at} #=#"
+
+
+def _serial_block(serial, timestamp="2026-01-05 09:00:00"):
+    return llm_block(timestamp=timestamp, system_prompt=f"System text {serial}.", user_prompt=f"Question number {serial}?",
+                     prompt_length=1000 + serial, output_length=5000 + serial, run_time=100.5 + serial,
+                     response=f"Answer number {serial} of the model.")
+
+
+def _restamped(lines, stamp):
+    return [stamp + line[19:] if is_log_line(line) else line for line in lines]
+
+
+def is_log_line(line):
+    return line[:4].isdigit() and line[4:5] == "-" and " - " in line
+
+
+def test_a_part_that_ends_on_a_running_request_ends_it_at_the_line_of_the_collection_script(monkeypatch, tmp_path):
+    """Review-16 and review-18: a part that ends on a running request, followed by a part whose lines are younger
+    than that request line - the time does not go back, and before this release the score lines of the next part
+    were taken for the lines of the request that was running. With the line of the collection script the request
+    ends there, cut off: failed is missing, the NOTE counts it, and the request of the next part has its own values."""
+    running = _serial_block(1, "2026-01-05 09:00:00")
+    scoring = next(index for index, line in enumerate(running) if " - scoreModel - INFO - prompt_length: " in line)
+    nxt = _restamped(_serial_block(2), "2026-01-05 09:00:30")
+    text = as_log([collected("demo-llm-1")], running[:scoring + 1], [collected("demo-llm-2")], nxt)
+
+    run = run_parser(monkeypatch, _write(tmp_path, text))
+    frame = run.uploads[0]["frame"]
+    assert list(frame["user_prompt"]) == ["Question number 1?", "Question number 2?"]
+    assert frame.loc[0, "prompt_length"] == 1001 and all(missing(frame.loc[0, column]) for column in ("output_length", "runtime", "response",
+                                                                                                       "status_code", "failed"))
+    assert (frame.loc[1, "prompt_length"], frame.loc[1, "output_length"], frame.loc[1, "response"], frame.loc[1, "failed"]) == (
+        1002, 5002, "Answer number 2 of the model.", 0)
+    assert _end_note(run) == 1
+    # the same lines without the two lines of the collection script: the time does not go back, so the file is one part,
+    # and the request that was cut off is a request whose container went on without answering it - failed = 1
+    plain = run_parser(monkeypatch, _write(tmp_path, as_log(running[:scoring + 1], nxt), name="plain.log"))
+    assert plain.uploads[0]["frame"].loc[0, "failed"] == 1
+
+
+def test_nothing_that_was_read_crosses_the_line_of_the_collection_script(monkeypatch, tmp_path):
+    """A part that begins with the rest of a transaction whose request line is in front of the collection is followed
+    to its end and given to no request - also where a request of the part waits for its transaction."""
+    earlier = _serial_block(1, "2026-01-05 09:00:00")
+    transaction = next(index for index, line in enumerate(earlier) if "The data was successfully formatted" in line)
+    waiting = lines_of(log_units(_serial_block(2, "2026-01-05 09:00:00"))[:5])   # the request line and its four first lines
+    text = as_log([collected("demo-llm-1")], waiting,                                     # the first part: request 2 has its first lines
+                  [collected("demo-llm-1", "2026-01-05T11:00:00Z")], earlier[transaction + 1:])   # the next one: the rest of request 1
+
+    run = run_parser(monkeypatch, _write(tmp_path, text))
+    frame = run.uploads[0]["frame"]
+    assert list(frame["user_prompt"]) == ["Question number 2?"]
+    assert all(missing(frame.loc[0, column]) for column in ("prompt_length", "response", "status_code", "failed"))
+
+
+@pytest.mark.parametrize("back", [2, 5, 30])
+def test_a_line_that_is_seconds_older_inside_a_part_of_a_collection_ends_nothing(monkeypatch, tmp_path, back):
+    """Review-18: two requests of one container that overlap, with lines 2 to 30 seconds older than the request line
+    in front of them. Without the line of the collection script such a line is the first line of the next part
+    (the time rule, which stays for those files). With it the part is one container, the order of the lines decides,
+    and no row gets failed = 1 or a value of the other request."""
+    a, b = log_units(_numbered(1)), log_units(_numbered(2))
+    order = [(a, 0), (a, 1), (a, 2), (a, 3), (a, 4), (a, 5), (a, 6), (a, 7), (b, 0), (b, 1), (b, 2), (b, 3), (b, 4)] + \
+            [(a, k) for k in range(8, 16)] + [(b, k) for k in range(5, 16)]
+    stamps = []
+    for position, _ in enumerate(order):
+        moment = datetime(2026, 1, 5, 9, 0, 0) + timedelta(seconds=position)
+        if position == 14:                       # a line of request 1 written late
+            moment -= timedelta(seconds=back + 1)
+        stamps.append(moment.strftime("%Y-%m-%d %H:%M:%S"))
+    lines = [line for (units, k), stamp in zip(order, stamps) for line in _restamped(units[k], stamp)]
+
+    run = run_parser(monkeypatch, _write(tmp_path, as_log([collected("demo-llm-1")], lines)))
+    frame = run.uploads[0]["frame"]
+    for row, serial in zip(frame.itertuples(), (1, 2)):
+        assert row.failed != 1
+        found = _numbers_in(frame.loc[row.Index])
+        assert set(found.values()) <= {serial}, (serial, found)
+    assert list(frame["failed"]) == [0, 0]
+
+
+def test_a_line_of_that_shape_that_is_older_than_the_one_in_front_of_it_is_text(monkeypatch, tmp_path):
+    """The script writes one time of collection for one run, and a later run a later one. A line of the shape whose
+    time is older than the line in front of it - in the text of a response, for one - was not written by the script."""
+    forged = collected("demo-llm-9", "2026-01-05T09:00:00Z")
+    run = run_parser(monkeypatch, _write(tmp_path, as_log([collected("demo-llm-1")], llm_block(response="Like this:\n" + forged))))
+
+    frame = run.uploads[0]["frame"]
+    assert frame.loc[0, "response"] == "Like this: " + forged
+    assert (frame.loc[0, "status_code"], frame.loc[0, "failed"]) == (200, 0) and run.sas.messages == []
+
+
+def test_a_file_without_the_lines_of_the_collection_script_is_read_as_before(monkeypatch, tmp_path):
+    """The same requests with and without the lines: one part each, the rows the same."""
+    text = as_log(_serial_block(1, "2026-01-05 09:00:00"), _serial_block(2, "2026-01-05 09:01:00"))
+    with_lines = as_log([collected("demo-llm-1")], _serial_block(1, "2026-01-05 09:00:00"), _serial_block(2, "2026-01-05 09:01:00"))
+
+    plain = run_parser(monkeypatch, _write(tmp_path, text)).uploads[0]["frame"]
+    marked = run_parser(monkeypatch, _write(tmp_path, with_lines, name="marked.log")).uploads[0]["frame"]
+    assert plain.equals(marked) and len(plain) == 2
+
+
+def _stale_time_file():
+    """The smallest file of the rule review-18 found (p_gen2 'parts', 10 of 600 files): a part whose requests could
+    not be told apart for a while ends while nothing runs; the next part begins 50 seconds earlier with two requests
+    whose first lines interleave, then a third request line. The time of the newest request that could not be told
+    apart was kept from the first part, so a line of the second part read as older by more than a line is written
+    late: a part began that is none, and the third request took the transaction of the first one of its part."""
+    def units(serial):
+        return log_units(_serial_block(serial))
+
+    def at(unit, stamp):
+        return [stamp + unit[0][19:]] + unit[1:]
+
+    b, c, d, e, f = units(2), units(3), units(4), units(5), units(6)
+    out = []
+    first, second = "2026-01-05 09:00:", "2026-01-05 08:59:"
+    out += [at(b[0], first + "05"), at(b[1], first + "05"), at(c[0], first + "07"), at(b[2], first + "07")]
+    out += [at(c[k], first + "08") for k in range(1, 5)] + [at(b[k], first + "08") for k in range(3, 5)]
+    out += [at(b[k], first + "10") for k in range(5, 16)] + [at(c[k], first + "20") for k in range(5, 16)]
+    out += [at(d[0], second + "30"), at(d[1], second + "30"), at(e[0], second + "31"), at(d[2], second + "31"),
+            at(e[1], second + "31"), at(e[2], second + "31")]
+    out += [at(d[k], second + "32") for k in range(3, 5)] + [at(e[k], second + "32") for k in range(3, 5)]
+    out += [at(f[0], second + "33")] + [at(d[k], second + "35") for k in range(5, 16)]
+    out += [at(f[k], second + "40") for k in range(1, 16)] + [at(e[k], second + "45") for k in range(5, 16)]
+    return "".join(line + "\n" for unit in out for line in unit)
+
+
+def test_a_part_that_begins_while_nothing_runs_keeps_no_time_of_the_part_in_front_of_it(monkeypatch, tmp_path):
+    """Before: the row of request 6 had the transaction id, the token counts, the run time and the response of
+    request 4. Now no row has a value of another request; the requests that could not be told apart have missing
+    values, which the NOTE counts."""
+    run = run_parser(monkeypatch, _write(tmp_path, _stale_time_file()))
+    frame = run.uploads[0]["frame"]
+
+    assert list(frame["user_prompt"].fillna("-")).count("-") >= 0 and len(frame) == 5
+    for row, serial in zip(frame.itertuples(), (2, 3, 4, 5, 6)):
+        found = _numbers_in(frame.loc[row.Index])
+        assert set(found.values()) <= {serial}, (serial, found)
+        assert row.transaction_id is None or row.transaction_id == made_up_id(
+            "2026-01-05 09:00:00", "demo_llm", llm_inputs(f"System text {serial}.", f"Question number {serial}?")), serial
+    assert _overlap_counts(run.sas.messages)[0] == 5
 
 
 # ---------------------------------------------------------------------------

@@ -116,6 +116,106 @@ def test_every_line_the_script_writes_went_through_the_redaction():
         assert re.search(r"\| redact_llm_log >> \"\$llm_log_path\"$", line), line
 
 
+# ---------------------------------------------------------------------------
+# The line in front of the lines of every container (release 2.3.0)
+#
+# The tests take the script from the guide, as the ones above do: the bash block that starts with
+# "# Set the script variables for your environment". They hold the script of round 19, which the
+# guide carries from the commit that puts it there.
+# ---------------------------------------------------------------------------
+
+def collection_marker():
+    """The pattern the parser takes the line by, from the code file."""
+    found = re.search(r"^COLLECTION_MARKER = re\.compile\(r'(.*)'\)$", code_file_program(), re.MULTILINE)
+    assert found, "the parser no longer defines COLLECTION_MARKER"
+    return re.compile(found.group(1))
+
+
+def marker_format():
+    """The format of the printf that writes the line, as the shell hands it to printf."""
+    found = re.search(r"^\s*printf (.*)$", collection_script(), re.MULTILINE)
+    assert found, "the collection script writes no line in front of the lines of a container"
+    words = shlex.split(found.group(1))
+    return words[0], words[1:]
+
+
+def test_the_script_writes_one_line_in_front_of_the_lines_of_every_container():
+    script = collection_script()
+    fmt, arguments = marker_format()
+
+    assert fmt == "#=# llm-log-collection pod=%s container=%s collected=%s #=#\\n"
+    assert arguments == ["${pod#pod/}", "$container", "$llm_collected_at"]
+    # one time of collection for the run, in UTC, taken before the first container
+    assert re.search(r'^llm_collected_at="\$\(date -u \+%Y-%m-%dT%H:%M:%SZ\)"$', script, re.MULTILINE)
+    assert script.index("llm_collected_at=") < script.index("for pod in")
+    # every container of every pod on its own, the line in front of its lines, both through the redaction
+    loop = script[script.index("for pod in"):]
+    assert "for container in $(kubectl get -n \"$llm_namespace\" \"$pod\" -o jsonpath='{.spec.containers[*].name}'); do" in loop
+    assert re.search(r"\{\n\s*printf .*\n\s*kubectl logs -n \"\$llm_namespace\" \"\$pod\" -c \"\$container\" --since=\"\$llm_logging_interval\"\n"
+                     r"\s*\} \| redact_llm_log >> \"\$llm_log_path\"\n", loop)
+    assert "--all-containers" not in script
+    # kubectl only reads
+    for command in re.findall(r"kubectl (\w+)", script):
+        assert command in ("get", "logs"), command
+
+
+def test_the_line_is_the_one_the_parser_takes():
+    fmt, _ = marker_format()
+    line = fmt.replace("\\n", "") % ("demo-llm-5d8f7c9b6-abcde", "demo-llm", "2026-10-13T09:00:00Z")
+
+    assert collection_marker().fullmatch(line)
+    # no line a container writes starts like it: a log line starts with its time
+    assert not line[:4].isdigit() and not collection_marker().fullmatch(log_line("2026-01-05 09:00:00", "api", line))
+
+
+@needs_gnu_sed
+def test_the_line_passes_the_redaction_as_it_is(tmp_path):
+    fmt, _ = marker_format()
+    line = fmt.replace("\\n", "") % ("demo-llm-5d8f7c9b6-abcde", "demo-llm", "2026-10-13T09:00:00Z")
+    assert redact(line + "\n", tmp_path) == line + "\n"
+
+
+needs_bash = pytest.mark.skipif(not shutil.which("bash") or not gnu_sed(), reason="the collection script needs bash and GNU sed")
+
+
+@needs_bash
+def test_a_collection_with_a_kubectl_that_answers_from_files_is_read_in_its_parts(monkeypatch, tmp_path):
+    """The script as the guide prints it, run with a kubectl of the test that knows two pods - one with two containers
+    - and answers 'kubectl logs' with a request block each. The file has one line in front of each container, the
+    parser reads one row per request, and the same lines without those three lines are read the same."""
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    blocks = {("demo-llm-1", "scr"): llm_block(timestamp="2026-01-05 09:00:00", user_prompt="first"),
+              ("demo-llm-2", "scr"): llm_block(timestamp="2026-01-05 08:59:59", user_prompt="second"),
+              ("demo-llm-2", "sidecar"): llm_block(timestamp="2026-01-05 09:00:05", user_prompt="third")}
+    for (pod, container), block in blocks.items():
+        (logs / f"{pod}.{container}.log").write_text(as_log(block), encoding="utf-8", newline="\n")
+    # kubectl of the test is a shell function in front of the script: a function is found before any command of
+    # the PATH, so no kubectl of the machine is called
+    stub = ("kubectl() {\n"
+            '  if [ "$1" = get ] && [ "$2" = pods ]; then printf "pod/demo-llm-1\\npod/demo-llm-2\\n"; return 0; fi\n'
+            '  if [ "$1" = get ]; then case "$4" in pod/demo-llm-1) echo scr;; pod/demo-llm-2) echo "scr sidecar";; esac; return 0; fi\n'
+            '  if [ "$1" = logs ]; then cat "' + logs.as_posix() + '/${4#pod/}.$6.log"; return 0; fi\n'
+            "  return 1\n"
+            "}\n")
+    collected = tmp_path / "llms.log"
+    script = re.sub(r'^llm_log_path=".*"$', f'llm_log_path="{collected.as_posix()}"', collection_script(), flags=re.MULTILINE)
+    assert script.count(collected.as_posix()) == 1
+    (tmp_path / "collect.sh").write_text(stub + script, encoding="utf-8", newline="\n")
+    subprocess.run(["bash", str(tmp_path / "collect.sh")], check=True, capture_output=True)
+
+    text = collected.read_text(encoding="utf-8")
+    markers = [line for line in text.split("\n") if collection_marker().fullmatch(line)]
+    assert [collection_marker().fullmatch(line).group(1, 2) for line in markers] == [("demo-llm-1", "scr"), ("demo-llm-2", "scr"),
+                                                                                  ("demo-llm-2", "sidecar")]
+    assert len({collection_marker().fullmatch(line).group(3) for line in markers}) == 1
+    (tmp_path / "marked").mkdir()
+    (tmp_path / "plain").mkdir()
+    marked = parse(monkeypatch, tmp_path / "marked", text)
+    plain = parse(monkeypatch, tmp_path / "plain", "".join(line + "\n" for line in text.split("\n")[:-1] if line not in markers))
+    assert list(marked["user_prompt"]) == ["first", "second", "third"] and marked.equals(plain)
+
+
 def test_the_shipped_deployment_templates_label_their_pods_app():
     """The selector of the script is the label the deployment templates give every model pod."""
     templates = sorted((REPOSITORY / "SCR-LLM-Deployment-YAML").glob("deploy-*.yaml"))
