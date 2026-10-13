@@ -549,3 +549,45 @@ def test_a_job_definition_without_the_parameter_gets_the_context_as_the_sentence
     viya.jobs[mine[UI_PATH]][0]["parameters"][0]["defaultValue"] = "Site context"
     result, fake, text = importing(Site(**{"Prompt Builder": options}))
     assert imports._context(viya) == "Site context"
+
+
+# ---- a custom step is registered without who saved it --------------------------------
+SAVED_BY = {"createdBy": "someone", "modifiedBy": "someone else", "creationTimeStamp": "2024-08-01T09:00:00.000Z",
+            "modifiedTimeStamp": "2025-01-01T09:00:00.000Z", "version": 2, "eTag": '"abc"', "localUi": "{}",
+            "links": [{"rel": "self", "href": "/dataFlows/steps/the-id-on-the-system-it-was-saved-on"}]}
+
+
+def test_a_step_reaches_a_site_without_the_user_its_step_file_carries(tmp_path, monkeypatch):
+    """gate-19: ten .step files of the repository carry the id of the user
+    who saved them, and the deploy POSTed the file as it is - while the
+    package names no user. A step is registered, and updated, without what
+    belongs to the system it was saved on."""
+    monkeypatch.setattr(content, "checkout_commit", lambda root: ("abc123", "2026-10-13T09:00:00+02:00"))
+    make_repo(tmp_path, sources={f"src/{STEP_NAME}": json.dumps({**SAVED_BY, **STEP})})
+    manifest = load_manifest(tmp_path)
+    viya = Viya()
+    assert deploy(viya, manifest).failed == []
+    uri, = viya.at(f"{CONTENT_ROOT}/{STEP_PATH}")
+    assert viya.steps[uri] == STEP and not set(SAVED_BY) & set(viya.steps[uri])
+    # the update writes the same body
+    (tmp_path / f"src/{STEP_NAME}").write_text(json.dumps({**SAVED_BY, **STEP, "ui": "{}"}), encoding="utf-8")
+    assert _statuses(deploy(viya, manifest))[STEP_PATH] == "updated"
+    assert viya.steps[uri] == {**STEP, "ui": "{}"}
+    assert _statuses(deploy(viya, manifest))[STEP_PATH] == EQUAL
+
+
+def test_no_step_of_the_repository_is_registered_with_a_user():
+    shipped = load_manifest(REPOSITORY)
+    source = content.CheckoutSource(shipped)
+    steps = [entry for entry in shipped.objects() if entry.kind == "step"]
+    carrying = 0
+    for entry in steps:
+        on_disk = json.loads(shipped.source_path(entry.source).read_text(encoding="utf-8"))
+        carrying += "createdBy" in on_disk
+        sent = json.loads(source.step_document(entry))
+        assert not {"createdBy", "modifiedBy", "creationTimeStamp", "modifiedTimeStamp", "links", "id"} & set(sent)
+        # what is compared, and the name the step is registered under, are those of the file
+        assert content.step_differences(on_disk, sent) == [] and sent["name"] == on_disk["name"] == entry.name
+        assert {key: on_disk.get(key) for key in ("displayName", "description", "type", "metadataVersion")} == \
+            {key: sent.get(key) for key in ("displayName", "description", "type", "metadataVersion")}
+    assert len(steps) == 18 and carrying > 0, "no .step file of the manifest carries a user any more"

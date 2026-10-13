@@ -707,11 +707,17 @@ class CheckoutSource:
         return file_bytes(self.manifest, entry)
 
     def step_body(self, entry: Entry) -> dict:
-        return step_body(self.manifest, entry)
+        """The step as it is compared and written: the .step file without
+        what belongs to the system it was saved on - who saved it and when,
+        its links and version. The same keys a package source leaves out, so
+        a step reaches a site the same way from either source."""
+        from .packages import _STEP_INSTANCE_KEYS
+        return {key: value for key, value in step_body(self.manifest, entry).items()
+                if key not in _STEP_INSTANCE_KEYS}
 
     def step_document(self, entry: Entry) -> bytes:
-        """The step as it is registered: the .step file as it is."""
-        return self.manifest.source_path(entry.source).read_bytes()
+        """The step as it is registered: `step_body`, as JSON."""
+        return json.dumps(self.step_body(entry), ensure_ascii=False).encode("utf-8")
 
     def job_body(self, entry: Entry) -> dict:
         return job_definition_body(self.manifest, entry)
