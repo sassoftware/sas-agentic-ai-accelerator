@@ -827,18 +827,25 @@ def load_facts(
 
 
 def _load_releases(session, ctx: "Context", caslib: str, server_name: str, table: str,
-                   changelog: Optional[Path] = None) -> dict:
+                   changelog: Optional[Path] = None, csv_data: Optional[bytes] = None) -> dict:
     """Parse CHANGELOG.md into the release table and load it (drop, upload,
-    promote, save). Shared by `mdb load-releases` and `mdb setup`."""
+    promote, save). Shared by `mdb load-releases`, `mdb setup` and `mdb
+    builders-import`. With `csv_data` - the Data/ACCELERATOR_RELEASES.csv a
+    package holds - that table is loaded as it is and no changelog is read."""
     import tempfile
-    from .core.releases import build_release_table
+    from .core.releases import build_release_table, rows_of_csv, summarise
     from .viya.cas import load_csv_table
-    source = changelog or (ctx.repo / "CHANGELOG.md")
-    if not source.is_file():
-        raise RuntimeError(f"no changelog at {source} - pass --changelog or set MDB_REPO to the accelerator clone")
     with tempfile.TemporaryDirectory() as tmp:
         csv_path = Path(tmp) / f"{table}.csv"
-        rows, summary = build_release_table(source, csv_path)
+        if csv_data is not None:
+            summary = summarise(rows_of_csv(csv_data))
+            csv_path.write_bytes(csv_data)
+        else:
+            source = changelog or (ctx.repo / "CHANGELOG.md")
+            if not source.is_file():
+                raise RuntimeError(f"no changelog at {source} - pass --changelog or set MDB_REPO to the accelerator "
+                                   "clone")
+            rows, summary = build_release_table(source, csv_path)
         result = load_csv_table(session, csv_path, table, caslib, server_name)
     summary["dropped"] = result["dropped"]
     return summary
@@ -895,7 +902,7 @@ def load_releases(
     Data-Driven Content object needs a data assignment before it renders -
     and it says which release an environment runs. `mdb setup` loads it too.
     """
-    from .core.releases import build_release_table
+    from .core.releases import build_release_table, current_words
     from .viya.cas import resolve_server
     ctx = Context()
     table_name = table or _releases_table()
@@ -907,7 +914,7 @@ def load_releases(
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1)
         console.print(f"Wrote {summary['rows']} rows for {summary['releases']} releases to {csv_out} "
-                      f"(current release: {summary['current'] or 'none dated'}).")
+                      f"({current_words(summary)}).")
         _print_release_counts(summary)
         return
     caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
@@ -924,7 +931,7 @@ def load_releases(
     console.print(f"  {table_name}: {summary['rows']} rows for {summary['releases']} releases, uploaded, "
                   f"promoted (global) and saved to disk{suffix}")
     _print_release_counts(summary)
-    console.print(f"[green]Done. Current release: {summary['current'] or 'none dated'}. Assign "
+    console.print(f"[green]Done. The table names the {current_words(summary)}. Assign "
                   f"{caslib}.{table_name} to the Prompt Builder object in SAS Visual Analytics.[/green]")
 
 
@@ -1123,9 +1130,10 @@ def setup(
             table_name = _releases_table()
             try:
                 server_name = resolve_server(session, os.environ.get("SAS_CAS_SERVER"))
+                from .core.releases import current_words
                 summary = _load_releases(session, ctx, caslib, server_name, table_name)
-                console.print(f"[green]loaded {caslib}.{table_name} ({summary['rows']} rows, current release "
-                              f"{summary['current'] or 'none dated'}) - assign it to the Prompt Builder object in "
+                console.print(f"[green]loaded {caslib}.{table_name} ({summary['rows']} rows, "
+                              f"{current_words(summary)}) - assign it to the Prompt Builder object in "
                               f"SAS Visual Analytics.[/green]")
             except (RuntimeError, ValueError) as exc:
                 console.print(f"[yellow]release table not loaded: {exc} - run 'mdb load-releases' later.[/yellow]")
@@ -1482,7 +1490,7 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
     return failures
 
 
-def _discovered_seeds(session, ctx: "Context", otherwise: str = "") -> dict:
+def _discovered_seeds(session, ctx: "Context", otherwise: str = "", kinds=None) -> dict:
     """{report name: seed} from this environment: the repository id, the
     project id of every seed kind the report needs, the SCR endpoint and the
     deployment type.
@@ -1498,10 +1506,13 @@ def _discovered_seeds(session, ctx: "Context", otherwise: str = "") -> dict:
     deployment_type = os.environ.get("SAS_DEPLOYMENT_TYPE", "k8s")
     scr_endpoint = _scr_endpoint()
     seeds: dict = {}
+    only = kinds
     for report_name, kinds in BUILDER_REPORTS.items():
         repository_id = None
         project_ids: dict = {}
         for kind in kinds:
+            if only is not None and kind not in only:
+                continue
             try:
                 ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
             except Exception as exc:
@@ -2040,6 +2051,31 @@ def _transfer_refusal(package_root: Optional[str], target_root: str) -> Optional
     return None
 
 
+def _missing_ids(captured: dict) -> list:
+    """The repository and project id options the captured Prompt Builder
+    section holds no value for, in the order of the report."""
+    from .core.options import MERGED_REPORT, SEED_PROJECT_LABELS
+    section = captured.get(MERGED_REPORT) or {}
+    labels = ["modelRepositoryID", *SEED_PROJECT_LABELS.values()]
+    return [label for label in labels if not str(section.get(label) or "").strip()]
+
+
+def _discover_missing(session, ctx: "Context", captured: dict, missing: list) -> dict:
+    """Fill the ids `missing` names into the captured section from discovery -
+    the kinds whose project id is missing, and the repository with them. A
+    value the report holds is never replaced. Returns {label: value} of what
+    was filled."""
+    from .core.options import BUILDER_REPORTS, MERGED_REPORT, SEED_PROJECT_LABELS
+    kinds = [kind for kind, label in SEED_PROJECT_LABELS.items() if label in missing] \
+        or list(BUILDER_REPORTS[MERGED_REPORT][:1])
+    seed = _discovered_seeds(session, ctx, "the option stays as the imported report has it",
+                             kinds=kinds).get(MERGED_REPORT, {})
+    section = captured.setdefault(MERGED_REPORT, {})
+    filled = {label: seed[label] for label in missing if str(seed.get(label) or "").strip()}
+    section.update(filled)
+    return filled
+
+
 def _known_context(saved: Optional[dict]) -> str:
     """The compute context a site's options name for jobs that run as the
     user who starts them: the option `ragComputeContext` of the Prompt
@@ -2105,6 +2141,16 @@ def builders_import(
     one transfer package: load the release table, import the reports, bring
     the files, custom steps and job definitions in place, write the Prompt
     Builder options back, and write the authorization commands for the folder.
+
+    THE RELEASE TABLE is the package's Data/ACCELERATOR_RELEASES.csv where
+    the package holds it - the table then says what was imported - else it
+    is made from the changelog of this checkout. What the command still needs
+    the accelerator clone for: mdb finds its repository first (every command
+    does), the manifest gives the default package file and content root and
+    says which parameters of a listed job definition are site settings, a
+    site without the Prompt Builder report is configured by discovery from
+    the model definitions, and a package without the release table takes it
+    from the changelog.
 
     TWO WAYS IN, by kind of object. The REPORTS, with the files that are
     children of a report (its pictures) and the folders they sit in, go
@@ -2194,11 +2240,13 @@ def builders_import(
     from .core.options import BUILDER_REPORTS
     from .core.packages import (PackageSource, legacy_objects, mapping_preview, report_labels,
                                 reports_package)
-    from .core.releases import DEFAULT_TABLE
+    from .core.packages import RELEASE_TABLE_PATH
+    from .core.releases import DEFAULT_TABLE, current_words
     from .viya.cas import resolve_server
     from .viya.content import CREATED, EQUAL, NOT_ATTEMPTED, UPDATED, DeployError, deploy
-    from .viya.transfer import (get_mapping, host_of, job_messages, job_tasks, job_uri, rehost_mapping,
-                                start_import, table_spec, task_problems, upload_package_bytes, wait_for_job)
+    from .viya.transfer import (delete_package, get_mapping, host_of, job_messages, job_tasks, job_uri,
+                                leftover_line, rehost_mapping, start_import, table_spec, task_problems,
+                                upload_package_bytes, wait_for_job)
     ctx = Context()
     manifest = _content_manifest(ctx, check_sources=False)
     files = [Path(p) for p in packages] if packages else [manifest.package_path]
@@ -2275,6 +2323,19 @@ def builders_import(
                 raise typer.Exit(1)
             if live:
                 saved = live
+                # a project id the report holds no value for (a 2.2.x site
+                # without the retired report has no embedding project in its
+                # Prompt Builder report): written back empty, it would empty
+                # the imported report's value. It is discovered instead.
+                missing = _missing_ids(live)
+                if missing and dry_run:
+                    console.print(f"Options: the report holds no value for {', '.join(missing)} - a run discovers "
+                                  "it from this deployment (which creates a missing project).", highlight=False)
+                elif missing:
+                    found = _discover_missing(session, ctx, live, missing)
+                    console.print(f"Options: the report holds no value for {', '.join(missing)} - discovered from "
+                                  "this deployment: " + (", ".join(f"{k} {v}" for k, v in found.items()) or "nothing")
+                                  + ".", highlight=False)
                 if dry_run:
                     console.print("Options: read from the report on this site; a run keeps them in a file and "
                                   "writes them back after the import.")
@@ -2299,16 +2360,26 @@ def builders_import(
             console.print(f"Compute context: {known} (the ingestion compute context of the options) - given to a "
                           "job definition this run creates; one the site has keeps its _contextName.",
                           markup=False, highlight=False)
+        # The release table is the one the package holds, where it holds one:
+        # the table then says what was imported, not what this checkout's
+        # changelog says now.
+        table_csv, table_from = None, "the changelog of this checkout"
+        for path, _package, source, _refusal in plans:
+            table_csv = source.release_table()
+            if table_csv is not None:
+                table_from = f"{RELEASE_TABLE_PATH} of {path.name}"
+                break
         if no_releases:
             console.print(f"Release table: not reloaded (--no-releases); reports bind to {releases_to}.")
         elif dry_run:
-            console.print(f"Release table: would load {caslib}.{table_name} on {server_name}.")
+            console.print(f"Release table: would load {caslib}.{table_name} on {server_name} from {table_from}.",
+                          highlight=False)
         else:
             try:
-                summary = _load_releases(session, ctx, caslib, server_name, table_name)
-                console.print(f"Release table: {caslib}.{table_name} loaded ({summary['rows']} rows, "
-                              f"current release {summary['current'] or 'none dated'}).")
-            except (RuntimeError, ValueError) as exc:
+                summary = _load_releases(session, ctx, caslib, server_name, table_name, csv_data=table_csv)
+                console.print(f"Release table: {caslib}.{table_name} loaded from {table_from} ({summary['rows']} "
+                              f"rows, {current_words(summary)}).", highlight=False)
+            except (RuntimeError, ValueError, UnicodeDecodeError) as exc:
                 console.print(f"[red]Release table not loaded: {exc}[/red]")
                 raise typer.Exit(1)
         for path, package, source, refusal in plans:
@@ -2363,6 +2434,7 @@ def builders_import(
                     for change in changes:
                         console.print(f"    mapping: {change}")
                 else:
+                    uploaded = None
                     try:
                         uploaded = upload_package_bytes(
                             session, path.name, (json.dumps(reduced, ensure_ascii=False) + "\n").encode("utf-8"))
@@ -2396,6 +2468,15 @@ def builders_import(
                     except RuntimeError as exc:
                         console.print(f"    [red]{exc}[/red]", highlight=False)
                         package_failed = True
+                    if uploaded and uploaded.get("id"):
+                        # the uploaded part of the package is not left on the
+                        # server; the import job keeps its own record
+                        package_uri = f"/transfer/packages/{uploaded['id']}"
+                        try:
+                            delete_package(session, package_uri)
+                        except RuntimeError as exc:
+                            console.print(f"    {leftover_line(package_uri)} ({exc}).", style="yellow",
+                                          markup=False, highlight=False, soft_wrap=True)
                     if package_failed:
                         failed_reports.update(carried)
 
@@ -2489,7 +2570,15 @@ def builders_import(
             # The command that finishes the job. `mdb options-restore` writes
             # options and imports nothing, so it is only the answer when every
             # package imported and the options were not all written.
-            if saved is None:
+            refused = any(source.reports and refusal is not None for _p, _pk, source, refusal in plans)
+            if saved is None and not arriving:
+                # no Builder report was imported, so the repeat imports and configures none either
+                again = given
+                does = ("it brings again what did not arrive in place; "
+                        + ("with --no-reports no report is imported or configured" if no_reports else
+                           "the reports are imported only where the line above allows it" if refused else
+                           "no report is imported or configured by it"))
+            elif saved is None:
                 again, does = given, "it imports again and configures the report from this deployment"
             elif not_imported:
                 again = given
@@ -2510,6 +2599,11 @@ def builders_import(
         raise typer.Exit(1)
     if dry_run:
         return
+    if captured_file is not None and captured_file.is_file():
+        # every option it holds is back in the report; a run that did not get
+        # there keeps it, and its repeat line names it
+        captured_file.unlink()
+        console.print(f"Removed {captured_file}: every option it held is back in the report.", highlight=False)
     console.print("\n[green]Done.[/green] Next: the Content Security Policy settings are described in the "
                   "administration guide, 'Deploying the Builder UIs', step 4."
                   + ("" if saved is not None or not targets else

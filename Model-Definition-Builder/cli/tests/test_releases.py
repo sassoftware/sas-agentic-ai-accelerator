@@ -212,6 +212,26 @@ def test_the_merge_release_lands_where_the_report_filters():
     assert not any(r["is_current"] for r in rows)
 
 
+def test_a_table_read_back_from_its_csv_says_the_same_and_names_the_unreleased_one(tmp_path):
+    """check-live-18: `mdb load-releases` ended 'Current release: 2.2.0' while
+    release.json of the same checkout said 2.3.0 - the newest heading is
+    marked unreleased. The line names both. The summary of the CSV a package
+    holds is the summary of the changelog it was made from."""
+    from mdb.core.releases import csv_bytes, current_words, rows_of_csv, summarise
+    rows, summary = build_release_table(REPO / "CHANGELOG.md", tmp_path / "releases.csv")
+    again = summarise(rows_of_csv((tmp_path / "releases.csv").read_bytes()))
+    assert again == summary
+    text = "## [2.3.0] - unreleased\n\n### Added\n\n- **A.** a.\n\n## [2.2.0] - 2026-10-07\n\n### Fixed\n\n- **B.** b.\n"
+    small = summarise(rows_from(parse_changelog(text)))
+    assert (small["current"], small["unreleased"]) == ("2.2.0", "2.3.0")
+    assert current_words(small) == "latest dated release 2.2.0; 2.3.0 is in it as unreleased"
+    dated = summarise(rows_from(parse_changelog(text.replace("unreleased", "2026-10-20"))))
+    assert current_words(dated) == "latest dated release 2.3.0"
+    with pytest.raises(ValueError, match="not a release table"):
+        rows_of_csv(b"a,b\n1,2\n")
+    assert csv_bytes(rows_of_csv(csv_bytes(rows))) == csv_bytes(rows)
+
+
 def test_the_real_changelog_parses(tmp_path):
     rows, summary = build_release_table(REPO / "CHANGELOG.md", tmp_path / "releases.csv")
     assert summary["releases"] >= 12 and summary["rows"] > 400

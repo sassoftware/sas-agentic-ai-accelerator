@@ -444,20 +444,55 @@ def build_release_table(changelog: Path, csv_path: Path) -> tuple[list[dict], di
         raise ValueError(f"{changelog} contains no '## [version] - date' release headings")
     rows = rows_from(releases)
     write_csv(rows, csv_path)
+    return rows, summarise(rows)
+
+
+def rows_of_csv(data: bytes) -> list[dict]:
+    """The rows of a release table CSV as `csv_bytes` writes it - the file
+    Data/ACCELERATOR_RELEASES.csv of a content folder or a package. A file
+    whose header is not the table's is a ValueError."""
+    reader = csv.DictReader(io.StringIO(data.decode("utf-8"), newline=""))
+    if list(reader.fieldnames or []) != list(COLUMNS):
+        raise ValueError("not a release table: its header is not " + ",".join(COLUMNS))
+    rows = list(reader)
+    if not rows:
+        raise ValueError("the release table holds no row")
+    return rows
+
+
+def summarise(rows: list[dict]) -> dict:
+    """What the commands report about a release table: the releases, rows and
+    entries, the current release (the newest with a date), the newest one
+    when the changelog marks it unreleased, and the rows per component and
+    per Builder part. Works on the rows `rows_from` makes and on those read
+    back from the CSV (where every value is text)."""
     by_component: dict[str, int] = {}
     by_part = {part: 0 for part in PARTS}
     for row in rows:
         by_component[row["component"]] = by_component.get(row["component"], 0) + 1
         if row["builder_part"]:
-            by_part[row["builder_part"]] += 1
-    current = next((r for r in rows if r["is_current"]), None)
-    return rows, {
-        "releases": len(releases),
+            by_part[row["builder_part"]] = by_part.get(row["builder_part"], 0) + 1
+    current = next((r for r in rows if str(r["is_current"]) == "1"), None)
+    newest = min(rows, key=lambda r: int(r["release_rank"])) if rows else None
+    return {
+        "releases": len({str(r["release_rank"]) for r in rows}),
         "rows": len(rows),
         # what the changelog holds, each counted once: a Builder entry that
         # concerns two parts is two rows and one entry
-        "entries": len({(r["release_rank"], r["item_rank"]) for r in rows}),
+        "entries": len({(str(r["release_rank"]), str(r["item_rank"])) for r in rows}),
         "current": current["version"] if current else "",
+        "unreleased": newest["version"] if newest and str(newest["release_date"]).lower().startswith("unreleased")
+        else "",
         "by_component": dict(sorted(by_component.items(), key=lambda kv: -kv[1])),
         "by_part": by_part,
     }
+
+
+def current_words(summary: dict) -> str:
+    """The release a loaded table names, as a line says it: the newest
+    release with a date, and the newer one the changelog marks unreleased
+    (a release.json of that checkout names the unreleased one)."""
+    words = f"latest dated release {summary.get('current') or 'none'}"
+    if summary.get("unreleased"):
+        words += f"; {summary['unreleased']} is in it as unreleased"
+    return words

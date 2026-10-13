@@ -871,6 +871,9 @@ def _reduce(package: dict, items: list, kept: list) -> None:
 # ---------------------------------------------------------------------------
 # A package as the source of an import
 # ---------------------------------------------------------------------------
+#: Where the content folder (and its package) holds the release table as CSV.
+RELEASE_TABLE_PATH = "Data/ACCELERATOR_RELEASES.csv"
+
 #: What a registered step carries that belongs to the system it was read
 #: from, or that the service writes itself: not part of a step that is
 #: registered somewhere else.
@@ -1064,6 +1067,15 @@ class PackageSource:
         if body.get("description"):
             wanted["description"] = body["description"]
         return wanted
+
+    def release_table(self) -> Optional[bytes]:
+        """The bytes of the release table the package holds
+        (RELEASE_TABLE_PATH below its root), or None where it holds none -
+        or holds it twice, or unreadable."""
+        try:
+            return self.file_bytes(_content.Entry(path=RELEASE_TABLE_PATH, kind="file"))
+        except ValueError:
+            return None
 
     def site_settings(self, entry) -> tuple:
         """The parameters of a packaged job definition that hold a value of

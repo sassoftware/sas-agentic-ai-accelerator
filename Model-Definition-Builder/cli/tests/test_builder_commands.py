@@ -614,10 +614,12 @@ def test_an_upgrade_without_options_keeps_what_the_site_had(importing, no_discov
     asked = no_discovery()
     result, fake, text = importing(Site(**{"Prompt Builder": OLD_PROMPT, "RAG Builder": OLD_RAG}))
     assert result.exit_code == 0, text
-    kept, = _captured_files(tmp_path)
-    assert f"Options: read from the report on this site and kept in {kept}; they are written back after the import." \
-        in text
+    kept = text.split("Options: read from the report on this site and kept in ", 1)[1].split(";", 1)[0]
+    assert kept.startswith("builder-options-captured-") and kept.endswith(".json")
     assert f"Writing back the options the report held before the import ({kept}):" in text
+    # every option is back in the report: the file is removed, so runs do not pile up files (integrate-18)
+    assert f"Removed {kept}: every option it held is back in the report." in text
+    assert _captured_files(tmp_path) == []
     restored = fake.options("Prompt Builder")
     assert restored["llmProjectID"] == "llm-live" and restored["modelRepositoryID"] == "repo-live"
     assert restored["SCREndpoint"] == "https://site.example/llm" and restored["enableOptimization"] == "true"
@@ -628,23 +630,56 @@ def test_an_upgrade_without_options_keeps_what_the_site_had(importing, no_discov
     # nothing was discovered: the report had its values, and discovery creates what is missing
     assert asked == []
     assert "keep the package's defaults" not in text and "Done." in text
-    # the kept file is an options file like any other
+    # the retired report is still there: the import removed nothing, and the command says so
+    assert fake.options("RAG Builder") == OLD_RAG
+    assert text.count("A report named 'RAG Builder' still exists on this site.") == 1
+    # a run that does not get there keeps the file, an options file like any other
+    result, fake, text = importing(Site(**{"Prompt Builder": OLD_PROMPT}), fails=True)
+    kept, = _captured_files(tmp_path)
     document = json.loads((tmp_path / kept).read_text(encoding="utf-8"))
     assert document["kind"] == "sas-agentic-ai-accelerator/builder-options"
     assert document["deployment"] == "https://site.example" and list(document["reports"]) == ["Prompt Builder"]
     assert document["reports"]["Prompt Builder"]["llmProjectID"] == "llm-live"
-    # the retired report is still there: the import removed nothing, and the command says so
-    assert fake.options("RAG Builder") == OLD_RAG
-    assert text.count("A report named 'RAG Builder' still exists on this site.") == 1
 
 
-def test_a_site_with_only_the_retired_report_keeps_its_rag_options(importing, no_discovery, tmp_path):
-    no_discovery()
+def test_a_site_with_only_the_retired_report_keeps_its_rag_options(importing, discovery, tmp_path):
+    """And the LLM project the retired report never held is discovered: the
+    imported report's empty value is not what the site is left with."""
+    discovery({"llm": "llm-disc", "embedding": "emb-disc"})
     result, fake, text = importing(Site(**{"RAG Builder": OLD_RAG}))
     assert result.exit_code == 0, text
     restored = fake.options("Prompt Builder")
     assert restored["contentRoot"] == "/Team/RAG" and restored["enableRag"] == "true"
-    assert restored["embeddingProjectID"] == "emb-live" and len(_captured_files(tmp_path)) == 1
+    assert restored["embeddingProjectID"] == "emb-live" and restored["llmProjectID"] == "llm-disc"
+    assert "Options: the report holds no value for llmProjectID - discovered from this deployment: llmProjectID " \
+           "llm-disc." in text
+
+
+def test_a_project_id_the_report_lacks_is_discovered_and_one_it_holds_is_kept(importing, discovery, monkeypatch):
+    """review-17/18: a 2.2.x site without the retired report ended with an
+    empty embeddingProjectID after the automatic capture - its Prompt Builder
+    report has no such option, and the imported report's empty default
+    stayed. The id is discovered (only that kind); the others are the
+    report's."""
+    asked: list = []
+    discovery({"llm": "llm-disc", "embedding": "emb-disc"})
+    real = registry.ensure_repository_and_project
+
+    def counted(session, kind, core, responsible_party):
+        asked.append(kind)
+        return real(session, kind, core, responsible_party)
+    monkeypatch.setattr(registry, "ensure_repository_and_project", counted)
+    result, fake, text = importing(Site(**{"Prompt Builder": OLD_PROMPT}))
+    assert result.exit_code == 0, text
+    restored = fake.options("Prompt Builder")
+    assert restored["embeddingProjectID"] == "emb-disc"
+    assert restored["llmProjectID"] == "llm-live" and restored["modelRepositoryID"] == "repo-live"
+    assert asked == ["embedding"]
+    # a dry run says what a run would discover, and discovers nothing
+    asked.clear()
+    result, fake, text = importing(Site(**{"Prompt Builder": OLD_PROMPT}), "--dry-run")
+    assert "Options: the report holds no value for embeddingProjectID - a run discovers it from this deployment " \
+           "(which creates a missing project)." in text and asked == []
 
 
 def test_a_failed_import_after_the_capture_names_the_kept_file(importing, tmp_path):
@@ -680,9 +715,10 @@ def test_options_that_could_not_be_written_back_are_still_in_the_kept_file(impor
 
 def test_two_runs_keep_two_files(importing, tmp_path):
     """A kept file is never written over: the report a second run reads may
-    already be the imported one."""
-    importing(Site(**{"Prompt Builder": OLD_PROMPT}))
-    importing(Site(**{"Prompt Builder": TUNED}))
+    already be the imported one. (A run that gets everything back into the
+    report removes its file; these two do not get there.)"""
+    importing(Site(**{"Prompt Builder": OLD_PROMPT}), fails=True)
+    importing(Site(**{"Prompt Builder": TUNED}), fails=True)
     kept = [json.loads((tmp_path / name).read_text(encoding="utf-8"))["reports"]["Prompt Builder"]["llmProjectID"]
             for name in _captured_files(tmp_path)]
     assert sorted(kept) == ["llm-live", "llm-tuned"]
@@ -729,6 +765,75 @@ def test_a_failed_first_install_discovers_nothing_and_says_how_to_go_on(importin
     assert fake.written == [] and "Prompt Builder" not in fake.reports
     assert "No Builder report was imported" in text
     assert "then run:\nmdb builders-import --no-releases\n(it imports again and configures the report" in text
+
+
+def test_a_package_the_transfer_service_could_not_delete_is_named(importing, monkeypatch):
+    """integrate-18: the uploaded part of the package was left on the server.
+    It is deleted after the job; where that fails, the line names it and how
+    to delete it, and the import is not called failed for it."""
+    def refused(session, uri):
+        raise RuntimeError(f"deleting the package {uri} was refused: HTTP 403")
+    monkeypatch.setattr(transfer, "delete_package", refused)
+    result, fake, text = importing(Site())
+    assert result.exit_code == 0, text
+    assert ("    the transfer package SAS Agentic AI Accelerator is left on the server - delete it with `sas-viya transfer "
+            "delete --id SAS Agentic AI Accelerator`, or DELETE /transfer/packages/SAS Agentic AI Accelerator "
+            "(deleting the package /transfer/packages/SAS Agentic AI Accelerator was refused: HTTP 403).") in text
+
+
+def test_the_release_table_is_the_one_the_package_holds(importing, monkeypatch, tmp_path):
+    """review-18 (D1): the import loaded the release table from the
+    checkout's changelog, so the table said what the checkout says now and
+    not what was imported. The package's Data/ACCELERATOR_RELEASES.csv is
+    loaded where the package holds one - this fake checkout has no changelog
+    at all."""
+    from mdb.core.releases import csv_bytes, parse_changelog, rows_from
+    from mdb.viya import cas
+    loaded: dict = {}
+
+    def load_csv_table(session, csv_path, table, caslib, server):
+        loaded["bytes"], loaded["table"] = Path(csv_path).read_bytes(), f"{caslib}.{table}"
+        return {"dropped": False}
+    monkeypatch.setattr(cas, "load_csv_table", load_csv_table)
+    table = csv_bytes(rows_from(parse_changelog(
+        "# Changelog\n\n## [2.3.0] - unreleased\n\n### Added\n\n- **One.** A thing.\n\n"
+        "## [2.2.0] - 2026-10-07\n\n### Fixed\n\n- **Two.** Another thing.\n")))
+    built = _built()
+    built.file("Data/ACCELERATOR_RELEASES.csv", table)
+    importing(Site(), "--dry-run", package=built.build())                  # the checkout and the package
+    assert not (tmp_path / "CHANGELOG.md").exists()
+    out_before = len(cli.console.file.getvalue())
+    result = CliRunner().invoke(cli.app, ["builders-import", "--no-files"])
+    text = cli.console.file.getvalue()[out_before:]
+    assert result.exit_code == 0, text
+    assert loaded == {"bytes": table, "table": "Public.ACCELERATOR_RELEASES"}
+    assert (f"Release table: Public.ACCELERATOR_RELEASES loaded from Data/ACCELERATOR_RELEASES.csv of {PACKAGE_FILE} "
+            "(2 rows, latest dated release 2.2.0; 2.3.0 is in it as unreleased).") in text
+    # a package without the table: the changelog of the checkout, and here there is none
+    (tmp_path / "SAS-Viya-Integrations" / PACKAGE_FILE).write_text(json.dumps(_built().build()), encoding="utf-8")
+    out_before = len(cli.console.file.getvalue())
+    result = CliRunner().invoke(cli.app, ["builders-import", "--no-files"])
+    assert result.exit_code == 1 and "Release table not loaded: no changelog at" in cli.console.file.getvalue()[
+        out_before:]
+
+
+def test_the_repeat_of_a_run_without_reports_does_not_promise_a_report(importing, no_discovery):
+    """gate-18: a run that failed with --no-reports (or with the reports
+    refused for the root) ended with '(it imports again and configures the
+    report from this deployment)' - the command it names imports none."""
+    no_discovery()
+    viya = importing.viya
+    _site_with_its_own_objects(viya)
+    viya.refuse[("PUT", "/files/files/")] = 500
+    result, fake, text = importing(Site(), "--no-reports")
+    assert result.exit_code == 1
+    assert ("then run:\nmdb builders-import --no-releases --no-reports\n(it brings again what did not arrive in "
+            "place; with --no-reports no report is imported or configured)") in text
+    assert "configures the report" not in text
+    result, fake, text = importing(Site(), "--content-root", "/Team/Accelerator", "--create")
+    assert result.exit_code == 1
+    assert "(it brings again what did not arrive in place; the reports are imported only where the line above " \
+           "allows it)" in text
 
 
 TUNED = {**NEW_DEFAULTS, "viyaHost": "https://site.example", "SCREndpoint": "https://scr.site.example/llm",
@@ -1073,15 +1178,19 @@ def test_an_object_registered_under_another_id_is_updated_in_place_and_keeps_its
     assert "exported" not in json.dumps([viya.steps, [body for body, _ in viya.jobs.values()]])
     # the compute context the site set in the job definition is the site's: left as it is
     assert page["parameters"][0]["defaultValue"] == "Team compute context"
-    # nothing was deleted, and no object was posted beside one that was there
-    assert {method for method, _path in viya.wrote()} == {"PUT"}
+    # nothing was deleted, and no object was posted beside one that was there - the one DELETE is of the part
+    # of the package the transfer service was handed, which is not left on the server (integrate-18)
+    assert {method for method, path in viya.wrote() if not path.startswith("/transfer/")} == {"PUT"}
+    assert [call for call in viya.wrote() if call[1].startswith("/transfer/")] == [
+        ("DELETE", "/transfer/packages/SAS Agentic AI Accelerator")]
     # a second import finds it all equal, under the same ids, and writes nothing
     viya.calls.clear()
     result, fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}))
     assert result.exit_code == 0, text
     assert f"    equal        step          {STEP_PATH}  (id {_id(mine[STEP_PATH])})\n" in text
     assert f"    equal        file          {FILE_PATH}  (id {_id(mine[FILE_PATH])})\n" in text
-    assert "    7 entries: 7 equal.\n" in text and viya.wrote() == [] and viya.ids(CONTENT_ROOT) == mine
+    assert "    7 entries: 7 equal.\n" in text and viya.ids(CONTENT_ROOT) == mine
+    assert [call for call in viya.wrote() if not call[1].startswith("/transfer/")] == []
 
 
 def test_two_objects_of_one_name_on_the_site_are_named_and_the_rest_is_brought(importing, no_discovery):
@@ -1569,7 +1678,8 @@ def test_a_dry_run_makes_get_requests_only(importing, no_discovery, monkeypatch,
     assert asked == [] and _captured_files(tmp_path) == []
     assert not (tmp_path / "sas-viya-cli-content-commands.txt").exists()
     # and it says what a run would do
-    assert "Release table: would load Public.ACCELERATOR_RELEASES on cas-shared-default." in text
+    assert "Release table: would load Public.ACCELERATOR_RELEASES on cas-shared-default from the changelog of this " \
+           "checkout." in text
     assert "Options: read from the report on this site; a run keeps them in a file and writes them back" in text
     assert "  Reports, through the transfer service (2 folder, 1 report): Prompt Builder/Prompt Builder\n" in text
     assert "    mapping: Prompt Builder: VisualElement:ve9 -> host site.example\n" in text

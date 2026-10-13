@@ -155,7 +155,38 @@ def download_package(session, package_uri: str) -> str:
 
 
 def delete_package(session, package_uri: str) -> None:
-    session.delete(package_uri)
+    """Delete a package of the transfer service. A refusal, and no answer,
+    are a RuntimeError: the caller says the package is left and how to
+    delete it. The pass of 2026-10-12 saw DELETE /transfer/packages/{id}
+    answered 204."""
+    _delete(session, package_uri, "the package")
+
+
+def delete_job(session, job_uri: str) -> None:
+    """Delete the record of an export job (DELETE /transfer/exportJobs/{id},
+    answered 204 in the clean-up of 2026-10-12). Failures as for
+    `delete_package`."""
+    _delete(session, job_uri, "the job record")
+
+
+def _delete(session, uri: str, what: str) -> None:
+    try:
+        response = session.delete(uri)
+    except Exception as exc:                                   # a timeout, a dropped connection
+        raise RuntimeError(f"no answer to the delete of {what} {uri} ({type(exc).__name__}: {exc})") from exc
+    if response is not None and not getattr(response, "ok", True):
+        raise RuntimeError(f"deleting {what} {uri} was refused: HTTP {response.status_code} "
+                           f"{str(getattr(response, 'text', ''))[:300]}")
+
+
+def leftover_line(uri: str, what: str = "package") -> str:
+    """How an administrator deletes a transfer object mdb could not delete."""
+    object_id = uri.rstrip("/").rsplit("/", 1)[-1]
+    if what == "package":
+        how = f"`sas-viya transfer delete --id {object_id}`, or DELETE {uri}"
+    else:
+        how = f"DELETE {uri}"
+    return f"the transfer {what} {object_id} is left on the server - delete it with {how}"
 
 
 # ---------------------------------------------------------------------------
