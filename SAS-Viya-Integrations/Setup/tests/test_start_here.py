@@ -375,11 +375,11 @@ def test_a_file_with_a_reference_of_its_name_beside_it_is_no_line_that_is_ok(mon
 
 @pytest.mark.parametrize("path, kind", [
     ("Logging and Monitoring/Log-Parser-Code.sas", "file"), (STEP, "step"), ("Data/Load-Accelerator-Tables", "jobDefinition"),
-    ("Prompt Builder/Prompt Builder", "report"), ("RAG/rag_core", "folder"),
-], ids=["file", "step", "job definition", "report", "folder"])
+    ("RAG/rag_core", "folder"),
+], ids=["file", "step", "job definition", "folder"])
 def test_a_reference_of_the_name_and_kind_of_an_entry_beside_its_object_stands_in_its_way(monkeypatch, tmp_path, path, kind):
-    """Every kind of entry mdb writes or looks up: the object and a reference to an object of that kind under one
-    name. What lies below a folder, and the report the page links, are read as without the reference."""
+    """Every kind of entry mdb writes: the object and a reference to an object of that kind under one name. What
+    lies below a folder, and the report the page links, are read as without the reference."""
     site = Site()
     site.refer(path, kind)
     lines, reports = lines_of(monkeypatch, tmp_path, site)
@@ -387,6 +387,24 @@ def test_a_reference_of_the_name_and_kind_of_an_entry_beside_its_object_stands_i
 
     assert (entry["state"], entry["found"], entry["todo"]) == (MISSING, REFERENCE_BESIDE, REMOVE_ONLY)
     assert [other["what"] for other in lines if other["state"] != OK] == [f"{path} ({kind})"]
+    assert reports["Prompt Builder"] == site.folders[site.folder_ids["Prompt Builder"]][0]["uri"]
+
+
+def test_a_report_with_a_reference_of_its_name_beside_it_is_present_as_mdb_has_it(monkeypatch, tmp_path):
+    """mdb writes no report: `mdb content-deploy` says `not deployed report ... (on the site)` for a report that is
+    there before it looks at a reference of its name, and lists the reference at the end. The page had said
+    `missing` for such a report, with `the import and mdb content-deploy write nothing for this entry` - a sentence
+    that holds for what mdb writes. A report that is only a reference is not there, and its line says so."""
+    source = (REPOSITORY / "Model-Definition-Builder" / "cli" / "src" / "mdb" / "viya" / "content.py").read_text(encoding="utf-8")
+    looked_up = source.index('done(entry, NOT_DEPLOYED, "on the site" if existing else')
+    assert looked_up < source.index("references = _references_named(listed, entry.name, entry.kind)")
+    path = "Prompt Builder/Prompt Builder"
+    site = Site()
+    site.refer(path, "report")
+    lines, reports = lines_of(monkeypatch, tmp_path, site)
+    entry = one(lines, f"{path} (report)")
+    assert (entry["state"], entry["found"], entry["todo"]) == (OK, "present", "")
+    assert [other["what"] for other in lines if other["state"] != OK] == []
     assert reports["Prompt Builder"] == site.folders[site.folder_ids["Prompt Builder"]][0]["uri"]
 
 
@@ -525,7 +543,8 @@ def test_the_program_tells_a_reference_by_the_type_of_the_member():
     assert ("A member of a folder that is a reference to an object elsewhere is no entry: it is not followed. A reference that has the "
             "name of an entry and names an object of the kind of the entry stands in the way of that entry - mdb content-deploy and "
             "the import write nothing for it -, and the line of the entry says so, where the reference is all the folder holds under "
-            "that name and where it lies beside the object. A reference to an object of another kind is no part of the check"
+            "that name and where it lies beside the object. A report that is there is present whatever lies beside it: mdb "
+            "writes no report and fails none over a reference. A reference to an object of another kind is no part of the check"
             ) in " ".join(header.split())
 
 

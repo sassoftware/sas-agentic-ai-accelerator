@@ -37,8 +37,10 @@
  *     object of the kind of the entry stands in the way of that entry - mdb
  *     content-deploy and the import write nothing for it -, and the line
  *     of the entry says so, where the reference is all the folder holds
- *     under that name and where it lies beside the object. A reference to
- *     an object of another kind is no part of the check
+ *     under that name and where it lies beside the object. A report that
+ *     is there is present whatever lies beside it: mdb writes no report
+ *     and fails none over a reference. A reference to an object of
+ *     another kind is no part of the check
  *   - the CAS tables the two reports bind: there, rows, loaded when
  *   - the CAS tables of the logging chain that no report binds: the fact sheet
  *     of the decision models and the four further tables of Get-All-Prompts.sas
@@ -558,8 +560,9 @@ def entry_line(path, kind, listings):
     there = [found for found in present if wanted is None or found[0] in wanted]
     if references and not there:
         return line(section, what, MISSING, REFERENCE_FOUND, REFERENCE_TODO + deploy)
-    if references:
-        # the object is there, so the entry is counted as present, and its line is shown with the ones that are not ok
+    if references and kind != 'report':
+        # the object is there, so the entry is counted as present, and its line is shown with the ones that are not ok.
+        # Not for a report: mdb writes none and fails none over a reference, so a report that is there is present
         return dict(line(section, what, MISSING, REFERENCE_BESIDE, REFERENCE_BESIDE_TODO), present=True)
     if not present:
         return line(section, what, MISSING, 'not in its folder', deploy)
