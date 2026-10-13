@@ -8,8 +8,8 @@
       _slo_optionsFileURI, which can be retrieved using
       the script Get-List-of-available-LLMs.sas
 
-    The output table is called:
-      work._slo_models
+    The code is printed to the Results tab and written to the
+      fileref _slo_LLM, as the settings below say. No table is left.
 
     slo is short for:
       SAS Large Language Model Options
@@ -22,7 +22,7 @@
 %let _slo_LLMSCR = %sysfunc(getoption(SERVICESBASEURL))/llm;
 * Print the code to the results tab? 1 = Yes, 0 = No;
 %let _slo_result = 1;
-* Save the code to a filename - the filename will be called _slo_LLM and use the following to run it: %include _slo_LLM;;
+* Save the code to a file? 1 = Yes, 0 = No. The fileref _slo_LLM then names the file, and an INCLUDE statement with that fileref runs the code;
 %let _slo_fl = 1;
 * If you save to a filename, you can also choose to set it to file location on the SAS server, otherwise the filename will be temporary;
 * If you specify a path put the value into quotes, i.e. '/viya-share/llmCall.sas';
@@ -206,9 +206,7 @@ run;
         put _slo_code;
     run;
 
-    filename _slo_LLM clear;
-
-    %put NOTE: The script is available at &_slo_fl_path.;
+    %put NOTE: The script is available at &_slo_fl_path., and the fileref _slo_LLM names it until the SAS session ends;
 %end;
 
 * Clean up;
