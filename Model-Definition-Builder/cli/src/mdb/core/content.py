@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -817,18 +818,70 @@ GENERATORS: dict = {
 }
 
 
-def commit_in_history(repo_root, commit: str) -> Optional[bool]:
-    """Whether `commit` is HEAD or a commit HEAD descends from. None where
-    git cannot say: no checkout, no git, or a clone that does not hold the
-    commit (a shallow one)."""
-    if not commit or repo_root is None:
-        return None
+#: Where a commit release.json names stands to the checkout (`commit_standing`).
+ANCESTOR = "ancestor"            # HEAD itself, or a commit HEAD descends from
+NOT_ANCESTOR = "not an ancestor"  # the clone holds it, on another line of history
+NOT_HELD = "not held"            # the clone does not hold it
+NOT_A_COMMIT = "not a commit"    # the text is no commit id at all
+UNKNOWN = "unknown"              # no git, or the folder is no git checkout
+
+_COMMIT_ID = re.compile(r"[0-9a-f]{4,64}")
+
+
+def _git(repo_root, *args) -> Optional[subprocess.CompletedProcess]:
     try:
-        done = subprocess.run(["git", "-C", str(repo_root), "merge-base", "--is-ancestor", commit, "HEAD"],
-                              capture_output=True, text=True, timeout=30, check=False)
+        return subprocess.run(["git", "-C", str(repo_root), *args], capture_output=True, text=True, timeout=30,
+                              check=False)
     except (OSError, subprocess.SubprocessError):
         return None
-    return {0: True, 1: False}.get(done.returncode)
+
+
+def commit_standing(repo_root, commit: str) -> str:
+    """Where `commit` stands to HEAD of the checkout at `repo_root`, as git
+    answers: ANCESTOR (HEAD or a commit HEAD descends from), NOT_ANCESTOR
+    (the clone holds it elsewhere), NOT_HELD (`git cat-file` does not know
+    it - a commit of a branch that was squashed and deleted, which a fresh
+    clone does not fetch, or a clone too shallow), NOT_A_COMMIT (no
+    hexadecimal commit id), UNKNOWN (no git, or no checkout).
+
+    `git merge-base --is-ancestor` answers 0 or 1 only for a commit the
+    clone holds; for one it does not hold, and for a text that is no commit,
+    it answers 128 - which is why the commit is first asked for by itself."""
+    commit = str(commit or "").strip()
+    if not _COMMIT_ID.fullmatch(commit):
+        return NOT_A_COMMIT
+    if repo_root is None:
+        return UNKNOWN
+    inside = _git(repo_root, "rev-parse", "--git-dir")
+    if inside is None or inside.returncode != 0:
+        return UNKNOWN
+    held = _git(repo_root, "cat-file", "-e", f"{commit}^{{commit}}")
+    if held is None:
+        return UNKNOWN
+    if held.returncode != 0:
+        return NOT_HELD
+    done = _git(repo_root, "merge-base", "--is-ancestor", commit, "HEAD")
+    if done is None:
+        return UNKNOWN
+    return {0: ANCESTOR, 1: NOT_ANCESTOR}.get(done.returncode, UNKNOWN)
+
+
+def commit_date(repo_root, commit: str) -> str:
+    """The committer date of a commit the clone holds, as ISO 8601 - what
+    release.json carries as `date` - or "" where git cannot say."""
+    if repo_root is None:
+        return ""
+    done = _git(repo_root, "show", "-s", "--format=%cI", str(commit))
+    return done.stdout.strip() if done is not None and done.returncode == 0 else ""
+
+
+def commit_in_history(repo_root, commit: str) -> Optional[bool]:
+    """Whether `commit` is HEAD or a commit HEAD descends from (True), is not
+    (False), or git cannot place it (None). `commit_standing` says which."""
+    if not commit:
+        return None
+    standing = commit_standing(repo_root, commit)
+    return {ANCESTOR: True, NOT_ANCESTOR: False}.get(standing)
 
 
 #: The fields release.json has, and the fields of each of its entries.
@@ -840,11 +893,16 @@ def release_info_findings(expected: bytes, actual: bytes, repo_root=None) -> tup
     """(what is wrong with a release.json, how it is behind the checkout).
 
     Wrong, whatever the checkout holds: not readable, another `kind`, a field
-    release.json does not have, an entry listed twice. Behind the checkout -
-    a difference in content: another release than this mdb, no commit or one
-    that is not in the history of the checkout (only where git can say), an
-    entry the manifest has and the file does not or the other way round, and
-    another hash for an entry. The date is the commit's and is not compared.
+    release.json does not have, an entry listed twice, a commit that is no
+    commit id, a date that is not the date of the commit it names (where the
+    clone holds the commit). Behind the checkout - a difference in content:
+    another release than this mdb, no commit, a commit that is not HEAD or an
+    ancestor of it - one the clone holds elsewhere, one it does not hold, one
+    git cannot place - each with its own sentence; an entry the manifest has
+    and the file does not or the other way round, and another hash for an
+    entry. Behind is drift between releases and an error for a release
+    (`mdb package-check --release`), so there only a commit in the history of
+    the checkout passes.
     """
     try:
         packaged = json.loads(actual.decode("utf-8"))
@@ -877,8 +935,29 @@ def release_info_findings(expected: bytes, actual: bytes, repo_root=None) -> tup
     commit = packaged.get("commit")
     if not commit:
         behind.append("names no commit - the folder was deployed from something that is no git checkout")
-    elif commit_in_history(repo_root, str(commit)) is False:
-        behind.append(f"names the commit {str(commit)[:12]}, which is not in the history of this checkout")
+    else:
+        # without a checkout to ask (repo_root None) only the form of the id is judged
+        standing = commit_standing(repo_root, str(commit)) if repo_root is not None else (
+            "" if _COMMIT_ID.fullmatch(str(commit).strip()) else NOT_A_COMMIT)
+        short = str(commit)[:12]
+        if standing == NOT_A_COMMIT:
+            wrong.append(f"names the commit '{str(commit)[:80]}', which is no commit id (git names a commit with "
+                         "40 hexadecimal digits)")
+        elif standing == NOT_ANCESTOR:
+            behind.append(f"names the commit {short}, which is not in the history of this checkout (the clone "
+                          "holds it on another line of history)")
+        elif standing == NOT_HELD:
+            behind.append(f"names the commit {short}, which this clone does not hold - a commit of a branch that "
+                          "was squash-merged or deleted after the deploy, or a clone too shallow to hold it; a "
+                          "release is deployed and exported from a commit that stays in the history of what is "
+                          "released")
+        elif standing == UNKNOWN:
+            behind.append(f"names the commit {short}, and git cannot say whether it is in the history of this "
+                          "checkout (git is not installed, or this folder is no git checkout)")
+        if standing in (ANCESTOR, NOT_ANCESTOR):
+            dated = commit_date(repo_root, str(commit))
+            if dated and packaged.get("date") != dated:
+                wrong.append(f"names the date '{packaged.get('date')}', and the commit {short} is dated {dated}")
     for key in sorted(set(wanted) - set(listed), key=str):
         behind.append(f"does not list {key[1]} '{key[0]}'")
     for key in sorted(set(listed) - set(wanted), key=str):

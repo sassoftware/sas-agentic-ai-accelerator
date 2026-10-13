@@ -244,6 +244,8 @@ def test_a_reset_writes_only_what_the_report_holds_and_only_that_report():
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
     monkeypatch.setattr(content, "checkout_commit", lambda root: ("abc123", "2026-10-12T09:31:55+02:00"))
+    # the made-up checkout is no git checkout: the commit it names is taken as its HEAD
+    monkeypatch.setattr(content, "commit_standing", lambda root, commit: content.ANCESTOR)
     return make_repo(tmp_path)
 
 

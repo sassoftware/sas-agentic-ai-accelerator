@@ -405,9 +405,9 @@ def test_release_json_is_compared_by_its_entries(repo, monkeypatch):
     exported yesterday is not behind the checkout for carrying yesterday's."""
     manifest = load_manifest(repo)
     entry = manifest.find("release.json", "file")
-    monkeypatch.setattr(content, "checkout_commit", lambda root: ("old", "2026-10-11T08:00:00+02:00"))
+    monkeypatch.setattr(content, "checkout_commit", lambda root: ("0d1d" * 10, "2026-10-11T08:00:00+02:00"))
     packaged = content.file_bytes(manifest, entry)
-    monkeypatch.setattr(content, "checkout_commit", lambda root: ("new", "2026-10-12T08:00:00+02:00"))
+    monkeypatch.setattr(content, "checkout_commit", lambda root: ("ae0e" * 10, "2026-10-12T08:00:00+02:00"))
     expected = content.file_bytes(manifest, entry)
     assert packaged != expected
     assert content.generated_differences(entry, expected, packaged) == []
@@ -437,8 +437,9 @@ def test_release_json_is_held_to_its_kind_its_fields_its_release_and_its_commit(
     expected = content.file_bytes(manifest, entry)
     info = json.loads(expected)
 
-    def findings(change, in_history=None):
-        monkeypatch.setattr(content, "commit_in_history", lambda root, commit: in_history)
+    def findings(change, standing=content.ANCESTOR, dated=""):
+        monkeypatch.setattr(content, "commit_standing", lambda root, commit: standing)
+        monkeypatch.setattr(content, "commit_date", lambda root, commit: dated)
         return content.generated_findings(entry, expected, json.dumps({**info, **change}).encode("utf-8"), repo)
 
     assert findings({}) == ([], [])
@@ -455,39 +456,125 @@ def test_release_json_is_held_to_its_kind_its_fields_its_release_and_its_commit(
     assert findings({"version": "0.0.1"}) == ([], [f"names release '0.0.1', this checkout is {__version__}"])
     assert findings({"commit": ""}) == (
         [], ["names no commit - the folder was deployed from something that is no git checkout"])
-    assert findings({"commit": "deadbeef" * 5}, in_history=False) == (
-        [], ["names the commit deadbeefdead, which is not in the history of this checkout"])
-    # where git cannot say - no checkout, a shallow clone - the commit is not judged
-    assert findings({"commit": "deadbeef" * 5}, in_history=None) == ([], [])
-    assert findings({"commit": "deadbeef" * 5}, in_history=True) == ([], [])
+    # where the commit stands: every answer but HEAD-or-an-ancestor is a sentence of its own (review-18: a commit
+    # the clone does not hold and a text that is no commit passed both modes, git answering 128 for both)
+    assert findings({"commit": "deadbeef" * 5}, content.NOT_ANCESTOR) == (
+        [], ["names the commit deadbeefdead, which is not in the history of this checkout (the clone holds it on "
+             "another line of history)"])
+    assert findings({"commit": "deadbeef" * 5}, content.NOT_HELD) == (
+        [], ["names the commit deadbeefdead, which this clone does not hold - a commit of a branch that was "
+             "squash-merged or deleted after the deploy, or a clone too shallow to hold it; a release is deployed "
+             "and exported from a commit that stays in the history of what is released"])
+    assert findings({"commit": "deadbeef" * 5}, content.UNKNOWN) == (
+        [], ["names the commit deadbeefdead, and git cannot say whether it is in the history of this checkout (git "
+             "is not installed, or this folder is no git checkout)"])
+    assert findings({"commit": "not-a-commit"}, content.NOT_A_COMMIT) == (
+        ["names the commit 'not-a-commit', which is no commit id (git names a commit with 40 hexadecimal digits)"],
+        [])
+    assert findings({"commit": "deadbeef" * 5}, content.ANCESTOR) == ([], [])
+    # the date is the commit's: another one is something release.json was made to say
+    assert findings({}, content.ANCESTOR, dated=info["date"]) == ([], [])
+    assert findings({"date": "2026-01-01T00:00:00+00:00"}, content.ANCESTOR, dated=info["date"]) == (
+        [f"names the date '2026-01-01T00:00:00+00:00', and the commit {info['commit'][:12]} is dated {info['date']}"],
+        [])
     # both lists, as one: what a release asks to be empty
-    monkeypatch.setattr(content, "commit_in_history", lambda root, commit: None)
+    monkeypatch.setattr(content, "commit_standing", lambda root, commit: content.ANCESTOR)
     assert content.generated_differences(entry, expected, json.dumps(
         {**info, "kind": "x", "version": "0.0.1"}).encode("utf-8"), repo) == [
         "is of kind 'x', not 'sas-agentic-ai-accelerator/release'",
         f"names release '0.0.1', this checkout is {__version__}"]
 
 
-def test_git_says_whether_a_commit_is_in_the_history(tmp_path, monkeypatch):
+def test_git_says_where_a_commit_stands(tmp_path, monkeypatch):
     asked = []
+    codes = {}
 
     def run(command, **kwargs):
         asked.append(command)
-        return type("Done", (), {"returncode": run.code, "stdout": "", "stderr": ""})()
+        return type("Done", (), {"returncode": codes.get(command[3], 0), "stdout": "", "stderr": ""})()
     monkeypatch.setattr(content.subprocess, "run", run)
-    run.code = 0
-    assert content.commit_in_history(tmp_path, "abc") is True
-    assert asked[-1] == ["git", "-C", str(tmp_path), "merge-base", "--is-ancestor", "abc", "HEAD"]
-    run.code = 1
-    assert content.commit_in_history(tmp_path, "abc") is False
-    run.code = 128                                           # git does not know the commit: a shallow clone
-    assert content.commit_in_history(tmp_path, "abc") is None
-    assert content.commit_in_history(tmp_path, "") is None and content.commit_in_history(None, "abc") is None
+    assert content.commit_standing(tmp_path, "abcd") == content.ANCESTOR
+    assert asked[-3:] == [["git", "-C", str(tmp_path), "rev-parse", "--git-dir"],
+                          ["git", "-C", str(tmp_path), "cat-file", "-e", "abcd^{commit}"],
+                          ["git", "-C", str(tmp_path), "merge-base", "--is-ancestor", "abcd", "HEAD"]]
+    codes["merge-base"] = 1
+    assert content.commit_standing(tmp_path, "abcd") == content.NOT_ANCESTOR
+    codes["cat-file"] = 128                                  # the clone does not hold it
+    assert content.commit_standing(tmp_path, "abcd") == content.NOT_HELD
+    codes["rev-parse"] = 128                                 # no checkout
+    assert content.commit_standing(tmp_path, "abcd") == content.UNKNOWN
+    assert content.commit_standing(tmp_path, "not-a-commit") == content.NOT_A_COMMIT
+    assert content.commit_standing(tmp_path, "") == content.NOT_A_COMMIT
+    assert content.commit_standing(None, "abcd") == content.UNKNOWN
+    assert content.commit_in_history(tmp_path, "") is None and content.commit_in_history(None, "abcd") is None
 
     def no_git(*args, **kwargs):
         raise FileNotFoundError("git")
     monkeypatch.setattr(content.subprocess, "run", no_git)
-    assert content.commit_in_history(tmp_path, "abc") is None
+    assert content.commit_standing(tmp_path, "abcd") == content.UNKNOWN and content.commit_date(tmp_path, "abcd") == ""
+
+
+GIT = __import__("shutil").which("git")
+
+
+def _git(cwd, *args) -> str:
+    import subprocess
+    done = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c",
+                           "init.defaultBranch=main", "-c", "core.autocrlf=false", *args],
+                          cwd=cwd, capture_output=True, text=True, check=True)
+    return done.stdout.strip()
+
+
+@pytest.mark.skipif(GIT is None, reason="no git on this machine")
+def test_the_squash_merge_procedure_with_a_real_repository(tmp_path):
+    """review-18: the release procedure is written around a squash merge.
+    Deploy from a commit of the branch and squash it: in the owner's clone
+    the commit is held but not in the history; in the tag's fresh clone it is
+    not held at all - both are errors now (--release). Merge first, deploy
+    from the merged commit, and commit the package on top - also through a
+    second squash-merged branch: the tag's clone finds the commit in its
+    history."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q")
+    (origin / "a.txt").write_text("a\n")
+    _git(origin, "add", ".")
+    _git(origin, "commit", "-q", "-m", "first")
+    _git(origin, "checkout", "-q", "-b", "feature")
+    (origin / "a.txt").write_text("b\n")
+    _git(origin, "commit", "-q", "-am", "the release work")
+    branch_commit = _git(origin, "rev-parse", "HEAD")              # what a deploy on the branch names
+    _git(origin, "checkout", "-q", "main")
+    _git(origin, "merge", "-q", "--squash", "feature")
+    _git(origin, "commit", "-q", "-m", "release (squashed)")
+    merged = _git(origin, "rev-parse", "HEAD")
+    _git(origin, "branch", "-q", "-D", "feature")
+
+    # the wrong order: the package names the branch commit
+    assert content.commit_standing(origin, branch_commit) == content.NOT_ANCESTOR      # the owner's clone holds it
+    clone = tmp_path / "tag-clone"
+    _git(tmp_path, "clone", "-q", "--no-local", str(origin), str(clone))
+    assert content.commit_standing(clone, branch_commit) == content.NOT_HELD           # the tag's clone does not
+
+    # the right order: deploy from the merged commit, commit the package on top, through a squashed branch
+    _git(origin, "checkout", "-q", "-b", "export")
+    (origin / "package.json").write_text("{}\n")
+    _git(origin, "add", ".")
+    _git(origin, "commit", "-q", "-m", "the package of the release")
+    _git(origin, "checkout", "-q", "main")
+    _git(origin, "merge", "-q", "--squash", "export")
+    _git(origin, "commit", "-q", "-m", "the package (squashed)")
+    _git(origin, "tag", "2.3.0")
+    _git(origin, "branch", "-q", "-D", "export")
+    tagged = tmp_path / "tag-clone-2"
+    _git(tmp_path, "clone", "-q", "--no-local", "--branch", "2.3.0", str(origin), str(tagged))
+    assert content.commit_standing(tagged, merged) == content.ANCESTOR
+    assert content.commit_standing(tagged, _git(tagged, "rev-parse", "HEAD")) == content.ANCESTOR    # HEAD itself
+    assert content.commit_date(tagged, merged) == _git(origin, "show", "-s", "--format=%cI", merged)
+    assert content.commit_standing(tagged, branch_commit) == content.NOT_HELD
+    assert content.commit_standing(tagged, "0" * 40) == content.NOT_HELD
+    assert content.commit_standing(tagged, "not-a-commit") == content.NOT_A_COMMIT
+    assert content.commit_standing(tmp_path / "nowhere", merged) == content.UNKNOWN
 
 
 def test_the_commit_of_a_folder_that_is_no_checkout_is_empty(tmp_path, monkeypatch):

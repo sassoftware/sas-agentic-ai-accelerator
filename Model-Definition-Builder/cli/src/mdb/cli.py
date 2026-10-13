@@ -2720,7 +2720,14 @@ def package_check(
     state, a report default that is not neutral, a missing entry, a path that
     never ships, a property or a field nothing in the checkout gives it. With
     --release every difference is an error: that is what the release
-    procedure runs after the export, and the workflow on a tag.
+    procedure runs after the export, and the workflow on a tag. There the
+    commit release.json names has to be HEAD or an ancestor of it: a commit
+    the clone holds elsewhere, one it does not hold (the commit of a branch
+    that was squash-merged and deleted, which the tag's fresh clone does not
+    fetch), and one git cannot place each fail with their own sentence; a
+    text that is no commit id, and a date that is not the commit's, fail in
+    both forms. So the folder of a release is deployed and exported from a
+    commit that stays in the history of what is tagged.
 
     One line per difference, and exit code 1 when one of them fails. `--fix`
     rewrites the hosts, the states and the option defaults in the file; a

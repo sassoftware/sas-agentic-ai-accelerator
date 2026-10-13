@@ -49,6 +49,8 @@ OPTIMIZE = "Prompt Builder/Optimize"
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
     monkeypatch.setattr(content, "checkout_commit", lambda root: ("abc123", "2026-10-12T09:31:55+02:00"))
+    # the made-up checkout is no git checkout: the commit it names is taken as its HEAD
+    monkeypatch.setattr(content, "commit_standing", lambda root, commit: content.ANCESTOR)
     return make_repo(tmp_path)
 
 
@@ -1034,7 +1036,7 @@ def test_the_manifest_of_the_repository_deploys_and_passes_the_gate(monkeypatch)
 
     # the commit release.json names is the checkout's - also where the tests run in an archive without git
     monkeypatch.setattr(content, "checkout_commit", lambda root: ("c" * 40, "2026-10-12T09:31:55+02:00"))
-    monkeypatch.setattr(content, "commit_in_history", lambda root, commit: None)
+    monkeypatch.setattr(content, "commit_standing", lambda root, commit: content.ANCESTOR)
     shipped = load_manifest(Path(__file__).resolve().parents[3])
     entries = shipped.all_entries()
     reports = [entry for entry in entries if entry.kind == "report"]
