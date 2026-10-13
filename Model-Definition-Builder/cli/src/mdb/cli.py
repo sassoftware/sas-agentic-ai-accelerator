@@ -3606,10 +3606,17 @@ def _credential_manifest(manifest: Optional[str], domain: str,
         if not path.is_file():
             console.print(f"[red]No credentials manifest at {path}.[/red]")
             console.print(
-                "Write one with [bold]mdb credentials-init[/bold], or equip a "
-                "single identity with [bold]--identity[/bold].")
+                "Write one with [bold]mdb credentials-init[/bold] or "
+                "[bold]mdb credentials-add[/bold], or equip a single identity "
+                "with [bold]--identity[/bold].")
             raise typer.Exit(2)
-        return Manifest.load(path)
+        try:
+            return Manifest.load(path)
+        except CredentialError as exc:
+            # A manifest the loader refuses - a wrong type, a `state` that is
+            # neither present nor absent - ends every command the same way.
+            console.print(f"[red]{_plain(exc)}[/red]")
+            raise typer.Exit(2)
     if manifest:
         console.print("[yellow]--identity was given, so --manifest is "
                       "ignored.[/yellow]")
@@ -3625,6 +3632,40 @@ def _credential_manifest(manifest: Optional[str], domain: str,
     except CredentialError as exc:
         console.print(f"[red]{_plain(exc)}[/red]")
         raise typer.Exit(2)
+
+
+def _credential_scaffold(target: Path, env_file: str, domain: str) -> tuple[str, int]:
+    """The starter manifest for `target` as text, and how many entries its
+    source carries. Writes nothing; ends the command when the source is not
+    there. `credentials-init` and a `credentials-add` that finds no manifest
+    both start here, so the two write the same file."""
+    from .viya.credentials import (
+        CredentialError, map_entries, read_name_value_file, scaffold,
+    )
+
+    source = Path(env_file)
+    if not source.is_file():
+        console.print(f"[red]No .env at {source}.[/red] Pass --env-file to point at one.")
+        raise typer.Exit(2)
+    try:
+        entries = map_entries(read_name_value_file(source))
+    except CredentialError as exc:
+        console.print(f"[red]{_plain(exc)}[/red]")
+        raise typer.Exit(2)
+    if not entries:
+        console.print(
+            f"[yellow]{source} carries no recognised entries — expected provider "
+            "keys (OPENAI_API_KEY, …), <BACKEND>_RAG_USER/_PW pairs and/or "
+            "<BACKEND>_HOST/_PORT/_DB/_SSLMODE settings. Writing the manifest "
+            "anyway.[/yellow]")
+    return (scaffold(source.resolve(), target.resolve(), domain, tuple(sorted(entries))),
+            len(entries))
+
+
+def _write_new_manifest(target: Path, text: str) -> None:
+    if target.parent != Path(""):
+        target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
 
 
 @app.command("credentials-init")
@@ -3648,40 +3689,215 @@ def credentials_init(
     The manifest holds no secrets — only identities and the paths to the files
     that do — which is what makes it the piece you commit and review, while
     the `.env` stays git-ignored.
-    """
-    from .viya.credentials import (
-        CredentialError, map_entries, read_name_value_file, scaffold,
-    )
 
+    The manifest it writes names a placeholder identity. Replace it by hand,
+    or with `mdb credentials-add group <id>`, which also writes this manifest
+    when there is none yet.
+    """
     target = Path(file)
     if target.exists() and not force:
         console.print(f"[red]{target} already exists.[/red] Pass --force to overwrite it.")
         raise typer.Exit(2)
-    source = Path(env_file)
-    if not source.is_file():
-        console.print(f"[red]No .env at {source}.[/red] Pass --env-file to point at one.")
+    text, count = _credential_scaffold(target, env_file, domain)
+    _write_new_manifest(target, text)
+    console.print(f"[green]Wrote {target} listing {count} available "
+                  "entries (names only — no values).[/green]")
+    console.print("Name the groups and users to equip — by hand, or with "
+                  f"[bold]mdb credentials-add group <id> --manifest {target}[/bold] — "
+                  f"then run [bold]mdb credentials-apply --manifest {target} --dry-run[/bold].")
+
+
+def _only_names(only: Optional[list[str]]) -> Optional[tuple]:
+    """`--only A,B --only C` -> (A, B, C), each name once, in the order typed.
+    None when the option was not given at all."""
+    if not only:
+        return None
+    names: list = []
+    for chunk in only:
+        for name in chunk.split(","):
+            if name.strip() and name.strip() not in names:
+                names.append(name.strip())
+    return tuple(names)
+
+
+@app.command("credentials-add")
+def credentials_add(
+    identity_type: str = typer.Argument(..., metavar="type", help="group or user"),
+    identity: str = typer.Argument(
+        ..., metavar="id", help="Id of the group or the user, as SAS Viya spells it"),
+    only: Optional[list[str]] = typer.Option(
+        None, "--only",
+        help="Give this identity only these entries, named as the DOMAIN spells "
+             "them (OpenRouter, PGVECTOR_RAG_PW); repeat it or separate with commas"),
+    source: Optional[str] = typer.Option(
+        None, "--source",
+        help="This identity's own key file, instead of the manifest's source"),
+    manifest: Optional[str] = typer.Option(
+        None, "--manifest", "-m",
+        help="The manifest to edit (default: ./credentials.yaml)"),
+    env_file: Optional[str] = typer.Option(
+        None, "--env-file",
+        help="The .env a NEW manifest points at (default: ./.env); not read "
+             "when the manifest exists"),
+):
+    """Add a group or a user to the credentials manifest.
+
+    It edits the manifest and nothing else: no call goes to SAS Viya, and the
+    credential is written by the next `mdb credentials-apply`. Only the one
+    identity is touched — comments, blank lines, order and the other
+    identities stay as they are in the file.
+
+    * No manifest yet: it is written the way `mdb credentials-init` writes
+      it, from the .env named with --env-file, with this identity in it.
+    * The manifest still names the placeholder of `credentials-init`: the
+      identity takes the placeholder's place.
+    * The identity is already listed: nothing is added a second time. With
+      --only or --source its entry is updated and the change is printed; an
+      identity marked `state: absent` is set back to present.
+
+    An --only name the source does not carry is refused, in the words
+    `mdb credentials-apply` uses, and nothing is written.
+
+    A GROUP credential reaches only the members of that group: name a group
+    the people who open the Prompt Builder are members of. `mdb setup` writes
+    the commands that create the group LLMConsumers for that into
+    sas-viya-cli-commands.txt.
+
+    No secret value is read into the output or written to the manifest — only
+    entry names and paths.
+    """
+    from .viya.credentials import (
+        DEFAULT_DOMAIN, DEFAULT_MANIFEST, PLACEHOLDER_ID, CredentialError,
+        edit_identity, planned_entries, read_manifest_text, relative_source,
+        write_manifest_text,
+    )
+
+    if identity_type not in ("user", "group"):
+        console.print("[red]The type must be user or group.[/red]")
         raise typer.Exit(2)
+    names = _only_names(only)
+    if names == ():
+        console.print("[red]--only was given without an entry name.[/red]")
+        raise typer.Exit(2)
+    path = Path(manifest or DEFAULT_MANIFEST)
+    created = not path.exists()
+    starter, count = "", 0
+    if created:
+        starter, count = _credential_scaffold(path, env_file or ".env", DEFAULT_DOMAIN)
+    elif env_file:
+        console.print(f"[yellow]--env-file is read only when the manifest is "
+                      f"created; {path} exists and names its own source.[/yellow]")
+    spelled = relative_source(Path(source).resolve(), path.resolve()) if source else None
     try:
-        entries = map_entries(read_name_value_file(source))
+        text = starter if created else read_manifest_text(path)
+        edit = edit_identity(text, path, identity_type, identity,
+                             only=names, source=spelled, state="present")
+        if edit.outcome != "unchanged" and (names or source):
+            # What was typed is checked against the source before it is
+            # written: a name that is not there would only be found at the
+            # apply, in a manifest that already looks right.
+            _, problem = planned_entries(edit.manifest, edit.identity)
+            if problem:
+                console.print(f"[red]{identity_type} {identity}: {problem}[/red]")
+                console.print(f"Nothing was written to {path}.")
+                raise typer.Exit(2)
+        if created:
+            _write_new_manifest(path, edit.text)
+        elif edit.outcome != "unchanged":
+            write_manifest_text(path, edit.text)
     except CredentialError as exc:
         console.print(f"[red]{_plain(exc)}[/red]")
         raise typer.Exit(2)
-    if not entries:
-        console.print(
-            f"[yellow]{source} carries no recognised entries — expected provider "
-            "keys (OPENAI_API_KEY, …), <BACKEND>_RAG_USER/_PW pairs and/or "
-            "<BACKEND>_HOST/_PORT/_DB/_SSLMODE settings. Writing the manifest "
-            "anyway.[/yellow]")
 
-    if target.parent != Path(""):
-        target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        scaffold(source.resolve(), target.resolve(), domain, tuple(sorted(entries))),
-        encoding="utf-8")
-    console.print(f"[green]Wrote {target} listing {len(entries)} available "
-                  "entries (names only — no values).[/green]")
-    console.print("Name the groups and users to equip, then run "
-                  f"[bold]mdb credentials-apply --manifest {target} --dry-run[/bold].")
+    who = f"{identity_type} {identity}"
+    if created:
+        console.print(f"[green]Wrote {path} with {who} as its identity, listing "
+                      f"{count} available entries (names only — no values).[/green]")
+    elif edit.outcome == "added":
+        console.print(f"[green]Added {who} to {path}.[/green]")
+    elif edit.outcome == "placeholder":
+        console.print(f"[green]Added {who} to {path}, in place of the "
+                      f"placeholder {PLACEHOLDER_ID}.[/green]")
+    elif edit.outcome == "updated":
+        console.print(f"[green]Updated {who} in {path}:[/green]")
+        for change in edit.changes:
+            console.print(f"  {change}")
+        if any(change.startswith("state:") for change in edit.changes):
+            console.print(f"{who} was marked for removal and is set back to "
+                          "present: the next apply writes its credential.")
+    else:
+        console.print(f"{who} is already in {path} — nothing was changed.")
+    if edit.outcome in ("added", "placeholder"):
+        if edit.identity.only:
+            console.print("  only: " + ", ".join(edit.identity.only))
+        if spelled:
+            console.print(f"  source: {spelled}")
+    console.print(f"Next: [bold]mdb credentials-apply --manifest {path} --dry-run[/bold]")
+
+
+@app.command("credentials-remove")
+def credentials_remove(
+    identity_type: str = typer.Argument(..., metavar="type", help="group or user"),
+    identity: str = typer.Argument(
+        ..., metavar="id", help="Id of the group or the user, as SAS Viya spells it"),
+    manifest: Optional[str] = typer.Option(
+        None, "--manifest", "-m",
+        help="The manifest to edit (default: ./credentials.yaml)"),
+):
+    """Mark the credential of a group or a user for removal, in the manifest.
+
+    It writes `state: absent` on that identity — adding the identity when the
+    manifest does not list it — and nothing else: no call goes to SAS Viya.
+    The credential is deleted on the server by the next
+    `mdb credentials-apply`, which shows the action `remove` in its plan and
+    in a --dry-run.
+
+    The entry stays in the manifest on purpose. The credentials service cannot
+    list who holds a credential, so nothing is ever removed because a line is
+    missing from the file; `state: absent` is what a removal is.
+
+    `mdb credentials-add` on the same identity sets it back to present.
+    """
+    from .viya.credentials import (
+        DEFAULT_MANIFEST, PLACEHOLDER_ID, CredentialError, edit_identity,
+        read_manifest_text, write_manifest_text,
+    )
+
+    if identity_type not in ("user", "group"):
+        console.print("[red]The type must be user or group.[/red]")
+        raise typer.Exit(2)
+    path = Path(manifest or DEFAULT_MANIFEST)
+    if not path.is_file():
+        console.print(f"[red]No credentials manifest at {path}.[/red]")
+        console.print("A removal is recorded in a manifest: write one with "
+                      "[bold]mdb credentials-init[/bold] first.")
+        raise typer.Exit(2)
+    try:
+        edit = edit_identity(read_manifest_text(path), path, identity_type,
+                             identity, state="absent")
+        if edit.outcome != "unchanged":
+            write_manifest_text(path, edit.text)
+    except CredentialError as exc:
+        console.print(f"[red]{_plain(exc)}[/red]")
+        raise typer.Exit(2)
+
+    who = f"{identity_type} {identity}"
+    if edit.outcome == "unchanged":
+        console.print(f"{who} is already marked `state: absent` in {path} — "
+                      "nothing was changed.")
+    elif edit.outcome == "updated":
+        console.print(f"[green]Marked {who} as `state: absent` in {path}.[/green]")
+    elif edit.outcome == "placeholder":
+        console.print(f"[green]Added {who} to {path} with `state: absent`, in "
+                      f"place of the placeholder {PLACEHOLDER_ID}.[/green]")
+    else:
+        console.print(f"[green]Added {who} to {path} with `state: absent`.[/green]")
+    console.print("The credential is deleted on the server by the next "
+                  f"[bold]mdb credentials-apply --manifest {path}[/bold]; this "
+                  "command did not contact the server.")
+    console.print("Keep the entry in the manifest: a line that is deleted from "
+                  "the file removes nothing.")
+    console.print(f"Next: [bold]mdb credentials-apply --manifest {path} --dry-run[/bold]")
 
 
 @app.command("credentials-apply")
@@ -3729,12 +3945,23 @@ def credentials_apply(
     * Creating the domain, or any GROUP credential, needs SAS administrator
       rights. A user may always (re)write their own.
 
+    A GROUP credential reaches only the members of that group, and a user's
+    own credential replaces it for that user. A run that plans or writes a
+    group credential says so once: a credential for a group the users are not
+    members of looks like a finished rollout and leaves them without a key.
+
+    An identity the manifest marks `state: absent` is planned as `remove`, and
+    its credential is deleted; one that is already gone is reported, not
+    failed. Nothing is removed because a line is missing from the manifest —
+    the service cannot list who holds a credential. `mdb credentials-add` and
+    `mdb credentials-remove` edit the manifest.
+
     Secret values are never printed, logged or written anywhere by this
     command — only entry names and counts.
     """
     from .viya.credentials import (
-        CredentialError, build_steps, ensure_domain, entries_for,
-        fetch_credential, put_credential,
+        GROUP_REACH, CredentialError, build_steps, delete_credential,
+        ensure_domain, entries_for, fetch_credential, put_credential,
     )
 
     if identity_type not in ("user", "group"):
@@ -3765,6 +3992,14 @@ def credentials_apply(
                 table.add_row(step.identity.id, step.identity.type,
                               "[red]skip[/red]", "-", step.problem)
                 continue
+            if step.action == "remove":
+                # Planned from `state: absent`. What is there now decides
+                # only what the line says, never whether the step runs.
+                held = (f"written by {step.existing_by} {step.existing_at[:10]}"
+                        if step.found else "no credential — already gone")
+                table.add_row(step.identity.id, step.identity.type,
+                              "[yellow]remove[/yellow]", "-", held)
+                continue
             held = (f"written by {step.existing_by} {step.existing_at[:10]}"
                     if step.action == "replace" else "no credential")
             table.add_row(step.identity.id, step.identity.type,
@@ -3772,9 +4007,10 @@ def credentials_apply(
                           str(len(step.entry_names)), held)
         console.print(table)
         usable = [step for step in steps if step.ok]
-        if usable:
-            console.print("Entries: " + ", ".join(usable[0].entry_names))
-            if any(set(s.entry_names) != set(usable[0].entry_names) for s in usable):
+        writes = [step for step in usable if step.action != "remove"]
+        if writes:
+            console.print("Entries: " + ", ".join(writes[0].entry_names))
+            if any(set(s.entry_names) != set(writes[0].entry_names) for s in writes):
                 console.print("[yellow]…and different sets for some identities; "
                               "see the manifest.[/yellow]")
         broken = [step for step in steps if not step.ok]
@@ -3784,12 +4020,16 @@ def credentials_apply(
             console.print("[red]Nothing to do.[/red]")
             raise typer.Exit(1)
         if dry_run:
-            console.print("[yellow]Dry run — nothing was written. The current "
-                          "contents of an existing credential cannot be read "
-                          "back, so a replace is reported without a diff.[/yellow]")
+            if any(step.identity.type == "group" for step in writes):
+                console.print(GROUP_REACH)
+            console.print("[yellow]Dry run — nothing was written and nothing "
+                          "was removed. The current contents of an existing "
+                          "credential cannot be read back, so a replace is "
+                          "reported without a diff.[/yellow]")
             raise typer.Exit(0)
 
-        if not skip_domain:
+        # A run that only removes writes into no domain, so it creates none.
+        if writes and not skip_domain:
             try:
                 ensure_domain(session, plan.domain)
                 console.print(f"[green]Domain '{plan.domain}' is in place.[/green]")
@@ -3800,16 +4040,27 @@ def credentials_apply(
                               "--skip-domain to stop trying.[/yellow]")
 
         failed = 0
+        group_written = False
         for step in usable:
+            who = f"{step.identity.type} {step.identity.id}"
             try:
+                if step.action == "remove":
+                    if delete_credential(session, plan.domain, step.identity):
+                        console.print(f"[green]{who}: credential removed.[/green]")
+                    else:
+                        console.print(f"{who}: no credential to remove — it "
+                                      "is already gone.")
+                    continue
                 put_credential(session, plan.domain, step.identity,
                                entries_for(plan, step.identity))
                 console.print(
-                    f"[green]{step.identity.type} {step.identity.id}: "
-                    f"{len(step.entry_names)} entries stored.[/green]")
+                    f"[green]{who}: {len(step.entry_names)} entries stored.[/green]")
+                group_written = group_written or step.identity.type == "group"
             except CredentialError as exc:
                 failed += 1
                 console.print(f"[red]{_plain(exc)}[/red]")
+        if group_written:
+            console.print(GROUP_REACH)
         if failed:
             raise typer.Exit(1)
         console.print("[green]Done. Check it with `mdb credentials-report`.[/green]")
@@ -3835,6 +4086,11 @@ def credentials_report(
 
     It cannot show what a credential contains: a read returns metadata only,
     never the secrets and not even their names.
+
+    An identity the manifest marks `state: absent` is expected to hold none:
+    it is shown as `absent` once its credential is gone, and as
+    `STILL THERE` while the credential exists — until the next
+    `mdb credentials-apply` removes it.
     """
     from .viya.credentials import CredentialError, fetch_credential
 
@@ -3847,6 +4103,7 @@ def credentials_report(
     table.add_column("Last written by")
     table.add_column("When")
     held = 0
+    lingering = 0
     with _viya_session() as session:
         for who in plan.identities:
             try:
@@ -3855,16 +4112,32 @@ def credentials_report(
                 table.add_row(who.id, who.type, "[red]unreadable[/red]", str(exc)[:40], "")
                 continue
             if body is None:
-                table.add_row(who.id, who.type, "[yellow]none[/yellow]", "", "")
+                table.add_row(who.id, who.type,
+                              "[green]absent (as the manifest says)[/green]"
+                              if who.absent else "[yellow]none[/yellow]", "", "")
                 continue
-            held += 1
-            table.add_row(
-                who.id, who.type, "[green]yes[/green]",
+            written = (
                 str(body.get("modifiedBy") or body.get("createdBy") or ""),
                 str(body.get("modifiedTimeStamp") or body.get("creationTimeStamp") or "")[:19],
             )
+            if who.absent:
+                lingering += 1
+                table.add_row(who.id, who.type,
+                              "[red]STILL THERE (manifest: absent)[/red]", *written)
+                continue
+            held += 1
+            table.add_row(who.id, who.type, "[green]yes[/green]", *written)
     console.print(table)
-    console.print(f"{held} of {len(plan.identities)} named identities hold a credential.")
+    expected = [who for who in plan.identities if not who.absent]
+    console.print(f"{held} of {len(expected)} named identities hold a credential.")
+    marked = len(plan.identities) - len(expected)
+    if marked:
+        console.print(f"{marked - lingering} of {marked} identities marked "
+                      "`state: absent` hold none.")
+    if lingering:
+        console.print(f"[red]{lingering} credential(s) the manifest marks absent "
+                      "are still there.[/red] Run [bold]mdb credentials-apply"
+                      "[/bold] to remove them.")
     console.print("[dim]Contents are never shown: a credential read returns "
                   "metadata only, so no identity can see another's keys.[/dim]")
 

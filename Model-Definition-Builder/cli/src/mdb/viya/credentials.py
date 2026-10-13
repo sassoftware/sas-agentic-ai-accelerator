@@ -65,6 +65,19 @@ THREE API FACTS THIS MODULE IS SHAPED BY, each established live 2026-08-04:
    repository does, which is worth re-checking whenever a new one is added.
    `?lookupInGroup=false` is equivalent to omitting it.
 
+REMOVAL IS SOMETHING THE MANIFEST SAYS, never something it implies. Because
+of fact 1 nobody can list the holders of a credential, so a line that is
+missing from the manifest cannot mean "remove": the tool would have to delete
+what it cannot see. An identity whose credential should go carries
+`state: absent`, and the apply deletes exactly that item. Nothing is ever
+removed because a line is gone.
+
+THE MANIFEST IS EDITED AS TEXT. `edit_identity()` adds or changes one identity
+by splicing text at the positions the YAML parser reports, because the YAML
+library this CLI depends on drops every comment on a dump - and the manifest
+is mostly comments. Every edit is read back with the loader and compared with
+what was intended before anything is written.
+
 SECRET VALUES NEVER LEAVE THIS MODULE. Nothing here returns, prints, logs or
 formats a value; the planning types carry entry NAMES and counts only. The
 values are read from the source file and base64-encoded straight into the
@@ -115,6 +128,20 @@ DOMAIN_DESCRIPTION = (
 )
 
 IDENTITY_TYPES = ("user", "group")
+
+#: What a manifest may say about an identity's credential. `present` is the
+#: default; `absent` is the only way a credential is ever removed.
+STATES = ("present", "absent")
+
+#: The identity the scaffold writes for its author to replace.
+PLACEHOLDER_ID = "CHANGE-ME-to-a-real-group"
+
+#: Said once per apply that writes a group credential. A credential written
+#: for a group the users are not members of looks like a finished rollout and
+#: leaves every one of them without a key.
+GROUP_REACH = (
+    "A group credential reaches only the members of that group, and a user's "
+    "own credential replaces it for that user.")
 
 
 class CredentialError(RuntimeError):
@@ -174,6 +201,29 @@ def map_entries(raw: dict, verbatim: bool = False) -> dict:
     return mapped
 
 
+def read_manifest_text(path: Path) -> str:
+    """A manifest's text with its line ends as they are in the file.
+
+    Read as bytes on purpose: a text-mode read turns every `\\r\\n` into
+    `\\n`, and an edit written back would then change every line of a file
+    the author expects to see one line changed in.
+    """
+    try:
+        return path.read_bytes().decode("utf-8")
+    except OSError as exc:
+        raise CredentialError(f"cannot read {path}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise CredentialError(f"{path} is not UTF-8 text: {exc}") from exc
+
+
+def write_manifest_text(path: Path, text: str) -> None:
+    """Write an edited manifest back, line ends untouched."""
+    try:
+        path.write_bytes(text.encode("utf-8"))
+    except OSError as exc:
+        raise CredentialError(f"cannot write {path}: {exc}") from exc
+
+
 def encode(entries: dict) -> dict:
     """The `secrets` map as the domain stores it (base64, per domain type)."""
     return {
@@ -197,6 +247,8 @@ class Identity:
     verbatim: bool = False
     #: Keep only these entry names. Empty = everything the source yields.
     only: tuple = ()
+    #: `absent` = this identity's credential is to be removed, not written.
+    state: str = "present"
 
     def __post_init__(self) -> None:
         if self.type not in IDENTITY_TYPES:
@@ -205,11 +257,20 @@ class Identity:
                 f"{', '.join(IDENTITY_TYPES)}, not {self.type!r}")
         if not str(self.id).strip():
             raise CredentialError("an identity with no id cannot be equipped")
+        if self.state not in STATES:
+            raise CredentialError(
+                f"identity {self.id!r}: state must be one of "
+                f"{', '.join(STATES)}, not {self.state!r}")
 
     @property
     def path_segment(self) -> str:
         """`users` or `groups` — the collection the item lives under."""
         return "users" if self.type == "user" else "groups"
+
+    @property
+    def absent(self) -> bool:
+        """True when the manifest asks for this credential to be removed."""
+        return self.state == "absent"
 
 
 @dataclass
@@ -223,12 +284,20 @@ class Manifest:
     @classmethod
     def load(cls, path: Path) -> "Manifest":
         """Read a credentials manifest (YAML). Paths resolve against it."""
+        return cls.parse(read_manifest_text(path), path)
+
+    @classmethod
+    def parse(cls, text: str, path: Path, allow_empty: bool = False) -> "Manifest":
+        """A manifest from its text. `path` is where the text lives (or will
+        live): paths inside it resolve against that file's directory.
+
+        `allow_empty` is for the editor alone, which may be handed a manifest
+        whose author deleted the placeholder and left `identities:` empty.
+        """
         import yaml
 
         try:
-            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except OSError as exc:
-            raise CredentialError(f"cannot read {path}: {exc}") from exc
+            raw = yaml.safe_load(text) or {}
         except yaml.YAMLError as exc:
             raise CredentialError(f"{path} is not valid YAML: {exc}") from exc
         if not isinstance(raw, dict):
@@ -237,7 +306,9 @@ class Manifest:
         base = path.parent
         default_source = raw.get("source")
         listed = raw.get("identities")
-        if not isinstance(listed, list) or not listed:
+        if allow_empty and listed is None:
+            listed = []
+        elif not isinstance(listed, list) or not listed:
             raise CredentialError(
                 f"{path}: 'identities' must be a non-empty list — a manifest "
                 "that equips nobody is almost certainly a mistake")
@@ -255,6 +326,10 @@ class Manifest:
                 source=(base / str(source)).resolve() if source else None,
                 verbatim=bool(item.get("verbatim", False)),
                 only=tuple(str(name) for name in only),
+                # A key that is missing means present. A key that is there
+                # with any other value - a YAML `no`, an empty value, a typo -
+                # is refused: a guess here would write or delete a credential.
+                state=str(item.get("state", "present")),
             ))
         return cls(
             domain=str(raw.get("domain") or DEFAULT_DOMAIN),
@@ -310,11 +385,19 @@ def scaffold(source: Path, manifest: Path, domain: str = DEFAULT_DOMAIN,
 #   mdb credentials-apply  --manifest {manifest.name}
 #   mdb credentials-report --manifest {manifest.name}
 #
-# A USER credential overrides a GROUP one, which is how "the department shares
-# a key, except the one person with their own quota" is expressed. Writing a
-# credential REPLACES it whole, so each source must carry everything that
-# identity should end up with. Creating the domain, or any group credential,
-# needs SAS administrator rights.
+# Identities are added and marked for removal with a command as well as by
+# hand; both edit this file and leave its comments alone:
+#
+#   mdb credentials-add    group LLMConsumers --manifest {manifest.name}
+#   mdb credentials-remove group FormerTeam   --manifest {manifest.name}
+#
+# A GROUP credential reaches only the members of that group: equip a group
+# the people who open the Prompt Builder are members of. A USER credential
+# overrides a GROUP one, which is how "the department shares a key, except the
+# one person with their own quota" is expressed. Writing a credential REPLACES
+# it whole, so each source must carry everything that identity should end up
+# with. Creating the domain, or any group credential, needs SAS administrator
+# rights.
 
 domain: {domain}
 
@@ -329,9 +412,10 @@ source: {relative_source(source, manifest)}
 {listed}
 
 identities:
-  # Replace with the groups and users this deployment should equip.
+  # Replace with the groups and users this deployment should equip. The first
+  # `mdb credentials-add` replaces this placeholder.
   - type: group
-    id: CHANGE-ME-to-a-real-group
+    id: {PLACEHOLDER_ID}
 
   # Narrow an identity to some of the entries:
   # - type: group
@@ -348,7 +432,308 @@ identities:
   # - type: group
   #   id: FraudAnalytics
   #   source: envs/production.env
+
+  # A credential that is to be removed. The next `mdb credentials-apply`
+  # deletes it; a line that is merely deleted from this file removes nothing:
+  # - type: group
+  #   id: FormerTeam
+  #   state: absent
 """
+
+
+# ---------------------------------------------------------------------------
+# Editing the manifest in place
+# ---------------------------------------------------------------------------
+@dataclass
+class ManifestEdit:
+    """A manifest after one identity was added to it or changed in it.
+
+    `changes` says what changed in words fit to print: entry names, paths and
+    states, never a value.
+    """
+
+    text: str
+    manifest: Manifest
+    identity: Identity
+    #: "added" | "placeholder" | "updated" | "unchanged" — placeholder when
+    #: the new identity took the place of the scaffold's placeholder.
+    outcome: str
+    changes: tuple = ()
+
+
+def _flow(value) -> str:
+    """A scalar, or a list in flow style, as YAML spells it — quoted only
+    where YAML would otherwise read something else (`'123'`, `'no'`)."""
+    import yaml
+
+    listed = isinstance(value, (list, tuple))
+    dumped = yaml.safe_dump(
+        [str(item) for item in value] if listed else [str(value)],
+        default_flow_style=True, allow_unicode=True, width=2 ** 31).strip()
+    return dumped if listed else dumped[1:-1]
+
+
+def _content_end(node) -> int:
+    """Index just past the last character a node really occupies.
+
+    A block collection's own end mark sits at the NEXT token, past every
+    comment and blank line that follows it, so its end is taken from its last
+    leaf. Scalars and flow collections end where their text ends.
+    """
+    import yaml
+
+    if isinstance(node, yaml.ScalarNode) or node.flow_style or not node.value:
+        return node.end_mark.index
+    last = node.value[-1]
+    return _content_end(last[1] if isinstance(node, yaml.MappingNode) else last)
+
+
+def _line_start(text: str, index: int) -> int:
+    return text.rfind("\n", 0, index) + 1
+
+
+def _line_after(text: str, index: int) -> int:
+    end = text.find("\n", index)
+    return len(text) if end < 0 else end + 1
+
+
+def _appended(text: str, at: int, block: str, eol: str) -> str:
+    """Whole lines to insert at `at`. A file whose last line has no line end
+    keeps that property: the block then starts with the missing line end
+    instead of finishing with one."""
+    if at == len(text) and text and not text.endswith("\n"):
+        return eol + block[:-len(eol)]
+    return block
+
+
+def _identities_node(text: str, path: Path):
+    """The `identities` key and its list as the parser sees them: nodes that
+    carry the position of every key and value in the text."""
+    import yaml
+
+    try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+    except yaml.YAMLError as exc:
+        raise CredentialError(f"{path} is not valid YAML: {exc}") from exc
+    name = listed = None
+    if isinstance(root, yaml.MappingNode):
+        for key, value in root.value:
+            if isinstance(key, yaml.ScalarNode) and key.value == "identities":
+                name, listed = key, value
+    if listed is None:
+        raise CredentialError(
+            f"{path}: there is no 'identities' list to add to — write a "
+            "manifest with `mdb credentials-init`")
+    empty = (isinstance(listed, yaml.ScalarNode)
+             and listed.start_mark.index == listed.end_mark.index)
+    block = (isinstance(listed, yaml.SequenceNode) and not listed.flow_style
+             and all(isinstance(item, yaml.MappingNode) and item.value
+                     for item in listed.value))
+    if not (empty or block):
+        raise CredentialError(
+            f"{path}: 'identities' is not a block list (one `- ` line per "
+            "identity), so it cannot be edited in place — edit the file by hand")
+    return name, listed
+
+
+def _cut(text: str, node, position: int) -> Optional[tuple]:
+    """The span to delete so that one key of an identity is gone, or None
+    when it cannot be taken out without touching its neighbours."""
+    key, value = node.value[position]
+    end = _content_end(value)
+    if node.flow_style:
+        if position > 0:
+            return _content_end(node.value[position - 1][1]), end
+        if len(node.value) > 1:
+            return key.start_mark.index, node.value[1][0].start_mark.index
+        return None
+    start = _line_start(text, key.start_mark.index)
+    if text[start:key.start_mark.index].strip():
+        return None             # the key shares its line with the dash
+    return start, _line_after(text, end)
+
+
+def _item_splices(text: str, node, sets: dict, drop: tuple, eol: str) -> list:
+    """(start, end, replacement) for one existing identity: `sets` are keys
+    to write — replaced where they are, appended where they are not — and
+    `drop` are keys to take out. An identity written `{…}` stays that way."""
+    import yaml
+
+    pairs = {key.value: (position, value)
+             for position, (key, value) in enumerate(node.value)}
+    sets = dict(sets)
+    splices = []
+    for name in drop:
+        if name not in pairs:
+            continue
+        cut = _cut(text, node, pairs[name][0])
+        if cut is None:
+            # `state: present` says the same as no `state` line at all.
+            sets[name] = "present"
+        else:
+            splices.append((cut[0], cut[1], ""))
+
+    fresh = []
+    for name, new in sets.items():
+        if name not in pairs:
+            fresh.append(f"{name}: {_flow(new)}")
+            continue
+        value = pairs[name][1]
+        start, end = value.start_mark.index, _content_end(value)
+        if (isinstance(value, yaml.SequenceNode) and not value.flow_style
+                and isinstance(new, (list, tuple))):
+            # A list written one name per line stays one name per line.
+            joint = eol + " " * value.start_mark.column
+            rendered = joint.join("- " + _flow(item) for item in new)
+        else:
+            rendered = _flow(new)
+            if start == end:                # `key:` with nothing after it
+                rendered = " " + rendered
+        splices.append((start, end, rendered))
+
+    if fresh:
+        last = _content_end(node.value[-1][1])
+        if node.flow_style:
+            splices.append((last, last, "".join(", " + pair for pair in fresh)))
+        else:
+            at = _line_after(text, last)
+            indent = " " * node.value[0][0].start_mark.column
+            block = "".join(indent + pair + eol for pair in fresh)
+            splices.append((at, at, _appended(text, at, block, eol)))
+    return splices
+
+
+def _entry_splice(text: str, listed_under, listed, who: Identity,
+                  source: Optional[str], eol: str) -> tuple:
+    """(start, end, replacement) that appends one identity, in block style,
+    after the last one the list holds."""
+    import yaml
+
+    gap = ""
+    if isinstance(listed, yaml.SequenceNode):
+        column = listed.start_mark.column
+        last = listed.value[-1]
+        end = _content_end(last)
+        # Identities that span lines are set apart by a blank line, the way
+        # the scaffold and the shipped example write them; a list of one-line
+        # `{…}` identities stays compact.
+        if "\n" in text[last.start_mark.index:end]:
+            gap = eol
+    else:                                   # `identities:` with nothing under it
+        column = listed_under.start_mark.column + 2
+        end = listed.end_mark.index
+    at = _line_after(text, end)
+    dash = " " * column
+    lines = [f"{dash}- type: {_flow(who.type)}", f"{dash}  id: {_flow(who.id)}"]
+    if who.only:
+        lines.append(f"{dash}  only: {_flow(who.only)}")
+    if source:
+        lines.append(f"{dash}  source: {_flow(source)}")
+    if who.absent:
+        lines.append(f"{dash}  state: absent")
+    block = gap + "".join(line + eol for line in lines)
+    return at, at, _appended(text, at, block, eol)
+
+
+def edit_identity(text: str, path: Path, type: str, id: str,
+                  only: Optional[tuple] = None, source: Optional[str] = None,
+                  state: Optional[str] = None) -> ManifestEdit:
+    """Add one identity to a manifest's text, or change the one that is there.
+
+    `only`, `source` and `state` are written when given and left as they are
+    when None; `source` is the path as the manifest should spell it. An
+    identity is the same one when type and id are equal as the loader reads
+    them. The scaffold's placeholder is replaced by the first identity that is
+    added. Returns the new text — nothing is written here.
+
+    Only the identity itself is touched. Every other character of the text —
+    comments, blank lines, order, line ends, the other identities — is
+    carried over as it is, because the edit is a splice at the positions the
+    YAML parser reports and not a dump of the parsed document. What comes out
+    is read back with the loader and compared with what was intended; a
+    layout the splice does not handle is refused rather than guessed at.
+    """
+    from dataclasses import replace
+
+    Identity(type=type, id=id)              # refuses a wrong type or an empty id
+    before = Manifest.parse(text, path, allow_empty=True)
+    listed_under, listed = _identities_node(text, path)
+
+    same = [index for index, who in enumerate(before.identities)
+            if (who.type, who.id) == (type, id)]
+    if len(same) > 1:
+        raise CredentialError(
+            f"{path}: {type} {id!r} is listed {len(same)} times — make it one "
+            "entry by hand first")
+    placeholders = [index for index, who in enumerate(before.identities)
+                    if who.id == PLACEHOLDER_ID]
+    if same:
+        index, outcome = same[0], "updated"
+    elif placeholders:
+        index, outcome = placeholders[0], "placeholder"
+    else:
+        index, outcome = None, "added"
+    current = before.identities[index] if index is not None else Identity(type=type, id=id)
+
+    wanted = replace(current, type=type, id=id)
+    changes = []
+    if only is not None and set(only) != set(current.only):
+        wanted = replace(wanted, only=tuple(str(name) for name in only))
+        changes.append(f"only: {', '.join(current.only) or 'every entry'} -> "
+                       f"{', '.join(wanted.only) or 'every entry'}")
+    if source is not None and (path.parent / source).resolve() != current.source:
+        wanted = replace(wanted, source=(path.parent / source).resolve())
+        was = relative_source(current.source, path) if current.source else "the manifest's source"
+        changes.append(f"source: {was} -> {source}")
+    if state is not None and state != current.state:
+        wanted = replace(wanted, state=state)
+        changes.append(f"state: {current.state} -> {state}")
+    if outcome == "updated" and not changes:
+        return ManifestEdit(text, before, current, "unchanged")
+
+    eol = "\r\n" if "\r\n" in text else "\n"
+    if index is None:
+        splices = [_entry_splice(text, listed_under, listed, wanted,
+                                 source if wanted.source else None, eol)]
+    else:
+        sets: dict = {}
+        if outcome == "placeholder":
+            if wanted.type != current.type:
+                sets["type"] = wanted.type
+            sets["id"] = wanted.id
+        if wanted.only != current.only:
+            sets["only"] = wanted.only
+        if wanted.source != current.source:
+            sets["source"] = source
+        if wanted.absent and not current.absent:
+            sets["state"] = "absent"
+        drop = ("state",) if current.absent and not wanted.absent else ()
+        splices = _item_splices(text, listed.value[index], sets, drop, eol)
+
+    edited = text
+    for start, end, new in sorted(splices, reverse=True):
+        edited = edited[:start] + new + edited[end:]
+
+    # The proof: what was spliced must load as exactly the manifest that was
+    # there plus this one change, or it is not written.
+    intended = list(before.identities)
+    if index is None:
+        intended.append(wanted)
+    else:
+        intended[index] = wanted
+    try:
+        after = Manifest.parse(edited, path)
+        proven = (after.identities == intended and after.domain == before.domain
+                  and after.source == before.source)
+    except CredentialError:
+        proven = False
+    if not proven:
+        raise CredentialError(
+            f"{path}: the manifest is laid out in a way this edit cannot be "
+            "made in safely — nothing was written; edit the file by hand")
+    # A new identity has no "before" to tell a change against.
+    return ManifestEdit(edited, after, wanted, outcome,
+                        tuple(changes) if outcome == "updated" else ())
 
 
 # ---------------------------------------------------------------------------
@@ -360,17 +745,53 @@ class Step:
 
     identity: Identity
     entry_names: tuple
-    #: "create" | "replace" — replace when a credential already exists.
+    #: "create" | "replace" | "remove" — replace when a credential already
+    #: exists, remove when the manifest marks the identity `state: absent`.
     action: str = "create"
     #: Who last wrote the existing credential, when the server says.
     existing_by: str = ""
     existing_at: str = ""
+    #: Whether a credential was there when the plan was made. Only a remove
+    #: step reads it: removing what is already gone is reported, not failed.
+    found: bool = False
     #: Why this identity is being skipped, or "" when it is not.
     problem: str = ""
 
     @property
     def ok(self) -> bool:
         return not self.problem
+
+
+def planned_entries(manifest: Manifest, identity: Identity) -> tuple:
+    """(entry names, problem) for one identity — what its source would give
+    it, or why it cannot be equipped. NAMES only, never a value.
+
+    One function, so that `credentials-apply` and `credentials-add` refuse
+    the same thing in the same words: an `only` name the source does not
+    carry is as wrong when it is typed as when it is applied.
+    """
+    source = identity.source or manifest.source
+    if source is None:
+        return (), ("no source file: set 'source' on the identity or a default at "
+                    "the top of the manifest")
+    if not Path(source).is_file():
+        return (), f"source file not found: {source}"
+    entries = map_entries(read_name_value_file(Path(source)), identity.verbatim)
+    if identity.only:
+        missing = [name for name in identity.only if name not in entries]
+        entries = {name: value for name, value in entries.items()
+                   if name in identity.only}
+        if missing:
+            return tuple(sorted(entries)), (
+                "the source does not carry " + ", ".join(sorted(missing))
+                + " — 'only' names entries as the DOMAIN spells them "
+                  "(OpenAI, PGVECTOR_RAG_PW), not as the .env does")
+    if not entries:
+        return (), (
+            f"no recognised entries in {source} — expected provider keys "
+            "(OPENAI_API_KEY, …), <BACKEND>_RAG_USER/_PW pairs and/or "
+            "<BACKEND>_HOST/_PORT/_DB/_SSLMODE settings")
+    return tuple(sorted(entries)), ""
 
 
 def build_steps(manifest: Manifest, existing) -> list:
@@ -383,36 +804,21 @@ def build_steps(manifest: Manifest, existing) -> list:
     """
     steps = []
     for identity in manifest.identities:
-        source = identity.source or manifest.source
-        if source is None:
-            steps.append(Step(identity, (), problem=(
-                "no source file: set 'source' on the identity or a default at "
-                "the top of the manifest")))
-            continue
-        if not Path(source).is_file():
-            steps.append(Step(identity, (), problem=f"source file not found: {source}"))
-            continue
-        entries = map_entries(read_name_value_file(Path(source)), identity.verbatim)
-        if identity.only:
-            missing = [name for name in identity.only if name not in entries]
-            entries = {name: value for name, value in entries.items()
-                       if name in identity.only}
-            if missing:
-                steps.append(Step(identity, tuple(sorted(entries)), problem=(
-                    "the source does not carry " + ", ".join(sorted(missing))
-                    + " — 'only' names entries as the DOMAIN spells them "
-                      "(OpenAI, PGVECTOR_RAG_PW), not as the .env does")))
+        if identity.absent:
+            # A removal reads no source and carries no entries: there is
+            # nothing to write, only an item to delete. It is planned before
+            # any source check, so a manifest can remove the credential of an
+            # identity whose key file is long gone.
+            body = existing(identity)
+            step = Step(identity, (), action="remove", found=body is not None)
+        else:
+            names, problem = planned_entries(manifest, identity)
+            if problem:
+                steps.append(Step(identity, names, problem=problem))
                 continue
-        if not entries:
-            steps.append(Step(identity, (), problem=(
-                f"no recognised entries in {source} — expected provider keys "
-                "(OPENAI_API_KEY, …), <BACKEND>_RAG_USER/_PW pairs and/or "
-                "<BACKEND>_HOST/_PORT/_DB/_SSLMODE settings")))
-            continue
-
-        body = existing(identity)
-        step = Step(identity, tuple(sorted(entries)),
-                    action="replace" if body else "create")
+            body = existing(identity)
+            step = Step(identity, names, action="replace" if body else "create",
+                        found=body is not None)
         if body:
             step.existing_by = str(body.get("modifiedBy") or body.get("createdBy") or "")
             step.existing_at = str(body.get("modifiedTimeStamp")

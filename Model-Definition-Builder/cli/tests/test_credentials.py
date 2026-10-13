@@ -17,9 +17,10 @@ from pathlib import Path
 import pytest
 
 from mdb.viya.credentials import (
-    PROVIDER_ENTRIES, CredentialError, Identity, Manifest, build_steps,
-    credential_path, encode, entries_for, map_entries, read_name_value_file,
-    relative_source, scaffold,
+    PLACEHOLDER_ID, PROVIDER_ENTRIES, CredentialError, Identity, Manifest,
+    build_steps, credential_path, delete_credential, encode, entries_for,
+    map_entries, planned_entries, read_name_value_file, relative_source,
+    scaffold,
 )
 
 REPO = Path(__file__).resolve().parents[3]
@@ -136,6 +137,27 @@ def test_an_unknown_identity_type_is_refused_by_name(tmp_path):
         _manifest(tmp_path, "identities:\n  - {type: everyone, id: x}\n")
 
 
+def test_an_identity_is_present_unless_the_manifest_says_absent(tmp_path, env_file):
+    manifest = _manifest(tmp_path, """
+source: .env
+identities:
+  - {type: group, id: LLMConsumers}
+  - {type: group, id: RAGEngineers, state: present}
+  - {type: group, id: FormerTeam, state: absent}
+""")
+    assert [who.state for who in manifest.identities] == ["present", "present", "absent"]
+    assert [who.absent for who in manifest.identities] == [False, False, True]
+
+
+@pytest.mark.parametrize("written", ["gone", "Absent", "no", "~", "[absent]"])
+def test_any_other_state_is_refused_by_name(tmp_path, written):
+    """`state` decides between writing a credential and deleting one, so a
+    value that is neither is never read as the nearest of the two."""
+    with pytest.raises(CredentialError) as refused:
+        _manifest(tmp_path, f"identities:\n  - {{type: group, id: FormerTeam, state: {written}}}\n")
+    assert "identity 'FormerTeam': state must be one of present, absent" in str(refused.value)
+
+
 def test_group_and_user_address_different_endpoints():
     assert credential_path("d", Identity("group", "PromptEngineers")) == \
         "/credentials/domains/d/groups/PromptEngineers"
@@ -201,6 +223,72 @@ identities:
     assert "no recognised entries" in steps[0].problem
 
 
+def test_an_absent_identity_is_planned_as_a_removal_and_needs_no_source(tmp_path):
+    """No source at the top, a source that is not there, a source with
+    nothing in it: each stops an identity that is to be equipped, and none
+    stops one that is to be removed - there is nothing to read for it."""
+    (tmp_path / "empty.env").write_text("NOTHING=useful\n", encoding="utf-8")
+    manifest = _manifest(tmp_path, """
+identities:
+  - {type: group, id: FormerTeam, state: absent}
+  - {type: user,  id: ada, state: absent, source: long-gone.env}
+  - {type: user,  id: bob, state: absent, source: empty.env, only: [OpenAI]}
+  - {type: group, id: Unequipped}
+""")
+    held = {"FormerTeam": {"modifiedBy": "sasadm", "modifiedTimeStamp": "2026-10-01T09:00:00Z"},
+            "bob": {}}
+    steps = build_steps(manifest, lambda who: held.get(who.id))
+
+    assert [step.action for step in steps[:3]] == ["remove", "remove", "remove"]
+    assert all(step.ok and step.entry_names == () for step in steps[:3])
+    assert [step.found for step in steps[:3]] == [True, False, True]
+    assert steps[0].existing_by == "sasadm"
+    assert not steps[3].ok and "no source file" in steps[3].problem
+
+
+def test_the_check_of_one_identity_is_the_check_of_the_plan(tmp_path, env_file):
+    """`credentials-add` refuses with `planned_entries` what `credentials-apply`
+    skips with `build_steps`: one function, so one wording."""
+    manifest = _manifest(tmp_path, """
+source: .env
+identities:
+  - {type: group, id: RAGEngineers, only: [PGVECTOR_RAG_USER, PGVECTOR_RAG_PW]}
+  - {type: group, id: Confused, only: [PGVECTOR_RAG_PW, OPENAI_API_KEY]}
+  - {type: group, id: Broken, source: nope.env}
+""")
+    steps = build_steps(manifest, lambda who: None)
+    for step in steps:
+        assert planned_entries(manifest, step.identity) == (step.entry_names, step.problem)
+    assert [bool(step.problem) for step in steps] == [False, True, True]
+
+
+class _Answer:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+
+class _Deleting:
+    """A session that answers a DELETE with one status and records the path."""
+
+    def __init__(self, status_code):
+        self.status_code, self.paths = status_code, []
+
+    def delete(self, path):
+        self.paths.append(path)
+        return _Answer(self.status_code)
+
+
+def test_deleting_a_credential_that_is_gone_is_an_answer_not_an_error():
+    who = Identity("group", "FormerTeam", state="absent")
+
+    removed = _Deleting(204)
+    assert delete_credential(removed, "agentic-ai-keys", who) is True
+    assert removed.paths == ["/credentials/domains/agentic-ai-keys/groups/FormerTeam"]
+    assert delete_credential(_Deleting(404), "agentic-ai-keys", who) is False
+    with pytest.raises(CredentialError, match="removing the credential for group 'FormerTeam' failed: HTTP 403"):
+        delete_credential(_Deleting(403), "agentic-ai-keys", who)
+
+
 def test_entries_for_returns_the_values_the_plan_withholds(tmp_path, env_file):
     manifest = _manifest(tmp_path, """
 source: .env
@@ -264,10 +352,26 @@ def test_a_scaffold_is_a_manifest_this_tool_can_read_back(tmp_path, env_file):
     manifest = Manifest.load(path)
     assert manifest.domain == "agentic-ai-keys"
     assert manifest.source == env_file.resolve()
-    assert [who.type for who in manifest.identities] == ["group"]
+    # One identity, the placeholder `mdb credentials-add` replaces. The
+    # examples below it - the `state: absent` one included - are comments:
+    # a starter file must not remove anything when it is applied.
+    assert [(who.type, who.id, who.state) for who in manifest.identities] == [
+        ("group", PLACEHOLDER_ID, "present")]
     # it plans, so the only thing standing between the scaffold and a run is
     # the author replacing the placeholder identity
     assert build_steps(manifest, lambda who: None)[0].ok
+
+
+def test_a_scaffold_names_the_commands_that_edit_it(tmp_path, env_file):
+    """The file is where its author looks first, so it says that identities
+    can be added and marked for removal without editing it, and whom a group
+    credential reaches."""
+    text = scaffold(env_file, tmp_path / "team.yaml", "agentic-ai-keys", ("OpenAI",))
+    assert "#   mdb credentials-add    group LLMConsumers --manifest team.yaml" in text
+    assert "#   mdb credentials-remove group FormerTeam   --manifest team.yaml" in text
+    assert "# A GROUP credential reaches only the members of that group" in text
+    assert "  #   state: absent" in text
+    assert text.count(PLACEHOLDER_ID) == 1
 
 
 # ---- the property that matters most ---------------------------------------
