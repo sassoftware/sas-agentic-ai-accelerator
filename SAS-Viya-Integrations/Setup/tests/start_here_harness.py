@@ -183,6 +183,23 @@ class Site:
             "type": "child", "createdBy": "uid7781", "addedBy": "uid9024"})
         return uri
 
+    def refer(self, path, kind="file", first=False):
+        """Puts a reference into a folder, under the name of the path: a member that names an object of that kind
+        which lives elsewhere. The member has the shape that was read on SAS Viya 2026.09 on 2026-10-13 for a
+        reference to a file: its type says reference, and contentType and uri are the ones of the object it
+        names. A reference to a folder names a folder that has members of its own. Returns the uri it names."""
+        folder, _, name = path.rpartition("/")
+        identifier = self._id("eeeeeeee")
+        uri = URI_OF.get(kind, "/files/files/") + identifier
+        if kind == "folder":
+            self.folders[identifier] = [{"id": self._id("mmmmmmmm"), "name": "__init__.py", "contentType": "file", "type": "child",
+                                         "uri": "/files/files/" + self._id("oooooooo")}]
+        entry = {"id": self._id("mmmmmmmm"), "name": name, "contentType": MEMBER_TYPE.get(kind, kind), "uri": uri, "type": "reference",
+                 "createdBy": "uid7781", "addedBy": "uid9024"}
+        members = self.folders[self.folder_ids[folder]]
+        members.insert(0, entry) if first else members.append(entry)
+        return uri
+
     def remove(self, path):
         """Takes an object out of its folder. A folder goes with everything in it."""
         folder, _, name = path.rpartition("/")

@@ -31,7 +31,10 @@
  * sentence what to do:
  *   - the release: release.json in the content root (version, commit, date)
  *   - the content: every entry release.json lists, present in this content
- *     root yes or no, so the page needs no checkout
+ *     root yes or no, so the page needs no checkout. A member of a folder
+ *     that is a reference to an object elsewhere is no entry: it is not
+ *     followed, and where it is all a folder holds under the name of an
+ *     entry, the line of that entry says so
  *   - the CAS tables the two reports bind: there, rows, loaded when
  *   - the CAS tables of the logging chain that no report binds: the fact sheet
  *     of the decision models and the four further tables of Get-All-Prompts.sas
@@ -221,6 +224,13 @@ STEP_MISSING = ('Import the package of the accelerator again, or run mdb content
 STEP_UPLOADED = ('Import the package of the accelerator again, or run mdb content-deploy: both register the step. Then delete the file of '
                  'that name, which neither of them removes: a step file that was uploaded opens empty in SAS Studio.')
 STEP_BESIDE = 'Delete the file of that name: it is a step file that was uploaded, not the step.'
+# A member of a folder that is a reference names an object that lives in another folder. It is told by the type
+# of the member, is never followed, and is no object of the folder - whatever kind of object it names. Measured on
+# 2026-10-13 for a file: mdb content-deploy and the import in place reported the entry whose name a reference had as
+# FAILED and wrote nothing for it, until the reference was removed
+REFERENCE = 'reference'
+REFERENCE_FOUND = 'a reference of that name is in its folder, and the object it names lives elsewhere'
+REFERENCE_TODO = 'Remove the reference from the folder. Then: '
 
 
 # ---------------------------------------------------------------------------
@@ -392,13 +402,16 @@ def segment(text):
 def members_of(get, folder_uri):
     """(status, {name: [(kind of member, uri), ...]}) of one folder. A folder can hold two
     members of one name when they are of two kinds: a registered step, and a file that was
-    uploaded under the name of the step."""
+    uploaded under the name of the step. The kind of a member that is a reference is
+    'reference', whatever it names: such a member is taken for no file, step, report, job
+    definition or folder of this folder."""
     status, items = list_all(get, folder_uri + '/members')
     found = {}
     for item in items:
         name = item.get('name')
         if isinstance(name, str):
-            found.setdefault(name, []).append((str(item.get('contentType') or item.get('type') or ''), str(item.get('uri') or '')))
+            kind = REFERENCE if text_of(item.get('type')).lower() == REFERENCE else str(item.get('contentType') or item.get('type') or '')
+            found.setdefault(name, []).append((kind, str(item.get('uri') or '')))
     return status, found
 
 
@@ -461,6 +474,8 @@ def release_of(get, listings):
         return None, [line(section, 'Content root', state, found, ask_again(status))]
     kind, uri = member(members, RELEASE_FILE, ('file',))
     deploy = 'Import the package of the accelerator again, or run mdb content-deploy, which writes the file.'
+    if kind == REFERENCE:
+        return None, [line(section, RELEASE_FILE, MISSING, REFERENCE_FOUND, REFERENCE_TODO + deploy)]
     if not uri or kind != 'file':
         return None, [line(section, RELEASE_FILE, MISSING, 'not in the content root', deploy)]
     # the member names where its file is: only a file of the Files service is asked for, as only
@@ -512,7 +527,11 @@ def entry_line(path, kind, listings):
         return line(section, what, state, found, ask_again(status))
     names = [name] + ([name + '.step'] if kind == 'step' and not name.endswith('.step') else [])
     names += [name[:-5]] if kind == 'step' and name.endswith('.step') else []
-    present = [found for candidate in names for found in members.get(candidate, [])]
+    named = [found for candidate in names for found in members.get(candidate, [])]
+    # a reference is no object of the folder: only what is left is looked at for the entry
+    present = [found for found in named if found[0] != REFERENCE]
+    if not present and named:
+        return line(section, what, MISSING, REFERENCE_FOUND, REFERENCE_TODO + deploy)
     if not present:
         return line(section, what, MISSING, 'not in its folder', deploy)
     wanted = MEMBER_TYPES.get(kind)
