@@ -32,7 +32,7 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
-from content_fakes import CONTENT_ROOT, STEP, STEP_NAME, Viya, make_repo
+from content_fakes import CONTENT_ROOT, STEP, STEP_NAME, Response, Viya, make_repo
 from mdb import cli
 from mdb.core import content
 from mdb.core.content import load_manifest
@@ -231,6 +231,29 @@ def test_the_update_of_a_file_names_the_version_it_read(manifest, repo, monkeypa
     assert viya.files[uri] == b"somebody else\n"
 
 
+def test_a_file_changed_after_it_was_compared_is_not_written_over(manifest, repo, monkeypatch):
+    """The ETag was asked for again right before the write, so a change made
+    between the comparison and the write was written over without a word.
+    The write names the version whose content was compared."""
+    viya = Viya()
+    deploy(viya, manifest)
+    uri, = viya.at(f"{CONTENT_ROOT}/{CORE}")
+    (repo / "src/rag_core/__init__.py").write_bytes(b"CORE = 2\n")
+    real_get = viya.get
+
+    def get(path, **kwargs):
+        response = real_get(path, **kwargs)
+        if path == f"{uri}/content":
+            # another writer, right after mdb read the content it compares
+            viya.files[uri], viya.etags[uri] = b"the other writer\n", viya.etags[uri] + 1
+        return response
+    monkeypatch.setattr(viya, "get", get)
+    result = deploy(viya, manifest)
+    outcome = _outcome(result, CORE)
+    assert outcome.status == FAILED and result.stopped_at is outcome
+    assert "HTTP 412" in outcome.note and viya.files[uri] == b"the other writer\n"
+
+
 def test_a_job_definition_is_updated_in_place_with_its_etag(manifest, repo):
     viya = Viya()
     deploy(viya, manifest)
@@ -277,21 +300,25 @@ def test_the_run_stops_at_the_first_write_that_is_refused(manifest, repo):
     viya.refuse[("PUT", "/files/files/")] = 500
     viya.calls.clear()
     result = deploy(viya, manifest)
-    # release.json is the first file of the manifest: its update is refused, and that is the end
-    assert [o.entry.path for o in result.failed] == ["release.json"]
+    # the release table is the first file that differs: its update is refused, and that is the end
+    assert [o.entry.path for o in result.failed] == ["Data/ACCELERATOR_RELEASES.csv"]
     assert result.stopped_at is result.failed[0]
     assert result.failed[0].note.startswith(
         "the file was left as it is: the update of its content was refused (HTTP 500")
     behind = [o.entry.path for o in result.not_attempted]
-    assert behind == ["Data/ACCELERATOR_RELEASES.csv", CORE, ADAPTERS, STEP_PATH, UI, OPTIMIZE,
-                      "Prompt Builder/Prompt Builder"]
+    # release.json comes last, behind everything it names
+    assert behind == [CORE, ADAPTERS, STEP_PATH, UI, OPTIMIZE, "release.json"]
     assert all(_statuses(result)[path] == NOT_ATTEMPTED for path in behind)
+    # a report is never deployed, also not behind a stop - and it is not counted as not attempted
+    assert _statuses(result)["Prompt Builder/Prompt Builder"] == NOT_DEPLOYED
+    assert _outcome(result, "Prompt Builder/Prompt Builder").note == "not looked up after the stop"
     # one write was sent, nothing was deleted, and every file holds what it held
-    assert viya.wrote() == [("PUT", f"{viya.at(CONTENT_ROOT + '/release.json')[0]}/content")]
+    assert viya.wrote() == [("PUT", f"{viya.at(CONTENT_ROOT + '/Data/ACCELERATOR_RELEASES.csv')[0]}/content")]
     assert viya.files == before
     assert result.stop_line() == (
-        "Stopped at the first write that failed: file release.json. Written before it: 0 created, 0 updated. Not "
-        "attempted behind it: 7 entries. Nothing was removed.")
+        "Stopped at the first write that failed: file Data/ACCELERATOR_RELEASES.csv. Written before it: 0 created, "
+        "0 updated. Not attempted behind it: 6 entries. Nothing was removed. release.json was not written: the "
+        "folder's release.json is the one an earlier run wrote, or there is none.")
     # with the service answering again the next run finishes the job
     viya.refuse.clear()
     result = deploy(viya, manifest)
@@ -307,23 +334,30 @@ def test_a_write_that_gets_no_answer_stops_the_run_and_says_what_is_known(manife
     (repo / "src/rag_core/adapters/__init__.py").write_bytes(b"ADAPTERS = 2\n")
     core, = viya.at(f"{CONTENT_ROOT}/{CORE}")
     viya.drop[("PUT", core)] = TimeoutError("read timed out")
+    release, = viya.at(f"{CONTENT_ROOT}/release.json")
+    record = viya.files[release]
     result = deploy(viya, manifest)
-    assert _statuses(result)["release.json"] == UPDATED               # written before the stop
     outcome = _outcome(result, CORE)
     assert outcome.status == FAILED and result.stopped_at is outcome
     assert outcome.note == ("no answer to the update of the content of __init__.py (TimeoutError: read timed out) "
                             "- the file holds its old or its new content, and was not removed")
     assert _statuses(result)[ADAPTERS] == NOT_ATTEMPTED
     assert viya.at(f"{CONTENT_ROOT}/{CORE}") == [core] and viya.files[core] == b"CORE = 1\n"
-    assert "Written before it: 0 created, 1 updated." in result.stop_line()
+    assert "Written before it: 0 created, 0 updated." in result.stop_line()
+    # the folder's own record still names what the earlier run wrote in full, not the content half brought
+    assert _statuses(result)["release.json"] == NOT_ATTEMPTED and viya.files[release] == record
+    assert _outcome(result, "release.json").note.startswith("not written: the run stopped in front of it")
 
 
 def test_an_upload_that_is_refused_stops_the_run_too(manifest):
     viya = Viya()
     viya.refuse[("POST", "/files/files")] = 403
     result = deploy(viya, manifest)
-    assert [o.entry.path for o in result.failed] == ["release.json"] and "HTTP 403" in result.failed[0].note
-    assert len(result.not_attempted) == 7 and _statuses(result)[STEP_PATH] == NOT_ATTEMPTED
+    assert [o.entry.path for o in result.failed] == ["Data/ACCELERATOR_RELEASES.csv"]
+    assert "HTTP 403" in result.failed[0].note
+    assert len(result.not_attempted) == 6 and _statuses(result)[STEP_PATH] == NOT_ATTEMPTED
+    # a first install that stopped has no release.json: nothing says a release is there
+    assert viya.at(f"{CONTENT_ROOT}/release.json") == []
     # the folders were there before the first object was looked at
     assert viya.tree(CONTENT_ROOT) == ["Data", "Prompt Builder", "RAG", "RAG/rag_core", "RAG/rag_core/adapters",
                                        "RAG/steps"]
@@ -338,8 +372,13 @@ def test_an_object_that_cannot_be_read_fails_and_the_run_goes_on(manifest):
     viya.calls.clear()
     result = deploy(viya, manifest)
     assert [o.entry.path for o in result.failed] == [CORE] and result.stopped_at is None
-    assert "HTTP 503" in result.failed[0].note and result.not_attempted == []
+    assert "HTTP 503" in result.failed[0].note
     assert _statuses(result)[ADAPTERS] == EQUAL and viya.wrote() == []
+    # release.json is not written behind an entry that failed - not even when it would be equal
+    assert [o.entry.path for o in result.not_attempted] == ["release.json"]
+    assert _outcome(result, "release.json").note.startswith(
+        "not written: 1 entry in front of it FAILED, and release.json names a release only when every entry was "
+        "written")
     viya.refuse.clear()
     viya.drop[("GET", f"{core}/content")] = TimeoutError("read timed out")
     result = deploy(viya, manifest)
@@ -471,7 +510,10 @@ def test_an_object_of_another_kind_under_a_listed_name_is_not_taken_for_it(manif
     assert result.unlisted == [f"{STEP_PATH} (file)"]
 
 
-def test_a_folder_that_cannot_be_created_fails_what_sits_in_it_and_nothing_else(manifest):
+def test_a_folder_that_cannot_be_created_stops_the_run(manifest):
+    """It failed what sat in it and went on through the whole list. A folder
+    is written like a file: the first one that cannot be created ends the run,
+    and nothing goes into the folders half made."""
     viya = Viya()
     viya.make_folder(f"{CONTENT_ROOT}/Data")
     viya.make_folder(f"{CONTENT_ROOT}/Prompt Builder")
@@ -479,9 +521,38 @@ def test_a_folder_that_cannot_be_created_fails_what_sits_in_it_and_nothing_else(
     viya.refuse[("POST", "/folders/folders")] = 403
     result = deploy(viya, manifest)
     failed = {o.entry.path: o.note for o in result.failed}
-    assert set(failed) == {"RAG/rag_core", "RAG/steps", "RAG/rag_core/adapters", CORE, ADAPTERS, STEP_PATH}
-    assert "HTTP 403" in failed["RAG/rag_core"] and failed[STEP_PATH] == "its folder could not be created"
-    assert _statuses(result)[UI] == CREATED and viya.members[rag] == []
+    assert list(failed) == ["RAG/rag_core"] and "HTTP 403" in failed["RAG/rag_core"]
+    assert result.stopped_at is result.failed[0]
+    statuses = _statuses(result)
+    # the folders behind it and every object are not attempted - also those whose folder is there
+    for path in ("RAG/steps", "RAG/rag_core/adapters", CORE, ADAPTERS, STEP_PATH, UI, OPTIMIZE,
+                 "Data/ACCELERATOR_RELEASES.csv", "release.json"):
+        assert statuses[path] == NOT_ATTEMPTED, path
+    assert viya.members[rag] == [] and [method for method, _ in viya.wrote()] == ["POST"]
+    assert result.stop_line().startswith("Stopped at the first write that failed: folder RAG/rag_core. Written "
+                                         "before it: 0 created, 0 updated. Not attempted behind it: 9 entries.")
+    # the content root itself, made with the folders above it: what was created before is named
+    other = Viya()
+    other.make_folder("/Users/me")
+    real_post = other.post
+
+    def post(path, params=None, data=None, headers=None, **kw):
+        if path == "/folders/folders" and json.loads(data)["name"] == "root":
+            return Response(403, {"message": "no"})
+        return real_post(path, params=params, data=data, headers=headers, **kw)
+    other.post = post
+    with pytest.raises(DeployError, match=r"Creating the folder root failed: HTTP 403 .* - created before it: "
+                                          r"/Users/me/ZZ_VERIFY_R19"):
+        deploy(other, manifest, "/Users/me/ZZ_VERIFY_R19/root")
+
+
+def test_a_root_that_is_not_there_is_created_only_where_that_is_allowed(manifest):
+    viya = Viya()
+    with pytest.raises(DeployError, match=r"there is no folder /Taem, and nothing was created: pass --create"):
+        deploy(viya, manifest, "/Taem", create_root=False)
+    with pytest.raises(DeployError, match="pass --create"):
+        deploy(viya, manifest, "/Taem", dry_run=True, create_root=False)
+    assert viya.wrote() == [] and viya.folders == {}
 
 
 # ---- site settings: the compute context and the content root ---------------------
@@ -709,14 +780,17 @@ def test_the_command_stops_at_the_first_failed_write_and_lists_what_it_did_not_a
     assert f"  FAILED       step          {STEP_PATH}  (Registering the step {STEP_NAME} failed: HTTP 500" in text
     assert f"  not attempted jobDefinition {UI}\n" in text
     assert f"  not attempted jobDefinition {OPTIMIZE}\n" in text
-    assert "14 entries: 10 created, 3 not attempted, 1 FAILED." in text
-    assert (f"Stopped at the first write that failed: step {STEP_PATH}. Written before it: 10 created, 0 updated. "
-            "Not attempted behind it: 3 entries. Nothing was removed.") in text
+    assert "  not deployed report        Prompt Builder/Prompt Builder  (not looked up after the stop)\n" in text
+    assert "  not attempted file          release.json  (not written: the run stopped in front of it" in text
+    assert "14 entries: 9 created, 1 not deployed, 3 not attempted, 1 FAILED." in text
+    assert (f"Stopped at the first write that failed: step {STEP_PATH}. Written before it: 9 created, 0 updated. "
+            "Not attempted behind it: 3 entries. Nothing was removed. release.json was not written: the folder's "
+            "release.json is the one an earlier run wrote, or there is none.") in text
     assert "Not every entry reached the folder." in text and "Done." not in text
     # the next run brings the rest and leaves what is there
     viya.refuse.clear()
     result, text, _ = command()
-    assert result.exit_code == 0 and "14 entries: 10 equal, 3 created, 1 not deployed." in text
+    assert result.exit_code == 0 and "14 entries: 9 equal, 4 created, 1 not deployed." in text
 
 
 def test_the_command_lists_what_it_left_alone(command):
@@ -860,7 +934,9 @@ def test_the_manifest_of_the_repository_deploys_and_passes_the_gate(monkeypatch)
 
     viya = Viya()
     dry = deploy(viya, shipped, dry_run=True)
-    assert [outcome.entry.path for outcome in dry.outcomes] == [entry.path for entry in entries]
+    # every entry, in the order of the manifest - release.json last
+    assert [outcome.entry.path for outcome in dry.outcomes] == \
+        [entry.path for entry in entries if entry.path != "release.json"] + ["release.json"]
     assert viya.wrote() == [] and dry.root_created
     assert {path: status for path, status in _statuses(dry).items() if status != CREATED} == \
         {entry.path: NOT_DEPLOYED for entry in reports}

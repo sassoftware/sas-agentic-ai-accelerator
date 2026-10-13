@@ -33,10 +33,17 @@ content, the file is left as it is and the run says so.
 
 THE RUN STOPS AT THE FIRST WRITE THAT FAILS. A write that was refused, or
 that got no answer, ends the run: the entry is FAILED with what is known of
-the object, and every entry behind it is listed as not attempted. An entry
-that fails before anything was sent - two objects of its name in the folder,
-an object that cannot be read - is FAILED too, and the run goes on: nothing
-was written for it.
+the object, and every entry behind it is listed as not attempted. That holds
+for a folder that cannot be created as well: nothing is written into a
+folder half made. An entry that fails before anything was sent - two
+objects of its name in the folder, an object that cannot be read - is FAILED
+too, and the run goes on: nothing was written for it.
+
+RELEASE.JSON IS WRITTEN LAST, and only when every entry in front of it was
+written: the record of a folder names a release only when the folder holds
+it. A run that stopped, or in which an entry FAILED, leaves the release.json
+an earlier run wrote as it is - so the folder's own record names the last
+release that was written in full, or there is none.
 
 WHAT IS NEVER WRITTEN. An object outside the folders of the source. A member
 of a folder can be a REFERENCE to an object that lives somewhere else; a
@@ -216,17 +223,19 @@ def create_file(session, folder_id: str, name: str, data: bytes) -> str:
 def update_file(session, uri: str, name: str, data: bytes, etag: str = "", content_type: str = "") -> None:
     """Replace the content of a file in place. The file object stays - its
     id, its place in the folder - and the Files service takes the new bytes
-    only for the version of the file the ETag names (`If-Match`): a file
-    somebody changed in between is refused, not written over.
+    only for the version of the file the ETag names (`If-Match`).
 
-    The ETag and the content type are those of the file itself, asked for
-    right before the write; `etag` and `content_type` - what the read of the
-    content gave - stand in where the file does not answer with them. No
-    name is sent: the file keeps the one it has."""
+    `etag` is the ETag of the read whose content was COMPARED with what is to
+    be written: a file somebody changed after that read is refused, not
+    written over. (The pass of 2026-10-12 measured that GET /files/files/{id}
+    and GET .../content answer with the same ETag.) Only where that read gave
+    none is the ETag of the file object asked for. The file object is asked
+    for its content type, which the write declares; no name is sent: the file
+    keeps the one it has."""
     response = _read(f"Reading {uri} failed", lambda: session.get(
         uri, headers={"Accept": "application/vnd.sas.file+json, application/json"}))
     if response.ok:
-        etag = (getattr(response, "headers", None) or {}).get("ETag") or etag
+        etag = etag or (getattr(response, "headers", None) or {}).get("ETag") or ""
         try:
             content_type = response.json().get("contentType") or content_type
         except (ValueError, AttributeError, TypeError):
@@ -366,23 +375,55 @@ class DeployResult:
         if self.stopped_at is None:
             return ""
         entry = self.stopped_at.entry
+        record = any(is_release_record(outcome.entry) for outcome in self.not_attempted)
         return (f"Stopped at the first write that failed: {entry.kind} {entry.path}. Written before it: "
                 f"{self.count(CREATED)} created, {self.count(UPDATED)} updated. Not attempted behind it: "
                 f"{len(self.not_attempted)} entr{'y' if len(self.not_attempted) == 1 else 'ies'}. Nothing was "
-                "removed.")
+                "removed." + (" release.json was not written: the folder's release.json is the one an earlier run "
+                              "wrote, or there is none." if record else ""))
 
 
-def _ensure_root(session, content_root: str, dry_run: bool) -> tuple:
+#: Where the release record of a content folder sits below its root.
+RELEASE_RECORD = "release.json"
+
+
+def is_release_record(entry) -> bool:
+    """Whether an entry is the folder's release.json: the file mdb generates
+    (`generated: release-info`), or - in a package, where nothing says how a
+    file was made - the file of that name at the root."""
+    return entry.kind == "file" and (getattr(entry, "generated", None) == _content.RELEASE_INFO
+                                     or entry.path == RELEASE_RECORD)
+
+
+def _ensure_root(session, content_root: str, dry_run: bool, create: bool = True) -> tuple:
     """(folder id or None, created?) for the content root. A missing root is
-    created with every folder above it that is missing too."""
+    created with every folder above it that is missing too - only where
+    `create` allows it; otherwise a missing root is a DeployError and nothing
+    is written. A folder that cannot be created ends it as a WriteFailed that
+    names what was created before it."""
     found = find_folder(session, content_root)
     if found:
         return found["id"], False
+    if not create:
+        raise DeployError(f"there is no folder {content_root}, and nothing was created: pass --create to create "
+                          "it (with every folder above it that is missing)")
     if dry_run:
         return None, True
-    parent_path, _, name = content_root.rstrip("/").rpartition("/")
-    parent_id = _ensure_root(session, parent_path, dry_run)[0] if parent_path else None
-    return create_folder(session, name, parent_id)["id"], True
+    made: list = []
+
+    def make(path: str, missing: bool = False):
+        found = None if missing else find_folder(session, path)
+        if found:
+            return found["id"]
+        parent_path, _, name = path.rstrip("/").rpartition("/")
+        parent_id = make(parent_path) if parent_path else None
+        try:
+            created = create_folder(session, name, parent_id)["id"]
+        except WriteFailed as exc:
+            raise WriteFailed(f"{exc} - created before it: {', '.join(made) if made else 'nothing'}") from exc
+        made.append(path)
+        return created
+    return make(content_root.rstrip("/"), missing=True), True
 
 
 def selected(manifest, only) -> tuple:
@@ -403,9 +444,10 @@ def selected(manifest, only) -> tuple:
 
 def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool = False,
            emit: Optional[Callable[[Outcome], None]] = None, only=None, source=None,
-           settings: Optional[dict] = None, reports: bool = True) -> DeployResult:
+           settings: Optional[dict] = None, reports: bool = True, new_values: Optional[dict] = None,
+           create_root: bool = True) -> DeployResult:
     """Bring `content_root` to the state of `source`; returns one Outcome per
-    entry of the manifest, folders first.
+    entry of the manifest, folders first and release.json last.
 
     `manifest` is the list of entries, `source` what each holds - the
     checkout unless another source is given. With `dry_run` nothing is
@@ -413,9 +455,14 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
     GET. `emit` is called with each outcome as it is known. `only` restricts
     the run to the entries at or below the given paths (and the folders above
     them); everything else is not looked at. `settings` maps the name of a
-    job definition parameter to the value to write there (the compute
-    context, the content root). With `reports` off a report entry gives no
-    outcome; it still counts as listed.
+    job definition parameter to the value to write there, into every job
+    definition that has the parameter (the compute context that was given,
+    the content root); `new_values` to the value a job definition gets only
+    where this run creates it, or where it lacks the parameter - a site
+    setting of a definition the site has keeps the site's value. With
+    `reports` off a report entry gives no outcome; it still counts as
+    listed. Without `create_root` a content root that is not there is a
+    DeployError and nothing is written.
 
     The run stops at the first write that fails (see the module text); the
     result says where in `stopped_at`.
@@ -424,6 +471,10 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
     source = source or _content.CheckoutSource(manifest)
     result = DeployResult()
     folders, objects = selected(manifest, only)
+    # the release record of the folder comes last: it names a release only
+    # when everything in front of it was written
+    objects = [entry for entry in objects if not is_release_record(entry)] \
+        + [entry for entry in objects if is_release_record(entry)]
 
     def done(entry, status: str, note: str = "") -> Outcome:
         outcome = Outcome(entry, status, note)
@@ -432,7 +483,7 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
             emit(outcome)
         return outcome
 
-    root_id, root_created = _ensure_root(session, content_root, dry_run)
+    root_id, root_created = _ensure_root(session, content_root, dry_run, create_root)
     folder_ids: dict = {"": root_id}
     members: dict = {}
 
@@ -443,6 +494,10 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
         return members[folder_path]
 
     for entry in folders:
+        if result.stopped_at is not None:
+            folder_ids.setdefault(entry.path, None)
+            done(entry, NOT_ATTEMPTED)
+            continue
         parent_id = folder_ids.get(entry.folder)
         try:
             found = _members_named(members_of(entry.folder), entry.name, "folder") if parent_id else []
@@ -453,10 +508,15 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
                 folder_ids[entry.path] = None
                 done(entry, CREATED)
             elif parent_id is None:
-                done(entry, FAILED, "its parent folder could not be created")
+                done(entry, FAILED, "its parent folder could not be read")
             else:
                 folder_ids[entry.path] = create_folder(session, entry.name, parent_id, entry.description)["id"]
                 done(entry, CREATED)
+        except WriteFailed as exc:
+            # a folder that cannot be created ends the run like any write:
+            # nothing goes on into a folder that is half made
+            folder_ids.setdefault(entry.path, None)
+            result.stopped_at = done(entry, FAILED, str(exc))
         except DeployError as exc:
             folder_ids.setdefault(entry.path, None)
             done(entry, FAILED, str(exc))
@@ -464,8 +524,20 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
     for entry in objects:
         if entry.kind == "report" and not reports:
             continue
+        if entry.kind == "report" and result.stopped_at is not None:
+            # a report is never deployed, whether the run stopped or not
+            done(entry, NOT_DEPLOYED, "not looked up after the stop")
+            continue
         if result.stopped_at is not None:
-            done(entry, NOT_ATTEMPTED)
+            done(entry, NOT_ATTEMPTED, "not written: the run stopped in front of it - the release.json of an "
+                                       "earlier run, if there is one, is left as it is"
+                 if is_release_record(entry) else "")
+            continue
+        if is_release_record(entry) and result.failed:
+            n = len(result.failed)
+            done(entry, NOT_ATTEMPTED, f"not written: {n} entr{'y' if n == 1 else 'ies'} in front of it FAILED, and "
+                                       "release.json names a release only when every entry was written - the "
+                                       "release.json of an earlier run, if there is one, is left as it is")
             continue
         folder_id = folder_ids.get(entry.folder)
         try:
@@ -475,7 +547,7 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
                 done(entry, NOT_DEPLOYED, "on the site" if existing else "not on the site - it comes with the package")
                 continue
             if folder_id is None and not dry_run:
-                done(entry, FAILED, "its folder could not be created")
+                done(entry, FAILED, "its folder could not be read")
                 continue
             if len(existing) > 1:
                 done(entry, FAILED, _several(entry, existing))
@@ -487,7 +559,8 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
                      "that lives elsewhere: it is not followed, and nothing was written - remove the reference, "
                      "or update the object it names with --to")
                 continue
-            status, note = _DEPLOYERS[entry.kind](session, source, entry, folder_id, existing, dry_run, settings)
+            status, note = _DEPLOYERS[entry.kind](session, source, entry, folder_id, existing, dry_run,
+                                                  settings, new_values)
             done(entry, status, note)
         except WriteFailed as exc:
             result.stopped_at = done(entry, FAILED, str(exc))
@@ -517,7 +590,7 @@ def _several(entry, existing: list) -> str:
             f"\"{entry.path}\" --to <id>`, or remove the other")
 
 
-def _deploy_file(session, source, entry, folder_id, existing, dry_run, settings) -> tuple:
+def _deploy_file(session, source, entry, folder_id, existing, dry_run, settings, new_values=None) -> tuple:
     wanted = source.file_bytes(entry)
     if not existing:
         if dry_run:
@@ -529,11 +602,12 @@ def _deploy_file(session, source, entry, folder_id, existing, dry_run, settings)
     if held == wanted:
         return EQUAL, f"id {_id(uri)}"
     if not dry_run:
+        # the version that was compared is the version that is replaced
         update_file(session, uri, entry.name, wanted, etag, content_type)
     return UPDATED, f"content replaced in place; id {_id(uri)} kept"
 
 
-def _deploy_step(session, source, entry, folder_id, existing, dry_run, settings) -> tuple:
+def _deploy_step(session, source, entry, folder_id, existing, dry_run, settings, new_values=None) -> tuple:
     wanted = source.step_body(entry)
     if not existing:
         if dry_run:
@@ -551,17 +625,18 @@ def _deploy_step(session, source, entry, folder_id, existing, dry_run, settings)
     return UPDATED, f"{', '.join(parts)}; id {_id(uri)} kept"
 
 
-def _deploy_job_definition(session, source, entry, folder_id, existing, dry_run, settings) -> tuple:
+def _deploy_job_definition(session, source, entry, folder_id, existing, dry_run, settings, new_values=None) -> tuple:
     wanted = source.job_body(entry)
     site_names = source.site_settings(entry)
     if not existing:
         if dry_run:
             return CREATED, ""
-        created = create_job_definition(session, folder_id, _content.settle_parameters(wanted, None, (), settings))
+        created = create_job_definition(session, folder_id,
+                                        _content.settle_parameters(wanted, None, (), settings, new_values))
         return CREATED, f"id {created}" if created else ""
     uri = existing[0]["uri"]
     live, etag = get_job_definition(session, uri)
-    wanted = _content.settle_parameters(wanted, live, site_names, settings)
+    wanted = _content.settle_parameters(wanted, live, site_names, settings, new_values)
     parts = _content.job_differences(wanted, live)
     if not parts:
         return EQUAL, f"id {_id(uri)}"

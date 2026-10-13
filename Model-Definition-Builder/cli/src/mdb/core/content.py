@@ -608,7 +608,8 @@ def site_settings(entry: Entry) -> tuple:
     return tuple(p["name"] for p in entry.parameters if p.get("siteSetting"))
 
 
-def settle_parameters(wanted: dict, live: Optional[dict], site_names=(), given: Optional[dict] = None) -> dict:
+def settle_parameters(wanted: dict, live: Optional[dict], site_names=(), given: Optional[dict] = None,
+                      new_values: Optional[dict] = None) -> dict:
     """The job definition to compare with a site and to write there: `wanted`
     with the value each site setting has on THAT site.
 
@@ -616,10 +617,15 @@ def settle_parameters(wanted: dict, live: Optional[dict], site_names=(), given: 
     * else a parameter named in `site_names` keeps the value the definition
       on the site holds (`live`), so it is no difference and is written back
       as it was;
-    * else - a new definition, or one that lacks the parameter - the default.
+    * else - a new definition, or one that lacks the parameter - the value
+      `new_values` names for it, and where it names none the default.
 
-    Everything else of `wanted` is returned as it is."""
+    `new_values` is what a site's options say a NEW job definition should
+    get (the compute context of `mdb builders-import`): it never replaces a
+    value a definition on the site holds. Everything else of `wanted` is
+    returned as it is."""
     given = {name: value for name, value in (given or {}).items() if value is not None}
+    fresh = {name: value for name, value in (new_values or {}).items() if value is not None and str(value).strip()}
     on_site = {p.get("name"): p.get("defaultValue") for p in (live or {}).get("parameters") or []
                if isinstance(p, dict)}
     parameters = []
@@ -629,6 +635,8 @@ def settle_parameters(wanted: dict, live: Optional[dict], site_names=(), given: 
             parameter = {**parameter, "defaultValue": str(given[name])}
         elif name in site_names and on_site.get(name) is not None:
             parameter = {**parameter, "defaultValue": str(on_site[name])}
+        elif name in fresh and (live is None or name not in on_site):
+            parameter = {**parameter, "defaultValue": str(fresh[name])}
         parameters.append(parameter)
     return {**wanted, "parameters": parameters}
 
