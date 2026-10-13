@@ -8,6 +8,7 @@ to sed. That needs GNU sed, as the script itself does; without it these tests ar
 The guide also says where the parser reads the collected file and what it writes to the
 SAS log. Those parts are held against the program they describe.
 """
+import json
 import re
 import shlex
 import shutil
@@ -27,6 +28,7 @@ from log_parser_harness import (
     llm_block,
     log_line,
     parse,
+    step_definition,
 )
 
 REPOSITORY = Path(__file__).resolve().parents[3]
@@ -373,11 +375,12 @@ def test_look_alikes_outside_of_a_response_end_no_part_either(needs_the_script_o
 
 
 @needs_gnu_sed
-def test_the_redaction_makes_no_line_of_the_shape_and_takes_no_backslash_away(tmp_path):
+def test_the_redaction_makes_no_line_of_the_shape(tmp_path):
     """The lines of a container are escaped first and redacted then, together with the line of the script. The
     redaction changes what follows API_KEY: and what follows the name of three headers, and replaces it by REDACTED:
-    it puts nothing in front of a line, and what it takes away between a carriage return and the start of a look-alike
-    it replaces by text. Held with lines made for it."""
+    it puts nothing in front of a line, and where it takes a backslash away it takes the look-alike behind it away
+    as well or puts text in its place. So it makes no line a line of the shape. Held with lines made for it, and
+    said by the About tab of the step and the README of the folder."""
     escaped = "\\" + LOOK_ALIKES[2]
     for line in (escaped,
                  "API_KEY:made-up-key," + "\r" + escaped,
@@ -389,6 +392,15 @@ def test_the_redaction_makes_no_line_of_the_shape_and_takes_no_backslash_away(tm
         assert all(not part.startswith(LINE_START) for part in re.split(r"\r\n|\r|\n", redacted)), line
     # and the line of the script itself passes as it is (the pod and the container are names of Kubernetes objects)
     assert redact(LOOK_ALIKES[0] + "\n", tmp_path) == LOOK_ALIKES[0] + "\n"
+    sentence = "The redaction leaves the line of the script as it is and makes no other line a line of that shape"
+    about = next(control["text"] for control in _controls(json.loads(step_definition()["ui"])["pages"]) if control["id"] == "textColumns")
+    assert sentence in about and sentence in " ".join((REPOSITORY / "SAS-Viya-Integrations" / "Logging-Monitoring" / "README.md").read_text(encoding="utf-8").split())
+
+
+def _controls(children):
+    for child in children:
+        yield child
+        yield from _controls(child.get("children", []))
 
 
 @needs_gnu_sed
