@@ -219,7 +219,14 @@ FOREIGN = "ERROR: Load-Accelerator-Tables: the table Public.{0} is no release ta
 FOREIGN_FILE = "ERROR: Load-Accelerator-Tables: no table Public.{0} is in memory, and the file a table of that name was saved to in the " \
                "CAS library Public could not be loaded or lacks columns of a release table. The job loads that file as a table " \
                "_LAT_SAVED of its session to read its columns, and only where no table of that name is in the CAS library. The file " \
-               "was left as it is and nothing was loaded: the parameter releaseTable names another table, or that file is to be removed first."
+               "was left as it is, the upload of ACCELERATOR_RELEASES.csv was dropped again and no table Public.{0} was loaded: the " \
+               "parameter releaseTable names another table, or that file is to be removed first."
+# The line of a saved file that was not looked at, because a table has the name the job would load it under ({1}: what CAS answered)
+SAVED_TAKEN = "ERROR: Load-Accelerator-Tables: no table Public.{0} is in memory, and the file a table of that name was saved to in the " \
+              "CAS library Public was not looked at. The job loads that file as a table _LAT_SAVED of its session to read its columns, " \
+              "and CAS did not answer that there is no table Public._LAT_SAVED - tableExists said {1}, and 0 is no table. The job loads " \
+              "over and drops no table it did not load: where a table of that name is there, rename or drop it and run the job again. " \
+              "The file was left as it is, the upload of ACCELERATOR_RELEASES.csv was dropped again and no table Public.{0} was loaded."
 TAKEN = "WARNING: Load-Accelerator-Tables: CAS did not answer that there is no table Public.{0}_NEW - tableExists said {1}, and 0 is no " \
         "table. The file is uploaded under that name first, as a table of this session, and the job drops and replaces no table it did " \
         "not load: where a table of that name is there, rename or drop it and run the job again. Nothing was uploaded, the table " \
@@ -311,21 +318,83 @@ def test_a_table_that_has_the_name_the_file_is_uploaded_under_is_not_touched(sco
     assert loaded(cas)["of"] == "the table of before"
 
 
-def test_a_table_of_the_site_that_has_the_name_the_saved_file_is_loaded_under_is_not_touched():
+@pytest.mark.parametrize("scope, answer", [("global", 2), ("session", 1)], ids=["a table of the site", "a table of the session"])
+def test_a_table_that_has_the_name_the_saved_file_is_loaded_under_is_not_touched(scope, answer):
     """The same for the second name the job loads a table of its session under: the file a table was saved to is
     loaded as _LAT_SAVED to read its columns, and dropped again. With a table of that name in the library the file
-    is not loaded: it is left as it is, with the ERROR line of a file that could not be looked at, which says so."""
+    is not loaded: it is left as it is, with an ERROR line of its own that names the table and what CAS answered."""
     cas = casl_harness.FakeCAS(upload_rows=755)
-    cas.table("Public", "_LAT_SAVED", SHEET_COLUMNS, rows=7, of="a table of the site")
+    cas.table("Public", "_LAT_SAVED", SHEET_COLUMNS, rows=7, of="a table of the site", scope=scope)
     cas.file("Public", "LLM_LOGS.sashdat", LOG_COLUMNS, rows=1040, of="the log of every run")
     log, macros = release(cas, releaseTable="LLM_LOGS")
 
-    assert log == [FOREIGN_FILE.format("LLM_LOGS")] and macros["_lat_failed"] == "1" and cas.errors == []
-    assert loaded(cas, "_LAT_SAVED") == {"columns": SHEET_COLUMNS, "rows": 7, "of": "a table of the site"} and cas.session == {}
+    assert log == [SAVED_TAKEN.format("LLM_LOGS", answer)] and macros["_lat_failed"] == "1" and cas.errors == []
+    held = cas.promoted if scope == "global" else cas.session
+    assert held == {cas.key("Public", "_LAT_SAVED"): {"columns": SHEET_COLUMNS, "rows": 7, "of": "a table of the site"}}
+    assert (cas.session == {}) == (scope == "global")
     assert saved(cas, "LLM_LOGS")["of"] == "the log of every run" and loaded(cas, "LLM_LOGS") is None
     assert not [action for action, _ in cas.calls if action in ("table.loadTable", "table.columnInfo", "table.promote", "table.save")]
     # the one table that is dropped is the upload of this run
     assert [parameters["name"] for action, parameters in cas.calls if action == "table.dropTable"] == ["LLM_LOGS_NEW"]
+
+
+@pytest.mark.parametrize("scope, answer", [("global", 2), ("session", 1)], ids=["a table of the site", "a table of the session"])
+def test_a_good_release_table_behind_a_taken_name_is_not_called_a_file_that_could_not_be_loaded(scope, answer):
+    """live-20b, review-20b. Measured on 2026-10-13 with a table _LAT_SAVED of the session (tableExists said 1) and a
+    release table that was only its saved file: the job wrote the ERROR line of a file that `could not be loaded or
+    lacks columns of a release table`, with the remedies `the parameter releaseTable names another table, or that
+    file is to be removed first` - and the next run, without the table, read the same file and loaded 796 rows. The
+    line also said `nothing was loaded` behind the upload of the CSV file. The cause now has a line of its own: the
+    table that is in the way, what CAS answered, and the remedy that fits. The run fails as before: the release
+    table is not in memory at its end."""
+    cas = casl_harness.FakeCAS(upload_rows=796)
+    cas.table("Public", "_LAT_SAVED", SHEET_COLUMNS, rows=19, of="a table of somebody", scope=scope)
+    cas.file("Public", RELEASES + ".sashdat", columns(), rows=755, of="the table of before")
+    log, macros = release(cas)
+
+    assert log == [SAVED_TAKEN.format(RELEASES, answer)] and macros["_lat_failed"] == "1" and cas.errors == []
+    for wrong in ("could not be loaded", "lacks columns", "names another table", "to be removed first", "nothing was loaded"):
+        assert wrong not in log[0], wrong
+    for said in ("Public._LAT_SAVED", f"tableExists said {answer}", "rename or drop it and run the job again",
+                 "the upload of ACCELERATOR_RELEASES.csv was dropped again"):
+        assert said in log[0], said
+    # what the line says is what happened: the file as it was, the upload gone, the table of somebody untouched
+    assert saved(cas)["of"] == "the table of before" and loaded(cas) is None
+    actions = [(action, parameters.get("name")) for action, parameters in cas.calls]
+    assert actions.count(("upload", None)) == 1 and actions[-1] == ("table.dropTable", RELEASES + "_NEW")
+    assert cas.key("Public", RELEASES + "_NEW") not in cas.session
+    held = cas.promoted if scope == "global" else cas.session
+    assert held[cas.key("Public", "_LAT_SAVED")] == {"columns": SHEET_COLUMNS, "rows": 19, "of": "a table of somebody"}
+    # the same file without that table is loaded, as the run of the pass behind it did
+    again = casl_harness.FakeCAS(upload_rows=796)
+    again.file("Public", RELEASES + ".sashdat", columns(), rows=755, of="the table of before")
+    assert release(again)[0] == [LOADED.replace("755", "796")]
+
+
+def test_the_two_causes_of_a_saved_file_that_is_not_replaced_have_a_line_each():
+    """A file that can not be loaded or lacks columns, and a file that was not looked at: two outcomes of the CASL,
+    two ERROR lines, and neither says that nothing was loaded - the upload ran in front of both."""
+    code = re.sub(r"/\*.*?\*/", "", program(), flags=re.DOTALL)
+    errors = re.findall(r"%if &_lat_outcome\. EQ (\w+) %then %do;\s*%put (ERROR: [^;]*);\s*%let _lat_failed = 1;\s*%return;", code)
+
+    assert [outcome for outcome, _ in errors] == ["foreign", "foreignfile", "savedtaken"]
+    assert code.count('outcome = "savedtaken";') == 1 and code.count('lacking = "foreignfile";') == 1
+    # the outcome of a name that is taken is set where CAS did not answer 0, with what it answered
+    assert ('                    else do;\n'
+            '                        \n'
+            '                        outcome = "savedtaken";\n'
+            '                        call symputx("_lat_helper", helper.exists, "L");\n'
+            '                    end;\n') in code
+    assert "%let _lat_helper = unknown;" in code and " _lat_helper;" in code.split("%macro _lat_release_table;")[1].split("\n")[1]
+    lines = dict(errors)
+    assert "could not be loaded or lacks columns of a release table" in lines["foreignfile"] and "was not looked at" in lines["savedtaken"]
+    for line in (lines["foreignfile"], lines["savedtaken"]):
+        assert "nothing was loaded" not in line
+        assert "the upload of ACCELERATOR_RELEASES.csv was dropped again and no table &caslib..&releaseTable. was loaded" in line
+    # the line of a name that is taken says what the WARNING for <table>_NEW says of the answer and of the remedy
+    warning = re.search(r"%put (WARNING: Load-Accelerator-Tables: CAS did not answer [^;]*);", code).group(1)
+    for shared in ("tableExists said &_lat_{0}., and 0 is no table", "where a table of that name is there, rename or drop it and run the job again"):
+        assert shared.format("taken") in warning and shared.format("helper") in lines["savedtaken"]
 
 
 def test_a_saved_file_that_can_not_be_loaded_is_left_as_it_is():
@@ -390,8 +459,9 @@ def test_the_statements_that_look_at_the_saved_file():
             '                    if helper.exists == 0 then do;\n'
             '                        table.loadTable result = ignored status = opened / caslib = "&caslib." path = saved\n'
             '                            casOut = {caslib = "&caslib.", name = "_LAT_SAVED", replace = true};') in code
-    # the name: asked for, loaded, looked at, dropped - and named in the ERROR line of a file that could not be looked at
-    assert code.count("_LAT_SAVED") == 5 and "promote = true" not in code
+    # the name: asked for, loaded, looked at, dropped - and named in the ERROR line of a file that could not be loaded or
+    # lacks columns, and twice in the one of a file that was not looked at
+    assert code.count("_LAT_SAVED") == 7 and "promote = true" not in code
     # the table of the session is dropped by the flag of the load, not by its name
     assert "if fromFile == 1 then do;" in code and code.count("fromFile = 1;") == 1 and code.count("fromFile = 0;") == 1
     # the header and the parameter say which table is looked at

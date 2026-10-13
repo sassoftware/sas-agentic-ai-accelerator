@@ -197,7 +197,7 @@ run;
    would put values under the wrong names. CAS then reads the file with the
    options the ingestion job of a RAG setup uploads its run history with. */
 %macro _lat_release_table;
-    %local _lat_file _lat_copy _lat_rows _lat_header _lat_outcome _lat_staged _lat_i _lat_n _lat_v _lat_there _lat_taken;
+    %local _lat_file _lat_copy _lat_rows _lat_header _lat_outcome _lat_staged _lat_i _lat_n _lat_v _lat_there _lat_taken _lat_helper;
     %if &_lat_ready. NE 1 %then %return;
     %let _lat_file = %sysfunc(pathname(work))/accelerator_releases.csv;
     %let _lat_rows = -1;
@@ -264,6 +264,7 @@ run;
 
     %let _lat_outcome = unknown;
     %let _lat_staged = -1;
+    %let _lat_helper = unknown;
     %let _lat_n = %sysfunc(countw(&_lat_vars., %str( )));
     proc cas;
         outcome = "upload";
@@ -335,6 +336,12 @@ run;
                             fromFile = 1;
                         end;
                     end;
+                    else do;
+                        /* a table of that name is there, so the file was not looked at: an outcome of its own,
+                           with what CAS answered, as the WARNING for <table>_NEW has it */
+                        outcome = "savedtaken";
+                        call symputx("_lat_helper", helper.exists, "L");
+                    end;
                 end;
             end;
             if look != "" then do;
@@ -384,7 +391,12 @@ run;
         %return;
     %end;
     %if &_lat_outcome. EQ foreignfile %then %do;
-        %put ERROR: Load-Accelerator-Tables: no table &caslib..&releaseTable. is in memory, and the file a table of that name was saved to in the CAS library &caslib. could not be loaded or lacks columns of a release table. The job loads that file as a table _LAT_SAVED of its session to read its columns, and only where no table of that name is in the CAS library. The file was left as it is and nothing was loaded: the parameter releaseTable names another table, or that file is to be removed first.;
+        %put ERROR: Load-Accelerator-Tables: no table &caslib..&releaseTable. is in memory, and the file a table of that name was saved to in the CAS library &caslib. could not be loaded or lacks columns of a release table. The job loads that file as a table _LAT_SAVED of its session to read its columns, and only where no table of that name is in the CAS library. The file was left as it is, the upload of ACCELERATOR_RELEASES.csv was dropped again and no table &caslib..&releaseTable. was loaded: the parameter releaseTable names another table, or that file is to be removed first.;
+        %let _lat_failed = 1;
+        %return;
+    %end;
+    %if &_lat_outcome. EQ savedtaken %then %do;
+        %put ERROR: Load-Accelerator-Tables: no table &caslib..&releaseTable. is in memory, and the file a table of that name was saved to in the CAS library &caslib. was not looked at. The job loads that file as a table _LAT_SAVED of its session to read its columns, and CAS did not answer that there is no table &caslib.._LAT_SAVED - tableExists said &_lat_helper., and 0 is no table. The job loads over and drops no table it did not load: where a table of that name is there, rename or drop it and run the job again. The file was left as it is, the upload of ACCELERATOR_RELEASES.csv was dropped again and no table &caslib..&releaseTable. was loaded.;
         %let _lat_failed = 1;
         %return;
     %end;
