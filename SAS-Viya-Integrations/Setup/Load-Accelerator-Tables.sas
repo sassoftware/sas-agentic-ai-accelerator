@@ -36,7 +36,9 @@
  * session, its rows are counted against the lines of the file, and only then
  * is the table dropped, the upload promoted under its name and saved. A file
  * that is not there, that has other columns or that CAS did not take leaves
- * the table as it is, with a WARNING. Load-Fact-Sheets.sas replaces each
+ * the table as it is, with a WARNING. So does a folder that is not there:
+ * the Folders service is asked for the folder before a fileref is assigned
+ * to a file of it. Load-Fact-Sheets.sas replaces each
  * fact sheet table the same way: the upload whose rows were counted is
  * promoted under the name of the table and saved, and the sheet is not
  * loaded a second time.
@@ -66,7 +68,9 @@
  *   contentRoot   the content folder (default /SAS Agentic AI Accelerator)
  *   caslib        the CAS library of the tables (default Public)
  *   releaseTable  the name of the release table (default ACCELERATOR_RELEASES);
- *                 a table of that name that lacks a column of one is left as it is
+ *                 a table of that name that lacks a column of one is left as it
+ *                 is - the table in memory, or, where none is in memory, the
+ *                 file a table of that name was saved to in the CAS library
  *
  * lat is short for Load Accelerator Tables
  ******************************************************************************/
@@ -154,6 +158,32 @@ run;
     %let _lat_clean_cas_session = 0;
 %end;
 
+/* ---- A folder that is not there ------------------------------------------------
+   A FILENAME statement of the access method FILESRVC writes two ERROR lines
+   for a folder of SAS Content that is not there (measured on 2026-10-13),
+   where this program means a WARNING. So the Folders service is asked for the
+   folder first, with the request Start Here asks for the content root with,
+   and the statement is left out where the answer is 404. Every other answer
+   - the folder is there, the session may not ask, there is no answer - leaves
+   the statement to say what it says. The address is made in a DATA step from
+   the text of the parameter, so that no statement resolves the path on the
+   way, and SYS_PROCHTTP_STATUS_CODE is emptied first: it keeps the answer of
+   an earlier request where PROC HTTP gets none. Load-Fact-Sheets.sas asks
+   the same way for its folder. */
+%macro _lat_ask_folder(_lat_below);
+    %local _lat_ask;
+    filename _latask temp;
+    data _null_;
+        length _lat_ask $ 8192;
+        _lat_ask = cats(getoption('servicesbaseurl'), '/folders/folders/@item?path=', urlencode(cats(symget('contentRoot'), "&_lat_below.")));
+        call symputx('_lat_ask', _lat_ask, 'L');
+        call symputx('SYS_PROCHTTP_STATUS_CODE', ' ', 'G');
+    run;
+    proc http method = "GET" url = "%superq(_lat_ask)" oauth_bearer = sas_services out = _latask;
+    run;
+    filename _latask clear;
+%mend _lat_ask_folder;
+
 /* ---- The release table -------------------------------------------------------
    The file is copied from SAS Content to WORK as it is, its lines are counted
    - mdb writes one row per line, no value holds a line break - and its first
@@ -161,16 +191,24 @@ run;
    would put values under the wrong names. CAS then reads the file with the
    options the ingestion job of a RAG setup uploads its run history with. */
 %macro _lat_release_table;
-    %local _lat_file _lat_copy _lat_rows _lat_header _lat_outcome _lat_staged _lat_i _lat_n _lat_v;
+    %local _lat_file _lat_copy _lat_rows _lat_header _lat_outcome _lat_staged _lat_i _lat_n _lat_v _lat_there;
     %if &_lat_ready. NE 1 %then %return;
     %let _lat_file = %sysfunc(pathname(work))/accelerator_releases.csv;
     %let _lat_rows = -1;
     %let _lat_header = 0;
 
-    filename _latsrc filesrvc folderPath="&contentRoot./Data" filename="ACCELERATOR_RELEASES.csv" recfm=n lrecl=32767;
-    %if %sysfunc(fexist(_latsrc)) NE 1 %then %do;
+    /* the fileref is assigned only where the Folders service did not say that the folder is not there */
+    %let _lat_there = 0;
+    %_lat_ask_folder(/Data);
+    %if "&SYS_PROCHTTP_STATUS_CODE." NE "404" %then %do;
+        filename _latsrc filesrvc folderPath="&contentRoot./Data" filename="ACCELERATOR_RELEASES.csv" recfm=n lrecl=32767;
+        %let _lat_there = %sysfunc(fexist(_latsrc));
+        %if &_lat_there. NE 1 %then %do;
+            filename _latsrc clear;
+        %end;
+    %end;
+    %if &_lat_there. NE 1 %then %do;
         %put WARNING: Load-Accelerator-Tables: the file ACCELERATOR_RELEASES.csv was not found in the folder &contentRoot./Data, the table &caslib..&releaseTable. was left as it is.;
-        filename _latsrc clear;
         %return;
     %end;
     filename _latdst "&_lat_file." recfm=n lrecl=32767;
@@ -238,9 +276,44 @@ run;
            earlier does not have it (measured on 2026-10-12: Public.ACCELERATOR_RELEASES of the test system had the
            ten other columns), and the job replaces it */
         if staged == &_lat_rows. then do;
+            /* What is there under that name: the table in memory, or - where none is - the file a table of that
+               name was saved to, which the save below writes over. tableExists sees a table in memory only, and a
+               restart of the CAS server leaves a saved table as its file. The files of the CAS library are listed
+               as the ingestion job of a RAG setup lists them: the whole library, so that a file that is not there
+               is no error, and the exact name before the same name in another case. The file is loaded as a table
+               of this session, its columns are read, and it is dropped again. Where the files can not be listed,
+               the run goes on as it does where there is no such file */
+            look = "";
+            lacking = "foreign";
+            fromFile = 0;
             table.tableExists result = present / caslib = "&caslib." name = "&releaseTable.";
-            if present.exists != 0 then do;
-                table.columnInfo result = described / table = {caslib = "&caslib.", name = "&releaseTable."};
+            if present.exists != 0 then look = "&releaseTable.";
+            else do;
+                saved = "";
+                table.fileInfo result = files status = listed / caslib = "&caslib.";
+                if listed.severity == 0 then do;
+                    if exists(files, "FileInfo") then do;
+                        do savedEntry over files.FileInfo;
+                            if savedEntry.Name == "&releaseTable..sashdat" then saved = savedEntry.Name;
+                            else if saved == "" and upcase(savedEntry.Name) == upcase("&releaseTable..sashdat") then saved = savedEntry.Name;
+                        end;
+                    end;
+                end;
+                if saved != "" then do;
+                    /* a saved file that can not be loaded is no release table either: nothing writes over it */
+                    lacking = "foreignfile";
+                    outcome = lacking;
+                    table.loadTable result = ignored status = opened / caslib = "&caslib." path = saved
+                        casOut = {caslib = "&caslib.", name = "_LAT_SAVED", replace = true};
+                    if opened.severity == 0 then do;
+                        outcome = "rows";
+                        look = "_LAT_SAVED";
+                        fromFile = 1;
+                    end;
+                end;
+            end;
+            if look != "" then do;
+                table.columnInfo result = described / table = {caslib = "&caslib.", name = look};
                 have = " ";
                 if exists(described, "ColumnInfo") then do;
                     do column over described.ColumnInfo;
@@ -250,12 +323,16 @@ run;
                 %do _lat_i = 1 %to &_lat_n.;
                     %let _lat_v = %upcase(%scan(%scan(&_lat_vars., &_lat_i., %str( )), 1, %str(:)));
                     %if &_lat_v. NE BUILDER_PART %then %do;
-                    if index(have, " &_lat_v. ") == 0 then outcome = "foreign";
+                    if index(have, " &_lat_v. ") == 0 then outcome = lacking;
                     %end;
                 %end;
             end;
+            /* only the table this step loaded from the file is dropped: a table of the site can have that name */
+            if fromFile == 1 then do;
+                table.dropTable / caslib = "&caslib." name = "_LAT_SAVED" quiet = true;
+            end;
         end;
-        if staged == &_lat_rows. and outcome != "foreign" then do;
+        if staged == &_lat_rows. and outcome == "rows" then do;
             outcome = "replace";
             table.dropTable status = dropped / caslib = "&caslib." name = "&releaseTable." quiet = true;
             table.promote status = promoted / caslib = "&caslib." name = "&releaseTable._NEW"
@@ -278,6 +355,11 @@ run;
 
     %if &_lat_outcome. EQ foreign %then %do;
         %put ERROR: Load-Accelerator-Tables: the table &caslib..&releaseTable. is no release table - it lacks columns of one - and was left as it is: the parameter releaseTable names another table.;
+        %let _lat_failed = 1;
+        %return;
+    %end;
+    %if &_lat_outcome. EQ foreignfile %then %do;
+        %put ERROR: Load-Accelerator-Tables: no table &caslib..&releaseTable. is in memory, and the file a table of that name was saved to in the CAS library &caslib. could not be loaded or lacks columns of a release table. The file was left as it is and nothing was loaded: the parameter releaseTable names another table, or that file is to be removed first.;
         %let _lat_failed = 1;
         %return;
     %end;
@@ -308,9 +390,13 @@ filename _latlfs temp;
     %local _lat_found;
     %let _lat_found = 0;
     %if &_lat_ready. EQ 1 %then %do;
-        filename _latlfs filesrvc folderPath="&contentRoot./Logging and Monitoring" filename="Load-Fact-Sheets.sas";
-        %if %sysfunc(fexist(_latlfs)) EQ 1 %then %let _lat_found = 1;
-        %else %put WARNING: Load-Accelerator-Tables: the program Load-Fact-Sheets.sas was not found in the folder &contentRoot./Logging and Monitoring, the three fact sheet tables were left as they are.;
+        /* the fileref is assigned only where the Folders service did not say that the folder is not there */
+        %_lat_ask_folder(/Logging and Monitoring);
+        %if "&SYS_PROCHTTP_STATUS_CODE." NE "404" %then %do;
+            filename _latlfs filesrvc folderPath="&contentRoot./Logging and Monitoring" filename="Load-Fact-Sheets.sas";
+            %if %sysfunc(fexist(_latlfs)) EQ 1 %then %let _lat_found = 1;
+        %end;
+        %if &_lat_found. NE 1 %then %put WARNING: Load-Accelerator-Tables: the program Load-Fact-Sheets.sas was not found in the folder &contentRoot./Logging and Monitoring, the three fact sheet tables were left as they are.;
     %end;
     %if &_lat_found. NE 1 %then %do;
         filename _latlfs temp;
@@ -322,6 +408,7 @@ filename _latlfs temp;
 %mend _lat_find_fact_sheets;
 %_lat_find_fact_sheets;
 %sysmacdelete _lat_find_fact_sheets;
+%sysmacdelete _lat_ask_folder;
 
 /* The two settings of Load-Fact-Sheets.sas, which takes a setting that is set */
 %let _lfs_path = &contentRoot./Data;
