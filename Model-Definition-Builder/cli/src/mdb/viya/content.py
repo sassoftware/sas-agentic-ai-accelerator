@@ -44,9 +44,9 @@ manifest, and only when every entry in front of it was written: the record of
 a folder names a release only when the folder holds it. A run that stopped,
 or in which an entry FAILED, leaves the release.json an earlier run wrote as
 it is, and so does a run of a part of the manifest (`only`): one that names
-release.json among its entries is refused before anything is sent - so the
-folder's own record names the last release that was written in full, or
-there is none.
+release.json among its entries is refused before anything is sent (the
+command refuses it before it signs in) - so the folder's own record names
+the last release that was written in full, or there is none.
 
 WHAT IS NEVER WRITTEN. An object outside the folders of the source. A member
 of a folder can be a REFERENCE to an object that lives somewhere else; a
@@ -463,6 +463,14 @@ def selected(manifest, only) -> tuple:
     return folders, [entry for entry in manifest.objects() if within(entry.path)]
 
 
+def record_in_part(manifest, only) -> bool:
+    """Whether a run of `only` covers a part of the manifest and names
+    release.json among its entries: the run RECORD_NEEDS_ALL refuses. Asked
+    of the manifest alone - the command asks it before it signs in."""
+    objects = selected(manifest, only)[1]
+    return len(objects) != len(manifest.objects()) and any(is_release_record(entry) for entry in objects)
+
+
 def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool = False,
            emit: Optional[Callable[[Outcome], None]] = None, only=None, source=None,
            settings: Optional[dict] = None, reports: bool = True, new_values: Optional[dict] = None,
@@ -502,7 +510,7 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
         + [entry for entry in objects if is_release_record(entry)]
     # ... and only by a run that covers every object of the manifest: a run of
     # a part that names release.json is refused before anything is sent
-    if len(objects) != len(manifest.objects()) and any(is_release_record(entry) for entry in objects):
+    if record_in_part(manifest, only):
         raise DeployError(RECORD_NEEDS_ALL)
 
     def done(entry, status: str, note: str = "") -> Outcome:

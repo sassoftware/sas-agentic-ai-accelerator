@@ -18,9 +18,11 @@ from typer.testing import CliRunner
 
 from content_fakes import Response
 from mdb import cli
+from mdb.core.content import load_manifest
 from mdb.viya import answer as answering
 from mdb.viya import content as deploying
 from mdb.viya import session as s
+from test_content_deploy import command, manifest, repo  # noqa: F401
 from test_session import URL, _answered, env, fake_sasctl  # noqa: F401
 
 REPOSITORY = Path(__file__).resolve().parents[3]
@@ -214,6 +216,28 @@ def test_the_sentence_for_a_missing_sasctl_keeps_its_bracket(monkeypatch):
     monkeypatch.setattr(s, "create_session", refuse)
     result = CliRunner().invoke(cli.app, ["content-deploy", "--dry-run"])
     assert result.exit_code == 2 and out.getvalue() == sentence + "\n"
+
+
+# ---- release.json and a run of a part: refused before the sign-in -------------------
+@pytest.mark.parametrize("args", [
+    ("--only", "release.json"),
+    ("--only", "RAG", "--only", "release.json", "--dry-run"),
+    ("--only", "release.json", "--to", "/Team/Other/release.json"),
+    ("--only", "release.json", "--to", "/files/files/11111111-0000-4000-8000-000000000001", "--force"),
+])
+def test_a_part_that_names_release_json_is_refused_before_the_sign_in(command, monkeypatch, args):
+    """review-20 and the pass of 2026-10-13: 'refused before anything is
+    sent' - and the command signed in first (twice with a wrong password,
+    and the refusal was never printed), and printed its header line in front
+    of the sentence."""
+    monkeypatch.setattr(cli, "_viya_session", lambda: pytest.fail("signed in for a run that is refused"))
+    result, text, _viya = command(*args)
+    assert result.exit_code == 1 and text == deploying.RECORD_NEEDS_ALL + "\n"
+    # the rule is one function: the command asks it of the manifest, and so does the deploy
+    manifest = load_manifest(cli.Context().repo)
+    assert deploying.record_in_part(manifest, ["release.json"]) and deploying.record_in_part(manifest, ["RAG", "release.json"])
+    assert not deploying.record_in_part(manifest, ["RAG"]) and not deploying.record_in_part(manifest, [])
+    assert not deploying.record_in_part(manifest, ["release.json", "Data", "RAG", "Prompt Builder"])
 
 
 def test_an_error_that_is_no_answer_of_the_token_address_is_passed_on():

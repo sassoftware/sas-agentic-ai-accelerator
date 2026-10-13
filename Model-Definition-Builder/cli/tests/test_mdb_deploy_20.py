@@ -120,8 +120,9 @@ def test_the_record_is_not_written_into_a_file_a_site_has_elsewhere(command, man
     outcome = deploy_to(viya, manifest, manifest.find("release.json", "file"), "/Team/Other/release.json")
     assert (outcome.status, outcome.note) == (FAILED, deploying.RECORD_NEEDS_ALL)
     assert viya.calls == [] and viya.files[theirs] == b"{}\n"
+    # the command says the same sentence, and nothing else: it ends before it signs in
     result, text, _ = command("--only", "release.json", "--to", "/Team/Other/release.json")
-    assert result.exit_code == 1 and deploying.RECORD_NEEDS_ALL in text and "Nothing was updated." in text
+    assert result.exit_code == 1 and text == deploying.RECORD_NEEDS_ALL + "\n"
 
 
 # ---- a folder of the manifest somewhere else: the content root its jobs read -----
@@ -591,8 +592,8 @@ def test_the_help_and_the_readme_say_what_the_commands_do():
     deploy_help, import_help = _flat(cli.content_deploy.__doc__), _flat(cli.builders_import.__doc__)
     readme = _flat((REPOSITORY / "SAS-Viya-Integrations" / "README.md").read_text(encoding="utf-8"))
     assert "only by a run that covers every entry of the manifest" in deploy_help
-    assert "A run of a part that names it (--only release.json) is refused with one line and writes nothing." in \
-        deploy_help
+    assert "A run of a part that names it (--only release.json) is refused with one line before the command signs " \
+           "in, and writes nothing." in deploy_help
     assert "only by a run that covers every entry of the manifest - a run of a part that names it, --only " \
            "release.json, is refused" in readme
     assert "or a reference of that name - alone, or beside the object itself - fail the entry" in deploy_help

@@ -1641,7 +1641,7 @@ def content_deploy(
     every entry in front of it was written: after a run that did not get
     there, the folder's release.json is the one an earlier run wrote, or
     there is none. A run of a part that names it (`--only release.json`) is
-    refused with one line and writes nothing.
+    refused with one line before the command signs in, and writes nothing.
 
     ONE NAME, ONE OBJECT. Two objects of the name and kind of an entry in
     its folder, or a reference of that name - alone, or beside the object
@@ -1679,8 +1679,8 @@ def content_deploy(
     An object whose name is not the entry's is not written without --force.
     """
     from .core.content import CheckoutSource, part_of, reads_content_root, root_of_part
-    from .viya.content import (CREATED, EQUAL, FAILED, NOT_ATTEMPTED, NOT_DEPLOYED, UPDATED, DeployError, deploy,
-                               deploy_to, selected)
+    from .viya.content import (CREATED, EQUAL, FAILED, NOT_ATTEMPTED, NOT_DEPLOYED, RECORD_NEEDS_ALL, UPDATED,
+                               DeployError, deploy, deploy_to, record_in_part, selected)
     ctx = Context()
     manifest = _content_manifest(ctx)
     root = (content_root or manifest.content_root).rstrip("/")
@@ -1735,6 +1735,10 @@ def content_deploy(
                 raise typer.Exit(2)
             settings = _deploy_settings(part_root or None, compute_context)
 
+    if record_in_part(manifest, only):
+        # asked of the manifest alone, so before the sign-in: one line, and nothing is sent
+        console.print(RECORD_NEEDS_ALL, style="red", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(1)
     with _viya_session() as session:
         if target_entry is not None:
             console.print(f"{'Dry run - nothing is written. What a run would do to' if dry_run else 'Updating'} "
