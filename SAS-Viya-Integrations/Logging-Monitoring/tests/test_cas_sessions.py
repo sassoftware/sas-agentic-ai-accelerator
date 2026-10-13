@@ -109,9 +109,11 @@ def test_fact_sheets_are_loaded_in_the_session_that_is_connected():
     text = program("Load-Fact-Sheets.sas")
 
     assert statements(text) == [(statements(text)[0][0], "mySess", ""), (statements(text)[1][0], "mySess", "terminate")]
-    # The tables are loaded, promoted and saved by PROC CASUTIL, which runs in the session SESSREF names
+    # The sheets are uploaded by PROC CASUTIL and put in the place of their tables by PROC CAS, both of which run in
+    # the session SESSREF names: one upload, one promote and one save in the two macros, called once per sheet
     assert 'proc casUtil inCASLib="&_lfs_caslib." outCASLib="&_lfs_caslib.";' in text
-    assert text.count("promote casData=") == 3 and text.count("save casData=") == 3
+    assert text.count("proc casUtil") == 1 and text.count("table.promote ") == 1 and text.count("table.save ") == 1
+    assert text.count("%_lfs_swap(") == 3 and "cas mySess;" not in text[text.index("%macro _lfs_read("):]
     assert text.rstrip().endswith("%symdel _lfs_path _lfs_caslib _lfs_clean_cas_session;")
     assert "A CAS session will be created for you" not in text
     assert "A CAS session is started for you when none is connected" in text
