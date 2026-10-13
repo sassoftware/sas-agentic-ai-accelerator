@@ -4147,7 +4147,8 @@ def credentials_report(
             try:
                 body = fetch_credential(session, plan.domain, who)
             except CredentialError as exc:
-                table.add_row(_plain(who.id), _plain(who.type), "[red]unreadable[/red]", _plain(str(exc)[:40]), "")
+                # the sentence whole: the HTTP status is its last word
+                table.add_row(_plain(who.id), _plain(who.type), "[red]unreadable[/red]", _plain(exc), "")
                 continue
             if body is None:
                 table.add_row(_plain(who.id), _plain(who.type),

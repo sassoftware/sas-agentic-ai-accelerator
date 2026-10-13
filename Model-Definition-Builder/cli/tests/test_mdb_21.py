@@ -434,3 +434,19 @@ def test_the_two_credentials_commands_name_what_was_typed_as_it_was_typed(mdb):
     code, said = mdb("credentials-add", "group", "RAG [team]", "--only", "OpenAI", "--manifest", "sub [1]/c.yaml")
     assert code == 0 and "  only: OpenAI\n" in said
     assert "Next: mdb credentials-apply --manifest sub [1]" in said
+
+
+# ---- credentials-report: the row of a credential that cannot be read --------------------
+def test_the_row_of_a_credential_that_cannot_be_read_shows_the_http_status(mdb):
+    """gate-20b: the row showed the first 40 characters of mdb's sentence
+    `reading the credential for <type> '<id>' failed: HTTP <status>`, so
+    the status never appeared."""
+    from test_credentials_commands import _Response
+    assert mdb("credentials-add", "group", "LLMConsumers")[0] == 0
+    assert mdb("credentials-add", "user", "ada [x]")[0] == 0
+    mdb.site.get = lambda path, **_: _Response(503)
+    code, said = mdb("credentials-report")
+    assert code == 0
+    for who in ("group 'LLMConsumers'", "user 'ada [x]'"):
+        assert sum(f"reading the credential for {who} failed: HTTP 503 " in line for line in said.splitlines()) == 1
+    assert "0 of 2 named identities hold a credential." in said
