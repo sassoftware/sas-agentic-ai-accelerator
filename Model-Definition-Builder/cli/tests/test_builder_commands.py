@@ -1544,7 +1544,8 @@ def test_a_compute_context_the_site_set_survives_the_import(importing, no_discov
     result, fake, text = importing(Site(**{"Prompt Builder": options}))
     assert result.exit_code == 0, text
     assert ("Compute context: RAG compute context (the ingestion compute context of the options) - given to a job "
-            "definition this run creates; one the site has keeps its _contextName.") in text
+            "definition the import creates and to one on the site that has no _contextName; a _contextName a job "
+            "definition on the site holds is kept.") in text
     assert _context(viya) == "Team compute context"
     assert f"    updated      jobDefinition {UI_PATH}  (form; id " in text
     # the one that is given is written, into every definition that has the parameter

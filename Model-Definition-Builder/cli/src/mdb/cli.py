@@ -2172,6 +2172,14 @@ def _discover_missing(session, ctx: "Context", captured: dict, missing: list) ->
     return filled
 
 
+#: Which job definitions get the compute context the options name
+#: (core/content.py, settle_parameters). ONE sentence: the line `mdb
+#: builders-import` prints, its help and SAS-Viya-Integrations/README.md
+#: carry it word for word, and a test holds them to it.
+CONTEXT_RULE = ("given to a job definition the import creates and to one on the site that has no _contextName; a "
+                "_contextName a job definition on the site holds is kept")
+
+
 def _known_context(saved: Optional[dict]) -> str:
     """The compute context a site's options name for jobs that run as the
     user who starts them: the option `ragComputeContext` of the Prompt
@@ -2213,8 +2221,8 @@ def builders_import(
     compute_context: Optional[str] = typer.Option(
         None, "--compute-context",
         help="Compute context written into the parameter _contextName of every job definition that has one. "
-             "Without it a job definition the site has keeps its context, and one the import creates gets the "
-             "ingestion compute context of the options that are written back (else the package's)."),
+             f"Without it the ingestion compute context of the options that are written back is {CONTEXT_RULE} "
+             "(where the options name none, the package's takes its place)."),
     create: bool = typer.Option(
         False, "--create",
         help="Create the --content-root folder (with every folder above it) where it is not there. Without it "
@@ -2453,9 +2461,9 @@ def builders_import(
                                   "they are written back after the import.", highlight=False)
         # The compute context for the job definitions: what was given goes
         # into every one that has the parameter; what the options that are
-        # written back name goes only into one this run creates - a context a
-        # site set survives the import. The content root is the folder the
-        # content goes to.
+        # written back name goes only into one this run creates, or one that
+        # has no _contextName (CONTEXT_RULE) - a context a site set survives
+        # the import. The content root is the folder the content goes to.
         given_context = (compute_context or "").strip()
         known = "" if given_context else _known_context(saved)
         settings = _deploy_settings(root, given_context)
@@ -2464,9 +2472,8 @@ def builders_import(
             console.print(f"Compute context: {given_context} (--compute-context) - written into _contextName of "
                           "every job definition that has it.", markup=False, highlight=False)
         elif known:
-            console.print(f"Compute context: {known} (the ingestion compute context of the options) - given to a "
-                          "job definition this run creates; one the site has keeps its _contextName.",
-                          markup=False, highlight=False)
+            console.print(f"Compute context: {known} (the ingestion compute context of the options) - "
+                          f"{CONTEXT_RULE}.", markup=False, highlight=False)
         # The release table is the one the package holds, where it holds one:
         # the table then says what was imported, not what this checkout's
         # changelog says now.

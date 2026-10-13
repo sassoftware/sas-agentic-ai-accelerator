@@ -531,3 +531,21 @@ def test_the_import_prints_the_line_for_a_content_root_it_creates(importing, no_
     assert result.exit_code == 0, text
     assert ("    created      folder        /Team/Accelerator  (the folder the content goes into; created above it: "
             "/Team)\n") in text
+
+
+def test_a_job_definition_without_the_parameter_gets_the_context_as_the_sentence_says(importing, no_discovery):
+    no_discovery()
+    viya = importing.viya
+    mine = _site_with_its_own_objects(viya)
+    body, etag = viya.jobs[mine[UI_PATH]]
+    viya.jobs[mine[UI_PATH]] = ({**body, "parameters": body["parameters"][1:]}, etag)   # no _contextName
+    options = {**TUNED, "ragComputeContext": "RAG compute context"}
+    result, fake, text = importing(Site(**{"Prompt Builder": options}))
+    assert result.exit_code == 0, text
+    assert f"Compute context: RAG compute context (the ingestion compute context of the options) - " \
+           f"{cli.CONTEXT_RULE}." in text
+    assert imports._context(viya) == "RAG compute context"
+    # and one that holds a value keeps it
+    viya.jobs[mine[UI_PATH]][0]["parameters"][0]["defaultValue"] = "Site context"
+    result, fake, text = importing(Site(**{"Prompt Builder": options}))
+    assert imports._context(viya) == "Site context"
