@@ -486,3 +486,52 @@ def test_an_error_that_is_no_answer_of_the_token_address_is_passed_on():
     with pytest.raises(AttributeError):
         s._sign_in(lambda: (_ for _ in ()).throw(AttributeError("a defect")), sleep=waited.append)
     assert waited == []
+
+
+# ---- what a service answered, in a line that is printed with markup on -------------
+def _prints_with_markup_on():
+    """(line, expression) for every value a `console.print` of cli.py puts into
+    a text it prints with markup on."""
+    import ast
+    tree = ast.parse((REPOSITORY / "Model-Definition-Builder/cli/src/mdb/cli.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "print"
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "console"):
+            continue
+        if any(keyword.arg == "markup" and getattr(keyword.value, "value", None) is False
+               for keyword in node.keywords):
+            continue
+        for argument in node.args:
+            for part in ast.walk(argument):
+                if isinstance(part, ast.FormattedValue):
+                    yield part.lineno, ast.unparse(part.value)
+
+
+def test_no_line_with_markup_on_prints_an_exception_as_markup():
+    """The sign-in sentence was one place of about forty: `[red]{exc}[/red]`
+    with markup on, for exceptions that carry what SAS Viya, CAS or a
+    provider answered. A `[/folders/...]` in such an answer ended the command
+    with a MarkupError. Every such line hands the text to `_plain`."""
+    printed = list(_prints_with_markup_on())
+    bare = [(line, text) for line, text in printed if text in ("exc", "result.detail")]
+    assert bare == []
+    assert sum(1 for _, text in printed if text in ("_plain(exc)", "_plain(result.detail)")) >= 40
+    out = io.StringIO()
+    text = "HTTP 403 not [/red] allowed for [/folders/folders/f1] - see [bold]the log[/bold] C:\\"
+    Console(file=out, width=1000, force_terminal=False).print(f"[red]{cli._plain(RuntimeError(text))}[/red]")
+    assert out.getvalue() == text + "\n"
+
+
+def test_an_answer_with_a_bracket_ends_the_export_with_its_line(exporting, manifest, monkeypatch):
+    """The same through a command: the transfer service refuses the export,
+    and its answer holds what rich reads as the end of a tag."""
+    from mdb.viya import transfer
+    answered = "the export was refused: HTTP 403 no access to [/folders/folders/f1] - ask [/red] (errorCode 7)"
+
+    def refused(session, name, items):
+        raise RuntimeError(answered)
+
+    monkeypatch.setattr(transfer, "start_export", refused)
+    result, text, target, _ = exporting(package_of(manifest))
+    assert result.exit_code == 1 and isinstance(result.exception, SystemExit), (result.exception, text)
+    assert answered in " ".join(text.split()) and not target.exists()

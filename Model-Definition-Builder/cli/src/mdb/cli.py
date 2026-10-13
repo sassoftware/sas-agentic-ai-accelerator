@@ -18,6 +18,7 @@ from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
@@ -46,6 +47,14 @@ app = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 console = Console()
+
+
+def _plain(value) -> str:
+    """The text of an exception, or of what a service answered, for a line
+    that is printed with markup on: a bracket in it is text. Without this a
+    `[/folders/...]` in an answer of SAS Viya is read as the end of a tag,
+    and the command ends with a MarkupError in place of its line."""
+    return escape(str(value))
 
 
 def _print_version(value: bool) -> None:
@@ -98,7 +107,7 @@ class Context:
         try:
             self.repo = find_repo_root()
         except RepoNotFoundError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{_plain(exc)}[/red]")
             raise typer.Exit(2)
         self.core = CoreAssets.load(core_dir(self.repo))
 
@@ -238,9 +247,9 @@ def _catalog_for(adapter: ProviderAdapter, ctx: Context, offline: bool, verify_s
                 enriched.extend(m for m in static if m.ref not in live_refs)
                 return enriched
         except NotImplementedError as exc:
-            console.print(f"[dim]{exc}[/dim]")
+            console.print(f"[dim]{_plain(exc)}[/dim]")
         except Exception as exc:
-            console.print(f"[yellow]Live catalog unavailable ({exc}) - falling back to the bundled snapshot.[/yellow]")
+            console.print(f"[yellow]Live catalog unavailable ({_plain(exc)}) - falling back to the bundled snapshot.[/yellow]")
     if static:
         console.print(f"[dim]Using bundled static catalog ({static[0].source}) - confirm pricing before relying on cost monitoring.[/dim]")
     return static
@@ -563,7 +572,7 @@ def add(
         _review_catalog_values(manifest, skip_review=yes or accept_defaults, core=ctx.core)
         rendered = render_assets(manifest, ctx.core)
     except (GenerationError, ValueError) as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{_plain(exc)}[/red]")
         raise typer.Exit(1)
 
     defs_name = kind_folder_name(manifest.kind)
@@ -616,7 +625,7 @@ def generate(
             manifest = load_manifest(folder)
             rendered = render_assets(manifest, ctx.core)
         except Exception as exc:
-            console.print(f"[red]{model_id}: {exc}[/red]")
+            console.print(f"[red]{model_id}: {_plain(exc)}[/red]")
             failed = True
             continue
         classifications = drift.classify(folder, rendered)
@@ -690,16 +699,16 @@ def validate(
                 continue
             result = adapter.smoke_test(manifest, _env_api_key(adapter), session)
             if result.skipped:
-                console.print(f"[dim]{folder.name}: {result.detail}[/dim]")
+                console.print(f"[dim]{folder.name}: {_plain(result.detail)}[/dim]")
             elif result.ok:
-                console.print(f"[green]{folder.name}: {result.detail}[/green]")
+                console.print(f"[green]{folder.name}: {_plain(result.detail)}[/green]")
             elif result.inconclusive:
                 # Transient upstream state (e.g. rate-limited): says nothing
                 # about the definition - warn without failing the validation.
-                console.print(f"[yellow]{folder.name}: smoke test inconclusive - {result.detail}[/yellow]")
+                console.print(f"[yellow]{folder.name}: smoke test inconclusive - {_plain(result.detail)}[/yellow]")
             else:
                 has_error = True
-                console.print(f"[red]{folder.name}: smoke test failed - {result.detail}[/red]")
+                console.print(f"[red]{folder.name}: smoke test failed - {_plain(result.detail)}[/red]")
     raise typer.Exit(1 if has_error else 0)
 
 
@@ -814,7 +823,7 @@ def load_facts(
             try:
                 result = load_fact_sheet(session, sheet, kind, caslib, server_name)
             except RuntimeError as exc:
-                console.print(f"  [red]{exc}[/red]")
+                console.print(f"  [red]{_plain(exc)}[/red]")
                 raise typer.Exit(1)
             loaded += 1
             # "dropped" reflects the loaded copy; the save step replaces any saved one
@@ -911,7 +920,7 @@ def load_releases(
         try:
             _, summary = build_release_table(source, csv_out)
         except (OSError, ValueError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{_plain(exc)}[/red]")
             raise typer.Exit(1)
         console.print(f"Wrote {summary['rows']} rows for {summary['releases']} releases to {csv_out} "
                       f"({current_words(summary)}).")
@@ -925,7 +934,7 @@ def load_releases(
         try:
             summary = _load_releases(session, ctx, caslib, server_name, table_name, changelog)
         except (RuntimeError, ValueError) as exc:
-            console.print(f"  [red]{exc}[/red]")
+            console.print(f"  [red]{_plain(exc)}[/red]")
             raise typer.Exit(1)
     suffix = " (replaced a loaded copy)" if summary["dropped"] else ""
     console.print(f"  {table_name}: {summary['rows']} rows for {summary['releases']} releases, uploaded, "
@@ -960,7 +969,7 @@ def import_(
     try:
         rendered = render_assets(result.manifest, ctx.core)
     except GenerationError as exc:
-        console.print(f"[red]{model_id}: {exc}[/red]")
+        console.print(f"[red]{model_id}: {_plain(exc)}[/red]")
         console.print("Nothing was written - the folder stays fully hand-maintained. "
                       "Declare the option inline (type/description) in a definition.yaml "
                       "or extend the vocabulary, then rerun mdb import.")
@@ -1117,7 +1126,7 @@ def setup(
             try:
                 ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
             except Exception as exc:
-                console.print(f"[red]{kind}: {exc}[/red]")
+                console.print(f"[red]{kind}: {_plain(exc)}[/red]")
                 raise typer.Exit(1)
             for created in ensured.created:
                 console.print(f"[green]created {created}.[/green]")
@@ -1139,7 +1148,7 @@ def setup(
                               f"{current_words(summary)}) - assign it to the Prompt Builder object in "
                               f"SAS Visual Analytics.[/green]")
             except (RuntimeError, ValueError) as exc:
-                console.print(f"[yellow]release table not loaded: {exc} - run 'mdb load-releases' later.[/yellow]")
+                console.print(f"[yellow]release table not loaded: {_plain(exc)} - run 'mdb load-releases' later.[/yellow]")
     if not created_any:
         console.print("[green]Repository and projects already exist.[/green]")
     if no_files:
@@ -1271,7 +1280,7 @@ def _capture_options(session, seeds: dict, strict: bool = False, content_root: s
             if strict:
                 raise _ReportUnreadable(report_name, f"it is in {folder} and its content cannot be read ({exc})") \
                     from exc
-            console.print(f"[yellow]{report_name}: content unreadable ({exc}).[/yellow]")
+            console.print(f"[yellow]{report_name}: content unreadable ({_plain(exc)}).[/yellow]")
             continue
         options = read_options(content)
         if not options:
@@ -1440,7 +1449,7 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
         try:
             content, etag = get_content(session, report["id"])
         except Exception as exc:
-            console.print(f"[red]{report_name}: reading the report failed ({exc}) - its options were not "
+            console.print(f"[red]{report_name}: reading the report failed ({_plain(exc)}) - its options were not "
                           "written.[/red]", highlight=False)
             failures += 1
             continue
@@ -1485,7 +1494,7 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
         try:
             put_content(session, report["id"], updated, etag)
         except Exception as exc:
-            console.print(f"[red]{report_name}: writing the report failed ({exc}).[/red]")
+            console.print(f"[red]{report_name}: writing the report failed ({_plain(exc)}).[/red]")
             failures += 1
             continue
         console.print(f"[green]{report_name}: restored " + "; ".join(what) + "[/green]")
@@ -1519,7 +1528,7 @@ def _discovered_seeds(session, ctx: "Context", otherwise: str = "", kinds=None) 
             try:
                 ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
             except Exception as exc:
-                console.print(f"[yellow]{report_name}: could not discover the {kind} project ({exc})"
+                console.print(f"[yellow]{report_name}: could not discover the {kind} project ({_plain(exc)})"
                               + (f"; {otherwise}" if otherwise else "") + ".[/yellow]")
                 continue
             repository_id = repository_id or ensured.repository_id
@@ -1897,7 +1906,7 @@ def package_export(
             job = start_export(session, package_name, [f"/folders/folders/{folder_obj['id']}"])
             job = wait_for_job(session, next(l["href"] for l in job["links"] if l["rel"] == "self"), timeout=timeout)
         except RuntimeError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{_plain(exc)}[/red]")
             raise typer.Exit(1)
         if str(job.get("state", "")).lower() != "completed":
             console.print(f"[red]The export job ended {job.get('state')} ({job.get('errorCount', 0)} error(s)).[/red]")
@@ -1941,7 +1950,7 @@ def package_export(
         text, states = strip_report_states(text)
         text, fixed = sanitise_text(text, target.name, ALLOWED_HOSTS)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{_plain(exc)}[/red]")
         raise typer.Exit(1)
     for copy_name, labels in reset.items():
         console.print(f"  reset {len(labels)} option default(s) of {copy_name} to the neutral values: "
@@ -2502,7 +2511,7 @@ def builders_import(
             try:
                 live = _live_options(session, root)
             except _ReportUnreadable as exc:
-                console.print(f"[red]{exc}.[/red]", highlight=False)
+                console.print(f"[red]{_plain(exc)}.[/red]", highlight=False)
                 console.print("[red]Nothing was imported.[/red] The import replaces this report, and options that "
                               "cannot be read now are lost with it. Run the command again when the report can be "
                               "read - or name the options yourself with --options <file> (`mdb options-save` "
@@ -2566,7 +2575,7 @@ def builders_import(
                 console.print(f"Release table: {caslib}.{table_name} loaded from {table_from} ({summary['rows']} "
                               f"rows, {current_words(summary)}).", highlight=False)
             except (RuntimeError, ValueError, UnicodeDecodeError) as exc:
-                console.print(f"[red]Release table not loaded: {exc}[/red]")
+                console.print(f"[red]Release table not loaded: {_plain(exc)}[/red]")
                 raise typer.Exit(1)
         for path, package, source, refusal in plans:
             objects = _package_objects(package)
@@ -2652,7 +2661,7 @@ def builders_import(
                                 console.print(f"    [green]imported {len(held)} object(s) through the transfer "
                                               "service.[/green]")
                     except RuntimeError as exc:
-                        console.print(f"    [red]{exc}[/red]", highlight=False)
+                        console.print(f"    [red]{_plain(exc)}[/red]", highlight=False)
                         package_failed = True
                     if uploaded and uploaded.get("id"):
                         # the uploaded part of the package is not left on the
@@ -3013,7 +3022,7 @@ def register(
                                   "(cost monitoring metadata will be incomplete).[/yellow]")
                 result = register_model(session, manifest, folder, row, scr, update=update)
             except Exception as exc:
-                console.print(f"[red]{folder.name}: {exc}[/red]")
+                console.print(f"[red]{folder.name}: {_plain(exc)}[/red]")
                 failed = True
                 continue
             color = {"created": "green", "updated": "green", "skipped": "yellow"}[result.action]
@@ -3044,7 +3053,7 @@ def unregister(
             try:
                 result = unregister_model(session, model_id)
             except Exception as exc:
-                console.print(f"[red]{model_id}: {exc}[/red]")
+                console.print(f"[red]{model_id}: {_plain(exc)}[/red]")
                 failed = True
                 continue
             if result == "deleted":
@@ -3075,7 +3084,7 @@ def pull(
             try:
                 result = pull_model(session, model_id, ctx.defs_dir, force=force)
             except Exception as exc:
-                console.print(f"[red]{model_id}: {exc}[/red]")
+                console.print(f"[red]{model_id}: {_plain(exc)}[/red]")
                 failed = True
                 continue
             defs_name = "LLM-Definitions" if result.kind == "llm" else "Embedding-Definitions"
@@ -3096,7 +3105,7 @@ def pull(
                                   f"'mdb import {model_id} --apply'.[/green]")
                 except Exception as exc:
                     console.print(f"[yellow]{model_id}: pulled, but could not reverse-engineer "
-                                  f"definition.yaml ({exc}) - the folder stays hand-maintained.[/yellow]")
+                                  f"definition.yaml ({_plain(exc)}) - the folder stays hand-maintained.[/yellow]")
             elif result.had_definition:
                 console.print(f"  Already mdb-managed (definition.yaml pulled). Regenerate with "
                               f"'mdb generate {model_id}'.")
@@ -3165,7 +3174,7 @@ def publish(
             try:
                 state = publish_model(session, model_id, dest, wait=wait)
             except Exception as exc:
-                console.print(f"[red]{model_id}: {exc}[/red]")
+                console.print(f"[red]{model_id}: {_plain(exc)}[/red]")
                 failed = True
                 continue
             if state in ("requested", "completed"):
@@ -3176,7 +3185,7 @@ def publish(
                     if ensure_model_lifecycle(session, model_id, "deployed", "approved"):
                         console.print(f"[dim]{model_id}: modelStatus=deployed, approvalState=approved[/dim]")
                 except Exception as exc:
-                    console.print(f"[yellow]{model_id}: could not update lifecycle attributes ({exc}).[/yellow]")
+                    console.print(f"[yellow]{model_id}: could not update lifecycle attributes ({_plain(exc)}).[/yellow]")
             else:
                 console.print(f"[red]{model_id}: publish {state} on {dest}[/red]")
                 failed = True
@@ -3205,11 +3214,11 @@ def ship(
     if adapter is not None:
         result = adapter.smoke_test(manifest, _env_api_key(adapter), make_session(verify_ssl))
         if result.skipped:
-            console.print(f"[dim]smoke test: {result.detail}[/dim]")
+            console.print(f"[dim]smoke test: {_plain(result.detail)}[/dim]")
         elif result.ok:
-            console.print(f"[green]smoke test: {result.detail}[/green]")
+            console.print(f"[green]smoke test: {_plain(result.detail)}[/green]")
         else:
-            console.print(f"[red]smoke test failed: {result.detail}[/red]")
+            console.print(f"[red]smoke test failed: {_plain(result.detail)}[/red]")
             raise typer.Exit(1)
     for stage in (
         lambda: register(ids=[model_id], all_=False, update=True),
@@ -3438,7 +3447,7 @@ def retire(
     except ViyaConfigError:
         console.print("[yellow]SAS Viya is not configured - the registered model's status was not updated.[/yellow]")
     except Exception as exc:
-        console.print(f"[yellow]Could not update the registered model's status: {exc}[/yellow]")
+        console.print(f"[yellow]Could not update the registered model's status: {_plain(exc)}[/yellow]")
 
     if not archive:
         console.print(f"Push the deprecated flag to the registered model with: mdb register {model_id} --update")
@@ -3614,7 +3623,7 @@ def _credential_manifest(manifest: Optional[str], domain: str,
                         for who in identities],
         )
     except CredentialError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{_plain(exc)}[/red]")
         raise typer.Exit(2)
 
 
@@ -3655,7 +3664,7 @@ def credentials_init(
     try:
         entries = map_entries(read_name_value_file(source))
     except CredentialError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{_plain(exc)}[/red]")
         raise typer.Exit(2)
     if not entries:
         console.print(
@@ -3735,14 +3744,14 @@ def credentials_apply(
         plan = _credential_manifest(manifest, domain, identity_type, identity,
                                     env_file, keys_file)
     except CredentialError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{_plain(exc)}[/red]")
         raise typer.Exit(2)
 
     with _viya_session() as session:
         try:
             steps = build_steps(plan, lambda who: fetch_credential(session, plan.domain, who))
         except CredentialError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{_plain(exc)}[/red]")
             raise typer.Exit(2)
 
         table = Table(title=f"Credential domain '{plan.domain}'")
@@ -3785,7 +3794,7 @@ def credentials_apply(
                 ensure_domain(session, plan.domain)
                 console.print(f"[green]Domain '{plan.domain}' is in place.[/green]")
             except CredentialError as exc:
-                console.print(f"[yellow]{exc}[/yellow]")
+                console.print(f"[yellow]{_plain(exc)}[/yellow]")
                 console.print("[yellow]Continuing: the domain may already exist "
                               "and only an administrator can (re)create it. Pass "
                               "--skip-domain to stop trying.[/yellow]")
@@ -3800,7 +3809,7 @@ def credentials_apply(
                     f"{len(step.entry_names)} entries stored.[/green]")
             except CredentialError as exc:
                 failed += 1
-                console.print(f"[red]{exc}[/red]")
+                console.print(f"[red]{_plain(exc)}[/red]")
         if failed:
             raise typer.Exit(1)
         console.print("[green]Done. Check it with `mdb credentials-report`.[/green]")
