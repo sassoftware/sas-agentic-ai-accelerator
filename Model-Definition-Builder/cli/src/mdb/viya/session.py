@@ -94,6 +94,14 @@ def _host(url: str) -> str:
     return (parsed.hostname or "").lower()
 
 
+def _port(url: str) -> int | None:
+    """The port a URL with a scheme names (https://host:8443), or None."""
+    try:
+        return urlparse(url).port if "://" in url else None
+    except ValueError:      # a port that is no number
+        return None
+
+
 def _fmt(when: datetime | None) -> str:
     return when.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if when else "?"
 
@@ -219,11 +227,15 @@ def create_session():
         import urllib3
 
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    # sasctl takes the scheme and the host from the URL and the port from an
+    # argument of its own: without it a port in SAS_VIYA_URL is dropped
+    port = _port(auth.url)
+    where = {"port": port} if port else {}
     try:
         if auth.method == "password":
-            session = _sign_in(lambda: Session(auth.url, auth.user, auth.password, verify_ssl=verify))
+            session = _sign_in(lambda: Session(auth.url, auth.user, auth.password, verify_ssl=verify, **where))
         else:
-            session = Session(auth.url, token=auth.token, verify_ssl=verify)
+            session = Session(auth.url, token=auth.token, verify_ssl=verify, **where)
     except Exception as exc:
         if not _refused_sign_in(exc):
             raise

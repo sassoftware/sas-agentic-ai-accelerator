@@ -17,7 +17,7 @@ from content_fakes import Response
 from mdb.viya import answer as answering
 from mdb.viya import content as deploying
 from mdb.viya import session as s
-from test_session import URL, _answered, env  # noqa: F401
+from test_session import URL, _answered, env, fake_sasctl  # noqa: F401
 
 
 # ---- the answer of a refused request: one function, one line ----------------------
@@ -146,6 +146,31 @@ def test_a_401_that_sasctl_raises_as_something_else_is_a_refused_sign_in(logon, 
         f"SAS Viya at {URL} refused the sign-in of u with SAS_VIYA_USER + SAS_VIYA_PASSWORD (3 sign-ins made): "
         f"HTTP 401 from /SASLogon/oauth/token {said}. Check the credentials")
     assert "s3cret-p" not in str(caught.value)
+
+
+def test_a_port_in_the_url_is_handed_to_sasctl(env, fake_sasctl):
+    """gate-20: SAS_VIYA_URL=http://127.0.0.1:4981 was asked at port 80 -
+    sasctl takes the port from an argument of its own, which mdb did not
+    give. For the password grant and for a token."""
+    assert s._port("https://viya.example.com:8443") == 8443 and s._port("https://viya.example.com") is None
+    assert s._port("viya.example.com:8443") is None and s._port("https://viya.example.com:port") is None
+    env.setenv(s.URL_ENV, "https://viya.example.com:8443")
+    env.setenv(s.USER_ENV, "u")
+    env.setenv(s.PASSWORD_ENV, "p")
+    s.create_session()
+    env.setenv(s.TOKEN_ENV, "not-a-jwt")
+    s.create_session()
+    assert fake_sasctl == [(("https://viya.example.com:8443", "u", "p"), {"verify_ssl": True, "port": 8443}),
+                           (("https://viya.example.com:8443",), {"token": "not-a-jwt", "verify_ssl": True,
+                                                                 "port": 8443})]
+
+
+def test_the_installed_sasctl_sends_the_grant_to_the_port(env, logon):
+    env.setenv(s.URL_ENV, "http://127.0.0.1:4981")
+    logon.body = '{"error":"invalid_client","error_description":"Bad credentials"}'
+    with pytest.raises(s.ViyaSignInError, match="SAS Viya at http://127.0.0.1:4981 refused the sign-in of u"):
+        s.create_session()
+    assert logon.posted == ["http://127.0.0.1:4981/SASLogon/oauth/token#password"]
 
 
 def test_an_error_that_is_no_answer_of_the_token_address_is_passed_on():
