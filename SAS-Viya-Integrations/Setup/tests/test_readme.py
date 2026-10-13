@@ -92,6 +92,37 @@ def test_what_the_page_says_of_a_custom_step_names_no_upload_as_a_way():
     assert not re.search(r"\bupload (it|the|a|its)\b", readme(), flags=re.IGNORECASE)
 
 
+def test_what_the_page_says_of_an_entry_is_what_the_two_programs_say():
+    """The sentences of this page a reader acts on where a line of Start Here or of the loader is not ok, each
+    beside the text of the program it is about."""
+    start, loader, tests = section("Start Here"), section("Load-Accelerator-Tables"), section("Tests")
+    page = (SETUP / "Start-Here.sas").read_text(encoding="utf-8")
+    job = (SETUP / "Load-Accelerator-Tables.sas").read_text(encoding="utf-8")
+
+    # one name, and two objects of it
+    assert ("a member has the name of the entry to the letter - a step that is registered under the name without `.step` is not the step "
+            "of the entry -, and is of its kind by what its uri starts with") in start
+    assert "named = members.get(name, [])" in page and "name + '.step'" not in page
+    assert ("Two objects of the name and kind of an entry stand in its way as well, because nothing says which one is meant: the line is "
+            "`missing` with the advice to remove or rename all but one, and the entry is counted as present.") in start
+    assert "NOT_ONE_TODO = 'Remove or rename all but one of them: " in page and "NOT_ONE_TODO + below), present=True)" in page
+    assert "Below a name two folders have nothing is read, and the entries there are `not checked`" in start
+    assert "listings[path] = (NOT_ONE if folders else 404, {})" in page and "return NOT_CHECKED, f'{what} was not read: " in page
+    # a report: what brings one
+    assert ("For a report that is missing the advice names the import of the package and `mdb builders-import` - a report comes with the "
+            "package - and says that `mdb content-deploy` writes none.") in start
+    assert ("REPORT_MISSING = 'Import the package of the accelerator again, or run mdb builders-import: a report comes with the package, "
+            "and mdb content-deploy writes none.'") in page
+    # the tests: a report with a reference beside it is held as ok, not as missing
+    assert "for each of the four kinds `mdb` writes and for `release.json` - a report that is there is held as `ok` -" in tests
+    assert "five kinds" not in readme()
+    # the loader: a table that has the name the saved file is loaded under
+    assert ("with an ERROR line of its own: it names the table `_LAT_SAVED`, says what `table.tableExists` answered and that the table is "
+            "to be renamed or dropped before the job is run again") in loader
+    assert "CAS did not answer that there is no table &caslib.._LAT_SAVED - tableExists said &_lat_helper., and 0 is no table." in job
+    assert "where a table of that name is there, rename or drop it and run the job again. The file was left as it is" in job
+
+
 def test_what_the_page_says_of_the_fact_sheet_program_and_of_the_four_widths():
     loader = section("Load-Accelerator-Tables")
 
