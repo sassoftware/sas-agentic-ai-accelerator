@@ -7,12 +7,17 @@ completely takes its place - the upload whose rows were counted, promoted under 
 the table, as Load-Accelerator-Tables does it for the release table; the sheet is not loaded
 a second time.
 
-The SAS code can not run here. The tests read it as text: the statements and their order.
+The SAS code can not run here. The tests read it as text: the statements and their order. The
+tests at the end follow the two macros with macro_harness and run the CASL of their PROC CAS steps
+against a CAS library that is made up (casl_harness): they say what the program does IF CAS
+behaves as that model has it.
 """
 import re
 from pathlib import Path
 
 import pytest
+
+import casl_harness
 
 FOLDER = Path(__file__).resolve().parents[1]
 REPOSITORY = FOLDER.parents[1]
@@ -89,7 +94,7 @@ def test_a_sheet_is_read_and_tried_in_cas_before_its_table_is_touched():
     # nothing of an earlier run or of the sheet in front stands in for this sheet
     in_order(macro, "%let _lfs_ok = 0;", "delete &_lfs_work.;", 'filename _lfs_fs filesrvc folderPath="&_lfs_path." filename="&_lfs_file.";')
     # a file that is not there is not handed to PROC IMPORT, which would end with an error
-    in_order(macro, "%if %sysfunc(fexist(_lfs_fs)) NE 1 %then %do;", "%return;", "proc import dataFile=_lfs_fs")
+    in_order(macro, "%let _lfs_there = %sysfunc(fexist(_lfs_fs));", "%if &_lfs_there. NE 1 %then %do;", "%return;", "proc import dataFile=_lfs_fs")
     assert "out=work.&_lfs_work." in macro and "guessingRows=max;" in macro and "getNames=yes;" in macro
     # its rows are counted, and a sheet without rows goes no further
     in_order(macro, "proc import dataFile=_lfs_fs", "%let _lfs_rows = %sysfunc(attrn(&_lfs_dsid., nlobs));", "%if &_lfs_rows. LE 0 %then %do;",
@@ -171,3 +176,66 @@ def test_the_macro_and_its_flag_are_gone_at_the_end():
     head = text.split("*/")[0]
     assert "A table that exists is only replaced by a sheet that was read" in head
     assert "The job definition Load-Accelerator-Tables includes this file from the" in head
+
+
+# ---------------------------------------------------------------------------
+# Followed: the folder of the sheets
+# ---------------------------------------------------------------------------
+
+SHEET = ("llm_fact_sheet.csv", "_lfs_llm_fact_sheet", "LLM_FACT_SHEET")
+FOLDER_OF_SHEETS = "/Site, Root (2026)/Data"
+NOT_FOUND = ("WARNING: The file llm_fact_sheet.csv was not found in the folder " + FOLDER_OF_SHEETS
+             + ", the table Public.LLM_FACT_SHEET was left as it is.")
+COLUMNS = ["model", "provider", "input_cost", "output_cost"]
+
+
+def follow(name, cas=None, status="200", there=1, rows=30, **more):
+    """Follows a macro of the program for one sheet. Returns (the SAS code it generates, the lines it writes, the
+    folders it asked for, the macro variables at its end)."""
+    symbols = {"_lfs_file": SHEET[0], "_lfs_work": SHEET[1], "_lfs_table": SHEET[2], "_lfs_path": FOLDER_OF_SHEETS, "_lfs_caslib": "Public",
+               "_lfs_ok": "0", "SYS_PROCHTTP_STATUS_CODE": "an answer of an earlier request"}
+    symbols.update(more)
+    asked = []
+
+    def called(text, macros):
+        asked.append(text)
+        macros.symbols["sys_prochttp_status_code"] = status
+
+    functions = {"fexist": lambda arguments: there, "exist": lambda arguments: 1, "open": lambda arguments: 7,
+                 "attrn": lambda arguments: rows, "close": lambda arguments: 0}
+    generated, log, macros = casl_harness.follow(program("Load-Fact-Sheets.sas"), name, symbols, cas, functions, called)
+    return [line for line in generated if not line.startswith(casl_harness.CALLED)], log, asked, macros
+
+
+def test_a_folder_that_is_not_there_is_the_warning_and_no_statement_that_fails():
+    """live-19, defect 6, for this program: a FILENAME statement of the access method FILESRVC wrote two ERROR
+    lines for a folder that is not there (measured on 2026-10-13 for the statement of the job that includes this
+    program). The Folders service is asked first, and the statement is left out where it answers 404."""
+    generated, log, asked, macros = follow("_lfs_read", status="404", there=0)
+
+    assert asked == ["_lfs_ask_folder();"]
+    assert not [line for line in generated if "filesrvc" in line] and log == [NOT_FOUND] and macros["_lfs_ok"] == "0"
+    # nothing of the sheet is read or loaded
+    assert generated == ["proc datasets lib=work noList noWarn;", "delete _lfs_llm_fact_sheet;", "run; quit;"]
+
+
+@pytest.mark.parametrize("status", ["200", "401", "403", "500", ""], ids=["there", "401", "403", "500", "no answer"])
+def test_a_folder_without_the_file_is_the_same_warning(status):
+    """Only the answer 404 says that the folder is not there: every other answer assigns the fileref as before."""
+    generated, log, asked, macros = follow("_lfs_read", status=status, there=0)
+
+    assert asked == ["_lfs_ask_folder();"]
+    assert [line for line in generated if "filename" in line] == [
+        'filename _lfs_fs filesrvc folderPath="' + FOLDER_OF_SHEETS + '" filename="llm_fact_sheet.csv";', "filename _lfs_fs clear;"]
+    assert log == [NOT_FOUND] and "proc import dataFile=_lfs_fs" not in generated
+
+
+def test_a_sheet_that_is_there_is_read_and_counted_as_before():
+    cas = casl_harness.FakeCAS()
+    cas.table("Public", "LLM_FACT_SHEET_NEW", COLUMNS, rows=30, of="the sheet", scope="session")      # what PROC CASUTIL loaded
+    generated, log, asked, macros = follow("_lfs_read", cas, status="200", there=1, rows=30)
+
+    assert log == [] and macros["_lfs_ok"] == "1" and cas.errors == []
+    in_order("\n".join(generated), "filename _lfs_fs filesrvc folderPath=", "proc import dataFile=_lfs_fs", "filename _lfs_fs clear;",
+             'load data=work._lfs_llm_fact_sheet casOut="LLM_FACT_SHEET_NEW" replace;', "proc cas;")
+    assert cas.exists("Public", "LLM_FACT_SHEET_NEW") == 1

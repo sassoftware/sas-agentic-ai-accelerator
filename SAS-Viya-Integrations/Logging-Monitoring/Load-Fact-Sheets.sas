@@ -57,6 +57,30 @@ options nosyntaxcheck;
     %let _lfs_clean_cas_session = 0;
 %end;
 
+/* Asks the Folders service for the folder of the sheets, as the job
+   Load-Accelerator-Tables asks for its folders: a FILENAME statement of the
+   access method FILESRVC writes two ERROR lines for a folder of SAS Content
+   that is not there (measured on 2026-10-13), where this program means a
+   WARNING. The statement is left out where the answer is 404; every other
+   answer - the folder is there, the session may not ask, there is no answer -
+   leaves the statement to say what it says. The address is made in a DATA
+   step from the text of the setting, so that no statement resolves the path
+   on the way, and SYS_PROCHTTP_STATUS_CODE is emptied first: it keeps the
+   answer of an earlier request where PROC HTTP gets none. */
+%macro _lfs_ask_folder(_lfs_below);
+    %local _lfs_ask;
+    filename _lfsask temp;
+    data _null_;
+        length _lfs_ask $ 8192;
+        _lfs_ask = cats(getoption('servicesbaseurl'), '/folders/folders/@item?path=', urlencode(cats(symget('_lfs_path'), "&_lfs_below.")));
+        call symputx('_lfs_ask', _lfs_ask, 'L');
+        call symputx('SYS_PROCHTTP_STATUS_CODE', ' ', 'G');
+    run;
+    proc http method = "GET" url = "%superq(_lfs_ask)" oauth_bearer = sas_services out = _lfsask;
+    run;
+    filename _lfsask clear;
+%mend _lfs_ask_folder;
+
 /* Reads one sheet from the folder into WORK and tries it in CAS, beside the
    table: it is loaded as <table>_NEW, a table of this session, and its rows
    are counted. _lfs_ok is 1 when CAS held every row of the sheet; that
@@ -66,7 +90,7 @@ options nosyntaxcheck;
    it are read. */
 %let _lfs_ok = 0;
 %macro _lfs_read(_lfs_file, _lfs_work, _lfs_table);
-    %local _lfs_rows _lfs_staged _lfs_dsid _lfs_rc;
+    %local _lfs_rows _lfs_staged _lfs_dsid _lfs_rc _lfs_there;
     %let _lfs_ok = 0;
     %let _lfs_rows = -1;
     %let _lfs_staged = -1;
@@ -74,10 +98,18 @@ options nosyntaxcheck;
         delete &_lfs_work.;
     run; quit;
 
-    filename _lfs_fs filesrvc folderPath="&_lfs_path." filename="&_lfs_file.";
-    %if %sysfunc(fexist(_lfs_fs)) NE 1 %then %do;
+    /* the fileref is assigned only where the Folders service did not say that the folder is not there */
+    %let _lfs_there = 0;
+    %_lfs_ask_folder();
+    %if "&SYS_PROCHTTP_STATUS_CODE." NE "404" %then %do;
+        filename _lfs_fs filesrvc folderPath="&_lfs_path." filename="&_lfs_file.";
+        %let _lfs_there = %sysfunc(fexist(_lfs_fs));
+        %if &_lfs_there. NE 1 %then %do;
+            filename _lfs_fs clear;
+        %end;
+    %end;
+    %if &_lfs_there. NE 1 %then %do;
         %put WARNING: The file &_lfs_file. was not found in the folder &_lfs_path., the table &_lfs_caslib..&_lfs_table. was left as it is.;
-        filename _lfs_fs clear;
         %return;
     %end;
 
@@ -196,6 +228,7 @@ run; quit;
 %end;
 %sysmacdelete _lfs_read;
 %sysmacdelete _lfs_swap;
+%sysmacdelete _lfs_ask_folder;
 options &_lfs_syntaxcheck.;
 %symdel _lfs_ok _lfs_syntaxcheck / nowarn;
 %symdel _lfs_path _lfs_caslib _lfs_clean_cas_session;
