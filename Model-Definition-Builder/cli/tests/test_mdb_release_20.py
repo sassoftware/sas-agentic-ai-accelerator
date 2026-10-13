@@ -44,6 +44,34 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 STAMP = "2026-10-13T09:19:08.741Z"
 
 
+# ---- 4: the last line of a release export, the help texts ----------------------
+
+
+#: A sentence about what was not measured, tested or run - not the word "run" in what a command does.
+NOT_RUN = re.compile(r"not (been )?(measured|tested)\b|untested|unmeasured|(has|have) not (been )?run\b"
+                     r"|not run (in|against) SAS|never (been )?(run|measured|sent)\b", re.I)
+
+
+def _help_texts(command, name: str) -> list:
+    texts = [(name, " ".join((command.help or "").split()))]
+    texts += [(f"{name} {param.name}", " ".join((getattr(param, "help", "") or "").split()))
+              for param in command.params]
+    for sub_name, sub in (getattr(command, "commands", None) or {}).items():
+        texts += _help_texts(sub, f"{name} {sub_name}")
+    return texts
+
+
+def test_no_help_text_says_what_was_not_measured():
+    """gate-19: `mdb package-export --help` ended with a sentence about what
+    has not been measured. That is said in the changelog and the guide."""
+    import typer
+    texts = _help_texts(typer.main.get_command(cli.app), "mdb")
+    assert len(texts) > 100 and any(name == "mdb package-export" for name, _ in texts)
+    assert [f"{name}: {match.group(0)}" for name, text in texts for match in NOT_RUN.finditer(text)] == []
+    assert NOT_RUN.search("What the transfer service does with neutral user fields has not been measured.")
+    assert not NOT_RUN.search("Nothing is run. A step that is not run keeps its id.")
+
+
 # ---- 2 and 3: real git repositories --------------------------------------------
 GIT = shutil.which("git")
 needs_git = pytest.mark.skipif(GIT is None, reason="no git on this machine")

@@ -1814,9 +1814,7 @@ def package_export(
     folder an object was exported from - for the content root of the release
     `/SAS Agentic AI Accelerator/...`, which names no one - and mdb reads it
     to tell a package of a folder below others (`mdb builders-import` refuses
-    to hand such a package to the transfer service). What the transfer
-    service does with neutral user fields on an import of the reports has
-    not been measured.
+    to hand such a package to the transfer service).
     """
     from .core.content import content_root_problem
     from .core.packages import (ALLOWED_HOSTS, NEUTRAL_USER, check_text, describe_findings, filter_package,
