@@ -371,6 +371,50 @@ def test_a_good_release_table_behind_a_taken_name_is_not_called_a_file_that_coul
     assert release(again)[0] == [LOADED.replace("755", "796")]
 
 
+class _Look:
+    """Stands in for the PROC CAS step of the macro that looks at the end of the job, whose statements
+    test_load_accelerator_tables.py holds: the names of its list for which tableExists answers 0."""
+
+    def __init__(self, cas):
+        self.cas = cas
+
+    def run(self, casl):
+        assert 'if found.exists == 0 then missing = missing || " " || name;' in casl and 'call symputx("_lat_missing", missing);' in casl
+        names = re.findall(r'"([^"]*)"', re.search(r"do name over \{(.*?)\};", casl).group(1))
+        # CALL SYMPUTX leaves out the blanks in front of and behind the value: the line of the pass named the three
+        # tables with one blank in front of the first
+        return {"_lat_missing": " ".join(name for name in names if self.cas.exists("Public", name) == 0)}
+
+
+@pytest.mark.parametrize("sheets", [True, False], ids=["the four tables are there", "the fact sheets are not there"])
+def test_the_warning_of_a_taken_name_alone_does_not_fail_the_job(sheets):
+    """live-20b could not show what the condition code of the job is where the WARNING for <table>_NEW is its only
+    message: its test root held no fact sheet table, so every run ended with the ERROR line of the look at the end
+    and SYSCC 1012. Followed here: the WARNING sets nothing the last statement reads, and with the four tables in
+    the CAS library the look at the end writes its NOTE. With the fact sheets missing it is the ERROR line the pass
+    saw. That SAS then leaves SYSCC as it was is what the last statement of the program says, and is not run here."""
+    cas = casl_harness.FakeCAS(upload_rows=755)
+    cas.table("Public", RELEASES, columns(), rows=453, of="the table of before")
+    cas.table("Public", RELEASES + "_NEW", LOG_COLUMNS, rows=19, of="a table of the site")
+    for name in ("LLM_FACT_SHEET", "EMBEDDING_FACT_SHEET", "DECISION_FACT_SHEET") if sheets else ():
+        cas.table("Public", name, SHEET_COLUMNS, rows=30, of="a fact sheet")
+    log, macros = release(cas)
+    assert log == [TAKEN.format(RELEASES, 2)] and macros["_lat_failed"] == "0"
+
+    generated, looked, end = casl_harness.follow(program(), "_lat_look", symbols(_lat_failed=macros["_lat_failed"], _lat_missing=""), _Look(cas))
+    if sheets:
+        assert looked == ["NOTE: Load-Accelerator-Tables: ACCELERATOR_RELEASES, LLM_FACT_SHEET, EMBEDDING_FACT_SHEET and DECISION_FACT_SHEET are "
+                          "in the CAS library Public."]
+    else:
+        assert looked == ["ERROR: Load-Accelerator-Tables: not in the CAS library Public at the end of the run: LLM_FACT_SHEET "
+                          "EMBEDDING_FACT_SHEET DECISION_FACT_SHEET. The lines above say why."]
+    assert end["_lat_failed"] == ("0" if sheets else "1") and end["_lat_ready"] == "1"
+    # the one statement that sets the condition code reads these two, and nothing else of the program sets it
+    code = re.sub(r"/\*.*?\*/", "", program(), flags=re.DOTALL)
+    assert code.count("%if &_lat_ready. NE 1 or &_lat_failed. EQ 1 %then %do;\n    %let SYSCC = 1012;\n%end;\n") == 1
+    assert len(re.findall(r"syscc\s*=", code, flags=re.IGNORECASE)) == 1
+
+
 def test_the_two_causes_of_a_saved_file_that_is_not_replaced_have_a_line_each():
     """A file that can not be loaded or lacks columns, and a file that was not looked at: two outcomes of the CASL,
     two ERROR lines, and neither says that nothing was loaded - the upload ran in front of both."""
