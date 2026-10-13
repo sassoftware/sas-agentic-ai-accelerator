@@ -1452,7 +1452,8 @@ def test_a_test_folder_without_reports_is_exported_with_its_differences_allowed(
     assert "commit it" not in text and "then commit this file" not in text
     assert text.rstrip().splitlines()[-1] == (
         f"Keep this file out of the repository. `mdb builders-import {cli._shell_word(elsewhere)} --content-root "
-        "<folder> --no-reports` brings what it holds into a test folder.")
+        '"<folder>" --no-releases --no-reports --no-files` brings what it holds into a test folder, and nothing '
+        "else: no report, no release table, no commands file.")
     # never for the file of the release
     result, text, target, exported = exporting(built, "--allow-differences")
     assert result.exit_code == 2 and exported == [] and not target.exists()

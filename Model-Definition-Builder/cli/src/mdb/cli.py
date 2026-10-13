@@ -1873,8 +1873,9 @@ def package_export(
     target = out or manifest.package_path
     if root != manifest.content_root and (out is None or target.resolve() == manifest.package_path.resolve()):
         console.print(f"[red]{root} is not the content root of the release ({manifest.content_root}): an export "
-                      f"of it is not written to {manifest.package}. Pass --out to write it somewhere else. "
-                      "Nothing was exported.[/red]", highlight=False)
+                      f"of it is not written to {manifest.package}. "
+                      + ("Pass --out to write it somewhere else." if out is None else "Name another file with --out.")
+                      + " Nothing was exported.[/red]", highlight=False)
         raise typer.Exit(2)
     if allow_differences and (out is None or target.resolve() == manifest.package_path.resolve()):
         console.print(f"[red]--allow-differences needs --out, and not {manifest.package}: the release file is "
@@ -2024,9 +2025,13 @@ def package_export(
                       "has to be in the history of that commit: a commit of a branch that is squash-merged later "
                       "is not.", markup=False, highlight=False, soft_wrap=True)
     elif differences:
-        console.print("Keep this file out of the repository. `mdb builders-import "
-                      f"{_shell_word(target)} --content-root <folder> --no-reports` brings what it holds into a "
-                      "test folder.", markup=False, highlight=False, soft_wrap=True)
+        # for a test folder: nothing but the folder is written - as the command comes, it would load the
+        # release table of the site and write the commands file of the content folder as well
+        into_a_test_folder = _import_command([target], None, None, None, None, True, IMPORT_TIMEOUT,
+                                             content_root="<folder>", no_reports=True, no_files=True)
+        console.print(f"Keep this file out of the repository. `{into_a_test_folder}` brings what it holds into a "
+                      "test folder, and nothing else: no report, no release table, no commands file.",
+                      markup=False, highlight=False, soft_wrap=True)
     else:
         console.print(f"The file equals the checkout and is not the release file ({manifest.package}): there is "
                       "nothing to commit.", markup=False, highlight=False, soft_wrap=True)

@@ -18,7 +18,7 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
-from content_fakes import CONTENT_ROOT, Response, make_repo
+from content_fakes import CONTENT_ROOT, Response, make_repo, package_of
 from mdb import cli
 from mdb.core import content
 from mdb.core.content import load_manifest
@@ -30,6 +30,7 @@ from test_builder_commands import (FILE_PATH, PACKAGE_FILE, Site, _built,  # noq
 from test_content_deploy import CORE, STEP_PATH, command, manifest, repo  # noqa: F401
 from test_mdb_release_20 import (EARLIER, _deploy_and_export, _git, _site, _squash_merge, _tag_clone,  # noqa: F401
                                  _with_commit, gate, needs_git)
+from test_package_guards import REPORT, exporting  # noqa: F401
 from test_session import URL, _answered, env, fake_sasctl  # noqa: F401
 
 REPOSITORY = Path(__file__).resolve().parents[3]
@@ -410,6 +411,42 @@ def test_a_tag_on_the_commit_of_the_branch_passes_the_gate_and_fails_that_step(t
         assert code == 0, text
         asked[tag] = subprocess.run(ON_MAIN.split(), cwd=clone, capture_output=True).returncode
     assert asked == {"2.3.0": 0, "2.3.1": 1}
+
+
+# ---- two sentences of package-export ----------------------------------------------------
+def test_the_command_for_a_test_folder_writes_nothing_but_the_folder(exporting, manifest, repo):
+    """The pass of 2026-10-13: the command the export prints for a test
+    folder carried neither --no-releases nor --no-files - run as printed it
+    loads the release table of the site. Each word of it is an option of
+    `mdb builders-import`, and the folder is a word a shell does not read as
+    a redirection."""
+    root = "/Users/me/My Folder/ZZ_VERIFY_R20/root"
+    elsewhere = repo / "scratch" / "r20.json"
+    result, text, _, _ = exporting(package_of(manifest, change={REPORT: None}, root="root"), "--content-root", root,
+                                   "--out", str(elsewhere), "--allow-differences")
+    assert result.exit_code == 0, text
+    last = text.rstrip().splitlines()[-1]
+    assert last.endswith("brings what it holds into a test folder, and nothing else: no report, no release table, "
+                         "no commands file.")
+    words = shlex.split(last.split("`")[1])
+    assert words == ["mdb", "builders-import", elsewhere.as_posix(), "--content-root", "<folder>", "--no-releases",
+                     "--no-reports", "--no-files"]
+    assert '--content-root "<folder>"' in last
+
+
+def test_the_refusal_of_the_release_file_for_another_root_fits_what_was_passed(exporting, manifest, repo):
+    """review-20: `--content-root <other> --out <the release file>` was told
+    'Pass --out to write it somewhere else' - with --out passed."""
+    root = "/Users/me/My Folder/ZZ_VERIFY_R20/root"
+    built = package_of(manifest, root="root")
+    refused = (f"{root} is not the content root of the release ({CONTENT_ROOT}): an export of it is not written to "
+               "SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json. ")
+    result, text, target, exported = exporting(built, "--content-root", root)
+    assert result.exit_code == 2 and exported == []
+    assert " ".join(text.split()) == refused + "Pass --out to write it somewhere else. Nothing was exported."
+    result, text, target, exported = exporting(built, "--content-root", root, "--out", str(target))
+    assert result.exit_code == 2 and exported == [] and not target.exists()
+    assert " ".join(text.split()) == refused + "Name another file with --out. Nothing was exported."
 
 
 def test_an_error_that_is_no_answer_of_the_token_address_is_passed_on():
