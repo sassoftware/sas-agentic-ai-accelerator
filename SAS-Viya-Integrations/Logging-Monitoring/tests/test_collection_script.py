@@ -9,6 +9,7 @@ The guide also says where the parser reads the collected file and what it writes
 SAS log. Those parts are held against the program they describe.
 """
 import json
+import os
 import re
 import shlex
 import shutil
@@ -51,15 +52,24 @@ def collection_script():
     return match.group(1)
 
 
-def redaction_expressions():
-    """The sed expressions of the script's redact_llm_log function, as the shell hands them to sed."""
+def redaction_command():
+    """The command of the script's redact_llm_log function, as the shell reads it: (the variables it sets for
+    sed in front of it, the sed expressions)."""
     match = re.search(r"^redact_llm_log\(\) \{\n(.*?)\n\}$", collection_script(), re.DOTALL | re.MULTILINE)
     assert match, "the collection script no longer defines redact_llm_log"
     command = shlex.split(match.group(1).replace("\\\n", " "))
+    assert "sed" in command
+    environment, command = command[:command.index("sed")], command[command.index("sed"):]
+    assert all(re.fullmatch(r"[A-Z_]+=\S*", word) for word in environment), environment
     assert command[:2] == ["sed", "-E"]
     options, expressions = command[2::2], command[3::2]
     assert options == ["-e"] * len(expressions)
-    return expressions
+    return dict(word.split("=", 1) for word in environment), expressions
+
+
+def redaction_expressions():
+    """The sed expressions of the script's redact_llm_log function, as the shell hands them to sed."""
+    return redaction_command()[1]
 
 
 def gnu_sed():
@@ -78,12 +88,20 @@ def missing(value):
     return value is None or value != value
 
 
-def redact(text, tmp_path):
+def redact_bytes(data, tmp_path, locale=None):
+    """What the redaction of the script makes of the bytes of a log: sed with the expressions of the script and with
+    the variables the script sets in front of it - or, with `locale`, in that locale in their place."""
     # The expressions reach sed in a script file, which keeps their quotes out of the command line
     script = tmp_path / "redact_llm_log.sed"
-    script.write_text("".join(expression + "\n" for expression in redaction_expressions()), encoding="utf-8", newline="\n")
-    result = subprocess.run(["sed", "-E", "-f", str(script)], input=text.encode("utf-8"), capture_output=True, check=True)
-    return result.stdout.decode("utf-8")
+    environment, expressions = redaction_command()
+    script.write_text("".join(expression + "\n" for expression in expressions), encoding="utf-8", newline="\n")
+    settings = {name: value for name, value in os.environ.items() if name != "LC_ALL" and not name.startswith("LC_")}
+    settings.update({"LC_ALL": locale} if locale else environment)
+    return subprocess.run(["sed", "-E", "-f", str(script)], input=data, capture_output=True, check=True, env=settings).stdout
+
+
+def redact(text, tmp_path):
+    return redact_bytes(text.encode("utf-8"), tmp_path).decode("utf-8")
 
 
 def unredacted_log():
@@ -286,6 +304,13 @@ def needs_the_script_of_this_release():
         "this round and stands in the guide from the commit that puts it there")
 
 
+@pytest.fixture
+def needs_the_redaction_of_this_release():
+    assert "LC_ALL=C sed -E" in collection_script(), (
+        "the guide holds the collection script of an earlier round: the script whose redaction runs sed in the C locale is "
+        "handed over with this round and stands in the guide from the commit that puts it there")
+
+
 def _response_lines_cases():
     """The lines a response is made of, by case: lines of the shape in the places and spellings the round names."""
     earlier, same, later = LOOK_ALIKES[1], LOOK_ALIKES[0], LOOK_ALIKES[2]
@@ -472,6 +497,65 @@ def test_the_redaction_changes_nothing_else(tmp_path):
             assert after == before
     # Redacting a redacted log changes nothing
     assert redact("\n".join(redacted), tmp_path) == "\n".join(redacted)
+
+
+# A byte that is no UTF-8: the containers log what a client sends, and a header or a key is no text they have checked
+NO_UTF8 = b"\xff"
+BROKEN = [
+    (b"Cookie: abc" + NO_UTF8 + b"made-up-cookie-value\n", b"Cookie: REDACTED\n"),
+    (b"x API_KEY:sk-abc" + NO_UTF8 + b"made-up-key, y\n", b"x API_KEY:REDACTED, y\n"),
+    (b"Authorization: Bearer " + NO_UTF8 + NO_UTF8 + b"made-up-bearer-token\n", b"Authorization: REDACTED\n"),
+    # the byte in front of the name of the header, in the line the first header stands on
+    (b"2026-01-05 09:40:00 - a" + NO_UTF8 + b"pi - INFO - Request Headers: X-CSRF-TOKEN: made-up-csrf-token\n",
+     b"2026-01-05 09:40:00 - a" + NO_UTF8 + b"pi - INFO - Request Headers: X-CSRF-TOKEN: REDACTED\n"),
+]
+
+
+def test_the_redaction_runs_sed_in_the_c_locale(needs_the_redaction_of_this_release):
+    """Review-20. In a UTF-8 locale GNU sed matches a byte that is no UTF-8 with neither '.' nor a bracket
+    expression, so the redaction stopped at such a byte: what stood behind it in a Cookie header or behind API_KEY:
+    reached the file in clear text. In the C locale every byte is a character. The script sets the locale for the
+    one sed that redacts; the sed that escapes names every character it matches and needs none."""
+    environment, expressions = redaction_command()
+
+    assert environment == {"LC_ALL": "C"} and len(expressions) == 4
+    script = collection_script()
+    assert script.count("LC_ALL=C sed -E \\\n") == 1 and script.count("sed -E \\\n") == 2
+    assert script.index("redact_llm_log() {\n  LC_ALL=C sed -E \\\n") < script.index("escape_llm_log() {\n  sed -E \\\n")
+    # the guide says why
+    guide = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    assert "`redact_llm_log` runs `sed` in the C locale (`LC_ALL=C`)" in guide
+
+
+@needs_gnu_sed
+@pytest.mark.parametrize("raw, redacted", BROKEN, ids=["a cookie", "a provider key", "a bearer token", "in front of the header"])
+def test_a_byte_that_is_no_utf8_does_not_end_the_redaction(needs_the_redaction_of_this_release, tmp_path, raw, redacted):
+    assert redact_bytes(raw, tmp_path) == redacted
+    # the same expressions in a UTF-8 locale: where sed knows the locale, the secret behind the byte is left - which
+    # is what was measured with GNU sed 4.9 - and where it does not, sed reads bytes as in the C locale
+    for locale in ("en_US.UTF-8", "C.UTF-8"):
+        left = redact_bytes(raw, tmp_path, locale=locale)
+        assert left == redacted or b"made-up" in left, (locale, left)
+    # a line without such a byte is redacted the same in both
+    plain = raw.replace(NO_UTF8, b"")
+    assert redact_bytes(plain, tmp_path) == redact_bytes(plain, tmp_path, locale="en_US.UTF-8") == redacted.replace(NO_UTF8, b"")
+
+
+@needs_bash
+def test_the_script_redacts_a_header_with_a_byte_that_is_no_utf8(needs_the_redaction_of_this_release, monkeypatch, tmp_path):
+    """The script as the guide prints it, run in a shell whose locale is UTF-8: the file it writes holds no byte of
+    the secrets, and the parser reads it."""
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+    monkeypatch.delenv("LC_ALL", raising=False)
+    block = llm_block(timestamp="2026-01-05 09:00:00", user_prompt="first", options="{API_KEY:sk-abcBREAKmade-up-key}",
+                      headers=("Cookie: abcBREAKmade-up-cookie-value",))
+    raw = as_log(block).encode("utf-8").replace(b"BREAK", NO_UTF8)
+    assert raw.count(NO_UTF8) == 2
+    text = collect(tmp_path, {("demo-llm-1", "scr"): raw})
+
+    assert "made-up" not in text and "Cookie: REDACTED" in text and "API_KEY:REDACTED" in text
+    frame = parse(monkeypatch, tmp_path, text)
+    assert list(frame["user_prompt"]) == ["first"] and list(frame["failed"]) == [0]
 
 
 def test_the_guide_says_which_lines_the_redaction_expects():
