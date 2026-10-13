@@ -675,6 +675,46 @@ def test_the_body_of_an_object_is_named_like_its_summary(manifest):
         "job definition 'Prompt Builder/UI' is of name 'Something Else' in its body, its manifest entry says 'UI'"]
 
 
+def test_what_an_object_says_about_itself_is_held_to_what_an_export_writes(manifest):
+    """review-18: passing in BOTH modes were a job definition body with an
+    absolute link to the exporting host and a step whose transfer object
+    carried a connector and a substitution. Read from the real exports, such
+    an object has its parentFolder connector only, no substitution, and names
+    no host outside its content; anything else fails in both modes."""
+    built = package_of(manifest)
+    for detail in built.details:
+        obj = detail["transferObject"]
+        kind, name = obj["summary"]["type"], obj["summary"]["name"]
+        if kind == "jobDefinition" and name == "UI":
+            body = json.loads(base64.b64decode(obj["content"]))
+            body["description"] = "built on https://viya4-exporter.internal.test/SASStudio"
+            body["links"] = [{"rel": "self", "href": "https://viya4-exporter.internal.test/jobDefinitions/x"}]
+            obj["content"] = _b64(body)
+        if kind == "flowStep":
+            obj["connectors"] = [{"type": "dataTable", "uri": "/dataTables/x"}]
+            obj["substitutions"] = {"host": "x"}
+            detail["connectors"].append({"type": "reference", "uri": "/somewhere"})
+    found = package_findings(built.build(), manifest)
+    texts = [d.text for d in found if not d.drift]
+    assert ("jobDefinition 'Prompt Builder/UI' names the host viya4-exporter.internal.test (2 time(s)) in what it says "
+            "about itself, outside its content") in texts
+    assert f"flowStep '{STEP_PATH}' carries a connector of type 'dataTable' in its transfer object - an export gives " \
+           "such an object none there" in texts
+    assert f"flowStep '{STEP_PATH}' carries substitutions (host) - an export gives such an object none" in texts
+    assert f"flowStep '{STEP_PATH}' carries a connector of type 'reference' - an export gives such an object its " \
+           "parentFolder only" in texts
+    # a public host in a parameter (the address of the guides) and a host in the content are no such finding
+    plain = package_of(manifest)
+    assert [d.text for d in package_findings(plain.build(), manifest)] == []
+
+
+@pytest.mark.parametrize("segment", ["generated (copy)", "Generated-old", "generated"])
+def test_a_folder_of_generated_content_under_another_name_never_ships(segment):
+    """review-17/18: never_ship took 'generated' only as the exact name."""
+    assert content.never_ship(f"RAG/{segment}/job.sas") == \
+        f"'{segment}' holds what the Prompt Builder generates for a site's own setups"
+
+
 def test_a_field_at_the_top_of_a_package_that_an_export_does_not_write_is_a_difference(manifest):
     package = package_of(manifest).build()
     package["createdBy"], package["links"] = "sas-agentic-ai-accelerator", []   # what an export writes
@@ -1456,9 +1496,12 @@ def checking(monkeypatch, repo):
     return run
 
 
-def test_the_check_says_when_the_checkout_holds_no_package(checking):
+def test_the_check_says_when_the_checkout_holds_no_package(checking, repo):
     """The state of the repository until the package is exported: not a pass.
-    --allow-missing is for the workflow that runs before that day."""
+    --allow-missing is for the workflow that runs before that day - while a
+    package file of an earlier release is still in the checkout."""
+    earlier = repo / "SAS-Viya-Integrations" / "SAS-Agentic-AI-Accelerator-Prompt-Builder.json"
+    earlier.write_text("{}\n", encoding="utf-8")
     result, text, target = checking()
     assert result.exit_code == 1 and not target.exists()
     assert "There is no SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json in this checkout: nothing was checked." \
@@ -1468,6 +1511,27 @@ def test_the_check_says_when_the_checkout_holds_no_package(checking):
     # a file that is named and is not there is a mistake either way
     result, text, _ = checking("--allow-missing", str(target))
     assert result.exit_code == 2 and "not a file" in text
+
+
+def test_allow_missing_ends_with_the_commit_that_adds_the_package(checking, repo):
+    """integrate-18: nothing enforced that --allow-missing leaves the
+    workflow with the commit that adds the package. That commit removes the
+    earlier package files; without them a missing package fails, flag or no
+    flag."""
+    result, text, _ = checking("--allow-missing")
+    assert result.exit_code == 1
+    assert ("--allow-missing is not honoured: the package files of the earlier releases are gone from this "
+            "checkout, so the commit that adds the package of the release is in it - and the package has to be "
+            "here.") in text
+    from mdb.core.packages import earlier_packages_present
+    release = repo / "SAS-Viya-Integrations" / "SAS-Agentic-AI-Accelerator.json"
+    assert earlier_packages_present(repo, release) == []
+    # the release file itself is no earlier package; the files of the earlier releases in this checkout are
+    release.write_text("{}\n", encoding="utf-8")
+    assert earlier_packages_present(repo, release) == []
+    shipped = REPO_ROOT / "SAS-Viya-Integrations" / "SAS-Agentic-AI-Accelerator.json"
+    assert sorted(earlier_packages_present(REPO_ROOT, shipped)) == sorted(
+        path for path in EARLIER_PACKAGES if path.parent.name == "SAS-Viya-Integrations" and path.is_file())
 
 
 def test_the_check_passes_a_package_that_is_the_checkout(checking, manifest):

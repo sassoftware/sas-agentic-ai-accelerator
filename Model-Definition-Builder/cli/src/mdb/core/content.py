@@ -130,17 +130,23 @@ def never_ship(path: str) -> Optional[str]:
 
     Showcase and example content lives outside the product and outside the
     repository; `generated` is where the Prompt Builder writes the artifacts of
-    a site's own RAG setups; `ZZ_VERIFY...` is the name test objects carry.
+    a site's own RAG setups - a FOLDER that holds the word in any form
+    (`generated (copy)`, `Generated-old`) is refused like the folder itself,
+    an object only under that exact name;
+    `ZZ_VERIFY...` is the name test objects carry.
     The rule is asked of the manifest when it is loaded and again of every
     object an export keeps, so a listed path does not get such an object out.
     """
-    for segment in str(path or "").replace("\\", "/").split("/"):
+    segments = str(path or "").replace("\\", "/").split("/")
+    for index, segment in enumerate(segments):
         low = segment.strip().lower()
         if "showcases" in low:
             return f"'{segment}' is showcase content"
         if "example" in low:
             return f"'{segment}' is example content"
-        if low == "generated":
+        # a folder that holds the word in any form; an object of that name
+        # (a module may be called generated_ids.py)
+        if ("generated" in low) if index < len(segments) - 1 else (low == "generated"):
             return f"'{segment}' holds what the Prompt Builder generates for a site's own setups"
         if low.startswith("zz_verify"):
             return f"'{segment}' is a test object"

@@ -2705,7 +2705,9 @@ def package_check(
              "ids in createdBy / modifiedBy to a neutral text"),
     allow_missing: bool = typer.Option(
         False, "--allow-missing",
-        help="End with exit code 0 when the package of the release is not in the checkout (not with --release)"),
+        help="End with exit code 0 when the package of the release is not in the checkout (not with --release) - "
+             "only while the checkout still holds a package file of an earlier release, i.e. before the commit "
+             "that adds the package"),
     release: bool = typer.Option(
         False, "--release",
         help="The gate of a release: every difference is an error, also a difference in content against the "
@@ -2767,10 +2769,19 @@ def package_check(
     else:
         targets = [manifest.package_path]
         if not targets[0].is_file():
-            allowed = allow_missing and not release
+            from .core.packages import earlier_packages_present
+            # --allow-missing is for the time before the export commit, which
+            # adds the package and removes the earlier package files: once
+            # they are gone, a missing package is a missing package
+            earlier = earlier_packages_present(ctx.repo, manifest.package_path)
+            allowed = allow_missing and not release and bool(earlier)
             console.print(f"[{'yellow' if allowed else 'red'}]There is no {manifest.package} in this "
                           f"checkout: nothing was checked.[/{'yellow' if allowed else 'red'}]",
                           highlight=False)
+            if allow_missing and not release and not earlier:
+                console.print("[red]--allow-missing is not honoured: the package files of the earlier releases are "
+                              "gone from this checkout, so the commit that adds the package of the release is in it "
+                              "- and the package has to be here.[/red]", highlight=False)
             raise typer.Exit(0 if allowed else 1)
 
     total = drifted = 0

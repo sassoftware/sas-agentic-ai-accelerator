@@ -367,6 +367,16 @@ def sanitise_text(text: str, package_name: str, allowed=ALLOWED_HOSTS) -> tuple:
     return text, fixed
 
 
+def earlier_packages_present(repo_root, release_file) -> list:
+    """The package files in SAS-Viya-Integrations/ other than the one of the
+    release (`release_file`): the packages of the releases up to 2.2.x, which
+    the commit that adds the one package of 2.3.0 removes. While one of them
+    is in a checkout, the package of the release may not be there yet. No
+    name of an earlier file is written here: any other package file counts."""
+    release = Path(release_file).resolve()
+    return [path for path in default_packages(repo_root) if path.resolve() != release]
+
+
 def default_packages(repo_root) -> list:
     """Every transfer package file in SAS-Viya-Integrations/, whatever its
     name: what the host check is asked of, so that no package file sits in
@@ -1352,6 +1362,57 @@ def _object_differences(item: Located, entry, manifest) -> list:
         + [wrong(f"job definition '{item.path}' {text}") for text in _content.job_extras(expected, body)]
 
 
+#: The parts of a packaged object that are its CONTENT - compared with the
+#: checkout as content (and drift between releases). Everything else of the
+#: object is what it says about itself: names, descriptions, links, users.
+_CONTENT_PARTS = ("code", "templates", "ui", "localUi", "content")
+
+
+def _without_content(value):
+    if isinstance(value, dict):
+        kept = {}
+        for key, item in value.items():
+            if key in _CONTENT_PARTS:
+                continue
+            if key == "properties" and isinstance(item, list):
+                item = [p for p in item if not (isinstance(p, dict) and p.get("name") == "form")]
+            kept[key] = _without_content(item)
+        return kept
+    if isinstance(value, list):
+        return [_without_content(item) for item in value]
+    return value
+
+
+def _metadata_problems(item: Located, allowed=ALLOWED_HOSTS) -> list:
+    """What a packaged file, step, job definition or folder carries beside
+    its content and must not: sentences. Read from the exports of 2026-10-12
+    and the packages up to 2.2.x, such an object has one connector - its
+    `parentFolder`, beside the transfer object - no substitution, and names
+    no host but a public one in what it says about itself (its summary, its
+    body without the program, the form, the file's bytes and the step's
+    templates). A host in its content is content, compared with the checkout."""
+    obj = item.obj
+    where = item.shown
+    problems = []
+    for connector in list(item.detail.get("connectors") or []):
+        if isinstance(connector, dict) and connector.get("type") != "parentFolder":
+            problems.append(f"{where} carries a connector of type '{connector.get('type')}' - an export gives such an "
+                            "object its parentFolder only")
+    for connector in obj.get("connectors") or []:
+        problems.append(f"{where} carries a connector of type '{(connector or {}).get('type')}' in its transfer "
+                        "object - an export gives such an object none there")
+    if obj.get("substitutions"):
+        problems.append(f"{where} carries substitutions ({', '.join(map(str, obj['substitutions']))}) - an export "
+                        "gives such an object none")
+    told = json.dumps([_without_content(obj.get("summary") or {}), _without_content(_body(obj) or {}),
+                       {key: value for key, value in obj.items() if key not in ("content", "summary")}])
+    for host, n in sorted(hosts_in(told).items()):
+        if host not in allowed:
+            problems.append(f"{where} names the host {host} ({n} time(s)) in what it says about itself, outside its "
+                            "content")
+    return problems
+
+
 def _report_file_differences(report: Located, entry, children: list) -> list:
     """How the files that are children of a packaged report differ from the
     ones its manifest entry lists: sentences. A child is compared by its name
@@ -1468,7 +1529,9 @@ def package_findings(package: dict, manifest, package_name: str = "") -> list:
             problems.extend(Difference(text) for text in
                             _report_differences(item, entry, in_package, package_name)
                             + _report_file_differences(item, entry, children))
-        elif entry.kind != "folder":
+            continue
+        problems.extend(Difference(text) for text in _metadata_problems(item))
+        if entry.kind != "folder":
             try:
                 problems.extend(_object_differences(item, entry, manifest))
             except (OSError, ValueError) as exc:
