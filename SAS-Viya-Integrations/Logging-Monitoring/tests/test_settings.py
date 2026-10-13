@@ -31,11 +31,13 @@ IDIOM = """%macro _{p}_default(_{p}_name, _{p}_value);
     %end;
 %mend _{p}_default;"""
 
-# Per program: its prefix, and the settings with the values its LET statements held before
+# Per program: its prefix, and the settings with the values its LET statements held before. One setting of the
+# parser has no value any more: _log_append_table held 0, which replaced a table that held the rows of earlier runs
+# without a word (measured on 2026-10-13: 3,630 rows became 1,024). Without a value the program stops at such a table
 PROGRAMS = {
     "Log-Parser-Code.sas": ("log", {
         "_log_path": "sasserver:/export/pvs/sasdata/data/llm/llms.log", "_log_target_table_engine": "CAS",
-        "_log_target_table_lib": "Public", "_log_target_table_name": "LLM_LOGS", "_log_append_table": "0",
+        "_log_target_table_lib": "Public", "_log_target_table_name": "LLM_LOGS", "_log_append_table": "",
         "_log_promote_table": "1", "_log_save_table": "1"}),
     "Get-All-Prompts.sas": ("gap", {
         "_gap_tag": "Prompt-Engineering", "_gap_rag_tag": "RAG-Engineering", "_gap_llm_project": "LLM Model Project",
@@ -128,7 +130,11 @@ def test_nothing_sets_a_setting_over_a_value_that_is_there(name):
     # no setting is read in front of the last default, and no LET statement names one
     first_read = min(code.find(f"&{variable}.") % (len(code) + 1) for variable in defaults)
     assert first_read > deleted_at
-    assigned = re.findall(r"%let\s+(\w+)\s*=", code)
+    # the message of the parser for a run without a value of _log_append_table shows the two statements a site
+    # can set in front of the program. They stand in %nrstr, which keeps the macro processor from running them
+    shown = re.findall(r"%nrstr\((%let \w+ = \d;)\)", code)
+    assert shown == (["%let _log_append_table = 1;", "%let _log_append_table = 0;"] if name == "Log-Parser-Code.sas" else [])
+    assigned = re.findall(r"%let\s+(\w+)\s*=", re.sub(r"%nrstr\([^()]*\)", "", code))
     assert [variable for variable in assigned if variable in defaults] == []
     rewritten = sorted(set(re.findall(r"call symputx\('(\w+)'", code) + re.findall(r"into\s+:(\w+)", code)) & set(defaults))
     assert rewritten == (["_log_path", "_log_target_table_lib"] if name == "Log-Parser-Code.sas" else [])
@@ -141,6 +147,10 @@ def test_a_default_is_text_a_macro_call_takes_as_one_argument(name):
     prefix, defaults = PROGRAMS[name]
     for variable, value in default_calls(program(name), prefix):
         assert re.fullmatch(r"_%s_[a-z_]+" % prefix, variable), variable
+        if variable == "_log_append_table":
+            # the one setting without a value: the call only makes sure that the macro variable exists
+            assert value == ""
+            continue
         assert re.fullmatch(r"[A-Za-z0-9_ :/.\-]+", value) and value == value.strip(), (variable, value)
 
 
@@ -201,8 +211,12 @@ def test_the_parser_step_gets_every_setting_from_a_control():
         "_log_target_table" + suffix for suffix in ("_engine", "_lib", "_name")}
     assert from_controls == set(defaults)
     for variable in defaults:
-        assert f"&{variable}." in step_program, variable
-    # a control that has to be filled in, or a checkbox, which is 0 or 1 whatever the user does
+        # the setting of the append is read as text, so that a value nobody thought of is compared and not run
+        read = "%superq(_log_append_table)" if variable == "_log_append_table" else f"&{variable}."
+        assert read in step_program, variable
+    assert "&_log_append_table." not in step_program
+    # a control that has to be filled in, or a checkbox, which is 0 or 1 whatever the user does: the step never
+    # runs without a value of _log_append_table, so it never stops at a table that holds rows
     assert controls["_log_path"]["required"] is True and controls["_log_target_table"]["required"] is True
     assert {values[control_id] for control_id in ("_log_append_table", "_log_promote_table", "_log_save_table")} == {False}
 

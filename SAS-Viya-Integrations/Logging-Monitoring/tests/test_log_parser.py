@@ -4,6 +4,7 @@ twelve columns the table has always had and the columns that were added behind t
 
 Run with: python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests
 """
+import ast
 import hashlib
 import json
 import math
@@ -86,6 +87,12 @@ def text_hash(text):
 
 def notes(run):
     return [message for kind, message in run.sas.messages if kind == "NOTE"]
+
+
+def ast_of_the_python():
+    """The Python of the code file as a syntax tree."""
+    import ast
+    return ast.parse(python_block(code_file_program()))
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +251,7 @@ def _output_macro(program):
 def _append_lookup(program):
     """The CASL append mode runs first: it looks for the table the rows are appended to."""
     macro = _output_macro(program)
-    start = macro.index("%if &_log_append_table. %then %do;")
+    start = macro.index("%if &_log_table_mode. EQ APPEND %then %do;")
     return macro[start:macro.index("%if &_log_target_scope. GE 1 %then %do;", start)]
 
 
@@ -299,12 +306,14 @@ def test_what_appending_found_is_handed_on_in_two_macro_variables(program):
     clean_up = program[program.index("* Clean up;"):]
     deleted = next(line for line in clean_up.split("\n") if line.startswith("%symdel ") and "_log_target_scope" in line)
     for name in ("_log_clean_cas_session", "_casSessionUUID", "_log_row_count", "_log_target_scope", "_log_target_unloaded",
-                 "_log_fixed_rename", "_log_fixed_assign", "_log_fixed_drop", "_log_append_syserr"):
+                 "_log_fixed_rename", "_log_fixed_assign", "_log_fixed_drop", "_log_append_syserr", "_log_table_mode",
+                 "_log_target_rows", "_log_row_repeats", "_log_target_has_id", "_log_compare_syserr"):
         assert f" {name}" in deleted, name
-    # Replace mode never asks: the lookup runs in append mode only
+    # Replace mode never asks: the lookup runs in append mode only, and the setting itself is read in one place
     macro = _output_macro(program)
-    assert macro.index("%if &_log_append_table. %then %do;") < macro.index("call symputx('_log_target_scope'")
-    assert macro.count("%if &_log_append_table. %then %do;") == 1
+    assert macro.index("%if &_log_table_mode. EQ APPEND %then %do;") < macro.index("call symputx('_log_target_scope'")
+    assert macro.count("%if &_log_table_mode. EQ APPEND %then %do;") == 2
+    assert "_log_append_table. %then" not in program and "&_log_append_table." not in program
 
 
 @BOTH_PROGRAMS
@@ -548,6 +557,320 @@ def test_replacing_writes_every_column(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# The setting _log_append_table has three states, and a run that appends writes a request once
+#
+# Measured on SAS Viya on 2026-10-13 with the program as it was: a run without the setting replaced a copy of a table
+# that held 3,630 rows of earlier runs by the 1,024 requests of one log - in memory and in the saved file, with a
+# completed job and no line that said so - and a second append of the same file left every request twice.
+# ---------------------------------------------------------------------------
+
+def _mode_of(program, value):
+    """What the program makes of a value of _log_append_table: the statements between the comment of the mode and the
+    lookup of the caslib are followed. They are %if statements in open code that do not nest, each with one %let, and
+    their functions are given their documented results: %LENGTH is the length of the text, and %SUPERQ gives the text
+    as text, so EQ compares two whole numbers as numbers and anything else as text."""
+    start = program.index("* What the run does with a table that exists, by the setting _log_append_table")
+    block = program[start:program.index("* Get the caslib name of the libname;")]
+    lines = [line.strip() for line in block.split("\n") if line.strip() and not line.startswith("*")]
+    assert lines[0] == "%let _log_table_mode = REFUSED;"
+    mode, position = "REFUSED", 1
+
+    def holds(condition):
+        for part in condition.split(" and "):
+            left, operator, right = part.split(" ")
+            assert operator == "EQ", part
+            left = left.replace("%length(%superq(_log_append_table))", str(len(value))).replace("%superq(_log_append_table)", value)
+            left = left.replace("&_log_table_mode.", mode)
+            whole = re.fullmatch(r"[+-]?\d+", left) and re.fullmatch(r"[+-]?\d+", right)
+            if not (int(left) == int(right) if whole else left == right):
+                return False
+        return True
+
+    refused = False
+    while position < len(lines):
+        match = re.fullmatch(r"%if (.+) %then %do;", lines[position])
+        assert match, lines[position]
+        body = lines[position + 1:lines.index("%end;", position)]
+        if holds(match.group(1)):
+            for statement in body:
+                if statement.startswith("%let _log_table_mode = "):
+                    mode = statement[len("%let _log_table_mode = "):-1]
+                elif statement == "%let _log_ready = 0;":
+                    refused = True
+                else:
+                    assert statement.startswith("%put ERROR: _log_append_table is %superq(_log_append_table), which is no value of this setting"), statement
+        position = lines.index("%end;", position) + 1
+    return mode, refused
+
+
+@BOTH_PROGRAMS
+@pytest.mark.parametrize("value, mode", [
+    ("1", "APPEND"), ("0", "REPLACE"), ("", "START"),
+    ("2", "REFUSED"), ("yes", "REFUSED"), ("01", "REFUSED"), ("10", "REFUSED"), ("-1", "REFUSED"), ("1.0", "REFUSED"),
+    ("true", "REFUSED"), ("x", "REFUSED"),
+], ids=["1", "0", "no value", "2", "yes", "01", "10", "-1", "1.0", "true", "one letter"])
+def test_the_setting_has_three_states_and_any_other_value_refuses_the_run(program, value, mode):
+    found, refused = _mode_of(program(), value)
+
+    assert found == mode
+    # a refusal is the one ERROR line and no log: the Python reads nothing where _log_ready is 0
+    assert refused == (mode == "REFUSED")
+
+
+@BOTH_PROGRAMS
+def test_the_setting_is_read_as_text_and_nowhere_else(program):
+    """A value is compared, never run: the program reads the setting through %SUPERQ in the statements that make the
+    mode of it, and everything behind them goes by the mode."""
+    program = program()
+    code = _sas_code(program)
+
+    assert "&_log_append_table" not in code
+    start = code.index("* What the run does with a table that exists, by the setting _log_append_table")
+    block = code[start:code.index("* Get the caslib name of the libname;")]
+    assert code.count("%superq(_log_append_table)") == block.count("%superq(_log_append_table)") == 6
+    # the ERROR line names the value, the two values the setting takes and what a run without one does
+    message = next(line.strip() for line in block.split("\n") if line.strip().startswith("%put ERROR:"))
+    assert message == ("%put ERROR: _log_append_table is %superq(_log_append_table), which is no value of this setting: 1 adds the "
+                       "requests of the log to the output table, 0 replaces the table with them, and without a value the program only "
+                       "starts a table that is not there yet. No log was read and nothing was written.;")
+    # the code file gives the setting no value: its line only makes sure that the macro variable exists
+    assert "%_log_default(_log_append_table, );\n" in code_file_program()
+    assert "_log_append_table has no default value" in code_file_program()
+
+
+def _count_macro(program):
+    return program[program.index("%macro _log_count_target;"):program.index("%mend _log_count_target;")]
+
+
+@BOTH_PROGRAMS
+def test_a_run_without_the_setting_stops_at_a_table_that_holds_rows_in_front_of_the_log(program):
+    """The rows are counted before PROC PYTHON runs. A table that holds rows sets _log_ready to 0: no log is read,
+    _log_row_count stays -1 - the condition code of a failed job - and the output macro returns before it drops,
+    copies or saves anything."""
+    program = program()
+    code = _sas_code(program)
+
+    stop = code[code.index("* A run without a value of _log_append_table stops here"):code.index("* The number of requests found in the log.")]
+    lines = [line.strip() for line in stop.split("\n")[1:] if line.strip()]
+    assert lines == [
+        "%if &_log_table_mode. EQ START and &_log_ready. EQ 1 %then %do;", "%_log_count_target;", "%end;",
+        "%if &_log_table_mode. EQ START and &_log_target_rows. GT 0 %then %do;",
+        "%put ERROR: The table &_log_target_table_lib..&_log_target_table_name. holds &_log_target_rows. rows and _log_append_table is "
+        "not set, so nothing was read and nothing was written - not the table and not its saved file. Set it in front of the program: "
+        "%nrstr(%let _log_append_table = 1;) adds the requests of the log to the table, %nrstr(%let _log_append_table = 0;) replaces "
+        "the table with them.;",
+        "%let _log_ready = 0;", "%end;",
+        "%if &_log_table_mode. EQ START and &_log_target_rows. LT 0 %then %do;",
+        "%put ERROR: The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded and _log_append_table is not "
+        "set, so nothing was read and nothing was written - the saved file was left as it is.;",
+        "%let _log_ready = 0;", "%end;"]
+    # in front of the Python, behind the session and the caslib of the table
+    assert program.index("* Get the caslib name of the libname;") < program.index("call symputx('_casSessionUUID', sessresults[1]);") \
+        < program.index("%macro _log_count_target;") < program.index("%_log_count_target;") < program.index("proc python restart;")
+    assert "%let _log_target_rows = 0;\n%macro _log_count_target;" in program
+    # a table with no rows, and no table, are started: 0 is neither above nor below 0
+    assert "%let _log_row_count = -1;" in code[code.index(stop) + len(stop) - 1:]
+    macro = _output_macro(program)
+    assert macro.index("%if &_log_ready. NE 1 %then %return;") < macro.index("%_log_count_target;") < macro.index("table.dropTable")
+
+
+@BOTH_PROGRAMS
+def test_the_rows_of_the_table_are_counted_in_memory_or_from_its_saved_file(program):
+    """The count writes nothing in the caslib of the table: a table in memory is asked for its rows, and the saved file
+    of a table that is not in memory is loaded into CASUSER under a name of the program, counted and dropped again."""
+    macro = " ".join(_count_macro(program()).split())
+
+    assert macro.index('table.tableExists result=found / casLib = "&_log_target_table_lib.", name = "&_log_target_table_name.";') \
+        < macro.index("if found.exists GE 1 then do;") < macro.index("table.fileInfo result=countedListing") < macro.index("table.loadTable")
+    assert ('table.tableInfo result=foundTables / casLib = "&_log_target_table_lib.", name = "&_log_target_table_name.", quiet = True; '
+            "if exists(foundTables, 'TableInfo') then targetRows = foundTables.TableInfo[1].Rows;") in macro
+    # the name of the file as append mode looks for it: the exact name, otherwise the same name in another case
+    assert 'if countedEntry.Name EQ "&_log_target_table_name..sashdat" then countedFile = countedEntry.Name;' in macro
+    assert 'upcase(countedEntry.Name) EQ upcase("&_log_target_table_name..sashdat") then countedFile = countedEntry.Name;' in macro
+    # -1 until the loaded file was counted, so a file that could not be loaded is not taken for a table without rows
+    loaded = macro[macro.index("if countedFile NE '' then do;"):]
+    assert loaded.index("targetRows = -1;") < loaded.index("table.loadTable") < loaded.index("targetRows = countedTables.TableInfo[1].Rows;") \
+        < loaded.index("table.dropTable")
+    assert ("table.loadTable / casLib = \"&_log_target_table_lib.\", path = countedFile, "
+            "casOut = {casLib = 'CASUSER', name = '_TEMP_LLM_LOGS_SAVED', replace = True};") in loaded
+    assert "table.dropTable / casLib = 'CASUSER', name = '_TEMP_LLM_LOGS_SAVED', quiet = True;" in loaded
+    assert macro.count("casOut") == 1 and macro.count("table.dropTable") == 1
+    for action in ("table.promote", "table.save", "table.alterTable", "table.copyTable"):
+        assert action not in macro, action
+    assert macro.rstrip().endswith("call symputx('_log_target_rows', targetRows); run; quit;")
+    # the macro is deleted with the other one
+    assert "%sysmacdelete _log_handle_output_table;\n%sysmacdelete _log_count_target;\n" in program()
+
+
+@BOTH_PROGRAMS
+def test_a_run_that_replaces_says_how_many_rows_it_replaced(program):
+    program = program()
+    macro, swap = _output_macro(program), " ".join(_swap(program).split())
+
+    # counted while the rows are still there: in front of the swap, for a run that replaces only
+    counted = "%if &_log_table_mode. EQ REPLACE %then %do;\n            %_log_count_target;\n        %end;"
+    assert macro.index("%if &_log_row_count. GT 0 %then %do;") < macro.index(counted) < macro.index("table.dropTable")
+    assert program.count("%_log_count_target;") == 2
+    # said behind the save, for a table that was written and held rows
+    note = ('%if &_log_table_mode. EQ REPLACE and &_log_target_rows. GT 0 %then %do; if tableWritten then do; '
+            'print (note) "The table &_log_target_table_lib..&_log_target_table_name. held &_log_target_rows. row(s). " || '
+            '"They were replaced by the &_log_row_count. request(s) of the log, as _log_append_table is 0."; end; %end;')
+    assert swap.index("table.save") < swap.index(note)
+
+
+@BOTH_PROGRAMS
+def test_a_run_that_appends_leaves_out_the_requests_the_table_holds_already(program):
+    """Two DATA steps in front of the one that appends: the transaction IDs of the table become a table of their own,
+    and the rows of the log are merged with it. The rows that are kept take the place of the rows of the log, so the
+    step that appends and the count behind it read what is appended."""
+    program = program()
+    step = _append_step(program)
+    statements = [line.strip() for line in step.split("\n") if line.strip()]
+
+    start = statements.index("%if &_log_target_has_id. %then %do;")
+    assert statements[start:start + 15] == [
+        "%if &_log_target_has_id. %then %do;",
+        "data _llmsrc._TEMP_LLM_LOGS_SEEN(keep=transaction_id);",
+        "length transaction_id varchar(*);",
+        'set _llmtgt."&_log_target_table_name."n(keep=transaction_id rename=(transaction_id=_log_seen_id));',
+        "transaction_id = trimn(_log_seen_id);",
+        "if transaction_id NE '';",
+        "run;",
+        "%let _log_compare_syserr = &syserr.;",
+        "data _llmsrc._TEMP_LLM_LOGS;",
+        "merge _llmsrc._TEMP_LLM_LOGS(in=_log_new_row) _llmsrc._TEMP_LLM_LOGS_SEEN(in=_log_seen_row);",
+        "by transaction_id;",
+        "if _log_new_row and not _log_seen_row;",
+        "run;",
+        "%let _log_compare_syserr = %sysfunc(max(&_log_compare_syserr., &syserr.));",
+        "%end;"]
+    # behind the librefs and in front of the step that appends
+    assert statements.index("libname _llmsrc cas caslib='CASUSER';") < start < statements.index("data _llmtgt._TEMP_LLM_LOGS_ALL;")
+    # only where the table has a text column of that name: a table of twelve columns holds nothing to compare with
+    assert ("if lowcase(strip(Column)) EQ 'transaction_id' and lowcase(strip(Type)) in ('char' 'varchar') "
+            "then call symputx('_log_target_has_id', '1');") in step
+    before_the_macro = program[:program.index("%macro _log_handle_output_table;")]
+    assert "%let _log_target_has_id = 0;\n%let _log_compare_syserr = 0;\n" in before_the_macro
+    # rows that were not compared are not appended: the swap is refused with the line of an append that did not finish
+    swap = " ".join(_swap(program).split())
+    refused = "%if &_log_compare_syserr. NE 0 and &_log_compare_syserr. NE 4 %then %do; stagedComplete = False; %end;"
+    assert swap.index("stagedRows NE existingRows + uploadedRows then stagedComplete = False;") < swap.index(refused) \
+        < swap.index("if staged.exists GE 1 and stagedComplete then do;")
+    # the table of the IDs is dropped with the rows of the log
+    last = program[program.index("%else %if &_log_row_count. EQ 0 %then %do;"):program.index("%mend _log_handle_output_table;")]
+    assert re.search(r"table\.dropTable /\s+casLib = 'CASUSER',\s+table = '_TEMP_LLM_LOGS_SEEN',\s+quiet = True;", last)
+
+
+def _merged(log_rows, table_ids):
+    """The rows the two DATA steps keep, by the rules of the DATA step: the first step writes the transaction IDs of
+    the table that are not empty, and the MERGE with BY puts the rows of both tables that have the same ID in one
+    group. A row of the log is written when no row of the table is in its group."""
+    seen = {identifier.rstrip(" ") for identifier in table_ids if identifier.rstrip(" ") != ""}
+    return [row for row in log_rows if (row["transaction_id"] or "") not in seen]
+
+
+def test_what_the_merge_keeps(monkeypatch, tmp_path):
+    first = llm_block(timestamp="2026-01-05 09:00:00", user_prompt="First made-up question?")
+    second = llm_block(timestamp="2026-01-05 09:10:00", user_prompt="Second made-up question?")
+    third = llm_block(timestamp="2026-01-05 09:20:00", user_prompt="Third made-up question?")
+    # a request whose lines name no transaction: the lines of its transaction and the Response Data line are gone
+    unnamed = [line for line in llm_block(timestamp="2026-01-05 09:30:00", user_prompt="Fourth made-up question?")
+               if " - transaction_" not in line and "Response Data:" not in line]
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(first, second, third, unnamed)), table_mode="APPEND")
+    rows = run.uploads[0]["frame"].to_dict("records")
+    rows = [dict(row, transaction_id=None if missing(row["transaction_id"]) else row["transaction_id"]) for row in rows]
+    ids = [row["transaction_id"] for row in rows]
+    assert ids[3] is None and len(set(ids[:3])) == 3
+
+    # the table holds the first request, the second one twice, and rows without an ID - of a 2.2 table, or of
+    # requests that got none
+    kept = _merged(rows, [ids[0], ids[1], ids[1], "", "", ""])
+    assert [row["transaction_id"] for row in kept] == [ids[2], None]
+    # a table that holds its IDs with a fixed length
+    assert [row["transaction_id"] for row in _merged(rows, [ids[2].ljust(64)])] == [ids[0], ids[1], None]
+    # a table without any of them
+    assert _merged(rows, ["", ""]) == rows and _merged(rows, []) == rows
+
+
+def test_a_run_that_appends_uploads_a_request_of_the_log_once(monkeypatch, tmp_path):
+    """A file that was collected twice holds every request twice. A run that appends uploads the row of the first
+    time, in the order of the file, and counts the others; a run that replaces or starts a table uploads the file
+    as it is."""
+    first = llm_block(timestamp="2026-01-05 09:00:00", user_prompt="First made-up question?")
+    second = decision_block(timestamp="2026-01-05 09:10:00")
+    third = embedding_block(timestamp="2026-01-05 09:20:00")
+    log = _write(tmp_path, as_log(first, second, third, first, second, third))
+
+    appended = run_parser(monkeypatch, log, table_mode="APPEND")
+    assert appended.row_count == "3" and appended.sas.macro_variables["_log_row_repeats"] == "3"
+    frame = appended.uploads[0]["frame"]
+    assert list(frame["kind"]) == ["llm", "decision", "embedding"] and frame["transaction_id"].is_unique
+    assert list(frame.index) == [0, 1, 2]
+
+    for mode in ("REPLACE", "START"):
+        other = run_parser(monkeypatch, log, table_mode=mode)
+        assert other.row_count == "6" and other.sas.macro_variables["_log_row_repeats"] == "0"
+        assert list(other.uploads[0]["frame"]["transaction_id"]) == list(frame["transaction_id"]) * 2
+    # the request is known by its transaction ID and by nothing else: the same request ID under two transactions is two requests
+    again = llm_block(timestamp="2026-01-05 09:40:00", user_prompt="First made-up question?", request_id="a" * 32, transaction=made_up_id("one"))
+    other = llm_block(timestamp="2026-01-05 09:50:00", user_prompt="First made-up question?", request_id="a" * 32, transaction=made_up_id("two"))
+    run = run_parser(monkeypatch, _write(tmp_path, as_log(again, other), "same-request-id.log"), table_mode="APPEND")
+    assert run.row_count == "2" and run.sas.macro_variables["_log_row_repeats"] == "0"
+
+
+def test_a_request_without_a_transaction_id_is_never_taken_for_another_one(monkeypatch, tmp_path):
+    unnamed = [[line for line in llm_block(timestamp=f"2026-01-05 09:{minute}:00", user_prompt="The same made-up question?",
+                                           request_id="b" * 32)
+                if " - transaction_" not in line and "Response Data:" not in line] for minute in (10, 20, 30)]
+    log = _write(tmp_path, as_log(*unnamed, *unnamed))
+
+    run = run_parser(monkeypatch, log, table_mode="APPEND")
+
+    frame = run.uploads[0]["frame"]
+    assert run.row_count == "6" and run.sas.macro_variables["_log_row_repeats"] == "0"
+    assert bool(frame["transaction_id"].isna().all()) and set(frame["request_id"]) == {"b" * 32}
+
+
+def test_the_python_sets_the_repeats_in_front_of_the_upload_and_the_row_count_behind_it():
+    tree = ast_of_the_python()
+    guarded = tree.body[-1]
+    statements = [ast.unparse(statement) for statement in guarded.body]
+
+    mode = next(index for index, statement in enumerate(statements) if statement.startswith("if SAS.symget('_log_table_mode') == 'APPEND':"))
+    assert statements[mode - 1] == "repeats = 0" and statements[mode + 1] == "put_number('_log_row_repeats', repeats)"
+    upload = next(index for index, statement in enumerate(statements) if "conn.upload_frame(" in statement)
+    assert mode < upload < len(statements) - 1 and statements[-1] == "put_number('_log_row_count', len(df))"
+    assert "keep='first'" in statements[mode] and "subset=['transaction_id']" in statements[mode]
+
+
+@BOTH_PROGRAMS
+def test_a_run_that_appends_says_its_numbers_in_one_note(program):
+    """The requests of the log, the ones that were appended and the ones that were left out, with the rows of the
+    table before and after: read = appended + left out, and the table holds what it held and what was appended.
+    The swap has checked the second of the two before the table was put in place."""
+    program = program()
+    swap = " ".join(_swap(program).split())
+
+    onto = ('print (note) (string) readRows || " request(s) were read from the log. " || (string) uploadedRows || " were appended to the '
+            'table &_log_target_table_lib..&_log_target_table_name., which held " || (string) existingRows || " row(s) and holds " || '
+            '(string) stagedRows || " now. " || (string) (readRows - uploadedRows) || " were left out, as a request with their '
+            'transaction_id is there already: " || (string) (&_log_row_count. - uploadedRows) || " in the table, &_log_row_repeats. '
+            'earlier in the log.";')
+    started = ('print (note) (string) readRows || " request(s) were read from the log. &_log_row_count. were written to the table '
+               '&_log_target_table_lib..&_log_target_table_name., " || "which was not there before. &_log_row_repeats. were left out, '
+               'as a request with their transaction_id stands earlier in the log.";')
+    notes = swap[swap.index("%if &_log_table_mode. EQ APPEND %then %do; if tableWritten then do;"):]
+    assert notes.index("readRows = &_log_row_count. + &_log_row_repeats.;") < notes.index("%if &_log_target_scope. GE 1 %then %do; " + onto) \
+        < notes.index("%else %do; " + started)
+    assert swap.count("print (note)") == 3 and swap.index("table.save") < swap.index("print (note)")
+    # what the NOTE calls appended is what the swap counted in the rows of the log behind the merge
+    assert swap.index("if upcase(listedTable.Name) EQ '_TEMP_LLM_LOGS' then uploadedRows = listedTable.Rows;") < swap.index(onto)
+    # no text of a message is longer than the 262 bytes SAS writes a NOTE about its quotation marks for, with room for the names
+    for message in (onto, started):
+        assert max(len(text) for text in re.findall(r'"([^"]*)"', message)) < 200
+
+
+# ---------------------------------------------------------------------------
 # What the step takes from the SAS session
 #
 # The code file starts a CAS session and assigns its librefs in its first lines.
@@ -767,9 +1090,9 @@ def test_about_tab_names_every_column_and_what_the_program_does_with_it(monkeypa
 def test_about_tab_is_about_the_program_and_the_changelog_starts_with_this_version():
     texts = _about_tab()
 
-    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.7 (")
+    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.8 (")
     changelog = texts["textChangelog"]
-    assert (changelog.index("Version: 2.7") < changelog.index("Version: 2.6") < changelog.index("Version: 2.5") < changelog.index("Version: 2.4") < changelog.index("Version: 2.3") < changelog.index("Version: 2.2")
+    assert (changelog.index("Version: 2.8") < changelog.index("Version: 2.7") < changelog.index("Version: 2.6") < changelog.index("Version: 2.5") < changelog.index("Version: 2.4") < changelog.index("Version: 2.3") < changelog.index("Version: 2.2")
             < changelog.index("Version: 2.1") < changelog.index("Version: 2.0"))
     # What a release has not run yet is said in the changelog of the release, not in the step
     for name, text in texts.items():
@@ -846,7 +1169,7 @@ def test_readme_says_of_the_line_of_the_script_what_the_parser_does():
     assert "so is what stands in front of the first line of the script in a file that is appended to" in readme
     assert "so a NOTE counts the request lines that were read that way" in readme
     assert "Every request whose `failed` is missing is counted once" in readme
-    assert "versions 2.7 and 2.4 of the two steps" in readme and _about_tab()["textChangelog"].startswith("* Version: 2.7 (")
+    assert "versions 2.8 and 2.4 of the two steps" in readme and _about_tab()["textChangelog"].startswith("* Version: 2.8 (")
     assert "not run in sas" not in readme.lower()
 
 
@@ -3520,8 +3843,9 @@ def test_refusal_ends_the_run_with_its_one_line_and_without_an_abort(program):
     assert not [statement for statement in statements if statement.split(" ")[0] == "abort"]
     checks = code[code.index("* Check if the file is located on the SAS Server"):code.index("* Get the caslib name of the libname;")]
     assert checks.index("%let _log_ready = 1;") < checks.index("data _null_;")
-    # Each refusal is one ERROR line and sets the flag
-    assert checks.count("ERROR:") == 2 and checks.count("putLog 'ERROR:") == 1 and checks.count("%put ERROR:") == 1
+    # Each refusal is one ERROR line and sets the flag: the file, the engine, and a value of _log_append_table
+    # that is none of its values
+    assert checks.count("ERROR:") == 3 and checks.count("putLog 'ERROR:") == 1 and checks.count("%put ERROR:") == 2
     assert "call symputx('_log_ready', '0');" in checks
     engine = checks[checks.index("%if &_log_target_table_engine. NE CAS %then %do;"):]
     assert [line.strip() for line in engine.split("\n")[1:4]] == [
@@ -3612,7 +3936,8 @@ def test_append_that_did_not_finish_leaves_the_table_with_one_error_line(program
     assert ('print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is. '
             'The DATA step that appends ended with the return code &_log_append_syserr. and wrote " || (string) stagedRows || " rows, '
             'the table held " || (string) existingRows || " and the log " || (string) uploadedRows || " (-1 stands for a table that was '
-            'not found).";') in in_append_mode
+            'not found). The DATA steps that leave out the requests the table holds already ended with the return code '
+            '&_log_compare_syserr..";') in in_append_mode
     # What the step left behind is dropped, the existing table is not named in that branch
     assert "table.dropTable / casLib = \"&_log_target_table_lib.\", name = '_TEMP_LLM_LOGS_ALL', quiet = True;" in in_append_mode
     assert 'name = "&_log_target_table_name."' not in otherwise

@@ -48,6 +48,11 @@ ERROR_LINES = {
     "Log-Parser-Code.sas": {
         "putLog 'ERROR: For this step to run please ensure the the selected file is located on the SAS Server.'": "call symputx('_log_ready', '0');",
         "%put ERROR: The table &_log_target_table_lib..&_log_target_table_name. is not a CAS table.": "%let _log_ready = 0;",
+        # The setting _log_append_table: a value that is none of its values, and no value at a table that holds rows
+        # or whose saved file could not be loaded. Each refuses the run in front of the log, as the two above do
+        "%put ERROR: _log_append_table is %superq(_log_append_table), which is no value of this setting": "%let _log_ready = 0;",
+        "%put ERROR: The table &_log_target_table_lib..&_log_target_table_name. holds &_log_target_rows. rows and _log_append_table is not set": "%let _log_ready = 0;",
+        "%put ERROR: The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded and _log_append_table is not set": "%let _log_ready = 0;",
         'print (error) "The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded': "call symputx('_log_failed', '1');",
         'print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is. The DATA step': "call symputx('_log_failed', '1');",
         'print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is.";': "call symputx('_log_failed', '1');",

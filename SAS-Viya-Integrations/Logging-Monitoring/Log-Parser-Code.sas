@@ -17,11 +17,12 @@ libname casuser cas caslib='casuser';
         %let &_log_name. = &_log_value.;
     %end;
 %mend _log_default;
+* _log_append_table has no default value, the line below only makes sure that the macro variable exists. Set to 1 the program adds the requests of the log to the table, set to 0 it replaces the table with them. Without a value it only starts a table that is not there yet or holds no rows: at a table that holds rows it writes one ERROR line and nothing else, so that a run without the setting can not replace the rows of the runs before it;
 %_log_default(_log_path, sasserver:/export/pvs/sasdata/data/llm/llms.log);
 %_log_default(_log_target_table_engine, CAS);
 %_log_default(_log_target_table_lib, Public);
 %_log_default(_log_target_table_name, LLM_LOGS);
-%_log_default(_log_append_table, 0);
+%_log_default(_log_append_table, );
 %_log_default(_log_promote_table, 1);
 %_log_default(_log_save_table, 1);
 %sysmacdelete _log_default;
@@ -48,6 +49,22 @@ run;
     %let _log_ready = 0;
 %end;
 
+* What the run does with a table that exists, by the setting _log_append_table: APPEND for 1, REPLACE for 0 and START for a setting without a value, which stops further down at a table that holds rows. Any other value refuses the run. The setting is read as text, so that a value nobody thought of is compared and not run;
+%let _log_table_mode = REFUSED;
+%if %length(%superq(_log_append_table)) EQ 0 %then %do;
+    %let _log_table_mode = START;
+%end;
+%if %length(%superq(_log_append_table)) EQ 1 and %superq(_log_append_table) EQ 1 %then %do;
+    %let _log_table_mode = APPEND;
+%end;
+%if %length(%superq(_log_append_table)) EQ 1 and %superq(_log_append_table) EQ 0 %then %do;
+    %let _log_table_mode = REPLACE;
+%end;
+%if &_log_table_mode. EQ REFUSED %then %do;
+    %put ERROR: _log_append_table is %superq(_log_append_table), which is no value of this setting: 1 adds the requests of the log to the output table, 0 replaces the table with them, and without a value the program only starts a table that is not there yet. No log was read and nothing was written.;
+    %let _log_ready = 0;
+%end;
+
 * Get the caslib name of the libname;
 proc sql noPrint;
     select sysvalue into :_log_target_table_lib trimmed
@@ -70,8 +87,72 @@ proc cas;
     call symputx('_casSessionUUID', sessresults[1]);
 quit;
 
+* The rows the output table holds before this run: 0 where there is no table, -1 where its saved file could not be loaded. The macro below counts them - the table in memory, or the saved file of a table that is not in memory, which is loaded into CASUSER for the count and dropped again. It runs in front of the log for a run without a value of _log_append_table and in front of the swap for a run that replaces. A run that appends does not ask it;
+%let _log_target_rows = 0;
+%macro _log_count_target;
+    proc cas;
+        targetRows = 0;
+        table.tableExists result=found /
+            casLib = "&_log_target_table_lib.",
+            name = "&_log_target_table_name.";
+        if found.exists GE 1 then do;
+            table.tableInfo result=foundTables /
+                casLib = "&_log_target_table_lib.",
+                name = "&_log_target_table_name.",
+                quiet = True;
+            if exists(foundTables, 'TableInfo') then targetRows = foundTables.TableInfo[1].Rows;
+        end;
+        else do;
+            /* The file keeps the case the table name was saved with, as in append mode further down */
+            countedFile = '';
+            table.fileInfo result=countedListing status=countedListed /
+                casLib = "&_log_target_table_lib.";
+            if countedListed.severity EQ 0 then do;
+                if exists(countedListing, 'FileInfo') then do;
+                    do countedEntry over countedListing.FileInfo;
+                        if countedEntry.Name EQ "&_log_target_table_name..sashdat" then countedFile = countedEntry.Name;
+                        else if countedFile EQ '' and upcase(countedEntry.Name) EQ upcase("&_log_target_table_name..sashdat") then countedFile = countedEntry.Name;
+                    end;
+                end;
+            end;
+            if countedFile NE '' then do;
+                targetRows = -1;
+                table.loadTable /
+                    casLib = "&_log_target_table_lib.",
+                    path = countedFile,
+                    casOut = {casLib = 'CASUSER', name = '_TEMP_LLM_LOGS_SAVED', replace = True};
+                table.tableInfo result=countedTables /
+                    casLib = 'CASUSER',
+                    name = '_TEMP_LLM_LOGS_SAVED',
+                    quiet = True;
+                if exists(countedTables, 'TableInfo') then targetRows = countedTables.TableInfo[1].Rows;
+                table.dropTable /
+                    casLib = 'CASUSER',
+                    name = '_TEMP_LLM_LOGS_SAVED',
+                    quiet = True;
+            end;
+        end;
+        call symputx('_log_target_rows', targetRows);
+    run; quit;
+%mend _log_count_target;
+
+* A run without a value of _log_append_table stops here at a table that holds rows, in front of the log: nothing is read and nothing is written. The two LET statements in the message are the two ways on, and NRSTR keeps the macro processor from running them;
+%if &_log_table_mode. EQ START and &_log_ready. EQ 1 %then %do;
+    %_log_count_target;
+%end;
+%if &_log_table_mode. EQ START and &_log_target_rows. GT 0 %then %do;
+    %put ERROR: The table &_log_target_table_lib..&_log_target_table_name. holds &_log_target_rows. rows and _log_append_table is not set, so nothing was read and nothing was written - not the table and not its saved file. Set it in front of the program: %nrstr(%let _log_append_table = 1;) adds the requests of the log to the table, %nrstr(%let _log_append_table = 0;) replaces the table with them.;
+    %let _log_ready = 0;
+%end;
+%if &_log_table_mode. EQ START and &_log_target_rows. LT 0 %then %do;
+    %put ERROR: The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded and _log_append_table is not set, so nothing was read and nothing was written - the saved file was left as it is.;
+    %let _log_ready = 0;
+%end;
+
 * The number of requests found in the log. The Python code sets it as its last statement, so -1 means that the parsing did not finish;
 %let _log_row_count = -1;
+* The requests the Python code left out of a run that appends, as the log holds them more than once;
+%let _log_row_repeats = 0;
 
 * What append mode finds in CAS. The output macro sets both: the table the rows are appended to (0 there is none, 1 a table of this session, 2 a promoted table) and whether a saved table could not be loaded;
 %let _log_target_scope = 0;
@@ -82,6 +163,9 @@ quit;
 %let _log_fixed_drop = ;
 * The return code of the DATA step of append mode (SYSERR). The output macro sets it behind that step, and the new table only takes the place of the existing one when it is 0 or the 4 of a warning;
 %let _log_append_syserr = 0;
+* What append mode needs to leave out a request the table holds already: whether the existing table has a text column transaction_id, which the output macro sets with the three above, and the highest return code of the two DATA steps that compare the rows of the log with it;
+%let _log_target_has_id = 0;
+%let _log_compare_syserr = 0;
 
 proc python restart;
 submit;
@@ -1495,6 +1579,20 @@ if SAS.symget('_log_ready') == '1':
             var['format'] = sas_formats[col]
         vars_metadata.append(var)
 
+    # A run that appends writes a request once. The transaction ID is what tells one request from every other: the
+    # container gives each request its own and writes it into the lines of the request, so it is the same in every
+    # file and every run that holds the request. A log holds a request more than once when its lines were collected
+    # more than once into one file. The row of the first time is kept, in the order of the file, and the others are
+    # counted. A request without a transaction ID is never taken for another one. What the table holds already is
+    # looked at by the SAS code behind this block
+    repeats = 0
+    if SAS.symget('_log_table_mode') == 'APPEND':
+        named = df['transaction_id'].notna() & (df['transaction_id'] != '')
+        again = named & df.duplicated(subset=['transaction_id'], keep='first')
+        repeats = int(again.sum())
+        df = df[~again].reset_index(drop=True)
+    put_number('_log_row_repeats', repeats)
+
     # Upload to the casuser and then return to SAS. A log without requests has nothing
     # to upload and the output table stays as it is.
     if len(df) > 0:
@@ -1522,7 +1620,11 @@ run; quit;
     %if &_log_ready. NE 1 %then %return;
 
     %if &_log_row_count. GT 0 %then %do;
-        %if &_log_append_table. %then %do;
+        /* A run that replaces says how many rows it replaced, so they are counted while they are still there */
+        %if &_log_table_mode. EQ REPLACE %then %do;
+            %_log_count_target;
+        %end;
+        %if &_log_table_mode. EQ APPEND %then %do;
             proc cas;
                 table.tableExists result=re /
                     casLib = "&_log_target_table_lib.",
@@ -1605,6 +1707,8 @@ run; quit;
                             fixedAssign = catx(' ', fixedAssign, cats(Column, '=trimn(_fx_', Column, ');'));
                             fixedDrop = catx(' ', fixedDrop, cats('_fx_', Column));
                         end;
+                        /* A table without a text column transaction_id holds nothing a request of the log can be compared with */
+                        if lowcase(strip(Column)) EQ 'transaction_id' and lowcase(strip(Type)) in ('char' 'varchar') then call symputx('_log_target_has_id', '1');
                         if lastColumn and fixedRename NE '' then do;
                             call symputx('_log_fixed_rename', cats('rename=(', fixedRename, ')'));
                             call symputx('_log_fixed_assign', catx(' ', 'if _log_existing_row then do;', fixedAssign, 'end;'));
@@ -1622,6 +1726,27 @@ run; quit;
                    rows. A column only the existing table has follows behind them and is missing in the new rows */
                 libname _llmtgt cas caslib="&_log_target_table_lib.";
                 libname _llmsrc cas caslib='CASUSER';
+                /* A request the table holds already is not appended a second time. The transaction IDs of the table
+                   are written to a table of their own - as VARCHAR whatever the table holds them as, and without the
+                   rows that have none - and the rows of the log are merged with it by that ID: a row of the log is
+                   kept when no row of the table has its ID. A row of the log without a transaction ID finds nothing
+                   it is merged with and is kept. The rows that were kept take the place of the rows of the log, and
+                   a step that does not finish leaves them as they were */
+                %if &_log_target_has_id. %then %do;
+                    data _llmsrc._TEMP_LLM_LOGS_SEEN(keep=transaction_id);
+                        length transaction_id varchar(*);
+                        set _llmtgt."&_log_target_table_name."n(keep=transaction_id rename=(transaction_id=_log_seen_id));
+                        transaction_id = trimn(_log_seen_id);
+                        if transaction_id NE '';
+                    run;
+                    %let _log_compare_syserr = &syserr.;
+                    data _llmsrc._TEMP_LLM_LOGS;
+                        merge _llmsrc._TEMP_LLM_LOGS(in=_log_new_row) _llmsrc._TEMP_LLM_LOGS_SEEN(in=_log_seen_row);
+                        by transaction_id;
+                        if _log_new_row and not _log_seen_row;
+                    run;
+                    %let _log_compare_syserr = %sysfunc(max(&_log_compare_syserr., &syserr.));
+                %end;
                 data _llmtgt._TEMP_LLM_LOGS_ALL;
                     length timestamp 8 model varchar(*) system_prompt varchar(*) user_prompt varchar(*)
                            temperature 8 top_p 8 top_k 8 max_tokens 8 prompt_length 8 output_length 8 runtime 8 response varchar(*)
@@ -1678,6 +1803,10 @@ run; quit;
                         end;
                     end;
                     if &_log_append_syserr. GT 4 or existingRows LT 0 or uploadedRows LT 0 or stagedRows NE existingRows + uploadedRows then stagedComplete = False;
+                    /* Rows of the log that were not compared with the table are not appended to it either */
+                    %if &_log_compare_syserr. NE 0 and &_log_compare_syserr. NE 4 %then %do;
+                        stagedComplete = False;
+                    %end;
                 %end;
                 %else %do;
                     stagedTable = "&_log_target_table_name._NEW";
@@ -1727,7 +1856,7 @@ run; quit;
                 end;
                 else do;
                     %if &_log_target_scope. GE 1 %then %do;
-                        print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is. The DATA step that appends ended with the return code &_log_append_syserr. and wrote " || (string) stagedRows || " rows, the table held " || (string) existingRows || " and the log " || (string) uploadedRows || " (-1 stands for a table that was not found).";
+                        print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is. The DATA step that appends ended with the return code &_log_append_syserr. and wrote " || (string) stagedRows || " rows, the table held " || (string) existingRows || " and the log " || (string) uploadedRows || " (-1 stands for a table that was not found). The DATA steps that leave out the requests the table holds already ended with the return code &_log_compare_syserr..";
                         call symputx('_log_failed', '1');
                         /* What the DATA step left behind is no table of anybody */
                         table.dropTable /
@@ -1752,6 +1881,26 @@ run; quit;
                         replace = True;
                 end;
             %end;
+
+            /* What the run did to a table that held rows is said in one NOTE: the rows a run that replaces took away,
+               and for a run that appends the requests of the log, the ones it appended and the ones it left out, with
+               the rows of the table before and after */
+            %if &_log_table_mode. EQ REPLACE and &_log_target_rows. GT 0 %then %do;
+                if tableWritten then do;
+                    print (note) "The table &_log_target_table_lib..&_log_target_table_name. held &_log_target_rows. row(s). " || "They were replaced by the &_log_row_count. request(s) of the log, as _log_append_table is 0.";
+                end;
+            %end;
+            %if &_log_table_mode. EQ APPEND %then %do;
+                if tableWritten then do;
+                    readRows = &_log_row_count. + &_log_row_repeats.;
+                    %if &_log_target_scope. GE 1 %then %do;
+                        print (note) (string) readRows || " request(s) were read from the log. " || (string) uploadedRows || " were appended to the table &_log_target_table_lib..&_log_target_table_name., which held " || (string) existingRows || " row(s) and holds " || (string) stagedRows || " now. " || (string) (readRows - uploadedRows) || " were left out, as a request with their transaction_id is there already: " || (string) (&_log_row_count. - uploadedRows) || " in the table, &_log_row_repeats. earlier in the log.";
+                    %end;
+                    %else %do;
+                        print (note) (string) readRows || " request(s) were read from the log. &_log_row_count. were written to the table &_log_target_table_lib..&_log_target_table_name., " || "which was not there before. &_log_row_repeats. were left out, as a request with their transaction_id stands earlier in the log.";
+                    %end;
+                end;
+            %end;
         run; quit;
     %end;
     %else %if &_log_row_count. EQ 0 %then %do;
@@ -1766,6 +1915,11 @@ run; quit;
                 casLib = 'CASUSER',
                 table = '_TEMP_LLM_LOGS',
                 quiet = True;
+        /* The transaction IDs of the existing table, which a run that appends wrote beside the rows of the log */
+        table.dropTable /
+                casLib = 'CASUSER',
+                table = '_TEMP_LLM_LOGS_SEEN',
+                quiet = True;
     run; quit;
 %mend _log_handle_output_table;
 
@@ -1776,9 +1930,10 @@ run; quit;
     cas llmLogMySess terminate;
 %end;
 %sysmacdelete _log_handle_output_table;
+%sysmacdelete _log_count_target;
 * A run that wrote an ERROR line and no table ends with the condition code of a failed job, as a SAS error leaves it: SAS Job Execution reports the job as failed, and in the SAS session of a job the DATA steps behind the program do not run until the condition code is set back to 0 - in the code of a flow the first of them is the end action of the flow. A refusal and a log that could not be parsed leave _log_row_count below 0, and a table that could not be written sets _log_failed. A run with a WARNING and a log without requests end as before. Nothing follows but the macro variables that are deleted;
 %if &_log_row_count. LT 0 or &_log_failed. EQ 1 %then %do;
     %let SYSCC = 1012;
 %end;
-%symdel _log_ready _log_failed _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded _log_fixed_rename _log_fixed_assign _log_fixed_drop _log_append_syserr;
+%symdel _log_ready _log_failed _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded _log_fixed_rename _log_fixed_assign _log_fixed_drop _log_append_syserr _log_table_mode _log_target_rows _log_row_repeats _log_target_has_id _log_compare_syserr;
 %symdel _log_path _log_target_table_engine _log_target_table_lib _log_target_table_name _log_append_table _log_promote_table _log_save_table;
