@@ -677,7 +677,7 @@ def test_the_body_of_an_object_is_named_like_its_summary(manifest):
 
 def test_a_field_at_the_top_of_a_package_that_an_export_does_not_write_is_a_difference(manifest):
     package = package_of(manifest).build()
-    package["createdBy"], package["links"] = "someone", []                     # what an export writes
+    package["createdBy"], package["links"] = "sas-agentic-ai-accelerator", []   # what an export writes
     assert package_differences(package, manifest) == []
     package["authorization"], package["substitutions"] = [{"principal": "someone"}], {"x": "y"}
     assert package_differences(package, manifest) == [
@@ -1205,20 +1205,102 @@ def test_the_delete_of_a_transfer_object_says_when_it_was_refused():
         delete_job(Session(TimeoutError("read timed out")), "/transfer/exportJobs/j1")
 
 
-def test_an_export_says_which_users_it_names_and_leaves_them(exporting, manifest):
-    """An export carries createdBy / modifiedBy of whoever made the objects.
-    That a package without them imports was not shown, so they stay - and the
-    command says who is in the file."""
+def test_an_export_replaces_the_user_ids_it_names(exporting, manifest, repo):
+    """M8 / A11: an export carries createdBy / modifiedBy of whoever made the
+    objects. The release file names no one: the ids are replaced with a
+    neutral text, the command says whose they were, and the gate fails a
+    package that still names a user."""
     built = package_of(manifest)
     for detail in built.details:
         detail["transferObject"]["summary"]["createdBy"] = "the.exporter"
         detail["transferObject"]["summary"]["modifiedBy"] = "a.colleague"
     result, text, target, _ = exporting(built)
     assert result.exit_code == 0, text
-    assert ("  The file names the user id(s) a.colleague, the.exporter in createdBy / modifiedBy (30 place(s): the "
-            "package, its objects and their bodies), and the exported folder in contentSourceLocation. They are "
-            "left as the export wrote them.\n") in text
-    assert "the.exporter" in target.read_text(encoding="utf-8")
+    assert ("  Replaced the user id(s) a.colleague, the.exporter in createdBy / modifiedBy with "
+            f"'sas-agentic-ai-accelerator' (30 place(s)); contentSourceLocation, the path of the folder each object "
+            f"was exported from, is left as it is ({CONTENT_ROOT}).\n") in text
+    written = target.read_text(encoding="utf-8")
+    assert "the.exporter" not in written and "a.colleague" not in written
+    assert named_users(json.loads(written)) == {"sas-agentic-ai-accelerator": 30}
+    assert package_differences(json.loads(written), manifest) == []
+    # --keep-user-ids: only into a file of its own, and then the gate names them
+    result, text, target, _ = exporting(built, "--keep-user-ids")
+    assert result.exit_code == 2 and "--keep-user-ids needs --out" in text
+    elsewhere = repo / "scratch" / "kept.json"
+    result, text, _, _ = exporting(built, "--keep-user-ids", "--out", str(elsewhere), "--allow-differences")
+    assert result.exit_code == 0, text
+    assert "the.exporter" in elsewhere.read_text(encoding="utf-8")
+    assert ("the package names the user id(s) a.colleague, the.exporter in createdBy / modifiedBy (30 place(s)) - an "
+            "export of the release writes 'sas-agentic-ai-accelerator' there, and `mdb package-check --fix` rewrites "
+            "them") in package_differences(json.loads(elsewhere.read_text(encoding="utf-8")), manifest)
+
+
+EARLIER_PACKAGES = [REPO_ROOT / "SAS-Viya-Integrations" / name for name in (
+    "SAS-Agentic-AI-Accelerator-Prompt-Builder.json", "SAS-Agentic-AI-Accelerator-RAG-Builder.json",
+    "SAS Agentic AI Accelerator.json")] + [REPO_ROOT / "SAS-Viya-Integrations" / "Logging-Monitoring" /
+                                           "LLM Usage Report.json"]
+
+
+def _decoded(package: dict) -> list:
+    """Every part of a package as values: the package without its objects,
+    and per object the transfer object with its body (base64 JSON) or its
+    report wrapper (behind the compression) decoded in place."""
+    from mdb.core.packages import _body, _report_wrapper
+    parts = [{k: v for k, v in package.items() if k != "transferDetails"}]
+    for detail in package.get("transferDetails") or []:
+        obj = dict(detail.get("transferObject") or {})
+        wrapper = _report_wrapper(obj)
+        obj["content"] = wrapper if wrapper is not None else (_body(obj) or obj.get("content"))
+        parts.append({**{k: v for k, v in detail.items() if k != "transferObject"}, "transferObject": obj})
+    return parts
+
+
+def _set_users(value, text):
+    if isinstance(value, dict):
+        return {k: (text if k in ("createdBy", "modifiedBy") and isinstance(v, str) and v else _set_users(v, text))
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [_set_users(v, text) for v in value]
+    return value
+
+
+@pytest.mark.parametrize("path", EARLIER_PACKAGES, ids=lambda p: p.name)
+def test_every_user_id_of_a_real_export_is_covered_and_nothing_else_changes(path):
+    """The four packages of the earlier releases are real exports. After the
+    neutralisation no createdBy / modifiedBy names anyone - in the package,
+    the summaries, the bodies, the report wrappers - and every other value is
+    what it was. (A user id in a per-user report state, a rule or a share is
+    in an object the export removes or drops; the gate fails those.)"""
+    from mdb.core.packages import NEUTRAL_USER, neutralise_users
+    if not path.is_file():
+        pytest.skip("the earlier package files are removed by the commit that adds the release package")
+    package = json.loads(path.read_text(encoding="utf-8"))
+    before = _decoded(package)
+    assert {user for user in named_users(package)} - {NEUTRAL_USER}       # it names people to begin with
+    replaced = neutralise_users(package)
+    assert replaced > 0
+    assert set(named_users(package)) == {NEUTRAL_USER}
+    after = _decoded(package)
+    assert after == _set_users(before, NEUTRAL_USER)
+    # the user ids of the export are nowhere in a createdBy / modifiedBy of the text any more
+    assert not re.search(r'"(createdBy|modifiedBy)"\s*:\s*"(?!sas-agentic-ai-accelerator")',
+                         json.dumps(_decoded(package), ensure_ascii=False))
+    # a second pass has nothing to do
+    assert neutralise_users(package) == 0
+
+
+def test_check_fix_rewrites_the_user_ids(checking, manifest):
+    built = package_of(manifest)
+    for detail in built.details:
+        detail["transferObject"]["summary"]["createdBy"] = "the.exporter"
+    target = manifest.package_path
+    target.write_text(json.dumps(built.build(), indent=2), encoding="utf-8")
+    result, text, _ = checking()
+    assert result.exit_code == 1 and "the package names the user id(s) the.exporter" in text
+    result, text, _ = checking("--fix")
+    assert result.exit_code == 0, text
+    assert "user id(s) the.exporter in createdBy / modifiedBy -> sas-agentic-ai-accelerator (15)" in text
+    assert "the.exporter" not in target.read_text(encoding="utf-8")
 
 
 def test_an_export_from_a_configured_site_is_made_shippable(exporting, manifest):

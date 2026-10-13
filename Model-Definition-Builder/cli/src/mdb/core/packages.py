@@ -1144,6 +1144,78 @@ def mapping_preview(package: dict) -> dict:
     return {"version": 1, "connectors": {"table": tables}, "substitutions": substitutions}
 
 
+#: What `mdb package-export` writes into createdBy / modifiedBy in place of
+#: the user ids of the exporting system: a text that is no user id.
+NEUTRAL_USER = "sas-agentic-ai-accelerator"
+
+#: The fields of a package that hold a user id.
+USER_FIELDS = ("createdBy", "modifiedBy")
+
+
+def _neutral(value) -> int:
+    """Replace every USER_FIELDS value in a parsed value, in place; returns
+    how many were replaced."""
+    replaced = 0
+    if isinstance(value, dict):
+        for key in list(value):
+            if key in USER_FIELDS and isinstance(value[key], str) and value[key] and value[key] != NEUTRAL_USER:
+                value[key] = NEUTRAL_USER
+                replaced += 1
+            else:
+                replaced += _neutral(value[key])
+    elif isinstance(value, list):
+        for item in value:
+            replaced += _neutral(item)
+    return replaced
+
+
+def neutralise_users(package: dict) -> int:
+    """Write NEUTRAL_USER into every createdBy / modifiedBy a parsed package
+    holds - its own, those of the object summaries, those inside the bodies
+    (base64 JSON) and inside a report's wrapper (behind the compression) -
+    and change nothing else; returns how many were replaced.
+
+    WHY THIS IS SAFE FOR AN IMPORT. These fields are what the exporting
+    system recorded about its objects. mdb never sends them anywhere: the
+    in-place write path takes a step without them (_STEP_INSTANCE_KEYS), a
+    job definition keeps the site's own, a file is sent as its bytes. What
+    the transfer service does with them on an import of the reports is not
+    measured; every package up to 2.2.x carried the exporter's id, and an
+    import of such a package was never seen to make that user the owner of
+    anything. A per-user report state, which carries a user id that does
+    decide something (whose view it is), is removed before this.
+
+    A body is written back as compact JSON (the form the transfer service
+    gives a report wrapper); the values are the same, the bytes of the
+    base64 are not."""
+    replaced = _neutral({key: value for key, value in package.items() if key != "transferDetails"})
+    for key in USER_FIELDS:
+        if isinstance(package.get(key), str) and package[key] and package[key] != NEUTRAL_USER:
+            package[key] = NEUTRAL_USER
+    for detail in package.get("transferDetails") or []:
+        obj = detail.get("transferObject") or {}
+        replaced += _neutral(obj.get("summary") or {})
+        content = obj.get("content") or ""
+        wrapper = _report_wrapper(obj)
+        if wrapper is not None:
+            n = _neutral(wrapper.get("object") or {}) + _neutral(
+                [state.get("reportState") for state in (wrapper.get("transferableContent") or {}).get(
+                    "reportStates") or [] if isinstance(state, dict)])
+            if n:
+                flag = "FALSE" if content.startswith("FALSE###") else "TRUE"
+                obj["content"] = deflate(json.dumps(wrapper, separators=(",", ":"), ensure_ascii=False), flag)
+                replaced += n
+            continue
+        body = _body(obj)
+        if body is not None:
+            n = _neutral(body)
+            if n:
+                obj["content"] = base64.b64encode(
+                    json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).decode("ascii")
+                replaced += n
+    return replaced
+
+
 def named_users(package: dict) -> dict:
     """{user id: number of places} for every `createdBy` / `modifiedBy` a
     package holds: its own, those of the object summaries and those inside
@@ -1334,13 +1406,16 @@ def package_findings(package: dict, manifest, package_name: str = "") -> list:
       the ones its entry lists, with the hash given there;
     * no object is in the package that the manifest does not list, none sits
       on a path that never ships, there is no authorization rule or share,
-      and the package has no field at its top that an export does not write.
+      the package has no field at its top that an export does not write, and
+      it names no user id in createdBy / modifiedBy (NEUTRAL_USER stands
+      there).
 
     Not compared, each for its reason: the description of a step or a job
     definition and the display fields the dataFlows service derives
     (`localDisplayName`, `localUi`) - text beside the content, which the
-    deploy does not hold a site to either; the ids, the links, the users and
-    the time stamps of the objects - they are those of the exporting system;
+    deploy does not hold a site to either; the ids, the links and the time
+    stamps of the objects - they are those of the exporting system (the users
+    are held to NEUTRAL_USER, above);
     a line end (CRLF for LF) in a text file.
     """
     root, items = locate(package)
@@ -1355,6 +1430,12 @@ def package_findings(package: dict, manifest, package_name: str = "") -> list:
     if unknown:
         problems.append(Difference(f"the package carries the field(s) {', '.join(unknown)} at its top, which an "
                                    "export does not write"))
+    users = {user: n for user, n in named_users(package).items() if user != NEUTRAL_USER}
+    if users:
+        problems.append(Difference(
+            f"the package names the user id(s) {', '.join(sorted(users))} in createdBy / modifiedBy "
+            f"({sum(users.values())} place(s)) - an export of the release writes '{NEUTRAL_USER}' there, and "
+            "`mdb package-check --fix` rewrites them"))
     for item in items:
         if item.kind in GRANT_KINDS:
             problems.append(Difference(f"the package carries the authorization {item.kind} '{item.name}'"))

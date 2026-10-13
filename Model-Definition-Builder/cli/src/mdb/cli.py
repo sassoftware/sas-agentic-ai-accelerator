@@ -1767,6 +1767,10 @@ def package_export(
         False, "--allow-differences",
         help="Write the package although it differs from the checkout or lacks an entry of the manifest - "
              "for a test folder that holds no report. Needs --out; the release file is never written that way."),
+    keep_user_ids: bool = typer.Option(
+        False, "--keep-user-ids",
+        help="Leave createdBy / modifiedBy as the export wrote them (the user ids of the exporting system). "
+             "Needs --out: the release file names no user."),
     timeout: int = typer.Option(600, "--timeout", help="Seconds to wait for the export job."),
 ):
     """Export the content folder to the one transfer package of the release.
@@ -1802,16 +1806,22 @@ def package_export(
     ends with exit code 3 (1 stays "nothing was written").
 
     The export names people: `createdBy` / `modifiedBy` of the package, of
-    every object and inside the bodies, and `contentSourceLocation`, the path
-    of the exported folder. They are left as the export wrote them - every
-    package up to 2.2.x carried them, and that the transfer service imports a
-    package without them was not shown - and the command says which user ids
-    the file holds.
+    every object and inside the bodies (also inside the compressed report
+    content). They are replaced with the text 'sas-agentic-ai-accelerator',
+    and nothing else of the package changes; `mdb package-check` fails a
+    package that names a user id. --keep-user-ids leaves them (with --out
+    only). `contentSourceLocation` is left as it is: it is the path of the
+    folder an object was exported from - for the content root of the release
+    `/SAS Agentic AI Accelerator/...`, which names no one - and mdb reads it
+    to tell a package of a folder below others (`mdb builders-import` refuses
+    to hand such a package to the transfer service). What the transfer
+    service does with neutral user fields on an import of the reports has
+    not been measured.
     """
     from .core.content import content_root_problem
-    from .core.packages import (ALLOWED_HOSTS, check_text, describe_findings, filter_package, named_users,
-                                package_differences, reset_report_defaults, sanitise_text,
-                                strip_report_states)
+    from .core.packages import (ALLOWED_HOSTS, NEUTRAL_USER, check_text, describe_findings, filter_package,
+                                named_users, neutralise_users, package_differences, reset_report_defaults,
+                                sanitise_text, strip_report_states)
     from .viya.transfer import (delete_job, delete_package, download_package, folder_by_path, job_messages,
                                 leftover_line, start_export, wait_for_job)
     ctx = Context()
@@ -1826,6 +1836,10 @@ def package_export(
     if allow_differences and (out is None or target.resolve() == manifest.package_path.resolve()):
         console.print(f"[red]--allow-differences needs --out, and not {manifest.package}: the release file is "
                       "only written when it equals the checkout. Nothing was exported.[/red]", highlight=False)
+        raise typer.Exit(2)
+    if keep_user_ids and (out is None or target.resolve() == manifest.package_path.resolve()):
+        console.print(f"[red]--keep-user-ids needs --out, and not {manifest.package}: the release file names no "
+                      "user. Nothing was exported.[/red]", highlight=False)
         raise typer.Exit(2)
     if content_root_problem(root):
         console.print(f"[red]{root}: {content_root_problem(root)}. Nothing was exported.[/red]", highlight=False)
@@ -1875,6 +1889,8 @@ def package_export(
     filtered = filter_package(parsed, manifest, f"/folders/folders/{folder_obj['id']}")
     for line in filtered.dropped:
         console.print(f"  left out: {line}", markup=False, highlight=False, soft_wrap=True)
+    exporters = named_users(parsed)
+    neutralised = 0 if keep_user_ids else neutralise_users(parsed)
     text = json.dumps(parsed, indent=2, ensure_ascii=False) + chr(10)
     try:
         text, reset = reset_report_defaults(text)
@@ -1930,11 +1946,17 @@ def package_export(
     console.print(f"[green]Wrote {target}[/green] ({package.get('transferObjectCount', '?')} objects: "
                   + ", ".join(f"{n} {kind}" for kind, n in counts.items()) + f"; {len(filtered.dropped)} left out).",
                   highlight=False)
-    users = named_users(package)
+    users = {user: n for user, n in named_users(package).items() if user != NEUTRAL_USER}
     if users:
         console.print(f"  The file names the user id(s) {', '.join(sorted(users))} in createdBy / modifiedBy "
-                      f"({sum(users.values())} place(s): the package, its objects and their bodies), and the "
-                      "exported folder in contentSourceLocation. They are left as the export wrote them.",
+                      f"({sum(users.values())} place(s): the package, its objects and their bodies) - left as the "
+                      "export wrote them (--keep-user-ids) - and the exported folder in contentSourceLocation.",
+                      markup=False, highlight=False, soft_wrap=True)
+    elif neutralised:
+        others = {user for user in exporters if user != NEUTRAL_USER}
+        console.print(f"  Replaced the user id(s) {', '.join(sorted(others))} in createdBy / modifiedBy with "
+                      f"'{NEUTRAL_USER}' ({neutralised} place(s)); contentSourceLocation, the path of the folder "
+                      f"each object was exported from, is left as it is ({root}).",
                       markup=False, highlight=False, soft_wrap=True)
     # What to do with the file depends on what it is: only the release file,
     # written without a difference, is something to commit.
@@ -2679,7 +2701,8 @@ def package_check(
     fix: bool = typer.Option(
         False, "--fix",
         help="Before the check, rewrite what can be rewritten in the file: hosts to the placeholder, "
-             "per-user report states removed, the Prompt Builder option defaults to the neutral values"),
+             "per-user report states removed, the Prompt Builder option defaults to the neutral values, user "
+             "ids in createdBy / modifiedBy to a neutral text"),
     allow_missing: bool = typer.Option(
         False, "--allow-missing",
         help="End with exit code 0 when the package of the release is not in the checkout (not with --release)"),
@@ -2735,8 +2758,8 @@ def package_check(
     exporting again. While the checkout holds no package of the release the
     command says so and ends with exit code 1, or 0 with --allow-missing.
     """
-    from .core.packages import (PLACEHOLDER_HOST, package_findings, reset_report_defaults,
-                                sanitise_text, strip_report_states)
+    from .core.packages import (NEUTRAL_USER, PLACEHOLDER_HOST, named_users, neutralise_users, package_findings,
+                                reset_report_defaults, sanitise_text, strip_report_states)
     ctx = Context()
     manifest = _content_manifest(ctx)
     if files:
@@ -2769,6 +2792,14 @@ def package_check(
                               highlight=False)
             for host, n in sorted(fixed.items()):
                 console.print(f"  {path.name}: {host} -> {PLACEHOLDER_HOST} ({n})", highlight=False)
+            parsed = json.loads(text)
+            users = sorted(user for user in named_users(parsed) if user != NEUTRAL_USER)
+            neutralised = neutralise_users(parsed)
+            if neutralised:
+                # written the way `mdb package-export` writes a package
+                text = json.dumps(parsed, indent=2, ensure_ascii=False) + "\n"
+                console.print(f"  {path.name}: user id(s) {', '.join(users)} in createdBy / modifiedBy -> "
+                              f"{NEUTRAL_USER} ({neutralised})", highlight=False)
             if text != before:
                 path.write_text(text, encoding="utf-8", newline="")
         for difference in package_findings(json.loads(text), manifest, path.name):
