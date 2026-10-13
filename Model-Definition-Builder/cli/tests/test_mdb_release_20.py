@@ -381,6 +381,48 @@ def gate(monkeypatch):
     return run
 
 
+EARLIER = "SAS-Viya-Integrations/Package-Of-An-Earlier-Release.json"
+
+
+def _site(tmp_path: Path) -> SimpleNamespace:
+    """A hosted repository (bare), the maintainer's clone of it and the clone
+    that stands for the host: `main` holds the checkout of the content tests
+    with one package file of an earlier release, and a branch with the
+    release work - its final texts included - is pushed and not merged."""
+    origin, owner, host = tmp_path / "origin.git", tmp_path / "owner", tmp_path / "host"
+    _git(tmp_path, "init", "-q", "--bare", str(origin))
+    owner.mkdir()
+    make_repo(owner)
+    (owner / EARLIER).write_text('{"transferDetails": []}\n', encoding="utf-8")
+    _git(owner, "init", "-q")
+    _git(owner, "remote", "add", "origin", str(origin))
+    _git(owner, "add", ".")
+    _git(owner, "commit", "-q", "-m", "the release before")
+    _git(owner, "push", "-q", "origin", "main")
+    _git(owner, "checkout", "-q", "-b", "feature/release")
+    (owner / "src/optimize.sas").write_bytes(b"%put optimize, as released;\n")
+    _git(owner, "commit", "-q", "-am", "the release work")
+    changelog = (owner / "CHANGELOG.md").read_bytes().replace(b"## [2.3.0] - Unreleased", b"## [2.3.0] - 2026-10-20")
+    (owner / "CHANGELOG.md").write_bytes(changelog)
+    _git(owner, "commit", "-q", "-am", "the final texts: the changelog carries its date")
+    _git(owner, "push", "-q", "origin", "feature/release")
+    _git(tmp_path, "clone", "-q", str(origin), str(host))
+    return SimpleNamespace(origin=origin, owner=owner, host=host, tmp=tmp_path)
+
+
+def _squash_merge(site, branch: str, message: str) -> str:
+    """What the host does with a pull request on a `main` that takes squash
+    merges only: one new commit on main with the changes of the branch, and
+    the branch is deleted."""
+    _git(site.host, "fetch", "-q", "--prune", "origin")
+    _git(site.host, "checkout", "-q", "-B", "main", "origin/main")
+    _git(site.host, "merge", "-q", "--squash", f"origin/{branch}")
+    _git(site.host, "commit", "-q", "-m", message)
+    _git(site.host, "push", "-q", "origin", "main")
+    _git(site.host, "push", "-q", "origin", "--delete", branch)
+    return _git(site.host, "rev-parse", "HEAD")
+
+
 def _deploy_and_export(checkout: Path) -> str:
     """What `mdb content-deploy` and `mdb package-export` leave in a checkout
     whose folder equals it: the package file, with a release.json that names
@@ -388,6 +430,102 @@ def _deploy_and_export(checkout: Path) -> str:
     listed = load_manifest(checkout)
     listed.package_path.write_text(json.dumps(package_of(listed).build(), indent=2), encoding="utf-8", newline="\n")
     return content.checkout_commit(checkout)[0]
+
+
+def _tag_clone(site, tag: str) -> Path:
+    """The fresh clone the workflow of a tag works in: the whole history of
+    what the hosted repository still has a name for."""
+    clone = site.tmp / f"clone-of-{tag}"
+    _git(site.tmp, "clone", "-q", "--no-local", "--branch", tag, str(site.origin), str(clone))
+    return clone
+
+
+@needs_git
+def test_the_release_procedure_on_a_main_that_takes_squash_merges_only(tmp_path, gate):
+    """review-19: the procedure did not say which commit is deployed from and
+    which one the tag names where every change reaches `main` as a squash
+    merge. The four steps of CONTRIBUTING.md, with the commands named there,
+    and the gate as the workflow runs it: on the pull request of the package,
+    on `main` after its merge, and in the fresh clone of the tag."""
+    site = _site(tmp_path)
+    # 1. the release work with its final texts is squash-merged first
+    merged = _squash_merge(site, "feature/release", "Release work (#1)")
+    # 2. deploy and export from the commit that merge made on main
+    _git(site.owner, "fetch", "-q", "origin")
+    _git(site.owner, "switch", "-q", "--detach", "origin/main")
+    assert _deploy_and_export(site.owner) == merged == _git(site.owner, "rev-parse", "origin/main")
+    assert gate(site.owner, "--release")[0] == 0
+    # 3. the package file in a second pull request, from a branch that starts at that commit
+    _git(site.owner, "switch", "-q", "-c", "release/package")
+    _git(site.owner, "rm", "-q", EARLIER)
+    _git(site.owner, "add", "SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json")
+    _git(site.owner, "commit", "-q", "-m", "the package of the release")
+    on_branch = _git(site.owner, "rev-parse", "HEAD")
+    _git(site.owner, "push", "-q", "origin", "release/package")
+    #    the workflow of the pull request checks the merge of the branch into main
+    _git(site.host, "fetch", "-q", "origin")
+    _git(site.host, "checkout", "-q", "-B", "pull-request-merge", "origin/main")
+    _git(site.host, "merge", "-q", "--no-ff", "-m", "the merge the workflow checks", "origin/release/package")
+    code, text = gate(site.host, "--release")
+    assert code == 0, text
+    squashed = _squash_merge(site, "release/package", "The package of the release (#2)")
+    #    ... and the workflow of the push to main checks the commit the squash made
+    code, text = gate(site.host, "--release")
+    assert code == 0, text
+    # 4. the tag names the commit that second merge made on main - not the commit of the branch
+    _git(site.owner, "fetch", "-q", "--prune", "origin")
+    _git(site.owner, "tag", "2.3.0", "origin/main")
+    _git(site.owner, "push", "-q", "origin", "2.3.0")
+    assert _git(site.owner, "rev-parse", "2.3.0^{commit}") == squashed != on_branch
+    clone = _tag_clone(site, "2.3.0")
+    assert content.commit_standing(clone, merged) == content.ANCESTOR
+    assert content.commit_standing(clone, on_branch) == content.NOT_HELD
+    code, text = gate(clone, "--release")
+    assert code == 0, text
+    assert "1 package(s): every entry of the manifest is in the package and equals the checkout" in text
+    assert not (clone / EARLIER).exists()
+    # a tag on the commit of the branch that added the file is a tag of a commit that is not on main
+    done = subprocess.run(["git", "merge-base", "--is-ancestor", on_branch, "origin/main"], cwd=site.owner)
+    assert done.returncode == 1
+    # CONTRIBUTING.md names these steps with these commands
+    procedure = " ".join((REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8").split())
+    for said in ("a release is two of them, in this order", "`git switch --detach origin/main`",
+                 "**The tag names the commit that second merge made on `main`**", "`git tag <version> origin/main`",
+                 "not the commit of the branch that added the file, which is not on `main` after a squash merge",
+                 "none of its commits is in the history of `main` afterwards",
+                 "removes the four package files of the earlier releases and takes `--allow-missing` out of the "
+                 "workflow"):
+        assert said in procedure, said
+
+
+@needs_git
+def test_a_deploy_from_the_branch_of_a_pull_request_fails_the_tag(tmp_path, gate):
+    """review-19, relproc.py `texts_by_pr`: the final texts and the package
+    in one pull request, deployed from its branch. The check of the pull
+    request passes - the commit is in the history of the branch - and the
+    tag fails: the squash made another commit, and neither the maintainer's
+    `main` nor the clone of the tag has the one release.json names in its
+    history."""
+    site = _site(tmp_path)
+    _git(site.owner, "checkout", "-q", "feature/release")
+    deployed = _deploy_and_export(site.owner)                    # from the tip of the branch
+    _git(site.owner, "rm", "-q", EARLIER)
+    _git(site.owner, "add", "SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json")
+    _git(site.owner, "commit", "-q", "-m", "the package of the release")
+    assert gate(site.owner, "--release")[0] == 0                 # on the branch, and so in its pull request
+    _git(site.owner, "push", "-q", "origin", "feature/release")
+    _squash_merge(site, "feature/release", "Release work with the package (#1)")
+    _git(site.owner, "fetch", "-q", "--prune", "origin")
+    _git(site.owner, "switch", "-q", "--detach", "origin/main")
+    code, text = gate(site.owner, "--release")
+    assert code == 1
+    assert (f"file 'release.json' names the commit {deployed[:12]}, which is not in the history of this checkout "
+            "(the clone holds it on another line of history)") in text
+    _git(site.owner, "tag", "2.3.0", "origin/main")
+    _git(site.owner, "push", "-q", "origin", "2.3.0")
+    code, text = gate(_tag_clone(site, "2.3.0"), "--release")
+    assert code == 1
+    assert f"file 'release.json' names the commit {deployed[:12]}, which this clone does not hold" in text
 
 
 def _with_commit(package_path: Path, commit: str) -> None:
