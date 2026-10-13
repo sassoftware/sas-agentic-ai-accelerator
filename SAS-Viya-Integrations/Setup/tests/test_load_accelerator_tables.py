@@ -189,7 +189,7 @@ def test_the_width_cas_keeps_for_display_cuts_no_value(release_file):
     assert all(length >= 16 for name, length in longest.items() if name not in short)
     # the upload names the name and the type of a column, and nothing else of it
     release = macro("_lat_release_table")
-    upload = release[release.index("upload path ="):release.index("table.tableExists")]
+    upload = release[release.index("upload path ="):release.index("table.tableExists", release.index("upload path ="))]
     assert re.findall(r"(\w+) = \"%scan", upload) == ["name", "type"]
     assert not re.search(r"length|format", upload, flags=re.IGNORECASE)
     # the header says what was measured
@@ -258,10 +258,10 @@ def test_the_table_is_dropped_only_behind_an_upload_that_holds_every_row():
     outcomes = re.findall(r"%if &_lat_outcome\. EQ (\w+) %then", release)
     assert outcomes == ["foreign", "foreignfile", "loaded", "upload", "rows", "replace", "save"]
     said = re.findall(r"%put (\w+): Load-Accelerator-Tables: ([^;]*);", release)
-    assert [kind for kind, _ in said] == ["WARNING"] * 4 + ["ERROR", "ERROR", "NOTE"] + ["WARNING"] * 5
+    assert [kind for kind, _ in said] == ["WARNING"] * 5 + ["ERROR", "ERROR", "NOTE"] + ["WARNING"] * 5
     for kind, text in said:
         assert not set(text) & set("%'\"") and text.count("(") == text.count(")"), text
-        assert set(re.findall(r"&(\w+)", text)) <= {"contentRoot", "caslib", "releaseTable", "_lat_rows", "_lat_staged"}, text
+        assert set(re.findall(r"&(\w+)", text)) <= {"contentRoot", "caslib", "releaseTable", "_lat_rows", "_lat_staged", "_lat_taken"}, text
         if kind == "WARNING" and "may not be loaded" not in text and "could not be saved" not in text and "holds what it held before" not in text:
             assert text.endswith("was left as it is.") or "was left as it is. " in text, text
 
@@ -275,8 +275,13 @@ def test_a_file_that_is_not_there_or_holds_other_columns_leaves_the_table():
     assert missing.count("%if &_lat_there. NE 1 %then %do;") == 2
     # one sentence for a file that is not there, whether its folder is there or not
     assert release.count("was not found in the folder &contentRoot./Data") == 1
-    assert release.count("%return;") == 7
-    assert release.index("proc cas;") > release.split("%if &_lat_outcome. EQ foreign")[0].rindex("%return;")
+    assert release.count("%return;") == 8
+    assert release.index('outcome = "upload";') > release.split("%if &_lat_outcome. EQ foreign")[0].rindex("%return;")
+    # the last of them in front of the upload: CAS is asked for a table of the name the file is uploaded under
+    in_order(release[release.index("%let _lat_taken = unknown;"):], "%let _lat_taken = unknown;",
+             'table.tableExists result = taken / caslib = "&caslib." name = "&releaseTable._NEW";',
+             'call symputx("_lat_taken", taken.exists, "L");', "%if &_lat_taken. NE 0 %then %do;", "%return;", "upload path =")
+    assert "_lat_taken" in release[release.index("%local "):release.index(";", release.index("%local "))]
     assert "The file and this job definition are of different releases." in release
 
 

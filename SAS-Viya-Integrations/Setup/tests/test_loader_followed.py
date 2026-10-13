@@ -217,8 +217,13 @@ def left_alone(cas, log, macros, name, sentence):
 FOREIGN = "ERROR: Load-Accelerator-Tables: the table Public.{0} is no release table - it lacks columns of one - and was left as it is: " \
           "the parameter releaseTable names another table."
 FOREIGN_FILE = "ERROR: Load-Accelerator-Tables: no table Public.{0} is in memory, and the file a table of that name was saved to in the " \
-               "CAS library Public could not be loaded or lacks columns of a release table. The file was left as it is and nothing was " \
-               "loaded: the parameter releaseTable names another table, or that file is to be removed first."
+               "CAS library Public could not be loaded or lacks columns of a release table. The job loads that file as a table " \
+               "_LAT_SAVED of its session to read its columns, and only where no table of that name is in the CAS library. The file " \
+               "was left as it is and nothing was loaded: the parameter releaseTable names another table, or that file is to be removed first."
+TAKEN = "WARNING: Load-Accelerator-Tables: CAS did not answer that there is no table Public.{0}_NEW - tableExists said {1}, and 0 is no " \
+        "table. The file is uploaded under that name first, as a table of this session, and the job drops and replaces no table it did " \
+        "not load: where a table of that name is there, rename or drop it and run the job again. Nothing was uploaded, the table " \
+        "Public.{0} was left as it is."
 LOADED = "NOTE: Load-Accelerator-Tables: the release table Public.ACCELERATOR_RELEASES was loaded with 755 rows, promoted and saved."
 
 
@@ -231,8 +236,10 @@ def test_a_first_run_loads_the_table_and_writes_no_error(no_table_when_empty):
 
     assert log == [LOADED] and macros["_lat_failed"] == "0" and cas.errors == []
     assert loaded(cas) == {"columns": columns(), "rows": 755, "of": "upload"} and saved(cas)["of"] == "upload" and cas.session == {}
-    assert [action for action, _ in cas.calls] == ["upload", "table.tableExists", "table.tableInfo", "table.tableExists", "table.fileInfo",
-                                                   "table.dropTable", "table.promote", "table.save"]
+    assert [action for action, _ in cas.calls] == ["table.tableExists", "upload", "table.tableExists", "table.tableInfo", "table.tableExists",
+                                                   "table.fileInfo", "table.dropTable", "table.promote", "table.save"]
+    # the first action asks for a table of the name the file is uploaded under
+    assert cas.calls[0][1] == {"caslib": "Public", "name": RELEASES + "_NEW"}
 
 
 def test_a_release_table_in_memory_is_replaced_also_the_one_of_2_2_0():
@@ -284,6 +291,41 @@ def test_a_table_of_the_site_that_has_the_name_of_the_table_of_the_session_is_no
     assert log == [FOREIGN.format("_LAT_SAVED")] and macros["_lat_failed"] == "1"
     assert loaded(cas, "_LAT_SAVED") == {"columns": LOG_COLUMNS, "rows": 7, "of": "a table of the site"} and cas.session == {}
     assert [parameters["name"] for action, parameters in cas.calls if action == "table.dropTable"] == ["_LAT_SAVED_NEW"]
+
+
+@pytest.mark.parametrize("scope, answer", [("global", 2), ("session", 1)], ids=["a table of the site", "a table of the session"])
+def test_a_table_that_has_the_name_the_file_is_uploaded_under_is_not_touched(scope, answer):
+    """gate-20. The file is uploaded as ACCELERATOR_RELEASES_NEW, and that table is dropped again or promoted. A site
+    can have a table of that name. What CAS does with a table of the session that has the name of a global one has
+    not been measured, so the job does not rest on it: it asks before the upload, and where a table of the name is
+    there it uploads nothing under it and drops nothing of it."""
+    cas = casl_harness.FakeCAS(upload_rows=755)
+    cas.table("Public", RELEASES, columns(), rows=453, of="the table of before")
+    cas.table("Public", RELEASES + "_NEW", LOG_COLUMNS, rows=7, of="a table of the site", scope=scope)
+    log, macros = release(cas)
+
+    assert log == [TAKEN.format(RELEASES, answer)] and macros["_lat_failed"] == "0"
+    assert [action for action, _ in cas.calls] == ["table.tableExists"]
+    held = cas.promoted if scope == "global" else cas.session
+    assert held[cas.key("Public", RELEASES + "_NEW")] == {"columns": LOG_COLUMNS, "rows": 7, "of": "a table of the site"}
+    assert loaded(cas)["of"] == "the table of before"
+
+
+def test_a_table_of_the_site_that_has_the_name_the_saved_file_is_loaded_under_is_not_touched():
+    """The same for the second name the job loads a table of its session under: the file a table was saved to is
+    loaded as _LAT_SAVED to read its columns, and dropped again. With a table of that name in the library the file
+    is not loaded: it is left as it is, with the ERROR line of a file that could not be looked at, which says so."""
+    cas = casl_harness.FakeCAS(upload_rows=755)
+    cas.table("Public", "_LAT_SAVED", SHEET_COLUMNS, rows=7, of="a table of the site")
+    cas.file("Public", "LLM_LOGS.sashdat", LOG_COLUMNS, rows=1040, of="the log of every run")
+    log, macros = release(cas, releaseTable="LLM_LOGS")
+
+    assert log == [FOREIGN_FILE.format("LLM_LOGS")] and macros["_lat_failed"] == "1" and cas.errors == []
+    assert loaded(cas, "_LAT_SAVED") == {"columns": SHEET_COLUMNS, "rows": 7, "of": "a table of the site"} and cas.session == {}
+    assert saved(cas, "LLM_LOGS")["of"] == "the log of every run" and loaded(cas, "LLM_LOGS") is None
+    assert not [action for action, _ in cas.calls if action in ("table.loadTable", "table.columnInfo", "table.promote", "table.save")]
+    # the one table that is dropped is the upload of this run
+    assert [parameters["name"] for action, parameters in cas.calls if action == "table.dropTable"] == ["LLM_LOGS_NEW"]
 
 
 def test_a_saved_file_that_can_not_be_loaded_is_left_as_it_is():
@@ -344,9 +386,12 @@ def test_the_statements_that_look_at_the_saved_file():
                          ('else if saved == "" and upcase(savedEntry.Name) == upcase("&releaseTable..sashdat") then saved = savedEntry.Name;',
                           'else if saved == "" and upcase(entry.Name) == upcase("&table..sashdat") then')):
         assert ours in code and theirs in job
-    assert ('table.loadTable result = ignored status = opened / caslib = "&caslib." path = saved\n'
-            '                        casOut = {caslib = "&caslib.", name = "_LAT_SAVED", replace = true};') in code
-    assert code.count("_LAT_SAVED") == 3 and "promote = true" not in code
+    assert ('table.tableExists result = helper / caslib = "&caslib." name = "_LAT_SAVED";\n'
+            '                    if helper.exists == 0 then do;\n'
+            '                        table.loadTable result = ignored status = opened / caslib = "&caslib." path = saved\n'
+            '                            casOut = {caslib = "&caslib.", name = "_LAT_SAVED", replace = true};') in code
+    # the name: asked for, loaded, looked at, dropped - and named in the ERROR line of a file that could not be looked at
+    assert code.count("_LAT_SAVED") == 5 and "promote = true" not in code
     # the table of the session is dropped by the flag of the load, not by its name
     assert "if fromFile == 1 then do;" in code and code.count("fromFile = 1;") == 1 and code.count("fromFile = 0;") == 1
     # the header and the parameter say which table is looked at

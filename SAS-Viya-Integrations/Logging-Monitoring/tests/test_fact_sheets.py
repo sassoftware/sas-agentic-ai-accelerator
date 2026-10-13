@@ -78,14 +78,14 @@ def test_the_three_sheets_are_read_one_after_the_other_and_none_stops_the_others
     macro = read_macro()
     # a sheet that is not loaded is a WARNING that names the file or the rows and the table that stays
     warnings = re.findall(r"%put (WARNING: [^;]*);", macro)
-    assert len(warnings) == 3 and "ERROR" not in macro.upper().replace("NOWARN", "")
+    assert len(warnings) == 4 and "ERROR" not in macro.upper().replace("NOWARN", "")
     for warning in warnings:
         assert warning.endswith("the table &_lfs_caslib..&_lfs_table. was left as it is.") or \
             warning.endswith("The table &_lfs_caslib..&_lfs_table. was left as it is.")
         assert not set(warning) & set("%'\"") and warning.count("(") == warning.count(")")
     # no ABORT and no statement that ends the program: the next sheet is read whatever became of this one
     assert not re.search(r"\babort\b|%abort|endsas", code, flags=re.IGNORECASE)
-    assert macro.count("%return;") == 2
+    assert macro.count("%return;") == 3
 
 
 def test_a_sheet_is_read_and_tried_in_cas_before_its_table_is_touched():
@@ -99,6 +99,12 @@ def test_a_sheet_is_read_and_tried_in_cas_before_its_table_is_touched():
     # its rows are counted, and a sheet without rows goes no further
     in_order(macro, "proc import dataFile=_lfs_fs", "%let _lfs_rows = %sysfunc(attrn(&_lfs_dsid., nlobs));", "%if &_lfs_rows. LE 0 %then %do;",
              'load data=work.&_lfs_work. casOut="&_lfs_table._NEW" replace;')
+    # CAS is asked for a table of the name the sheet is loaded under, and the sheet is loaded only where it says 0
+    assert macro.index("%if &_lfs_rows. LE 0 %then %do;") < macro.index("%let _lfs_taken = unknown;")
+    in_order(macro[macro.index("%let _lfs_taken = unknown;"):], "%let _lfs_taken = unknown;",
+             'table.tableExists result = taken / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";',
+             'call symputx("_lfs_taken", taken.exists, "L");', "%if &_lfs_taken. NE 0 %then %do;", "%return;",
+             'load data=work.&_lfs_work. casOut="&_lfs_table._NEW" replace;')
     # it is loaded beside the table, under another name, counted there and dropped again
     in_order(macro, 'load data=work.&_lfs_work. casOut="&_lfs_table._NEW" replace;',
              'table.tableExists result = found / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";',
@@ -109,7 +115,7 @@ def test_a_sheet_is_read_and_tried_in_cas_before_its_table_is_touched():
     # the table itself is named nowhere in the macro: it only tries the sheet
     assert not re.search(r'name = "&_lfs_table\."', macro) and "promote" not in macro.lower() and "save " not in macro.lower()
     assert macro.count("%let _lfs_ok = 1;") == 1 and macro.count("%do") == macro.count("%end")
-    assert macro.count("proc casUtil") == 1 and macro.count("proc cas;") == 1 and macro.count("proc import") == 1
+    assert macro.count("proc casUtil") == 1 and macro.count("proc cas;") == 2 and macro.count("proc import") == 1
 
 
 def test_the_counted_upload_takes_the_place_of_the_table_and_nothing_loads_the_sheet_again():
@@ -189,9 +195,10 @@ NOT_FOUND = ("WARNING: The file llm_fact_sheet.csv was not found in the folder "
 COLUMNS = ["model", "provider", "input_cost", "output_cost"]
 
 
-def follow(name, cas=None, status="200", there=1, rows=30, **more):
+def follow(name, cas=None, status="200", there=1, rows=30, loads=None, **more):
     """Follows a macro of the program for one sheet. Returns (the SAS code it generates, the lines it writes, the
-    folders it asked for, the macro variables at its end)."""
+    folders it asked for, the macro variables at its end). `loads` is the number of rows PROC CASUTIL loads as a
+    table of the session where the macro gets to its LOAD statement."""
     symbols = {"_lfs_file": SHEET[0], "_lfs_work": SHEET[1], "_lfs_table": SHEET[2], "_lfs_path": FOLDER_OF_SHEETS, "_lfs_caslib": "Public",
                "_lfs_ok": "0", "SYS_PROCHTTP_STATUS_CODE": "an answer of an earlier request"}
     symbols.update(more)
@@ -203,7 +210,12 @@ def follow(name, cas=None, status="200", there=1, rows=30, **more):
 
     functions = {"fexist": lambda arguments: there, "exist": lambda arguments: 1, "open": lambda arguments: 7,
                  "attrn": lambda arguments: rows, "close": lambda arguments: 0}
-    generated, log, macros = casl_harness.follow(program("Load-Fact-Sheets.sas"), name, symbols, cas, functions, called)
+    def on_line(line, macros):
+        load = re.fullmatch(r'load data=work\.\w+ casOut="(\w+)" replace;', line)
+        if load and loads is not None:
+            cas.table(macros["_lfs_caslib"], load.group(1), COLUMNS, rows=loads, of="the sheet", scope="session")
+
+    generated, log, macros = casl_harness.follow(program("Load-Fact-Sheets.sas"), name, symbols, cas, functions, called, on_line=on_line)
     return [line for line in generated if not line.startswith(casl_harness.CALLED)], log, asked, macros
 
 
@@ -232,13 +244,56 @@ def test_a_folder_without_the_file_is_the_same_warning(status):
 
 def test_a_sheet_that_is_there_is_read_and_counted_as_before():
     cas = casl_harness.FakeCAS()
-    cas.table("Public", "LLM_FACT_SHEET_NEW", COLUMNS, rows=30, of="the sheet", scope="session")      # what PROC CASUTIL loaded
-    generated, log, asked, macros = follow("_lfs_read", cas, status="200", there=1, rows=30)
+    generated, log, asked, macros = follow("_lfs_read", cas, status="200", there=1, rows=30, loads=30)
 
     assert log == [] and macros["_lfs_ok"] == "1" and cas.errors == []
     in_order("\n".join(generated), "filename _lfs_fs filesrvc folderPath=", "proc import dataFile=_lfs_fs", "filename _lfs_fs clear;",
-             'load data=work._lfs_llm_fact_sheet casOut="LLM_FACT_SHEET_NEW" replace;', "proc cas;")
+             'table.tableExists result = taken / caslib = "Public" name = "LLM_FACT_SHEET_NEW";',
+             'load data=work._lfs_llm_fact_sheet casOut="LLM_FACT_SHEET_NEW" replace;',
+             'table.tableExists result = found / caslib = "Public" name = "LLM_FACT_SHEET_NEW";')
     assert cas.exists("Public", "LLM_FACT_SHEET_NEW") == 1
+    # CAS was asked for a table of that name before the sheet was loaded under it
+    assert cas.calls[0] == ("table.tableExists", {"caslib": "Public", "name": "LLM_FACT_SHEET_NEW"})
+
+
+TAKEN = ("WARNING: CAS did not answer that there is no table Public.LLM_FACT_SHEET_NEW - tableExists said {0}, and 0 is no table. The sheet "
+         "is loaded under that name first, as a table of this session, and this program drops and replaces no table it did not load: where "
+         "a table of that name is there, rename or drop it and run this program again. The file llm_fact_sheet.csv was not loaded into "
+         "CAS, the table Public.LLM_FACT_SHEET was left as it is.")
+
+
+@pytest.mark.parametrize("scope, answer", [("global", 2), ("session", 1)], ids=["a table of the site", "a table of the session"])
+def test_a_table_that_has_the_name_the_sheet_is_loaded_under_is_not_touched(scope, answer):
+    """gate-20. The sheet is loaded as LLM_FACT_SHEET_NEW and that table is dropped again or promoted. A site can
+    have a table of that name: what CAS does with a table of the session that has the name of a global one has
+    not been measured, so the program does not rest on it. It asks before it loads, and where a table of the name
+    is there it loads nothing under it and drops nothing of it."""
+    cas = casl_harness.FakeCAS()
+    cas.table("Public", "LLM_FACT_SHEET", COLUMNS, rows=28, of="the table of before")
+    cas.table("Public", "LLM_FACT_SHEET_NEW", COLUMNS, rows=7, of="a table of the site", scope=scope)
+    generated, log, asked, macros = follow("_lfs_read", cas, status="200", there=1, rows=30, loads=30)
+
+    assert log == [TAKEN.format(answer)] and macros["_lfs_ok"] == "0"
+    # nothing was loaded and nothing was dropped: the one action is the question
+    assert [action for action, _ in cas.calls] == ["table.tableExists"] and not [line for line in generated if "casUtil" in line or "load data=" in line]
+    held = cas.promoted if scope == "global" else cas.session
+    assert held[cas.key("Public", "LLM_FACT_SHEET_NEW")] == {"columns": COLUMNS, "rows": 7, "of": "a table of the site"}
+    assert in_memory(cas) == {"columns": COLUMNS, "rows": 28, "of": "the table of before"}
+    # and the swap does nothing for a sheet that was not loaded
+    assert swapped(cas, _lfs_ok=macros["_lfs_ok"]) == [] and len(cas.calls) == 1
+
+
+def test_a_session_without_an_answer_loads_nothing_either():
+    """Where the step that asks did not run - no CAS session -, the macro variable keeps the text it was given,
+    and that is no 0."""
+    read = read_macro()
+
+    in_order(read, "%let _lfs_taken = unknown;", "proc cas;", 'call symputx("_lfs_taken", taken.exists, "L");', "%if &_lfs_taken. NE 0 %then %do;")
+    assert "_lfs_taken" in read[read.index("%local "):read.index(";", read.index("%local "))]
+    # an upload that does not hold every row is dropped behind the question, so it is the upload of this run
+    in_order(read[read.index("%if &_lfs_taken. NE 0 %then %do;"):], "%if &_lfs_taken. NE 0 %then %do;", "%return;", "proc casUtil",
+             "if staged != &_lfs_rows. then do;", 'table.dropTable / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW" quiet = true;')
+    assert read.count("_NEW\" quiet = true;") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +405,11 @@ def test_the_readme_says_of_the_program_what_it_does():
     assert ("Where the promote is refused, a table of that name that is in memory - the table could not be dropped - is left as it is, "
             "and where none is, the table is loaded again from the file it was saved to before; each of these outcomes is a WARNING of "
             "its own.") in readme
+    # and of the name the sheet is loaded under
+    assert ("A table that has the name `<table>_NEW` before a sheet is loaded is no table of the program: CAS is asked first "
+            "(`table.tableExists`), and where it does not answer that there is none, the sheet is not loaded and neither table is "
+            "touched, with a WARNING that says to rename or drop that table.") in readme
+    assert code.count('table.tableExists result = taken / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";') == 1
     # what has not run in SAS is said in the changelog and in the guide, not here
     paragraph = readme[readme.index("*Load-Fact-Sheets.sas* reads the three fact sheet files"):readme.index("*Build-RAG-Cost-View.sas* stacks")]
     assert not re.search(r"not (been )?run|untested|not measured", paragraph, flags=re.IGNORECASE)

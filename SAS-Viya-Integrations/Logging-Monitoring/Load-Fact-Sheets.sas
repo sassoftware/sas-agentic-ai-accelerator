@@ -17,7 +17,10 @@
       and the other sheets are loaded all the same. The upload whose rows
       were counted is the one that takes the place of the table: the table
       is dropped, the upload promoted under its name and saved, as the job
-      Load-Accelerator-Tables does it for the release table.
+      Load-Accelerator-Tables does it for the release table. The upload is
+      a table of the CAS session with the name <table>_NEW: where a table
+      of that name is there before the sheet is loaded, the sheet is not
+      loaded and neither table is touched, with a WARNING.
 
     The job definition Load-Accelerator-Tables includes this file from the
       content folder and loads the release table beside the three sheets.
@@ -90,7 +93,7 @@ options nosyntaxcheck;
    it are read. */
 %let _lfs_ok = 0;
 %macro _lfs_read(_lfs_file, _lfs_work, _lfs_table);
-    %local _lfs_rows _lfs_staged _lfs_dsid _lfs_rc _lfs_there;
+    %local _lfs_rows _lfs_staged _lfs_dsid _lfs_rc _lfs_there _lfs_taken;
     %let _lfs_ok = 0;
     %let _lfs_rows = -1;
     %let _lfs_staged = -1;
@@ -133,6 +136,20 @@ options nosyntaxcheck;
     %end;
     %if &_lfs_rows. LE 0 %then %do;
         %put WARNING: The file &_lfs_file. of the folder &_lfs_path. could not be read or holds no rows, the table &_lfs_caslib..&_lfs_table. was left as it is.;
+        %return;
+    %end;
+
+    /* The sheet is loaded as <table>_NEW, a table of this session, which the step below drops again or _lfs_swap
+       promotes. A table of that name that is there before the load is no table of this run - a table of the site
+       can have the name -, so CAS is asked first. Only where it answers that there is none is the sheet loaded
+       under the name, and only then is a table of the name dropped or promoted: the one this run loaded */
+    %let _lfs_taken = unknown;
+    proc cas;
+        table.tableExists result = taken / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";
+        call symputx("_lfs_taken", taken.exists, "L");
+    run; quit;
+    %if &_lfs_taken. NE 0 %then %do;
+        %put WARNING: CAS did not answer that there is no table &_lfs_caslib..&_lfs_table._NEW - tableExists said &_lfs_taken., and 0 is no table. The sheet is loaded under that name first, as a table of this session, and this program drops and replaces no table it did not load: where a table of that name is there, rename or drop it and run this program again. The file &_lfs_file. was not loaded into CAS, the table &_lfs_caslib..&_lfs_table. was left as it is.;
         %return;
     %end;
 

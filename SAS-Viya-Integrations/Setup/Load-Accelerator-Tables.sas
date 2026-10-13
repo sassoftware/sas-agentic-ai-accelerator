@@ -38,7 +38,10 @@
  * that is not there, that has other columns or that CAS did not take leaves
  * the table as it is, with a WARNING. So does a folder that is not there:
  * the Folders service is asked for the folder before a fileref is assigned
- * to a file of it. Load-Fact-Sheets.sas replaces each
+ * to a file of it. And so does a table that has the name <table>_NEW
+ * before the upload: it is no table of the job, so nothing is uploaded under
+ * that name and no table of that name is dropped. Load-Fact-Sheets.sas
+ * replaces each
  * fact sheet table the same way: the upload whose rows were counted is
  * promoted under the name of the table and saved, and the sheet is not
  * loaded a second time.
@@ -58,7 +61,10 @@
  * THE JOB FAILS when one of the four tables is not in the CAS library at its
  * end, or when a parameter is refused: it then writes an ERROR line and sets
  * the condition code of the session to 1012. A table that was left as it is
- * and is there is a WARNING. An error of SAS or of CAS on the way is an
+ * and is there is a WARNING. So a run whose only message on the way is the
+ * WARNING of a file or a folder that is not there still fails where the table
+ * of that file is not in the CAS library: the job is there to load the four.
+ * An error of SAS or of CAS on the way is an
  * error of the job as well; it stops no table behind it from being loaded.
  *
  * Parameters of the job definition:
@@ -191,7 +197,7 @@ run;
    would put values under the wrong names. CAS then reads the file with the
    options the ingestion job of a RAG setup uploads its run history with. */
 %macro _lat_release_table;
-    %local _lat_file _lat_copy _lat_rows _lat_header _lat_outcome _lat_staged _lat_i _lat_n _lat_v _lat_there;
+    %local _lat_file _lat_copy _lat_rows _lat_header _lat_outcome _lat_staged _lat_i _lat_n _lat_v _lat_there _lat_taken;
     %if &_lat_ready. NE 1 %then %return;
     %let _lat_file = %sysfunc(pathname(work))/accelerator_releases.csv;
     %let _lat_rows = -1;
@@ -242,6 +248,20 @@ run;
         %return;
     %end;
 
+    /* The file is uploaded as <table>_NEW, a table of this session, which the step below drops again or promotes.
+       A table of that name that is there before the upload is no table of this run - a table of the site can have
+       the name -, so CAS is asked first. Only where it answers that there is none is the file uploaded under the
+       name, and only then is a table of the name dropped or promoted: the one this run loaded */
+    %let _lat_taken = unknown;
+    proc cas;
+        table.tableExists result = taken / caslib = "&caslib." name = "&releaseTable._NEW";
+        call symputx("_lat_taken", taken.exists, "L");
+    quit;
+    %if &_lat_taken. NE 0 %then %do;
+        %put WARNING: Load-Accelerator-Tables: CAS did not answer that there is no table &caslib..&releaseTable._NEW - tableExists said &_lat_taken., and 0 is no table. The file is uploaded under that name first, as a table of this session, and the job drops and replaces no table it did not load: where a table of that name is there, rename or drop it and run the job again. Nothing was uploaded, the table &caslib..&releaseTable. was left as it is.;
+        %return;
+    %end;
+
     %let _lat_outcome = unknown;
     %let _lat_staged = -1;
     %let _lat_n = %sysfunc(countw(&_lat_vars., %str( )));
@@ -281,8 +301,10 @@ run;
                restart of the CAS server leaves a saved table as its file. The files of the CAS library are listed
                as the ingestion job of a RAG setup lists them: the whole library, so that a file that is not there
                is no error, and the exact name before the same name in another case. The file is loaded as a table
-               of this session, its columns are read, and it is dropped again. Where the files can not be listed,
-               the run goes on as it does where there is no such file */
+               of this session, its columns are read, and it is dropped again - under the name _LAT_SAVED, and only
+               where CAS answers that no table of that name is there: a table of the site can have it, and the
+               table this step drops is then the one it loaded. Where the files can not be listed, the run goes on
+               as it does where there is no such file */
             look = "";
             lacking = "foreign";
             fromFile = 0;
@@ -303,12 +325,15 @@ run;
                     /* a saved file that can not be loaded is no release table either: nothing writes over it */
                     lacking = "foreignfile";
                     outcome = lacking;
-                    table.loadTable result = ignored status = opened / caslib = "&caslib." path = saved
-                        casOut = {caslib = "&caslib.", name = "_LAT_SAVED", replace = true};
-                    if opened.severity == 0 then do;
-                        outcome = "rows";
-                        look = "_LAT_SAVED";
-                        fromFile = 1;
+                    table.tableExists result = helper / caslib = "&caslib." name = "_LAT_SAVED";
+                    if helper.exists == 0 then do;
+                        table.loadTable result = ignored status = opened / caslib = "&caslib." path = saved
+                            casOut = {caslib = "&caslib.", name = "_LAT_SAVED", replace = true};
+                        if opened.severity == 0 then do;
+                            outcome = "rows";
+                            look = "_LAT_SAVED";
+                            fromFile = 1;
+                        end;
                     end;
                 end;
             end;
@@ -359,7 +384,7 @@ run;
         %return;
     %end;
     %if &_lat_outcome. EQ foreignfile %then %do;
-        %put ERROR: Load-Accelerator-Tables: no table &caslib..&releaseTable. is in memory, and the file a table of that name was saved to in the CAS library &caslib. could not be loaded or lacks columns of a release table. The file was left as it is and nothing was loaded: the parameter releaseTable names another table, or that file is to be removed first.;
+        %put ERROR: Load-Accelerator-Tables: no table &caslib..&releaseTable. is in memory, and the file a table of that name was saved to in the CAS library &caslib. could not be loaded or lacks columns of a release table. The job loads that file as a table _LAT_SAVED of its session to read its columns, and only where no table of that name is in the CAS library. The file was left as it is and nothing was loaded: the parameter releaseTable names another table, or that file is to be removed first.;
         %let _lat_failed = 1;
         %return;
     %end;

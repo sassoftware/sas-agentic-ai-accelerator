@@ -78,7 +78,7 @@ def in_blocks(program, name, parameters=None):
     return f"%macro {name};\n" + "\n".join(lines) + f"\n%mend {name};\n"
 
 
-def follow(program, name, symbols, cas=None, functions=None, called=None, data_step=None):
+def follow(program, name, symbols, cas=None, functions=None, called=None, data_step=None, on_line=None):
     """Follows the macro `name` of a program: (the lines of SAS code it generates, the lines it writes with %put,
     the macro variables as the macro leaves them).
 
@@ -87,11 +87,15 @@ def follow(program, name, symbols, cas=None, functions=None, called=None, data_s
                 reached, and the macro variables the step sets are there for the lines behind it
     functions   what %sysfunc may call, as {name: function of the list of arguments}
     called      called(text, macros) for the call of another macro, the text being '<macro>(<arguments>);'
-    data_step   data_step(lines, macros) for a DATA step, at its RUN statement: what it leaves in macro variables"""
+    data_step   data_step(lines, macros) for a DATA step, at its RUN statement: what it leaves in macro variables
+    on_line     on_line(line, macros) for every line of SAS code the macro generates, in front of everything else:
+                how a test stands in for a step of another procedure"""
     macros = Macros(symbols, functions)
     step = {"cas": None, "data": None}
 
     def on_text(line, macros):
+        if on_line is not None:
+            on_line(line, macros)
         if line.startswith(CALLED):
             assert called is not None, line
             called(line[len(CALLED):], macros)
