@@ -2044,12 +2044,14 @@ def _shell_word(value, windows: bool = os.name == "nt") -> str:
 
 def _import_command(packages, options, caslib, table, server, no_releases: bool, timeout: int,
                     report_caslib=None, content_root=None, compute_context=None, no_reports: bool = False,
-                    no_capture: bool = False, create: bool = False) -> str:
+                    no_capture: bool = False, create: bool = False, out: str = ".", no_files: bool = False) -> str:
     """`mdb builders-import` with the arguments a run was given, for the line
-    that tells an admin to run it again. An argument that was not given is
-    left out, so the repeat reads the same environment the first run did -
-    and so is an empty --caslib, --report-caslib, --table or --server, which
-    the run reads as not given."""
+    that tells an admin to run it again - every option of the command but
+    --dry-run, after which no such line is printed. An argument that was not
+    given is left out, so the repeat reads the same environment the first
+    run did - and so is an empty --caslib, --report-caslib, --table or
+    --server, which the run reads as not given, and an --out that names the
+    current directory, which is its default."""
     words = ["mdb", "builders-import", *(_shell_word(path) for path in packages or [])]
     if options is not None:
         words += ["--options", _shell_word(options)]
@@ -2066,6 +2068,10 @@ def _import_command(packages, options, caslib, table, server, no_releases: bool,
         words.append("--no-options-capture")
     if create:
         words.append("--create")
+    if out and str(out) != ".":
+        words += ["--out", _shell_word(Path(out))]
+    if no_files:
+        words.append("--no-files")
     if timeout != IMPORT_TIMEOUT:
         words += ["--timeout", str(timeout)]
     return " ".join(words)
@@ -2361,13 +2367,14 @@ def builders_import(
 
     def command(options_file) -> str:
         """The command line as it was given, for the line that says how to
-        go on - with the options file a run kept, once there is one."""
+        go on - with the options file a run kept, once there is one, and
+        with --no-reports where the same command would be refused its
+        reports again (`repeat_without_reports`, below)."""
         return _import_command(packages, options_file, caslib_given, table, server, no_releases, timeout,
-                               report_caslib, content_root, compute_context, no_reports, no_options_capture,
-                               create)
+                               report_caslib, content_root, compute_context, repeat_without_reports,
+                               no_options_capture, create, out, no_files)
 
     caslib_given = caslib
-    given = command(options)
     caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
     table_name = table or _releases_table()
     failures = 0
@@ -2388,6 +2395,16 @@ def builders_import(
         if source.reports:
             refusal = "left out (--no-reports)" if no_reports else _transfer_refusal(source.root_path, root)
         plans.append((path, package, source, refusal))
+    # The command a failed run names must not fail for the reason this one
+    # did. Reports that are refused for this content root are refused by the
+    # same command again: where no package's reports go to the transfer
+    # service, the repeat leaves the reports out; where some do, its
+    # sentence says which package needs a run of its own.
+    refused_for_root = [path.name for path, _package, source, refusal in plans
+                        if source.reports and refusal is not None and not no_reports]
+    reports_through = any(source.reports and refusal is None for _path, _package, source, refusal in plans)
+    repeat_without_reports = no_reports or (bool(refused_for_root) and not reports_through)
+    given = command(options)
     with _viya_session() as session:
         host = host_of(os.environ.get("SAS_VIYA_URL") or getattr(session, "hostname", "") or "")
         server_name = resolve_server(session, server or os.environ.get("SAS_CAS_SERVER"))
@@ -2660,21 +2677,29 @@ def builders_import(
             # The command that finishes the job. `mdb options-restore` writes
             # options and imports nothing, so it is only the answer when every
             # package imported and the options were not all written.
-            refused = any(source.reports and refusal is not None for _p, _pk, source, refusal in plans)
+            if not refused_for_root:
+                reports_note = ""
+            elif repeat_without_reports:
+                reports_note = (f"; --no-reports is added here, because the reports are not imported into {root} - "
+                                "the line above says why")
+            else:
+                reports_note = (f"; the reports of {', '.join(refused_for_root)} are not imported by it either - "
+                                "the line above says why - and it ends with exit code 1 for them: bring that "
+                                "package in a run of its own with --no-reports")
             if saved is None and not arriving:
                 # no Builder report was imported, so the repeat imports and configures none either
                 again = given
                 does = ("it brings again what did not arrive in place; "
-                        + ("with --no-reports no report is imported or configured" if no_reports else
-                           "the reports are imported only where the line above allows it" if refused else
-                           "no report is imported or configured by it"))
+                        + ("with --no-reports no report is imported or configured" if repeat_without_reports else
+                           "the reports are imported only where the line above allows it" if refused_for_root else
+                           "no report is imported or configured by it") + reports_note)
             elif saved is None:
-                again, does = given, "it imports again and configures the report from this deployment"
+                again, does = given, "it imports again and configures the report from this deployment" + reports_note
             elif not_imported:
                 again = given
                 does = (f"{', '.join(not_imported)} did not import in full - this imports again and writes the "
                         "options back; what is equal by then is left as it is, and `mdb options-restore` "
-                        "imports nothing")
+                        "imports nothing" + reports_note)
             else:
                 again = f"mdb options-restore --file {_shell_word(kept)}"
                 does = "every package imported - only the options are left to write"

@@ -832,8 +832,9 @@ def test_the_repeat_of_a_run_without_reports_does_not_promise_a_report(importing
     assert "configures the report" not in text
     result, fake, text = importing(Site(), "--content-root", "/Team/Accelerator", "--create")
     assert result.exit_code == 1
-    assert "(it brings again what did not arrive in place; the reports are imported only where the line above " \
-           "allows it)" in text
+    assert ("(it brings again what did not arrive in place; with --no-reports no report is imported or configured; "
+            "--no-reports is added here, because the reports are not imported into /Team/Accelerator - the line "
+            "above says why)") in text
 
 
 TUNED = {**NEW_DEFAULTS, "viyaHost": "https://site.example", "SCREndpoint": "https://scr.site.example/llm",
@@ -1313,7 +1314,8 @@ def test_a_report_is_not_imported_into_a_root_the_package_does_not_come_from(imp
     assert "--no-reports to bring everything but the reports" in text
     # the content was brought all the same
     assert "    7 entries: 7 created." in text and FILE_PATH in viya.tree("/Team/Accelerator")
-    assert "then run:\nmdb builders-import --content-root /Team/Accelerator --no-releases --create\n" in text
+    # the command to repeat leaves the reports out: as it was run, it would be refused them again
+    assert "then run:\nmdb builders-import --content-root /Team/Accelerator --no-releases --no-reports --create\n" in text
 
 
 def test_a_package_from_a_folder_below_others_never_reaches_the_transfer_service(importing, no_discovery):

@@ -344,6 +344,102 @@ def test_a_path_that_names_the_object_and_a_reference_names_two_things(manifest)
     assert viya.files[outside] == b"THEIRS = 1\n"
 
 
+# ---- the command a failed import names ------------------------------------------
+def _options_of(command_function) -> set:
+    """Every option flag a command of the app takes, as typer declares them."""
+    import typer
+    declared = typer.main.get_command(cli.app).commands[command_function]
+    return {flag for parameter in declared.params if getattr(parameter, "param_type_name", "") == "option"
+            for flag in parameter.opts if flag.startswith("--")}
+
+
+def test_the_command_to_repeat_knows_every_option_of_the_command():
+    """gate-19 / live-19: the line was built from a list of arguments that
+    had fallen behind the command (--no-files, --out). One function builds
+    it, and this test fails when the command gets an option it does not
+    know."""
+    line = cli._import_command(
+        [Path("p.json")], None, "Lib", "TABLE", "cas", True, 30, "Logs", "/Team/Root", "Team context", True, True,
+        True, "rules", True)
+    assert line == ("mdb builders-import p.json --caslib Lib --report-caslib Logs --table TABLE --server cas "
+                    '--content-root /Team/Root --compute-context "Team context" --no-releases --no-reports '
+                    "--no-options-capture --create --out rules --no-files --timeout 30")
+    words = set(shlex.split(line)) | set(shlex.split(cli._import_command(None, Path("o.json"), None, None, None,
+                                                                         False, cli.IMPORT_TIMEOUT)))
+    # a dry run prints no such line; --help is typer's own
+    assert len(_options_of("builders-import")) >= 15
+    assert _options_of("builders-import") - words - {"--help"} == {"--dry-run"}
+    # the current directory is where --out points without being given
+    assert cli._import_command(None, None, None, None, None, False, cli.IMPORT_TIMEOUT, out=".") == \
+        "mdb builders-import"
+    assert cli._import_command(None, None, None, None, None, False, cli.IMPORT_TIMEOUT,
+                               out="my rules/here") == 'mdb builders-import --out "my rules/here"'
+
+
+def _repeat(text: str) -> list:
+    """The arguments of the command a failed run prints, as a shell reads them."""
+    line = text.split("then run:\n", 1)[1].splitlines()[0]
+    words = shlex.split(line)
+    assert words[:2] == ["mdb", "builders-import"], line
+    return words[1:]
+
+
+def test_the_command_to_repeat_keeps_no_files_and_out(importing, no_discovery, tmp_path):
+    """live-19: a run with --no-files named a repeat without it, which writes
+    the commands file the run was told not to write."""
+    no_discovery()
+    viya = importing.viya
+    _site_with_its_own_objects(viya)
+    viya.refuse[("PUT", "/files/files/")] = 500
+    result, fake, text = importing(Site(), "--no-reports", "--no-files")
+    assert result.exit_code == 1
+    assert "then run:\nmdb builders-import --no-releases --no-reports --no-files\n" in text
+    rules = tmp_path / "rules of the site"
+    result, fake, text = importing(Site(), "--no-reports", "--out", str(rules))
+    assert result.exit_code == 1
+    assert _repeat(text) == ["builders-import", "--no-releases", "--no-reports", "--out", rules.as_posix()]
+
+
+def test_the_command_to_repeat_is_not_refused_its_reports_again(importing, no_discovery, out):
+    """gate-19: reports refused for another content root, and the repeat was
+    the same command - refused for the same reason, exit code 1 again. The
+    repeat leaves the reports out, says so, and RUN AS PRINTED ends well."""
+    no_discovery()
+    viya = importing.viya
+    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), "--content-root", "/Team/Accelerator",
+                                   "--create", "--no-files")
+    assert result.exit_code == 1 and "Reports (Prompt Builder/Prompt Builder): NOT imported" in text
+    assert _repeat(text) == ["builders-import", "--content-root", "/Team/Accelerator", "--no-releases",
+                             "--no-reports", "--create", "--no-files"]
+    assert ("(it brings again what did not arrive in place; with --no-reports no report is imported or configured; "
+            "--no-reports is added here, because the reports are not imported into /Team/Accelerator - the line "
+            "above says why)") in text
+    before = len(out.getvalue())
+    again = CliRunner().invoke(cli.app, _repeat(text))
+    printed = out.getvalue()[before:]
+    assert again.exit_code == 0, printed
+    assert "Reports (Prompt Builder/Prompt Builder): NOT imported - left out (--no-reports)." in printed
+    assert "    7 entries: 7 equal." in printed and "Done." in printed
+    assert importing.uploaded == {} and fake.written == []
+
+
+def test_where_one_package_went_through_the_repeat_says_which_one_needs_a_run_of_its_own(importing, tmp_path):
+    """Two packages, the reports of one refused: --no-reports for the repeat
+    would leave out the reports of the other as well. The command stays as
+    it was run, and its sentence says that it ends the same way and what to
+    do about it."""
+    nested = {**_built(root="root1", location="/Users/me/My Folder/ZZ_VERIFY_R20").build(), "name": "A test root"}
+    other = tmp_path / "pkgs" / "nested.json"
+    main = tmp_path / "SAS-Viya-Integrations" / PACKAGE_FILE
+    result, fake, text = importing(Site(), str(main), str(other), "--no-files", extra=[(other, nested)])
+    assert result.exit_code == 1, text
+    assert "imported 3 object(s) through the transfer service." in text and "nested.json" in text
+    assert "--no-reports" not in _repeat(text)
+    assert ("(it imports again and configures the report from this deployment; the reports of nested.json are not "
+            "imported by it either - the line above says why - and it ends with exit code 1 for them: bring that "
+            "package in a run of its own with --no-reports)") in text
+
+
 # ---- what a refused write answered, and the line for the content root -------------
 #: A refusal in the shape the pass of 2026-10-13 recorded for a PUT of a file's content whose If-Match was
 #: no longer the ETag of the file. Every value is made up.
