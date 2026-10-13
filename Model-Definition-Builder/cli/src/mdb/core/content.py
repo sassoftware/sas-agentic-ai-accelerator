@@ -858,6 +858,7 @@ ANCESTOR = "ancestor"            # HEAD itself, or a commit HEAD descends from
 NOT_ANCESTOR = "not an ancestor"  # the clone holds it, on another line of history
 NOT_HELD = "not held"            # the clone does not hold it
 NOT_A_COMMIT = "not a commit"    # the text is no commit id in full
+OTHER_OBJECT = "another object"  # the clone holds the id, and it is no commit: a tag, a tree, a file's content
 UNKNOWN = "unknown"              # no git, or the folder is no git checkout
 
 #: A commit id as git writes it in full: 40 hexadecimal digits, 64 in a
@@ -880,13 +881,17 @@ def commit_standing(repo_root, commit: str) -> str:
     (the clone holds it elsewhere), NOT_HELD (`git cat-file` does not know
     it - a commit of a branch that was squashed and deleted, which a fresh
     clone does not fetch, or a clone too shallow), NOT_A_COMMIT (no commit
-    id in full - `_COMMIT_ID`; an abbreviation is none), UNKNOWN (no git, or
-    no checkout).
+    id in full - `_COMMIT_ID`; an abbreviation is none, and neither is an id
+    with a blank in front of it or a line break behind it), OTHER_OBJECT (the
+    clone holds an object of that id which is no commit), UNKNOWN (no git,
+    or no checkout).
 
     `git merge-base --is-ancestor` answers 0 or 1 only for a commit the
     clone holds; for one it does not hold, and for a text that is no commit,
-    it answers 128 - which is why the commit is first asked for by itself."""
-    commit = str(commit or "").strip()
+    it answers 128 - which is why the id is first asked for by itself. It is
+    asked for its type (`git cat-file -t`): git takes the id of an annotated
+    tag where it expects a commit, and answers for the commit the tag names."""
+    commit = str(commit or "")
     if not _COMMIT_ID.fullmatch(commit):
         return NOT_A_COMMIT
     if repo_root is None:
@@ -894,11 +899,13 @@ def commit_standing(repo_root, commit: str) -> str:
     inside = _git(repo_root, "rev-parse", "--git-dir")
     if inside is None or inside.returncode != 0:
         return UNKNOWN
-    held = _git(repo_root, "cat-file", "-e", f"{commit}^{{commit}}")
+    held = _git(repo_root, "cat-file", "-t", commit)
     if held is None:
         return UNKNOWN
     if held.returncode != 0:
         return NOT_HELD
+    if held.stdout.strip() != "commit":
+        return OTHER_OBJECT
     done = _git(repo_root, "merge-base", "--is-ancestor", commit, "HEAD")
     if done is None:
         return UNKNOWN
@@ -933,8 +940,9 @@ def release_info_findings(expected: bytes, actual: bytes, repo_root=None) -> tup
 
     Wrong, whatever the checkout holds: not readable, another `kind`, a field
     release.json does not have, an entry listed twice, a commit that is no
-    commit id in full, a date that is not the date of the commit it names (where the
-    clone holds the commit). Behind the checkout - a difference in content:
+    commit id in full or is the id of an object that is no commit, a date
+    that is not the date of the commit it names (where the clone holds the
+    commit). Behind the checkout - a difference in content:
     another release than this mdb, no commit, a commit that is not HEAD or an
     ancestor of it - one the clone holds elsewhere, one it does not hold, one
     git cannot place - each with its own sentence; an entry the manifest has
@@ -977,11 +985,15 @@ def release_info_findings(expected: bytes, actual: bytes, repo_root=None) -> tup
     else:
         # without a checkout to ask (repo_root None) only the form of the id is judged
         standing = commit_standing(repo_root, str(commit)) if repo_root is not None else (
-            "" if _COMMIT_ID.fullmatch(str(commit).strip()) else NOT_A_COMMIT)
+            "" if _COMMIT_ID.fullmatch(str(commit)) else NOT_A_COMMIT)
         short = str(commit)[:12]
         if standing == NOT_A_COMMIT:
-            wrong.append(f"names the commit '{str(commit)[:80]}', which is no commit id in full (git writes one "
+            # as Python writes a text: a blank in front and a line break behind are seen
+            wrong.append(f"names the commit {str(commit)[:80]!r}, which is no commit id in full (git writes one "
                          "with 40 hexadecimal digits, 64 in a SHA-256 repository)")
+        elif standing == OTHER_OBJECT:
+            wrong.append(f"names the commit {short}, which is the id of another object of this clone - a tag, a "
+                         "tree or the content of a file - and not of a commit")
         elif standing == NOT_ANCESTOR:
             behind.append(f"names the commit {short}, which is not in the history of this checkout (the clone "
                           "holds it on another line of history)")

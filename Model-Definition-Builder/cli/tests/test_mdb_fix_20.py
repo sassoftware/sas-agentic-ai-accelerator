@@ -17,8 +17,9 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
-from content_fakes import CONTENT_ROOT, Response
+from content_fakes import CONTENT_ROOT, Response, make_repo
 from mdb import cli
+from mdb.core import content
 from mdb.core.content import load_manifest
 from mdb.viya import answer as answering
 from mdb.viya import content as deploying
@@ -26,6 +27,7 @@ from mdb.viya import session as s
 from test_builder_commands import (FILE_PATH, PACKAGE_FILE, Site, _built,  # noqa: F401
                                    _site_with_its_own_objects, discovery, importing, no_discovery, out, site)
 from test_content_deploy import CORE, STEP_PATH, command, manifest, repo  # noqa: F401
+from test_mdb_release_20 import _deploy_and_export, _git, _with_commit, gate, needs_git  # noqa: F401
 from test_session import URL, _answered, env, fake_sasctl  # noqa: F401
 
 REPOSITORY = Path(__file__).resolve().parents[3]
@@ -309,6 +311,49 @@ def test_the_hint_for_two_objects_says_whose_content_the_command_writes(importin
     assert (f"2 files of that name are in the folder (ids {mine[FILE_PATH].rsplit('/', 1)[-1]}, ") in text
     assert (f"update one from a checkout with `mdb content-deploy --only \"{FILE_PATH}\" --to <id>`, or remove the "
             "other)") in text
+
+
+# ---- the commit release.json names: a commit id, and nothing around it ----------------
+@needs_git
+def test_only_the_id_of_a_commit_as_it_stands_is_a_commit_of_release_json(tmp_path, gate):
+    """gate-20: three release.json commits made by hand. A full id with a
+    blank in front or a line feed behind passed as a commit id in full; the
+    id of an annotated tag was an ancestor and then failed on a sentence
+    about its date; the id of a tree was 'a commit this clone does not
+    hold'."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    make_repo(checkout)
+    _git(checkout, "init", "-q")
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-q", "-m", "first")
+    head = _deploy_and_export(checkout)
+    package_path = load_manifest(checkout).package_path
+    assert content.commit_standing(checkout, head) == content.ANCESTOR and gate(checkout, "--release")[0] == 0
+    for text in (" " + head, head + "\n", head + " ", "\t" + head):
+        assert content.commit_standing(checkout, text) == content.NOT_A_COMMIT, repr(text)
+        _with_commit(package_path, text)
+        for form in ((), ("--release",)):
+            code, printed = gate(checkout, *form)
+            assert code == 1, repr(text)
+            assert f"file 'release.json' names the commit {text!r}, which is no commit id in full (git" in printed
+    # ids the clone holds that are no commit: an annotated tag, the tree of HEAD, the content of a file
+    _git(checkout, "tag", "-a", "v0", "-m", "an annotated tag")
+    others = {"tag": _git(checkout, "rev-parse", "v0"), "tree": _git(checkout, "rev-parse", "HEAD^{tree}"),
+              "blob": _git(checkout, "rev-parse", "HEAD:CHANGELOG.md")}
+    assert others["tag"] != head and _git(checkout, "rev-parse", "v0^{commit}") == head
+    for kind, other in others.items():
+        assert _git(checkout, "cat-file", "-t", other) == kind
+        assert content.commit_standing(checkout, other) == content.OTHER_OBJECT, kind
+        _with_commit(package_path, other)
+        for form in ((), ("--release",)):
+            code, printed = gate(checkout, *form)
+            assert code == 1, kind
+            assert (f"file 'release.json' names the commit {other[:12]}, which is the id of another object of this "
+                    "clone - a tag, a tree or the content of a file - and not of a commit\n") in printed
+            assert "is dated" not in printed and "does not hold" not in printed
+    _with_commit(package_path, head)
+    assert gate(checkout, "--release")[0] == 0
 
 
 def test_an_error_that_is_no_answer_of_the_token_address_is_passed_on():

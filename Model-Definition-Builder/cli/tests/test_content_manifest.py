@@ -488,18 +488,25 @@ def test_release_json_is_held_to_its_kind_its_fields_its_release_and_its_commit(
 def test_git_says_where_a_commit_stands(tmp_path, monkeypatch):
     asked = []
     codes = {}
+    kind = {"is": "commit"}
 
     def run(command, **kwargs):
         asked.append(command)
-        return type("Done", (), {"returncode": codes.get(command[3], 0), "stdout": "", "stderr": ""})()
+        said = kind["is"] + "\n" if command[3] == "cat-file" else ""
+        return type("Done", (), {"returncode": codes.get(command[3], 0), "stdout": said, "stderr": ""})()
     monkeypatch.setattr(content.subprocess, "run", run)
     abcd = "abcd" * 10                                       # a commit id in full
     assert content.commit_standing(tmp_path, abcd) == content.ANCESTOR
     assert asked[-3:] == [["git", "-C", str(tmp_path), "rev-parse", "--git-dir"],
-                          ["git", "-C", str(tmp_path), "cat-file", "-e", abcd + "^{commit}"],
+                          ["git", "-C", str(tmp_path), "cat-file", "-t", abcd],
                           ["git", "-C", str(tmp_path), "merge-base", "--is-ancestor", abcd, "HEAD"]]
     codes["merge-base"] = 1
     assert content.commit_standing(tmp_path, abcd) == content.NOT_ANCESTOR
+    for other in ("tag", "tree", "blob"):                    # an id the clone holds, of something that is no commit
+        kind["is"] = other
+        assert content.commit_standing(tmp_path, abcd) == content.OTHER_OBJECT
+        assert content.commit_in_history(tmp_path, abcd) is None
+    kind["is"] = "commit"
     codes["cat-file"] = 128                                  # the clone does not hold it
     assert content.commit_standing(tmp_path, abcd) == content.NOT_HELD
     codes["rev-parse"] = 128                                 # no checkout
