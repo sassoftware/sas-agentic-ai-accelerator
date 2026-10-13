@@ -125,3 +125,38 @@ def test_the_line_of_a_refused_update_holds_the_whole_answer(command, repo):
     assert result.exit_code == 1
     assert (f"  FAILED       file          {CORE}  (the file was left as it is: the update of its content was refused "
             f"(HTTP 412 {REFUSED['message']} - {REFUSED['remediation']} (errorCode 0)))\n") in text
+
+
+def test_a_content_root_that_is_created_gets_a_line(command):
+    """live-19: the run sent the POST for the root folder, and neither the
+    dry run nor the run had a line for it."""
+    root = "/Users/me/My Folder/ZZ_VERIFY_R20/root1"
+    _, _, viya = command("--only", "RAG", "--dry-run")                    # the fake, before anything is on it
+    viya.make_folder("/Users/me")
+    result, text, _ = command("--content-root", root, "--create", "--dry-run")
+    assert result.exit_code == 0, text
+    assert (f"  created      folder        {root}  (the folder the content goes into, with every folder above it "
+            "that is missing)\n") in text
+    assert "14 entries: 13 created, 1 not deployed." in text and viya.wrote() == []
+    result, text, _ = command("--content-root", root, "--create")
+    assert result.exit_code == 0, text
+    lines = text.splitlines()
+    assert lines[1] == (f"  created      folder        {root}  (the folder the content goes into; created above it: "
+                        "/Users/me/My Folder, /Users/me/My Folder/ZZ_VERIFY_R20)")
+    # it is no entry: the count is the manifest's
+    assert "14 entries: 13 created, 1 not deployed." in text
+    # a folder that is there gets no such line
+    result, text, _ = command("--content-root", root)
+    assert "the folder the content goes into" not in text and "14 entries: 13 equal, 1 not deployed." in text
+    # the folder form of --to, and a root whose parent is there
+    result, text, _ = command("--only", "RAG", "--to", "/Users/me/Retrieval", "--create")
+    assert "  created      folder        /Users/me/Retrieval  (the folder the content goes into)\n" in text
+
+
+def test_the_import_prints_the_line_for_a_content_root_it_creates(importing, no_discovery):
+    no_discovery()
+    result, fake, text = importing(Site(), "--content-root", "/Team/Accelerator", "--create", "--no-reports",
+                                   "--no-files", without_report=True)
+    assert result.exit_code == 0, text
+    assert ("    created      folder        /Team/Accelerator  (the folder the content goes into; created above it: "
+            "/Team)\n") in text

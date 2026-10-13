@@ -406,7 +406,8 @@ class DeployResult:
         entry = self.stopped_at.entry
         record = any(is_release_record(outcome.entry) for outcome in self.not_attempted)
         return (f"Stopped at the first write that failed: {entry.kind} {entry.path}. Written before it: "
-                f"{self.count(CREATED)} created, {self.count(UPDATED)} updated. Not attempted behind it: "
+                f"{self.count(CREATED)} created, {self.count(UPDATED)} updated"
+                f"{', and the folder the content goes into' if self.root_created else ''}. Not attempted behind it: "
                 f"{len(self.not_attempted)} entr{'y' if len(self.not_attempted) == 1 else 'ies'}. Nothing was "
                 "removed." + (" release.json was not written: the folder's release.json is the one an earlier run "
                               "wrote, or there is none." if record else ""))
@@ -425,19 +426,21 @@ def is_release_record(entry) -> bool:
 
 
 def _ensure_root(session, content_root: str, dry_run: bool, create: bool = True) -> tuple:
-    """(folder id or None, created?) for the content root. A missing root is
-    created with every folder above it that is missing too - only where
-    `create` allows it; otherwise a missing root is a DeployError and nothing
-    is written. A folder that cannot be created ends it as a WriteFailed that
-    names what was created before it."""
+    """(folder id or None, the folders made for it) for the content root: no
+    folder for a root that is there. A missing root is created with every
+    folder above it that is missing too, and each is listed, the root last -
+    only where `create` allows it; otherwise a missing root is a DeployError
+    and nothing is written. A dry run creates nothing and lists the root
+    alone: it does not look up the folders above it. A folder that cannot be
+    created ends it as a WriteFailed that names what was created before it."""
     found = find_folder(session, content_root)
     if found:
-        return found["id"], False
+        return found["id"], []
     if not create:
         raise DeployError(f"there is no folder {content_root}, and nothing was created: pass --create to create "
                           "it (with every folder above it that is missing)")
     if dry_run:
-        return None, True
+        return None, [content_root]
     made: list = []
 
     def make(path: str, missing: bool = False):
@@ -452,7 +455,7 @@ def _ensure_root(session, content_root: str, dry_run: bool, create: bool = True)
             raise WriteFailed(f"{exc} - created before it: {', '.join(made) if made else 'nothing'}") from exc
         made.append(path)
         return created
-    return make(content_root.rstrip("/"), missing=True), True
+    return make(content_root.rstrip("/"), missing=True), made
 
 
 def selected(manifest, only) -> tuple:
@@ -481,7 +484,9 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
     `manifest` is the list of entries, `source` what each holds - the
     checkout unless another source is given. With `dry_run` nothing is
     written: every outcome says what a run would do, and every request is a
-    GET. `emit` is called with each outcome as it is known. `only` restricts
+    GET. `emit` is called with each outcome as it is known - and first, where
+    `content_root` itself is created, with a line for that folder, which is
+    no entry and no outcome of the result. `only` restricts
     the run to the entries at or below the given paths (and the folders above
     them); everything else is not looked at. `settings` maps the name of a
     job definition parameter to the value to write there, into every job
@@ -512,7 +517,14 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
             emit(outcome)
         return outcome
 
-    root_id, root_created = _ensure_root(session, content_root, dry_run, create_root)
+    root_id, made = _ensure_root(session, content_root, dry_run, create_root)
+    result.root_created = bool(made)
+    if made and emit:
+        # the folder itself is no entry of the manifest: it gets a line, and is not counted with the entries
+        emit(Outcome(_content.Entry(path=content_root, kind="folder"), CREATED,
+                     "the folder the content goes into, with every folder above it that is missing" if dry_run else
+                     "the folder the content goes into"
+                     + (f"; created above it: {', '.join(made[:-1])}" if made[:-1] else "")))
     folder_ids: dict = {"": root_id}
     members: dict = {}
 
@@ -608,7 +620,6 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
                     what = f"reference to a {what}"
                 name = str(member.get("name"))
                 result.unlisted.append(f"{folder_path}/{name} ({what})" if folder_path else f"{name} ({what})")
-    result.root_created = root_created
     return result
 
 

@@ -833,9 +833,11 @@ def test_the_command_stops_at_the_first_failed_write_and_lists_what_it_did_not_a
     assert "  not deployed report        Prompt Builder/Prompt Builder  (not looked up after the stop)\n" in text
     assert "  not attempted file          release.json  (not written: the run stopped in front of it" in text
     assert "14 entries: 9 created, 1 not deployed, 3 not attempted, 1 FAILED." in text
-    assert (f"Stopped at the first write that failed: step {STEP_PATH}. Written before it: 9 created, 0 updated. "
-            "Not attempted behind it: 3 entries. Nothing was removed. release.json was not written: the folder's "
-            "release.json is the one an earlier run wrote, or there is none.") in text
+    # the content root was made by this run too, and is no entry: named beside the counts
+    assert (f"Stopped at the first write that failed: step {STEP_PATH}. Written before it: 9 created, 0 updated, "
+            "and the folder the content goes into. Not attempted behind it: 3 entries. Nothing was removed. "
+            "release.json was not written: the folder's release.json is the one an earlier run wrote, or there is "
+            "none.") in text
     assert "Not every entry reached the folder." in text and "Done." not in text
     # the next run brings the rest and leaves what is there
     viya.refuse.clear()
