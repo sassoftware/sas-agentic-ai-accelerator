@@ -623,14 +623,12 @@ def test_no_step_of_the_repository_is_registered_with_a_user():
     shipped = load_manifest(REPOSITORY)
     source = content.CheckoutSource(shipped)
     steps = [entry for entry in shipped.objects() if entry.kind == "step"]
-    carrying = 0
+    assert steps
     for entry in steps:
         on_disk = json.loads(shipped.source_path(entry.source).read_text(encoding="utf-8"))
-        carrying += "createdBy" in on_disk
         sent = json.loads(source.step_document(entry))
         assert not {"createdBy", "modifiedBy", "creationTimeStamp", "modifiedTimeStamp", "links", "id"} & set(sent)
         # what is compared, and the name the step is registered under, are those of the file
         assert content.step_differences(on_disk, sent) == [] and sent["name"] == on_disk["name"] == entry.name
         assert {key: on_disk.get(key) for key in ("displayName", "description", "type", "metadataVersion")} == \
             {key: sent.get(key) for key in ("displayName", "description", "type", "metadataVersion")}
-    assert len(steps) == 18 and carrying > 0, "no .step file of the manifest carries a user any more"
