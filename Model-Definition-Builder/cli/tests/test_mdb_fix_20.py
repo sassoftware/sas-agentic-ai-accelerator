@@ -16,13 +16,13 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
-from content_fakes import Response
+from content_fakes import CONTENT_ROOT, Response
 from mdb import cli
 from mdb.core.content import load_manifest
 from mdb.viya import answer as answering
 from mdb.viya import content as deploying
 from mdb.viya import session as s
-from test_content_deploy import command, manifest, repo  # noqa: F401
+from test_content_deploy import CORE, STEP_PATH, command, manifest, repo  # noqa: F401
 from test_session import URL, _answered, env, fake_sasctl  # noqa: F401
 
 REPOSITORY = Path(__file__).resolve().parents[3]
@@ -238,6 +238,34 @@ def test_a_part_that_names_release_json_is_refused_before_the_sign_in(command, m
     assert deploying.record_in_part(manifest, ["release.json"]) and deploying.record_in_part(manifest, ["RAG", "release.json"])
     assert not deploying.record_in_part(manifest, ["RAG"]) and not deploying.record_in_part(manifest, [])
     assert not deploying.record_in_part(manifest, ["release.json", "Data", "RAG", "Prompt Builder"])
+
+
+# ---- a reference of the name of an entry that names an object of another kind ---------
+def test_a_reference_of_another_kind_is_listed_as_what_it_is_and_fails_nothing(command):
+    """gate-20 / review-20: the help said a reference 'of that name' fails
+    the entry. The code needs name and kind - the kind says which one is
+    meant - and listed the path of a manifest entry under 'Not in the
+    manifest' without a word that the entry is something else."""
+    result, text, viya = command()
+    assert result.exit_code == 0, text
+    viya.put_reference(f"{CONTENT_ROOT}/{CORE}", "/reports/reports/zz-other-kind")
+    viya.put_reference(f"{CONTENT_ROOT}/{STEP_PATH}", "/files/files/a-file")
+    viya.put_reference(f"{CONTENT_ROOT}/RAG", "/files/files/another-file")
+    viya.put_reference(f"{CONTENT_ROOT}/RAG/not listed", "/files/files/a-third")
+    viya.calls.clear()
+    result, text, viya = command()
+    assert result.exit_code == 0 and viya.wrote() == [] and "FAILED" not in text
+    assert f"  equal        file          {CORE}  (id " in text
+    assert "\nNot in the manifest and left alone (4) - " in text
+    assert f"  {CORE} (reference to a report - not the file that is listed under this name)\n" in text
+    assert f"  {STEP_PATH} (reference to a file - not the step that is listed under this name)\n" in text
+    assert "  RAG (reference to a file - not the folder that is listed under this name)\n" in text
+    assert "  RAG/not listed (reference to a file)\n" in text
+    # the sentence of the help is the one the code keeps
+    said = " ".join(cli.content_deploy.__doc__.split())
+    assert ("or a reference of that name to an object of that kind elsewhere - alone, or beside the object itself - "
+            "fail the entry: each is named on its line and none is written. A reference of that name to an object "
+            "of another kind fails nothing and is listed at the end.") in said
 
 
 def test_an_error_that_is_no_answer_of_the_token_address_is_passed_on():

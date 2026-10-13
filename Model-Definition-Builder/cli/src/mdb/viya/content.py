@@ -54,7 +54,9 @@ reference is told by its member type, is never followed, and is no object of
 the folder. ONE NAME, ONE OBJECT: where a folder holds two objects of the
 name and kind of an entry, or a reference of that name and kind - alone, or
 beside the object itself - the entry is FAILED, each of them is named on its
-line and none is written: nothing says which one is meant.
+line and none is written: nothing says which one is meant. A reference of
+that name to an object of another kind fails nothing - the kind says which
+is meant - and is listed with what else sits in the folder.
 
 A report is not deployed: it is authored in SAS Visual Analytics and reaches
 a site through the transfer service.
@@ -641,9 +643,11 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
             if is_reference(member) or key not in listed_entries:
                 what = kind or member.get("contentType") or uri.strip("/").split("/")[0] or "object"
                 if is_reference(member):
-                    # at a listed path the reference is what is not listed, not the path
+                    # at a listed path the reference is what is not listed, not the path - whatever kind
+                    # of object it names
+                    listed_as = sorted(k for folder, name, k in listed_entries if (folder, name) == key[:2])
                     what = f"reference to a {what}" + (
-                        f" - not the {what} that is listed under this name" if key in listed_entries else "")
+                        f" - not the {' or '.join(listed_as)} that is listed under this name" if listed_as else "")
                 name = str(member.get("name"))
                 result.unlisted.append(f"{folder_path}/{name} ({what})" if folder_path else f"{name} ({what})")
     return result

@@ -1634,7 +1634,7 @@ def content_deploy(
     before it; every entry behind it is listed as not attempted. Where the
     update of a file is refused, the file is left as it is. An entry that
     fails before anything was sent (two objects of its name in the folder, a
-    reference to an object elsewhere, an object that cannot be read) is
+    reference of its name and kind, an object that cannot be read) is
     reported and the run goes on. Either way the exit code is 1, and a second
     run leaves what is equal by then as it is. release.json is written last,
     only by a run that covers every entry of the manifest, and only when
@@ -1644,8 +1644,10 @@ def content_deploy(
     refused with one line before the command signs in, and writes nothing.
 
     ONE NAME, ONE OBJECT. Two objects of the name and kind of an entry in
-    its folder, or a reference of that name - alone, or beside the object
-    itself - fail the entry: each is named on its line and none is written.
+    its folder, or a reference of that name to an object of that kind
+    elsewhere - alone, or beside the object itself - fail the entry: each is
+    named on its line and none is written. A reference of that name to an
+    object of another kind fails nothing and is listed at the end.
 
     SITE SETTINGS. A parameter the manifest marks `siteSetting` - the compute
     context `_contextName`, the CAS library, the credential domain and the
@@ -2310,9 +2312,9 @@ def builders_import(
     does not, and no second object of the name. A file keeps its id as well:
     its content is replaced, the file is not deleted. Two objects of one name
     in a folder are both named and neither is written - and a reference of
-    that name to an object elsewhere counts as one of them, alone or beside
-    the object itself: it is named on the line of the entry, never followed,
-    and the entry is FAILED until the reference is removed.
+    that name to an object of that kind elsewhere counts as one of them,
+    alone or beside the object itself: it is named on the line of the entry,
+    never followed, and the entry is FAILED until the reference is removed.
 
     THE OPTIONS of the Prompt Builder report are kept across the import. With
     --options the values of that file are written back. Without it, and when

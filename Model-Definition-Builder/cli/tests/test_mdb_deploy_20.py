@@ -596,11 +596,12 @@ def test_the_help_and_the_readme_say_what_the_commands_do():
            "in, and writes nothing." in deploy_help
     assert "only by a run that covers every entry of the manifest - a run of a part that names it, --only " \
            "release.json, is refused" in readme
-    assert "or a reference of that name - alone, or beside the object itself - fail the entry" in deploy_help
-    assert "a reference of that name to an object elsewhere counts as one of them, alone or beside the object " \
-           "itself" in import_help
-    assert "or a reference of that name to an object elsewhere - alone, or beside the object itself - fail the " \
-           "entry" in readme
+    assert "or a reference of that name to an object of that kind elsewhere - alone, or beside the object itself - " \
+           "fail the entry" in deploy_help
+    assert "a reference of that name to an object of that kind elsewhere counts as one of them, alone or beside " \
+           "the object itself" in import_help
+    assert "or a reference of that name to an object of that kind elsewhere - alone, or beside the object itself " \
+           "- fail the entry" in readme
     assert "(--only Data --to \"/Team/Tables/Data\" writes /Team/Tables)" in deploy_help
     assert "--only Data --to \"/Team/Tables/Data\" writes /Team/Tables into contentRoot" in readme
     assert "with --no-reports added where the reports were refused for the content root" in import_help
