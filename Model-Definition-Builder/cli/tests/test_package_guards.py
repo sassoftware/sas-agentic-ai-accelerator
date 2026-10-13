@@ -758,9 +758,14 @@ def test_a_package_gives_what_each_of_its_objects_holds(manifest):
             assert set(body) <= {"name", "type", "code", "parameters", "properties", "description"}
             assert all(set(p) <= {"version", "name", "defaultValue", "type", "label", "required"}
                        for p in body["parameters"])
-    # which parameters are the site's is read from the manifest of the checkout, where it lists the path
+    # which parameters are the site's is read from the manifest of the checkout, where it lists the path -
+    # and the compute context and the content root are the site's wherever the packaged definition has them,
+    # also without a checkout (an import of a job definition the checkout does not list lost a site's context)
     assert source.site_settings(listed.find("Prompt Builder/UI", "jobDefinition")) == ("_contextName",)
-    assert PackageSource(built.build()).site_settings(listed.find("Prompt Builder/UI", "jobDefinition")) == ()
+    assert PackageSource(built.build()).site_settings(listed.find("Prompt Builder/UI", "jobDefinition")) == \
+        ("_contextName",)
+    assert PackageSource(built.build()).site_settings(listed.find("Prompt Builder/Optimize", "jobDefinition")) == \
+        ("contentRoot",)
 
 
 def test_what_a_package_holds_and_is_not_brought_in_place_is_named(manifest):

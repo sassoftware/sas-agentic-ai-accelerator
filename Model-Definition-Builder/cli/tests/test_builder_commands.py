@@ -1164,7 +1164,12 @@ def test_a_report_is_not_imported_into_a_root_the_package_does_not_come_from(imp
     not imported, the command says so, and the exit code says it too."""
     no_discovery()
     viya = importing.viya
+    # a folder that is not there is not created without --create: nothing is written
     result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), "--content-root", "/Team/Accelerator")
+    assert result.exit_code == 1 and viya.wrote() == []
+    assert "there is no folder /Team/Accelerator, and nothing was created: pass --create" in text
+    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}), "--content-root", "/Team/Accelerator",
+                                   "--create")
     assert result.exit_code == 1
     assert importing.uploaded == {} and fake.read == [] and fake.written == [] and _captured_files(tmp_path) == []
     assert ("  Reports (Prompt Builder/Prompt Builder): NOT imported - the package was exported from "
@@ -1173,7 +1178,7 @@ def test_a_report_is_not_imported_into_a_root_the_package_does_not_come_from(imp
     assert "--no-reports to bring everything but the reports" in text
     # the content was brought all the same
     assert "    7 entries: 7 created." in text and FILE_PATH in viya.tree("/Team/Accelerator")
-    assert "then run:\nmdb builders-import --content-root /Team/Accelerator --no-releases\n" in text
+    assert "then run:\nmdb builders-import --content-root /Team/Accelerator --no-releases --create\n" in text
 
 
 def test_a_package_from_a_folder_below_others_never_reaches_the_transfer_service(importing, no_discovery):
@@ -1182,14 +1187,14 @@ def test_a_package_from_a_folder_below_others_never_reaches_the_transfer_service
     no_discovery()
     nested = _built(root="root1", location="/Users/me/My Folder/ZZ_VERIFY_R18").build()
     for root in (None, "/Users/me/My Folder/ZZ_VERIFY_R18/root1"):
-        args = ["--content-root", root] if root else []
+        args = ["--content-root", root, "--create"] if root else []
         result, fake, text = importing(Site(), *args, package=nested)
         assert result.exit_code == 1, text
         assert importing.uploaded == {}
         assert ("NOT imported - the package was exported from /Users/me/My Folder/ZZ_VERIFY_R18/root1, a folder "
                 "that is not at the root of SAS Content: the transfer service puts such a package into a new "
                 f"folder at the root of SAS Content (measured), not into {root or CONTENT_ROOT}.") in text
-    result, fake, text = importing(Site(), "--content-root", ROOT2, "--no-reports", package=nested)
+    result, fake, text = importing(Site(), "--content-root", ROOT2, "--no-reports", "--create", package=nested)
     assert result.exit_code == 0 and importing.uploaded == {}
     # a root that does not say where it was exported from is not guessed either
     silent = json.loads(json.dumps(nested))
@@ -1321,30 +1326,89 @@ def _context(viya, root=CONTENT_ROOT) -> str:
     return {p["name"]: p["defaultValue"] for p in page["parameters"]}["_contextName"]
 
 
-def test_the_compute_context_of_the_site_is_written_into_the_job_definitions(importing, no_discovery):
-    """Start Here without `_contextName` ran in the SAS Job Execution compute
-    context, under a service account, and checked nothing. The import writes
-    the context it knows runs as the user: the ingestion compute context of
-    the options it restores."""
+def test_a_compute_context_the_site_set_survives_the_import(importing, no_discovery):
+    """The import handed the ingestion compute context of the options it
+    restores to every job definition with `_contextName` as a GIVEN value, so
+    the context a site set for the Prompt Builder page (and for Start Here)
+    was replaced on every upgrade - the shipped report holds one. An existing
+    value is left alone; only --compute-context writes over it."""
     no_discovery()
     viya = importing.viya
     _site_with_its_own_objects(viya)
     assert _context(viya) == "Team compute context"
-    result, fake, text = importing(Site(**{"Prompt Builder": {**TUNED, "ragComputeContext": "RAG compute context"}}))
+    options = {**TUNED, "ragComputeContext": "RAG compute context"}
+    result, fake, text = importing(Site(**{"Prompt Builder": options}))
     assert result.exit_code == 0, text
-    assert ("Compute context: RAG compute context (the ingestion compute context of the options) - written into "
-            "_contextName of the job definitions that have it.") in text
-    assert _context(viya) == "RAG compute context"
-    assert f"    updated      jobDefinition {UI_PATH}  (form, parameters; id " in text
-    # the one that is given wins
+    assert ("Compute context: RAG compute context (the ingestion compute context of the options) - given to a job "
+            "definition this run creates; one the site has keeps its _contextName.") in text
+    assert _context(viya) == "Team compute context"
+    assert f"    updated      jobDefinition {UI_PATH}  (form; id " in text
+    # the one that is given is written, into every definition that has the parameter
+    result, fake, text = importing(Site(**{"Prompt Builder": options}), "--compute-context", "Given context")
+    assert result.exit_code == 0, text
+    assert ("Compute context: Given context (--compute-context) - written into _contextName of every job definition "
+            "that has it.") in text and _context(viya) == "Given context"
+    # and stays when the next import is not given one
+    result, fake, text = importing(Site(**{"Prompt Builder": options}))
+    assert result.exit_code == 0 and _context(viya) == "Given context"
+
+
+def test_a_job_definition_the_import_creates_gets_the_context_of_the_options(importing, no_discovery):
+    """Start Here without `_contextName` ran in the SAS Job Execution compute
+    context, under a service account, and checked nothing. A definition the
+    site does not have yet gets the context the options know runs as the
+    user: the ingestion compute context."""
+    no_discovery()
+    viya = importing.viya
+    built = _built()
+    built.job("Start Here", START_JOB)
     result, fake, text = importing(Site(**{"Prompt Builder": {**TUNED, "ragComputeContext": "RAG compute context"}}),
-                                   "--compute-context", "Given context")
+                                   package=built.build())
     assert result.exit_code == 0, text
-    assert "Compute context: Given context (--compute-context)" in text and _context(viya) == "Given context"
-    # a retired report's computeContext WAS the ingestion context: folded in, it counts
+    start, _ = viya.jobs[viya.at(f"{CONTENT_ROOT}/Start Here")[0]]
+    assert {p["name"]: p["defaultValue"] for p in start["parameters"]}["_contextName"] == "RAG compute context"
+    assert _context(viya) == "RAG compute context"
+    # a retired report's computeContext WAS the ingestion context: folded in, it counts for a new definition
+    other = Viya()
+    importing.viya.__dict__.update(other.__dict__)
     result, fake, text = importing(Site(**{"RAG Builder": {**OLD_RAG, "computeContext": "Old RAG context"}}))
     assert result.exit_code == 0, text
     assert _context(viya) == "Old RAG context"
+
+
+def test_the_content_root_a_job_reads_is_the_folder_the_content_goes_to(importing, no_discovery):
+    """review-18: a package exported from another root with
+    --allow-differences carries that root in Start Here; imported into the
+    default root, Start Here was created checking the exporter's folder."""
+    no_discovery()
+    viya = importing.viya
+    built = _built(report=False)
+    built.job("Start Here", {**START_JOB, "parameters": [
+        START_JOB["parameters"][0], {**START_JOB["parameters"][1], "defaultValue": "/Users/x/My Folder/ZZ/root1"}]})
+    result, fake, text = importing(Site(), package=built.build())
+    assert result.exit_code == 0, text
+    start, _ = viya.jobs[viya.at(f"{CONTENT_ROOT}/Start Here")[0]]
+    assert {p["name"]: p["defaultValue"] for p in start["parameters"]}["contentRoot"] == CONTENT_ROOT
+
+
+def test_a_job_definition_the_checkout_does_not_list_keeps_its_context(importing, no_discovery):
+    """review-18: Start Here and Load-Accelerator-Tables, which the manifest of
+    the importer's checkout did not list, lost a hand-set `_contextName` in a
+    plain import. The compute context and the content root are site values
+    wherever a packaged definition has them."""
+    no_discovery()
+    viya = importing.viya
+    viya.put_member(f"{CONTENT_ROOT}/Start Here", "/jobDefinitions/definitions/", {
+        "name": "Start Here", **START_JOB, "parameters": [
+            {**START_JOB["parameters"][0], "defaultValue": "Site context"}, START_JOB["parameters"][1]]})
+    built = _built()
+    built.job("Start Here", START_JOB)
+    result, fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), package=built.build())
+    assert result.exit_code == 0, text
+    start, _ = viya.jobs[viya.at(f"{CONTENT_ROOT}/Start Here")[0]]
+    assert {p["name"]: p["defaultValue"] for p in start["parameters"]} == {
+        "_contextName": "Site context", "contentRoot": CONTENT_ROOT}
+    assert "    equal        jobDefinition Start Here  (id " in text
 
 
 def test_the_context_of_the_optimization_job_is_not_taken_for_it(importing, no_discovery):

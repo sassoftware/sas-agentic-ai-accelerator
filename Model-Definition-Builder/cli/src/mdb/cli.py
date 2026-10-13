@@ -1913,7 +1913,7 @@ def _shell_word(value, windows: bool = os.name == "nt") -> str:
 
 def _import_command(packages, options, caslib, table, server, no_releases: bool, timeout: int,
                     report_caslib=None, content_root=None, compute_context=None, no_reports: bool = False,
-                    no_capture: bool = False) -> str:
+                    no_capture: bool = False, create: bool = False) -> str:
     """`mdb builders-import` with the arguments a run was given, for the line
     that tells an admin to run it again. An argument that was not given is
     left out, so the repeat reads the same environment the first run did -
@@ -1933,6 +1933,8 @@ def _import_command(packages, options, caslib, table, server, no_releases: bool,
         words.append("--no-reports")
     if no_capture and options is None:
         words.append("--no-options-capture")
+    if create:
+        words.append("--create")
     if timeout != IMPORT_TIMEOUT:
         words += ["--timeout", str(timeout)]
     return " ".join(words)
@@ -2046,8 +2048,13 @@ def builders_import(
              "the package was exported from, at the root of SAS Content."),
     compute_context: Optional[str] = typer.Option(
         None, "--compute-context",
-        help="Compute context written into the parameter _contextName of the job definitions that have one. "
-             "Default: the ingestion compute context of the options that are written back, when they name one."),
+        help="Compute context written into the parameter _contextName of every job definition that has one. "
+             "Without it a job definition the site has keeps its context, and one the import creates gets the "
+             "ingestion compute context of the options that are written back (else the package's)."),
+    create: bool = typer.Option(
+        False, "--create",
+        help="Create the --content-root folder (with every folder above it) where it is not there. Without it "
+             "only the content root the manifest names is created."),
     no_releases: bool = typer.Option(False, "--no-releases", help="Do not (re)load the release table first."),
     no_reports: bool = typer.Option(
         False, "--no-reports",
@@ -2115,10 +2122,13 @@ def builders_import(
 
     THE COMPUTE CONTEXT. Start Here and Load-Accelerator-Tables have to run
     as the user who opens them, so their job definitions carry _contextName.
-    The import writes --compute-context there, else the ingestion compute
-    context (ragComputeContext) of the options it writes back; where it knows
-    neither, a job definition on the site keeps the context it has and a new
-    one gets the package's.
+    A context a site set in a job definition - in these two or in
+    SAS-LLM-Prompt-Builder-UI - survives the import: an existing value is
+    left alone. Only a job definition the import CREATES gets the ingestion
+    compute context (ragComputeContext) of the options it writes back, else
+    the package's. --compute-context writes the context it names into every
+    job definition that has the parameter. contentRoot is written with the
+    folder the content goes to.
 
     A RETIRED REPORT. The import removes nothing: the report "RAG Builder"
     and the job definition RAG-Builder-UI of a 2.2.x site stay where they
@@ -2146,6 +2156,7 @@ def builders_import(
     with a warning or an error is printed and counts. The in-place part stops
     at the first write that fails and lists what it did not attempt.
     """
+    from .core.content import CONTEXT_PARAMETER
     from .core.options import BUILDER_REPORTS
     from .core.packages import (PackageSource, legacy_objects, mapping_preview, report_labels,
                                 reports_package)
@@ -2180,7 +2191,8 @@ def builders_import(
         """The command line as it was given, for the line that says how to
         go on - with the options file a run kept, once there is one."""
         return _import_command(packages, options_file, caslib_given, table, server, no_releases, timeout,
-                               report_caslib, content_root, compute_context, no_reports, no_options_capture)
+                               report_caslib, content_root, compute_context, no_reports, no_options_capture,
+                               create)
 
     caslib_given = caslib
     given = command(options)
@@ -2237,15 +2249,22 @@ def builders_import(
                     given = command(captured_file)
                     console.print(f"Options: read from the report on this site and kept in {captured_file}; "
                                   "they are written back after the import.", highlight=False)
-        # The compute context for the job definitions: what was given, else
-        # what the options that are written back name.
-        context = (compute_context or "").strip() or _known_context(saved)
-        settings = _deploy_settings(content_root, context)
-        if context:
-            console.print(f"Compute context: {context} ("
-                          + ("--compute-context" if (compute_context or "").strip()
-                             else "the ingestion compute context of the options") + ") - written into "
-                          "_contextName of the job definitions that have it.", markup=False, highlight=False)
+        # The compute context for the job definitions: what was given goes
+        # into every one that has the parameter; what the options that are
+        # written back name goes only into one this run creates - a context a
+        # site set survives the import. The content root is the folder the
+        # content goes to.
+        given_context = (compute_context or "").strip()
+        known = "" if given_context else _known_context(saved)
+        settings = _deploy_settings(root, given_context)
+        new_values = {CONTEXT_PARAMETER: known} if known else {}
+        if given_context:
+            console.print(f"Compute context: {given_context} (--compute-context) - written into _contextName of "
+                          "every job definition that has it.", markup=False, highlight=False)
+        elif known:
+            console.print(f"Compute context: {known} (the ingestion compute context of the options) - given to a "
+                          "job definition this run creates; one the site has keeps its _contextName.",
+                          markup=False, highlight=False)
         if no_releases:
             console.print(f"Release table: not reloaded (--no-releases); reports bind to {releases_to}.")
         elif dry_run:
@@ -2351,7 +2370,8 @@ def builders_import(
                 try:
                     result = deploy(session, source.manifest(root), root, dry_run,
                                     lambda outcome: _emit_outcome(outcome, "    "), source=source,
-                                    settings=settings, reports=False)
+                                    settings=settings, reports=False, new_values=new_values,
+                                    create_root=create or root == manifest.content_root)
                 except DeployError as exc:
                     console.print(f"    {exc}", style="red", markup=False, highlight=False, soft_wrap=True)
                     package_failed = True

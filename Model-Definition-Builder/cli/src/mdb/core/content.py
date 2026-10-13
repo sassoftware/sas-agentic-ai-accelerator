@@ -40,11 +40,15 @@ THE KINDS.
 
 A SITE SETTING. A parameter marked `siteSetting: true` holds a value of the
 site, not of the release: the compute context a job runs in (`_contextName`),
-the content root a job reads (`contentRoot`). Its default in the manifest is
-what a NEW job definition gets. On a site that has the job definition the
-value is the site's: a deploy and an import leave it as it is and do not
-count it as a difference, unless they are given the value to write
-(`--compute-context`, `--content-root`).
+the CAS library, the credential domain and the other values a site points
+its jobs at. Its default in the manifest is what a NEW job definition gets
+(for `_contextName`, `mdb builders-import` gives a new one the ingestion
+compute context of the options it restores). On a site that has the job
+definition the value is the site's: a deploy and an import leave it as it is
+and do not count it as a difference, unless they are given the value to
+write (`--compute-context`). `contentRoot` is the one site setting a deploy
+and an import always write: with the folder the content goes to, because a
+job reads the content root it sits in.
 
 This module holds the manifest and what each entry is expected to be - the
 bytes of a file, the compared parts of a step and of a job definition - so that

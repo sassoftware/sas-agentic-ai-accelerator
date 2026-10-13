@@ -324,6 +324,17 @@ def test_a_site_setting_keeps_the_value_of_the_site(repo):
     assert values(given)[0] == "Other context"
     assert values(content.settle_parameters(wanted, None, (), {"_action": "execute", "notThere": "x"})) == [
         "SAS Studio compute context", "execute"]
+    # what the options name for a NEW definition: a new one, or one that lacks the parameter, gets it - a
+    # definition the site has keeps its own value, and the value given still wins over it
+    fresh = {"_contextName": "From the options"}
+    assert values(content.settle_parameters(wanted, None, (), None, fresh))[0] == "From the options"
+    assert values(content.settle_parameters(wanted, {"parameters": []}, ("_contextName",), None, fresh))[0] == \
+        "From the options"
+    assert values(content.settle_parameters(wanted, live, ("_contextName",), None, fresh))[0] == \
+        "Team compute context"
+    assert values(content.settle_parameters(wanted, live, ("_contextName",), {"_contextName": "G"}, fresh))[0] == "G"
+    assert values(content.settle_parameters(wanted, None, (), None, {"_contextName": " "}))[0] == \
+        values(wanted)[0]
     assert values(content.settle_parameters(wanted, live, ("_contextName",), {"_contextName": None})) == [
         "Team compute context", "prompts,form,execute"]
 

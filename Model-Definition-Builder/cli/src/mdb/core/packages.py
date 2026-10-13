@@ -984,8 +984,18 @@ class PackageSource:
         return wanted
 
     def site_settings(self, entry) -> tuple:
+        """The parameters of a packaged job definition that hold a value of
+        the site: what the checkout's manifest marks for the entry at that
+        path, and - whatever the checkout lists - the compute context and the
+        content root wherever the packaged definition has them. A job
+        definition the checkout does not list (or an importer without the
+        manifest of this release) keeps the context a site set as well."""
         listed = self.checkout.find(entry.path, "jobDefinition") if self.checkout is not None else None
-        return _content.site_settings(listed) if listed is not None else ()
+        names = list(_content.site_settings(listed)) if listed is not None else []
+        packaged = {p.get("name") for p in self.job_body(entry).get("parameters") or []}
+        names += [name for name in (_content.CONTEXT_PARAMETER, _content.CONTENT_ROOT_PARAMETER)
+                  if name in packaged and name not in names]
+        return tuple(names)
 
 
 def reports_package(package: dict, root_uri: Optional[str] = None) -> tuple:
