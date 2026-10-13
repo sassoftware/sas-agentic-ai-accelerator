@@ -332,3 +332,24 @@ def test_each_outcome_has_one_sentence_and_the_sentences_differ():
     in_order(swap, 'table.dropTable / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW" quiet = true;',
              'table.tableExists result = still / caslib = "&_lfs_caslib." name = "&_lfs_table.";',
              'if still.exists != 0 then outcome = "kept";', "table.loadTable status = restored /")
+
+
+def test_the_readme_says_of_the_program_what_it_does():
+    """The README of the folder said that the table is 'dropped, loaded, promoted and saved as before': since the
+    counted upload takes the place of the table, no statement loads the sheet a second time. It says that now, and
+    what becomes of a folder that is not there and of a promote that is refused."""
+    readme = " ".join(program("README.md").split())
+    code = without_comments(program("Load-Fact-Sheets.sas"))
+
+    assert "dropped, loaded, promoted and saved as before" not in readme
+    assert ("only a sheet that CAS held completely takes the place of the table: the table is dropped, and the upload whose rows were "
+            "counted is promoted under its name and saved - the sheet is not loaded a second time.") in readme
+    assert code.count("load data=") == 1 and code.count("table.promote ") == 1 and code.count("table.loadTable ") == 1
+    assert ("A file that is not in the folder, a folder that is not there, a file without rows and a sheet that CAS did not take leave "
+            "the table of that sheet as it is, with a WARNING, and the other sheets are loaded.") in readme
+    assert ("Where the promote is refused, a table of that name that is in memory - the table could not be dropped - is left as it is, "
+            "and where none is, the table is loaded again from the file it was saved to before; each of these outcomes is a WARNING of "
+            "its own.") in readme
+    # what has not run in SAS is said in the changelog and in the guide, not here
+    paragraph = readme[readme.index("*Load-Fact-Sheets.sas* reads the three fact sheet files"):readme.index("*Build-RAG-Cost-View.sas* stacks")]
+    assert not re.search(r"not (been )?run|untested|not measured", paragraph, flags=re.IGNORECASE)
