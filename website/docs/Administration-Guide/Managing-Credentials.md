@@ -27,7 +27,20 @@ of named secrets:
 Who resolves what:
 
 - A **group credential** (for example for `LLMConsumers`) equips every member
-  at once.
+  at once — and nobody else. **The credential has to go to a group the people
+  who open the Prompt Builder are members of.** A credential for a group they
+  are not in is written without an error and `mdb credentials-report` shows
+  the group holding it, and those users still find the models of the provider
+  disabled in the Prompt Builder, with this note:
+
+  `No <provider> key available in the <domain> credential domain - ask your administrator for access.`
+
+  The examples on this page use `LLMConsumers` for those people: it is the
+  group for everybody who needs access to the LLM repository, and `mdb setup`
+  writes the commands that create it into `sas-viya-cli-commands.txt` (see
+  [Setup SAS Model Manager](./Setup-SAS-Model-Manager.md)). A site that
+  equips another group names that group instead — what counts is the
+  membership, not the name.
 - A **user credential** belongs to one person and **overrides** the group
   credential entirely — a personal set of keys.
 - A user with neither, or with a map that lacks a specific entry, sees the
@@ -99,17 +112,22 @@ and wrong for a rollout. `mdb` does a whole deployment from a manifest, and
 reports what it did:
 
 ```bash
-mdb credentials-init                    # write a starter manifest
-mdb credentials-apply --dry-run         # see the plan
-mdb credentials-apply                   # do it
-mdb credentials-report                  # who holds one
+mdb credentials-init                        # write a starter manifest
+mdb credentials-add group LLMConsumers      # add an identity to it
+mdb credentials-apply --dry-run             # see the plan
+mdb credentials-apply                       # do it
+mdb credentials-report                      # who holds one
+mdb credentials-remove group FormerTeam     # mark a credential for removal
 ```
 
 `credentials-init` reads your `.env` and writes a manifest listing the entries
 it actually carries — names only, never a value — so you can see what is
-available to hand out before deciding who gets it. All four commands default
-to `credentials.yaml` in the working directory; `--file` and `--manifest` put
-it anywhere you keep deployment records.
+available to hand out before deciding who gets it. All five commands default
+to `credentials.yaml` in the working directory; `--file` (for
+`credentials-init`) and `--manifest` (for the other four) put it anywhere you
+keep deployment records. The manifest is the one place a rollout is managed
+from: identities are added to it, narrowed in it and marked for removal in it,
+and `credentials-apply` carries out what it says.
 
 The manifest says **who** gets keys and **where those keys come from**. It
 never contains a key, so unlike the `.env` it is meant to be committed and
@@ -122,11 +140,21 @@ domain: agentic-ai-keys
 source: ../../.env          # relative to the manifest
 
 identities:
-  - {type: group, id: PromptEngineers}
+  - {type: group, id: LLMConsumers}
   - {type: group, id: RAGEngineers, only: [PGVECTOR_RAG_USER, PGVECTOR_RAG_PW]}
   - {type: user,  id: sas-be-sa}
   - {type: group, id: FraudAnalytics, source: ../../envs/production.env}
+  - {type: group, id: FormerTeam, state: absent}
 ```
+
+`LLMConsumers` stands for the people who open the Prompt Builder. Name the
+group **your** users are members of: a credential for another group is
+written, reported as held, and leaves them with the note *No … key available
+in the … credential domain* (see
+[Who resolves what](#the-model-one-domain-named-entries-per-identity-credentials)).
+After a run that plans or writes a group credential, `credentials-apply`
+prints one line to that effect: *A group credential reaches only the members
+of that group, and a user's own credential replaces it for that user.*
 
 Paths inside a manifest resolve against **the manifest's own directory**, not
 your working directory, so a manifest and the `.env` files it names can be
@@ -141,25 +169,132 @@ spells them (`OpenAI`, `PGVECTOR_RAG_PW`) rather than the way the `.env` does
 quietly dropped. A single identity needs no manifest at all:
 
 ```bash
-mdb credentials-apply --identity-type group --identity PromptEngineers --dry-run
+mdb credentials-apply --identity-type group --identity LLMConsumers --dry-run
 mdb credentials-report --identity <user id> --identity-type user
 ```
+
+### Adding an identity: `mdb credentials-add`
+
+`mdb credentials-add <type> <id>` adds a group or a user to the manifest, so
+the file need not be edited by hand. The type is `group` or `user`:
+
+```bash
+mdb credentials-add group LLMConsumers
+mdb credentials-add group RAGEngineers --only PGVECTOR_RAG_USER,PGVECTOR_RAG_PW
+mdb credentials-add group FraudAnalytics --source envs/production.env
+mdb credentials-add user sas-be-sa --manifest deployment/credentials.yaml
+```
+
+The command edits the manifest and makes no call to SAS Viya; the credential
+is written by the next `mdb credentials-apply`, and the command prints that
+as its next step (`mdb credentials-apply --manifest <file> --dry-run`).
+
+| Option | Meaning |
+| --- | --- |
+| `--only` | The entries this identity gets, named the way the domain spells them. Repeat the option or separate the names with commas. |
+| `--source` | This identity's own key file. The path is the one you type in the shell, relative to the working directory; it is written into the manifest relative to the manifest. |
+| `--manifest`, `-m` | The manifest to edit. Default: `credentials.yaml` in the working directory. |
+| `--env-file` | The `.env` a **new** manifest points at. Default: `.env` in the working directory. Not read when the manifest exists. |
+
+What it does with the file:
+
+- **Only that identity changes.** Comments, blank lines, the order and the
+  other identities stay byte for byte as they are. A new identity is written
+  in block style (`- type: group` / `id: …`) after the last one; an identity
+  that is written `{type: group, id: …}` keeps that style when it is updated.
+- **The placeholder is replaced.** A manifest from `credentials-init` names
+  the identity `CHANGE-ME-to-a-real-group`; the first identity that is added
+  takes its place.
+- **No manifest yet:** it is written the way `credentials-init` writes it,
+  from the `.env`, with the identity in place of the placeholder. Without a
+  `.env` nothing is written.
+- **The identity is already listed:** no second entry is written, and the
+  command says so and ends with exit code 0. With `--only` or `--source` the
+  entry that is there is updated and the change is printed. An identity is
+  the same one when type and id are equal, the id letter for letter.
+- **A name the source does not carry is refused.** An `--only` name that is
+  not among the entries of the source, or a `--source` file that is not
+  there, ends the command with exit code 2 and the message
+  `credentials-apply` gives for it, and nothing is written.
+
+The edit is made in the text of the file, because the YAML library `mdb` uses
+would drop every comment on a rewrite. Before the file is written, the result
+is read back and has to be the manifest that was there plus the one change.
+Two layouts are refused with a message, and the file is left alone: an
+`identities` list that is not written one `- ` line per identity (for example
+`identities: [{…}, {…}]`), and an identity that is listed more than once.
+
+### Removing a credential: `state: absent`
+
+A credential is removed through the manifest as well. An identity may carry
+`state: absent`:
+
+```yaml
+identities:
+  - type: group
+    id: FormerTeam
+    state: absent
+```
+
+`mdb credentials-remove <type> <id>` writes that line — on the identity that
+is listed, or as a new entry when the manifest does not list it — under the
+same rule as `credentials-add`: nothing else in the file changes. It does not
+contact SAS Viya. The credential is deleted by the next
+`mdb credentials-apply`:
+
+```bash
+mdb credentials-remove group FormerTeam
+mdb credentials-apply --dry-run         # the plan shows the action "remove"
+mdb credentials-apply                   # deletes the credential
+mdb credentials-report                  # shows it as absent
+```
+
+- `credentials-apply` plans the action `remove` for such an identity. A dry
+  run shows it and removes nothing. A credential that is already gone is not
+  an error: the run says that there was none to remove.
+- An identity with `state: absent` needs no source and no entries, so a
+  credential can be removed after its key file is gone. A run that only
+  removes does not create or update the domain.
+- `credentials-report` shows such an identity as
+  `absent (as the manifest says)` once its credential is gone, and as
+  `STILL THERE (manifest: absent)` while it exists.
+- `state: present` is the default and may be written. Any other value is
+  refused when the manifest is read, with exit code 2, before anything is
+  written or removed.
+- `mdb credentials-add` on an identity that is marked absent sets it back to
+  present and says so: the `state` line is taken out again, or rewritten to
+  `state: present` where it is the first line of a block entry.
+
+**Nothing is removed because a line is missing from the manifest.** The
+service cannot list who holds a credential, so `mdb` cannot know what a
+deleted line once said. Leave the entry in the file with `state: absent`
+until the report shows the credential as absent.
+
+The removal was run against a stand-in for the credentials service in the
+test suite of `mdb`, not against a SAS Viya server.
 
 :::note A dry run cannot show you a diff
 Reading a credential returns its metadata — who wrote it, and when — and
 **never its contents, not even the entry names**. So a dry run tells you an
-identity will be created or replaced, but not what it holds today. That is a
-privacy property rather than a gap: no identity can ever see another's keys.
+identity will be created, replaced or removed, but not what it holds today.
+That is a privacy property rather than a gap: no identity can ever see
+another's keys.
 
 For the same reason there is no way to list who holds a credential. Both
 commands report on the identities you **name**, which is why passing the same
-manifest you applied gives you the after-picture of that rollout.
+manifest you applied gives you the after-picture of that rollout — and why a
+credential is removed by marking its identity `state: absent`, never by
+deleting its line.
 :::
 
 ## Inspecting and deleting: CLI and Environment Manager
 
-Day-2 administration works with the standard tools (they can list and delete,
-but authoring the multi-entry map itself is the script's job):
+A credential that is managed with a manifest is deleted through the manifest:
+`mdb credentials-remove`, then `mdb credentials-apply` (see
+[Removing a credential](#removing-a-credential-state-absent)). The standard
+tools delete as well — one credential, or the whole domain, which `mdb` never
+deletes — and they show the domain. Authoring the multi-entry map is the job
+of the scripts and of `mdb credentials-apply`:
 
 ```bash
 ./sas-viya credentials domains list
@@ -169,6 +304,10 @@ but authoring the multi-entry map itself is the script's job):
 ./sas-viya credentials groups delete --domain-id "agentic-ai-keys" --identity-id LLMConsumers
 ./sas-viya credentials domains delete --domain-id "agentic-ai-keys"
 ```
+
+A credential that is deleted with these tools while a manifest still lists
+its identity as present is written again by the next `mdb credentials-apply`:
+the apply writes every identity the manifest does not mark `state: absent`.
 
 In **SAS Environment Manager** (as an administrator), **Security → Domains**
 lists the domain and its credentials per identity, and supports deleting
