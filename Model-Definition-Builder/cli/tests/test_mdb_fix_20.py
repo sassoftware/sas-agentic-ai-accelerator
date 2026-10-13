@@ -1,9 +1,10 @@
 # Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 """What the gate and the review of the round after the pass of 2026-10-13
-found in mdb, each as a test that fails on the code before it. Every service
-is a fake (content_fakes, the fakes of test_builder_commands) or a made-up
-answer: nothing here says how SAS Viya answers.
+found in mdb, each with a test that fails on the code before it. Every
+service is a fake (content_fakes, the fakes of test_builder_commands) or a
+made-up answer, and the git repositories are scratch ones: nothing here says
+how SAS Viya or GitHub answers.
 """
 import io
 import json
