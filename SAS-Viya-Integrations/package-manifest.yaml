@@ -53,13 +53,11 @@ entries:
   # reads release.json of the content root, so the page needs no checkout.
   # _output_type = html is what makes SAS Job Execution show what the program
   # writes to _webout as a page. _contextName: the page shows what its session
-  # may read, so the job has to run as the user who opens it. The SAS Job
-  # Execution compute context runs its session under another account than
-  # the user who opens the page (measured on 2026-10-12: SYSUSERID is not
-  # SYS_COMPUTE_SESSION_OWNER there). In one pass that day every request of
-  # the page was answered 401; in a second pass the same day the page was
-  # built in full - with what that account may read. Either way it is not the
-  # user's view.
+  # may read, so the job runs as the user who opens it. What a session of the
+  # SAS Job Execution compute context may read depends on how a system
+  # configures that context: on 2026-10-12 one run there had every request of
+  # the page answered 401, and a later run the same day built the whole page,
+  # in a session whose SYSUSERID was not SYS_COMPUTE_SESSION_OWNER.
   - path: Start Here
     kind: jobDefinition
     code: SAS-Viya-Integrations/Setup/Start-Here.sas
