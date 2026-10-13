@@ -33,8 +33,12 @@
  *   - the content: every entry release.json lists, present in this content
  *     root yes or no, so the page needs no checkout. A member of a folder
  *     that is a reference to an object elsewhere is no entry: it is not
- *     followed, and where it is all a folder holds under the name of an
- *     entry, the line of that entry says so
+ *     followed. A reference that has the name of an entry and names an
+ *     object of the kind of the entry stands in the way of that entry - mdb
+ *     content-deploy and the import write nothing for it -, and the line
+ *     of the entry says so, where the reference is all the folder holds
+ *     under that name and where it lies beside the object. A reference to
+ *     an object of another kind is no part of the check
  *   - the CAS tables the two reports bind: there, rows, loaded when
  *   - the CAS tables of the logging chain that no report binds: the fact sheet
  *     of the decision models and the four further tables of Get-All-Prompts.sas
@@ -231,6 +235,13 @@ STEP_BESIDE = 'Delete the file of that name: it is a step file that was uploaded
 REFERENCE = 'reference'
 REFERENCE_FOUND = 'a reference of that name is in its folder, and the object it names lives elsewhere'
 REFERENCE_TODO = 'Remove the reference from the folder. Then: '
+# What the uri of an object of each kind of entry starts with: the uri of a reference is the one of the object it
+# names. mdb fails an entry for a reference that has its name and names an object of its kind, alone or beside the
+# object, and for no other reference (viya/content.py, _references_named). The page judges an entry the same way
+KIND_URI = {'file': '/files/files/', 'step': '/dataFlows/steps/', 'jobDefinition': '/jobDefinitions/definitions/',
+            'report': '/reports/reports/', 'folder': '/folders/folders/'}
+REFERENCE_BESIDE = 'present, and a reference of that name is in its folder, which names an object that lives elsewhere'
+REFERENCE_BESIDE_TODO = 'Remove the reference from the folder: while it is there, the import and mdb content-deploy write nothing for this entry.'
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +433,16 @@ def member(members, name, kinds):
     return ([found for found in named if found[0] in kinds] or named or [('', '')])[0]
 
 
+def named_as(members, names, kind):
+    """What a folder holds under the names of an entry of a kind: (its objects, the references that stand in the
+    way of the entry). A reference is no object of the folder. It stands in the way where the uri it names is the
+    uri of an object of that kind; a reference to an object of another kind is in neither list."""
+    named = [found for candidate in names for found in members.get(candidate, [])]
+    of_kind = KIND_URI.get(kind, '')
+    return ([found for found in named if found[0] != REFERENCE],
+            [found for found in named if found[0] == REFERENCE and found[1].startswith(of_kind)])
+
+
 def read_root(get, root):
     """The members of the content root, as {'': (status, {name: [(kind, uri), ...]})}: the folders
     are kept by their path below the root, and the root itself is the empty path."""
@@ -473,8 +494,9 @@ def release_of(get, listings):
         state, found = not_read(status, 'the content root')
         return None, [line(section, 'Content root', state, found, ask_again(status))]
     kind, uri = member(members, RELEASE_FILE, ('file',))
+    references = named_as(members, [RELEASE_FILE], 'file')[1]
     deploy = 'Import the package of the accelerator again, or run mdb content-deploy, which writes the file.'
-    if kind == REFERENCE:
+    if references and kind != 'file':
         return None, [line(section, RELEASE_FILE, MISSING, REFERENCE_FOUND, REFERENCE_TODO + deploy)]
     if not uri or kind != 'file':
         return None, [line(section, RELEASE_FILE, MISSING, 'not in the content root', deploy)]
@@ -499,6 +521,9 @@ def release_of(get, listings):
                                         'of ' + date[:10] if date else '') if part)
     if not version:
         return release, [line(section, RELEASE_FILE, MISSING, 'the file names no version' + (', ' + found if found else ''), deploy)]
+    if references:
+        # the file is read, and the reference beside it is what the next import or deploy fails for
+        return release, [line(section, RELEASE_FILE, MISSING, found + '; ' + REFERENCE_BESIDE, REFERENCE_BESIDE_TODO)]
     return release, [line(section, RELEASE_FILE, OK, found)]
 
 
@@ -527,16 +552,19 @@ def entry_line(path, kind, listings):
         return line(section, what, state, found, ask_again(status))
     names = [name] + ([name + '.step'] if kind == 'step' and not name.endswith('.step') else [])
     names += [name[:-5]] if kind == 'step' and name.endswith('.step') else []
-    named = [found for candidate in names for found in members.get(candidate, [])]
     # a reference is no object of the folder: only what is left is looked at for the entry
-    present = [found for found in named if found[0] != REFERENCE]
-    if not present and named:
+    present, references = named_as(members, names, kind)
+    wanted = MEMBER_TYPES.get(kind)
+    there = [found for found in present if wanted is None or found[0] in wanted]
+    if references and not there:
         return line(section, what, MISSING, REFERENCE_FOUND, REFERENCE_TODO + deploy)
+    if references:
+        # the object is there, so the entry is counted as present, and its line is shown with the ones that are not ok
+        return dict(line(section, what, MISSING, REFERENCE_BESIDE, REFERENCE_BESIDE_TODO), present=True)
     if not present:
         return line(section, what, MISSING, 'not in its folder', deploy)
-    wanted = MEMBER_TYPES.get(kind)
     uploaded = kind == 'step' and any(found[0] == 'file' for found in present)
-    if [found for found in present if wanted is None or found[0] in wanted]:
+    if there:
         if uploaded:
             return line(section, what, OK, 'present, and a file of that name lies beside it', STEP_BESIDE)
         return line(section, what, OK, 'present')
@@ -1010,7 +1038,7 @@ def render_page(settings, lines, reports, session=None, viya_host=''):
         if section != 'Content':
             page += rows_of(of_section)
             continue
-        there = sum(1 for entry in of_section if entry['state'] == OK)
+        there = sum(1 for entry in of_section if entry['state'] == OK or entry.get('present'))
         page.append('<p>' + shown(f'{there} of {len(of_section)} entries of {RELEASE_FILE} are present in this content root.') + '</p>')
         absent = [entry for entry in of_section if entry['state'] != OK]
         if absent:

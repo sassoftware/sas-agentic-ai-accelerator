@@ -286,6 +286,8 @@ def test_a_step_is_found_with_or_without_the_ending_of_its_file(monkeypatch, tmp
 REFERENCE_FOUND = "a reference of that name is in its folder, and the object it names lives elsewhere"
 REMOVE = "Remove the reference from the folder. Then: "
 DEPLOY = "Import the package of the accelerator again, or run mdb content-deploy."
+REFERENCE_BESIDE = "present, and a reference of that name is in its folder, which names an object that lives elsewhere"
+REMOVE_ONLY = "Remove the reference from the folder: while it is there, the import and mdb content-deploy write nothing for this entry."
 
 
 def test_the_reference_of_the_harness_has_the_shape_that_was_read():
@@ -347,10 +349,12 @@ def test_a_reference_is_taken_for_no_kind_of_entry(monkeypatch, tmp_path, path, 
 
 
 @pytest.mark.parametrize("first", [True, False], ids=["the reference first", "the file first"])
-def test_a_file_with_a_reference_of_its_name_beside_it_is_present(monkeypatch, tmp_path, first):
-    """Measured on 2026-10-13 with the file and a reference of its name in one folder: the import in place of
-    mdb builders-import found the file equal and left the reference alone. The entry is there, whichever of the
-    two the folder lists first."""
+def test_a_file_with_a_reference_of_its_name_beside_it_is_no_line_that_is_ok(monkeypatch, tmp_path, first):
+    """Measured on 2026-10-13 with the file and a reference of its name in one folder: mdb content-deploy and
+    mdb builders-import reported the entry as FAILED and wrote nothing for it ('nothing says which one is meant -
+    remove the reference'), and the page said 'RAG/rag_core/tokens.py (file) | ok | present' for the same folder.
+    The line of the entry now says what stands in its way, whichever of the two the folder lists first. The file is
+    there: the entry is counted as present, and its line is shown with the lines that are not ok."""
     site = Site()
     site.refer("RAG/rag_core/adapters/base.py", first=first)
     lines, _ = lines_of(monkeypatch, tmp_path, site)
@@ -358,8 +362,58 @@ def test_a_file_with_a_reference_of_its_name_beside_it_is_present(monkeypatch, t
 
     assert [member["type"] for member in site.folders[site.folder_ids["RAG/rag_core/adapters"]] if member["name"] == "base.py"] \
         == (["reference", "child"] if first else ["child", "reference"])
-    assert (entry["state"], entry["found"], entry["todo"]) == (OK, "present", "")
-    assert {other["state"] for other in lines} == {OK}
+    assert (entry["state"], entry["found"], entry["todo"]) == (MISSING, REFERENCE_BESIDE, REMOVE_ONLY)
+    assert [other["what"] for other in lines if other["state"] != OK] == ["RAG/rag_core/adapters/base.py (file)"]
+    done = run(monkeypatch, tmp_path, site)
+    assert f"{len(ENTRIES)} of {len(ENTRIES)} entries of release.json are present in this content root." in done.page
+    row = ("<tr><td>RAG/rag_core/adapters/base.py (file)</td><td class=\"state missing\">missing</td><td>" + REFERENCE_BESIDE + "</td><td>"
+           + REMOVE_ONLY + "</td></tr>")
+    # once in front of the list of every entry, which is folded, and once in it
+    assert done.page.count(row) == 2 and done.page.index(row) < done.page.index("<details>")
+    assert "1 missing" in done.page
+
+
+@pytest.mark.parametrize("path, kind", [
+    ("Logging and Monitoring/Log-Parser-Code.sas", "file"), (STEP, "step"), ("Data/Load-Accelerator-Tables", "jobDefinition"),
+    ("Prompt Builder/Prompt Builder", "report"), ("RAG/rag_core", "folder"),
+], ids=["file", "step", "job definition", "report", "folder"])
+def test_a_reference_of_the_name_and_kind_of_an_entry_beside_its_object_stands_in_its_way(monkeypatch, tmp_path, path, kind):
+    """Every kind of entry mdb writes or looks up: the object and a reference to an object of that kind under one
+    name. What lies below a folder, and the report the page links, are read as without the reference."""
+    site = Site()
+    site.refer(path, kind)
+    lines, reports = lines_of(monkeypatch, tmp_path, site)
+    entry = one(lines, f"{path} ({kind})")
+
+    assert (entry["state"], entry["found"], entry["todo"]) == (MISSING, REFERENCE_BESIDE, REMOVE_ONLY)
+    assert [other["what"] for other in lines if other["state"] != OK] == [f"{path} ({kind})"]
+    assert reports["Prompt Builder"] == site.folders[site.folder_ids["Prompt Builder"]][0]["uri"]
+
+
+@pytest.mark.parametrize("path, kind, other", [
+    ("RAG/rag_core/adapters/base.py", "file", "report"), ("RAG/rag_core/adapters/base.py", "file", "folder"),
+    (STEP, "step", "file"), ("Data/Load-Accelerator-Tables", "jobDefinition", "file"), ("RAG/rag_core", "folder", "file"),
+], ids=["a file, a report", "a file, a folder", "a step, a file", "a job definition, a file", "a folder, a file"])
+def test_a_reference_to_an_object_of_another_kind_is_no_part_of_the_check(monkeypatch, tmp_path, path, kind, other):
+    """The rule of mdb is the name and the kind: a reference that has the name of an entry and names an object of
+    another kind fails nothing there - mdb writes the object beside it. Beside the object the line is ok; alone, the
+    entry is not in its folder, and the advice is the one of an entry that is missing, without a word of the
+    reference."""
+    site = Site()
+    named = site.refer(path, other)
+    lines, _ = lines_of(monkeypatch, tmp_path, site)
+    entry = one(lines, f"{path} ({kind})")
+
+    assert named.startswith(harness.URI_OF[other]) and (entry["state"], entry["found"], entry["todo"]) == (OK, "present", "")
+    assert {line["state"] for line in lines} == {OK}
+
+    alone = Site()
+    alone.remove(path)
+    alone.refer(path, other)
+    lines, _ = lines_of(monkeypatch, tmp_path, alone)
+    entry = one(lines, f"{path} ({kind})")
+    advice = REGISTER + "Uploading its .step file to the folder does not." if kind == "step" else DEPLOY
+    assert (entry["state"], entry["found"], entry["todo"]) == (MISSING, "not in its folder", advice)
 
 
 def test_a_reference_beside_a_registered_step_is_no_file_that_was_uploaded(monkeypatch, tmp_path):
@@ -405,6 +459,57 @@ def test_a_release_file_that_is_a_reference_is_not_read(monkeypatch, tmp_path):
     assert [entry for entry in lines if entry["section"] == "Content"] == []
 
 
+def test_a_release_file_with_a_reference_beside_it_is_read_and_its_line_says_so(monkeypatch, tmp_path):
+    """release.json is an entry of the deploy as well: with a reference to a file of its name beside it, mdb writes
+    no release.json. The page reads the file - the entries it lists are checked - and its line is not ok."""
+    site = Site()
+    named = site.refer("release.json")
+    lines, _ = lines_of(monkeypatch, tmp_path, site)
+    release = one(lines, "release.json")
+
+    assert (release["state"], release["todo"]) == (MISSING, REMOVE_ONLY)
+    assert release["found"] == "release 2.3.0, commit 0123456789ab, of 2026-10-12; " + REFERENCE_BESIDE
+    assert not [path for path in site.paths() if named in path]
+    # the entries the file lists are checked; the file is one of them, and its line says the same
+    content = [entry for entry in lines if entry["section"] == "Content"]
+    assert len(content) == len(ENTRIES) and [entry["what"] for entry in content if entry["state"] != OK] == ["release.json (file)"]
+    assert (one(lines, "release.json (file)")["found"], one(lines, "release.json (file)")["todo"]) == (REFERENCE_BESIDE, REMOVE_ONLY)
+
+
+def test_a_reference_to_another_kind_under_the_name_of_the_release_file_is_no_release_file(monkeypatch, tmp_path):
+    """Alone it is no file to read and nothing to remove: the file is not in the content root, and mdb writes it
+    beside the reference. Beside the file it changes nothing."""
+    site = Site()
+    site.refer("release.json", "report")
+    assert one(lines_of(monkeypatch, tmp_path, site)[0], "release.json")["state"] == OK
+
+    alone = Site()
+    alone.remove("release.json")
+    named = alone.refer("release.json", "report")
+    release = one(lines_of(monkeypatch, tmp_path, alone)[0], "release.json")
+    assert (release["state"], release["found"]) == (MISSING, "not in the content root")
+    assert release["todo"] == "Import the package of the accelerator again, or run mdb content-deploy, which writes the file."
+    assert not [path for path in alone.paths() if named in path]
+
+
+def test_the_page_and_mdb_have_one_rule_for_a_reference():
+    """mdb fails an entry for a reference of its name that names an object of its kind, and tells the kind by what
+    the uri starts with (viya/content.py: _MEMBER_URI, _named, _references_named). The page holds the same table."""
+    block = harness.python_block()
+    mdb = (REPOSITORY / "Model-Definition-Builder" / "cli" / "src" / "mdb" / "viya" / "content.py").read_text(encoding="utf-8")
+    table = re.search(r"^_MEMBER_URI = (\{.*?\})$", mdb, flags=re.MULTILINE | re.DOTALL)
+    of_the_page = re.search(r"^KIND_URI = (\{.*?\})$", block, flags=re.MULTILINE | re.DOTALL)
+
+    assert ast.literal_eval(of_the_page.group(1)) == ast.literal_eval(table.group(1)) == harness.URI_OF
+    assert 'return [m for m in members if m.get("name") == name and str(m.get("uri") or "").startswith(prefix)]' in mdb
+    assert "return [m for m in _named(members, name, kind) if is_reference(m)]" in mdb
+    assert "[found for found in named if found[0] == REFERENCE and found[1].startswith(of_kind)])" in block
+    # the two places that judge an entry ask the one function
+    assert block.count("def named_as(members, names, kind):") == 1
+    assert block.count("references = named_as(members, [RELEASE_FILE], 'file')[1]") == 1
+    assert block.count("present, references = named_as(members, names, kind)") == 1 and block.count("named_as(") == 3
+
+
 def test_the_program_tells_a_reference_by_the_type_of_the_member():
     """The rule mdb has for a member of a folder (viya/content.py, is_reference): a member is a child unless its
     type says reference - in any case of the letters."""
@@ -417,8 +522,11 @@ def test_the_program_tells_a_reference_by_the_type_of_the_member():
     assert 'return str(member.get("type") or "child").lower() == "reference"' in mdb
     # the header of the program says what a reference is to the page
     header = " ".join(line.lstrip(" *") for line in harness.program().split("*/")[0].split("\n"))
-    assert ("A member of a folder that is a reference to an object elsewhere is no entry: it is not followed, and where it is all a "
-            "folder holds under the name of an entry, the line of that entry says so") in " ".join(header.split())
+    assert ("A member of a folder that is a reference to an object elsewhere is no entry: it is not followed. A reference that has the "
+            "name of an entry and names an object of the kind of the entry stands in the way of that entry - mdb content-deploy and "
+            "the import write nothing for it -, and the line of the entry says so, where the reference is all the folder holds under "
+            "that name and where it lies beside the object. A reference to an object of another kind is no part of the check"
+            ) in " ".join(header.split())
 
 
 @pytest.mark.parametrize("change, what, state, found, todo", [
