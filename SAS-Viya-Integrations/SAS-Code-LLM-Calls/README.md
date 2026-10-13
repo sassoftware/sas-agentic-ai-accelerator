@@ -49,6 +49,8 @@ Copy the content of the script **Create-LLM-Call.sas**. This script will provide
 -   *_slo_fl*, setting this value to 1 will create a filename with the base LLM call code in it, setting it to 0 will not do that. The default is 1.
 -   *_slo_fl_path*, this value only needs to be set if you set *_slo_fl* to 1. You can either specify *temp*, which creates a temporary file, but it is recommend to set a path on the Server - suggested pattern is */path/\<llmName\>Call.sas*. The default is *temp*. Please note that paths in the *SAS Content* are currently not supported!
 
+The script comes with *_slo_LLM_name* and *_slo_optionsFileURI* empty. Without a value for both it asks SAS Viya for nothing and writes no code: it ends with one ERROR line that says that no model with an options file was chosen.
+
 The output of this script is the input required for the next step.
 
 ## Modify the LLM Call

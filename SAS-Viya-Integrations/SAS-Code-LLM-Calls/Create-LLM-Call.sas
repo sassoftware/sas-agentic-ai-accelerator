@@ -5,8 +5,10 @@
     Retrieves options for a LLM call and generates it
 
     This script requires you to set the macro variables
-      _slo_optionsFileURI, which can be retrieved using
-      the script Get-List-of-available-LLMs.sas
+      _slo_LLM_name and _slo_optionsFileURI, which can be
+      retrieved using the script Get-List-of-available-LLMs.sas.
+      Without both it asks SAS Viya for nothing and ends with
+      one ERROR line.
 
     The code is printed to the Results tab and written to the
       fileref _slo_LLM, as the settings below say. No table is left.
@@ -27,6 +29,8 @@
 * If you save to a filename, you can also choose to set it to file location on the SAS server, otherwise the filename will be temporary;
 * If you specify a path put the value into quotes, i.e. '/viya-share/llmCall.sas';
 %let _slo_fl_path = temp;
+* 1 where there is a model name and an options file to ask for;
+%let _slo_chosen = %eval(%length(%superq(_slo_LLM_name)) GT 0 and %length(%superq(_slo_optionsFileURI)) GT 0);
 
 * Get the Viya Host URL;
 %let _slo_viyaHost=%sysfunc(getoption(SERVICESBASEURL));
@@ -43,6 +47,7 @@ run; quit;
 filename _slo_rsp temp;
 
 * https://developer.sas.com/rest-apis/files-v9?operation=getfileContentForGivenId;
+%if &_slo_chosen. EQ 1 %then %do;
 proc http
     method='Get'
     url="&_slo_viyaHost.&_slo_optionsFileURI./content"
@@ -50,11 +55,16 @@ proc http
     out=_slo_rsp;
     headers 'Accept' = 'application/json';
 run; quit;
+%end;
 
 %let _slo_why = SAS Viya did not answer the request for the options file %superq(_slo_optionsFileURI) with HTTP 200 (status: %superq(SYS_PROCHTTP_STATUS_CODE));
 %if "&SYS_PROCHTTP_STATUS_CODE." EQ "200" %then %do;
     %let _slo_why = the options file %superq(_slo_optionsFileURI) is no JSON that SAS can read;
     libname _slo_rsp json;
+%end;
+* A run without a model has asked for nothing;
+%if &_slo_chosen. NE 1 %then %do;
+    %let _slo_why = no model with an options file was chosen - the script needs a model name in _slo_LLM_name and the URI of its options file in _slo_optionsFileURI;
 %end;
 
 * One row per option. An option is a member of the object of the file, and default, range and description are members of an option with one value each;
@@ -223,4 +233,4 @@ run; quit;
     %let SYSCC = %sysfunc(max(&SYSCC., 1012));
 %end;
 %symdel _slo_LLM_name _slo_optionsFileURI _slo_LLMSCR _slo_result _slo_fl _slo_fl_path _slo_viyaHost;
-%symdel _slo_ok _slo_why / nowarn;
+%symdel _slo_chosen _slo_ok _slo_why / nowarn;
