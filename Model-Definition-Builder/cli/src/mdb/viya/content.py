@@ -70,6 +70,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from ..core import content as _content
+from .answer import answer as _answer
 
 STEP_MEDIA = "application/vnd.sas.data.flow.step+json"
 DEFINITION_MEDIA = "application/vnd.sas.job.definition+json"
@@ -96,35 +97,6 @@ class DeployError(RuntimeError):
 
 class WriteFailed(DeployError):
     """A write was sent and was refused, or got no answer. The run stops."""
-
-
-#: How much of an answer that is no JSON error body a line shows.
-_ANSWER_LIMIT = 300
-
-
-def _answer(response) -> str:
-    """What a request that was refused answered, for a line: `HTTP <status>`
-    and, of a JSON error body, the fields a reader needs - `message`,
-    `remediation` and `errorCode` - each whole. A body of any other shape is
-    shown whole up to _ANSWER_LIMIT characters; a longer one ends at the last
-    whole word in front of that, with `...`."""
-    text = str(getattr(response, "text", "") or "").strip()
-    try:
-        body = json.loads(text) if text.startswith("{") else None
-    except ValueError:
-        body = None
-    if isinstance(body, dict) and (body.get("message") or body.get("remediation")):
-        shown = " - ".join(str(body[key]).strip() for key in ("message", "remediation") if body.get(key))
-        if body.get("errorCode") is not None:
-            shown += f" (errorCode {body['errorCode']})"
-    elif len(text) > _ANSWER_LIMIT:
-        head = text[:_ANSWER_LIMIT]
-        if not (text[_ANSWER_LIMIT].isspace() or head[-1].isspace()) and len(head.split()) > 1:
-            head = head.rsplit(None, 1)[0]                     # the cut fell into a word: end in front of it
-        shown = head.rstrip() + "..."
-    else:
-        shown = text
-    return f"HTTP {response.status_code}" + (f" {shown}" if shown else "")
 
 
 def _failure(what: str, response) -> DeployError:
