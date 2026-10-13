@@ -89,7 +89,7 @@ def test_the_steps_that_are_read():
     # what the reading is made of: every line of the nine programs that holds one of the three, a text of the
     # code a step writes included
     kinds = [kind for name in READ for kind, _ in macro_statements(program(name))]
-    assert {kind: kinds.count(kind) for kind in ("put", "let", "call")} == {"put": 18, "let": 79, "call": 36}
+    assert {kind: kinds.count(kind) for kind in ("put", "let", "call")} == {"put": 18, "let": 85, "call": 36}
 
 
 @pytest.mark.parametrize("name", READ, ids=[name[:-5] for name in READ])
@@ -121,10 +121,14 @@ def test_what_the_two_steps_that_write_a_code_file_make_is_read_as_text():
         # the first %put of LLM - Create LLM Call is a text of its DATA step, which names no variable
         assert [re.findall(r"%superq\((\w+)\)", statement) for statement in puts] == [
             ["_slo_fl_path"] if name == "LLM - Get Options.step" else [], ["_slo_why"]]
-        # the reason is set in three statements, each of which reads the address through %SUPERQ, and in one DATA step through SYMGET
+        # the reason is set in three statements, each of which reads the address through %SUPERQ, in one DATA step through
+        # SYMGET, and in the statement of a run without a model, which names no variable
         reasons = [statement for kind, statement in macro_statements(text) if kind == "let" and statement.startswith("%let _slo_why")]
-        assert len(reasons) == 3 and all("&" not in statement and "%superq(_slo_optionsFileURI)" in statement for statement in reasons)
-        assert "symget('_slo_optionsFileURI')" in text
+        assert len(reasons) == 4 and all("&" not in statement for statement in reasons)
+        assert ["%superq(_slo_optionsFileURI)" in statement for statement in reasons] == [True, True, False, True]
+        assert "%" not in reasons[2][1:] and "symget('_slo_optionsFileURI')" in text
+        # the name of the model and the address are looked at through %SUPERQ where the step asks whether there is a model
+        assert "%let _slo_chosen = %eval(%length(%superq(_slo_LLM_name)) GT 0 and %length(%superq(_slo_optionsFileURI)) GT 0);" in text
 
 
 def test_what_get_all_prompts_resolves_was_looked_at_by_its_python():

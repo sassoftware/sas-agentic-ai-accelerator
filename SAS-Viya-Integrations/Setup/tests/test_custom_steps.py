@@ -32,6 +32,24 @@ function, which doubles an apostrophe: the statement was made of the path betwee
 and an apostrophe of the path ended its text early. For a path without one the statement is the one
 of version 1.0, character for character.
 
+LLM - Create LLM Call 1.4 and LLM - Get Options 1.3. Measured on 2026-10-13 with 1.3 and 1.2: in the
+state the steps come with - the selector on "Select name from a table", no table connected, no model
+name selected - SAS Studio wrote no macro variable for the table and the model name, and the
+program read both: warnings of references that were not resolved, a syntax error of PROC SQL, and
+then "no code was written, because SAS Viya did not answer the request for the options file  with
+HTTP 200 (status: 404)". And with a model table whose column optionsFileURI was 200 characters
+wide the program asked for "<uri><blanks>/content" and got 404, where a column of 49 characters
+(what LLM - List Available LLMs writes) gave the code. The steps now ask for the macro variable of a
+control before they read it, read the URI with TRIMMED, and a run without a model and an options
+file asks SAS Viya for nothing and ends with an ERROR line that says so.
+
+A quotation mark in the path. Measured on 2026-10-13 with the code SAS Studio 2026.09 generates
+for a path control that holds sasserver:/tmp/zz_verify_r20a_p;q'r"s&t%u/call.sas: SAS Studio writes
+the value masked (%nrquote(%nrstr(...)) with a percent sign in front of each quotation mark), and a
+DATA step that read it as "&_slo_fl_path." - the way both steps read it - held the 50 characters
+of the path, the quotation mark among them; SYMGET gave the same 50. So the value of the control
+reaches the DATA step whole. The step with such a path was not run.
+
 The steps are one line of JSON and have no code file of their own. SAS can not run here: the tests read
 the program, follow the DATA step that makes the two statements for the three kinds of path, and
 follow the reading of the options on the table the JSON engine makes of each options.json of the
@@ -43,10 +61,15 @@ They sit in this folder because its tests run with the package checks, and Custo
 import hashlib
 import json
 import re
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Logging-Monitoring" / "tests"))
+
+import macro_harness  # noqa: E402
 
 STEPS = Path(__file__).resolve().parents[2] / "Custom-Steps"
 STEP = STEPS / "LLM - Create LLM Call.step"
@@ -99,6 +122,24 @@ NOTE_OF_GET_OPTIONS_1_1 = ("%put NOTE: The filename _slo_LLM has been assigned, 
 NOTE_OF_GET_OPTIONS = ("%put NOTE: The filename _slo_LLM has been assigned, the source is available at %superq(_slo_fl_path) - "
                        "use %nrstr(%include) _slo_LLM to run the code;")
 NOTE = "%put NOTE: No path was chosen, so the code was written to a temporary file. The fileref _slo_LLM names it until the SAS session ends"
+# The two entries of the newest version in the changelog of both steps; <before> is the version in front of it
+NO_MODEL_AND_TRIMMED = [
+    "      - A run without a model ends with one ERROR line that says so, and asks SAS Viya for nothing: Select name from a table "
+    "without a model table or without a model name selected - the values the step comes with -, a model whose row holds no "
+    "optionsFileURI, and manual entry without a name or without a URI. In the state it comes with, version <before> wrote warnings of "
+    "macro variables that were not resolved and a syntax error of PROC SQL, and then named an empty options file and HTTP 404 "
+    "(measured on 2026-10-13)",
+    "      - The optionsFileURI of a model table is read without the blanks a column holds behind its value. With a column of "
+    "200 characters version <before> asked for the file with those blanks behind its URI, got HTTP 404 and wrote no code (measured on "
+    "2026-10-13); with the column of 49 characters that LLM - List Available LLMs writes it read the file"]
+# What a run without a model says in the place of the reason, and the URI of an options file of the tests
+NO_MODEL = ("no model with an options file was chosen - with Select name from a table the step needs a model table that has the columns "
+            "name and optionsFileURI and a model name selected from it, otherwise a model name and an options file URI")
+OPTIONS_URI = "/files/files/c63576cf-ffcd-4259-88e1-1c14a99c3aeb"
+# The macro variables SAS Studio 2026.09 wrote in front of the program of a step that was dropped into a flow and run as it
+# came (measured on 2026-10-13): none for the model table, the model name and the two text fields
+AS_IT_COMES = {"_slo_LLMSCR": "%sysfunc(getoption(SERVICESBASEURL))/llm", "_slo_fl": "1", "_slo_fl_path": "", "_slo_input_selector": "table",
+               "_slo_result": "0"}
 
 
 def step():
@@ -269,9 +310,10 @@ def test_an_apostrophe_of_the_path_does_not_end_the_text_of_the_statement(name, 
     character of a path that can end such a text is the apostrophe, and the QUOTE function doubles it.
     Followed for each path: the statement holds the folder and the file as the texts they are, and no
     apostrophe is left open. With the line of the version before, an apostrophe of the path is.
-    What is followed is the DATA step from the path on. How the value of the control reaches the DATA
-    step - between quotation marks, where SAS resolves it - is the reading of version 1.0 and is not
-    followed here."""
+    What is followed is the DATA step from the path on. The value of the control reaches the DATA step
+    between quotation marks, the reading of version 1.0: measured on 2026-10-13 with the code SAS
+    Studio generates, a path with a semicolon, an apostrophe, a quotation mark, an ampersand and a
+    percent sign arrived there whole (see the top of this file)."""
     text = PROGRAMS[name]()
     assigned, _ = statements_for(path, text)
 
@@ -317,7 +359,7 @@ def test_the_two_statements_stand_around_the_step_that_writes_the_file():
 def test_the_macro_variables_of_the_step_are_deleted_at_its_end():
     text = program()
 
-    assert text.endswith("%symdel _slo_LLM_name _slo_optionsFileURI _slo_viyaHost;\n%symdel _slo_fl_end _slo_ok _slo_why / nowarn;")
+    assert text.endswith("%symdel _slo_LLM_name _slo_optionsFileURI _slo_viyaHost;\n%symdel _slo_chosen _slo_fl_end _slo_ok _slo_why / nowarn;")
     assert FOR_A_PATH in saving()
 
 
@@ -332,6 +374,7 @@ def test_the_about_tab_and_the_changelog_say_what_the_step_does():
     assert ("It is possible to save the resulting code to a file or printing it to the Results pane. Without a path the code is saved to a "
             "temporary file, which the fileref _slo_LLM names until the SAS session ends.") in about
     assert changelog.split("\n") == [
+        "* Version: 1.4 (13OCT2026)"] + [line.replace("<before>", "1.3") for line in NO_MODEL_AND_TRIMMED] + [
         "* Version: 1.3 (13OCT2026)",
         "      - An apostrophe in the path is doubled in the statement that assigns the file. Version 1.2 wrote the path between two "
         "apostrophes as it was",
@@ -559,9 +602,10 @@ def test_the_two_steps_say_what_they_read():
     sentence = ("Every option of the options file is read with its default, also an option that lists the values it can take. A run that "
                 "can not read the default of every option writes no code and no file: it ends with an ERROR line that says why.")
     assert sentence in control("textAbout")["text"] and sentence in get_texts["textAbout"]
-    assert control("textChangelog")["text"].startswith("* Version: 1.3 (13OCT2026)\n")
-    assert "\n* Version: 1.2 (13OCT2026)\n" in control("textChangelog")["text"]
-    assert get_texts["textChangelog"].split("\n")[:4] == [
+    assert control("textChangelog")["text"].startswith("* Version: 1.4 (13OCT2026)\n")
+    assert "\n* Version: 1.3 (13OCT2026)\n" in control("textChangelog")["text"] and "\n* Version: 1.2 (13OCT2026)\n" in control("textChangelog")["text"]
+    assert get_texts["textChangelog"].split("\n")[:3] == ["* Version: 1.3 (13OCT2026)"] + [line.replace("<before>", "1.2") for line in NO_MODEL_AND_TRIMMED]
+    assert get_texts["textChangelog"].split("\n")[3:7] == [
         "* Version: 1.2 (13OCT2026)",
         "      - With the box Save the code to a filename ticked and no path, the values the step comes with, version 1.1 wrote the code "
         "file and then ended with ERROR 180-322 and a failed job (measured on 2026-10-13): the statement that assigns the temporary file "
@@ -630,5 +674,145 @@ def test_the_fileref_of_get_options_stays_assigned_and_is_named_by_the_note():
     text = get_options()
 
     assert "filename _slo_LLM clear" not in text and "_slo_fl_end" not in text
-    assert text.endswith("%symdel _slo_LLM_name _slo_optionsFileURI _slo_viyaHost;\n%symdel _slo_ok _slo_why / nowarn;")
+    assert text.endswith("%symdel _slo_LLM_name _slo_optionsFileURI _slo_viyaHost;\n%symdel _slo_chosen _slo_ok _slo_why / nowarn;")
     assert "LLM - Get Options: no code was written" in text and text.upper().count("ERROR") == 1
+
+
+# ---------------------------------------------------------------------------
+# The model a run looks up (LLM - Create LLM Call 1.4, LLM - Get Options 1.3)
+# ---------------------------------------------------------------------------
+
+class _OpenCode(macro_harness.Macros):
+    """macro_harness.Macros with %symexist, which the two steps ask the controls with."""
+
+    def call(self, name, inner):
+        if name == "symexist":
+            return "1" if inner.strip().lower() in self.symbols else "0"
+        return super().call(name, inner)
+
+
+def looked_up(text, symbols, column_width=None, status="200"):
+    """Follows the open code of a step from the controls to the reason of a run without code, for the macro variables
+    SAS Studio wrote in front of it: (the SAS code it generates, its ERROR line, the address it asked for or None).
+
+    The PROC SQL step is stood in for: it leaves the URI of the row in the macro variable as INTO does - with the
+    blanks of a column of `column_width` characters behind it, unless the statement says TRIMMED. A PROC HTTP step
+    leaves `status`. A reference to a macro variable that is not there raises, as SAS warns of it."""
+    start = text.index("%let _slo_optionsFileURI = ;")
+    read = text[start:text.index("* Get the Viya Host URL;", start)]
+    asked = text[text.index("* The code is written only where"):text.index("* One row per option.")]
+    said = text[text.index("%if &_slo_ok. NE 1 %then %do;"):text.index("%symdel _slo_LLM_name")]
+    program = "%macro step;\n" + read + asked + said + "%mend step;\n"
+    step = {"sql": None, "http": None, "asked": None}
+
+    def on_text(line, macros):
+        if line == "proc sql noPrint;":
+            step["sql"] = []
+        elif step["sql"] is not None:
+            step["sql"].append(line)
+            if line == "run; quit;":
+                select = " ".join(step["sql"])
+                assert "select optionsFileURI into :_slo_optionsFileURI" in select and "where name EQ " in select
+                uri = OPTIONS_URI if '"gpt_5_mini"' in select else ""
+                if uri and "into :_slo_optionsFileURI trimmed" not in select:
+                    uri = uri.ljust(column_width)
+                # a statement that selects no row leaves the macro variable as it was
+                if '"gpt_5_mini"' in select:
+                    macros.symbols["_slo_optionsfileuri"] = uri
+                step["sql"] = None
+        elif line == "proc http":
+            step["http"] = []
+        elif step["http"] is not None:
+            step["http"].append(line)
+            if line == "run; quit;":
+                step["asked"] = next(part[len('url="'):-1] for part in step["http"] if part.startswith('url="'))
+                macros.symbols["sys_prochttp_status_code"] = status
+                step["http"] = None
+
+    macros = _OpenCode(dict(symbols, _slo_viyaHost="https://viya.example.com", SYSCC="0"),
+                       {"libref": lambda arguments: 70006, "max": lambda arguments: max(int(argument) for argument in arguments)})
+    generated, log = macros.run(program, "step", on_text)
+    return generated, log, step["asked"]
+
+
+@pytest.mark.parametrize("name", ["LLM - Create LLM Call", "LLM - Get Options"])
+def test_a_step_as_it_comes_reads_no_control_that_is_not_there_and_says_that_no_model_was_chosen(name):
+    """The pass of 2026-10-13, both steps dropped into a flow and run as they came. The program resolves no macro
+    variable SAS Studio did not write, runs no PROC SQL step without a table, asks SAS Viya for nothing, and its one
+    ERROR line says what is missing. With the program of the version before, the first statement of the branch
+    resolves _slo_mod_nm_tab_1, which is not there."""
+    generated, log, asked = looked_up(PROGRAMS[name](), AS_IT_COMES)
+
+    assert asked is None and not [line for line in generated if line.startswith(("proc sql", "proc http", "select ", "from "))]
+    assert log == [f"ERROR: {name}: no code was written, because {NO_MODEL}."]
+    # the version before: a reference SAS warns of, in the first statement behind the condition
+    before = PROGRAMS[name]().replace("%if &_slo_input_selector. EQ table and %symexist(_slo_mod_input) and %symexist(_slo_mod_nm_tab_1) %then %do;",
+                                      "%if &_slo_input_selector. EQ table %then %do;")
+    with pytest.raises(macro_harness.MacroError, match="Apparent symbolic reference _SLO_MOD_NM_TAB_1 not resolved"):
+        looked_up(before, AS_IT_COMES)
+
+
+@pytest.mark.parametrize("name", ["LLM - Create LLM Call", "LLM - Get Options"])
+@pytest.mark.parametrize("symbols", [
+    {"_slo_input_selector": "table", "_slo_mod_input": "WORK.MODELS"},
+    {"_slo_input_selector": "table", "_slo_mod_nm_tab_1": "gpt_5_mini"},
+    {"_slo_input_selector": "table", "_slo_mod_input": "WORK.MODELS", "_slo_mod_nm_tab_1": "a_model_that_is_not_in_the_table"},
+    {"_slo_input_selector": "manual"},
+    {"_slo_input_selector": "manual", "_slo_mod_name_manual": "gpt_5_mini"},
+    {"_slo_input_selector": "manual", "_slo_mod_name_manual": "gpt_5_mini", "_slo_fl_uri_manual": ""},
+    {"_slo_input_selector": "manual", "_slo_mod_name_manual": "", "_slo_fl_uri_manual": OPTIONS_URI},
+], ids=["a table and no model name", "a model name and no table", "a model whose row gives no URI", "manual entry and no field",
+        "manual entry without the URI field", "manual entry with an empty URI", "manual entry with an empty name"])
+def test_a_run_without_a_model_and_an_options_file_asks_for_nothing(name, symbols):
+    """Every state of the controls in which there is no model name or no options file to ask for ends the same way:
+    no request, the one ERROR line."""
+    generated, log, asked = looked_up(PROGRAMS[name](), dict(AS_IT_COMES, **symbols), column_width=200)
+
+    assert asked is None and "proc http" not in generated
+    assert log == [f"ERROR: {name}: no code was written, because {NO_MODEL}."]
+
+
+@pytest.mark.parametrize("name", ["LLM - Create LLM Call", "LLM - Get Options"])
+@pytest.mark.parametrize("width", [49, 200], ids=["the column of List Available LLMs", "a column of 200 characters"])
+def test_the_uri_of_a_model_table_is_asked_for_without_the_blanks_of_its_column(name, width):
+    """The pass of 2026-10-13: with a model table whose column optionsFileURI was 200 characters wide, both steps asked
+    for '<uri><blanks>/content' and got HTTP 404 in 3 of 3 runs; with the column of 49 characters, the length of a URI,
+    they read the file. INTO keeps the blanks of a column, TRIMMED leaves them out."""
+    symbols = dict(AS_IT_COMES, _slo_mod_input="WORK.MODELS", _slo_mod_nm_tab_1="gpt_5_mini")
+    text = PROGRAMS[name]()
+    generated, log, asked = looked_up(text, symbols, column_width=width)
+
+    assert asked == "https://viya.example.com" + OPTIONS_URI + "/content" and len(OPTIONS_URI) == 49
+    assert 'where name EQ "gpt_5_mini";' in generated and "from WORK.MODELS" in generated
+    # the request was answered with 200, so the reason is the one of a file that is no JSON - until the file is read
+    assert log == [f"ERROR: {name}: no code was written, because the options file {OPTIONS_URI} is no JSON that SAS can read."]
+    # the statement of the version before, for the same table
+    before = text.replace("into :_slo_optionsFileURI trimmed", "into :_slo_optionsFileURI")
+    assert before != text
+    asked_before = looked_up(before, symbols, column_width=width)[2]
+    assert (asked_before == asked) == (width == 49)
+    assert asked_before == "https://viya.example.com" + OPTIONS_URI.ljust(width) + "/content"
+
+
+@pytest.mark.parametrize("name", ["LLM - Create LLM Call", "LLM - Get Options"])
+def test_manual_entry_asks_for_the_options_file_that_was_entered(name):
+    generated, log, asked = looked_up(PROGRAMS[name](), dict(AS_IT_COMES, _slo_input_selector="manual", _slo_mod_name_manual="gpt_5_mini",
+                                                             _slo_fl_uri_manual=OPTIONS_URI), status="404")
+
+    assert asked == "https://viya.example.com" + OPTIONS_URI + "/content" and "proc sql noPrint;" not in generated
+    assert log == [f"ERROR: {name}: no code was written, because SAS Viya did not answer the request for the options file {OPTIONS_URI} "
+                   "with HTTP 200 (status: 404)."]
+
+
+def test_the_two_steps_look_a_model_up_with_the_same_statements():
+    """The block that reads the controls and the block that asks for the file are one text in both steps, and the
+    macro variable that says whether there is a model is deleted at the end of both."""
+    def blocks(text):
+        start = text.index("%let _slo_optionsFileURI = ;")
+        return text[start:text.index("* Get the Viya Host URL;", start)], text[text.index("* The code is written only where"):text.index("* One row per option.")]
+
+    assert blocks(program()) == blocks(get_options())
+    for text in (program(), get_options()):
+        assert text.count("%let _slo_chosen = ") == 1 and text.count("&_slo_chosen.") == 2 and "_slo_chosen " in text.split("\n")[-1]
+        assert text.count("%if &_slo_chosen. EQ 1 %then %do;\nproc http\n") == 1 and text.count("\nproc http\n") == 1
+        assert text.count(f"%if &_slo_chosen. NE 1 %then %do;\n    %let _slo_why = {NO_MODEL};\n%end;\n") == 1
