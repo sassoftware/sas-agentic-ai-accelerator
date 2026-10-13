@@ -408,13 +408,18 @@ def test_a_reference_to_an_object_elsewhere_is_never_followed(manifest, repo):
     # the file elsewhere was not read, not written and is still there
     assert viya.files[outside] == b"THEIRS = 1\n"
     assert not [call for call in viya.calls if outside in call[1]] and viya.wrote() == []
-    assert result.unlisted == [f"{ADAPTERS} (reference to a file)"]
-    # beside the object itself a reference is only named
+    # the reference is named on the line of its entry - a path of the manifest is not listed as "not in the manifest"
+    assert result.unlisted == []
+    # beside the object itself a reference makes the name two things: both are named, and neither is written
+    core, = viya.at(f"{CONTENT_ROOT}/{CORE}")
     viya.put_reference(f"{CONTENT_ROOT}/{CORE}", outside)
     (repo / "src/rag_core/__init__.py").write_bytes(b"CORE = 2\n")
     result = deploy(viya, manifest)
-    assert _statuses(result)[CORE] == UPDATED and viya.files[outside] == b"THEIRS = 1\n"
-    assert f"{CORE} (reference to a file)" in result.unlisted
+    assert _statuses(result)[CORE] == FAILED and viya.files[outside] == b"THEIRS = 1\n"
+    assert viya.files[core] == b"CORE = 1\n" and result.unlisted == []
+    assert _outcome(result, CORE).note.startswith(
+        f"the file of that name (id {_id(core)}) and a reference of that name, which names {outside}, an object "
+        "that lives elsewhere, are in the folder: none was changed and the reference was not followed")
 
 
 def test_two_registered_steps_of_one_name_are_both_named_and_none_is_guessed(manifest, repo):

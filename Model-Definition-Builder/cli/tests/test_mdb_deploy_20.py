@@ -110,6 +110,178 @@ def test_the_record_is_not_written_into_a_file_a_site_has_elsewhere(command, man
     assert result.exit_code == 1 and deploying.RECORD_NEEDS_ALL in text and "Nothing was updated." in text
 
 
+# ---- one name, one object: a reference of the name of an entry -------------------
+def _reference_alone(viya, path=ADAPTERS) -> str:
+    """Take the file of an entry out of its folder and put a reference of its
+    name there, which points at a file in another folder. Returns that file."""
+    outside = viya.put_member("/Users/someone/My Folder/elsewhere.py", "/files/files/", b"THEIRS = 1\n")
+    above, _, name = f"{CONTENT_ROOT}/{path}".rpartition("/")
+    here = viya.folder_id(above)
+    viya.members[here] = [m for m in viya.members[here] if m["name"] != name]
+    viya.put_reference(f"{CONTENT_ROOT}/{path}", outside)
+    return outside
+
+
+def test_a_reference_at_a_path_of_the_manifest_is_not_called_not_in_the_manifest(command):
+    """live-19: the run that FAILED RAG/rag_core/tokens.py for a reference of
+    that name listed the same path under 'Not in the manifest and left
+    alone'."""
+    _, _, viya = command()
+    outside = _reference_alone(viya)
+    for args in ((), ("--dry-run",)):
+        result, text, _ = command(*args)
+        assert result.exit_code == 1, text
+        assert (f"  FAILED       file          {ADAPTERS}  (a reference of that name is in the folder and names "
+                f"{outside}, an object that lives elsewhere: it is not followed, and nothing was written") in text
+        assert "Not in the manifest" not in text and "left alone" not in text
+        assert "  not attempted file          release.json  (not written: 1 entry in front of it FAILED" in text
+    # a reference that stands at no path of the manifest is what it was: not in the manifest, and left alone
+    viya.put_reference(f"{CONTENT_ROOT}/RAG/rag_core/notes.py", outside)
+    result, text, _ = command()
+    assert "Not in the manifest and left alone (1) - not deployed, and `mdb package-export` leaves them out:\n" \
+           "  RAG/rag_core/notes.py (reference to a file)\n" in text
+
+
+def test_the_object_and_a_reference_of_its_name_are_both_named_and_neither_is_written(command, repo):
+    """live-19: with the real file AND a reference of its name in the folder
+    the run said `equal`, exit code 0, and named the reference as 'left
+    alone' - while two objects of one name are both named and neither is
+    written."""
+    _, _, viya = command()
+    core, = viya.at(f"{CONTENT_ROOT}/{CORE}")
+    outside = viya.put_member("/Users/someone/My Folder/elsewhere.py", "/files/files/", b"THEIRS = 1\n")
+    viya.put_reference(f"{CONTENT_ROOT}/{CORE}", outside)
+    line = (f"  FAILED       file          {CORE}  (the file of that name (id {_id(core)}) and a reference of that "
+            f"name, which names {outside}, an object that lives elsewhere, are in the folder: none was changed and "
+            "the reference was not followed, because nothing says which one is meant - remove the reference)\n")
+    # equal content, and content that differs: the same line, and no write either time
+    for changed in (False, True):
+        if changed:
+            (repo / "src/rag_core/__init__.py").write_bytes(b"CORE = 2\n")
+        viya.calls.clear()
+        result, text, _ = command()
+        assert result.exit_code == 1 and line in text, text
+        assert viya.wrote() == [] and viya.files[core] == b"CORE = 1\n" and viya.files[outside] == b"THEIRS = 1\n"
+        assert "left alone" not in text
+        assert "14 entries: 11 equal, 1 not deployed, 1 not attempted, 1 FAILED." in text
+    # every reference of the name is named, alone and beside the object
+    second = viya.put_member("/Users/someone/My Folder/another.py", "/files/files/", b"OTHERS = 1\n")
+    viya.put_reference(f"{CONTENT_ROOT}/{CORE}", second)
+    result, text, _ = command()
+    assert (f"(the file of that name (id {_id(core)}) and 2 references of that name, which name {outside}, {second}, "
+            "objects that live elsewhere, are in the folder: none was changed and no reference was followed, because "
+            "nothing says which one is meant - remove the references)\n") in text
+    here = viya.folder_id(f"{CONTENT_ROOT}/RAG/rag_core")
+    kept = list(viya.members[here])
+    viya.members[here] = [m for m in kept if m["uri"] != core]
+    result, text, _ = command()
+    assert (f"(2 references of that name are in the folder and name {outside}, {second}, objects that live "
+            "elsewhere: none is followed, and nothing was written - remove them, or update an object they name "
+            "with --to)\n") in text and viya.wrote() == []
+    viya.members[here] = kept
+    # the references removed: the file is the one object of its name again, and is written
+    viya.members[here] = [m for m in viya.members[here] if m.get("type") != "reference"]
+    result, text, _ = command()
+    assert result.exit_code == 0 and viya.files[core] == b"CORE = 2\n"
+
+
+def test_the_import_follows_the_same_rule_for_a_reference(importing, no_discovery):
+    """`mdb builders-import` runs the same write path: one truth for both."""
+    no_discovery()
+    viya = importing.viya
+    mine = _site_with_its_own_objects(viya)
+    outside = viya.put_member("/Users/someone/My Folder/elsewhere.py", "/files/files/", b"THEIRS = 1\n")
+    viya.put_reference(f"{CONTENT_ROOT}/{FILE_PATH}", outside)
+    result, fake, text = importing(Site(), "--no-reports", without_report=True)
+    assert result.exit_code == 1, text
+    assert (f"    FAILED       file          {FILE_PATH}  (the file of that name (id {_id(mine[FILE_PATH])}) and a "
+            f"reference of that name, which names {outside}") in text
+    assert viya.files[mine[FILE_PATH]] == b"CORE = 1\n" and "left alone" not in text
+    # the reference alone, at the path of an object of the package
+    here = viya.folder_id(f"{CONTENT_ROOT}/RAG/rag_core")
+    viya.members[here] = [m for m in viya.members[here] if m.get("type") == "reference"]
+    result, fake, text = importing(Site(), "--no-reports", without_report=True)
+    assert result.exit_code == 1
+    assert f"    FAILED       file          {FILE_PATH}  (a reference of that name is in the folder and names " in text
+    assert "Not in the package" not in text and "left alone" not in text
+
+
+def test_a_reference_of_the_name_of_a_folder_fails_the_folder_and_what_is_in_it(manifest):
+    """The rule holds for a folder of the manifest too: beside a reference
+    called RAG no second RAG is created, and nothing goes into either. A dry
+    run says what the run does."""
+    viya = Viya()
+    viya.make_folder(CONTENT_ROOT)
+    elsewhere = viya.make_folder("/Team/Other RAG")
+    viya.put_reference(f"{CONTENT_ROOT}/RAG", f"/folders/folders/{elsewhere}")
+    lines = []
+    for dry_run in (True, False):
+        viya.calls.clear()
+        result = deploy(viya, manifest, dry_run=dry_run)
+        statuses = _statuses(result)
+        assert {path for path, status in statuses.items() if status == FAILED} == {
+            "RAG", "RAG/rag_core", "RAG/steps", "RAG/rag_core/adapters", CORE, ADAPTERS, STEP_PATH}
+        assert statuses["release.json"] == "not attempted" and statuses["Data"] == CREATED
+        notes = {o.entry.path: o.note for o in result.failed}
+        assert notes["RAG"].startswith(f"a reference of that name is in the folder and names /folders/folders/"
+                                       f"{elsewhere}, an object that lives elsewhere: it is not followed")
+        assert notes["RAG/rag_core"] == "the folder above it FAILED (its line says why): nothing was created in it"
+        assert notes[CORE] == "its folder FAILED (the line of the folder says why): nothing was written into it"
+        assert result.unlisted == [] and result.stopped_at is None
+        lines.append([(o.entry.path, o.status, o.note) for o in result.failed])
+        # nothing was created under the name, and nothing in the folder the reference names
+        assert [m["type"] for m in viya.members[viya.folder_id(CONTENT_ROOT)] if m["name"] == "RAG"] == ["reference"]
+        assert viya.members[elsewhere] == []
+    assert lines[0] == lines[1]
+    # two folders of the name: neither is taken for the one, and nothing goes into either
+    twice = Viya()
+    first = twice.make_folder(f"{CONTENT_ROOT}/RAG")
+    second = twice._create_folder("RAG", twice.folder_id(CONTENT_ROOT))
+    result = deploy(twice, manifest)
+    note = next(o.note for o in result.failed if o.entry.path == "RAG")
+    assert note == (f"2 folders of that name are in the folder (ids {first}, {second}): nothing was written into any "
+                    "of them, because nothing says which one is meant - remove or rename the others")
+    assert twice.members[first] == [] and twice.members[second] == [] and _statuses(result)[CORE] == FAILED
+
+
+def test_a_reference_beside_a_report_or_an_entry_the_run_did_not_look_at_is_still_named(manifest):
+    """Where no line of an entry names the reference - a report, which is
+    never deployed, or an entry `only` left out - the list names it, and
+    says that it is not the object listed under the name."""
+    viya = Viya()
+    deploy(viya, manifest)
+    outside = viya.put_member("/Users/someone/My Folder/elsewhere.py", "/files/files/", b"THEIRS = 1\n")
+    viya.put_reference(f"{CONTENT_ROOT}/{CORE}", outside)
+    viya.put_reference(f"{CONTENT_ROOT}/Prompt Builder/Prompt Builder", "/reports/reports/another")
+    result = deploy(viya, manifest, only=["Prompt Builder"])
+    assert result.failed == [] and _statuses(result)["Prompt Builder/Prompt Builder"] == NOT_DEPLOYED
+    assert result.unlisted == [
+        "Prompt Builder/Prompt Builder (reference to a report - not the report that is listed under this name)"]
+    result = deploy(viya, manifest)
+    assert [o.entry.path for o in result.failed] == [CORE]
+    assert result.unlisted == [
+        "Prompt Builder/Prompt Builder (reference to a report - not the report that is listed under this name)"]
+
+
+def test_a_path_that_names_the_object_and_a_reference_names_two_things(manifest):
+    """`--to <path>`: the object beside a reference of its name is named by
+    its id, where nothing can be taken for it."""
+    viya = Viya()
+    mine = viya.put_member("/Team/code/__init__.py", "/files/files/", b"OLD = 1\n")
+    outside = viya.put_member("/Users/someone/My Folder/elsewhere.py", "/files/files/", b"THEIRS = 1\n")
+    viya.put_reference("/Team/code/__init__.py", outside)
+    with pytest.raises(DeployError) as raised:
+        resolve_target(viya, "file", "/Team/code/__init__.py")
+    assert str(raised.value) == (
+        f"--to /Team/code/__init__.py: the folder holds the file of that name (id {_id(mine)}) and a reference of "
+        f"that name, which names {outside} - name the file by its id")
+    entry = manifest.find(CORE, "file")
+    assert deploy_to(viya, manifest, entry, "/Team/code/__init__.py").status == FAILED
+    assert viya.files[mine] == b"OLD = 1\n" and viya.wrote() == []
+    assert deploy_to(viya, manifest, entry, _id(mine)).status == "updated" and viya.files[mine] == b"CORE = 1\n"
+    assert viya.files[outside] == b"THEIRS = 1\n"
+
+
 # ---- what a refused write answered, and the line for the content root -------------
 #: A refusal in the shape the pass of 2026-10-13 recorded for a PUT of a file's content whose If-Match was
 #: no longer the ETag of the file. Every value is made up.

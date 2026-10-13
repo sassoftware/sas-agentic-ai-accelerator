@@ -51,8 +51,10 @@ there is none.
 WHAT IS NEVER WRITTEN. An object outside the folders of the source. A member
 of a folder can be a REFERENCE to an object that lives somewhere else; a
 reference is told by its member type, is never followed, and is no object of
-the folder. And where a folder holds two objects of one name and kind, none
-of them is guessed to be the one.
+the folder. ONE NAME, ONE OBJECT: where a folder holds two objects of the
+name and kind of an entry, or a reference of that name and kind - alone, or
+beside the object itself - the entry is FAILED, each of them is named on its
+line and none is written: nothing says which one is meant.
 
 A report is not deployed: it is authored in SAS Visual Analytics and reaches
 a site through the transfer service.
@@ -220,6 +222,12 @@ def _members_named(members: list, name: str, kind: str) -> list:
     """The objects of a folder with this name and kind: its children. A
     reference is not one - what it names lives in another folder."""
     return [m for m in _named(members, name, kind) if not is_reference(m)]
+
+
+def _references_named(members: list, name: str, kind: str) -> list:
+    """The references of a folder that carry this name and point at an
+    object of this kind."""
+    return [m for m in _named(members, name, kind) if is_reference(m)]
 
 
 # ---------------------------------------------------------------------------
@@ -542,6 +550,10 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
                      + (f"; created above it: {', '.join(made[:-1])}" if made[:-1] else "")))
     folder_ids: dict = {"": root_id}
     members: dict = {}
+    #: (folder, name, kind) of the entries whose own line names a reference of their name.
+    referenced: set = set()
+    #: The paths of the folders that FAILED before anything was sent: nothing goes into them.
+    broken: set = set()
 
     def members_of(folder_path: str) -> list:
         if folder_path not in members:
@@ -556,15 +568,25 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
             continue
         parent_id = folder_ids.get(entry.folder)
         try:
-            found = _members_named(members_of(entry.folder), entry.name, "folder") if parent_id else []
+            if entry.folder in broken or (parent_id is None and not dry_run):
+                raise DeployError("the folder above it FAILED (its line says why): nothing was created in it")
+            listed = members_of(entry.folder) if parent_id else []
+            found = _members_named(listed, entry.name, "folder")
+            references = _references_named(listed, entry.name, "folder")
+            if references:
+                # one name, one object: nothing is created beside a reference of the name
+                referenced.add((entry.folder, entry.name, entry.kind))
+                raise DeployError(_referenced(entry, found, references))
+            if len(found) > 1:
+                raise DeployError(f"{len(found)} folders of that name are in the folder (ids "
+                                  f"{', '.join(_id(m['uri']) for m in found)}): nothing was written into any of "
+                                  "them, because nothing says which one is meant - remove or rename the others")
             if found:
                 folder_ids[entry.path] = _id(found[0]["uri"])
                 done(entry, EQUAL)
             elif dry_run:
                 folder_ids[entry.path] = None
                 done(entry, CREATED)
-            elif parent_id is None:
-                done(entry, FAILED, "its parent folder could not be read")
             else:
                 folder_ids[entry.path] = create_folder(session, entry.name, parent_id, entry.description)["id"]
                 done(entry, CREATED)
@@ -575,6 +597,7 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
             result.stopped_at = done(entry, FAILED, str(exc))
         except DeployError as exc:
             folder_ids.setdefault(entry.path, None)
+            broken.add(entry.path)
             done(entry, FAILED, str(exc))
 
     for entry in objects:
@@ -597,23 +620,26 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
             continue
         folder_id = folder_ids.get(entry.folder)
         try:
+            if entry.folder in broken or (folder_id is None and not dry_run):
+                # in a dry run as in a run: nothing goes into a folder that FAILED
+                if entry.kind == "report":
+                    done(entry, NOT_DEPLOYED, "not looked up: its folder FAILED")
+                else:
+                    done(entry, FAILED, "its folder FAILED (the line of the folder says why): nothing was written "
+                                        "into it")
+                continue
             listed = members_of(entry.folder) if folder_id else []
             existing = _members_named(listed, entry.name, entry.kind)
             if entry.kind == "report":
                 done(entry, NOT_DEPLOYED, "on the site" if existing else "not on the site - it comes with the package")
                 continue
-            if folder_id is None and not dry_run:
-                done(entry, FAILED, "its folder could not be read")
+            references = _references_named(listed, entry.name, entry.kind)
+            if references:
+                referenced.add((entry.folder, entry.name, entry.kind))
+                done(entry, FAILED, _referenced(entry, existing, references))
                 continue
             if len(existing) > 1:
                 done(entry, FAILED, _several(entry, existing))
-                continue
-            references = [m for m in _named(listed, entry.name, entry.kind) if is_reference(m)]
-            if not existing and references:
-                done(entry, FAILED,
-                     f"a reference of that name is in the folder and names {references[0].get('uri')}, an object "
-                     "that lives elsewhere: it is not followed, and nothing was written - remove the reference, "
-                     "or update the object it names with --to")
                 continue
             status, note = _DEPLOYERS[entry.kind](session, source, entry, folder_id, existing, dry_run,
                                                   settings, new_values)
@@ -629,10 +655,15 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
         for member in items:
             uri = str(member.get("uri") or "")
             kind = next((k for k, prefix in _MEMBER_URI.items() if uri.startswith(prefix)), None)
-            if is_reference(member) or (folder_path, member.get("name"), kind) not in listed_entries:
+            key = (folder_path, member.get("name"), kind)
+            if is_reference(member) and key in referenced:
+                continue                                       # named on the line of its entry, which FAILED for it
+            if is_reference(member) or key not in listed_entries:
                 what = kind or member.get("contentType") or uri.strip("/").split("/")[0] or "object"
                 if is_reference(member):
-                    what = f"reference to a {what}"
+                    # at a listed path the reference is what is not listed, not the path
+                    what = f"reference to a {what}" + (
+                        f" - not the {what} that is listed under this name" if key in listed_entries else "")
                 name = str(member.get("name"))
                 result.unlisted.append(f"{folder_path}/{name} ({what})" if folder_path else f"{name} ({what})")
     return result
@@ -643,6 +674,30 @@ def _several(entry, existing: list) -> str:
     return (f"{len(existing)} {_WORD[entry.kind]}s of that name are in the folder (ids {ids}): none was changed, "
             f"because nothing says which one is meant - update one with `mdb content-deploy --only "
             f"\"{entry.path}\" --to <id>`, or remove the other")
+
+
+def _referenced(entry, existing: list, references: list) -> str:
+    """Why an entry is not written while a reference of its name and kind is
+    in its folder: alone, or beside the object - or objects - of that name.
+    Every object and every reference of the name is named."""
+    names = ", ".join(str(m.get("uri")) for m in references)
+    one = len(references) == 1
+    if not existing:
+        return (f"a reference of that name is in the folder and names {names}, an object that lives elsewhere: it "
+                "is not followed, and nothing was written - remove the reference, or update the object it names "
+                "with --to" if one else
+                f"{len(references)} references of that name are in the folder and name {names}, objects that live "
+                "elsewhere: none is followed, and nothing was written - remove them, or update an object they "
+                "name with --to")
+    ids = ", ".join(_id(m["uri"]) for m in existing)
+    held = (f"the {_WORD[entry.kind]} of that name (id {ids})" if len(existing) == 1 else
+            f"{len(existing)} {_WORD[entry.kind]}s of that name (ids {ids})")
+    return (f"{held} and a reference of that name, which names {names}, an object that lives elsewhere, are in "
+            "the folder: none was changed and the reference was not followed, because nothing says which one is "
+            "meant - remove the reference" if one else
+            f"{held} and {len(references)} references of that name, which name {names}, objects that live "
+            "elsewhere, are in the folder: none was changed and no reference was followed, because nothing says "
+            "which one is meant - remove the references")
 
 
 def _deploy_file(session, source, entry, folder_id, existing, dry_run, settings, new_values=None) -> tuple:
@@ -744,8 +799,10 @@ def resolve_target(session, kind: str, target: str) -> dict:
     `target` is the object's URI (`/dataFlows/steps/<id>`), its id, or its
     SAS Content path (`/Custom Steps/LLM - Log Parser.step`). A path has to
     name exactly one object of that kind in its folder - a reference is not
-    one - and nothing is ever created from it. An object named by its id or
-    URI is read for its name and asked for its folder.
+    one, and a reference of that name beside the object makes the path name
+    two things: the object is then named by its id - and nothing is ever
+    created from it. An object named by its id or URI is read for its name
+    and asked for its folder.
     """
     target = (target or "").strip()
     prefix = _MEMBER_URI[kind]
@@ -763,13 +820,21 @@ def resolve_target(session, kind: str, target: str) -> dict:
     folder = find_folder(session, folder_path) if folder_path else None
     if not folder:
         raise DeployError(f"--to {target}: there is no folder {folder_path or '/'}")
-    found = _members_named(folder_members(session, folder["id"]), name, kind)
+    members = folder_members(session, folder["id"])
+    found = _members_named(members, name, kind)
     if not found:
         raise DeployError(f"--to {target}: the folder {folder_path} holds no {_WORD[kind]} named '{name}'. "
                           "Nothing was written - this option updates an object and never creates one.")
     if len(found) > 1:
         raise DeployError(f"--to {target}: the folder holds {len(found)} {_WORD[kind]}s of that name (ids "
                           f"{', '.join(_id(m['uri']) for m in found)}) - name one of them by its id")
+    references = _references_named(members, name, kind)
+    if references:
+        pointer = ("a reference of that name, which names" if len(references) == 1 else
+                   f"{len(references)} references of that name, which name")
+        raise DeployError(f"--to {target}: the folder holds the {_WORD[kind]} of that name (id "
+                          f"{_id(found[0]['uri'])}) and {pointer} "
+                          f"{', '.join(str(m.get('uri')) for m in references)} - name the {_WORD[kind]} by its id")
     return {"uri": found[0]["uri"], "name": name, "folder": folder_path}
 
 
