@@ -347,3 +347,42 @@ def test_two_release_files_are_not_read(monkeypatch, tmp_path, mdb_content, firs
     assert site.paths("/files/files") == [] and [entry for entry in lines if entry["section"] == "Content"] == []
     assert mdb_outcomes(monkeypatch, mdb_content, site)[("release.json", "file")][0] == "FAILED"
 
+
+# ---------------------------------------------------------------------------
+# What to do about a report that is not there
+# ---------------------------------------------------------------------------
+
+BRING_REPORT = ("Import the package of the accelerator again, or run mdb builders-import: a report comes with the package, and "
+                "mdb content-deploy writes none.")
+
+
+@pytest.mark.parametrize("held, lead", [((0, 0), ""), ((0, 1), "Remove the reference from the folder. Then: ")],
+                         ids=["not in its folder", "only a reference"])
+def test_the_advice_for_a_report_names_what_brings_a_report(monkeypatch, tmp_path, mdb_content, held, lead):
+    """review-20b. The page advised `run mdb content-deploy` for a report that is missing, and mdb content-deploy
+    writes no report: its line for the entry is `not deployed ... (not on the site - it comes with the package)`."""
+    site = folder_with("report", held)
+    entry = page_lines(monkeypatch, tmp_path, site)[f"{ENTRY['report']} (report)"]
+
+    assert mdb_outcomes(monkeypatch, mdb_content, site)[(ENTRY["report"], "report")] == ("not deployed", NOT_ON_THE_SITE)
+    assert entry["todo"] == lead + BRING_REPORT
+    # and a report whose folder is not there
+    gone = Site()
+    gone.remove("Prompt Builder")
+    lines = page_lines(monkeypatch, tmp_path, gone)
+    assert (lines[f"{ENTRY['report']} (report)"]["found"], lines[f"{ENTRY['report']} (report)"]["todo"]) == (
+        "its folder is not in the content root", BRING_REPORT)
+    # the other kinds keep their advice: both commands write them
+    assert lines["Prompt Builder/SAS-LLM-Prompt-Builder-UI (jobDefinition)"]["todo"] == "Import the package of the accelerator again, or run mdb content-deploy."
+
+
+def test_the_line_of_a_report_takes_its_advice_from_one_sentence(monkeypatch, tmp_path):
+    """The sentence of a report names the import and mdb builders-import, and mdb content-deploy only as what
+    writes none; the one statement that picks the advice of an entry picks it for a report."""
+    namespace = load(monkeypatch, tmp_path).namespace
+    block = harness.python_block()
+
+    assert namespace["REPORT_MISSING"] == BRING_REPORT and "run mdb content-deploy" not in namespace["REPORT_MISSING"]
+    assert namespace["ENTRY_MISSING"] == "Import the package of the accelerator again, or run mdb content-deploy."
+    assert "deploy = STEP_MISSING if kind == 'step' else REPORT_MISSING if kind == 'report' else ENTRY_MISSING" in block
+    assert block.count("REPORT_MISSING") == 2 and block.count("ENTRY_MISSING") == 2

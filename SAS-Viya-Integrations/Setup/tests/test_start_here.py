@@ -297,6 +297,9 @@ def test_a_step_is_found_under_the_name_of_its_entry_to_the_letter(monkeypatch, 
 REFERENCE_FOUND = "a reference of that name is in its folder, and the object it names lives elsewhere"
 REMOVE = "Remove the reference from the folder. Then: "
 DEPLOY = "Import the package of the accelerator again, or run mdb content-deploy."
+# What brings a report: mdb content-deploy writes none
+BRING_REPORT = ("Import the package of the accelerator again, or run mdb builders-import: a report comes with the package, and "
+                "mdb content-deploy writes none.")
 REFERENCE_BESIDE ="present, and a reference of that name is in its folder, which names an object that lives elsewhere"
 REMOVE_ONLY = "Remove the reference from the folder: while it is there, the import and mdb content-deploy write nothing for this entry."
 
@@ -340,7 +343,7 @@ def test_a_reference_in_the_place_of_a_file_is_not_the_file(monkeypatch, tmp_pat
     ("Logging and Monitoring/Log-Parser-Code.sas", "file", DEPLOY),
     (STEP, "step", REGISTER + "Uploading its .step file to the folder does not."),
     ("Data/Load-Accelerator-Tables", "jobDefinition", DEPLOY),
-    ("Prompt Builder/Prompt Builder", "report", DEPLOY),
+    ("Prompt Builder/Prompt Builder", "report", BRING_REPORT),
 ], ids=["file", "step", "job definition", "report"])
 def test_a_reference_is_taken_for_no_kind_of_entry(monkeypatch, tmp_path, path, kind, advice):
     """A member is taken for an entry only when it is a child of the folder and of the kind of the entry. A

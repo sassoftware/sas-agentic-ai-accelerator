@@ -235,6 +235,10 @@ STEP_MISSING = ('Import the package of the accelerator again, or run mdb content
 STEP_UPLOADED = ('Import the package of the accelerator again, or run mdb content-deploy: both register the step. Then delete the file of '
                  'that name, which neither of them removes: a step file that was uploaded opens empty in SAS Studio.')
 STEP_BESIDE = 'Delete the file of that name: it is a step file that was uploaded, not the step.'
+# What to do about an entry that is not in its folder: a file, a job definition and a folder are written by the import
+# and by mdb content-deploy. A report is not: mdb content-deploy writes none, it comes with the package
+ENTRY_MISSING = 'Import the package of the accelerator again, or run mdb content-deploy.'
+REPORT_MISSING = 'Import the package of the accelerator again, or run mdb builders-import: a report comes with the package, and mdb content-deploy writes none.'
 # A member of a folder that is a reference names an object that lives in another folder. It is told by the type
 # of the member, is never followed, and is no object of the folder - whatever kind of object it names. Measured on
 # 2026-10-13 for a file: mdb content-deploy and the import in place reported the entry whose name a reference had as
@@ -573,7 +577,7 @@ def entry_line(path, kind, listings):
     folder, _, name = path.rpartition('/')
     status, members = listings.get(folder, (404, {}))
     what = f'{path} ({kind})' if kind else path
-    deploy = STEP_MISSING if kind == 'step' else 'Import the package of the accelerator again, or run mdb content-deploy.'
+    deploy = STEP_MISSING if kind == 'step' else REPORT_MISSING if kind == 'report' else ENTRY_MISSING
     if status == 404:
         return line(section, what, MISSING, 'its folder is not in the content root', deploy)
     if status != 200:
