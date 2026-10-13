@@ -292,6 +292,32 @@ def test_an_export_of_a_folder_below_a_user_says_where_the_id_stays(exporting, m
 
 
 # ---- 4: the last line of a release export, the help texts ----------------------
+def test_the_last_line_of_a_release_export_names_what_the_commit_holds(exporting, manifest, repo):
+    """review-19: 'commit this file - and nothing else with it', while the
+    commit of release 2.3.0 also removes the package files of the earlier
+    releases and takes --allow-missing out of the workflow; and 'Tag the
+    commit that adds the file', which after a squash merge is a commit of a
+    branch."""
+    earlier = repo / "SAS-Viya-Integrations"
+    for name in ("An Earlier Package.json", "Another-Earlier-Package.json"):
+        (earlier / name).write_text('{"transferDetails": []}\n', encoding="utf-8")
+    result, text, target, _ = exporting(package_of(manifest))
+    assert result.exit_code == 0, text
+    assert text.rstrip().splitlines()[-1] == (
+        "Run `mdb package-check --release`, then commit this file in a commit that changes neither the changelog nor "
+        "a source the manifest names: they stay as they were at the deploy (release.json names that commit, and the "
+        "release table was made from that changelog). That commit also removes the package files of earlier "
+        "releases - An Earlier Package.json, Another-Earlier-Package.json beside this file, and every other "
+        "transfer package below SAS-Viya-Integrations/ - and takes --allow-missing out of the workflow. The tag goes "
+        "on the commit of main that holds this file - after a squash merge the commit the merge made on main, not "
+        "the commit of the branch - and the commit release.json names has to be in the history of that commit: a "
+        "commit of a branch that is squash-merged later is not.")
+    assert "nothing else with it" not in text and "Tag the commit that adds the file" not in text
+    # once they are gone the sentence about them is too
+    for name in ("An Earlier Package.json", "Another-Earlier-Package.json"):
+        (earlier / name).unlink()
+    result, text, _, _ = exporting(package_of(manifest))
+    assert result.exit_code == 0 and "earlier releases" not in text and "--allow-missing" not in text
 
 
 #: A sentence about what was not measured, tested or run - not the word "run" in what a command does.

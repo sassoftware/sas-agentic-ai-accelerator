@@ -1188,9 +1188,12 @@ def test_an_export_of_a_folder_that_is_the_checkout_is_written(exporting, manife
     # review-18: the last line said to commit the file "with the CHANGELOG entry that explains the change" - a
     # changelog edit after the export fails the gate of the release
     assert text.rstrip().splitlines()[-1] == (
-        "Run `mdb package-check --release`, then commit this file - and nothing else with it: the changelog and every "
-        "source the manifest names stay as they were at the deploy (release.json names that commit, and the release "
-        "table was made from that changelog). Tag the commit that adds the file.")
+        "Run `mdb package-check --release`, then commit this file in a commit that changes neither the changelog nor "
+        "a source the manifest names: they stay as they were at the deploy (release.json names that commit, and the "
+        "release table was made from that changelog). The tag goes on the commit of main that holds this file - "
+        "after a squash merge the commit the merge made on main, not the commit of the branch - and the commit "
+        "release.json names has to be in the history of that commit: a commit of a branch that is squash-merged "
+        "later is not.")
     assert "CHANGELOG entry" not in text
     # what the export left on the server is deleted: the package and the record of the export job
     assert exporting.deleted == ["/transfer/packages/p1", "/transfer/exportJobs/j1"]

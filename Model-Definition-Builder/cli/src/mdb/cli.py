@@ -1970,10 +1970,19 @@ def package_export(
         # The changelog is finished before the deploy: release.json and the
         # release table were made from this checkout, and a changelog edit
         # after the export makes `mdb package-check --release` fail.
-        console.print("Run `mdb package-check --release`, then commit this file - and nothing else with it: the "
-                      "changelog and every source the manifest names stay as they were at the deploy (release.json "
-                      "names that commit, and the release table was made from that changelog). Tag the commit that "
-                      "adds the file.", markup=False, highlight=False, soft_wrap=True)
+        from .core.packages import earlier_packages_present
+        earlier = earlier_packages_present(ctx.repo, manifest.package_path)
+        console.print("Run `mdb package-check --release`, then commit this file in a commit that changes neither "
+                      "the changelog nor a source the manifest names: they stay as they were at the deploy "
+                      "(release.json names that commit, and the release table was made from that changelog). "
+                      + ("That commit also removes the package files of earlier releases - "
+                         f"{', '.join(path.name for path in earlier)} beside this file, and every other transfer "
+                         f"package below {manifest.package_path.parent.name}/ - and takes --allow-missing out of the "
+                         "workflow. " if earlier else "")
+                      + "The tag goes on the commit of main that holds this file - after a squash merge the commit "
+                      "the merge made on main, not the commit of the branch - and the commit release.json names "
+                      "has to be in the history of that commit: a commit of a branch that is squash-merged later "
+                      "is not.", markup=False, highlight=False, soft_wrap=True)
     elif differences:
         console.print("Keep this file out of the repository. `mdb builders-import "
                       f"{_shell_word(target)} --content-root <folder> --no-reports` brings what it holds into a "
