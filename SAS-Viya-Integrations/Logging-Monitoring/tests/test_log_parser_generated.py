@@ -14,6 +14,7 @@ Every line is made up by the builders of the harness.
 import random
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -48,7 +49,8 @@ def generated_file(seed, parts=6):
     """Returns the text of a file and, in the order of their request lines, what the generator knows of each request
     whose request line is in the file: its number, whether it fails, whether its part holds the line that ends it -
     its 'Response:' line or, for a request that fails, the last ERROR line of its transaction - and whether its part
-    holds an ERROR line of it."""
+    holds an ERROR line of it. And for the reading without the lines of the script: the part it stands in, and
+    whether that part holds the line that names it as answered, its 'Response Data:' line."""
     rng = random.Random(seed)
     known, text, serial = [], [], 0
     clock = datetime(2026, 1, 5, 9, 0, 0)
@@ -92,9 +94,10 @@ def generated_file(seed, parts=6):
                 continue
             # what ends a request: its 'Response:' line, or the last ERROR line of its transaction where it fails
             last = [unit for unit in units if " - ERROR - " in unit[0]][-1] if fails else units[14]
-            assert fails or " - api - INFO - Response: Status Code " in last[0]
+            assert fails or (" - api - INFO - Response: Status Code " in last[0] and " - api - INFO - Response Data: " in units[15][0])
             known.append({"serial": number, "fails": fails, "ended": id(last) in in_part,
-                          "error in its part": any(id(unit) in in_part and " - ERROR - " in unit[0] for unit in units[8:])})
+                          "error in its part": any(id(unit) in in_part and " - ERROR - " in unit[0] for unit in units[8:]),
+                          "part": part, "response data in its part": not fails and id(units[15]) in in_part})
         stamped, clock = _stamped(lines_of(written), clock + timedelta(seconds=rng.choice([-120, -30, 5, 60, 600])), rng)
         text += [collected(f"pod-{part}")] + stamped
     return "".join(line + "\n" for line in text), known
@@ -209,6 +212,95 @@ def test_the_numbers_of_the_notes_are_the_rows_they_speak_of(parsed_files):
     assert cut_off > 250 and overlapped_and_cut > 40
 
 
+def without_the_lines_of_the_script(text):
+    return "".join(line + "\n" for line in text.split("\n")[:-1] if not line.startswith("#=# "))
+
+
+# What `failed` says wrong in a file without the lines of the script, each with the test of test_log_parser.py that
+# holds two files of it which are the same byte for byte and need different rows
+WITHOUT_A_CLOSING_LINE = "failed = 1 for a request whose part holds neither its 'Response:' line nor an ERROR line of it"
+A_RESPONSE_LINE_ALONE = "failed = 1 for a request whose part holds its 'Response:' line and not its 'Response Data:' line"
+THE_RESPONSE_LINE_OF_ANOTHER = "failed = 0 for a request whose part does not hold its 'Response:' line"
+THE_ERROR_LINE_OF_ANOTHER = "failed = 1 and the text of an error for a request whose part holds no ERROR line of it"
+PROOFS = {WITHOUT_A_CLOSING_LINE: "test_a_request_without_a_closing_line_is_two_files_in_one",
+          A_RESPONSE_LINE_ALONE: "test_a_response_line_without_its_response_data_line_is_two_files_in_one",
+          THE_RESPONSE_LINE_OF_ANOTHER: "test_a_response_line_without_its_response_data_line_is_two_files_in_one",
+          THE_ERROR_LINE_OF_ANOTHER: "test_an_error_line_of_the_score_code_behind_a_request_without_a_closing_line_is_two_files_in_one"}
+
+
+def wrong_failed_values(run, folder, seeds):
+    """Every row of the generated files, read WITHOUT the lines of the script, whose `failed` is not what the part of its
+    request says - as (seed, class, the request), the class being one of the four above or 'other' - and the number
+    of files that have a row for every request line."""
+    found, files = [], 0
+    for seed in seeds:
+        text, known = generated_file(seed)
+        path = folder / "one.log"
+        path.write_text(without_the_lines_of_the_script(text), encoding="utf-8", newline="")
+        frame = run.namespace["parse_log_file"](str(path))
+        if len(frame) != len(known):
+            continue
+        files += 1
+        last_request_line = len(known) - 1
+        for position, ((_, row), request) in enumerate(zip(frame.iterrows(), known)):
+            failed = row["failed"]
+            if missing(failed):
+                continue
+            if request["error in its part"]:
+                right, kind = failed == 1, "other"
+            elif failed == 1 and not missing(row["error_text"]):
+                # the ERROR line the score code writes names no request: another request of its part wrote one
+                theirs = any(other["part"] == request["part"] and other is not request and other["error in its part"] for other in known)
+                right, kind = False, THE_ERROR_LINE_OF_ANOTHER if theirs else "other"
+            elif request["ended"]:
+                right = failed == 0
+                # its 'Response:' line names no request: only the 'Response Data:' line behind it does
+                kind = A_RESPONSE_LINE_ALONE if not request["response data in its part"] else "other"
+            elif failed == 1:
+                # nothing of the file says how the request ended, and a request line stands behind it: of its container,
+                # or of the next one
+                right, kind = False, WITHOUT_A_CLOSING_LINE if position < last_request_line else "other"
+            else:
+                # the status is the one of a 'Response:' line that names no request: another request of its part has
+                # such a line, without the 'Response Data:' line that would name it
+                alone = any(other["part"] == request["part"] and other is not request and other["ended"] and not other["fails"]
+                            and not other["response data in its part"] for other in known)
+                right, kind = False, THE_RESPONSE_LINE_OF_ANOTHER if alone else "other"
+            if not right:
+                found.append((seed, kind, request))
+    return found, files
+
+
+def test_every_wrong_failed_without_the_lines_of_the_script_is_of_a_class_that_two_files_hold(tmp_path):
+    """Review-20 and gate-20: in files without the lines of the script `failed` is wrong for some requests, and the
+    guide gave that as a limit without saying of which kinds the wrong values are. Here every generated file is read
+    without the lines, and every `failed` that is not what the part of its request says is put to one of four
+    classes by what the generator knows of the request. No value is left over. For each class a test of
+    test_log_parser.py builds two files that are the same byte for byte and need different rows, so no reading of
+    such a file is right for both. With the lines of the script none of the four occurs
+    (test_failed_is_what_the_part_of_a_request_says)."""
+    patch = pytest.MonkeyPatch()
+    try:
+        empty = tmp_path / "empty.log"
+        empty.write_text("", encoding="utf-8")
+        run = run_parser(patch, empty)
+        found, files = wrong_failed_values(run, tmp_path, range(FILES))
+    finally:
+        patch.undo()
+    classes = {}
+    for seed, kind, request in found:
+        classes.setdefault(kind, []).append((seed, request["serial"]))
+
+    assert "other" not in classes, classes["other"][:5]
+    assert set(classes) <= set(PROOFS) and len(classes[WITHOUT_A_CLOSING_LINE]) > 50
+    # the files that are counted are nearly all: a file with a row fewer is one with a request line in a response
+    assert files >= FILES - 5
+    # the tests that hold the two files of each class are there
+    source = (Path(__file__).resolve().parent / "test_log_parser.py").read_text(encoding="utf-8")
+    for name in set(PROOFS.values()):
+        assert f"\ndef {name}(" in source, name
+
+
 def test_the_same_lines_without_the_lines_of_the_script_are_not_read_that_well(monkeypatch, tmp_path):
     """What the line of the collection script is for: the first files of the generator without it. The parts are found
     by the time of their lines then, a part that starts later than the one in front of it is not found, and rows hold
@@ -218,7 +310,7 @@ def test_the_same_lines_without_the_lines_of_the_script_are_not_read_that_well(m
         text, known = generated_file(seed)
         folder = tmp_path / str(seed)
         folder.mkdir()
-        frame = parse(monkeypatch, folder, "".join(line + "\n" for line in text.split("\n")[:-1] if not line.startswith("#=# ")))
+        frame = parse(monkeypatch, folder, without_the_lines_of_the_script(text))
         prompt_length = {f"Q{request['serial']}?": 1000 + request["serial"] for request in known}
         for _, row in frame.iterrows():
             if not missing(row["prompt_length"]) and row["prompt_length"] != prompt_length.get(row["user_prompt"]):

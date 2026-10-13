@@ -3125,6 +3125,131 @@ def test_response_line_of_a_request_that_is_taken_as_over_ends_no_other_request(
 
 
 # ---------------------------------------------------------------------------
+# What `failed` can not say in a file without the lines of the collection script (review-20 and gate-20)
+#
+# test_log_parser_generated.py reads its generated files without those lines and puts every `failed` that is not what
+# the part of its request says to one of four classes. The three tests below hold, for each class, two files that are
+# the same byte for byte and need different rows.
+# ---------------------------------------------------------------------------
+
+def _at(units, *times):
+    """The lines of units, the log line of each under the time that stands at its place."""
+    assert len(units) == len(times)
+    return [line for unit, time in zip(units, times) for line in _stamped(unit, "2026-01-05 " + time)]
+
+
+@pytest.mark.parametrize("begins", ["09:00:30", "09:00:12"],
+                         ids=["behind the last line in front of it", "ten seconds before the last line in front of it"])
+def test_a_request_without_a_closing_line_is_two_files_in_one(monkeypatch, tmp_path, begins):
+    """The largest class of wrong `failed` values in files WITHOUT the lines of the collection script: failed = 1 for a
+    request the lines of its container end on. Request 1 has its transaction and two lines of its score code, and
+    neither a 'Response:' line nor an error. The lines of request 2 follow, which is answered.
+
+    These bytes are more than one file. In the first, the container of request 1 was collected while request 1 ran,
+    and the lines of the next container follow: nothing is known of request 1, `failed` is missing. In the second,
+    one container wrote all of it: request 1 ended without a line - its worker was gone - and the container went on
+    with request 2: request 1 failed. A request that ends without a response writes no line, and no line says where
+    the lines of a container end.
+
+    The parser reads the second wherever the time does not go back by more than a second against a request that is
+    running or waiting. That is so in both files here: in 'ten seconds before', the first line of request 2 is older
+    than the line in front of it and younger than the request line of request 1. Such a line does not end a part,
+    because a file whose containers are mixed holds such lines as well, with the container going on behind them
+    (test_transaction_that_goes_on_behind_the_end_of_its_part_takes_no_line_and_gives_none_away).
+
+    With the line of the script in front of each container, request 1 is cut off there: `failed` is missing, and
+    the NOTE counts it."""
+    a = log_units(_serial_block(1))
+    first = _at(a[:10], "09:00:00", "09:00:00", "09:00:00", "09:00:00", "09:00:00", "09:00:01", "09:00:01", "09:00:01", "09:00:20", "09:00:22")
+    second = _restamped(_serial_block(2), "2026-01-05 " + begins)
+    two_containers = as_log(first, second)
+    one_container = as_log(first + second)
+    assert two_containers == one_container
+    assert " - api - INFO - Response: " not in as_log(first) and " - ERROR - " not in two_containers
+
+    run = run_parser(monkeypatch, _write(tmp_path, one_container))
+    frame = run.uploads[0]["frame"]
+    assert list(frame["user_prompt"]) == ["Question number 1?", "Question number 2?"]
+    assert list(frame["failed"]) == [1, 0] and missing(frame.loc[0, "status_code"])
+    assert (frame.loc[0, "prompt_length"], frame.loc[1, "prompt_length"]) == (1001, 1002)
+    # for the parser nothing is open in these lines: it writes no NOTE
+    assert run.sas.messages == []
+
+    marked = run_parser(monkeypatch, _write(tmp_path, as_log([collected("demo-llm-1")], first, [collected("demo-llm-2")], second), name="marked.log"))
+    frame = marked.uploads[0]["frame"]
+    assert missing(frame.loc[0, "failed"]) and frame.loc[1, "failed"] == 0 and _end_note(marked) == 1
+
+
+@pytest.mark.parametrize("scored", [True, False], ids=["the request behind it has the line that follows its score code", "the request behind it has not"])
+def test_a_response_line_without_its_response_data_line_is_two_files_in_one(monkeypatch, tmp_path, scored):
+    """Two more classes of wrong `failed` values in those files, both of one line: a 'Response: Status Code' line names
+    no request - the 'Response Data:' line behind it does -, and the lines end between the two.
+
+    Request 1 has the line of its transaction that follows the score code, and no later line names it. Request 2 comes
+    in. Then the 'Elapsed time' line and the 'Response:' line of a request, and the lines end.
+
+    In the first file the two lines are of request 1: it was answered, and the lines of the container end on request
+    2. In the second they are not: request 1 ended without a line, and the two lines are of request 2 - or, where
+    request 2 has not got as far as the line that follows its score code, the rest of a request of the next
+    container, whose lines begin in the middle of that request. The files are the same byte for byte.
+
+    The parser reads the second. In the first file that is failed = 1 for a request that was answered, and - where
+    request 2 has the line that follows its score code - failed = 0 for a request the lines end on."""
+    a, b, c = (log_units(_serial_block(serial)) for serial in (1, 2, 3))
+    assert "successfully scored using the scoreModel function" in a[12][0] and " - api - INFO - Elapsed time for " in a[13][0]
+    assert " - api - INFO - Response: Status Code 200" in a[14][0] and " - api - INFO - Response Data: " in a[15][0]
+    in_front = lines_of(a[:13] + (b[:13] if scored else b[:8]))
+    of_request_1 = as_log(in_front, lines_of(a[13:15]))
+    of_another = as_log(in_front, lines_of((b if scored else c)[13:15]))
+    assert of_request_1 == of_another
+
+    run = run_parser(monkeypatch, _write(tmp_path, of_request_1))
+    frame = run.uploads[0]["frame"]
+    assert list(frame["user_prompt"]) == ["Question number 1?", "Question number 2?"]
+    assert frame.loc[0, "failed"] == 1 and missing(frame.loc[0, "status_code"]) and frame.loc[0, "response"] == "Answer number 1 of the model."
+    if scored:
+        assert (frame.loc[1, "status_code"], frame.loc[1, "failed"]) == (200, 0) and run.sas.messages == []
+    else:
+        # the line is given to no request: request 2 is the one that is running, and it is counted
+        assert missing(frame.loc[1, "status_code"]) and missing(frame.loc[1, "failed"])
+        assert _overlap_note(run) == (1, 1, 1)
+
+
+def test_an_error_line_of_the_score_code_behind_a_request_without_a_closing_line_is_two_files_in_one(monkeypatch, tmp_path):
+    """The fourth class: the line the score code writes when the provider refuses a request names no request either.
+    It is the class of test_score_lines_behind_a_request_without_a_closing_line_are_two_files_in_one, with a line
+    that sets `failed`. Request 1 has its transaction and no later line names it; request 2 has its transaction; the
+    ERROR line of a score code follows, and the file ends.
+
+    In the first file the container of request 1 was collected while request 1 ran, the lines of the next container
+    follow, and the line is of request 2, which failed. In the second file both requests are of one container and
+    the line is of request 1, which was still running; the lines end on request 2, of which nothing is known.
+
+    The parser reads the first: the text of the error and failed = 1 are in the row of request 2."""
+    def failing(serial):
+        return log_units(failed_block("2026-01-05 09:00:00", "demo_llm", llm_inputs(f"System text {serial}.", f"Question number {serial}?")))
+
+    a, b = failing(1), failing(2)
+    assert " - scoreModel - ERROR - HTTP 401" in a[8][0] and " - transaction_" in a[9][0]
+    of_request_2 = as_log(lines_of(a[:8]), lines_of(b[:8]), b[8])
+    of_request_1 = as_log(lines_of(a[:8] + b[:8]), a[8])
+    assert of_request_2 == of_request_1
+
+    run = run_parser(monkeypatch, _write(tmp_path, of_request_1))
+    frame = run.uploads[0]["frame"]
+    assert list(frame["user_prompt"]) == ["Question number 1?", "Question number 2?"]
+    assert frame.loc[1, "failed"] == 1 and frame.loc[1, "error_text"].startswith("HTTP 401") and missing(frame.loc[0, "error_text"])
+    # with the lines of the script: one container - the line is given to neither of two running requests; two - it
+    # is the line of the one request of the second
+    one = run_parser(monkeypatch, _write(tmp_path, as_log([collected("demo-llm-1")], lines_of(a[:8] + b[:8]), a[8]), name="one.log"))
+    assert all(missing(value) for value in one.uploads[0]["frame"]["error_text"]) and all(missing(value) for value in one.uploads[0]["frame"]["failed"])
+    two = run_parser(monkeypatch, _write(tmp_path, as_log([collected("demo-llm-1")], lines_of(a[:8]), [collected("demo-llm-2")], lines_of(b[:8]), b[8]),
+                                         name="two.log"))
+    frame = two.uploads[0]["frame"]
+    assert missing(frame.loc[0, "failed"]) and frame.loc[1, "failed"] == 1 and frame.loc[1, "error_text"].startswith("HTTP 401")
+
+
+# ---------------------------------------------------------------------------
 # Content that can not be read
 # ---------------------------------------------------------------------------
 
