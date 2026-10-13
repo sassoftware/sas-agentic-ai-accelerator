@@ -227,12 +227,14 @@ def create_session():
             raise
         # A refusal is an answer, not a defect of mdb: one sentence, no traceback.
         if auth.method == "password":
-            how = (f"the sign-in of {auth.user} with {USER_ENV} + {PASSWORD_ENV} (asked {_attempts()} time(s))")
+            made = getattr(exc, SIGN_INS_MADE, 1)
+            how = (f"the sign-in of {auth.user} with {USER_ENV} + {PASSWORD_ENV} "
+                   f"({made} sign-in{'' if made == 1 else 's'} made)")
         else:
             how = f"the access token ({TOKEN_ENV if auth.method == 'token' else 'the SAS Viya CLI login'})"
         raise ViyaSignInError(
-            f"SAS Viya at {auth.url} refused {how}: {_refusal(exc)}. Check the credentials - or use another way "
-            f"in: {THE_THREE_WAYS}."
+            f"SAS Viya at {auth.url} refused {how}: {_refusal(exc, auth.method == 'password')}. Check the "
+            f"credentials - or use another way in: {THE_THREE_WAYS}."
         ) from exc
     session.auth_summary = auth.summary
     return session
@@ -244,6 +246,18 @@ def create_session():
 LOGIN_ATTEMPTS = 3
 LOGIN_WAIT = (2, 5)
 LOGIN_ATTEMPTS_ENV = "MDB_LOGIN_ATTEMPTS"
+
+#: What the answer to a wrong password says in `error_description`, and how
+#: often a grant that is answered so is asked in all - never more often than
+#: the number above. Measured on 2026-10-13: a password grant with a wrong
+#: password got 401 with the JSON body
+#: {"error":"invalid_client","error_description":"Bad credentials"}.
+BAD_CREDENTIALS = "bad credentials"
+BAD_CREDENTIALS_ATTEMPTS = 2
+
+#: The attribute `_sign_in` gives the refusal it passes on: how many sign-ins
+#: were made.
+SIGN_INS_MADE = "mdb_sign_ins_made"
 
 
 #: The address the password grant is sent to; a 401 from it is a refused sign-in.
@@ -275,12 +289,51 @@ def _refused_sign_in(exc: Exception) -> bool:
     return status == 401 and TOKEN_PATH in (url or str(exc))
 
 
-def _refusal(exc: Exception) -> str:
+def _answer(exc: Exception) -> tuple:
+    """(error, error_description) of the answer a refused sign-in carries,
+    each "" where it cannot be read.
+
+    sasctl hands the answer of the token address on in one of its two ways
+    only: the HTTPError of requests carries it as `response`, and its JSON
+    body names both fields. sasctl's own AuthenticationError carries no
+    response - sasctl has read the body by then (see `_bad_credentials`)."""
+    try:
+        body = getattr(exc, "response", None).json()
+    except Exception:       # no response, no JSON
+        return "", ""
+    if not isinstance(body, dict):
+        return "", ""
+    return tuple(" ".join(str(body.get(key) or "").split())[:200] for key in ("error", "error_description"))
+
+
+def _bad_credentials(exc: Exception) -> bool:
+    """Whether a refused sign-in is the answer a wrong password got:
+    `error_description` says BAD_CREDENTIALS.
+
+    Either mdb reads that from the answer (`_answer`), or sasctl did:
+    sasctl (1.11.8 was read, and a test runs the one installed) raises its
+    AuthenticationError for the password grant where the token address
+    answered 401 with "bad credentials" in the `error_description` of its
+    JSON body, and passes every other 401 on as the HTTPError of requests."""
+    return type(exc).__name__ == "AuthenticationError" or BAD_CREDENTIALS in _answer(exc)[1].lower()
+
+
+def _refusal(exc: Exception, grant: bool = False) -> str:
     """What a refused sign-in says, without the address of the token
-    endpoint spelled out twice and without anything that was sent."""
+    endpoint spelled out twice and without anything that was sent: the
+    `error` and the `error_description` of the answer where it carries them.
+    `grant` says that the refusal is one of the password grant - there
+    sasctl's AuthenticationError stands for an `error_description` that mdb
+    cannot read itself (`_bad_credentials`)."""
     if type(exc).__name__ == "HTTPError":
-        return f"HTTP 401 from {TOKEN_PATH}"
-    return str(exc).strip().rstrip(".") or type(exc).__name__
+        error, description = _answer(exc)
+        said = [f'{name} "{value}"' for name, value in (("error", error), ("error_description", description)) if value]
+        return f"HTTP 401 from {TOKEN_PATH}" + (
+            f" with {' and '.join(said)}" if said else " (no error_description could be read from the answer)")
+    text = str(exc).strip().rstrip(".") or type(exc).__name__
+    if grant and type(exc).__name__ == "AuthenticationError":
+        return f'{text} - sasctl says so for an answer whose error_description says "Bad credentials"'
+    return text
 
 
 def _attempts() -> int:
@@ -294,11 +347,16 @@ def _sign_in(make, attempts: int | None = None, sleep=None):
     """A session from `make()`, asked again when the password grant is refused.
 
     A password grant has been answered 401 on the test system while several
-    sign-ins overlapped. So a refused grant is asked again - LOGIN_ATTEMPTS
-    times in all - before the refusal is passed on. A wrong password is refused every
-    time, which costs that many failed sign-ins: sites that lock an account
-    after a few can set MDB_LOGIN_ATTEMPTS=1. Anything that is not a refused
-    sign-in (the server not reachable, a certificate) is passed on at once.
+    sign-ins overlapped (2026-10-11 and 2026-10-12; the command went through
+    when it was run again, and the body of that 401 was not recorded). So a
+    refused grant is asked again - LOGIN_ATTEMPTS times in all - before the
+    refusal is passed on. A grant that is answered "Bad credentials"
+    (`_bad_credentials`), which is what a wrong password got on 2026-10-13,
+    is asked BAD_CREDENTIALS_ATTEMPTS times at most: a wrong password costs
+    two failed sign-ins, and one with MDB_LOGIN_ATTEMPTS=1, which switches
+    every repeat off. Anything that is not a refused sign-in (the server not
+    reachable, a certificate) is passed on at once. The refusal that is
+    passed on carries the number of sign-ins made as SIGN_INS_MADE.
     """
     import time
 
@@ -310,6 +368,9 @@ def _sign_in(make, attempts: int | None = None, sleep=None):
         try:
             return make()
         except Exception as exc:
-            if attempt == attempts or not _refused_sign_in(exc):
+            if not _refused_sign_in(exc):
+                raise
+            if attempt >= (min(attempts, BAD_CREDENTIALS_ATTEMPTS) if _bad_credentials(exc) else attempts):
+                setattr(exc, SIGN_INS_MADE, attempt)
                 raise
             sleep(LOGIN_WAIT[min(attempt - 1, len(LOGIN_WAIT) - 1)])
