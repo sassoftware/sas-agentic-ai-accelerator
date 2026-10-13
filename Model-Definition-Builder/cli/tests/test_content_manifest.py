@@ -696,8 +696,9 @@ def test_the_two_setup_jobs_are_listed_with_the_parameters_their_programs_read(s
 def test_the_jobs_that_run_as_their_user_carry_a_compute_context_that_is_the_sites(shipped):
     """Start Here shows what its session may read, and Load-Accelerator-Tables
     loads as its session: opened without `_contextName`, Start Here ran in the
-    SAS Job Execution compute context under a service account and every
-    request was answered 401 (the pass of 2026-10-12). Both job definitions
+    SAS Job Execution compute context, whose session is not the user's (the
+    passes of 2026-10-12: once every request answered 401, once the page of
+    what that account may read). Both job definitions
     carry the parameter with the default the Prompt Builder job definition
     has, and it is a site setting in all three - as `contentRoot` is where a
     job reads one."""
@@ -708,12 +709,17 @@ def test_the_jobs_that_run_as_their_user_carry_a_compute_context_that_is_the_sit
         entry = shipped.find(path, "jobDefinition")
         context = [p for p in entry.parameters if p["name"] == "_contextName"]
         assert len(context) == 1 and context[0]["default"] == default and context[0]["siteSetting"], path
-    for path in ("Start Here", "Data/Load-Accelerator-Tables"):
-        assert content.site_settings(shipped.find(path, "jobDefinition")) == ("_contextName", "contentRoot"), path
-    # and nothing else is one: every other parameter is the release's
-    marked = {p["name"] for e in shipped.objects() if e.kind == "jobDefinition" for p in e.parameters
-              if p["siteSetting"]}
-    assert marked == {content.CONTEXT_PARAMETER, content.CONTENT_ROOT_PARAMETER}
+    # integrate-18 open item: the CAS library, the credential domain, the names of the repository and the
+    # projects, the compute contexts to look for and the release table were set back to the manifest by
+    # every deploy and import. They are values of the site too; what belongs to the release is not.
+    assert content.site_settings(shipped.find("Start Here", "jobDefinition")) == (
+        "_contextName", "contentRoot", "caslib", "casServer", "credentialDomain", "repositoryName", "llmProject",
+        "embeddingProject", "decisionProject", "computeContexts")
+    assert content.site_settings(shipped.find("Data/Load-Accelerator-Tables", "jobDefinition")) == (
+        "_contextName", "contentRoot", "caslib", "releaseTable")
+    release_owned = {p["name"] for e in shipped.objects() if e.kind == "jobDefinition" for p in e.parameters
+                     if not p["siteSetting"]}
+    assert release_owned == {"_action", "_output_type", "guideUrl"}
 
 
 def test_the_pictures_of_the_usage_report_are_listed_with_their_hashes(shipped):

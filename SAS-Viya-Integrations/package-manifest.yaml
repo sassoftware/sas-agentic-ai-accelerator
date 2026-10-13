@@ -29,14 +29,20 @@
 #                  compares, because their bytes are not in the repository
 #
 # A parameter with `siteSetting: true` holds a value of the site: the compute
-# context a job runs in (_contextName), the content root it reads
-# (contentRoot). The default is what a new job definition gets; on a site that
-# has the job definition a deploy and an import leave the site's value alone,
-# unless they are given one (--compute-context, --content-root). The package
-# of a release holds the defaults.
+# context a job runs in (_contextName), the CAS library and server, the
+# credential domain, the names of the repository and the projects, the
+# release table. The default is what a new job definition gets (for
+# _contextName `mdb builders-import` gives a new one the ingestion compute
+# context of the options it restores); on a site that has the job definition
+# a deploy and an import leave the site's value alone, unless they are given
+# one (--compute-context). contentRoot is always written with the folder the
+# content goes to: a job reads the content root it sits in. A value that
+# belongs to the release - the address of the guides, _action, _output_type -
+# is no site setting and is set back to the manifest. The package of a
+# release holds the defaults.
 #
-# A path with Showcases, Example, a folder named generated or a name that
-# starts with ZZ_VERIFY is refused: such content never ships.
+# A path with Showcases, Example, a folder whose name holds generated or a
+# name that starts with ZZ_VERIFY is refused: such content never ships.
 version: 1
 contentRoot: /SAS Agentic AI Accelerator
 package: SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json
@@ -47,9 +53,13 @@ entries:
   # reads release.json of the content root, so the page needs no checkout.
   # _output_type = html is what makes SAS Job Execution show what the program
   # writes to _webout as a page. _contextName: the page shows what its session
-  # may read, so the job has to run as the user who opens it - in the SAS Job
-  # Execution compute context, which runs under a service account, every
-  # request of the page was answered 401 (measured on 2026-10-12).
+  # may read, so the job has to run as the user who opens it. The SAS Job
+  # Execution compute context runs its session under another account than
+  # the user who opens the page (measured on 2026-10-12: SYSUSERID is not
+  # SYS_COMPUTE_SESSION_OWNER there). In one pass that day every request of
+  # the page was answered 401; in a second pass the same day the page was
+  # built in full - with what that account may read. Either way it is not the
+  # user's view.
   - path: Start Here
     kind: jobDefinition
     code: SAS-Viya-Integrations/Setup/Start-Here.sas
@@ -59,14 +69,14 @@ entries:
       - {name: _action, type: character, default: execute}
       - {name: _output_type, type: character, default: html}
       - {name: contentRoot, type: character, default: /SAS Agentic AI Accelerator, label: Content root, siteSetting: true}
-      - {name: caslib, type: character, default: Public, label: CAS library of the report tables}
-      - {name: casServer, type: character, default: cas-shared-default, label: CAS server}
-      - {name: credentialDomain, type: character, default: agentic-ai-keys, label: Credential domain}
-      - {name: repositoryName, type: character, default: LLM Repository, label: Model Manager repository}
-      - {name: llmProject, type: character, default: LLM Model Project, label: Project of the LLM definitions}
-      - {name: embeddingProject, type: character, default: Embedding Model Project, label: Project of the embedding model definitions}
-      - {name: decisionProject, type: character, default: Decision Model Project, label: Project of the decision model definitions}
-      - {name: computeContexts, type: character, default: "SAS Studio compute context|SAS Job Execution compute context", label: Compute contexts to look for}
+      - {name: caslib, type: character, default: Public, label: CAS library of the report tables, siteSetting: true}
+      - {name: casServer, type: character, default: cas-shared-default, label: CAS server, siteSetting: true}
+      - {name: credentialDomain, type: character, default: agentic-ai-keys, label: Credential domain, siteSetting: true}
+      - {name: repositoryName, type: character, default: LLM Repository, label: Model Manager repository, siteSetting: true}
+      - {name: llmProject, type: character, default: LLM Model Project, label: Project of the LLM definitions, siteSetting: true}
+      - {name: embeddingProject, type: character, default: Embedding Model Project, label: Project of the embedding model definitions, siteSetting: true}
+      - {name: decisionProject, type: character, default: Decision Model Project, label: Project of the decision model definitions, siteSetting: true}
+      - {name: computeContexts, type: character, default: "SAS Studio compute context|SAS Job Execution compute context", label: Compute contexts to look for, siteSetting: true}
       - {name: guideUrl, type: character, default: "https://sassoftware.github.io/sas-agentic-ai-accelerator", label: Address of the guides}
   - path: release.json
     kind: file
@@ -264,8 +274,8 @@ entries:
       - {name: _contextName, type: character, default: SAS Studio compute context, label: Context Name, siteSetting: true}
       - {name: _action, type: character, default: execute}
       - {name: contentRoot, type: character, default: /SAS Agentic AI Accelerator, label: Content root, siteSetting: true}
-      - {name: caslib, type: character, default: Public, label: CAS library}
-      - {name: releaseTable, type: character, default: ACCELERATOR_RELEASES, label: Release table}
+      - {name: caslib, type: character, default: Public, label: CAS library, siteSetting: true}
+      - {name: releaseTable, type: character, default: ACCELERATOR_RELEASES, label: Release table, siteSetting: true}
 
   # ---- Custom Steps -----------------------------------------------------------
   # Not listed, and so not shipped: `LLM - Get Prompt Experiments.step`, the
