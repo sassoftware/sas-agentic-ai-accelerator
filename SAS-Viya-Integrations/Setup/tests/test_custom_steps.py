@@ -19,6 +19,19 @@ writes no code and no file and ends with an ERROR line. LLM - Get Options, an ea
 step, read the options the same way and is changed the same way (1.1), and so is the script
 SAS-Code-LLM-Calls/Create-LLM-Call.sas.
 
+LLM - Get Options 1.2. Measured on 2026-10-13 with version 1.1 in the state the step comes with (the
+box ticked, no path): the code file was written (34 records), and then SAS wrote "ERROR 180-322:
+Statement is not valid or it is used out of proper order.", the condition code was 3000 and the job
+failed. The step had put the statement that assigns the temporary file into its macro variable with
+the semicolon, and the closing NOTE resolved that variable: the semicolon ended the NOTE. Version 1.2
+keeps the statement without the semicolon, as LLM - Create LLM Call does, and the NOTE reads the
+variable through %SUPERQ, as text.
+
+Both steps (Create LLM Call 1.3) write a path into the statement that assigns the file with the QUOTE
+function, which doubles an apostrophe: the statement was made of the path between two apostrophes,
+and an apostrophe of the path ended its text early. For a path without one the statement is the one
+of version 1.0, character for character.
+
 The steps are one line of JSON and have no code file of their own. SAS can not run here: the tests read
 the program, follow the DATA step that makes the two statements for the three kinds of path, and
 follow the reading of the options on the table the JSON engine makes of each options.json of the
@@ -51,7 +64,8 @@ CONTROLS = [("pageDefinition", "page"), ("_slo_info_text", "text"), ("_slo_input
 GENERATION_OF_1_1 = "bcdd949ca58f2f809b8dff8b40256d6134eae6ed6dc043cbca47c087c7a25013"
 SAVING_OF_1_1 = "205ec3d3d3e60ed8b7ff1b93fbcccda867d79cfbedf27036184d6bef7f16a65d"
 SAVING_OF_GET_OPTIONS_1_0 = "df65d2a73fbbeb80531c81346f535d901ad26b397c719c45be401270a1e3d147"
-# What version 1.0 did for a path: the lines that make the statement which assigns the fileref
+# The lines that make the statement which assigns the fileref for a path. Version 1.0 put the path between two
+# apostrophes; the QUOTE function does the same and doubles an apostrophe of the path (Create LLM Call 1.3, Get Options 1.2)
 FOR_A_PATH = """        else do;
             justFileName = scan("&_slo_fl_path.", -1, '/', 'MO');
             folderPath1 = scan("&_slo_fl_path.", 2, ':', 'MO');
@@ -59,13 +73,31 @@ FOR_A_PATH = """        else do;
             mode = scan("&_slo_fl_path.", 1, ':', 'MO');
 
             * Handle the different required filename for SAS Content and SAS Server;
+            * The QUOTE function doubles an apostrophe of the path, which would end the text of the statement early;
             if mode = 'sascontent' then do;
-                call symput('_slo_fl_path', "filename _slo_LLM filesrvc folderPath='" || strip(folderPath2) || "' filename='" || strip(justFileName) || "'");
+                call symput('_slo_fl_path', "filename _slo_LLM filesrvc folderPath=" || quote(strip(folderPath2), "'") || " filename=" || quote(strip(justFileName), "'"));
             end;
             else do;
-                call symput('_slo_fl_path', "filename _slo_LLM '" || strip(folderPath1) || "'");
+                call symput('_slo_fl_path', "filename _slo_LLM " || quote(strip(folderPath1), "'"));
             end;
 """
+# The lines of the three programs that changed in the block that saves the code, as (the line of before, the line of now)
+QUOTED = [
+    ('''call symput('_slo_fl_path', "filename _slo_LLM filesrvc folderPath='" || strip(folderPath2) || "' filename='" || strip(justFileName) || "'");''',
+     '''call symput('_slo_fl_path', "filename _slo_LLM filesrvc folderPath=" || quote(strip(folderPath2), "'") || " filename=" || quote(strip(justFileName), "'"));'''),
+    ('''call symput('_slo_fl_path', "filename _slo_LLM '" || strip(folderPath1) || "'");''',
+     '''call symput('_slo_fl_path', "filename _slo_LLM " || quote(strip(folderPath1), "'"));'''),
+    ("", "            * The QUOTE function doubles an apostrophe of the path, which would end the text of the statement early;\n"),
+]
+GET_OPTIONS_1_2 = [
+    ("call symput('_slo_fl_path', 'filename _slo_LLM temp;');", "call symput('_slo_fl_path', 'filename _slo_LLM temp');"),
+    ("available at &_slo_fl_path. - use", "available at %superq(_slo_fl_path) - use"),
+]
+# The closing NOTE of LLM - Get Options, as version 1.1 had it and as it is
+NOTE_OF_GET_OPTIONS_1_1 = ("%put NOTE: The filename _slo_LLM has been assigned, the source is available at &_slo_fl_path. - "
+                           "use %nrstr(%include) _slo_LLM to run the code;")
+NOTE_OF_GET_OPTIONS = ("%put NOTE: The filename _slo_LLM has been assigned, the source is available at %superq(_slo_fl_path) - "
+                       "use %nrstr(%include) _slo_LLM to run the code;")
 NOTE = "%put NOTE: No path was chosen, so the code was written to a temporary file. The fileref _slo_LLM names it until the SAS session ends"
 
 
@@ -101,30 +133,70 @@ def control(control_id):
     return look(ui()["pages"])
 
 
-def saving():
-    """The block of the program that saves the code to a file."""
-    text = program()
+def saving(text=None):
+    """The block of a program that saves the code to a file."""
+    text = program() if text is None else text
     return text[text.index("* Save the result as a filename;"):text.index("* Print the result for the user;")]
 
 
-def statements_for(path):
+def get_options():
+    return json.loads(GET_OPTIONS.read_bytes().decode("utf-8"))["templates"]["SAS"]
+
+
+def quote(text):
+    """QUOTE(text, "'"): the text between two apostrophes, an apostrophe of the text doubled."""
+    return "'" + text.replace("'", "''") + "'"
+
+
+def statements_for(path, text=None):
     """Follows the DATA step of the block for a value of the path control, the way its statements
-    say: (the statement that assigns the fileref, the statement that stands behind the file)."""
-    block = saving()
+    say: (the statement that assigns the fileref, the statement that stands behind the file - None in
+    LLM - Get Options, which has none)."""
+    block = saving(text)
     for_an_empty_path = block[block.index("if \"&_slo_fl_path.\" EQ '' then do;"):block.index("        else do;")]
     for_a_path = block[block.index("        else do;"):block.index("    run;")]
     if path == "":
         made = dict(re.findall(r"call symput\('(\w+)', '([^']*)'\);", for_an_empty_path))
-        return made["_slo_fl_path"], made["_slo_fl_end"]
-    assert for_a_path.startswith(FOR_A_PATH)
+        return made["_slo_fl_path"], made.get("_slo_fl_end")
+    # the lines of the two programs differ in the blanks at the end of one line
+    assert "\n".join(line.rstrip() for line in for_a_path.split("\n")).startswith(FOR_A_PATH)
     file_name = path.split("/")[-1]                                  # scan(path, -1, '/', 'MO')
     behind_the_colon = path.split(":")[1]                            # scan(path, 2, ':', 'MO')
     folder = behind_the_colon[:len(behind_the_colon) - len(file_name) - 1]
     mode = path.split(":")[0]                                        # scan(path, 1, ':', 'MO')
-    assigned = (f"filename _slo_LLM filesrvc folderPath='{folder}' filename='{file_name}'" if mode == "sascontent"
-                else f"filename _slo_LLM '{behind_the_colon}'")
+    assigned = (f"filename _slo_LLM filesrvc folderPath={quote(folder)} filename={quote(file_name)}" if mode == "sascontent"
+                else f"filename _slo_LLM {quote(behind_the_colon)}")
     behind = dict(re.findall(r"call symput\('(\w+)', '([^']*)'\);", for_a_path[len(FOR_A_PATH):]))
-    return assigned, behind["_slo_fl_end"]
+    return assigned, behind.get("_slo_fl_end")
+
+
+def as_sas_reads_it(statement, values):
+    """A statement of the macro language with its macro variables resolved the way SAS resolves them:
+    the value behind an ampersand is read again as code, the value %SUPERQ gives is text. Each character
+    of a text is an x here, so a semicolon or a quotation mark that is left is one SAS acts on."""
+    statement = re.sub(r"%superq\((\w+)\)", lambda found: "x" * len(values[found.group(1)]), statement)
+    return re.sub(r"&(\w+)\.?", lambda found: values[found.group(1)], statement)
+
+
+def literals(statement):
+    """The texts a SAS statement holds between apostrophes, a doubled apostrophe read as one; None when
+    an apostrophe is left open."""
+    found, position = [], 0
+    while True:
+        start = statement.find("'", position)
+        if start < 0:
+            return found
+        text, position = "", start + 1
+        while True:
+            end = statement.find("'", position)
+            if end < 0:
+                return None
+            text += statement[position:end]
+            position = end + 1
+            if statement[position:position + 1] != "'":
+                break
+            text, position = text + "'", position + 1
+        found.append(text)
 
 
 # ---------------------------------------------------------------------------
@@ -174,8 +246,49 @@ def test_an_empty_path_is_a_temporary_file_and_no_abort():
     ("sascontent:/Public/LLM Calls/call.sas", "filename _slo_LLM filesrvc folderPath='/Public/LLM Calls' filename='call.sas'"),
 ], ids=["a file of the SAS server", "a file at the root", "a file of SAS Content"])
 def test_a_path_gives_the_statements_of_version_1_0(path, assigned):
-    """For a path the step assigns the fileref, writes the file and clears the fileref, as it did."""
+    """For a path the step assigns the fileref, writes the file and clears the fileref, as it did. LLM - Get
+    Options assigns it with the same statement and does not clear it."""
     assert statements_for(path) == (assigned, "filename _slo_LLM clear")
+    assert statements_for(path, get_options()) == (assigned, None)
+
+
+PATHS_WITH_MORE = [
+    ("sasserver:/home/o'brien/it's/call.sas", ["/home/o'brien/it's/call.sas"]),
+    ("sascontent:/Users/o'brien/My Folder/o'brien's call.sas", ["/Users/o'brien/My Folder", "o'brien's call.sas"]),
+    ("sasserver:/tmp/a;b/100% of R&D/call.sas", ["/tmp/a;b/100% of R&D/call.sas"]),
+    ("sascontent:/Public/R&D; 100%/call.sas", ["/Public/R&D; 100%", "call.sas"]),
+]
+
+
+@pytest.mark.parametrize("name", ["LLM - Create LLM Call", "LLM - Get Options"])
+@pytest.mark.parametrize("path, texts", PATHS_WITH_MORE, ids=["apostrophes, server", "apostrophes, content", "the others, server",
+                                                              "the others, content"])
+def test_an_apostrophe_of_the_path_does_not_end_the_text_of_the_statement(name, path, texts):
+    """The statement that assigns the file is resolved in open code, &_slo_fl_path. and a semicolon. Its
+    texts stand between apostrophes, where SAS resolves nothing and ends no statement - so the one
+    character of a path that can end such a text is the apostrophe, and the QUOTE function doubles it.
+    Followed for each path: the statement holds the folder and the file as the texts they are, and no
+    apostrophe is left open. With the line of the version before, an apostrophe of the path is.
+    What is followed is the DATA step from the path on. How the value of the control reaches the DATA
+    step - between quotation marks, where SAS resolves it - is the reading of version 1.0 and is not
+    followed here."""
+    text = PROGRAMS[name]()
+    assigned, _ = statements_for(path, text)
+
+    assert literals(assigned) == texts
+    outside = assigned
+    for found in texts:
+        outside = outside.replace(quote(found), "''", 1)
+    assert not set(outside) & set(";%&\"") and outside.count("'") == 2 * len(texts)
+    # what the version before made of it: the path between two apostrophes as it was
+    before = assigned
+    for found in texts:
+        before = before.replace(quote(found), "'" + found + "'", 1)
+    assert (literals(before) == texts) == ("'" not in "".join(texts))
+    # the two lines are the ones that changed, and the path reaches them from the DATA step alone
+    for old, new in QUOTED[:2]:
+        assert new in text and old not in text
+    assert len(re.findall(r"quote\(", saving(text))) == 3
 
 
 def test_the_two_statements_stand_around_the_step_that_writes_the_file():
@@ -195,7 +308,10 @@ def test_the_two_statements_stand_around_the_step_that_writes_the_file():
         assert len(literal.encode("utf-8")) < 262, literal
     # the comment inside the block is read by the macro processor: it holds nothing that it takes as code
     comments = re.findall(r"^\s*\*[^;]*;", block, flags=re.MULTILINE)
-    assert len(comments) == 3 and all(not set(comment) & set("%&'\"") for comment in comments)
+    assert len(comments) == 4 and all(not set(comment) & set("%&'\"") for comment in comments)
+    for other in (get_options(),):
+        comments = re.findall(r"^\s*\*[^;]*;", saving(other), flags=re.MULTILINE)
+        assert len(comments) == 4 and all(not set(comment) & set("%&'\"") for comment in comments)
 
 
 def test_the_macro_variables_of_the_step_are_deleted_at_its_end():
@@ -216,6 +332,9 @@ def test_the_about_tab_and_the_changelog_say_what_the_step_does():
     assert ("It is possible to save the resulting code to a file or printing it to the Results pane. Without a path the code is saved to a "
             "temporary file, which the fileref _slo_LLM names until the SAS session ends.") in about
     assert changelog.split("\n") == [
+        "* Version: 1.3 (13OCT2026)",
+        "      - An apostrophe in the path is doubled in the statement that assigns the file. Version 1.2 wrote the path between two "
+        "apostrophes as it was",
         "* Version: 1.2 (13OCT2026)",
         "      - An option of the options file that lists the values it can take (values, as reasoning_effort of gpt_5_mini has it) is read. "
         "Version 1.1 stopped in PROC TRANSPOSE with four ERROR lines at such an option and wrote the code without it. A run that can not "
@@ -413,10 +532,19 @@ def test_the_code_the_step_writes_is_the_code_of_version_1_1():
         start = text.index("\n", text.index("\n", text.index("* Save the result as a filename;\n")) + 1) + 1
         return text[start:text.index("* Print the result for the user;")]
 
+    def before(block, changes):
+        """The block with each line that changed put back to what it was."""
+        for old, new in changes:
+            assert block.count(new) == 1, new
+            block = block.replace(new, old)
+        return block
+
     text, get = program(), PROGRAMS["LLM - Get Options"]()
     assert hashlib.sha256(generation(text).encode("utf-8")).hexdigest() == GENERATION_OF_1_1 and generation(get) == generation(text)
-    assert hashlib.sha256(saved(text).encode("utf-8")).hexdigest() == SAVING_OF_1_1
-    assert hashlib.sha256(saved(get).encode("utf-8")).hexdigest() == SAVING_OF_GET_OPTIONS_1_0
+    # the block that saves the code is the one of 1.1 but for the lines of the path (1.3) ...
+    assert hashlib.sha256(before(saved(text), QUOTED).encode("utf-8")).hexdigest() == SAVING_OF_1_1
+    # ... and in LLM - Get Options the one of 1.0 but for them, the statement of an empty path and the NOTE (1.2)
+    assert hashlib.sha256(before(saved(get), QUOTED + GET_OPTIONS_1_2).encode("utf-8")).hexdigest() == SAVING_OF_GET_OPTIONS_1_0
 
 
 def test_the_two_steps_say_what_they_read():
@@ -431,9 +559,76 @@ def test_the_two_steps_say_what_they_read():
     sentence = ("Every option of the options file is read with its default, also an option that lists the values it can take. A run that "
                 "can not read the default of every option writes no code and no file: it ends with an ERROR line that says why.")
     assert sentence in control("textAbout")["text"] and sentence in get_texts["textAbout"]
-    assert control("textChangelog")["text"].startswith("* Version: 1.2 (13OCT2026)\n")
-    assert get_texts["textChangelog"].startswith("* Version: 1.1 (13OCT2026)\n")
+    assert control("textChangelog")["text"].startswith("* Version: 1.3 (13OCT2026)\n")
+    assert "\n* Version: 1.2 (13OCT2026)\n" in control("textChangelog")["text"]
+    assert get_texts["textChangelog"].split("\n")[:4] == [
+        "* Version: 1.2 (13OCT2026)",
+        "      - With the box Save the code to a filename ticked and no path, the values the step comes with, version 1.1 wrote the code "
+        "file and then ended with ERROR 180-322 and a failed job (measured on 2026-10-13): the statement that assigns the temporary file "
+        "stood in the closing NOTE with its semicolon, which ended the NOTE. The statement is kept without the semicolon, and the NOTE "
+        "reads it as text",
+        "      - An apostrophe in the path is doubled in the statement that assigns the file. Version 1.1 wrote the path between two "
+        "apostrophes as it was",
+        "* Version: 1.1 (13OCT2026)"]
+    # both steps say what becomes of the code without a path, in one sentence
+    without_a_path = "Without a path the code is saved to a temporary file, which the fileref _slo_LLM names until the SAS session ends."
+    assert without_a_path in control("textAbout")["text"] and without_a_path in get_texts["textAbout"]
+    assert not re.search(r"not (been )?run|untested|not measured", " ".join(get_texts.values()), flags=re.IGNORECASE)
     assert get_texts["textChangelog"].endswith("* Version: 1.0 (04AUG2024)\n      - Initial version")
     raw = GET_OPTIONS.read_bytes()
     assert raw.count(b"\n") == 0 and raw.count(b"\r") == 0 and not raw.startswith(b"\xef\xbb\xbf")
     assert json.dumps(json.loads(raw.decode("utf-8")), separators=(",", ":")).encode("utf-8") == raw
+
+
+# ---------------------------------------------------------------------------
+# LLM - Get Options in the state it comes with (version 1.2)
+# ---------------------------------------------------------------------------
+
+def test_the_model_of_a_resolved_statement_gives_what_was_measured_for_get_options_1_1():
+    """Measured on 2026-10-13 with version 1.1, the box ticked and no path: the log line of the NOTE ended behind
+    'filename _slo_LLM temp', and SAS read the rest of the line as a statement of its own - ERROR 180-322."""
+    read = as_sas_reads_it(NOTE_OF_GET_OPTIONS_1_1, {"_slo_fl_path": "filename _slo_LLM temp;"})
+
+    assert read.count(";") == 2
+    said, rest = read.split(";")[0], read.split(";")[1]
+    assert said == "%put NOTE: The filename _slo_LLM has been assigned, the source is available at filename _slo_LLM temp"
+    assert rest == " - use %nrstr(%include) _slo_LLM to run the code"
+
+
+def test_get_options_comes_with_a_ticked_box_and_an_empty_path():
+    values = json.loads(json.loads(GET_OPTIONS.read_bytes().decode("utf-8"))["ui"])["values"]
+
+    assert values["_slo_fl"] is True and values["_slo_fl_path"] == ""
+
+
+@pytest.mark.parametrize("path", ["", "sasserver:/tmp/llm/call.sas", "sascontent:/Public/LLM Calls/call.sas"] + [path for path, _ in PATHS_WITH_MORE],
+                         ids=["no path", "a file of the SAS server", "a file of SAS Content", "apostrophes, server", "apostrophes, content",
+                              "the others, server", "the others, content"])
+def test_the_closing_note_of_get_options_ends_at_its_own_semicolon(path):
+    """live-19, defect 2. The statement the DATA step makes for the path stands in the macro variable the NOTE
+    names. The NOTE is one statement whatever that statement holds: its one semicolon is the last character of
+    its line, and no quotation mark of the value is read as one."""
+    text = get_options()
+    block = saving(text)
+    assigned, behind = statements_for(path, text)
+
+    assert behind is None and re.findall(r"^\s*(%put [^\n]*)$", block, flags=re.MULTILINE) == [NOTE_OF_GET_OPTIONS]
+    read = as_sas_reads_it(NOTE_OF_GET_OPTIONS, {"_slo_fl_path": assigned})
+    assert read.count(";") == 1 and read.endswith(";") and not set(read) & set("'\"&")
+    # the one percent sign that is left is the one of the text the NOTE writes
+    assert re.findall(r"%\w+", read) == ["%put", "%nrstr", "%include"]
+    # the statement itself stands in open code in front of the semicolon of its line, so it holds none of its own
+    assert "\t&_slo_fl_path.;\n" in block and block.count("&_slo_fl_path.") == 5
+    if path == "":
+        # the statement of LLM - Create LLM Call for an empty path, which has no semicolon of its own
+        assert assigned == "filename _slo_LLM temp" and statements_for("")[0] == assigned
+
+
+def test_the_fileref_of_get_options_stays_assigned_and_is_named_by_the_note():
+    """What the About tab says of a run without a path: the fileref is assigned to a temporary file and no
+    statement of the step clears it."""
+    text = get_options()
+
+    assert "filename _slo_LLM clear" not in text and "_slo_fl_end" not in text
+    assert text.endswith("%symdel _slo_LLM_name _slo_optionsFileURI _slo_viyaHost;\n%symdel _slo_ok _slo_why / nowarn;")
+    assert "LLM - Get Options: no code was written" in text and text.upper().count("ERROR") == 1
