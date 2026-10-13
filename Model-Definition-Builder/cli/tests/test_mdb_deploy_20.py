@@ -98,6 +98,20 @@ def test_a_run_of_a_part_does_not_write_the_record_of_the_whole_folder(command, 
     assert result.failed == [] and len(whole.at(f"{CONTENT_ROOT}/release.json")) == 1
 
 
+def test_the_refusal_of_a_part_is_one_line_on_a_terminal_of_any_width(command, monkeypatch):
+    """'Says so in one line': at the width of a terminal the console broke
+    the sentence into several."""
+    buffer = io.StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=buffer, width=80, force_terminal=False))
+    result = CliRunner().invoke(cli.app, ["content-deploy", "--only", "release.json"])
+    assert result.exit_code == 1 and deploying.RECORD_NEEDS_ALL in buffer.getvalue().splitlines()
+    # the same print carries the line for a folder that is not there
+    result = CliRunner().invoke(cli.app, ["content-deploy", "--content-root", "/Team/A folder with a long name/root"])
+    assert result.exit_code == 1 and buffer.getvalue().splitlines()[-1] == (
+        "there is no folder /Team/A folder with a long name/root, and nothing was created: pass --create to create "
+        "it (with every folder above it that is missing)")
+
+
 def test_the_record_is_not_written_into_a_file_a_site_has_elsewhere(command, manifest):
     """The same hole by another door: `--only release.json --to <a file>`."""
     viya = Viya()

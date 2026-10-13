@@ -1757,7 +1757,8 @@ def content_deploy(
                             settings=settings,
                             create_root=create or (to is None and root == manifest.content_root))
         except DeployError as exc:
-            console.print(str(exc), style="red", markup=False, highlight=False)
+            # one line, whatever the width of the terminal
+            console.print(str(exc), style="red", markup=False, highlight=False, soft_wrap=True)
             raise typer.Exit(1)
     if result.unlisted:
         console.print(f"\nNot in the manifest and left alone ({len(result.unlisted)}) - not deployed, and "
