@@ -398,6 +398,24 @@ export async function buildRagBuilder(
   let selectedProjectID = '';
   let selectedSetupID = '';
   let selectedSetupName = '';
+  /**
+   * Counts the times the steps after Setup were started for a setup (or for
+   * none). Whatever is asked of the server for the setup on the page - its
+   * stored configuration, the prompts of its enrichment, a retrieval test,
+   * the state of an ingestion, its ledger - takes `whileSetupShown()` before
+   * it waits, and draws its answer only while that still says yes.
+   *
+   * Without it an answer was drawn whichever setup was open by then
+   * (issue #47): the chunks of a retrieval test waited in the test panel of
+   * the setup opened next, a finished ingestion opened its ledger there, and
+   * the stored configuration of a setup that answered late was put into the
+   * editor of another one - a new one included.
+   */
+  let shownSetup = 0;
+  const whileSetupShown = (): (() => boolean) => {
+    const mine = shownSetup;
+    return () => mine === shownSetup;
+  };
   /** Tags of the loaded setup that this builder manages (removed on re-save). */
   let managedTags: string[] = [];
   /**
@@ -1687,8 +1705,12 @@ export async function buildRagBuilder(
       : setup.enrich
         ? [setup.enrich as RagEnrichStep]
         : [];
+    const shown = whileSetupShown();
     for (const block of enrichBlocks.splice(0)) block.root.remove();
     for (const step of stored.length > 0 ? stored : [null]) {
+      // Another setup was opened while a prompt of this one was read back:
+      // the form holds the enrichment of that one by now.
+      if (!shown()) return;
       const block = addEnrichBlock();
       if (step) await block.restore(step);
     }
@@ -2549,13 +2571,23 @@ export async function buildRagBuilder(
   let allProjects: DropdownOption[] = [];
   let allSetups: DropdownOption[] = [];
 
+  // The first entry of each picker says what the picker is for. The list
+  // helper gives that entry its own text as its value, so the entry can be
+  // chosen like any other - and is then no project and no setup: its text
+  // went to SAS Model Manager as an id (a 404, and the editor of the later
+  // steps open on nothing). `chosenIn` reads a picker with that in mind.
+  const projectPlaceholder = str('ragBuilderProjectPlaceholder', 'Select a RAG project…');
+  const setupPlaceholder = str('ragBuilderSetupPlaceholder', 'Select a RAG setup…');
+  const chosenIn = (picker: HTMLSelectElement, placeholder: string): string =>
+    picker.value === placeholder ? '' : picker.value;
+
   function renderProjectOptions(): void {
     renderFilteredOptions(
       projectSelect,
       allProjects,
       projectFilter.nameInput,
       projectFilter.userSelect,
-      str('ragBuilderProjectPlaceholder', 'Select a RAG project…')
+      projectPlaceholder
     );
   }
 
@@ -2565,7 +2597,7 @@ export async function buildRagBuilder(
       allSetups,
       setupFilter.nameInput,
       setupFilter.userSelect,
-      str('ragBuilderSetupPlaceholder', 'Select a RAG setup…')
+      setupPlaceholder
     );
   }
 
@@ -2861,24 +2893,70 @@ export async function buildRagBuilder(
    * one, right after this (applySetup). What no setup carries stayed where
    * the setup before had left it (issue #47): the question that was asked of
    * its collection, the number of chunks, the chunks that came back and the
-   * open test panel, and the note of its last save or manifest.
+   * open test panel, the state and the milestones of its ingestion run, its
+   * ledger, and the note of its last save or manifest.
    */
   const startLaterStepsAfresh = (): void => {
+    // What is still on its way for the setup before is not drawn any more.
+    shownSetup += 1;
+    // A model, a database or a caslib that the lists no longer offer was
+    // kept in its list for the setup before, and leaves with it - before the
+    // fields are put back, because that entry may be the chosen one.
+    [embedModelField, backendField, caslibField].forEach((field) => {
+      field.querySelectorAll('option[data-unlisted]').forEach((kept) => kept.remove());
+    });
     // Every field back to its first value, the two of the retrieval test
     // among them. Nothing is derived here: applySetup does that for the
-    // setup it draws.
+    // setup it draws, showEmptyEditor where there is none.
     stepper.restoreFreshState();
+    // The run of the setup before: its clock stops (the ledger of a setup
+    // asks it whether a run is in flight), and its card is emptied, not only
+    // hidden.
+    stopRunClock();
     runCard.style.display = 'none';
+    runBadge.className = 'badge text-bg-secondary';
+    runBadge.textContent = '';
+    runStateText.textContent = '';
+    runClock.textContent = '';
+    runNote.textContent = '';
+    runMilestones.replaceChildren();
     ledgerCard.style.display = 'none';
+    ledgerContent.replaceChildren();
     testCard.style.display = 'none';
     testStatus.textContent = '';
     testResults.replaceChildren();
     clearSaveResult();
   };
 
+  /**
+   * The editor with no setup in it, as on the page that was just loaded. Its
+   * parts are hidden and its fields were just put back; this is the rest: the
+   * documentation of the setup that was open - which stands on the Setup
+   * step, where it stayed readable under a picker that named no setup - and
+   * what the fields say beside themselves or carry for one setup.
+   */
+  const showEmptyEditor = (): void => {
+    ragDoc.clear();
+    sourcePlaceholder();
+    followEmbeddingModel();
+    capTokenWindow(false);
+    followChunker(false);
+    judgeOverlap();
+    showStoreLocation();
+    for (const block of enrichBlocks.splice(0)) block.root.remove();
+    addEnrichBlock();
+    managedTags = [];
+    currentPolicies = null;
+    currentJobUri = '';
+    updateLaunchState();
+  };
+
   async function loadSetup(): Promise<void> {
     stopPolling();
     startLaterStepsAfresh();
+    // Whether this setup is still the one on the page: asked after every
+    // wait, before anything of it is drawn.
+    const shown = whileSetupShown();
     editorParts.forEach((part) => {
       part.style.display = selectedSetupID ? '' : 'none';
     });
@@ -2887,17 +2965,26 @@ export async function buildRagBuilder(
     });
     // set before the early return: deselecting must disable the button too
     docSaveButton.disabled = !selectedSetupID;
-    if (!selectedSetupID) return;
+    if (!selectedSetupID) {
+      showEmptyEditor();
+      return;
+    }
+    const setupID = selectedSetupID;
     applySetup(defaultSetup(config));
-    const contents = await getModelContents(selectedSetupID);
+    const contents = await getModelContents(setupID);
+    if (!shown()) return;
     const setupItem = contents.find((item) => item.name === SETUP_FILE);
     if (setupItem?.fileUri) {
       try {
         const response = await getFileContent(setupItem.fileUri);
+        if (!shown()) return;
         if (response.ok) {
-          applySetup({ ...defaultSetup(config), ...(await response.json()) } as RagSetup);
+          const stored = await response.json();
+          if (!shown()) return;
+          applySetup({ ...defaultSetup(config), ...stored } as RagSetup);
         }
       } catch {
+        if (!shown()) return;
         showStatus('danger', str('ragBuilderLoadSetupError', 'The stored rag-setup.json could not be read - starting from defaults.'));
       }
     } else {
@@ -2905,8 +2992,8 @@ export async function buildRagBuilder(
       // its own. The attributes are then the only copy, so read them back
       // rather than showing empty fields over text that exists.
       try {
-        const details = await getModelDetails(selectedSetupID);
-        if (details) ragDoc.setValues(details as Record<string, unknown>);
+        const details = await getModelDetails(setupID);
+        if (details && shown()) ragDoc.setValues(details as Record<string, unknown>);
       } catch (error) {
         console.debug('RAG Builder: reading documentation attributes failed', error);
       }
@@ -3241,6 +3328,11 @@ export async function buildRagBuilder(
       return;
     }
     stopPolling();
+    // The run belongs to the setup it was launched for. When another one is
+    // opened the job goes on in SAS Viya, and nothing of it - a state, a
+    // milestone, the ledger it writes, the word that it ended - is drawn on
+    // the setup that is on the page by then.
+    const shown = whileSetupShown();
     const setup = collectSetup();
     const args: Record<string, string> = { ...jobArguments(setup) };
     if (config.computeContext) args._contextName = String(config.computeContext);
@@ -3254,6 +3346,7 @@ export async function buildRagBuilder(
     startRunClock();
     try {
       const job = await launchJob(currentJobUri, `RAG Ingest - ${selectedSetupName}`, args);
+      if (!shown()) return;
       const jobId = String(job.id ?? '');
       const renderMilestones = (messages: string[]): void => {
         runMilestones.replaceChildren();
@@ -3266,10 +3359,12 @@ export async function buildRagBuilder(
       const poll = async (): Promise<void> => {
         try {
           const current = await getJob(jobId);
+          if (!shown()) return;
           const state = String(current.state ?? 'running');
           setRunBadge(state);
           runStateText.textContent = `${str('ragBuilderRunStateLabel', 'State:')} ${state}`;
           const progress = await getJobProgressMessages(current);
+          if (!shown()) return;
           if (progress.messages.length > 0) {
             renderMilestones(progress.messages);
             // The last milestone is the answer to "what is it doing right
@@ -3335,6 +3430,7 @@ export async function buildRagBuilder(
       void poll();
     } catch (error) {
       console.error('Launching the ingestion job failed.', error);
+      if (!shown()) return;
       stopRunClock();
       runClock.textContent = '';
       setRunBadge('failed', true);
@@ -3604,11 +3700,14 @@ export async function buildRagBuilder(
   async function browseLedger(): Promise<void> {
     clearStatus();
     const setup = collectSetup();
+    // The rows are those of the setup that is on the page now.
+    const shown = whileSetupShown();
     ledgerCard.style.display = '';
     ledgerContent.textContent = '…';
     try {
       const table = `${setup.tables.prefix}_LEDGER`;
       const data = await getCasTableRows(setup.tables.caslib, table, config.casServer);
+      if (!shown()) return;
       const preferred = ['doc_id', 'status', 'chunk_count', 'error_text', 'run_id', 'updated_at', 'source_uri'];
       const order = preferred
         .map((name) => data.columns.findIndex((column) => column.toLowerCase() === name))
@@ -3654,6 +3753,7 @@ export async function buildRagBuilder(
       }
     } catch (error) {
       console.debug('RAG Builder: ledger read failed', error);
+      if (!shown()) return;
       // The commonest cause is not a missing table but an unfinished run:
       // the ledger is written by the run's LAST step, so it does not exist
       // until then. Saying "no table was found" here sent the reader looking
@@ -3808,6 +3908,11 @@ export async function buildRagBuilder(
       ? str('ragBuilderTestQuestionAdjusted', 'Asking without the ; & % characters - they cannot survive the trip to the job as a parameter.')
       : str('ragBuilderTestStarting', 'Starting…');
     const startedAt = Date.now();
+    // The chunks are those of the collection of this setup. When another
+    // setup is opened before they are back, the wait ends at its next step:
+    // nothing is written to the panel, which belongs to that setup by then,
+    // and the job definition is deleted as after every test.
+    const shown = whileSetupShown();
     let definitionUri = '';
     try {
       const jobsFolder = await getFolderByPath(`${config.contentRoot}/jobs`);
@@ -3816,11 +3921,13 @@ export async function buildRagBuilder(
             (member) => member.name === 'Test-Retrieval.sas'
           )
         : undefined;
+      if (!shown()) return;
       if (!jobFile?.uri) {
         testStatus.textContent = str('ragBuilderTestSourceMissing', 'Test-Retrieval.sas was not found under the content root - run the deploy-rag-content script first.');
         return;
       }
       const source = await (await getFileContent(String(jobFile.uri), 'text/plain')).text();
+      if (!shown()) return;
       const topK = Math.min(25, Math.max(1, Math.round(Number(testTopKField.value) || 5)));
       const args = retrievalArguments(setup, asked.value, topK);
       const jobName = `RAG Test retrieval - ${selectedSetupName}`;
@@ -3835,17 +3942,21 @@ export async function buildRagBuilder(
         description: 'Transient: created by the RAG Builder for one retrieval test and deleted when it ends. Nothing references it.',
       });
       definitionUri = `/jobDefinitions/definitions/${created.id}`;
+      if (!shown()) return;
       const launchArgs: Record<string, string> = { ...args };
       if (config.computeContext) launchArgs._contextName = String(config.computeContext);
       const job = await launchJob(definitionUri, jobName, launchArgs);
+      if (!shown()) return;
       const jobId = String(job.id ?? '');
 
       const deadline = startedAt + 5 * 60 * 1000;
       let parsed = parseRetrievalLog([]);
       for (;;) {
         const current = await getJob(jobId);
+        if (!shown()) return;
         const state = String(current.state ?? 'running');
         parsed = parseRetrievalLog((await getJobProgressMessages(current)).messages);
+        if (!shown()) return;
         if (isTerminalJobState(state as never)) break;
         if (Date.now() > deadline) {
           // The definition still goes, in the finally. The run itself is
@@ -3855,6 +3966,7 @@ export async function buildRagBuilder(
         }
         testStatus.textContent = `${str('ragBuilderTestRunning', 'Asking the collection…')} (${state}, ${formatElapsed(Date.now() - startedAt)})`;
         await pause(3000);
+        if (!shown()) return;
       }
       if (parsed.failure) {
         testResults.replaceChildren();
@@ -3867,7 +3979,9 @@ export async function buildRagBuilder(
       renderRetrievalHits(parsed, Date.now() - startedAt);
     } catch (error) {
       console.error('The retrieval test failed.', error);
-      testStatus.textContent = str('ragBuilderTestFailed', 'The retrieval test could not be run - check the browser console and your permissions on the compute context.');
+      if (shown()) {
+        testStatus.textContent = str('ragBuilderTestFailed', 'The retrieval test could not be run - check the browser console and your permissions on the compute context.');
+      }
     } finally {
       // Unconditional: a failed, timed-out or abandoned test has to clean up
       // exactly as a successful one does, or "leaves nothing behind" holds
@@ -3889,7 +4003,7 @@ export async function buildRagBuilder(
 
   // ---- events ---------------------------------------------------------------
   projectSelect.addEventListener('change', () => {
-    const projectID = projectSelect.value;
+    const projectID = chosenIn(projectSelect, projectPlaceholder);
     selectedProjectID = projectID;
     selectedSetupID = '';
     selectedSetupName = '';
@@ -3915,8 +4029,8 @@ export async function buildRagBuilder(
   });
 
   setupSelect.addEventListener('change', () => {
-    selectedSetupID = setupSelect.value;
-    selectedSetupName = setupSelect.selectedOptions[0]?.textContent ?? '';
+    selectedSetupID = chosenIn(setupSelect, setupPlaceholder);
+    selectedSetupName = selectedSetupID ? (setupSelect.selectedOptions[0]?.textContent ?? '') : '';
     updateSelectionActions();
     void loadSetup();
   });

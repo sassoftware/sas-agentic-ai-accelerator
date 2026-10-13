@@ -752,11 +752,9 @@ export async function buildPromptBuilder(
      * kind are shown.
      */
     function switchPromptKind(kind: PromptKind): void {
-      resetExperimentTrackerState();
       // Nothing of the kind that is left may arrive late: neither the
       // prompt-tests of its project nor a prompt-test that was being opened.
       projectLoadToken += 1;
-      dropPromptSelection();
       promptBuilderProjectPrompts = [];
       promptBuilderDecisionPromptIds = new Set();
       promptBuilderProjectSelectorDropdown.value = `${promptBuilderInterfaceText?.projectSelect}`;
@@ -764,6 +762,11 @@ export async function buildPromptBuilder(
       projectFilter.nameInput.value = '';
       promptFilter.nameInput.value = '';
       promptFilter.setUsers([]);
+      // The picker is emptied before the reset: what the reset redraws asks
+      // the picker which prompt-test is open (see the project picker).
+      renderPromptOptions();
+      resetExperimentTrackerState();
+      dropPromptSelection();
       applyPromptMode(kind);
       renderProjectOptions();
       renderPromptOptions();
@@ -836,13 +839,19 @@ export async function buildPromptBuilder(
     promptBuilderProjectSelectorDropdown.onchange = async function () {
       const self = this as unknown as HTMLSelectElement;
       const loadToken = ++projectLoadToken;
-      // Reset the in-memory experiment state of the previously selected prompt
-      resetExperimentTrackerState();
-      dropPromptSelection();
-      // Reset the prompt list and its filters
+      // Reset the prompt list and its filters. This comes first: the reset
+      // below redraws the later steps, and the Optimize step asks the picker
+      // which prompt-test is open. While the picker still named the
+      // prompt-test of the project that is left, that step kept its
+      // optimization history - with "Load as experiment", which filled
+      // Build & Test from a prompt-test that was no longer open - and offered
+      // Compare targets for it.
       promptBuilderProjectPrompts = [];
       promptFilter.nameInput.value = '';
       renderPromptOptions();
+      // Reset the in-memory experiment state of the previously selected prompt
+      resetExperimentTrackerState();
+      dropPromptSelection();
 
       // Get the prompts from the selected projects
       const currentProject = self.options[self.selectedIndex].value;
@@ -1000,9 +1009,6 @@ export async function buildPromptBuilder(
       // prompt, and take that prompt-test out of the later steps.
       const startedAfresh = resetExperimentTrackerState();
       const promptBuilderPromptSelectedModelID = self.options[self.selectedIndex].value;
-      // From here on the later steps show the prompt-test that was chosen -
-      // also a new one, which brings nothing and is filled by hand.
-      laterStepsShowPromptTest = promptBuilderPromptSelectedModelID !== `${promptBuilderInterfaceText?.promptSelect}`;
       // Load the prompt's documentation (and migrate a legacy function value);
       // the same registration says which kind of template this is.
       const promptDetails = await loadPromptDocumentation(promptBuilderPromptSelectedModelID);
@@ -1169,6 +1175,13 @@ export async function buildPromptBuilder(
           }
         }
       }
+      // The prompt-test is on the page: from here on the later steps show it
+      // - also a new one, which brought nothing and is filled by hand - and
+      // are started afresh when it is left. Not earlier: while it was being
+      // read nothing of it was drawn, so what the steps held, typed with no
+      // prompt-test open, was still nobody's, and a second choice made in
+      // that time must not take it away.
+      laterStepsShowPromptTest = true;
       // Enable prompt deletion only for a real prompt selection
       deletePromptButton.disabled =
         promptBuilderPromptSelectedModelID === `${promptBuilderInterfaceText?.promptSelect}`;
@@ -1390,18 +1403,19 @@ export async function buildPromptBuilder(
       dialog.close();
     }
 
-    // Whether the steps after Setup show a prompt-test: set when one is
-    // chosen in the picker (or created, which chooses it), cleared when the
-    // steps are started afresh. While it is not set, what those steps hold was
-    // typed on a page with no prompt-test open and belongs to none.
+    // Whether the steps after Setup show a prompt-test: set once the one
+    // chosen in the picker (or created, which chooses it) has been read and
+    // drawn, cleared when the steps are started afresh. While it is not set,
+    // what those steps hold was typed on a page with no prompt-test open and
+    // belongs to none.
     let laterStepsShowPromptTest = false;
 
     /**
      * The steps after Setup as the page showed them when it was loaded: every
      * field back to the value it had then (the defaults - a temperature from
      * the model's options, a judge model from the report options - not
-     * blanks), no variable, no question, no result of an evaluation or an
-     * optimization.
+     * blanks), every explanation open or folded as it was then, no variable,
+     * no question, no result of an evaluation or an optimization.
      *
      * This is the one place that takes a prompt-test out of those steps. The
      * steps keep everything in the DOM, and opening a prompt-test only ever
@@ -1432,9 +1446,10 @@ export async function buildPromptBuilder(
       });
       // The judge model is a list: what it shows and hides is redrawn here.
       updateJudgeControlsVisibility();
-      // The designer redraws its lint and tells the model cards and the Run
-      // button (the state template was emptied with the other fields).
-      decisionDesigner.setQuestions([]);
+      // The designer takes out its questions, closes the help a "?" had
+      // opened and empties the line beside its list of templates; it redraws
+      // its lint and tells the model cards and the Run button.
+      decisionDesigner.startAfresh();
       updateRunExperimentsButtonState();
       clearEvaluation();
       clearOptimizeRun();
@@ -5632,6 +5647,14 @@ ${scoreCodeReturn}`;
     // change while the job runs) and the launched job's id.
     let optimizeSourceModelId = '';
     let optimizeJobId = '';
+    // What the job last reported: its state line, its milestones and why
+    // there are none yet. Kept here and not only on the page, because the
+    // Optimize step draws them for one prompt-test alone - the one the job
+    // runs for (optimizeJobIsShown) - and shows them again when that one is
+    // opened again while the job still runs.
+    let optimizeJobStatus = '';
+    let optimizeJobMessages: string[] = [];
+    let optimizeJobLiveStatus: string | undefined;
     // Row count of the currently selected CAS dataset table (fetched lazily
     // when the table is picked) so the panel's call estimate reflects the
     // CAS source instead of the tracker count; null = not (yet) known.
@@ -5647,16 +5670,64 @@ ${scoreCodeReturn}`;
       return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, '0')}`;
     }
 
+    /**
+     * Whether the Optimize step shows the job: it does for the prompt-test
+     * the job was launched for, and for no other.
+     *
+     * The state line, the run log and the result were written to the step
+     * whichever prompt-test was open, so a prompt-test that was opened or
+     * created while a job ran - a new one included - showed the log and the
+     * result of an optimization of another one (issue #47). The job goes on
+     * and is polled all the same; another prompt-test only sees that an
+     * optimization is running, which is why it cannot start one.
+     */
+    function optimizeJobIsShown(): boolean {
+      return optimizeSourceModelId !== '' && promptBuilderPromptSelectorDropdown.value === optimizeSourceModelId;
+    }
+
     /** Paint the current elapsed runtime (no-op once frozen). */
     function updateOptimizeRuntimeDisplay(): void {
-      if (!optimizeUI || optimizeJobStartedAt === 0) return;
+      if (!optimizeUI || optimizeJobStartedAt === 0 || !optimizeJobIsShown()) return;
       optimizeUI.logRuntime.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeRuntime} ${formatOptimizeRuntime(Date.now() - optimizeJobStartedAt)}`;
+    }
+
+    /** The milestones of the job in the run log, or why there are none yet. */
+    function paintOptimizeRunLog(finished: boolean): void {
+      if (!optimizeUI || !optimizeJobIsShown()) return;
+      if (optimizeJobMessages.length > 0) {
+        optimizeUI.logList.innerText = optimizeJobMessages.join('\n');
+        delete optimizeUI.logList.dataset.pending;
+      } else if (!finished && optimizeJobLiveStatus && optimizeJobLiveStatus !== 'ok') {
+        // No milestones yet: say WHY instead of showing an empty log.
+        // 'no-milestones' just means the job has not reported one yet, any
+        // other status pinpoints why live streaming is unavailable (the full
+        // log always appears when the run finishes).
+        optimizeUI.logList.innerText =
+          optimizeJobLiveStatus === 'no-milestones' || optimizeJobLiveStatus === 'no-session-refs'
+            ? `${promptBuilderInterfaceText?.promptBuilderOptimizeLogWaiting}`
+            : `${promptBuilderInterfaceText?.promptBuilderOptimizeLogUnavailable}`.replace('{status}', optimizeJobLiveStatus);
+        optimizeUI.logList.dataset.pending = '1';
+      }
+    }
+
+    /**
+     * Draw what the running job last reported - for the prompt-test it runs
+     * for. Called every second while a job is monitored and whenever the
+     * Optimize step was emptied, so that prompt-test shows its job again as
+     * soon as it is opened again.
+     */
+    function paintOptimizeJob(): void {
+      if (!optimizeUI || !optimizeJobActive || optimizeJobId === '' || !optimizeJobIsShown()) return;
+      optimizeUI.logDetails.classList.remove('d-none');
+      optimizeUI.statusLine.innerText = optimizeJobStatus;
+      updateOptimizeRuntimeDisplay();
+      paintOptimizeRunLog(false);
     }
 
     /** Tick the runtime every second in the browser (smoother than the 5s job polls). */
     function startOptimizeRuntimeTicker(): void {
       stopOptimizeRuntimeTicker();
-      optimizeRuntimeHandle = window.setInterval(updateOptimizeRuntimeDisplay, 1000);
+      optimizeRuntimeHandle = window.setInterval(paintOptimizeJob, 1000);
     }
 
     function stopOptimizeRuntimeTicker(): void {
@@ -5673,6 +5744,9 @@ ${scoreCodeReturn}`;
     // time the CAS source is revealed.
     const casPickerCache = { caslibs: new Map<string, string[]>(), tables: new Map<string, string[]>() };
     let casServersPromise: Promise<void> | null = null;
+    // Counts the times the pickers were emptied for another prompt-test: a
+    // server list that was asked for before that is not filled in after it.
+    let casPickerGeneration = 0;
 
     /** Rebuild a picker: placeholder + entries, keeping a still-valid selection. */
     function fillCasSelect(select: HTMLSelectElement, placeholderText: unknown, names: string[]): void {
@@ -5698,8 +5772,10 @@ ${scoreCodeReturn}`;
       if (!casServersPromise) {
         casServersPromise = (async () => {
           if (!optimizeUI) return;
+          const generation = casPickerGeneration;
           try {
             const servers = await getCasServers();
+            if (generation !== casPickerGeneration) return;
             fillCasSelect(
               optimizeUI.casServerSelect,
               promptBuilderInterfaceText?.promptBuilderOptimizeCasServerPlaceholder,
@@ -5769,25 +5845,11 @@ ${scoreCodeReturn}`;
         stopOptimizeRuntimeTicker();
         optimizeJobStartedAt = 0;
       }
-      if (messages.length > 0) {
-        optimizeUI.logList.innerText = messages.join('\n');
-        delete optimizeUI.logList.dataset.pending;
-      } else if (!finished && liveStatus && liveStatus !== 'ok') {
-        // No milestones yet: say WHY instead of showing an empty log —
-        // 'no-milestones' just means the job has not reported one yet, any
-        // other status pinpoints why live streaming is unavailable (the full
-        // log always appears when the run finishes). Never overwrite already
-        // painted milestones with this (a poll can fail transiently).
-        const pendingOrEmpty =
-          optimizeUI.logList.dataset.pending === '1' || optimizeUI.logList.innerText.trim() === '';
-        if (pendingOrEmpty) {
-          optimizeUI.logList.innerText =
-            liveStatus === 'no-milestones' || liveStatus === 'no-session-refs'
-              ? `${promptBuilderInterfaceText?.promptBuilderOptimizeLogWaiting}`
-              : `${promptBuilderInterfaceText?.promptBuilderOptimizeLogUnavailable}`.replace('{status}', liveStatus);
-          optimizeUI.logList.dataset.pending = '1';
-        }
-      }
+      // Milestones that were reported once stay: a poll can fail transiently
+      // and come back without any.
+      if (messages.length > 0) optimizeJobMessages = messages;
+      optimizeJobLiveStatus = liveStatus;
+      paintOptimizeRunLog(finished);
     }
 
     /** Runs that qualify as optimization examples: those with a Best Response. */
@@ -5873,6 +5935,20 @@ ${scoreCodeReturn}`;
         promptBuilderPromptSelectorDropdown.value !== '' &&
         promptBuilderPromptSelectorDropdown.value !== `${promptBuilderInterfaceText?.promptSelect}`;
       const configReady = Boolean(promptBuilderObject?.computeContext && promptBuilderObject?.optimizeJobProgram);
+      // The job that runs is the business of the prompt-test it runs for:
+      // there the button turns and the state line and the log say the rest.
+      // Any other prompt-test has a plain button that is switched off, and
+      // the banner says why.
+      const jobShown = optimizeJobActive && optimizeJobIsShown();
+      if (jobShown !== (optimizeUI.runButton.dataset.running === '1')) {
+        if (jobShown) {
+          optimizeUI.runButton.dataset.running = '1';
+          optimizeUI.runButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText?.promptBuilderOptimizeRunButtonStatus}`;
+        } else {
+          delete optimizeUI.runButton.dataset.running;
+          optimizeUI.runButton.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeRunButton}`;
+        }
+      }
       let disabledHint = '';
       if (optimizeJobActive) disabledHint = `${promptBuilderInterfaceText?.promptBuilderOptimizeAlreadyRunning}`;
       else if (!configReady) disabledHint = `${promptBuilderInterfaceText?.promptBuilderOptimizeNotConfigured}`;
@@ -5886,7 +5962,7 @@ ${scoreCodeReturn}`;
         disabledHint = `${promptBuilderInterfaceText?.promptBuilderOptimizeGepaNeedsJudge}`;
       setDisabledHint(optimizeUI.runButton, optimizeUI.runWrapper, disabledHint !== '', disabledHint);
       // Say why the run is blocked in the open, not only on hover.
-      const showBanner = disabledHint !== '' && !optimizeJobActive;
+      const showBanner = disabledHint !== '' && !jobShown;
       optimizeUI.banner.classList.toggle('d-none', !showBanner);
       optimizeUI.banner.innerText = showBanner ? disabledHint : '';
       // The compare entry point only needs a prompt and a quiet job slot —
@@ -5903,16 +5979,18 @@ ${scoreCodeReturn}`;
      */
     function clearOptimizeRun(): void {
       if (!optimizeUI) return;
-      // The CAS pickers were emptied with the other fields. The next time the
-      // CAS source is chosen the servers are asked for again, which also
+      // The CAS pickers were put back to "choose one" with the other fields;
+      // the servers, caslibs and tables they listed go as well. The next time
+      // the CAS source is chosen the servers are asked for again, which also
       // chooses the usual one and lists its caslibs - as on a page that was
       // just loaded.
+      casPickerGeneration += 1;
       casServersPromise = null;
       optimizeCasRowCount = null;
+      fillCasSelect(optimizeUI.casServerSelect, promptBuilderInterfaceText?.promptBuilderOptimizeCasServerPlaceholder, []);
+      fillCasSelect(optimizeUI.casLibSelect, promptBuilderInterfaceText?.promptBuilderOptimizeCasLibPlaceholder, []);
+      fillCasSelect(optimizeUI.casTableSelect, promptBuilderInterfaceText?.promptBuilderOptimizeCasTablePlaceholder, []);
       updateOptimizeState();
-      // A job that is still running goes on writing its state, its log and
-      // its result here, whichever prompt-test is open: they stay.
-      if (optimizeJobActive) return;
       optimizeUI.statusLine.innerText = '';
       optimizeUI.resultBox.innerHTML = '';
       optimizeUI.logDetails.classList.add('d-none');
@@ -5920,6 +5998,20 @@ ${scoreCodeReturn}`;
       optimizeUI.logRuntime.innerText = '';
       optimizeUI.logList.innerText = '';
       delete optimizeUI.logList.dataset.pending;
+      // A job that is still running goes on, and is drawn again here when
+      // the prompt-test that was opened is the one it runs for.
+      paintOptimizeJob();
+    }
+
+    /** The state line of the job: kept, and written where the job is shown. */
+    function setOptimizeJobStatus(text: string): void {
+      optimizeJobStatus = text;
+      if (optimizeUI && optimizeJobIsShown()) optimizeUI.statusLine.innerText = text;
+    }
+
+    /** What became of the job, in the result box - where the job is shown. */
+    function showOptimizeOutcome(text: string): void {
+      if (optimizeUI && optimizeJobIsShown()) optimizeUI.resultBox.innerText = text;
     }
 
     /** Stop polling the optimization job (finished, failed, or abandoned). */
@@ -5937,7 +6029,7 @@ ${scoreCodeReturn}`;
       // Safety net: never leave the runtime ticking (covers launch failures,
       // where updateOptimizeRunLog(…, true) is not reached).
       stopOptimizeRuntimeTicker();
-      optimizeUI.runButton.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeRunButton}`;
+      // The label of the button follows the job there.
       updateOptimizeState();
     }
 
@@ -5955,7 +6047,7 @@ ${scoreCodeReturn}`;
       const progressMessages = progress.messages;
       updateOptimizeRunLog(progressMessages, false, progress.liveStatus);
       const latestMilestone = progressMessages.length > 0 ? ` — ${progressMessages[progressMessages.length - 1]}` : '';
-      optimizeUI.statusLine.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobState} ${job.state}${latestMilestone}`;
+      setOptimizeJobStatus(`${promptBuilderInterfaceText?.promptBuilderOptimizeJobState} ${job.state}${latestMilestone}`);
       if (!isTerminalJobState(job.state)) {
         // The job records its outcome in the optimization tracker BEFORE Job
         // Execution's state turns terminal — and a hard-killed compute session
@@ -5966,13 +6058,13 @@ ${scoreCodeReturn}`;
         stopOptimizePolling();
         // Clear the (possibly stale) state line — the run is over; the result
         // box and the run log carry the outcome from here.
-        optimizeUI.statusLine.innerText = '';
+        setOptimizeJobStatus('');
         updateOptimizeRunLog(progressMessages, true);
         if (earlyEntry.status === 'succeeded') {
           await showOptimizeResult();
         } else {
           const earlyError = earlyEntry.error ? ` ${earlyEntry.error}` : '';
-          optimizeUI.resultBox.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}${earlyError}`;
+          showOptimizeOutcome(`${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}${earlyError}`);
           showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}`);
           void refreshOptimizationHistory(true);
         }
@@ -5982,7 +6074,7 @@ ${scoreCodeReturn}`;
       stopOptimizePolling();
       // The run is over: replace the transient state line with nothing — the
       // outcome lives in the result box; runtime + milestones in the run log.
-      optimizeUI.statusLine.innerText = '';
+      setOptimizeJobStatus('');
       updateOptimizeRunLog(progressMessages, true);
       if (job.state === 'completed' || job.state === 'completedWithWarnings') {
         await showOptimizeResult();
@@ -5996,7 +6088,7 @@ ${scoreCodeReturn}`;
           : job.error?.message
             ? ` ${job.error.message}`
             : '';
-        optimizeUI.resultBox.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}${failureDetail}`;
+        showOptimizeOutcome(`${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}${failureDetail}`);
         showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}`);
         void refreshOptimizationHistory(true);
       }
@@ -6556,13 +6648,17 @@ ${scoreCodeReturn}`;
      */
     async function showOptimizeResult(): Promise<void> {
       if (!optimizeUI) return;
-      optimizeUI.resultBox.innerHTML = '';
+      if (optimizeJobIsShown()) optimizeUI.resultBox.innerHTML = '';
       const entry = await readOptimizationEntry();
+      // The result box is that of the prompt-test the job ran for. With
+      // another one open the outcome is a toast, and the run is in the
+      // history of its own prompt-test the next time that one is opened.
+      const shown = optimizeJobIsShown();
       if (!entry || entry.status !== 'succeeded') {
         // The job completed but its tracker entry is missing/failed — surface
         // whatever error the entry carries.
         const entryError = entry?.error ? ` ${entry.error}` : '';
-        optimizeUI.resultBox.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}${entryError}`;
+        showOptimizeOutcome(`${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}${entryError}`);
         return;
       }
 
@@ -6572,7 +6668,7 @@ ${scoreCodeReturn}`;
         const compareHeading = document.createElement('p');
         compareHeading.classList.add('fw-bold', 'mb-1');
         compareHeading.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareDone}`;
-        optimizeUI.resultBox.appendChild(compareHeading);
+        if (shown) optimizeUI.resultBox.appendChild(compareHeading);
         void refreshOptimizationHistory(true);
         showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeCompareDone}`);
         return;
@@ -6586,7 +6682,7 @@ ${scoreCodeReturn}`;
         `${promptBuilderInterfaceText?.promptBuilderOptimizeDone} ` +
         `${promptBuilderInterfaceText?.promptBuilderOptimizeMetricBefore} ${formatOptimizeMetric(entry.metricBefore)}` +
         ` → ${promptBuilderInterfaceText?.promptBuilderOptimizeMetricAfter} ${formatOptimizeMetric(entry.metricAfter)}`;
-      optimizeUI.resultBox.appendChild(resultHeading);
+      if (shown) optimizeUI.resultBox.appendChild(resultHeading);
       void refreshOptimizationHistory(true);
       showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeDone}`);
     }
@@ -6658,14 +6754,18 @@ ${scoreCodeReturn}`;
       if (optimizeJobId === '') {
         throw new Error('Job Execution returned no job id.');
       }
-      optimizeUI.statusLine.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobState} ${job.state ?? 'pending'}`;
       // Reset + reveal the collapsed run log for this run; the runtime
-      // ticks browser-side every second.
+      // ticks browser-side every second. All of it where the job is shown:
+      // the prompt-test may have been left while the job was being launched.
+      optimizeJobMessages = [];
+      optimizeJobLiveStatus = undefined;
       optimizeJobStartedAt = Date.now();
-      optimizeUI.logList.innerText = '';
-      delete optimizeUI.logList.dataset.pending;
-      optimizeUI.logDetails.classList.remove('d-none');
-      updateOptimizeRuntimeDisplay();
+      optimizeJobStatus = `${promptBuilderInterfaceText?.promptBuilderOptimizeJobState} ${job.state ?? 'pending'}`;
+      if (optimizeJobIsShown()) {
+        optimizeUI.logList.innerText = '';
+        delete optimizeUI.logList.dataset.pending;
+      }
+      paintOptimizeJob();
       startOptimizeRuntimeTicker();
       optimizePollHandle = window.setInterval(() => {
         void pollOptimizeJob();
@@ -6712,7 +6812,7 @@ ${scoreCodeReturn}`;
       updateOptimizeState();
       optimizeUI.resultBox.innerHTML = '';
       optimizeUI.statusLine.innerText = '';
-      optimizeUI.runButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText?.promptBuilderOptimizeRunButtonStatus}`;
+      optimizeJobStatus = '';
 
       try {
         // Save first so the job reads the exact prompt (and tracker) the user
@@ -6750,9 +6850,9 @@ ${scoreCodeReturn}`;
         startOptimizeJobMonitor(job);
       } catch (error) {
         stopOptimizePolling();
-        optimizeUI.resultBox.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed} ${String(
-          (error as Error)?.message ?? error
-        )}`;
+        showOptimizeOutcome(
+          `${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed} ${String((error as Error)?.message ?? error)}`
+        );
         showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed}`);
         resetOptimizeRunButton();
       }
@@ -6977,7 +7077,7 @@ ${scoreCodeReturn}`;
       updateOptimizeState();
       optimizeUI.resultBox.innerHTML = '';
       optimizeUI.statusLine.innerText = '';
-      optimizeUI.runButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText?.promptBuilderOptimizeRunButtonStatus}`;
+      optimizeJobStatus = '';
 
       try {
         // Save first so the job reads the exact prompt (and tracker) the user
@@ -7015,9 +7115,9 @@ ${scoreCodeReturn}`;
         startOptimizeJobMonitor(job);
       } catch (error) {
         stopOptimizePolling();
-        optimizeUI.resultBox.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed} ${String(
-          (error as Error)?.message ?? error
-        )}`;
+        showOptimizeOutcome(
+          `${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed} ${String((error as Error)?.message ?? error)}`
+        );
         showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed}`);
         resetOptimizeRunButton();
       }
@@ -7609,6 +7709,13 @@ ${scoreCodeReturn}`;
     // there is nothing to take off.
     let clearEvaluation = (): void => {};
     if (decisionEnabled) {
+      // Counts the times the step was emptied for another template. An
+      // evaluation over a CAS table is a loop of calls that can take minutes,
+      // and a list of servers is asked for when the CAS source is chosen:
+      // what comes back after the template was left belongs to that one and
+      // is not drawn (issue #47 - the result of the evaluation of the
+      // template before filled the Evaluate step of a new one).
+      let evaluationGeneration = 0;
       const evaluatePane = paneOf('evaluate') as HTMLDivElement;
       const evaluationHeader = document.createElement('h2');
       evaluationHeader.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateHeading}`;
@@ -7678,8 +7785,10 @@ ${scoreCodeReturn}`;
       const loadEvaluationServers = async (): Promise<void> => {
         if (evaluationServersLoaded) return;
         evaluationServersLoaded = true;
+        const generation = evaluationGeneration;
         try {
-          fillEvaluationSelect(evaluationServerSelect, await getCasServers());
+          const servers = await getCasServers();
+          if (generation === evaluationGeneration) fillEvaluationSelect(evaluationServerSelect, servers);
         } catch (error) {
           console.error('Failed to list the CAS servers.', error);
         }
@@ -7738,12 +7847,18 @@ ${scoreCodeReturn}`;
       evaluationCard.wide.appendChild(evaluationResults);
       evaluatePane.appendChild(evaluationCard.element);
       clearEvaluation = (): void => {
+        // An evaluation that is still running is no longer this step's.
+        evaluationGeneration += 1;
         // The results hold the answers of that template, with a threshold
         // slider per question.
         evaluationResults.innerHTML = '';
         evaluationStatus.innerText = '';
-        // The pickers were put back to "choose a server": the caslibs and
-        // tables listed for the server chosen before go with it.
+        // The pickers were put back to "choose a server": the servers, and
+        // the caslibs and tables listed for the one chosen before, go with
+        // it. The servers are asked for again when the CAS source is chosen,
+        // as on a page that was just loaded.
+        evaluationServersLoaded = false;
+        fillEvaluationSelect(evaluationServerSelect, []);
         fillEvaluationSelect(evaluationLibSelect, []);
         fillEvaluationSelect(evaluationTableSelect, []);
       };
@@ -7776,6 +7891,10 @@ ${scoreCodeReturn}`;
         evaluationResults.innerHTML = '';
         evaluationStatus.innerText = '';
         evaluationButton.disabled = true;
+        // Whether the template this evaluation was started for has been left
+        // meanwhile: asked after every wait, before anything is written.
+        const generation = evaluationGeneration;
+        const left = (): boolean => generation !== evaluationGeneration;
         try {
           if (evaluationTrackerRadio.checked) {
             const { questions, cases, answers } = trackerEvaluationCases();
@@ -7815,6 +7934,7 @@ ${scoreCodeReturn}`;
           // its last row.
           evaluationRunning = true;
           const table = await getCasTableRows(evaluationLibSelect.value, evaluationTableSelect.value, evaluationServerSelect.value, maxRows);
+          if (left()) return;
           const columnIndex = (name: string): number => table.columns.findIndex((column) => column.toLowerCase() === name.toLowerCase());
           const variables = collectPromptVariables();
           const missingColumns = variables.map((variable) => variable.name).filter((name) => columnIndex(name) < 0);
@@ -7865,14 +7985,18 @@ ${scoreCodeReturn}`;
               if (!parsed) failed += 1;
               answers[index] = parsed;
               done += 1;
+              if (left()) return;
               evaluationStatus.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateProgress}`
                 .replace('{done}', String(done))
                 .replace('{total}', String(total));
             });
+            // Once the template was left no further case is asked: the calls
+            // that are out come back, the rest of the table is not sent.
             const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
-              while (queue.length > 0) await queue.shift()!();
+              while (queue.length > 0 && !left()) await queue.shift()!();
             });
             await Promise.all(workers);
+            if (left()) return;
             evaluationResults.appendChild(
               renderEvaluation(model.name, questions, cases, cases.map((_, index) => answers[index] ?? null), failed, promptBuilderInterfaceText, evaluationPrefix)
             );
@@ -7883,7 +8007,7 @@ ${scoreCodeReturn}`;
               : '';
         } catch (error) {
           console.error('The evaluation failed.', error);
-          evaluationStatus.innerText = String(error);
+          if (!left()) evaluationStatus.innerText = String(error);
         } finally {
           evaluationRunning = false;
           evaluationButton.disabled = false;

@@ -61,7 +61,8 @@ export interface Stepper {
    */
   setVisible(index: number, visible: boolean): void;
   /**
-   * Remember what every field of the steps after the first holds right now.
+   * Remember what every field of the steps after the first holds right now,
+   * and which of their foldable sections (`details`) are open.
    * A builder calls this once, when its page is built and before an item is
    * opened: it is the state of those steps on a freshly loaded page, with
    * every default the builder gave a field (a temperature from the model's
@@ -70,8 +71,9 @@ export interface Stepper {
    */
   rememberFreshState(): void;
   /**
-   * Put every remembered field back to that value and return the fields that
-   * held something else. Only the values are set; no event is sent, because
+   * Put every remembered field back to that value, every remembered section
+   * back to open or folded, and return the fields that held something else.
+   * Only the values are set; no event is sent, because
    * what a field's listeners do (some load a list from the server) is the
    * builder's to decide - it re-runs what follows from the fields, or sends
    * the event itself.
@@ -204,19 +206,26 @@ export function createStepper(baseID: string, steps: StepDefinition[], labels: S
   }
   render();
 
-  // What the fields of the later steps held when the builder had built them.
+  // What the fields of the later steps held when the builder had built them,
+  // and which of the sections a person can fold were open.
   const freshState = new Map<StepField, string | boolean>();
+  const freshFolds = new Map<HTMLDetailsElement, boolean>();
   function rememberFreshState(): void {
     freshState.clear();
+    freshFolds.clear();
     panes.slice(1).forEach((pane) => {
       pane.querySelectorAll<StepField>('input, textarea, select').forEach((field) => {
         // The value of a file input cannot be set by a script.
         if (field instanceof HTMLInputElement && field.type === 'file') return;
         freshState.set(field, isTick(field) ? field.checked : field.value);
       });
+      pane.querySelectorAll('details').forEach((fold) => freshFolds.set(fold, fold.open));
     });
   }
   function restoreFreshState(): StepField[] {
+    freshFolds.forEach((open, fold) => {
+      if (fold.open !== open) fold.open = open;
+    });
     const changed: StepField[] = [];
     freshState.forEach((fresh, field) => {
       if (isTick(field)) {

@@ -808,6 +808,11 @@ export interface QuestionDesigner {
   stateInput: HTMLTextAreaElement;
   getQuestions(): DecisionQuestion[];
   setQuestions(questions: DecisionQuestion[]): void;
+  /**
+   * The designer as it is on a page that was just loaded: no state template,
+   * no question, no template chosen in the list, every "?" closed.
+   */
+  startAfresh(): void;
   /** Expected answers of the current questions, keyed by question id (empty ones left out). */
   getExpected(): Record<string, string>;
   /** At least one question and nothing left to fix. */
@@ -1279,6 +1284,21 @@ export function createQuestionDesigner(
       validate();
       // A restored run is a change like any other: the cards re-price and
       // re-check the request it brought along.
+      changed();
+    },
+    startAfresh: () => {
+      stateInput.value = '';
+      list.innerHTML = '';
+      // The list of templates says beside itself what the chosen one is good
+      // for. A value set by a script sends no change event, so that line is
+      // emptied with the choice.
+      templateSelect.value = '';
+      templateWhy.innerText = '';
+      // The rows took their own help with them; the two "?" of the designer
+      // itself are closed.
+      element.querySelectorAll('.pb-help').forEach((panel) => panel.classList.add('d-none'));
+      element.querySelectorAll('.pb-help-toggle').forEach((toggle) => toggle.setAttribute('aria-expanded', 'false'));
+      validate();
       changed();
     },
     getExpected: () => {

@@ -15,15 +15,32 @@
  *              chosen, and the new item is created there
  *   kind       (prompt and decision templates) an item of the other kind is
  *              opened, the kind is changed, a new item is created
+ *   in flight  something of the item that is left is still running: an
+ *              evaluation over a CAS table, an optimization job, a retrieval
+ *              test, an ingestion, the reading of the item itself. Its
+ *              answer arrives after the next item is on the page
  *
  * After each road the page is read as a whole and compared with the
  * reference; every field that differs is printed with both values. Read are,
  * per step: every input, text area and select with its value (and whether it
- * is disabled) whether it is shown or not, the text a person can read in the
- * step (which holds the runs of the tracker, results and notes), which
- * elements are hidden or disabled, and the row of steps. Left out are the two pickers
- * and the fields of the create dialogs, which name the item, and the entries
- * a list offers - the chosen entry is read.
+ * is disabled) whether it is shown or not, the entries every list offers, the
+ * text a person can read in the step (which holds the runs of the tracker,
+ * results and notes), every text the step holds in what is hidden (a result
+ * that waits in a closed panel is shown by the next click), which elements
+ * are hidden, disabled or folded open, and the row of steps. Left out are the
+ * two pickers and the fields of the create dialogs, which name the item.
+ *
+ * The page with no item open is compared the same way, with a fresh page on
+ * which a project is chosen and nothing else: after another project or kind
+ * was chosen, after the placeholder entry of a picker, after a delete. A
+ * project that is chosen draws nothing into the later steps, so whatever is
+ * there then was left by the item before.
+ *
+ * A comparison only sees a field that a road has changed. So the roads that
+ * fill an item by hand are checked themselves: every field of the later
+ * steps has to be changed by one of them (the list of the fields that none
+ * changes is part of a check), or a field that is added to a step and not
+ * put back for a new item would pass.
  *
  * The other direction is checked as well, so that a reset cannot pass by
  * emptying too much: an existing item that is opened again shows exactly what
@@ -33,8 +50,14 @@
  *
  * What is typed while no prompt-test is open belongs to none: it is kept for
  * the prompt-test that is created for it, and makes way for a prompt-test
- * that brings a run of its own. (A RAG setup has no such state - its later
- * steps show nothing before a setup is open.)
+ * that brings a run of its own - also when two prompt-tests are chosen one
+ * right after the other and the first is never drawn. (A RAG setup has no
+ * such state - its later steps show nothing before a setup is open.)
+ *
+ * A job that is still running is another matter than its leftovers: one
+ * optimization runs at a time, so a prompt-test opened meanwhile says that
+ * one is running, and the prompt-test the job runs for shows its state and
+ * its log again when it is opened again.
  *
  * The suite goes on after a comparison that failed, so one run lists the
  * fields of every road; a line "[http 4xx/5xx]" names a request the mock
@@ -84,11 +107,15 @@ const named = (text) => text.replace(/issue47[ _-]?[a-z0-9]+/gi, '<item>');
  *
  * controls  "<step> #<id>" (or the class and position of a control without
  *           an id) -> value, " [disabled]" appended
+ * lists     "<step> #<id>" -> the entries a select offers, whether it is
+ *           shown or not
  * text      "<step>" -> the text a person can read in the pane (nothing that
  *           is hidden), white space folded
- * state     "<step> <path>" -> hidden / disabled / is-invalid / readonly, for
- *           the elements that are one of them (not for what a hidden
- *           element holds)
+ * held      "<step>" -> every text the pane holds, also in what is hidden: a
+ *           result that waits in a closed panel is shown by the next click
+ * state     "<step> <path>" -> hidden / disabled / is-invalid / readonly /
+ *           open (a details element), for the elements that are one of them
+ *           (not for what a hidden element holds)
  * steps     the visible steps and the current one
  */
 function readBuilder(prefix) {
@@ -114,6 +141,7 @@ function readBuilder(prefix) {
       return `-enrich-${blocks.indexOf(number) + 1}-`;
     });
   const controls = {};
+  const lists = {};
   const unnamed = {};
   root.querySelectorAll('input, textarea, select').forEach((element) => {
     const pane = paneOf(element);
@@ -126,8 +154,12 @@ function readBuilder(prefix) {
     }
     const value = element.type === 'checkbox' || element.type === 'radio' ? String(element.checked) : element.value;
     controls[`${pane} ${name}`] = `${value}${element.disabled ? ' [disabled]' : ''}`;
+    if (element.tagName === 'SELECT') {
+      lists[`${pane} ${name}`] = [...element.options].map((option) => `${option.value}${option.disabled ? ' [disabled]' : ''}`).join(' | ');
+    }
   });
   const text = {};
+  const held = {};
   const state = {};
   root.querySelectorAll(`[id^="${panePrefix}"]`).forEach((pane) => {
     const key = pane.id.slice(panePrefix.length);
@@ -147,6 +179,17 @@ function readBuilder(prefix) {
         })
         .join('');
     text[key] = shownText(pane).replace(/\s+/g, ' ').trim();
+    // Everything the pane holds, shown or not (the entries of the lists are
+    // read above): what waits in a closed panel is shown by the next click.
+    const heldText = (element) =>
+      [...element.childNodes]
+        .map((node) => {
+          if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+          if (node.nodeType !== Node.ELEMENT_NODE || /^(OPTION|SCRIPT|STYLE)$/.test(node.tagName)) return '';
+          return heldText(node);
+        })
+        .join(' ');
+    held[key] = heldText(pane).replace(/\s+/g, ' ').trim();
     const walk = (element, path) => {
       const flags = [];
       // Its own display, whatever hides it: the attribute, a class or a style.
@@ -155,6 +198,7 @@ function readBuilder(prefix) {
       if (element.disabled) flags.push('disabled');
       if (element.classList.contains('is-invalid')) flags.push('is-invalid');
       if (element.readOnly) flags.push('readonly');
+      if (element.tagName === 'DETAILS' && element.open) flags.push('open');
       if (flags.length) state[`${key} ${path}${element.id ? `#${placed(element.id)}` : ''}`] = flags.join(' ');
       // What a hidden element holds is hidden with it.
       if (flags.includes('hidden')) return;
@@ -169,7 +213,7 @@ function readBuilder(prefix) {
       return `${button.id.replace(`app-obj-${prefix}-step-`, '')}${item.classList.contains('is-current') ? '*' : ''}`;
     })
     .join(',');
-  return { controls, text, state, steps };
+  return { controls, lists, text, held, state, steps };
 }
 
 const clip = (value) => (value.length > 110 ? `${value.slice(0, 110)}...` : value);
@@ -200,6 +244,22 @@ function differences(got, wanted) {
     const parted = textDifference(a, b);
     lines.push(`text of step ${key}: "${clip(parted.got)}" (expected "${clip(parted.wanted)}")`);
   }
+  for (const key of new Set([...Object.keys(got.lists), ...Object.keys(wanted.lists)])) {
+    const a = got.lists[key];
+    const b = wanted.lists[key];
+    // A select that only one of the two has is reported as a field above.
+    if (a === b || a === undefined || b === undefined) continue;
+    lines.push(`list ${key}: "${clip(a)}" (expected "${clip(b)}")`);
+  }
+  for (const key of new Set([...Object.keys(got.held), ...Object.keys(wanted.held)])) {
+    // What differs in the text that is shown was reported above.
+    if (named(got.text[key] || '') !== named(wanted.text[key] || '')) continue;
+    const a = named(got.held[key] || '');
+    const b = named(wanted.held[key] || '');
+    if (a === b) continue;
+    const parted = textDifference(a, b);
+    lines.push(`hidden in step ${key}: "${clip(parted.got)}" (expected "${clip(parted.wanted)}")`);
+  }
   for (const key of new Set([...Object.keys(got.state), ...Object.keys(wanted.state)])) {
     const a = got.state[key] || 'shown';
     const b = wanted.state[key] || 'shown';
@@ -207,6 +267,11 @@ function differences(got, wanted) {
   }
   return lines;
 }
+/** The fields of the later steps that hold in `filled` what they hold in `reference`. */
+const leftAlone = (filled, reference) =>
+  Object.keys(reference.controls)
+    .filter((key) => !key.startsWith('setup ') && filled.controls[key] === reference.controls[key])
+    .sort();
 /**
  * One comparison: a line of its own, and below it every field that differs.
  * `fieldsOnly` compares the fields and leaves the texts and the states out.
@@ -361,15 +426,29 @@ function same(got, wanted, label, fieldsOnly = false) {
     await page.fill(nameField, '');
   };
   const lpb = (suffix) => `#app-obj-LPB-${suffix}`;
+  // Choose an entry of a list that a search field stands in for on the page:
+  // the list itself is not shown, so it is set the way that field sets it.
+  const choose = (page, selector, value) =>
+    page.$eval(
+      selector,
+      (select, wanted) => {
+        select.value = wanted;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      },
+      value
+    );
 
   // ---- prompt templates ----------------------------------------------------------
   let promptReference;
+  // The page with a project chosen and no prompt-test open.
+  let promptIdle;
   // The manifested prompt-test as a fresh page shows it.
   let manifestedReference;
   await road('prompt template: the reference - a fresh page, a new prompt-test', async (page) => {
     await openPromptBuilder(page, 'llm');
     const untouched = await read(page, 'LPB');
     await choosePromptProject(page, 'proj-1');
+    promptIdle = await read(page, 'LPB');
     await createPromptTest(page);
     promptReference = await read(page, 'LPB');
     assert(promptReference.steps === 'setup*,build,optimize,finalize', `a prompt template has the steps Setup, Build & Test, Optimize and Finalize (got: ${promptReference.steps})`);
@@ -443,6 +522,7 @@ function same(got, wanted, label, fieldsOnly = false) {
       none.controls['build #app-obj-LPB-system-prompt'] === '' && none.controls['build #model0'] === 'false' && none.controls['finalize #app-obj-LPB-pet-manifest-integrated'] === 'false' && !('build input.form-control.pb-var-name (1)' in none.controls),
       `the placeholder entry, chosen after a prompt-test with a configuration, leaves none of it (system prompt: "${none.controls['build #app-obj-LPB-system-prompt']}", first LLM ticked: ${none.controls['build #model0']}, LLM call included: ${none.controls['finalize #app-obj-LPB-pet-manifest-integrated']}, variables: ${Object.keys(none.controls).filter((key) => key.includes('pb-var-name')).length})`
     );
+    same(none, promptIdle, 'and the whole page is what a fresh page shows with no prompt-test open');
   });
 
   // Fill every later step of an open prompt template by hand.
@@ -463,6 +543,8 @@ function same(got, wanted, label, fieldsOnly = false) {
     await page.check(lpb('judge-chairman-toggle'));
     await page.selectOption(lpb('judge-chairman-model'), 'second_llm');
     await page.check(lpb('judge-include-self'));
+    await page.check(lpb('judge-auto'));
+    await page.fill('#temperature1', '0.3');
     // One of the two LLMs does not answer: the run leaves a line that says so.
     await fetch(BASE + '/__failmodel', { method: 'POST', body: JSON.stringify({ name: 'second_llm', status: 503 }) });
     await page.click(lpb('run-experiment'));
@@ -477,10 +559,17 @@ function same(got, wanted, label, fieldsOnly = false) {
     await page.selectOption(lpb('optimize-optimizer'), { index: 1 });
     await page.fill(lpb('optimize-max-demos'), '7');
     await page.check(lpb('optimize-dataset-source-cas'));
+    // The server is chosen by the page; the caslib and the table by hand.
+    await waitUntil(async () => (await page.$$(`${lpb('optimize-cas-lib')} option`)).length >= 2, 'the caslibs of the CAS server are listed');
+    await choose(page, lpb('optimize-cas-lib'), 'Public');
+    await waitUntil(async () => (await page.$$(`${lpb('optimize-cas-table')} option`)).length >= 2, 'the tables of the caslib are listed');
+    await choose(page, lpb('optimize-cas-table'), 'OPT_DATA');
+    // An explanation beside the pickers, folded away.
+    await page.locator(`${lpb('pane-optimize')} details.pb-guide summary`).first().click();
     await atRest();
     await goStep(page, 'LPB', 'finalize');
     await page.check(lpb('pet-manifest-integrated'));
-    await page.uncheck(lpb('pet-out-run_time'));
+    for (const output of ['response', 'run_time', 'prompt_length', 'output_length']) await page.uncheck(lpb(`pet-out-${output}`));
     await page.click(`${lpb('pane-finalize')} button:has-text("Add Output Variable")`);
     await page.fill(`${lpb('pet-outvars')} .pb-outvar-name`, 'typed_output');
     await page.fill(`${lpb('pet-outvars')} .pb-outvar-default`, 'typed default');
@@ -494,8 +583,13 @@ function same(got, wanted, label, fieldsOnly = false) {
     shown.controls['build #app-obj-LPB-judge-chairman-model'] === 'second_llm' &&
     shown.controls['optimize #app-obj-LPB-optimize-max-demos'].startsWith('7') &&
     shown.controls['optimize #app-obj-LPB-optimize-dataset-source-cas'] === 'true' &&
+    shown.controls['optimize #app-obj-LPB-optimize-cas-table'] === 'OPT_DATA' &&
     shown.controls['finalize #app-obj-LPB-pet-out-run_time'] === 'false' &&
     shown.controls['finalize input.form-control.pb-outvar-name (1)'] === 'typed_output';
+  // The fields no road of a kind changes, by road: what one road leaves alone
+  // another one has to change, or a field that is added to a later step and
+  // is not put back for a new item would pass every comparison below.
+  const leftAloneBy = { prompt: [], decision: [], ragNew: [], ragExisting: [] };
 
   await road('prompt template: a new prompt-test right after a new one', async (page) => {
     await openPromptBuilder(page, 'llm');
@@ -510,6 +604,7 @@ function same(got, wanted, label, fieldsOnly = false) {
       typedPromptIsShown(typed) && /second_llm/.test(failedLine) && typed.text.build.includes(failedLine),
       `what was typed into the new prompt-test is on the page after a walk through every step: prompts, variable, LLM options, judges, the optimization settings, the manifest configuration and the line about the LLM that failed in its run (line: "${failedLine}")`
     );
+    leftAloneBy.prompt = leftAlone(typed, promptReference);
     await cancelCreate(page, '#promptBuilderCreatePromptModal', '#promptBuilderCreatePromptName');
     same(await read(page, 'LPB'), typed, 'a second walk through the steps and a create dialog that is closed without creating lose nothing of it');
     await createPromptTest(page);
@@ -522,8 +617,38 @@ function same(got, wanted, label, fieldsOnly = false) {
     await openPromptTest(page, 'model-used');
     await atRest();
     await createPromptProject(page);
+    // Before anything is created there, the steps show no prompt-test: the
+    // Optimize step lists no run of the prompt-test of the other project,
+    // whose "Load as experiment" would fill Build & Test with its prompt.
+    const idle = await read(page, 'LPB');
+    await goStep(page, 'LPB', 'optimize');
+    const offered = {
+      banner: ((await page.textContent(lpb('optimize-banner'))) || '').trim(),
+      history: ((await page.textContent(lpb('optimize-history'))) || '').replace(/\s+/g, ' ').trim(),
+      compare: !(await page.isDisabled(lpb('optimize-compare'))),
+    };
+    step(
+      offered.banner === 'Select a prompt-test first.' && offered.history === '' && !offered.compare,
+      `existing -> another project, nothing open yet: the Optimize step asks for a prompt-test and shows no optimization history of the one that was open (banner: "${offered.banner}", history: "${clip(offered.history)}", Compare targets usable: ${offered.compare})`
+    );
+    same(idle, promptIdle, 'and the whole page is what a fresh page shows with no prompt-test open');
     await createPromptTest(page);
     same(await read(page, 'LPB'), promptReference, 'existing -> another project -> new: the new prompt-test starts as on a fresh page');
+  });
+
+  await road('prompt template: a prompt-test that was filled by hand is deleted', async (page) => {
+    await openPromptBuilder(page, 'llm');
+    await choosePromptProject(page, 'proj-1');
+    await createPromptTest(page);
+    await fillPromptTemplate(page);
+    await goStep(page, 'LPB', 'setup');
+    await page.click('#LPB-delete-prompt-button');
+    await page.waitForSelector('.modal.show .btn-danger');
+    await page.click('.modal.show .btn-danger');
+    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await waitUntil(async () => !(await page.inputValue('#LPB-prompt-dropdown')).startsWith('model-new-'), 'the deleted prompt-test has left the picker');
+    await atRest();
+    same(await read(page, 'LPB'), promptIdle, 'new, filled by hand -> deleted: the page is what a fresh page shows with no prompt-test open');
   });
 
   // What is typed into Build & Test while no prompt-test is open belongs to
@@ -570,13 +695,48 @@ function same(got, wanted, label, fieldsOnly = false) {
     await openPromptTest(page, 'model-used');
     same(await read(page, 'LPB'), manifestedReference, 'nothing open -> typed -> an existing prompt-test with a best run: it shows what it shows on a fresh page, not its run mixed with what was typed');
   });
+  await road('prompt template: typed before two prompt-tests were chosen one right after the other', async (page) => {
+    await openPromptBuilder(page, 'llm');
+    await choosePromptProject(page, 'proj-1');
+    await typeWithoutPromptTest(page);
+    await goStep(page, 'LPB', 'setup');
+    // The first one, which has a best run, is still being read when the
+    // second one, which has none, is chosen: nothing of the first was drawn,
+    // so what was typed is still nobody's and is kept for the second.
+    await page.route('**/modelRepository/models/model-used', async (route) => {
+      await sleep(1500);
+      await route.continue();
+    });
+    await page.selectOption('#LPB-prompt-dropdown', 'model-used');
+    await page.selectOption('#LPB-prompt-dropdown', 'model-free');
+    await sleep(2500);
+    await atRest();
+    await page.unroute('**/modelRepository/models/model-used');
+    const kept = await read(page, 'LPB');
+    step(
+      (await page.inputValue('#LPB-prompt-dropdown')) === 'model-free' &&
+        kept.controls['build #app-obj-LPB-system-prompt'] === 'Typed before a prompt-test existed' &&
+        kept.controls['build input.form-control.pb-var-name (1)'] === 'early' &&
+        kept.controls['build #model1'] === 'true' &&
+        kept.controls['build #temperature1'] === '0.4' &&
+        kept.controls['optimize #app-obj-LPB-optimize-max-demos'] === '9' &&
+        (await savedRuns(page)) === 0,
+      `nothing open -> typed -> a prompt-test with a best run and at once one without: what was typed is kept for the one that is open, and no run of the other is shown (system prompt: "${kept.controls['build #app-obj-LPB-system-prompt']}", variable: ${kept.controls['build input.form-control.pb-var-name (1)']}, second LLM ticked: ${kept.controls['build #model1']} at ${kept.controls['build #temperature1']}, examples of an optimization: ${kept.controls['optimize #app-obj-LPB-optimize-max-demos']}, runs: ${await savedRuns(page)})`
+    );
+    // It belongs to that prompt-test now, and goes with it.
+    await openPromptTest(page, 'model-used');
+    same(await read(page, 'LPB'), manifestedReference, 'and the prompt-test with the best run, opened after it, shows what it shows on a fresh page');
+  });
 
   // ---- decision templates --------------------------------------------------------
   let decisionReference;
+  // The page with a decision project chosen and no template open.
+  let decisionIdle;
   await road('decision template: the reference - a fresh page, a new decision template', async (page) => {
     await openPromptBuilder(page, 'decision');
     const untouched = await read(page, 'LPB');
     await choosePromptProject(page, 'proj-2');
+    decisionIdle = await read(page, 'LPB');
     await createPromptTest(page);
     decisionReference = await read(page, 'LPB');
     assert(decisionReference.steps === 'setup*,build,evaluate,finalize', `a decision template has the steps Setup, Build & Test, Evaluate and Finalize (got: ${decisionReference.steps})`);
@@ -587,6 +747,15 @@ function same(got, wanted, label, fieldsOnly = false) {
     same(decisionReference, untouched, 'every field of the later steps holds for a new decision template on a fresh page what it holds before anything is selected', true);
   });
 
+  // The labelled cases of the Evaluate step: server, caslib and table.
+  const chooseEvaluationTable = async (page) => {
+    await waitUntil(async () => (await page.$$(`${lpb('evaluate-cas-server')} option`)).length >= 2, 'the CAS servers are listed');
+    await page.selectOption(lpb('evaluate-cas-server'), 'cas-shared-default');
+    await waitUntil(async () => (await page.$$(`${lpb('evaluate-cas-lib')} option`)).length >= 2, 'the caslibs are listed');
+    await page.selectOption(lpb('evaluate-cas-lib'), 'Public');
+    await waitUntil(async () => (await page.$$(`${lpb('evaluate-cas-table')} option`)).length >= 2, 'the tables are listed');
+    await page.selectOption(lpb('evaluate-cas-table'), 'DEC_CASES');
+  };
   const ticketRoutingIsShown = (shown) =>
     shown.controls['build #app-obj-LPB-decision-state'].startsWith('Subject: {{subject}}') &&
     shown.controls['build input.form-control.pb-var-name (2)'] === 'body' &&
@@ -621,6 +790,9 @@ function same(got, wanted, label, fieldsOnly = false) {
   const fillDecisionTemplate = async (page) => {
     await goStep(page, 'LPB', 'build');
     await page.fill(lpb('decision-state'), 'Typed state about {{topic}}');
+    // A template that is looked at and not applied: the line beside the list
+    // says what it is good for.
+    await page.selectOption(lpb('decision-template'), { index: 1 });
     await page.click(`${lpb('pane-build')} button:has-text("Add Variable")`);
     await page.fill(`${lpb('variables')} .pb-var-name`, 'topic');
     await page.fill(`${lpb('variables')} .pb-var-value`, 'typed value');
@@ -630,6 +802,11 @@ function same(got, wanted, label, fieldsOnly = false) {
     await row.locator('.pb-question-type').selectOption('noul');
     await row.locator('.pb-question-instructions').fill('Is the text about an invoice that was paid twice?');
     await row.locator('.pb-question-expected').fill('no');
+    // Every "?" beside a label opens a sentence of help under it.
+    for (const toggle of await page.$$(`${lpb('pane-build')} .pb-help-toggle`)) {
+      if (await toggle.isVisible()) await toggle.click();
+    }
+    await page.check('#decision-model0');
     await page.check('#decision-model1');
     await page.click(lpb('run-experiment'));
     await waitUntil(async () => (await page.$$(`${lpb('pet')} .accordion-item`)).length > 0, 'the typed decision template was run');
@@ -639,13 +816,17 @@ function same(got, wanted, label, fieldsOnly = false) {
     await page.click(lpb('evaluate-run'));
     await waitUntil(async () => ((await page.textContent(lpb('evaluate-results'))) || '').trim().length > 0, 'the run was evaluated');
     await page.check(lpb('evaluate-source-cas'));
+    await chooseEvaluationTable(page);
     await page.fill(lpb('evaluate-max-rows'), '7');
     await atRest();
     await goStep(page, 'LPB', 'finalize');
-    await page.uncheck(lpb('pet-decout-confidence'));
+    for (const output of ['answers', 'answer', 'confidence', 'run_time', 'prompt_length']) await page.uncheck(lpb(`pet-decout-${output}`));
     await atRest();
   };
   const typedDecisionIsShown = (shown) =>
+    // the opened help of the state template, and what the template is good for
+    shown.text.build.includes('The text or JSON the model reads') &&
+    shown.controls['build #app-obj-LPB-decision-template'] !== '' &&
     shown.controls['build #app-obj-LPB-decision-state'] === 'Typed state about {{topic}}' &&
     shown.controls['build input.form-control.pb-var-value (1)'] === 'typed value' &&
     Object.values(shown.controls).includes('typed_question') &&
@@ -660,6 +841,14 @@ function same(got, wanted, label, fieldsOnly = false) {
     await fillDecisionTemplate(page);
     const typed = await read(page, 'LPB');
     assert(typedDecisionIsShown(typed), 'what was typed into the new decision template is on the page after a walk through every step: state template, variable, question, decision model, the evaluation settings and the outputs');
+    leftAloneBy.decision = leftAlone(typed, decisionReference);
+    // The LLM that cannot be selected here - no credential for it in the
+    // domain of this page - has a tick box and an option nobody can change.
+    const never = leftAloneBy.prompt.filter((key) => leftAloneBy.decision.includes(key));
+    step(
+      never.join(' ; ') === 'build #model2 ; build #temperature2',
+      `every field of the steps after Setup is changed by one of the two roads that fill a prompt-test by hand, so each of them is compared with its value on a fresh page afterwards - all but the LLM that cannot be selected (not changed by either: ${never.join(' ; ') || 'none'})`
+    );
     await cancelCreate(page, '#promptBuilderCreatePromptModal', '#promptBuilderCreatePromptName');
     same(await read(page, 'LPB'), typed, 'a second walk through the steps and a create dialog that is closed without creating lose nothing of it');
     await createPromptTest(page);
@@ -671,8 +860,41 @@ function same(got, wanted, label, fieldsOnly = false) {
     await choosePromptProject(page, 'proj-2');
     await openPromptTest(page, 'model-dec');
     await createPromptProject(page);
+    same(await read(page, 'LPB'), decisionIdle, 'existing -> another project, nothing open yet: the page is what a fresh page shows with no decision template open');
     await createPromptTest(page);
     same(await read(page, 'LPB'), decisionReference, 'existing -> another project -> new: the new decision template starts as on a fresh page');
+  });
+
+  await road('decision template: an evaluation over a CAS table is still running when a new template is created', async (page) => {
+    await openPromptBuilder(page, 'decision');
+    await choosePromptProject(page, 'proj-2');
+    await openPromptTest(page, 'model-dec');
+    // Two decision models: the second one is asked after the first.
+    await goStep(page, 'LPB', 'build');
+    await page.check('#decision-model1');
+    await goStep(page, 'LPB', 'evaluate');
+    await page.check(lpb('evaluate-source-cas'));
+    await chooseEvaluationTable(page);
+    // Every answer of a decision model takes six seconds from here on: the
+    // four cases of the first model are still out when the new template is
+    // created, and the four of the second model have not been asked yet.
+    let asked = 0;
+    await page.route('**/scr/**', async (route) => {
+      asked += 1;
+      await sleep(6000);
+      await route.continue();
+    });
+    const firstCase = page.waitForRequest('**/scr/**');
+    await page.click(lpb('evaluate-run'));
+    await firstCase;
+    await createPromptTest(page);
+    const stillOut = await page.isDisabled(lpb('evaluate-run'));
+    step(stillOut, 'the new decision template was created while the answers of the evaluation were still out, and Evaluate stays disabled until they are in');
+    await waitUntil(async () => !(await page.isDisabled(lpb('evaluate-run'))), 'the calls of the evaluation have ended', 40000);
+    await page.unroute('**/scr/**');
+    await atRest();
+    step(asked === 4, `the evaluation of the template that was left asks no further case: the four that were out are all (asked: ${asked} of 8)`);
+    same(await read(page, 'LPB'), decisionReference, 'an evaluation in flight -> new: the new decision template starts as on a fresh page, without the result of that evaluation');
   });
 
   // ---- from one kind to the other ------------------------------------------------
@@ -681,11 +903,13 @@ function same(got, wanted, label, fieldsOnly = false) {
     await choosePromptProject(page, 'proj-1');
     await openPromptTest(page, 'model-used');
     await chooseKind(page, 'decision');
+    same(await read(page, 'LPB'), decisionIdle, 'an existing prompt template -> the decision kind, nothing open yet: the page is what a fresh page shows with no decision template open');
     await choosePromptProject(page, 'proj-2');
     await createPromptTest(page);
     same(await read(page, 'LPB'), decisionReference, 'an existing prompt template -> the decision kind -> new: the new decision template starts as on a fresh page');
     await openPromptTest(page, 'model-dec');
     await chooseKind(page, 'llm');
+    same(await read(page, 'LPB'), promptIdle, 'an existing decision template -> the LLM kind, nothing open yet: the page is what a fresh page shows with no prompt-test open');
     await choosePromptProject(page, 'proj-1');
     await createPromptTest(page);
     same(await read(page, 'LPB'), promptReference, 'an existing decision template -> the LLM kind -> new: the new prompt template starts as on a fresh page');
@@ -741,7 +965,23 @@ function same(got, wanted, label, fieldsOnly = false) {
   };
 
   let ragReference;
+  // The page with a RAG project chosen and no setup open, and the two fixture
+  // setups this suite opens beside the handbook, each as a fresh page shows it.
+  let ragIdle;
+  let emptySetupReference;
+  let legacyReference;
   await road('RAG setup: the reference - a fresh page, a new setup', async (page) => {
+    await openRagBuilder(page);
+    await chooseRagProject(page, 'rag-proj');
+    ragIdle = await read(page, 'RGB');
+    await openRagSetup(page, 'rag-setup-2');
+    emptySetupReference = await read(page, 'RGB');
+    await page.goto('about:blank');
+    await openRagBuilder(page);
+    await chooseRagProject(page, 'rag-proj');
+    await openRagSetup(page, 'rag-setup-ss');
+    legacyReference = await read(page, 'RGB');
+    await page.goto('about:blank');
     await openRagBuilder(page);
     await chooseRagProject(page, 'rag-proj');
     await createRagSetup(page);
@@ -783,6 +1023,7 @@ function same(got, wanted, label, fieldsOnly = false) {
     await waitUntil(async () => ((await page.textContent(rgb('test-results'))) || '').trim().length > 0, 'the question was answered with chunks', 30000);
     await atRest();
     const existing = await read(page, 'RGB');
+    leftAloneBy.ragExisting = leftAlone(existing, ragReference);
     assert(handbookIsShown(existing), 'opening the saved setup fills the later steps: document folder, embedding model, vector database and table prefix');
     await goStep(page, 'RGB', 'run');
     const testPanelOpen = await page.isVisible(rgb('test-panel'));
@@ -801,17 +1042,31 @@ function same(got, wanted, label, fieldsOnly = false) {
 
   const fillRagSetup = async (page) => {
     await goStep(page, 'RGB', 'documents');
+    await page.selectOption(rgb('source-kind'), 'sascontent');
     await page.fill(rgb('source-path'), '/typed/folder');
+    await page.selectOption(rgb('extractor'), { index: 1 });
     await page.check(rgb('include-code'));
     await page.selectOption(rgb('embed-model'), { index: 1 });
     await page.selectOption(rgb('chunker'), { index: 1 });
     await page.fill(rgb('token-limit'), '128');
     await page.dispatchEvent(rgb('token-limit'), 'change');
+    // A prompt that is called once per chunk. The blocks of the chain are
+    // rebuilt for every setup, so their fields are found by the end of their id.
+    const enrich = (suffix) => `${rgb('enrich-list')} [id$="-${suffix}"]`;
+    await page.selectOption(enrich('project'), 'proj-1');
+    await waitUntil(async () => (await page.$$eval(`${enrich('prompt')} option`, (options) => options.map((option) => option.value))).includes('model-parse'), 'the prompts of the project are listed');
+    await page.selectOption(enrich('prompt'), 'model-parse');
+    await waitUntil(async () => (await page.$$(`${enrich('version')} option`)).length >= 2, 'the versions of the prompt are listed');
+    await page.selectOption(enrich('version'), { index: 1 });
+    await page.selectOption(enrich('header'), 'context_header');
+    await page.fill(enrich('workers'), '3');
+    await atRest();
     await goStep(page, 'RGB', 'store');
     await page.selectOption(rgb('backend'), 'pgvector');
     await page.fill(rgb('collection'), 'typed_collection');
     await page.fill(rgb('tables-prefix'), 'TYPED');
     await page.selectOption(rgb('tables-caslib'), { index: 1 });
+    await page.fill(rgb('artifacts-folder'), '/typed/generated');
     await goStep(page, 'RGB', 'run');
     await page.click(rgb('ledger'));
     await atRest();
@@ -830,6 +1085,12 @@ function same(got, wanted, label, fieldsOnly = false) {
     await fillRagSetup(page);
     const typed = await read(page, 'RGB');
     assert(typedRagIsShown(typed), 'what was typed into the new setup is on the page after a walk through every step: document folder, chunking, vector database, collection and table prefix');
+    leftAloneBy.ragNew = leftAlone(typed, ragReference);
+    const neverRag = leftAloneBy.ragNew.filter((key) => leftAloneBy.ragExisting.includes(key));
+    step(
+      neverRag.length === 0,
+      `every field of the steps after Setup is changed by one of the two roads that fill a RAG setup, so each of them is compared with its value on a fresh page afterwards (not changed by either: ${neverRag.join(' ; ') || 'none'})`
+    );
     await cancelCreate(page, rgb('create-setupModal'), rgb('create-setupName'));
     same(await read(page, 'RGB'), typed, 'a second walk through the steps and a create dialog that is closed without creating lose nothing of it');
     await createRagSetup(page);
@@ -844,14 +1105,247 @@ function same(got, wanted, label, fieldsOnly = false) {
     await page.click(rgb('ledger'));
     await atRest();
     await createRagProject(page);
+    same(await read(page, 'RGB'), ragIdle, 'existing -> another project, nothing open yet: the page is what a fresh page shows with no setup open');
     await createRagSetup(page);
     same(await read(page, 'RGB'), ragReference, 'existing -> another project -> new: the new setup starts as on a fresh page');
   });
 
+  // The requests that carry the text of a picker's placeholder as an id.
+  const placeholderRequests = async () =>
+    (await getLog()).map((entry) => decodeURIComponent(entry.url)).filter((url) => /Select a RAG (setup|project)/.test(url));
+  await road('RAG setup: the placeholder entries of the two pickers', async (page) => {
+    await openRagBuilder(page);
+    await chooseRagProject(page, 'rag-proj');
+    await openRagSetup(page, 'rag-setup-1');
+    await goStep(page, 'RGB', 'setup');
+    await resetLog();
+    let errorsBefore = pageErrors.length;
+    await page.selectOption(rgb('setup'), { index: 0 });
+    await atRest();
+    let asked = await placeholderRequests();
+    step(
+      asked.length === 0 && pageErrors.length === errorsBefore && (await page.isDisabled(rgb('delete-setup'))),
+      `the placeholder entry of the setup picker is no setup: nothing is asked of SAS Model Manager under its text, nothing fails, and Delete setup is off (requests: ${asked.join(' | ') || 'none'}, page errors: ${pageErrors.length - errorsBefore})`
+    );
+    same(await read(page, 'RGB'), ragIdle, 'an existing setup -> the placeholder entry: the page is what a fresh page shows with no setup open');
+    await openRagSetup(page, 'rag-setup-1');
+    await goStep(page, 'RGB', 'setup');
+    await resetLog();
+    errorsBefore = pageErrors.length;
+    await page.selectOption(rgb('project'), { index: 0 });
+    await atRest();
+    asked = await placeholderRequests();
+    const setups = await page.$$eval(`${rgb('setup')} option`, (options) => options.length);
+    step(
+      asked.length === 0 && pageErrors.length === errorsBefore && setups === 1 && (await page.isDisabled(rgb('delete-project'))),
+      `the placeholder entry of the project picker is no project: nothing is asked under its text, nothing fails, the setup picker holds its placeholder only and Delete project is off (requests: ${asked.join(' | ') || 'none'}, page errors: ${pageErrors.length - errorsBefore}, entries of the setup picker: ${setups})`
+    );
+    same(await read(page, 'RGB'), ragIdle, 'an existing setup -> the placeholder entry of the project picker: the later steps are as with no setup open');
+  });
+
+  // What the test panel of the last step holds, shown or not.
+  const testPanel = async (page) => ({
+    shown: await page.isVisible(rgb('test-panel')),
+    question: await page.inputValue(rgb('test-question')),
+    status: ((await page.textContent(rgb('test-status'))) || '').trim(),
+    chunks: ((await page.textContent(rgb('test-results'))) || '').replace(/\s+/g, ' ').trim(),
+  });
+  const probeEnded = async () => (await getLog()).some((entry) => entry.method === 'DELETE' && entry.url.startsWith('/jobDefinitions/definitions/') && entry.status !== null);
+  const askHandbook = async (page) => {
+    await goStep(page, 'RGB', 'run');
+    await page.click(rgb('test'));
+    await page.waitForSelector(rgb('test-question'), { state: 'visible' });
+    await page.fill(rgb('test-question'), 'What does the handbook say about travel?');
+    await resetLog();
+    await page.click(rgb('test-run'));
+    await waitUntil(async () => (await getLog()).some((entry) => entry.method === 'POST' && entry.url.startsWith('/jobExecution/jobs')), 'the probe was launched');
+  };
+  await road('RAG setup: a retrieval test is still running when another setup is opened', async (page) => {
+    await openRagBuilder(page);
+    await chooseRagProject(page, 'rag-proj');
+    await openRagSetup(page, 'rag-setup-1');
+    await askHandbook(page);
+    // Another existing setup, with a collection of its own.
+    await goStep(page, 'RGB', 'setup');
+    await page.selectOption(rgb('setup'), 'rag-setup-ss');
+    const outAtTheChange = !(await probeEnded());
+    await waitUntil(probeEnded, 'the probe of the setup that was left has ended', 40000);
+    await atRest();
+    let panel = await testPanel(page);
+    step(
+      outAtTheChange && !panel.shown && panel.status === '' && panel.chunks === '',
+      `a retrieval test in flight -> another setup: the chunks of the setup that was left do not arrive in the test panel of the one that is open (still out at the change: ${outAtTheChange}, panel shown: ${panel.shown}, status: "${clip(panel.status)}", chunks: "${clip(panel.chunks)}")`
+    );
+    same(await read(page, 'RGB'), legacyReference, 'and that setup shows what it shows on a fresh page');
+    await goStep(page, 'RGB', 'run');
+    await page.click(rgb('test'));
+    await page.waitForSelector(rgb('test-question'), { state: 'visible' });
+    panel = await testPanel(page);
+    step(
+      panel.question === '' && panel.status === '' && panel.chunks === '' && !(await page.isDisabled(rgb('test-run'))),
+      `its test panel opens empty and ready to ask (question: "${panel.question}", status: "${clip(panel.status)}", chunks: "${clip(panel.chunks)}", Run test disabled: ${await page.isDisabled(rgb('test-run'))})`
+    );
+    // And a new setup.
+    await openRagSetup(page, 'rag-setup-1');
+    await askHandbook(page);
+    await createRagSetup(page);
+    await waitUntil(probeEnded, 'the probe of the setup that was left has ended', 40000);
+    await atRest();
+    same(await read(page, 'RGB'), ragReference, 'a retrieval test in flight -> new: the new setup starts as on a fresh page, with nothing waiting in its closed test panel');
+  });
+
+  await road('RAG setup: an ingestion is still running when another setup is opened', async (page) => {
+    await openRagBuilder(page);
+    await chooseRagProject(page, 'rag-proj');
+    await openRagSetup(page, 'rag-setup-1');
+    await goStep(page, 'RGB', 'run');
+    // Every answer about the state of the job takes three seconds.
+    let polls = 0;
+    await page.route('**/jobExecution/jobs/ragrun-*', async (route) => {
+      polls += 1;
+      await sleep(3000);
+      await route.continue();
+    });
+    await page.click(rgb('launch'));
+    // The second poll is the one that finds the job completed: it is out
+    // when the other setup is chosen, and comes back after that.
+    await waitUntil(async () => polls >= 2, 'the second poll of the ingestion is out', 30000);
+    await goStep(page, 'RGB', 'setup');
+    await page.selectOption(rgb('setup'), 'rag-setup-2');
+    await sleep(5000);
+    await atRest();
+    await page.unroute('**/jobExecution/jobs/ragrun-*');
+    const banner = ((await page.textContent(rgb('status'))) || '').replace(/\s+/g, ' ').trim();
+    await goStep(page, 'RGB', 'run');
+    const ledgerShown = await page.isVisible(rgb('ledger-panel'));
+    step(
+      !ledgerShown && !/ingestion/i.test(banner),
+      `an ingestion in flight -> another setup: the run of the setup that was left opens no ledger and reports nothing on the one that is open (ledger shown: ${ledgerShown}, banner: "${clip(banner)}")`
+    );
+    same(await read(page, 'RGB'), emptySetupReference, 'and that setup shows what it shows on a fresh page');
+    // Its own ledger does not speak of a run either.
+    await goStep(page, 'RGB', 'run');
+    await page.click(rgb('ledger'));
+    await waitUntil(async () => page.isVisible(rgb('ledger-panel')), 'the ledger of the open setup is shown');
+    await atRest();
+    const ledger = ((await page.textContent(rgb('ledger-panel'))) || '').replace(/\s+/g, ' ').trim();
+    step(!/has been running/.test(ledger), `the ledger of the open setup does not say that an ingestion is running (ledger: "${clip(ledger)}")`);
+  });
+
+  await road('RAG setup: a setup is still being read when another one is chosen', async (page) => {
+    await openRagBuilder(page);
+    await chooseRagProject(page, 'rag-proj');
+    await goStep(page, 'RGB', 'setup');
+    await page.route('**/modelRepository/models/rag-setup-1/contents**', async (route) => {
+      await sleep(2000);
+      await route.continue();
+    });
+    await page.selectOption(rgb('setup'), 'rag-setup-1');
+    await page.selectOption(rgb('setup'), 'rag-setup-2');
+    await sleep(3000);
+    await atRest();
+    await page.unroute('**/modelRepository/models/rag-setup-1/contents**');
+    same(await read(page, 'RGB'), emptySetupReference, 'a saved setup that answers late -> a setup that was never saved: the one that is open shows what it shows on a fresh page, not the stored configuration of the other');
+  });
+
   // ============================================================================
-  // The result of an optimization (last: a job the mock has launched stays
-  // launched)
+  // Optimizations (last: a job the mock has launched stays launched). The
+  // first job of a mock runs for four polls, twenty seconds; its entry in the
+  // optimization tracker then stands, and every later job is found finished
+  // on its first poll.
   // ============================================================================
+  // What the Optimize step says about a job.
+  const optimizeRun = async (page) => ({
+    log: await page.isVisible(lpb('optimize-log')),
+    status: ((await page.textContent(lpb('optimize-status'))) || '').trim(),
+    result: ((await page.textContent(lpb('optimize-result'))) || '').replace(/\s+/g, ' ').trim(),
+    banner: ((await page.textContent(lpb('optimize-banner'))) || '').trim(),
+    button: ((await page.textContent(lpb('optimize-run'))) || '').trim(),
+    disabled: await page.isDisabled(lpb('optimize-run')),
+  });
+  const jobPolls = async () => (await getLog()).filter((entry) => entry.method === 'GET' && entry.url === '/jobExecution/jobs/job-1' && entry.status !== null).length;
+  const launchOptimization = async (page) => {
+    await goStep(page, 'LPB', 'optimize');
+    await page.selectOption(lpb('optimize-target'), 'demo_llm');
+    await waitUntil(async () => !(await page.isDisabled(lpb('optimize-run'))), 'the optimization can be started');
+    await resetLog();
+    await page.click(lpb('optimize-run'));
+    await waitUntil(async () => (await getLog()).some((entry) => entry.method === 'POST' && entry.url === '/jobExecution/jobs' && entry.status !== null), 'the optimization job was launched');
+    await page.waitForSelector(lpb('optimize-log'), { state: 'visible' });
+  };
+  // The job has ended when it was asked for at least once and the page no
+  // longer says that an optimization is running - on the button of the
+  // prompt-test the job runs for, in the banner of any other.
+  const jobEnded = async (page) => {
+    await waitUntil(
+      async () => {
+        const shown = await optimizeRun(page);
+        return (await jobPolls()) >= 1 && shown.button === 'Run optimization' && shown.banner !== 'An optimization is already running.';
+      },
+      'the optimization job has ended',
+      90000
+    );
+    await atRest();
+    await sleep(500);
+    await atRest();
+  };
+  await road('prompt template: an optimization is still running when another prompt-test is opened', async (page) => {
+    await openPromptBuilder(page, 'llm');
+    await choosePromptProject(page, 'proj-1');
+    await openPromptTest(page, 'model-used');
+    // The first job of this mock: twenty seconds.
+    await launchOptimization(page);
+    const own = await optimizeRun(page);
+    await createPromptTest(page);
+    await goStep(page, 'LPB', 'optimize');
+    const during = await optimizeRun(page);
+    const outAtTheChange = (await jobPolls()) < 4;
+    step(
+      outAtTheChange && own.log && own.button === 'Optimising...' && !during.log && during.status === '' && during.result === '' && during.disabled && during.button === 'Run optimization' && during.banner === 'An optimization is already running.',
+      `an optimization in flight -> new: the Optimize step of the new prompt-test shows neither the state nor the log of the job of the other one; it says that an optimization is running, which is why none can be started (job still running: ${outAtTheChange}; on its own prompt-test - log shown: ${own.log}, button: "${own.button}"; on the new one - log shown: ${during.log}, status: "${clip(during.status)}", result: "${clip(during.result)}", button: "${during.button}"${during.disabled ? ' [disabled]' : ''}, banner: "${during.banner}")`
+    );
+    // The prompt-test the job runs for shows it again while it runs.
+    await openPromptTest(page, 'model-used');
+    await goStep(page, 'LPB', 'optimize');
+    let back = await optimizeRun(page);
+    const stillRunning = (await jobPolls()) < 4;
+    try {
+      await waitUntil(async () => {
+        back = await optimizeRun(page);
+        return back.log && /running|pending/.test(back.status);
+      }, 'the job is shown again', 8000);
+    } catch {
+      /* said by the check below */
+    }
+    step(
+      stillRunning && back.log && /running|pending/.test(back.status) && back.disabled && back.button === 'Optimising...',
+      `an optimization in flight -> new -> the prompt-test the job runs for: it shows the state and the log of its job again (job still running: ${stillRunning}, log shown: ${back.log}, status: "${clip(back.status)}", button: "${back.button}"${back.disabled ? ' [disabled]' : ''})`
+    );
+    await jobEnded(page);
+    const ended = await optimizeRun(page);
+    step(
+      /Optimization finished/.test(ended.result) && ended.status === '' && !ended.disabled && ended.button === 'Run optimization',
+      `and the result of the job, when it ends there (result: "${clip(ended.result)}", button: "${ended.button}"${ended.disabled ? ' [disabled]' : ''})`
+    );
+
+    // A job that ends while another prompt-test is open. Its first poll is
+    // answered after four seconds, so that it cannot end before the new
+    // prompt-test is there.
+    await page.route('**/jobExecution/jobs/job-1', async (route) => {
+      await sleep(4000);
+      await route.continue();
+    });
+    await launchOptimization(page);
+    await createPromptTest(page);
+    const outAtTheCreation = (await jobPolls()) === 0;
+    await goStep(page, 'LPB', 'optimize');
+    await jobEnded(page);
+    await page.unroute('**/jobExecution/jobs/job-1');
+    step(outAtTheCreation, 'a second job was still running when the next new prompt-test was created');
+    same(await read(page, 'LPB'), promptReference, 'an optimization that ends after the new prompt-test was created: the new prompt-test is as on a fresh page, without the result and the log of that run');
+  });
+
+
   await road('prompt template: an optimization was run for the prompt-test that was open', async (page) => {
     await openPromptBuilder(page, 'llm');
     await choosePromptProject(page, 'proj-1');
