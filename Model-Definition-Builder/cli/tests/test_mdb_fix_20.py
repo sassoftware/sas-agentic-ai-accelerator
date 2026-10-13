@@ -302,6 +302,23 @@ def test_the_hint_for_a_reference_works_as_it_is_printed(command, repo):
     assert result.exit_code == 0 and viya.files[theirs] == b"CORE = 1\n", text
 
 
+def test_the_hint_for_a_reference_named_like_a_folder_names_the_folder_form(command):
+    """A folder of the manifest goes somewhere else by the path of the
+    folder, not by a URI, and --force has no part in it."""
+    _, _, viya = command("--only", "Data")
+    elsewhere = viya.make_folder("/Team/Other RAG")
+    viya.put_reference(f"{CONTENT_ROOT}/RAG", f"/folders/folders/{elsewhere}")
+    result, text, _ = command("--only", "RAG")
+    assert result.exit_code == 1
+    hint = ("remove the reference, or update the object it names from a checkout with `mdb content-deploy --only "
+            "\"RAG\" --to <the SAS Content path of that folder>`)\n")
+    assert hint in text and "--force" not in text
+    printed = shlex.split(hint.split("`")[1].replace("<the SAS Content path of that folder>", '"/Team/Other RAG"'))
+    result, text, _ = command(*printed[2:])
+    assert result.exit_code == 0, text
+    assert viya.files[viya.at("/Team/Other RAG/rag_core/__init__.py")[0]] == b"CORE = 1\n"
+
+
 def test_the_hint_for_two_objects_says_whose_content_the_command_writes(importing, no_discovery):
     """gate-20: `mdb builders-import` prints the line too, and the command
     it names writes the content of a checkout, not of the package."""

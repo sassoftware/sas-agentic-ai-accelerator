@@ -673,8 +673,12 @@ def _referenced(entry, existing: list, references: list) -> str:
     names = ", ".join(str(m.get("uri")) for m in references)
     one = len(references) == 1
     if not existing:
-        # an object named by its URI is written only under the name of the entry, or with --force
-        hint = f"{_to_hint(entry, '<its URI>')} (with --force where that object has another name)"
+        if entry.kind == "folder":
+            # the folder form of --to takes the SAS Content path of a folder, whatever its name
+            hint = _to_hint(entry, "<the SAS Content path of that folder>")
+        else:
+            # an object named by its URI is written only under the name of the entry, or with --force
+            hint = f"{_to_hint(entry, '<its URI>')} (with --force where that object has another name)"
         return (f"a reference of that name is in the folder and names {names}, an object that lives elsewhere: it "
                 "is not followed, and nothing was written - remove the reference, or update the object it names "
                 f"{hint}" if one else
