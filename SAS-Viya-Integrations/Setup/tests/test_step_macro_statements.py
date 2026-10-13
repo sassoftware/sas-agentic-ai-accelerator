@@ -141,6 +141,33 @@ def test_what_get_all_prompts_resolves_was_looked_at_by_its_python():
     assert "select count(*) into :_gap_lruns trimmed from work._gap_runs_one;" in text
 
 
+@pytest.mark.parametrize("name", READ, ids=[name[:-5] for name in READ])
+def test_a_step_deletes_the_macros_it_defines_and_no_other(name):
+    """Found while the statements were read: MM - Get Model Information 1.0 ended with %sysmacdelete of
+    _mgm_model_pagination, the macro of MM - Get Models in Project. The step defines no macro, so the statement
+    deleted nothing a run of the step had made. Version 1.1 has no such statement."""
+    text = program(name)
+    defined = re.findall(r"^\s*%macro (\w+)", text, flags=re.MULTILINE)
+    deleted = re.findall(r"%sysmacdelete (\w+)", text)
+
+    assert sorted(deleted) == sorted(defined), name
+    if name == "MM - Get Model Information.step":
+        assert defined == [] and text.endswith("%symdel _mgi_viyaHost _mgi_model_id;")
+        # the comment at the top names this step and the prefix of its macro variables
+        assert text.startswith("/**************************************************************\n"
+                               "    Get the information SAS Model Manager holds on one model\n\n"
+                               "    mgi is short for:\n      Model Manager Get Information\n")
+        assert "_mgm_" not in text and "mgm" not in text
+        ui = json.loads(json.loads((STEPS / name).read_bytes().decode("utf-8"))["ui"])
+        changelog = [child["text"] for page in ui["pages"] for section in page["children"] for child in section.get("children", [])
+                     if child["id"] == "textChangelog"]
+        assert changelog == [
+            "* Version: 1.1 (13OCT2026)\n"
+            "      - The last statement of the program deleted the macro of the step MM - Get Models in Project, which this step does not "
+            "define. The statement is gone, and the comment at the top of the program names this step\n"
+            "* Version: 1.0 (03AUG2024)\n      - Initial version"]
+
+
 def test_the_macro_call_a_data_step_makes_is_made_of_an_id_of_sas_model_manager():
     """LLM - List Available LLMs calls a macro once per model through CALL EXECUTE, with the id of the model as
     its argument. The id is a column of 36 characters that SAS Model Manager fills."""
