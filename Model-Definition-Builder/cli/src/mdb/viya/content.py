@@ -653,11 +653,17 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
     return result
 
 
+def _to_hint(entry, target: str) -> str:
+    """How one object of a site is updated where an entry FAILED over two
+    things of its name. The command writes the content of a checkout - which
+    the hint says, because `mdb builders-import` prints the line too."""
+    return f"from a checkout with `mdb content-deploy --only \"{entry.path}\" --to {target}`"
+
+
 def _several(entry, existing: list) -> str:
     ids = ", ".join(_id(m["uri"]) for m in existing)
     return (f"{len(existing)} {_WORD[entry.kind]}s of that name are in the folder (ids {ids}): none was changed, "
-            f"because nothing says which one is meant - update one with `mdb content-deploy --only "
-            f"\"{entry.path}\" --to <id>`, or remove the other")
+            f"because nothing says which one is meant - update one {_to_hint(entry, '<id>')}, or remove the other")
 
 
 def _referenced(entry, existing: list, references: list) -> str:
@@ -667,12 +673,14 @@ def _referenced(entry, existing: list, references: list) -> str:
     names = ", ".join(str(m.get("uri")) for m in references)
     one = len(references) == 1
     if not existing:
+        # an object named by its URI is written only under the name of the entry, or with --force
+        hint = f"{_to_hint(entry, '<its URI>')} (with --force where that object has another name)"
         return (f"a reference of that name is in the folder and names {names}, an object that lives elsewhere: it "
                 "is not followed, and nothing was written - remove the reference, or update the object it names "
-                "with --to" if one else
+                f"{hint}" if one else
                 f"{len(references)} references of that name are in the folder and name {names}, objects that live "
                 "elsewhere: none is followed, and nothing was written - remove them, or update an object they "
-                "name with --to")
+                f"name {hint}")
     ids = ", ".join(_id(m["uri"]) for m in existing)
     held = (f"the {_WORD[entry.kind]} of that name (id {ids})" if len(existing) == 1 else
             f"{len(existing)} {_WORD[entry.kind]}s of that name (ids {ids})")

@@ -254,7 +254,8 @@ def test_the_object_and_a_reference_of_its_name_are_both_named_and_neither_is_wr
     result, text, _ = command()
     assert (f"(2 references of that name are in the folder and name {outside}, {second}, objects that live "
             "elsewhere: none is followed, and nothing was written - remove them, or update an object they name "
-            "with --to)\n") in text and viya.wrote() == []
+            f"from a checkout with `mdb content-deploy --only \"{CORE}\" --to <its URI>` (with --force where that "
+            "object has another name))\n") in text and viya.wrote() == []
     viya.members[here] = kept
     # the references removed: the file is the one object of its name again, and is written
     viya.members[here] = [m for m in viya.members[here] if m.get("type") != "reference"]

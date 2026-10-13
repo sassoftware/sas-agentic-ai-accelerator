@@ -437,7 +437,7 @@ def test_two_registered_steps_of_one_name_are_both_named_and_none_is_guessed(man
     assert outcome.status == FAILED and result.stopped_at is None
     assert outcome.note == (
         f"2 registered steps of that name are in the folder (ids {_id(first)}, {_id(second)}): none was changed, "
-        "because nothing says which one is meant - update one with `mdb content-deploy --only "
+        "because nothing says which one is meant - update one from a checkout with `mdb content-deploy --only "
         f"\"{STEP_PATH}\" --to <id>`, or remove the other")
     assert (viya.steps[first], viya.steps[second]) == before
     assert not [call for call in viya.wrote() if "/dataFlows/" in call[1]]

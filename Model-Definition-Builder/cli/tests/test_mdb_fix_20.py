@@ -8,6 +8,7 @@ answer: nothing here says how SAS Viya answers.
 import io
 import json
 import re
+import shlex
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,8 @@ from mdb.core.content import load_manifest
 from mdb.viya import answer as answering
 from mdb.viya import content as deploying
 from mdb.viya import session as s
+from test_builder_commands import (FILE_PATH, PACKAGE_FILE, Site, _built,  # noqa: F401
+                                   _site_with_its_own_objects, discovery, importing, no_discovery, out, site)
 from test_content_deploy import CORE, STEP_PATH, command, manifest, repo  # noqa: F401
 from test_session import URL, _answered, env, fake_sasctl  # noqa: F401
 
@@ -266,6 +269,46 @@ def test_a_reference_of_another_kind_is_listed_as_what_it_is_and_fails_nothing(c
     assert ("or a reference of that name to an object of that kind elsewhere - alone, or beside the object itself - "
             "fail the entry: each is named on its line and none is written. A reference of that name to an object "
             "of another kind fails nothing and is listed at the end.") in said
+
+
+# ---- the hints of two FAILED lines, run as printed -----------------------------------
+def test_the_hint_for_a_reference_works_as_it_is_printed(command, repo):
+    """gate-20: 'update the object it names with --to' was refused without
+    --force where the reference names an object of another name - the case
+    a site has: its own file, under its own name."""
+    _, _, viya = command()
+    core, = viya.at(f"{CONTENT_ROOT}/{CORE}")
+    theirs = viya.put_member("/Team/Own/core_of_the_site.py", "/files/files/", b"THEIRS = 1\n")
+    here = viya.folder_id(f"{CONTENT_ROOT}/RAG/rag_core")
+    viya.members[here] = [m for m in viya.members[here] if m["uri"] != core]
+    viya.put_reference(f"{CONTENT_ROOT}/{CORE}", theirs)
+    result, text, _ = command()
+    assert result.exit_code == 1
+    hint = (f"remove the reference, or update the object it names from a checkout with `mdb content-deploy --only "
+            f"\"{CORE}\" --to <its URI>` (with --force where that object has another name))\n")
+    assert hint in text and f"names {theirs}, an object that lives elsewhere" in text
+    # as printed, with the URI the line names: refused for the other name, and written with --force
+    printed = shlex.split(hint.split("`")[1].replace("<its URI>", theirs))
+    assert printed[:2] == ["mdb", "content-deploy"]
+    result, text, _ = command(*printed[2:])
+    assert result.exit_code == 1 and "pass --force to update it all the same" in text
+    assert viya.files[theirs] == b"THEIRS = 1\n"
+    result, text, _ = command(*printed[2:], "--force")
+    assert result.exit_code == 0 and viya.files[theirs] == b"CORE = 1\n", text
+
+
+def test_the_hint_for_two_objects_says_whose_content_the_command_writes(importing, no_discovery):
+    """gate-20: `mdb builders-import` prints the line too, and the command
+    it names writes the content of a checkout, not of the package."""
+    no_discovery()
+    viya = importing.viya
+    mine = _site_with_its_own_objects(viya)
+    viya.put_member(f"{CONTENT_ROOT}/{FILE_PATH}", "/files/files/", b"SECOND = 1\n")
+    result, _fake, text = importing(Site(), "--no-reports", without_report=True)
+    assert result.exit_code == 1
+    assert (f"2 files of that name are in the folder (ids {mine[FILE_PATH].rsplit('/', 1)[-1]}, ") in text
+    assert (f"update one from a checkout with `mdb content-deploy --only \"{FILE_PATH}\" --to <id>`, or remove the "
+            "other)") in text
 
 
 def test_an_error_that_is_no_answer_of_the_token_address_is_passed_on():
