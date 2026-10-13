@@ -856,7 +856,7 @@ No changes are required at this time.
 
 ## [0.1.33] - 2025-12-16
 
-In order for these changes to take effect you need to update the source code of the [SAS Portalframework for SAS Viya](https://github.com/sassoftware/sas-portal-framework-for-sas-viya). If you have deployed the LLM containers in kubernetes no additional changes are required, if you have deployed them as an Azure Container App or Azure Container Instance please utilize the [prompt-builder-json.py](./utility/prompt-builder-json.py) utility script with the additional option -dt aca in order to enable the prompt builder for this as well.
+In order for these changes to take effect you need to update the source code of the [SAS Portalframework for SAS Viya](https://github.com/sassoftware/sas-portal-framework-for-sas-viya). If you have deployed the LLM containers in kubernetes no additional changes are required, if you have deployed them as an Azure Container App or Azure Container Instance please utilize the `utility/prompt-builder-json.py` utility script with the additional option -dt aca in order to enable the prompt builder for this as well. (That script was removed in release 1.3.0; `mdb setup` takes its place.)
 
 ### Added
 
@@ -926,22 +926,6 @@ No changes are required at this time.
 
 ### Added
 
-- None
-
-### Changed
-
-- The register-LLMs.py script does no longer require an entry in the LLM Fact Sheet.
-
-### Fixed
-
-- None
-
-## [0.1.29] - 2025-10-10
-
-No changes are required at this time.
-
-### Added
-
 - Expanded documentation pages by a lot
 - Optional argument for the Model-Manager-Setup.py script to provide the ability to change to deployment: k8s or aca
 - Ignore .venv added to the .gitignore
@@ -949,6 +933,7 @@ No changes are required at this time.
 ### Changed
 
 - The Model-Manager-Setup.py script now provides bash commands, instead of PowerShell
+- The register-LLMs.py script does no longer require an entry in the LLM Fact Sheet.
 
 ### Fixed
 
