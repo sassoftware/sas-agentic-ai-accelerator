@@ -434,11 +434,14 @@ def test_two_registered_steps_of_one_name_are_both_named_and_none_is_guessed(man
         f"\"{STEP_PATH}\" --to <id>`, or remove the other")
     assert (viya.steps[first], viya.steps[second]) == before
     assert not [call for call in viya.wrote() if "/dataFlows/" in call[1]]
-    # the entries behind it were still brought
-    assert _statuses(result)[UI] == EQUAL and result.not_attempted == []
-    # and the one that is named by its id is updated
+    # the entries behind it were still brought - all but release.json, which waits for every entry
+    assert _statuses(result)[UI] == EQUAL
+    assert [o.entry.path for o in result.not_attempted] == ["release.json"]
+    # and the one that is named by its id is updated - the line names it with its folder
     updated = deploy_to(viya, manifest, manifest.find(STEP_PATH, "step"), _id(second))
-    assert (updated.status, updated.note) == (UPDATED, f"templates, ui; id {_id(second)} kept")
+    assert (updated.status, updated.note) == (
+        UPDATED, f"templates, ui; id {_id(second)} kept - the registered step '{STEP_NAME}' in "
+                 f"{CONTENT_ROOT}/RAG/steps")
     assert viya.steps[first] == before[0] and viya.steps[second]["ui"] == "{}"
 
 
@@ -626,30 +629,57 @@ def test_a_step_a_site_registered_elsewhere_is_updated_in_place(manifest, repo):
     old = {**STEP, "templates": {"SAS": "%put the parser of an earlier release;\n"}}
     theirs = viya.put_member(f"/Custom Steps/{STEP_NAME}", "/dataFlows/steps/", old)
     entry = manifest.find(STEP_PATH, "step")
-    # a dry run first: it says what a run would do
+    where = f" - the registered step '{STEP_NAME}' in /Custom Steps"
+    # a dry run first: it says what a run would do, and to which object
     outcome = deploy_to(viya, manifest, entry, f"/Custom Steps/{STEP_NAME}", dry_run=True)
-    assert (outcome.status, outcome.note) == (UPDATED, f"templates; id {_id(theirs)} kept")
+    assert (outcome.status, outcome.note) == (UPDATED, f"templates; id {_id(theirs)} kept{where}")
     assert viya.wrote() == [] and viya.steps[theirs] == old
     outcome = deploy_to(viya, manifest, entry, f"/Custom Steps/{STEP_NAME}")
-    assert (outcome.status, outcome.note) == (UPDATED, f"templates; id {_id(theirs)} kept")
+    assert (outcome.status, outcome.note) == (UPDATED, f"templates; id {_id(theirs)} kept{where}")
     assert viya.steps[theirs]["templates"] == STEP["templates"]
     # one write, at the step's own address; no folder was made, and the content root does not exist
     assert viya.wrote() == [("PUT", theirs)] and viya.folder_id(CONTENT_ROOT) is None
     assert viya.at(f"/Custom Steps/{STEP_NAME}") == [theirs]
     assert deploy_to(viya, manifest, entry, f"/Custom Steps/{STEP_NAME}").status == EQUAL
-    # by its id and by its URI
+    # by its id and by its URI: the step is read for its name, and the Folders service names its folder
     viya.steps[theirs] = old
-    assert deploy_to(viya, manifest, entry, _id(theirs)).status == UPDATED
+    outcome = deploy_to(viya, manifest, entry, _id(theirs))
+    assert (outcome.status, outcome.note) == (UPDATED, f"templates; id {_id(theirs)} kept{where}")
     viya.steps[theirs] = old
     assert deploy_to(viya, manifest, entry, theirs).status == UPDATED
+    assert ("GET", "/folders/ancestors", {"childUri": theirs}) in viya.calls
+
+
+def test_an_object_of_another_name_is_not_written_without_force(manifest):
+    """An id typed from the wrong line replaced the program of another step:
+    the step kept its own name, and the output named only the id."""
+    viya = Viya()
+    other = viya.put_member("/Team/Steps/Completely Other Step.step", "/dataFlows/steps/",
+                            {**STEP, "name": "Completely Other Step.step", "templates": {"SAS": "%put other;\n"}})
+    entry = manifest.find(STEP_PATH, "step")
+    for target in (_id(other), other, "/Team/Steps/Completely Other Step.step"):
+        outcome = deploy_to(viya, manifest, entry, target)
+        assert outcome.status == FAILED, target
+        assert outcome.note == (f"--to {target} names the registered step 'Completely Other Step.step' in "
+                                f"/Team/Steps, not '{STEP_NAME}': nothing was written - pass --force to update it "
+                                "all the same")
+    assert viya.wrote() == [] and viya.steps[other]["templates"] == {"SAS": "%put other;\n"}
+    # an object the Folders service gives no folder for is still named, with that said
+    viya.refuse[("GET", "/folders/ancestors")] = 503
+    outcome = deploy_to(viya, manifest, entry, _id(other))
+    assert "names the registered step 'Completely Other Step.step' (the Folders service did not say in which " \
+           "folder)" in outcome.note
 
 
 def test_a_step_keeps_the_name_it_has_on_the_site(manifest):
     viya = Viya()
     theirs = viya.put_member("/Team/Steps/Embed (ours)", "/dataFlows/steps/",
                              {**STEP, "name": "Embed (ours)", "templates": {"SAS": "%put old;\n"}})
-    outcome = deploy_to(viya, manifest, manifest.find(STEP_PATH, "step"), "/Team/Steps/Embed (ours)")
+    entry = manifest.find(STEP_PATH, "step")
+    assert deploy_to(viya, manifest, entry, "/Team/Steps/Embed (ours)").status == FAILED
+    outcome = deploy_to(viya, manifest, entry, "/Team/Steps/Embed (ours)", force=True)
     assert outcome.status == UPDATED
+    assert outcome.note.endswith(" - the registered step 'Embed (ours)' in /Team/Steps")
     assert viya.steps[theirs]["name"] == "Embed (ours)" and viya.steps[theirs]["templates"] == STEP["templates"]
 
 
@@ -679,9 +709,13 @@ def test_a_file_and_a_job_definition_are_updated_elsewhere_the_same_way(manifest
                               {"name": "Optimize", "type": "Compute", "code": "%put old;\n", "parameters": [],
                                "properties": []})
     outcome = deploy_to(viya, manifest, manifest.find(CORE, "file"), "/Team/code/__init__.py")
-    assert outcome.note == f"content replaced in place; id {_id(file_uri)} kept" and viya.files[file_uri] == b"CORE = 1\n"
+    assert outcome.note == f"content replaced in place; id {_id(file_uri)} kept - the file '__init__.py' in /Team/code"
+    assert viya.files[file_uri] == b"CORE = 1\n"
     outcome = deploy_to(viya, manifest, manifest.find(OPTIMIZE, "jobDefinition"), _id(job_uri))
-    assert outcome.note == f"code, parameters; id {_id(job_uri)} kept"
+    assert outcome.note == f"code, parameters; id {_id(job_uri)} kept - the job definition 'Optimize' in /Team/jobs"
+    # a file named by its id is read for its name as well
+    assert deploy_to(viya, manifest, manifest.find(CORE, "file"), _id(file_uri)).note == \
+        f"id {_id(file_uri)} - the file '__init__.py' in /Team/code"
     assert viya.jobs[job_uri][0]["code"] == "%put optimize;\n%put done;\n"
     # a reference in the folder is not the object
     viya.put_reference("/Team/links/__init__.py", file_uri)
@@ -734,30 +768,44 @@ def test_the_command_prints_a_line_per_entry(command):
 
 
 def test_the_command_deploys_to_the_root_it_is_given(command):
-    result, text, viya = command("--content-root", "/Users/me/My Folder/ZZ_VERIFY_R17/root/")
+    root = "/Users/me/My Folder/ZZ_VERIFY_R17/root"
+    # a root that is not there is not made up from a typed path
+    result, text, viya = command("--content-root", root + "/")
+    assert result.exit_code == 1 and f"there is no folder {root}, and nothing was created: pass --create" in text
+    assert viya.wrote() == []
+    result, text, viya = command("--content-root", root + "/", "--create")
     assert result.exit_code == 0, text
-    assert viya.folder_id("/Users/me/My Folder/ZZ_VERIFY_R17/root") and viya.folder_id(CONTENT_ROOT) is None
+    assert viya.folder_id(root) and viya.folder_id(CONTENT_ROOT) is None
+    # once it is there, it is a root like any other
+    assert command("--content-root", root)[0].exit_code == 0
     result, text, _ = command("--content-root", "relative/root")
     assert result.exit_code == 2 and "must be a SAS Content path" in text
 
 
-def test_a_content_root_that_is_given_is_written_into_the_job_definitions_that_read_one(command):
+def test_the_content_root_the_manifest_names_is_created_on_a_first_install(command):
+    result, text, viya = command()
+    assert result.exit_code == 0, text
+    assert viya.folder_id(CONTENT_ROOT) and "--create" not in text
+
+
+def test_the_content_root_is_written_into_the_job_definitions_that_read_one(command):
     """Start Here and Load-Accelerator-Tables read the folder their parameter
     `contentRoot` names. Deployed into another root they checked and loaded
-    the default one."""
+    the default one; and a package of another root, imported, kept the
+    exporter's root. The folder the content goes to is the one they read."""
     root = "/Users/me/My Folder/ZZ_VERIFY_R18/root1"
-    result, text, viya = command("--content-root", root)
+    result, text, viya = command("--content-root", root, "--create")
     assert result.exit_code == 0, text
     assert _parameters(viya, root, OPTIMIZE) == {"_action": "execute", "contentRoot": root}
     assert "contentRoot" not in _parameters(viya, root, UI)
-    # the default root, not named: a value a site set there is left alone
+    # the default root, not named: a job that reads another folder than the one it sits in is put right
     result, text, viya = command()
     assert result.exit_code == 0, text
     uri, = viya.at(f"{CONTENT_ROOT}/{OPTIMIZE}")
     viya.jobs[uri][0]["parameters"][1]["defaultValue"] = "/Team/Accelerator"
     result, text, viya = command()
-    assert f"  equal        jobDefinition {OPTIMIZE}  (id {_id(uri)})\n" in text
-    assert _parameters(viya, CONTENT_ROOT, OPTIMIZE)["contentRoot"] == "/Team/Accelerator"
+    assert f"  updated      jobDefinition {OPTIMIZE}  (parameters; id {_id(uri)} kept)\n" in text
+    assert _parameters(viya, CONTENT_ROOT, OPTIMIZE)["contentRoot"] == CONTENT_ROOT
 
 
 def test_the_command_writes_the_compute_context_it_is_given(command):
@@ -812,7 +860,7 @@ def test_only_a_part_of_the_folder_is_deployed_when_one_is_named(command):
                                        STEP_PATH]
     assert "7 entries: 7 created." in text and "Prompt Builder" not in text and "release.json" not in text
     # a path below a folder brings the folders above it, and nothing beside it
-    result, text, viya = command("--only", "RAG/rag_core/adapters/", "--content-root", "/Team")
+    result, text, viya = command("--only", "RAG/rag_core/adapters/", "--content-root", "/Team", "--create")
     assert result.exit_code == 0, text
     assert viya.tree("/Team") == ["RAG", "RAG/rag_core", "RAG/rag_core/adapters", ADAPTERS]
     # one object, and two parts
@@ -830,10 +878,11 @@ def test_one_command_updates_the_step_a_site_registered_elsewhere(command):
     _, _, viya = command("--dry-run")
     theirs = viya.put_member(f"/Custom Steps/{STEP_NAME}", "/dataFlows/steps/",
                              {**STEP, "templates": {"SAS": "%put old;\n"}})
+    where = f"the registered step '{STEP_NAME}' in /Custom Steps"
     result, text, _ = command("--only", STEP_PATH, "--to", f"/Custom Steps/{STEP_NAME}", "--dry-run")
     assert result.exit_code == 0, text
     assert f"Dry run - nothing is written. What a run would do to /Custom Steps/{STEP_NAME} from {STEP_PATH}:" in text
-    assert f"  updated      step          {STEP_PATH}  (templates; id {_id(theirs)} kept)\n" in text
+    assert f"  updated      step          {STEP_PATH}  (templates; id {_id(theirs)} kept - {where})\n" in text
     assert "Nothing was written." in text and viya.wrote() == []
     result, text, _ = command("--only", STEP_PATH, "--to", f"/Custom Steps/{STEP_NAME}")
     assert result.exit_code == 0, text
@@ -841,7 +890,14 @@ def test_one_command_updates_the_step_a_site_registered_elsewhere(command):
     assert viya.steps[theirs]["templates"] == STEP["templates"] and viya.wrote() == [("PUT", theirs)]
     assert viya.folder_id(CONTENT_ROOT) is None                       # nothing else was deployed
     result, text, _ = command("--only", STEP_PATH, "--to", _id(theirs))
-    assert result.exit_code == 0 and f"  equal        step          {STEP_PATH}  (id {_id(theirs)})\n" in text
+    assert result.exit_code == 0 and f"  equal        step          {STEP_PATH}  (id {_id(theirs)} - {where})\n" in text
+    # another step, named by its id: refused, and with --force written - the line names it
+    other = viya.put_member("/Team/Other.step", "/dataFlows/steps/", {**STEP, "name": "Other.step"})
+    result, text, _ = command("--only", STEP_PATH, "--to", _id(other))
+    assert result.exit_code == 1 and "names the registered step 'Other.step' in /Team" in text
+    assert "pass --force" in text and "Nothing was updated." in text
+    result, text, _ = command("--only", STEP_PATH, "--to", _id(other), "--force")
+    assert result.exit_code == 0 and "the registered step 'Other.step' in /Team)" in text
     # a step that is not where the command says: nothing is created, and the exit code says so
     result, text, _ = command("--only", STEP_PATH, "--to", f"/Elsewhere/{STEP_NAME}")
     assert result.exit_code == 1 and "there is no folder /Elsewhere" in text and "Nothing was updated." in text
@@ -861,7 +917,12 @@ def test_a_folder_of_the_manifest_goes_into_a_folder_of_another_name(command):
     `<content root>/RAG`. `--only RAG --to <that folder>` deploys the RAG
     runtime there - what `-ContentRoot` of the deploy-rag-content scripts
     names."""
-    result, text, viya = command("--only", "RAG", "--to", "/Team/Retrieval")
+    # a folder that is not there is not made from a typed path - least of all at the root of SAS Content
+    result, text, viya = command("--only", "RAG", "--to", "/Taem/Retrieval")
+    assert result.exit_code == 1 and "there is no folder /Taem/Retrieval, and nothing was created: pass --create" \
+        in text
+    assert viya.wrote() == [] and viya.folder_id("/Taem") is None and "Done." not in text
+    result, text, viya = command("--only", "RAG", "--to", "/Team/Retrieval", "--create")
     assert result.exit_code == 0, text
     assert "Deploying to /Team/Retrieval (the entries below RAG of the manifest):" in text
     assert viya.tree("/Team/Retrieval") == ["rag_core", "rag_core/__init__.py", "rag_core/adapters",
@@ -872,7 +933,7 @@ def test_a_folder_of_the_manifest_goes_into_a_folder_of_another_name(command):
     result, text, viya = command("--only", "RAG", "--to", "/Team/Retrieval/")
     assert result.exit_code == 0 and "6 entries: 6 equal." in text
     # the default RAG root is the folder RAG of the content root, either way of saying it
-    result, text, viya = command("--only", "RAG", "--to", f"{CONTENT_ROOT}/RAG", "--dry-run")
+    result, text, viya = command("--only", "RAG", "--to", f"{CONTENT_ROOT}/RAG", "--dry-run", "--create")
     assert result.exit_code == 0 and "6 entries: 6 created." in text
     result, text, _ = command("--only", "RAG", "--to", "Team/Retrieval")
     assert result.exit_code == 2 and "--only RAG is a folder of the manifest" in text

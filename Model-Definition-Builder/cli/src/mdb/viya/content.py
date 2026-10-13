@@ -651,20 +651,56 @@ _DEPLOYERS = {"file": _deploy_file, "step": _deploy_step, "jobDefinition": _depl
 # ---------------------------------------------------------------------------
 # one entry, into an object the site has somewhere else
 # ---------------------------------------------------------------------------
+def _object_name(session, kind: str, uri: str) -> str:
+    """The name an object has on the site, read from the object itself."""
+    accept = {"file": "application/vnd.sas.file+json, application/json", "step": STEP_MEDIA,
+              "jobDefinition": DEFINITION_MEDIA}[kind]
+    response = _read(f"Reading {uri} failed", lambda: session.get(uri, headers={"Accept": accept}))
+    if not response.ok:
+        raise _failure(f"Reading {uri} failed", response)
+    try:
+        return str(response.json().get("name") or "")
+    except (ValueError, AttributeError, TypeError):
+        return ""
+
+
+def _folder_of(session, uri: str) -> str:
+    """The SAS Content path of the folder an object sits in, as the Folders
+    service names its ancestors (`GET /folders/ancestors?childUri=`, nearest
+    first); "" when the service does not say. Only read."""
+    try:
+        response = session.get("/folders/ancestors", params={"childUri": uri},
+                               headers={"Accept": "application/vnd.sas.content.folder.ancestor+json, "
+                                                  "application/json"})
+        if not response.ok:
+            return ""
+        names = [str(item.get("name") or "") for item in (response.json().get("ancestors") or [])
+                 if isinstance(item, dict)]
+    except Exception:                                          # a timeout, an answer of another shape
+        return ""
+    return "/" + "/".join(reversed(names)) if names and all(names) else ""
+
+
 def resolve_target(session, kind: str, target: str) -> dict:
-    """The object of `kind` that a `--to` names: {"uri", "name"}.
+    """The object of `kind` that a `--to` names: {"uri", "name", "folder"} -
+    its URI, the name it has on the site and the path of the folder it sits
+    in ("" where the Folders service does not say).
 
     `target` is the object's URI (`/dataFlows/steps/<id>`), its id, or its
     SAS Content path (`/Custom Steps/LLM - Log Parser.step`). A path has to
     name exactly one object of that kind in its folder - a reference is not
-    one - and nothing is ever created from it.
+    one - and nothing is ever created from it. An object named by its id or
+    URI is read for its name and asked for its folder.
     """
     target = (target or "").strip()
     prefix = _MEMBER_URI[kind]
+    uri = ""
     if target.startswith(prefix) and _ID.fullmatch(target[len(prefix):]):
-        return {"uri": target, "name": ""}
-    if _ID.fullmatch(target):
-        return {"uri": prefix + target, "name": ""}
+        uri = target
+    elif _ID.fullmatch(target):
+        uri = prefix + target
+    if uri:
+        return {"uri": uri, "name": _object_name(session, kind, uri), "folder": _folder_of(session, uri)}
     if not target.startswith("/") or target.startswith(tuple(_MEMBER_URI.values())):
         raise DeployError(f"--to {target}: not a SAS Content path (starting with a slash), an id or the URI of a "
                           f"{_WORD[kind]} ({prefix}<id>)")
@@ -679,21 +715,31 @@ def resolve_target(session, kind: str, target: str) -> dict:
     if len(found) > 1:
         raise DeployError(f"--to {target}: the folder holds {len(found)} {_WORD[kind]}s of that name (ids "
                           f"{', '.join(_id(m['uri']) for m in found)}) - name one of them by its id")
-    return {"uri": found[0]["uri"], "name": name}
+    return {"uri": found[0]["uri"], "name": name, "folder": folder_path}
 
 
 def deploy_to(session, manifest, entry, target: str, dry_run: bool = False, source=None,
-              settings: Optional[dict] = None) -> Outcome:
+              settings: Optional[dict] = None, force: bool = False) -> Outcome:
     """Update ONE object a site has somewhere else, in place, from one entry
     of the manifest: the step a site registered in a folder of its own, which
     its flows reference by id. Nothing is created, no folder is looked at but
-    the one a path names, and the object keeps its id and its name."""
+    the one a path names, and the object keeps its id and its name.
+
+    The outcome names what was written: the name of the object on the site
+    and the folder it sits in. An object whose name is not the name of the
+    entry is not written unless `force` says it is meant - an id typed from
+    another line updates another step."""
     source = source or _content.CheckoutSource(manifest)
     try:
         if entry.kind not in _DEPLOYERS:
             raise DeployError(f"a {entry.kind} is not updated this way")
         found = resolve_target(session, entry.kind, target)
+        where = f"the {_WORD[entry.kind]} '{found['name'] or '?'}' " + (
+            f"in {found['folder']}" if found["folder"] else "(the Folders service did not say in which folder)")
+        if found["name"] != entry.name and not force:
+            raise DeployError(f"--to {target} names {where}, not '{entry.name}': nothing was written - pass --force "
+                              "to update it all the same")
         status, note = _DEPLOYERS[entry.kind](session, source, entry, None, [found], dry_run, settings)
     except (DeployError, OSError, ValueError) as exc:
         return Outcome(entry, FAILED, str(exc))
-    return Outcome(entry, status, note)
+    return Outcome(entry, status, f"{note} - {where}")

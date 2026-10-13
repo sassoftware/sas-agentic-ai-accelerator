@@ -5,15 +5,17 @@
 # Deploy the accelerator's RAG runtime to SAS Content - the Linux/macOS twin
 # of deploy-rag-content.ps1 (see its header for the full description).
 #
-#   ./deploy-rag-content.sh [-s repo-root] [-r '/SAS Agentic AI Accelerator/RAG'] [-p profile] [-K] [-n]
+#   ./deploy-rag-content.sh [-s repo-root] [-r '/SAS Agentic AI Accelerator/RAG'] [-p profile] [-K] [-c] [-n]
 #
 # The script calls `mdb content-deploy --only RAG --to <RAG content root>`:
 # rag_core, the two job programs, the retrieval model template and the RAG
 # custom steps are brought to the state of the checkout, in place. -r is the
-# RAG content root, a folder of any name. A custom step is updated and keeps
-# its id, a file that differs gets its content replaced, and nothing is
-# deleted. -n is a dry run. The checkout is the only source - nothing is
-# pulled from the internet.
+# RAG content root, a folder of any name; one that is not there is created
+# only with -c (a mistyped path does not become a new folder). A custom step
+# is updated and keeps its id, a file that differs gets its content
+# replaced, and nothing is deleted. -n is a dry run. The checkout is the only
+# source - nothing is pulled from the internet. What mdb writes to stderr (a
+# warning) is passed on and does not end the script; the exit code is mdb's.
 # Prerequisites: the Model Definition Builder (pip install -e
 # "Model-Definition-Builder/cli[viya]") and a sign-in it can use: SAS_VIYA_TOKEN,
 # SAS_VIYA_USER + SAS_VIYA_PASSWORD, or the sas-viya CLI's login.
@@ -25,15 +27,17 @@ CONTENT_ROOT='/SAS Agentic AI Accelerator/RAG'
 PROFILE=''
 DRY_RUN=''
 INSECURE=''
+CREATE=''
 
-while getopts 's:r:p:Kn' opt; do
+while getopts 's:r:p:Kcn' opt; do
   case "$opt" in
     s) SOURCE_ROOT="$OPTARG" ;;
     r) CONTENT_ROOT="$OPTARG" ;;
     p) PROFILE="$OPTARG" ;;
     K) INSECURE=1 ;;
+    c) CREATE=1 ;;
     n) DRY_RUN=1 ;;
-    *) echo "usage: $0 [-s repo-root] [-r content-root] [-p profile] [-K] [-n]" >&2; exit 1 ;;
+    *) echo "usage: $0 [-s repo-root] [-r content-root] [-p profile] [-K] [-c] [-n]" >&2; exit 1 ;;
   esac
 done
 
@@ -48,9 +52,12 @@ command -v mdb > /dev/null 2>&1 \
   || { echo 'mdb is not installed - run: pip install -e "Model-Definition-Builder/cli[viya]"' >&2; exit 1; }
 
 export MDB_REPO="$SOURCE_ROOT"
-[ -n "$PROFILE" ] && export SAS_CLI_PROFILE="$PROFILE"
-[ -n "$INSECURE" ] && export SAS_VIYA_VERIFY_SSL=false
+if [ -n "$PROFILE" ]; then export SAS_CLI_PROFILE="$PROFILE"; fi
+if [ -n "$INSECURE" ]; then export SAS_VIYA_VERIFY_SSL=false; fi
 
 ARGS=(content-deploy --only RAG --to "$ROOT")
-[ -n "$DRY_RUN" ] && ARGS+=(--dry-run)
+if [ -n "$CREATE" ]; then ARGS+=(--create); fi
+if [ -n "$DRY_RUN" ]; then ARGS+=(--dry-run); fi
+# set -e looks at exit codes only: a warning mdb writes to stderr does not
+# end the script, and exec hands on mdb's own exit code
 exec mdb "${ARGS[@]}"

@@ -429,6 +429,23 @@ class Viya:
     def _file_headers(self, uri) -> dict:
         return {"ETag": f'"{self.etags.get(uri, 1)}"', "Content-Type": "application/octet-stream"}
 
+    def _holder(self, uri):
+        """(folder id, member) of the child member that is `uri`, or (None, None)."""
+        for folder_id, items in self.members.items():
+            for member in items:
+                if member["uri"] == uri and member.get("type") != "reference":
+                    return folder_id, member
+        return None, None
+
+    def ancestors(self, uri) -> list:
+        """The folders above an object, nearest first, as /folders/ancestors gives them."""
+        folder_id, _member = self._holder(uri)
+        found = []
+        while folder_id:
+            found.append({"id": folder_id, "name": self.folders[folder_id]["name"], "type": "folder"})
+            folder_id = self.folders[folder_id]["parent"]
+        return found
+
     def get(self, path, params=None, headers=None, **kw):
         self.calls.append(("GET", path, params))
         refused = self._refused("GET", path)
@@ -443,11 +460,17 @@ class Viya:
             items = self.members.get(path.split("/")[3], [])
             start, limit = int(params.get("start", 0)), int(params.get("limit", 20))
             return Response(200, {"items": items[start:start + limit], "count": len(items)})
+        if path == "/folders/ancestors":
+            if self._holder(params.get("childUri"))[0] is None:
+                return Response(404, {"message": "not found"})
+            return Response(200, {"childUri": params.get("childUri"), "ancestors": self.ancestors(params["childUri"])})
         if path.endswith("/content") and path[:-len("/content")] in self.files:
             uri = path[:-len("/content")]
             return Response(200, content=self.files[uri], headers=self._file_headers(uri))
         if path in self.files:
-            return Response(200, {"id": path.rsplit("/", 1)[-1]}, headers=self._file_headers(path))
+            member = self._holder(path)[1] or {}
+            return Response(200, {"id": path.rsplit("/", 1)[-1], "name": member.get("name"),
+                                  "contentType": "application/octet-stream"}, headers=self._file_headers(path))
         if path in self.steps:
             return Response(200, {**as_registered(self.steps[path]), "id": path.rsplit("/", 1)[-1]})
         if path in self.jobs:

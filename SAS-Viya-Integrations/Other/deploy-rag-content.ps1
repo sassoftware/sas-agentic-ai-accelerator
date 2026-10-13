@@ -25,15 +25,25 @@
 # `mdb content-deploy` without --only deploys the whole content folder; run
 # it directly for that, and for a dry run of everything.
 #
+# A RAG content root that is not there is created only with -Create: a
+# mistyped path does not become a new folder (at the root of SAS Content,
+# for one). Without it the script ends with mdb's line and writes nothing.
+#
 # Prerequisites: the Model Definition Builder (pip install -e
 # "Model-Definition-Builder/cli[viya]") and a sign-in it can use: SAS_VIYA_TOKEN,
 # SAS_VIYA_USER + SAS_VIYA_PASSWORD, or the sas-viya CLI's login
 # (sas-viya auth login). The runner needs write permission on the target
 # folder.
 #
+# What mdb writes to the error stream (a warning, such as urllib3's
+# InsecureRequestWarning with -Insecure) is passed on and does not stop the
+# script, also when its error stream is redirected (*> or 2>&1). The exit
+# code is mdb's.
+#
 # Usage:
 #   ./deploy-rag-content.ps1                       # deploy from this repo
 #   ./deploy-rag-content.ps1 -ContentRoot '/Team/Retrieval'
+#   ./deploy-rag-content.ps1 -ContentRoot '/Team/Retrieval' -Create   # a new folder
 #   ./deploy-rag-content.ps1 -DryRun               # say what would change
 
 param(
@@ -41,6 +51,7 @@ param(
     [string]$ContentRoot = '/SAS Agentic AI Accelerator/RAG',
     [string]$CliProfile = '',
     [switch]$Insecure,
+    [switch]$Create,
     [switch]$DryRun
 )
 
@@ -60,6 +71,12 @@ if ($CliProfile) { $env:SAS_CLI_PROFILE = $CliProfile }
 if ($Insecure) { $env:SAS_VIYA_VERIFY_SSL = 'false' }
 
 $arguments = @('content-deploy', '--only', 'RAG', '--to', $root)
+if ($Create) { $arguments += '--create' }
 if ($DryRun) { $arguments += '--dry-run' }
+# Windows PowerShell 5.1 turns a line a native command writes to stderr into
+# an error record when the error stream is redirected, and 'Stop' would end
+# the script there - before mdb's own lines and its exit code. The exit code
+# of mdb is what tells success from failure.
+$ErrorActionPreference = 'Continue'
 & mdb @arguments
 exit $LASTEXITCODE

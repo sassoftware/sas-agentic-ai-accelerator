@@ -1522,8 +1522,9 @@ def _emit_outcome(outcome, indent: str = "  ") -> None:
 
 
 def _deploy_settings(content_root_given: Optional[str], compute_context: Optional[str]) -> dict:
-    """The values a deploy or an import writes into the site settings of the
-    job definitions, by the name of the parameter: only what was given."""
+    """The values a deploy or an import writes into every job definition that
+    has the parameter, by its name: the compute context where one was given,
+    and the content root the content goes to."""
     from .core.content import CONTENT_ROOT_PARAMETER, CONTEXT_PARAMETER
     settings: dict = {}
     if compute_context and compute_context.strip():
@@ -1554,6 +1555,14 @@ def content_deploy(
         None, "--compute-context",
         help="Write this compute context into the parameter _contextName of the job definitions that have "
              "one. Without it a job definition on the site keeps the context it has."),
+    create: bool = typer.Option(
+        False, "--create",
+        help="Create the folder the content goes to (--content-root, or the folder form of --to) with every "
+             "folder above it, where it is not there. Without it only the content root the manifest names is "
+             "created; any other folder that is not there ends the command and nothing is written."),
+    force: bool = typer.Option(
+        False, "--force",
+        help="With --to for one object: update it although its name on the site is not the name of the entry."),
     dry_run: bool = typer.Option(False, "--dry-run", help="List what would change; write nothing."),
 ):
     """Bring a SAS Content folder to the state of this checkout, from the
@@ -1576,18 +1585,29 @@ def content_deploy(
     listed at the end. A report is not deployed: it reaches a site through
     `mdb builders-import`, and its line says whether it is on the site.
 
-    THE RUN STOPS at the first write that fails - a refusal, or no answer -
-    and says what was written before it; every entry behind it is listed as
-    not attempted. Where the update of a file is refused, the file is left as
-    it is. An entry that fails before anything was sent (two objects of its
-    name in the folder, a reference to an object elsewhere, an object that
-    cannot be read) is reported and the run goes on. Either way the exit code
-    is 1, and a second run leaves what is equal by then as it is.
+    THE RUN STOPS at the first write that fails - a refusal, or no answer,
+    also for a folder that cannot be created - and says what was written
+    before it; every entry behind it is listed as not attempted. Where the
+    update of a file is refused, the file is left as it is. An entry that
+    fails before anything was sent (two objects of its name in the folder, a
+    reference to an object elsewhere, an object that cannot be read) is
+    reported and the run goes on. Either way the exit code is 1, and a second
+    run leaves what is equal by then as it is. release.json is written last
+    and only when every entry in front of it was written: after a run that
+    did not get there, the folder's release.json is the one an earlier run
+    wrote, or there is none.
 
     SITE SETTINGS. A parameter the manifest marks `siteSetting` - the compute
-    context `_contextName`, the content root `contentRoot` - gets its default
-    in a new job definition and keeps the site's value in an existing one.
-    --compute-context and --content-root write the value they are given.
+    context `_contextName`, the CAS library, the credential domain and the
+    other values of a site - gets its default in a new job definition and
+    keeps the site's value in an existing one. --compute-context writes the
+    context it is given. `contentRoot` is always written with the folder the
+    content goes to: a job reads the content root it sits in.
+
+    A FOLDER THAT IS NOT THERE. The content root the manifest names is
+    created on a first install. Any other folder - a --content-root, the
+    folder of `--only <folder> --to` - is created only with --create;
+    without it the command says so and writes nothing.
 
     PARTS. With --only a part of the folder is deployed and the rest is not
     looked at: `--only RAG` is the RAG runtime. With --to that part goes
@@ -1596,6 +1616,8 @@ def content_deploy(
     scripts run), and `--only "Logging and Monitoring/LLM - Log Parser.step"
     --to "/Custom Steps/LLM - Log Parser.step"` updates, in place, the step a
     site registered in a folder of its own - the step its flows reference.
+    The line says which object that is: its name on the site and its folder.
+    An object whose name is not the entry's is not written without --force.
     """
     from .core.content import CheckoutSource, part_of
     from .viya.content import (CREATED, EQUAL, FAILED, NOT_ATTEMPTED, NOT_DEPLOYED, UPDATED, DeployError, deploy,
@@ -1612,7 +1634,9 @@ def content_deploy(
             console.print(f"--only {path}: the manifest lists nothing at or below that path.", style="red",
                           markup=False, highlight=False)
             raise typer.Exit(2)
-    settings = _deploy_settings(content_root, compute_context)
+    # the content root a job reads is the one it is deployed into - for the
+    # folder of the manifest, not for a part of it somewhere else
+    settings = _deploy_settings(root if to is None else None, compute_context)
     source = CheckoutSource(manifest)
 
     # --to: one part of the manifest, somewhere else
@@ -1641,7 +1665,7 @@ def content_deploy(
         if target_entry is not None:
             console.print(f"{'Dry run - nothing is written. What a run would do to' if dry_run else 'Updating'} "
                           f"{to} from {target_entry.path}:", markup=False, highlight=False)
-            outcome = deploy_to(session, manifest, target_entry, to, dry_run, source, settings)
+            outcome = deploy_to(session, manifest, target_entry, to, dry_run, source, settings, force)
             _emit_outcome(outcome)
             if outcome.status == FAILED:
                 console.print("[red]Nothing was updated.[/red]")
@@ -1659,7 +1683,8 @@ def content_deploy(
                           markup=False, highlight=False)
         try:
             result = deploy(session, deployed, root, dry_run, _emit_outcome, only=only_shown, source=source,
-                            settings=settings)
+                            settings=settings,
+                            create_root=create or (to is None and root == manifest.content_root))
         except DeployError as exc:
             console.print(str(exc), style="red", markup=False, highlight=False)
             raise typer.Exit(1)
