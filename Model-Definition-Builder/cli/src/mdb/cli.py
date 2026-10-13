@@ -1660,7 +1660,7 @@ def content_deploy(
     The line says which object that is: its name on the site and its folder.
     An object whose name is not the entry's is not written without --force.
     """
-    from .core.content import CheckoutSource, part_of
+    from .core.content import CheckoutSource, part_of, reads_content_root, root_of_part
     from .viya.content import (CREATED, EQUAL, FAILED, NOT_ATTEMPTED, NOT_DEPLOYED, UPDATED, DeployError, deploy,
                                deploy_to, selected)
     ctx = Context()
@@ -1675,8 +1675,9 @@ def content_deploy(
             console.print(f"--only {path}: the manifest lists nothing at or below that path.", style="red",
                           markup=False, highlight=False)
             raise typer.Exit(2)
-    # the content root a job reads is the one it is deployed into - for the
-    # folder of the manifest, not for a part of it somewhere else
+    # the content root a job reads is the one it is deployed into; one object
+    # a site has somewhere else (--to) keeps its own, and for a folder of the
+    # manifest somewhere else it is worked out below
     settings = _deploy_settings(root if to is None else None, compute_context)
     source = CheckoutSource(manifest)
 
@@ -1701,6 +1702,20 @@ def content_deploy(
             console.print(f"--only {only[0]} is a folder of the manifest, so --to has to be the SAS Content folder "
                           "its entries go into, starting with a slash.", style="red", markup=False, highlight=False)
             raise typer.Exit(2)
+        else:
+            # a folder of the manifest somewhere else: the content root its jobs read is the one the target
+            # is that folder of - never the default of the manifest
+            part_root = root_of_part(to, only[0])
+            readers = [entry.path for entry in selected(manifest, only)[1] if reads_content_root(entry)]
+            if readers and not part_root:
+                console.print(f"--only {only[0]} --to {to}: the job definition {readers[0]} reads the content root "
+                              f"it sits in (its parameter contentRoot), and {to} is not the folder {only[0]} of a "
+                              f"content root - a path that ends with /{only[0]}, with the content root in front of "
+                              f"it. Nothing was written. Give the folder as <content root>/{only[0]}, or run `mdb "
+                              f"content-deploy --content-root <content root> --only {_shell_word(only[0])}`.",
+                              style="red", markup=False, highlight=False, soft_wrap=True)
+                raise typer.Exit(2)
+            settings = _deploy_settings(part_root or None, compute_context)
 
     with _viya_session() as session:
         if target_entry is not None:

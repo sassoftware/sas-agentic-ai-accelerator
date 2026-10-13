@@ -733,6 +733,22 @@ def part_of(manifest: ContentManifest, folder: str, content_root: str) -> Conten
                            package=manifest.package, entries=entries)
 
 
+def root_of_part(target: str, folder: str) -> str:
+    """The content root a SAS Content folder belongs to as the part `folder`
+    of the manifest: `target` without that path at its end - `/Team/Tables/Data`
+    is the folder `Data` of the content root `/Team/Tables`. "" where `target`
+    does not end with the path, or is nothing but it: such a folder is that
+    part of no content root."""
+    target, tail = target.rstrip("/"), "/" + folder.strip("/")
+    return target[:-len(tail)] if target.endswith(tail) and len(target) > len(tail) else ""
+
+
+def reads_content_root(entry: Entry) -> bool:
+    """Whether a job definition entry has the parameter `contentRoot`: the
+    job then reads the content root that parameter names."""
+    return entry.kind == "jobDefinition" and any(p["name"] == CONTENT_ROOT_PARAMETER for p in entry.parameters)
+
+
 def _sha256(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 

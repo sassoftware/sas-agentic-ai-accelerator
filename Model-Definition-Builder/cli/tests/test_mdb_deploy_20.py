@@ -110,6 +110,68 @@ def test_the_record_is_not_written_into_a_file_a_site_has_elsewhere(command, man
     assert result.exit_code == 1 and deploying.RECORD_NEEDS_ALL in text and "Nothing was updated." in text
 
 
+# ---- a folder of the manifest somewhere else: the content root its jobs read -----
+def test_the_content_root_of_a_folder_that_goes_elsewhere_is_the_one_it_belongs_to(command, monkeypatch):
+    """live-19: `--only Data --to <root>/Data --create` wrote contentRoot =
+    the content root of the manifest into the job definition, which then read
+    the Data folder of the real content root. Here the folder `Prompt
+    Builder` of the test manifest holds the job that reads one."""
+    result, text, viya = command("--only", "Prompt Builder", "--to", "/Team/Tables/Prompt Builder/", "--create")
+    assert result.exit_code == 0, text
+    assert _parameters(viya, "/Team/Tables/Prompt Builder/Optimize") == {
+        "_action": "execute", "contentRoot": "/Team/Tables"}
+    # a job the site pointed somewhere else is put right by the next run, like in a content root
+    uri, = viya.at("/Team/Tables/Prompt Builder/Optimize")
+    viya.jobs[uri][0]["parameters"][1]["defaultValue"] = CONTENT_ROOT
+    result, text, viya = command("--only", "Prompt Builder", "--to", "/Team/Tables/Prompt Builder")
+    assert f"  updated      jobDefinition Optimize  (parameters; id {_id(uri)} kept)\n" in text
+    assert _parameters(viya, "/Team/Tables/Prompt Builder/Optimize")["contentRoot"] == "/Team/Tables"
+    # a target that is that folder of no content root: refused before the sign-in, with what to give
+    monkeypatch.setattr(cli, "_viya_session", lambda: pytest.fail("signed in for a target that is refused"))
+    for target in ("/Team/Pages", "/Prompt Builder", "/Team/Prompt Builder 2"):
+        result, text, _ = command("--only", "Prompt Builder", "--to", target, "--create")
+        assert result.exit_code == 2, text
+        assert (f"--only Prompt Builder --to {target}: the job definition Prompt Builder/Optimize reads the content "
+                f"root it sits in (its parameter contentRoot), and {target} is not the folder Prompt Builder of a "
+                "content root - a path that ends with /Prompt Builder, with the content root in front of it. Nothing "
+                "was written. Give the folder as <content root>/Prompt Builder, or run `mdb content-deploy "
+                "--content-root <content root> --only \"Prompt Builder\"`.") in text
+
+
+def test_a_folder_without_a_job_that_reads_the_content_root_goes_anywhere(command):
+    """The RAG runtime: a RAG content root is a folder of any name, and no
+    job definition of it reads a content root."""
+    result, text, viya = command("--only", "RAG", "--to", "/Team/Retrieval", "--create")
+    assert result.exit_code == 0 and "6 entries: 6 created." in text
+
+
+@pytest.mark.parametrize("target, folder, root", [
+    ("/Team/Tables/Data", "Data", "/Team/Tables"), ("/Team/Tables/Data/", "/Data/", "/Team/Tables"),
+    ("/A/RAG/rag_core", "RAG/rag_core", "/A"), ("/Users/me/My Folder/root/Data", "Data", "/Users/me/My Folder/root"),
+    # not that folder of a content root
+    ("/Data", "Data", ""), ("/Team/Tables", "Data", ""), ("/Team/MyData", "Data", ""), ("/Team/Data/x", "Data", ""),
+])
+def test_the_content_root_a_target_belongs_to(target, folder, root):
+    assert content.root_of_part(target, folder) == root
+
+
+def test_the_data_folder_of_the_repository_manifest_reads_the_root_it_went_to(monkeypatch):
+    """The command of the pass, on the manifest that ships."""
+    buffer, viya = io.StringIO(), Viya()
+    monkeypatch.setattr(cli, "console", Console(file=buffer, width=1000, force_terminal=False))
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=REPOSITORY))
+    monkeypatch.setattr(cli, "_viya_session", lambda: viya)
+    root = "/Users/me/My Folder/ZZ_VERIFY_R20/zz_loader"
+    result = CliRunner().invoke(cli.app, ["content-deploy", "--only", "Data", "--to", f"{root}/Data", "--create"])
+    assert result.exit_code == 0, buffer.getvalue()
+    parameters = _parameters(viya, f"{root}/Data/Load-Accelerator-Tables")
+    assert parameters["contentRoot"] == root != load_manifest(REPOSITORY).content_root
+    result = CliRunner().invoke(cli.app, ["content-deploy", "--only", "Data", "--to", "/Team/Tables", "--create"])
+    assert result.exit_code == 2 and "the job definition Data/Load-Accelerator-Tables reads the content root" in \
+        buffer.getvalue()
+    assert viya.folder_id("/Team") is None
+
+
 # ---- one name, one object: a reference of the name of an entry -------------------
 def _reference_alone(viya, path=ADAPTERS) -> str:
     """Take the file of an entry out of its folder and put a reference of its
