@@ -41,14 +41,21 @@ THE KINDS.
 A SITE SETTING. A parameter marked `siteSetting: true` holds a value of the
 site, not of the release: the compute context a job runs in (`_contextName`),
 the CAS library, the credential domain and the other values a site points
-its jobs at. Its default in the manifest is what a NEW job definition gets
-(for `_contextName`, `mdb builders-import` gives a new one the ingestion
-compute context of the options it restores). On a site that has the job
-definition the value is the site's: a deploy and an import leave it as it is
-and do not count it as a difference, unless they are given the value to
-write (`--compute-context`). `contentRoot` is the one site setting a deploy
-and an import always write: with the folder the content goes to, because a
-job reads the content root it sits in.
+its jobs at. Its default in the manifest is what a job definition gets that
+a run creates, and one on the site that has no such parameter (for
+`_contextName`, `mdb builders-import` gives both the ingestion compute
+context of the options it restores). A value a job definition on the site
+holds is the site's: a deploy and an import leave it as it is and do not
+count it as a difference, unless they are given the value to write
+(`--compute-context`). `contentRoot` is the one site setting a deploy and an
+import always write: with the content root the content goes to, because a
+job reads the content root it sits in. For a folder of the manifest that is
+deployed somewhere else (`--only <folder> --to <target>`) that is the target
+without the folder's own path at its end (`root_of_part`); a target that
+does not end with it is refused where a job of the folder reads the content
+root. One object named with `--to` is the site's own: its `contentRoot` is
+left as the site has it, and is the default like any site setting where the
+definition has none.
 
 This module holds the manifest and what each entry is expected to be - the
 bytes of a file, the compared parts of a step and of a job definition - so that

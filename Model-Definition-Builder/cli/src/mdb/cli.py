@@ -1580,8 +1580,8 @@ def content_deploy(
     content_root: Optional[str] = typer.Option(
         None, "--content-root",
         help="SAS Content folder to bring to the state of the checkout (default: the content root the "
-             "manifest names, /SAS Agentic AI Accelerator). Given, it is also written into the parameter "
-             "contentRoot of the job definitions that have one."),
+             "manifest names, /SAS Agentic AI Accelerator). Named or not, that folder is written into the "
+             "parameter contentRoot of the job definitions that have one."),
     only: Optional[list[str]] = typer.Option(
         None, "--only",
         help="Deploy only the entries at or below this path of the manifest (repeatable), e.g. --only RAG "
@@ -1633,22 +1633,37 @@ def content_deploy(
     fails before anything was sent (two objects of its name in the folder, a
     reference to an object elsewhere, an object that cannot be read) is
     reported and the run goes on. Either way the exit code is 1, and a second
-    run leaves what is equal by then as it is. release.json is written last
-    and only when every entry in front of it was written: after a run that
-    did not get there, the folder's release.json is the one an earlier run
-    wrote, or there is none.
+    run leaves what is equal by then as it is. release.json is written last,
+    only by a run that covers every entry of the manifest, and only when
+    every entry in front of it was written: after a run that did not get
+    there, the folder's release.json is the one an earlier run wrote, or
+    there is none. A run of a part that names it (`--only release.json`) is
+    refused with one line and writes nothing.
+
+    ONE NAME, ONE OBJECT. Two objects of the name and kind of an entry in
+    its folder, or a reference of that name - alone, or beside the object
+    itself - fail the entry: each is named on its line and none is written.
 
     SITE SETTINGS. A parameter the manifest marks `siteSetting` - the compute
     context `_contextName`, the CAS library, the credential domain and the
-    other values of a site - gets its default in a new job definition and
-    keeps the site's value in an existing one. --compute-context writes the
-    context it is given. `contentRoot` is always written with the folder the
-    content goes to: a job reads the content root it sits in.
+    other values of a site - gets its default in a new job definition and in
+    one that has no such parameter, and keeps the value a job definition on
+    the site holds. --compute-context writes the context it is given.
+    `contentRoot` is always written with the content root the content goes
+    to: a job reads the content root it sits in. With `--only <folder> --to
+    <target>` that is the target without the folder's path at its end
+    (`--only Data --to "/Team/Tables/Data"` writes /Team/Tables); where a job
+    definition of the folder reads the content root and the target does not
+    end with that path, the command ends before it signs in and says what to
+    give. One object named with --to is the site's own in this too: it keeps
+    the contentRoot it has, and gets the manifest's where it has none.
 
     A FOLDER THAT IS NOT THERE. The content root the manifest names is
     created on a first install. Any other folder - a --content-root, the
     folder of `--only <folder> --to` - is created only with --create;
-    without it the command says so and writes nothing.
+    without it the command says so and writes nothing. Where the folder the
+    content goes into is created, it gets a line of its own, in a dry run
+    too; it is no entry and is not counted with them.
 
     PARTS. With --only a part of the folder is deployed and the rest is not
     looked at: `--only RAG` is the RAG runtime. With --to that part goes
@@ -2286,7 +2301,10 @@ def builders_import(
     kept)` where the content differs, `equal ... (id <its own id>)` where it
     does not, and no second object of the name. A file keeps its id as well:
     its content is replaced, the file is not deleted. Two objects of one name
-    in a folder are both named and neither is written.
+    in a folder are both named and neither is written - and a reference of
+    that name to an object elsewhere counts as one of them, alone or beside
+    the object itself: it is named on the line of the entry, never followed,
+    and the entry is FAILED until the reference is removed.
 
     THE OPTIONS of the Prompt Builder report are kept across the import. With
     --options the values of that file are written back. Without it, and when
@@ -2307,12 +2325,14 @@ def builders_import(
     THE COMPUTE CONTEXT. Start Here and Load-Accelerator-Tables have to run
     as the user who opens them, so their job definitions carry _contextName.
     A context a site set in a job definition - in these two or in
-    SAS-LLM-Prompt-Builder-UI - survives the import: an existing value is
-    left alone. Only a job definition the import CREATES gets the ingestion
-    compute context (ragComputeContext) of the options it writes back, else
-    the package's. --compute-context writes the context it names into every
-    job definition that has the parameter. contentRoot is written with the
-    folder the content goes to.
+    SAS-LLM-Prompt-Builder-UI - survives the import. The ingestion compute
+    context (ragComputeContext) of the options the import writes back is
+    given to a job definition the import creates and to one on the site that
+    has no _contextName; a _contextName a job definition on the site holds
+    is kept. Where the options name none, the package's takes its place.
+    --compute-context writes the context it names into every job definition
+    that has the parameter. contentRoot is written with the folder the
+    content goes to.
 
     A RETIRED REPORT. The import removes nothing: the report "RAG Builder"
     and the job definition RAG-Builder-UI of a 2.2.x site stay where they
@@ -2336,7 +2356,11 @@ def builders_import(
     none of them.
 
     A run that did not do everything ends with exit code 1 and the command to
-    repeat. The tasks of the import job are read to the end: one that ended
+    go on with: `mdb builders-import` with the options of the run - and with
+    --no-reports added where the reports were refused for the content root
+    and no package's reports went to the transfer service - or `mdb
+    options-restore` where only options are left to write. The tasks of the
+    import job are read to the end: one that ended
     with a warning or an error is printed and counts. The in-place part stops
     at the first write that fails and lists what it did not attempt.
     """

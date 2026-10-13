@@ -31,15 +31,16 @@
 # A parameter with `siteSetting: true` holds a value of the site: the compute
 # context a job runs in (_contextName), the CAS library and server, the
 # credential domain, the names of the repository and the projects, the
-# release table. The default is what a new job definition gets (for
-# _contextName `mdb builders-import` gives a new one the ingestion compute
-# context of the options it restores); on a site that has the job definition
-# a deploy and an import leave the site's value alone, unless they are given
-# one (--compute-context). contentRoot is always written with the folder the
-# content goes to: a job reads the content root it sits in. A value that
-# belongs to the release - the address of the guides, _action, _output_type -
-# is no site setting and is set back to the manifest. The package of a
-# release holds the defaults.
+# release table. The default is what a new job definition gets, and one on
+# the site that has no such parameter (for _contextName `mdb builders-import`
+# gives both the ingestion compute context of the options it restores); a
+# value a job definition on the site holds is left alone by a deploy and an
+# import, unless they are given one (--compute-context). contentRoot is
+# always written with the content root the content goes to: a job reads the
+# content root it sits in (one job definition named with --to keeps the one
+# it has). A value that belongs to the release - the address of the guides,
+# _action, _output_type - is no site setting and is set back to the manifest.
+# The package of a release holds the defaults.
 #
 # A path with Showcases, Example, a folder whose name holds generated or a
 # name that starts with ZZ_VERIFY is refused: such content never ships.

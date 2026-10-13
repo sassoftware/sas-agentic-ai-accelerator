@@ -533,6 +533,27 @@ def test_the_import_prints_the_line_for_a_content_root_it_creates(importing, no_
             "/Team)\n") in text
 
 
+# ---- the compute context: one sentence ---------------------------------------------
+def test_one_sentence_says_which_job_definitions_get_the_context_of_the_options():
+    """review-19: the line said 'given to a job definition this run creates'
+    while one that exists without the parameter gets it too. The line, the
+    help of the command and of --compute-context, and the README carry the
+    same sentence."""
+    assert cli.CONTEXT_RULE == ("given to a job definition the import creates and to one on the site that has no "
+                                "_contextName; a _contextName a job definition on the site holds is kept")
+    assert cli.CONTEXT_RULE in _flat(cli.builders_import.__doc__)
+    readme = (REPOSITORY / "SAS-Viya-Integrations" / "README.md").read_text(encoding="utf-8")
+    assert cli.CONTEXT_RULE in _flat(readme)
+    import typer
+    declared = typer.main.get_command(cli.app).commands["builders-import"]
+    option = next(p for p in declared.params if "--compute-context" in getattr(p, "opts", ()))
+    assert cli.CONTEXT_RULE in _flat(option.help)
+    for text in (cli.builders_import.__doc__, readme, (REPOSITORY / "SAS-Viya-Integrations" /
+                                                       "package-manifest.yaml").read_text(encoding="utf-8")):
+        assert "this run creates; one the site has keeps" not in _flat(text)
+        assert not re.search(r"job definition the import creates gets", _flat(text))
+
+
 def test_a_job_definition_without_the_parameter_gets_the_context_as_the_sentence_says(importing, no_discovery):
     no_discovery()
     viya = importing.viya
@@ -549,6 +570,28 @@ def test_a_job_definition_without_the_parameter_gets_the_context_as_the_sentence
     viya.jobs[mine[UI_PATH]][0]["parameters"][0]["defaultValue"] = "Site context"
     result, fake, text = importing(Site(**{"Prompt Builder": options}))
     assert imports._context(viya) == "Site context"
+
+
+# ---- what the texts of the two commands say ------------------------------------------
+def test_the_help_and_the_readme_say_what_the_commands_do():
+    deploy_help, import_help = _flat(cli.content_deploy.__doc__), _flat(cli.builders_import.__doc__)
+    readme = _flat((REPOSITORY / "SAS-Viya-Integrations" / "README.md").read_text(encoding="utf-8"))
+    assert "only by a run that covers every entry of the manifest" in deploy_help
+    assert "A run of a part that names it (--only release.json) is refused with one line and writes nothing." in \
+        deploy_help
+    assert "only by a run that covers every entry of the manifest - a run of a part that names it, --only " \
+           "release.json, is refused" in readme
+    assert "or a reference of that name - alone, or beside the object itself - fail the entry" in deploy_help
+    assert "a reference of that name to an object elsewhere counts as one of them, alone or beside the object " \
+           "itself" in import_help
+    assert "or a reference of that name to an object elsewhere - alone, or beside the object itself - fail the " \
+           "entry" in readme
+    assert "(--only Data --to \"/Team/Tables/Data\" writes /Team/Tables)" in deploy_help
+    assert "--only Data --to \"/Team/Tables/Data\" writes /Team/Tables into contentRoot" in readme
+    assert "with --no-reports added where the reports were refused for the content root" in import_help
+    # nothing here states what has or has not run against SAS Viya: that belongs in the changelog and the guide
+    for text in (deploy_help, import_help):
+        assert not re.search(r"not (been )?(run|measured)|has not run|untested", text)
 
 
 # ---- a custom step is registered without who saved it --------------------------------
