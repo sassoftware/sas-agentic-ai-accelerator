@@ -33,8 +33,11 @@
  *   - the content: every entry release.json lists, present in this content
  *     root yes or no, so the page needs no checkout
  *   - the CAS tables the two reports bind: there, rows, loaded when
+ *   - the CAS tables of the logging chain that no report binds: the fact sheet
+ *     of the decision models and the four further tables of Get-All-Prompts.sas
  *   - SAS Model Manager: the repository and the projects of the LLM, the
- *     embedding model and the decision model definitions, with their models
+ *     embedding model and the decision model definitions, with their models;
+ *     a project without a model is missing
  *   - the options of the Prompt Builder report that name the repository and
  *     the projects
  *   - the credential domain of the provider keys, by its name only
