@@ -516,6 +516,15 @@ def _listed(shipped, kind: str, folder: str) -> dict:
     return {e.path[len(folder) + 1:]: e for e in shipped.objects() if e.kind == kind and e.path.startswith(folder + "/")}
 
 
+def test_the_builder_reports_are_looked_up_where_the_manifest_puts_them(shipped):
+    """The options commands find a Builder report at its place below the
+    content root; that place is the manifest's."""
+    from mdb.core.options import DEFAULT_CONTENT_ROOT, MERGED_REPORT, REPORT_FOLDERS, report_folder
+    assert shipped.content_root == DEFAULT_CONTENT_ROOT
+    entry = shipped.find(f"{REPORT_FOLDERS[MERGED_REPORT]}/{MERGED_REPORT}", "report")
+    assert entry is not None and report_folder("", MERGED_REPORT) == f"{DEFAULT_CONTENT_ROOT}/{entry.folder}"
+
+
 def test_every_file_of_the_rag_runtime_is_listed(shipped):
     """An entry per object means a new module of rag_core is not shipped
     until it is listed - and this is what notices that it is not."""

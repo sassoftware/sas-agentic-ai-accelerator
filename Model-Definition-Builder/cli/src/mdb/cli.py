@@ -1155,6 +1155,10 @@ def options_save(
     reports_only: bool = typer.Option(
         False, "--reports-only",
         help="Capture only what the live reports hold; skip repository/project discovery"),
+    content_root: Optional[str] = typer.Option(
+        None, "--content-root",
+        help="The content folder the report sits in (default /SAS Agentic AI Accelerator): the report read is "
+             "<content root>/Prompt Builder/Prompt Builder, and the retired <content root>/RAG/RAG Builder."),
 ):
     """Save this deployment's Prompt Builder option values to a file.
 
@@ -1189,7 +1193,7 @@ def options_save(
     ctx = Context()
     with _viya_session() as session:
         seeds = {} if reports_only else _discovered_seeds(session, ctx, "capturing the report only")
-        captured = _capture_options(session, seeds)
+        captured = _capture_options(session, seeds, content_root=content_root or "")
     if not captured:
         console.print("[red]Nothing captured.[/red]")
         raise typer.Exit(1)
@@ -1212,10 +1216,15 @@ class _ReportUnreadable(RuntimeError):
         super().__init__(f"{report}: {reason}")
 
 
-def _capture_options(session, seeds: dict, strict: bool = False) -> dict:
+def _capture_options(session, seeds: dict, strict: bool = False, content_root: str = "") -> dict:
     """{report name: {option: value}} for the Builder report, as options-save
     writes it: what `seeds` discovered, overlaid with what the live reports
     hold.
+
+    A report is the one at its place below `content_root` (the content root
+    of the release unless named): `<root>/Prompt Builder/Prompt Builder`, and
+    the retired `<root>/RAG/RAG Builder` - not a report of that name anywhere
+    on the system.
 
     A retired report that still exists is read as well and folded into the
     merged one BEFORE the seed is applied, so the order of precedence is: the
@@ -1223,35 +1232,45 @@ def _capture_options(session, seeds: dict, strict: bool = False) -> dict:
     project id an admin once chose in the retired report beats the one this
     run would derive.
 
-    A report whose content cannot be read is passed over with a line - unless
-    `strict`: then it raises _ReportUnreadable, and so does a lookup the
-    reports service does not answer. That is for the caller about to replace
-    the report: options it could not read are options it would lose.
+    A report whose content cannot be read, or that is read and holds no
+    option at all, is passed over with a line - unless `strict`: then it
+    raises _ReportUnreadable, and so does a lookup the service does not
+    answer. That is for the caller about to replace the report: options it
+    could not read are options it would lose.
     """
     from .core.options import (BUILDER_REPORTS, LEGACY_REPORTS, fold_legacy, merge_seed,
-                               read_options)
-    from .viya.reports import find_report, get_content
+                               read_options, report_folder)
+    from .viya.reports import find_report_at, get_content
     live: dict = {}
     for report_name in (*BUILDER_REPORTS, *sorted(LEGACY_REPORTS)):
+        folder = report_folder(content_root, report_name)
         if strict:
             try:
-                report = find_report(session, report_name, strict=True)
+                report = find_report_at(session, folder, report_name, strict=True)
             except Exception as exc:
-                raise _ReportUnreadable(report_name, f"whether it is on this site could not be asked ({exc})") \
+                raise _ReportUnreadable(report_name, f"whether it is in {folder} could not be asked ({exc})") \
                     from exc
         else:
-            report = find_report(session, report_name)
+            report = find_report_at(session, folder, report_name)
         if not report:
             continue
         try:
             content, _ = get_content(session, report["id"])
         except Exception as exc:
             if strict:
-                raise _ReportUnreadable(report_name, f"it is on this site and its content cannot be read ({exc})") \
+                raise _ReportUnreadable(report_name, f"it is in {folder} and its content cannot be read ({exc})") \
                     from exc
             console.print(f"[yellow]{report_name}: content unreadable ({exc}).[/yellow]")
             continue
-        live[report_name] = read_options(content)
+        options = read_options(content)
+        if not options:
+            why = (f"it is in {folder} and holds no option at all - it is not the report of the Builder, or its "
+                   "content is not what mdb reads")
+            if strict:
+                raise _ReportUnreadable(report_name, why)
+            console.print(f"[yellow]{report_name}: {why} - passed over.[/yellow]")
+            continue
+        live[report_name] = options
         if report_name in LEGACY_REPORTS:
             console.print(f"[yellow]'{report_name}': read from the retired report of that name "
                           f"and folded into the {', '.join(BUILDER_REPORTS)} section.[/yellow]")
@@ -1278,6 +1297,10 @@ def options_restore(
                              help="The options file written by `mdb options-save`"),
     dry_run: bool = typer.Option(False, "--dry-run",
                                  help="Report what would change without writing"),
+    content_root: Optional[str] = typer.Option(
+        None, "--content-root",
+        help="The content folder the report sits in (default /SAS Agentic AI Accelerator): the report written "
+             "is <content root>/Prompt Builder/Prompt Builder - a report of that name elsewhere is not touched."),
 ):
     """Write saved option values back into the Prompt Builder report after an import.
 
@@ -1314,7 +1337,7 @@ def options_restore(
         console.print(f"[yellow]Note: these options were saved from "
                       f"{document['deployment']}, not {here}.[/yellow]")
     with _viya_session() as session:
-        failures = _restore_options(session, saved, dry_run, _site_host())
+        failures = _restore_options(session, saved, dry_run, _site_host(), content_root=content_root or "")
     if failures:
         console.print(f"[red]Not every option {'would be' if dry_run else 'was'} restored.[/red] {file} "
                       "still holds all of them: fix what is reported above and run the command again.")
@@ -1344,13 +1367,15 @@ def _fold_saved(saved: dict) -> dict:
     return folded
 
 
-def _warn_retired_reports(session) -> list[str]:
-    """Say so when a retired report still exists on the site; returns the
-    names found. Nothing is deleted: the report may be the only place a
-    setting was ever written down, and removing content is an admin's call."""
-    from .core.options import LEGACY_REPORTS, MERGED_REPORT
-    from .viya.reports import find_report
-    found = [name for name in sorted(LEGACY_REPORTS) if find_report(session, name)]
+def _warn_retired_reports(session, content_root: str = "") -> list[str]:
+    """Say so when a retired report still exists on the site, at its place
+    below the content root; returns the names found. Nothing is deleted: the
+    report may be the only place a setting was ever written down, and
+    removing content is an admin's call."""
+    from .core.options import LEGACY_REPORTS, MERGED_REPORT, report_folder
+    from .viya.reports import find_report_at
+    found = [name for name in sorted(LEGACY_REPORTS)
+             if find_report_at(session, report_folder(content_root, name), name)]
     for name in found:
         console.print(
             f"[yellow]A report named '{name}' still exists on this site. It is retired: the RAG Builder "
@@ -1362,7 +1387,7 @@ def _warn_retired_reports(session) -> list[str]:
 
 
 def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
-                     arriving: Optional[dict] = None) -> int:
+                     arriving: Optional[dict] = None, content_root: str = "") -> int:
     """Write the saved option values back into the named reports and point
     every remaining placeholder host at `host`; returns the number of reports
     that could not be written, or not in full. Shared by options-restore and
@@ -1380,21 +1405,26 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
     in a dry run, where the live report is still the one from before the
     import and lacks every option the new version adds. Those are summed up
     in one line instead of being reported as unknown one by one.
+
+    A report is the one at its place below `content_root` - a copy of that
+    name somewhere else is not written to.
     """
-    from .core.options import MERGED_REPORT_LABELS, rehost_content, write_options
-    from .viya.reports import find_report, get_content, put_content
+    from .core.options import MERGED_REPORT_LABELS, REPORT_FOLDERS, rehost_content, report_folder, write_options
+    from .viya.reports import find_report_at, get_content, put_content
     failures = 0
     arriving = arriving or {}
     for report_name, values in _fold_saved(saved).items():
         values = values or {}
-        report = find_report(session, report_name)
+        folder = report_folder(content_root, report_name) if report_name in REPORT_FOLDERS else ""
+        report = find_report_at(session, folder, report_name) if folder else None
         if not report:
             if report_name in arriving:
                 then = f", and the {len(values)} saved option(s) are written then" if values else ""
                 console.print(f"[cyan]{report_name}: not on this site yet - it arrives with the import"
                               f"{then}.[/cyan]")
             else:
-                console.print(f"[yellow]{report_name}: no such report here - skipped.[/yellow]")
+                console.print(f"[yellow]{report_name}: no such report in {folder or 'the content folder'} - "
+                              "skipped.[/yellow]")
             continue
         try:
             content, etag = get_content(session, report["id"])
@@ -1448,7 +1478,7 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
             failures += 1
             continue
         console.print(f"[green]{report_name}: restored " + "; ".join(what) + "[/green]")
-    _warn_retired_reports(session)
+    _warn_retired_reports(session, content_root)
     return failures
 
 
@@ -1940,24 +1970,26 @@ def _import_command(packages, options, caslib, table, server, no_releases: bool,
     return " ".join(words)
 
 
-def _live_options(session) -> dict:
-    """{report name: {option: value}} as the Builder report on this site holds
-    them now - a retired report folded in, as `mdb options-save
-    --reports-only` records them. Empty when the site has neither report:
-    then there is nothing an import could overwrite.
+def _live_options(session, content_root: str = "") -> dict:
+    """{report name: {option: value}} as the Builder report at its place
+    below `content_root` holds them now - a retired report folded in, as
+    `mdb options-save --reports-only` records them. Empty when the site has
+    neither report there: then there is nothing an import could overwrite.
 
-    Raises _ReportUnreadable when a report is on the site and cannot be read,
-    or when the reports service does not say whether it is: an import behind
-    that would replace a report whose options nobody holds."""
-    from .core.options import BUILDER_REPORTS, LEGACY_REPORTS
-    from .viya.reports import find_report
+    Raises _ReportUnreadable when a report is there and cannot be read or
+    holds no option, or when the service does not say whether it is there:
+    an import behind that would replace a report whose options nobody
+    holds."""
+    from .core.options import BUILDER_REPORTS, LEGACY_REPORTS, report_folder
+    from .viya.reports import find_report_at
     on_site = False
     for name in (*BUILDER_REPORTS, *sorted(LEGACY_REPORTS)):
+        folder = report_folder(content_root, name)
         try:
-            on_site = bool(find_report(session, name, strict=True)) or on_site
+            on_site = bool(find_report_at(session, folder, name, strict=True)) or on_site
         except Exception as exc:
-            raise _ReportUnreadable(name, f"whether it is on this site could not be asked ({exc})") from exc
-    return _capture_options(session, {}, strict=True) if on_site else {}
+            raise _ReportUnreadable(name, f"whether it is in {folder} could not be asked ({exc})") from exc
+    return _capture_options(session, {}, strict=True, content_root=content_root) if on_site else {}
 
 
 def _keep_captured(captured: dict) -> Path:
@@ -2108,13 +2140,15 @@ def builders_import(
 
     THE OPTIONS of the Prompt Builder report are kept across the import. With
     --options the values of that file are written back. Without it, and when
-    the report (or the retired report "RAG Builder") is on the site, its
-    options are read before the import, kept in a file
+    the report (or the retired report "RAG Builder") is at its place in the
+    content root - <root>/Prompt Builder/Prompt Builder, <root>/RAG/RAG
+    Builder; a report of that name elsewhere is not read and not written -
+    its options are read before the import, kept in a file
     builder-options-captured-<time>.json in the current directory, and
     written back afterwards - so an upgrade is this one command. When such a
-    report is on the site and cannot be read, the command stops BEFORE
-    anything is imported: name the options with --options <file>, or pass
-    --no-options-capture to import without them. On a site without the report
+    report is there and cannot be read, or is read and holds no option at
+    all, the command stops BEFORE anything is imported: name the options with
+    --options <file>, or pass --no-options-capture to import without them. On a site without the report
     the values `mdb setup` discovers are written, and either way every
     remaining placeholder host in the report becomes this deployment's host.
     A package that brings no Prompt Builder report leaves the report on the
@@ -2137,10 +2171,10 @@ def builders_import(
 
     A DRY RUN writes nothing and uploads nothing. The requests it can make,
     all of them GET (the sign-in aside): /casManagement/servers;
-    /reports/reports (looking a report up by its name) and
-    /reports/reports/{id}/content; /folders/folders/@item and
-    /folders/folders/{id}/members; /files/files/{id}/content;
-    /dataFlows/steps/{id}; /jobDefinitions/definitions/{id}. The transfer
+    /folders/folders/@item and /folders/folders/{id}/members (also to find
+    a report as a member of its folder); /reports/reports/{id}/content;
+    /files/files/{id}/content; /dataFlows/steps/{id};
+    /jobDefinitions/definitions/{id}. The transfer
     service is not called, so the mapping lines of a dry run are what the
     package itself says about its tables and substitutions. Without options
     it discovers nothing, because discovery creates a missing repository or
@@ -2231,7 +2265,7 @@ def builders_import(
                           "import brings is configured from this deployment.")
         elif saved is None and brings_report:
             try:
-                live = _live_options(session)
+                live = _live_options(session, root)
             except _ReportUnreadable as exc:
                 console.print(f"[red]{exc}.[/red]", highlight=False)
                 console.print("[red]Nothing was imported.[/red] The import replaces this report, and options that "
@@ -2436,7 +2470,7 @@ def builders_import(
             if arriving:
                 console.print("  [cyan](dry run: nothing is imported, so this compares with the reports as they "
                               "are on the site now)[/cyan]")
-            failures += _restore_options(session, values, dry_run, host, arriving)
+            failures += _restore_options(session, values, dry_run, host, arriving, content_root=root)
         else:
             # A report whose package did not import is left alone: what is on
             # the site is the report from before, and it has its values.
@@ -2445,7 +2479,8 @@ def builders_import(
                     console.print(f"[yellow]{report_name}: its package did not import - options not "
                                   "restored.[/yellow]")
             failures += _restore_options(
-                session, {name: v for name, v in values.items() if name not in failed_reports}, dry_run, host)
+                session, {name: v for name, v in values.items() if name not in failed_reports}, dry_run, host,
+                content_root=root)
         if imported_any and not no_files:
             _write_content_rules(session, root, Path(out))
     kept = options if options is not None else captured_file

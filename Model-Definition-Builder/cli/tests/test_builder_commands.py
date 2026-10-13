@@ -74,6 +74,8 @@ class Site:
         #: reports the service does not answer a lookup for.
         self.unreadable: set = set()
         self.unanswered: set = set()
+        #: the folder each report was looked up in
+        self.looked_in: list = []
 
     def options(self, name: str) -> dict:
         return read_options(self.reports[name])
@@ -90,11 +92,15 @@ def out(monkeypatch):
 @pytest.fixture
 def site(monkeypatch):
     def install(fake: Site) -> Site:
-        def find_report(session, name, strict=False):
+        def find_report_at(session, folder, name, strict=False):
             fake.looked_up.append(name)
+            fake.looked_in.append(f"{folder}/{name}")
             if strict and name in fake.unanswered:
-                raise RuntimeError(f"Looking up the report '{name}' failed: HTTP 503")
+                raise RuntimeError(f"Looking up the folder {folder} of the report '{name}' failed: HTTP 503")
             return {"id": name, "name": name} if name in fake.reports else None
+
+        def find_report(session, name, strict=False):
+            pytest.fail(f"the report '{name}' was looked up by its name anywhere on the system")
 
         def get_content(session, report_id):
             if report_id in fake.unreadable:
@@ -109,6 +115,7 @@ def site(monkeypatch):
             fake.reports[report_id] = content
 
         monkeypatch.setattr(reports, "find_report", find_report)
+        monkeypatch.setattr(reports, "find_report_at", find_report_at)
         monkeypatch.setattr(reports, "get_content", get_content)
         monkeypatch.setattr(reports, "put_content", put_content)
         return fake
@@ -1289,8 +1296,8 @@ def test_a_report_that_cannot_be_read_stops_the_command_before_anything_is_impor
     viya = importing.viya
     result, fake, text = importing(_unreadable(**{"Prompt Builder": TUNED}))
     assert result.exit_code == 1
-    assert "Prompt Builder: it is on this site and its content cannot be read (Reading the report content failed: " \
-           "HTTP 503)." in text
+    assert (f"Prompt Builder: it is in {CONTENT_ROOT}/Prompt Builder and its content cannot be read (Reading the "
+            "report content failed: HTTP 503).") in text
     assert "Nothing was imported." in text and "--options <file>" in text and "--no-options-capture" in text
     # nothing: no upload, no import, no write in place, no file, no discovery, the report as it was
     assert importing.uploaded == {} and importing.imports == {} and viya.wrote() == [] and viya.folders == {}
@@ -1304,14 +1311,81 @@ def test_a_report_that_cannot_be_read_stops_the_command_before_anything_is_impor
     fake = Site(**{"Prompt Builder": TUNED, "RAG Builder": OLD_RAG})
     fake.unreadable = {"RAG Builder"}
     result, fake, text = importing(fake)
-    assert result.exit_code == 1 and "RAG Builder: it is on this site and its content cannot be read" in text
+    assert result.exit_code == 1 and f"RAG Builder: it is in {CONTENT_ROOT}/RAG and its content cannot be read" in text
     # and a service that does not say whether the report is there is not "no report"
     fake = Site()
     fake.unanswered = {"Prompt Builder"}
     result, fake, text = importing(fake)
     assert result.exit_code == 1 and importing.uploaded == {}
-    assert "Prompt Builder: whether it is on this site could not be asked (Looking up the report 'Prompt Builder' " \
-           "failed: HTTP 503)." in text
+    assert (f"Prompt Builder: whether it is in {CONTENT_ROOT}/Prompt Builder could not be asked (Looking up the "
+            f"folder {CONTENT_ROOT}/Prompt Builder of the report 'Prompt Builder' failed: HTTP 503).") in text
+
+
+def test_a_report_that_holds_no_option_stops_the_command_like_one_that_cannot_be_read(importing, no_discovery,
+                                                                                     tmp_path):
+    """review-18: a report of that name that answers and holds nothing gave
+    'Prompt Builder: 0 options (report)', a kept file with an empty section,
+    an import, nothing written back, no configuration from discovery, and
+    'Done.' with exit code 0."""
+    asked = no_discovery()
+    viya = importing.viya
+    result, fake, text = importing(Site(**{"Prompt Builder": {}}))
+    assert result.exit_code == 1
+    assert (f"Prompt Builder: it is in {CONTENT_ROOT}/Prompt Builder and holds no option at all - it is not the report "
+            "of the Builder, or its content is not what mdb reads.") in text
+    assert "Nothing was imported." in text and "--options <file>" in text and "--no-options-capture" in text
+    assert importing.uploaded == {} and viya.wrote() == [] and asked == [] and _captured_files(tmp_path) == []
+    assert "Done." not in text
+    # options-save passes it over with the same sentence, and captures nothing from it
+    assert cli._capture_options(None, {}) == {}
+
+
+def test_the_report_is_the_one_at_its_place_in_the_content_root(importing, no_discovery, site, out, tmp_path):
+    """integrate-18: the report was found by its name anywhere on the system
+    (the first exact-name hit), so a copy of that name in somebody's folder
+    could be read from and written to. It is looked up as a member of its
+    folder below the content root the reports go to (the fixture fails a
+    lookup by name)."""
+    no_discovery()
+    result, fake, text = importing(Site(**{"Prompt Builder": TUNED}))
+    assert result.exit_code == 0, text
+    assert set(fake.looked_in) == {f"{CONTENT_ROOT}/Prompt Builder/Prompt Builder", f"{CONTENT_ROOT}/RAG/RAG Builder"}
+    # options-restore writes the report of the root it is given, and says where it found none
+    options = tmp_path / "builder-options.json"
+    options.write_text(json.dumps({"version": 1, "reports": {"Prompt Builder": {"llmProjectID": "x"}}}),
+                       encoding="utf-8")
+    fake = site(Site(**{"Prompt Builder": NEW_DEFAULTS}))
+    result = CliRunner().invoke(cli.app, ["options-restore", "--file", str(options), "--content-root", "/Team/Acc"])
+    assert result.exit_code == 0, out.getvalue()
+    assert "/Team/Acc/Prompt Builder/Prompt Builder" in fake.looked_in and fake.written == ["Prompt Builder"]
+    fake.reports.clear()
+    result = CliRunner().invoke(cli.app, ["options-restore", "--file", str(options)])
+    assert f"Prompt Builder: no such report in {CONTENT_ROOT}/Prompt Builder - skipped." in out.getvalue()
+
+
+def test_find_report_at_reads_the_members_of_the_folder_only():
+    """Against the in-memory Folders service: the report in its folder, not
+    a report of that name in another folder, not a reference, and two of a
+    name are an error where the caller must know."""
+    from mdb.viya.reports import find_report_at
+    viya = Viya()
+    viya.put_member("/Users/me/My Folder/Prompt Builder", "/reports/reports/", None)       # a copy elsewhere
+    assert find_report_at(viya, f"{CONTENT_ROOT}/Prompt Builder", "Prompt Builder") is None
+    assert find_report_at(viya, f"{CONTENT_ROOT}/Prompt Builder", "Prompt Builder", strict=True) is None
+    viya.put_reference(f"{CONTENT_ROOT}/Prompt Builder/Prompt Builder", "/reports/reports/elsewhere")
+    assert find_report_at(viya, f"{CONTENT_ROOT}/Prompt Builder", "Prompt Builder") is None
+    uri = viya.put_member(f"{CONTENT_ROOT}/Prompt Builder/Prompt Builder", "/reports/reports/", None)
+    found = find_report_at(viya, f"{CONTENT_ROOT}/Prompt Builder", "Prompt Builder")
+    assert found == {"id": _id(uri), "name": "Prompt Builder", "uri": uri,
+                     "path": f"{CONTENT_ROOT}/Prompt Builder/Prompt Builder"}
+    assert not [call for call in viya.calls if call[1] == "/reports/reports"]                # never by name
+    viya.put_member(f"{CONTENT_ROOT}/Prompt Builder/Prompt Builder", "/reports/reports/", None)
+    with pytest.raises(RuntimeError, match="2 reports of that name are in the folder"):
+        find_report_at(viya, f"{CONTENT_ROOT}/Prompt Builder", "Prompt Builder", strict=True)
+    viya.refuse[("GET", "/folders/folders/@item")] = 503
+    assert find_report_at(viya, f"{CONTENT_ROOT}/Prompt Builder", "Prompt Builder") is None
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        find_report_at(viya, f"{CONTENT_ROOT}/Prompt Builder", "Prompt Builder", strict=True)
 
 
 def test_the_two_ways_out_of_a_report_that_cannot_be_read(importing, tmp_path):
@@ -1452,7 +1526,7 @@ def test_the_context_of_the_optimization_job_is_not_taken_for_it(importing, no_d
 # ---- a dry run asks, and nothing else ----------------------------------------------------
 #: Every request a dry run may make, as the command's own text lists them.
 DRY_RUN_REQUESTS = (
-    r"/casManagement/servers\?limit=100", r"/reports/reports", r"/reports/reports/[^/]+/content",
+    r"/casManagement/servers\?limit=100", r"/reports/reports/[^/]+/content",
     r"/folders/folders/@item", r"/folders/folders/[^/]+/members", r"/files/files/[^/]+/content",
     r"/dataFlows/steps/[^/]+", r"/jobDefinitions/definitions/[^/]+")
 
@@ -1468,6 +1542,10 @@ def test_a_dry_run_makes_get_requests_only(importing, no_discovery, monkeypatch,
     viya = importing.viya
     mine = _site_with_its_own_objects(viya)
     viya.reports = {"Prompt Builder": _xml(TUNED), "RAG Builder": _xml(OLD_RAG)}
+    # each report at its place in the content folder - the lookup is by folder, not by name
+    for folder, name in (("Prompt Builder", "Prompt Builder"), ("RAG", "RAG Builder")):
+        viya.members[viya.make_folder(f"{CONTENT_ROOT}/{folder}")].append(
+            {"name": name, "uri": f"/reports/reports/{name}", "type": "child"})
     before = json.dumps([viya.reports, viya.steps, {k: v.decode() for k, v in viya.files.items()},
                          [body for body, _ in viya.jobs.values()], viya.tree(CONTENT_ROOT)], sort_keys=True)
     folder = tmp_path / "SAS-Viya-Integrations"

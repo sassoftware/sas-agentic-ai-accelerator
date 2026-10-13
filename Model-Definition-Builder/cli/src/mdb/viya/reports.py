@@ -20,7 +20,9 @@ def _failure(what: str, response) -> RuntimeError:
 
 
 def find_report(session, name: str, strict: bool = False) -> Optional[dict]:
-    """The report with this exact name, or None.
+    """The report with this exact name anywhere on the system, or None.
+    The Builder commands ask `find_report_at` instead: the report at its
+    place in the content folder.
 
     Filtered server-side and matched exactly here: `contains` would also
     return "Prompt Builder (old)" and picking the first hit would silently
@@ -43,6 +45,50 @@ def find_report(session, name: str, strict: bool = False) -> Optional[dict]:
         if item.get("name") == name:
             return item
     return None
+
+
+def find_report_at(session, folder_path: str, name: str, strict: bool = False) -> Optional[dict]:
+    """The report called `name` in the SAS Content folder `folder_path`, or
+    None - {"id", "name", "uri", "path"}.
+
+    The Builder's report is the one at its place in the content folder, not
+    the first report of that name anywhere on the system: a copy somebody
+    saved in their own folder is not read from and not written to. A member
+    that is a reference is not the report. A folder or a lookup the service
+    does not answer gives None - unless `strict`, for the caller that must
+    not take "could not ask" for "there is no such report"; two reports of
+    the name in the folder are an error then too.
+    """
+    path = f"{folder_path.rstrip('/')}/{name}"
+    response = session.get("/folders/folders/@item", params={"path": folder_path})
+    if response.status_code == 404:
+        return None
+    if not response.ok:
+        if strict:
+            raise _failure(f"Looking up the folder {folder_path} of the report '{name}' failed", response)
+        return None
+    folder_id = response.json().get("id")
+    members, start = [], 0
+    while True:
+        page = session.get(f"/folders/folders/{folder_id}/members", params={"limit": 200, "start": start})
+        if not page.ok:
+            if strict:
+                raise _failure(f"Listing the folder {folder_path} of the report '{name}' failed", page)
+            return None
+        items = page.json().get("items") or []
+        members.extend(items)
+        start += len(items)
+        if not items or start >= int(page.json().get("count") or 0):
+            break
+    found = [m for m in members if m.get("name") == name and str(m.get("uri") or "").startswith("/reports/reports/")
+             and str(m.get("type") or "child").lower() != "reference"]
+    if len(found) > 1 and strict:
+        raise RuntimeError(f"{path}: {len(found)} reports of that name are in the folder - nothing says which one "
+                           "holds the options")
+    if not found:
+        return None
+    uri = str(found[0]["uri"])
+    return {"id": uri.rstrip("/").rsplit("/", 1)[-1], "name": name, "uri": uri, "path": path}
 
 
 def get_content(session, report_id: str) -> tuple:

@@ -72,6 +72,21 @@ SEED_PROJECT_LABELS = {
 #: moves their options into MERGED_REPORT.
 LEGACY_REPORTS = frozenset({"RAG Builder"})
 
+#: The content folder of the accelerator unless a site moved it - the
+#: contentRoot of SAS-Viya-Integrations/package-manifest.yaml.
+DEFAULT_CONTENT_ROOT = "/SAS Agentic AI Accelerator"
+
+#: Where each Builder report sits below the content root: the folder of the
+#: Prompt Builder report in the package of 2.3.0 (manifest path
+#: `Prompt Builder/Prompt Builder`), and the folder the retired report sat in
+#: (the package of 2.2.x: `RAG/RAG Builder`).
+REPORT_FOLDERS = {MERGED_REPORT: "Prompt Builder", "RAG Builder": "RAG"}
+
+
+def report_folder(content_root: str, report: str) -> str:
+    """The SAS Content folder a Builder report sits in, below `content_root`."""
+    return f"{(content_root or DEFAULT_CONTENT_ROOT).rstrip('/')}/{REPORT_FOLDERS[report]}"
+
 #: Options both reports held with the same meaning. The Prompt Builder's value
 #: is kept; a legacy value that differs is reported, because the two reports
 #: of one site were not supposed to disagree and an admin should know they did.
