@@ -42,6 +42,8 @@ MEMBER_TYPE = {"folder": "folder", "file": "file", "step": "flowStep", "jobDefin
 URI_OF = {"folder": "/folders/folders/", "file": "/files/files/", "step": "/dataFlows/steps/", "jobDefinition": "/jobDefinitions/definitions/",
           "report": "/reports/reports/"}
 TABLES = ("ACCELERATOR_RELEASES", "LLM_LOGS", "PROMPT_EXPERIMENTS", "LLM_FACT_SHEET", "EMBEDDING_FACT_SHEET")
+# The tables of the logging chain that no report binds (round 19)
+CHAIN_TABLES = ("DECISION_FACT_SHEET", "PROMPT_OPTIMIZATIONS", "RAG_SETUPS", "RAG_RUNS", "MODEL_CATALOG")
 
 
 def program():
@@ -139,7 +141,7 @@ class Site:
         self.cas_servers = ["cas-shared-default"]
         self.tables = {name: {"name": name, "state": "loaded", "scope": "global", "rowCount": 100 + position,
                               "lastModified": "2026-10-07T16:12:02.378Z", "createdBy": "uid7781"}
-                       for position, name in enumerate(TABLES)}
+                       for position, name in enumerate(TABLES + CHAIN_TABLES)}
         self.repositories = [{"id": self._id("rrrrrrrr"), "name": "LLM Repository", "createdBy": "uid7781"}]
         self.projects = [{"id": self._id("pppppppp"), "name": name, "repositoryId": self.repositories[0]["id"], "createdBy": "uid7781"}
                          for name in ("LLM Model Project", "Embedding Model Project", "Decision Model Project")]

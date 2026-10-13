@@ -79,7 +79,8 @@ def test_the_sections_of_the_check_stand_in_one_order(monkeypatch, tmp_path):
         if entry["section"] not in sections:
             sections.append(entry["section"])
 
-    assert sections == ["Release", "Content", "CAS tables of the reports", "SAS Model Manager", "Options of the Prompt Builder report",
+    assert sections == ["Release", "Content", "CAS tables of the reports", "CAS tables of the logging chain", "SAS Model Manager",
+                        "Options of the Prompt Builder report",
                         "Credentials", "Python packages: Logging and Monitoring", "Python packages: RAG",
                         "Python packages: Prompt optimization", "Publishing destinations", "Compute contexts"]
     assert all(entry["state"] in (OK, MISSING, NOT_CHECKED) for entry in lines)
@@ -315,14 +316,36 @@ def test_one_thing_missing_is_one_line_with_what_to_do(monkeypatch, tmp_path, ch
             assert other["state"] == NOT_CHECKED, other
 
 
-def test_a_project_without_a_model_is_there_and_says_how_models_get_into_it(monkeypatch, tmp_path):
+def test_a_project_without_a_model_is_missing_and_says_how_models_get_into_it(monkeypatch, tmp_path):
+    """Open item 18 of integrate-18: an empty project of definitions was ok. It is there and holds nothing to call."""
     site = Site()
     site.models[site.projects[2]["id"]] = 0
+    site.models[site.projects[0]["id"]] = 0
     lines, _ = lines_of(monkeypatch, tmp_path, site)
     entry = one(lines, "Project Decision Model Project (decision model definitions)")
 
-    assert (entry["state"], entry["found"]) == (OK, "found, no model yet")
-    assert entry["todo"] == "Register the decision model definitions you need with mdb register."
+    assert (entry["state"], entry["found"]) == (MISSING, "found, no model yet")
+    assert entry["todo"] == ("Register the decision model definitions you need with mdb register. Without decision models this part of the "
+                             "accelerator has nothing to call.")
+    entry = one(lines, "Project LLM Model Project (LLM definitions)")
+    assert (entry["state"], entry["todo"]) == (MISSING, "Register the LLM definitions you need with mdb register.")
+
+
+@pytest.mark.parametrize("table", harness.CHAIN_TABLES)
+def test_a_table_of_the_logging_chain_that_is_not_there_is_missing(monkeypatch, tmp_path, table):
+    """Open item 18 of integrate-18: DECISION_FACT_SHEET and the four tables Get-All-Prompts.sas writes beside
+    PROMPT_EXPERIMENTS were not looked at. They stand in a section of their own, behind the tables of the reports."""
+    site = Site()
+    del site.tables[table]
+    lines, _ = lines_of(monkeypatch, tmp_path, site)
+    chain = [entry for entry in lines if entry["section"] == "CAS tables of the logging chain"]
+
+    assert [entry["what"].split(" ")[0] for entry in chain] == ["Public." + name for name in harness.CHAIN_TABLES]
+    entry = next(entry for entry in chain if entry["what"].startswith(f"Public.{table} "))
+    assert (entry["state"], entry["found"]) == (MISSING, "not in the CAS library")
+    assert entry["todo"] == ("Run the job Load-Accelerator-Tables of the folder Data in this content root, or mdb load-facts."
+                             if table == "DECISION_FACT_SHEET" else "Run Get-All-Prompts.sas or the step LLM - Get All Prompts.")
+    assert all(other["state"] == OK for other in chain if other is not entry)
 
 
 def test_a_cas_server_of_another_name_is_one_line_and_its_tables_are_not_checked(monkeypatch, tmp_path):
@@ -481,8 +504,9 @@ def test_a_session_of_another_user_that_is_refused_everything_gets_one_line(monk
     site = Site()
     site.refuse("/", 401)
     lines, _ = lines_of(monkeypatch, tmp_path, site)
-    assert [entry["state"] for entry in lines].count(NOT_CHECKED) == 15 and [entry["state"] for entry in lines].count(OK) == 13
-    assert [entry["todo"] for entry in lines].count(ASK) == 12        # the page of before
+    # fifteen as on the page that was measured, and the five tables of the logging chain this round added
+    assert [entry["state"] for entry in lines].count(NOT_CHECKED) == 20 and [entry["state"] for entry in lines].count(OK) == 13
+    assert [entry["todo"] for entry in lines].count(ASK) == 17        # the page of before: 12, and the five tables of the logging chain
 
     done = run(monkeypatch, tmp_path, refusing("/", 401), harness.SERVICE_ACCOUNT_SESSION)
     said = ("SAS Viya refused every request of this page (HTTP 401): its SAS session runs as another user than you, in the compute "
@@ -490,7 +514,7 @@ def test_a_session_of_another_user_that_is_refused_everything_gets_one_line(monk
             "context")
 
     assert done.rc == "0"
-    assert summary_of(done.page) == "13 ok, 0 missing, 15 not checked. " + said + ". " + AS_YOURSELF
+    assert summary_of(done.page) == "13 ok, 0 missing, 20 not checked. " + said + ". " + AS_YOURSELF
     # one row stands for the fifteen, and it is the first row of the page
     assert not_checked_rows(done.page) == ["Requests to SAS Viya"]
     rows = re.findall(r'<tr><td>(.*?)</td><td class="state (\w+)">', done.page)
@@ -501,7 +525,7 @@ def test_a_session_of_another_user_that_is_refused_everything_gets_one_line(monk
     assert "<li>The report Prompt Builder could not be looked for.</li>" in done.page and "was not found in" not in done.page
     # the log has the counts and the same sentence, without the character an address takes
     assert done.sas.messages == [
-        ("NOTE", "Start Here: the page holds 28 checks - 13 ok, 0 missing, 15 not checked."),
+        ("NOTE", "Start Here: the page holds 33 checks - 13 ok, 0 missing, 20 not checked."),
         ("NOTE", "Start Here: " + said + ". Open the page in a compute context that runs as you: the parameter _contextName, in the address "
                  "of the page or in the job definition, names the context.")]
     # neither user is on the page or in the log
@@ -518,7 +542,7 @@ def test_a_session_that_names_neither_user_and_is_refused_everything_says_both_w
     line names the compute context it ran in where that is known, and the way to open the page as oneself."""
     done = run(monkeypatch, tmp_path, refusing("/", 401), {})
 
-    assert summary_of(done.page) == ("13 ok, 0 missing, 15 not checked. SAS Viya refused every request of this page (HTTP 401). Open this "
+    assert summary_of(done.page) == ("13 ok, 0 missing, 20 not checked. SAS Viya refused every request of this page (HTTP 401). Open this "
                                      "page again. If the line stays, " + AS_YOURSELF[0].lower() + AS_YOURSELF[1:])
     assert not_checked_rows(done.page) == ["Requests to SAS Viya"] and "another user" not in summary_of(done.page)
 
@@ -538,7 +562,7 @@ def test_a_session_of_the_user_that_is_refused_everything_is_told_what_to_ask_fo
     said = (f"SAS Viya refused every request of this page (HTTP {status}), which ran as you, in the compute context SAS Studio "
             "compute context")
 
-    assert summary_of(done.page) == "13 ok, 0 missing, 15 not checked. " + said + ". " + todo
+    assert summary_of(done.page) == "13 ok, 0 missing, 20 not checked. " + said + ". " + todo
     assert not_checked_rows(done.page) == ["Requests to SAS Viya"]
     assert "another user" not in done.page and "_contextName" not in summary_of(done.page)
     # the log says the same, and the advice holds no ampersand
@@ -621,10 +645,10 @@ def test_in_a_session_of_another_user_a_refused_line_advises_to_open_the_page_as
     as_user = run(monkeypatch, work(tmp_path, 'own'), site, harness.OWN_SESSION)
     other = run(monkeypatch, work(tmp_path, 'other'), site, harness.SERVICE_ACCOUNT_SESSION)
 
-    assert as_user.page.count(ASK) == 6 and "does not run as you" not in as_user.page
+    assert as_user.page.count(ASK) == 11 and "does not run as you" not in as_user.page
     assert "in a compute context that runs under a service account that is the service account" in as_user.page
     advice = (AS_YOURSELF[:-1] + " - or ask for the right the session lacks.").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    assert ASK not in other.page and other.page.count("<td>" + advice + "</td>") == 6
+    assert ASK not in other.page and other.page.count("<td>" + advice + "</td>") == 11
     note = re.search(r'<p class="note">(.*?)</p>', other.page).group(1).replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
     assert note == (f"Content root {ROOT}. This page was built by a SAS session that does not run as you, in the compute context SAS Job "
                     "Execution compute context: it shows what that session may read, which depends on how the system configures its "
@@ -981,6 +1005,29 @@ def test_a_guide_address_of_another_host_is_text(monkeypatch, tmp_path, address,
         assert guides == []
         assert any(text == "User Guide: Prompt Builder: " + address.rstrip("/") + "/User-Guide/Prompt-Builder" for text in page.texts)
         assert "the addresses of the guides are text, not links" in done.page
+
+
+CONTEXT_LINK = "/SASJobExecution/?_program=/SAS%20Agentic%20AI%20Accelerator/Start%20Here&_contextName="
+
+
+@pytest.mark.parametrize("refused", [True, False], ids=["refused everything", "refused nothing"])
+def test_a_page_whose_advice_is_another_compute_context_links_itself_in_the_others(monkeypatch, tmp_path, refused):
+    """Open item 18 of integrate-18: the page said to add &_contextName= to its address and gave no link. In a
+    session of another user it links itself in each compute context it found - or, where the contexts could not
+    be listed, in each one the parameter computeContexts names -, but the one it ran in."""
+    site = refusing("/", 401) if refused else Site()
+    done = run(monkeypatch, tmp_path, site, harness.SERVICE_ACCOUNT_SESSION)
+    page = Page(done.page)
+    links = [link["href"] for link in page.links if link["href"].startswith("/SASJobExecution/")]
+
+    assert CONTEXT_LINK + "SAS%20Studio%20compute%20context" in links and len(links) == len(set(links))
+    assert CONTEXT_LINK + "SAS%20Job%20Execution%20compute%20context" not in links          # the context it ran in
+    if refused:
+        assert links == [CONTEXT_LINK + "SAS%20Studio%20compute%20context"]                # the contexts of the parameter
+    assert "Whether a context runs as you depends on how the system configures it." in done.page
+    # a session that runs as the person who opened the page is not sent elsewhere
+    own = run(monkeypatch, work(tmp_path, "own"), site, harness.OWN_SESSION)
+    assert not [link for link in Page(own.page).links if link["href"].startswith("/SASJobExecution/")]
 
 
 def test_a_guide_address_on_this_sas_viya_is_a_link(monkeypatch, tmp_path):

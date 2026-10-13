@@ -156,6 +156,16 @@ REPORT_TABLES = (
     ('LLM_FACT_SHEET', 'LLM Usage Report', LOADER_JOB + ', or mdb load-facts.'),
     ('EMBEDDING_FACT_SHEET', 'LLM Usage Report', LOADER_JOB + ', or mdb load-facts.'),
 )
+# The CAS tables of the logging chain that no report binds: the fact sheet of the decision models, and the four
+# tables Get-All-Prompts.sas writes beside PROMPT_EXPERIMENTS, which Link-Logs-To-Models.sas reads
+GET_ALL_PROMPTS = 'Run Get-All-Prompts.sas or the step LLM - Get All Prompts.'
+CHAIN_TABLES = (
+    ('DECISION_FACT_SHEET', 'the costs of the decision models', LOADER_JOB + ', or mdb load-facts.'),
+    ('PROMPT_OPTIMIZATIONS', 'Link-Logs-To-Models.sas', GET_ALL_PROMPTS),
+    ('RAG_SETUPS', 'Link-Logs-To-Models.sas', GET_ALL_PROMPTS),
+    ('RAG_RUNS', 'Link-Logs-To-Models.sas', GET_ALL_PROMPTS),
+    ('MODEL_CATALOG', 'Link-Logs-To-Models.sas', GET_ALL_PROMPTS),
+)
 # What a folder member is called for each kind of entry release.json lists
 MEMBER_TYPES = {'folder': ('folder',), 'file': ('file',), 'step': ('flowStep',), 'jobDefinition': ('jobDefinition',),
                 'report': ('report',)}
@@ -566,21 +576,25 @@ def builder_options(get, listings):
 # The checks
 # ---------------------------------------------------------------------------
 
+TABLE_GROUPS = ((REPORT_TABLES, 'CAS tables of the reports'), (CHAIN_TABLES, 'CAS tables of the logging chain'))
+
+
 def table_lines(get, server, caslib):
-    """The CAS tables the two reports bind: there, their rows, and when they were loaded."""
-    section = 'CAS tables of the reports'
+    """The CAS tables the two reports bind, and the ones of the logging chain that no report binds: there,
+    their rows, and when they were loaded."""
     status, servers = list_all(get, '/casManagement/servers')
     names = [text_of(item.get('name')) for item in servers if item.get('name')]
     if status != 200:
         state, found = not_read(status, 'the CAS servers')
-        return [line(section, f'{caslib}.{table} ({report})', state, found, ask_again(status)) for table, report, _ in REPORT_TABLES]
+        return [line(section, f'{caslib}.{table} ({report})', state, found, ask_again(status))
+                for tables, section in TABLE_GROUPS for table, report, _ in tables]
     lines = []
     if server not in names:
-        lines.append(line(section, 'CAS server ' + server, MISSING, 'not among the CAS servers: ' + (', '.join(names[:10]) or 'none is listed'),
+        lines.append(line(TABLE_GROUPS[0][1], 'CAS server ' + server, MISSING, 'not among the CAS servers: ' + (', '.join(names[:10]) or 'none is listed'),
                           'Set the parameter casServer of this job to the CAS server that holds the tables.'))
         return lines + [line(section, f'{caslib}.{table} ({report})', NOT_CHECKED, 'the CAS server was not found',
-                             'Set the parameter casServer of this job.') for table, report, _ in REPORT_TABLES]
-    for table, report, load in REPORT_TABLES:
+                             'Set the parameter casServer of this job.') for tables, section in TABLE_GROUPS for table, report, _ in tables]
+    for table, report, load, section in [(table, report, load, section) for tables, section in TABLE_GROUPS for table, report, load in tables]:
         what = f'{caslib}.{table} ({report})'
         status, info = read_json(get, f'/casManagement/servers/{segment(server)}/caslibs/{segment(caslib)}/tables/{segment(table)}')
         if status == 404:
@@ -643,7 +657,9 @@ def repository_lines(get, settings):
         if status != 200 or not isinstance(count, int) or isinstance(count, bool):
             lines.append(line(section, what, OK, 'found, its models could not be counted'))
         elif count == 0:
-            lines.append(line(section, what, OK, 'found, no model yet', f'Register the {kind} definitions you need with mdb register.'))
+            lines.append(line(section, what, MISSING, 'found, no model yet',
+                              f'Register the {kind} definitions you need with mdb register.'
+                              + ('' if key == 'llmProject' else f' Without {kind}s this part of the accelerator has nothing to call.')))
         else:
             lines.append(line(section, what, OK, f'found, {count} model' + ('s' if count != 1 else '')))
     return lines, found_ids
@@ -778,7 +794,9 @@ def context_lines(get, settings, options):
     lines = []
     for name, why in wanted:
         if name in names:
-            lines.append(line(section, f'{name} ({why})', OK, 'found'))
+            found = line(section, f'{name} ({why})', OK, 'found')
+            found['context'] = name
+            lines.append(found)
         else:
             lines.append(line(section, f'{name} ({why})', MISSING, 'no compute context of that name',
                               'Create the context in SAS Environment Manager, or correct the name where it is set.'))
@@ -945,6 +963,21 @@ def render_page(settings, lines, reports, session=None, viya_host=''):
                                            2 * TEXT_LIMIT) + '</p>',
              '<p class="note">' + shown('Content root ' + settings['contentRoot'] + '. ' + whose + 'It changed nothing: it only read.',
                                         2 * TEXT_LIMIT) + '</p>']
+    # Where the page says to open it in another compute context, it links itself in each one it found
+    if session['other'] or (refused and not session.get('own')):
+        # the contexts the page found, or - where they could not be listed - the ones the parameter computeContexts names
+        listed = [entry for entry in lines if entry['section'] == 'Compute contexts' and entry['state'] != NOT_CHECKED]
+        named = ([entry.get('context', '') for entry in listed if entry['state'] == OK] if listed
+                 else [part.strip() for part in settings['computeContexts'].split('|')])
+        contexts = []
+        for name in named:
+            if name and name != session['context'] and name not in contexts:
+                contexts.append(name)
+        address = '/SASJobExecution/?_program=' + quote(settings['contentRoot'].rstrip('/') + '/Start Here', safe='/')
+        targets = [link(name, address + chr(38) + '_contextName=' + quote(name, safe=''), here=True) for name in contexts]
+        if targets:
+            page.append('<p class="note">' + shown('Open this page in the compute context: ') + shown(', ').join(targets)
+                        + shown('. Whether a context runs as you depends on how the system configures it.') + '</p>')
     sections = []
     for entry in lines:
         if entry['section'] not in sections:
