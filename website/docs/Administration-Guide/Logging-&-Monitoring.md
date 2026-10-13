@@ -19,8 +19,8 @@ Three programs of that folder work on the collected log, and they run in this or
 
 1. **Collect** the log - the script below, or your own process.
 2. **Parse** it: `Log-Parser-Code.sas` or the *LLM - Log Parser* custom step write one row per request to the table `LLM_LOGS` - see [Running the Parser](#running-the-parser) and [The Columns of LLM_LOGS](#the-columns-of-llm_logs).
-3. **Pull** what the Prompt Builder keeps in SAS Model Manager: `Get-All-Prompts.sas` or the *LLM - Get All Prompts* custom step write the experiments, the RAG setups and a catalog of models - see [The Experiments of Every Kind](#what-it-reads).
-4. **Link** the two: `Link-Logs-To-Models.sas` fills, for every row of `LLM_LOGS`, the SAS Model Manager id of the model that answered and of the prompt, decision template or RAG setup that sent the request - see [Linking the Log to the Models](#the-rules-in-their-order).
+3. **Pull** what the Prompt Builder keeps in SAS Model Manager: `Get-All-Prompts.sas` or the *LLM - Get All Prompts* custom step write the experiments, the RAG setups and a catalog of models - see [The Experiments of Every Kind](#the-experiments-of-every-kind).
+4. **Link** the two: `Link-Logs-To-Models.sas` fills, for every row of `LLM_LOGS`, the SAS Model Manager id of the model that answered and of the prompt, decision template or RAG setup that sent the request - see [Linking the Log to the Models](#linking-the-log-to-the-models).
 
 Steps 2 to 4 of release 2.3.0 ran as one chain on the test system three times, on 2026-10-11 and twice on 2026-10-12, each time with the programs as they were then - the parse with its 24 further columns, the pull with its four further tables, the link, and the joins of the tables: see [The Chain on SAS Viya](#the-chain-on-sas-viya). The first run found defects and the three programs were changed; the second run measured those changes and found further defects, and the programs were changed again; [the third run](#the-third-run) measured those changes - version 2.4 of the *LLM - Log Parser* step, version 2.2 of the *LLM - Get All Prompts* step, `Link-Logs-To-Models.sas` and the ingestion job of a RAG setup. Of what was changed after the third run, the settings a program takes only where they are not set ([Settings that stay yours](#settings-that-stay-yours)), `Load-Fact-Sheets.sas` through the job `Load-Accelerator-Tables`, and `Build-RAG-Cost-View.sas` with one and with two run tables were measured later that day in test content roots. **Not run in SAS**, and the sections say which part that is: versions 2.5 and 2.6 of the *LLM - Log Parser* step and 2.3 and 2.4 of the *LLM - Get All Prompts* step, the counter of an `optimizationId`, the line the collection script of this release writes in front of the lines of every container, and `Build-RAG-Cost-View.sas` as it is since it leaves at the first refusal. The Python of the three programs runs in the tests of the repository and was run outside of SAS on the collected log of those runs. [What Was Measured](#what-was-measured) is about the parser as it was before the further columns.
 
@@ -389,6 +389,8 @@ The step and the program of this release hold that check line unchanged. What th
 - Of the parser with the 36 columns: the output port of the step on the flow canvas of SAS Studio and its *About* tab as SAS Studio shows it - the stored step, its 36 column controls and the generated code were looked at -, the default table names - the runs of 2026-10-11 wrote to `CASUSER`, and on 2026-10-12 one chain wrote to `Public` under names of its own -, a collected log with requests that ran at the same time, and the *LLM Usage Report* opened on a table of this release: the twelve columns it reads of `LLM_LOGS` were compared with the report package and are all there. The package joins `LLM_LOGS` with `LLM_FACT_SHEET`; whether the new column `model_id` of `LLM_LOGS` touches that join was not looked at.
 - What the three programs do since the chain ran a second time on 2026-10-12: version 2.4 of the *LLM - Log Parser* step, version 2.2 of the *LLM - Get All Prompts* step and `Link-Logs-To-Models.sas` as they are now. [The Chain on SAS Viya](#the-chain-on-sas-viya) lists what was changed after each run.
 
+<a id="the-experiments-of-every-kind"></a>
+
 # The Experiments of Every Kind
 
 `SAS-Viya-Integrations/Logging-Monitoring/Get-All-Prompts.sas` reads what the Prompt Builder keeps in SAS Model Manager and writes it into five CAS tables. Every row of every table carries `modelID` and `projectID`, the SAS Model Manager ids of the model and of its project - the model being the prompt template, the decision template or the RAG setup itself, where its trackers and its manifested score code are stored. The *LLM - Get All Prompts* custom step runs the same program.
@@ -498,6 +500,8 @@ Measured on the test system on 2026-10-11 with `Get-All-Prompts.sas` as it was t
 - **The run table of the Builder's setup does not exist.** The pull wrote `NOTE: The run table Public.<prefix>_RUNS is not in memory, ...`. The caslib held the ledger of the setup (`<prefix>_LEDGER`, 7 rows, and its `.sashdat`) and no run table, in memory or as a file. The 105 rows of `RAG_RUNS` came from four run tables of setups that the step path had ingested; three of those tables are shared by two or three models the step registered and are in `RAG_RUNS` once per model. 15 of the 105 rows hold a `finished_at` about two hours before their `started_at`. **On 2026-10-12:** for a setup without a run table in memory the pull writes the runs its ledger still names. For that setup it wrote `NOTE: The run table Public.<prefix>_RUNS is not in memory. 1 run(s) were taken from the ledger Public.<prefix>_LEDGER - the runs its rows still name, each from the start its id holds to the latest of its rows.` The row had the run id of the ledger, `started_at` `2026-10-11 17:49:41`, `finished_at` `2026-10-11 17:49:47`, the collection and the embedding model of the setup, `run_source` `ledger`, and no counts and no status. A second setup gave one row from its ledger as well: 2 of the 107 rows of `RAG_RUNS` were from ledgers and 105 from the four run tables. The ledger was unchanged - 7 rows, the same modified time, the same file -, and the steps that read it wrote no note about a variable that is not initialized or a value that was converted. **Since then** the ingestion job publishes the run table of its setup, see `RAG_RUNS` above; in [the third run](#the-third-run) the pull read four runs of a setup from the table its job had published.
 - **Behind the parser in one SAS session** the `cas mySess;` of the program wrote `WARNING: A session with the name MYSESS already exists.` - SAS Job Execution keeps such a warning in the record of a job: another job of that day with the same warning ended as completed and carried the error code 5710 with that message -, and the program ended the session the parser had started and its librefs were bound to. **On 2026-10-12:** both code files ask `SESSFOUND` before they start a session, and `Get-All-Prompts.sas` ends only a session it started. Alone in a fresh SAS session the program started `MYSESS` and ended it. In one job with the parser, the pull, the parser, the pull and the link twice, no line said `already exists`, the session and the librefs `public` and `casuser` were there after every program, and both pulls wrote their five tables with the row counts above. Behind a CAS session of the user no program started one of its own.
 - **Not measured:** an output without rows - every output had rows -, a pull that takes longer than two minutes (51 projects and 109 models took 17 to 20 seconds), the default table names - on 2026-10-12 one pull wrote its five tables to `Public` under names of its own, with the same rows and columns -, the step run from its page in SAS Studio, and of the runs taken from a ledger a ledger without the columns `run_id` and `updated_at` and a CAS library that is not available. What the program does since the third run - version 2.3 of the step, and the settings it takes only where they are not set - is not run in SAS.
+
+<a id="linking-the-log-to-the-models"></a>
 
 # Linking the Log to the Models
 
@@ -725,6 +729,8 @@ A check of the saved logs of this run against its report carried every measureme
 
 The links are made by content because nothing else is logged. What would make them exact is a caller id that the manifested models send themselves: a key in `options` - the SAS Model Manager id of the prompt or decision template - that the generated score code of the answering model ignores and the container logs with the request, and, for a retrieval, the id of the setup or its collection in the `project` input of the embedding call, which the RAG runtime sends as the constant `rag` today. The parser would read both from the `Request Data:` line and no rule above would be needed for such a request. It is not built: it needs a change of the Prompt Builder and of the RAG runtime, and a new manifest of every model - a prompt, a decision template or a retrieval model that was manifested before sends no id.
 
+<a id="the-llm-usage-report"></a>
+
 # The LLM Usage Report
 
 The LLM Usage Report is a ready-made SAS Visual Analytics report. It is part of
@@ -789,8 +795,12 @@ CAS library**, repoint them one of two ways:
   table in your library.
 
 :::note
-The imported report keeps its identifier `/reports/reports/1f08db8d-d6c6-4ed1-9684-e7d11c4ec50c` —
-the same URI shown as the example `SAS_LLM_MODEL_CARD_REPORT_URI` and the Prompt
-Builder *Model card report URI* — so once imported it can double as the model-card
-custom chart for your registered models and manifested prompts.
+The package of earlier releases carried the report under the identifier
+`/reports/reports/1f08db8d-d6c6-4ed1-9684-e7d11c4ec50c` — the URI shown as the example
+`SAS_LLM_MODEL_CARD_REPORT_URI` and the Prompt Builder *Model card report URI*. Which
+identifier the report has on your site after an import of this release — the one of the
+package, or another where your site had a report of that name — has not been measured.
+Read it from the report in the folder `Logging and Monitoring` of the content folder after
+the import, and use that URI where the report doubles as the model-card custom chart for
+your registered models and manifested prompts.
 :::
