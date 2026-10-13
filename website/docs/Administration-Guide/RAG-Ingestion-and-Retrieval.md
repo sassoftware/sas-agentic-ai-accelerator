@@ -57,8 +57,17 @@ into is `/SAS Agentic AI Accelerator/RAG`; `-ContentRoot` (PowerShell) or `-r`
 which is what the option **RAG: content root** of the Prompt Builder holds.
 A site with such a content root deploys the runtime there after an import,
 because the import brings it into the folder `RAG` of the content folder.
-`-DryRun` / `-n` lists what would change and writes nothing. The script as a
-caller of `mdb` has **not run against SAS Viya**.
+`-DryRun` / `-n` lists what would change and writes nothing. A folder that is
+not there is created only with `-Create` / `-c` (with every folder above it),
+so a mistyped path does not become a new folder. A warning `mdb` writes to the
+error stream - `InsecureRequestWarning` where TLS verification is off - does
+not stop the PowerShell script, also with its streams redirected, and both
+scripts end with the exit code of `mdb`. The command they call, `mdb
+content-deploy --only RAG --to <folder>`, created the 41 entries of the runtime
+directly in a test folder on SAS Viya 2026.09 on 2026-10-12. The scripts as
+callers of `mdb` have **not run against SAS Viya**: a dry run of the
+PowerShell script was reported that day with `41 entries: 41 equal.`, but
+what was saved of it does not show the command that started it.
 
 **Nothing is ever fetched from the internet at run time**, so both ways work
 in an air-gapped deployment: the SAS Content folder is the distribution
