@@ -88,7 +88,7 @@ https://<your SAS Viya host>/SASJobExecution/?_program=/SAS Agentic AI Accelerat
 | `_contextName` | `SAS Studio compute context` | The compute context the job runs in: one that runs as the person who starts it |
 | `contentRoot` | `/SAS Agentic AI Accelerator` | The content folder whose `Data` folder holds the four files |
 | `caslib` | `Public` | The CAS library of the four tables |
-| `releaseTable` | `ACCELERATOR_RELEASES` | The name of the release table: a SAS name of 28 characters at most. A table of that name that exists and lacks a column of the release table - a fact sheet, the log table - is left as it is, with an ERROR line |
+| `releaseTable` | `ACCELERATOR_RELEASES` | The name of the release table: a SAS name of 28 characters at most. A table of that name that exists and lacks one of the ten columns every release table has - a fact sheet, the log table - is left as it is, with an ERROR line; the release table of 2.2.0, without `builder_part`, is replaced |
 
 `mdb load-releases` and `mdb load-facts` load the same tables from a checkout and stay the way to load them from a workstation.
 

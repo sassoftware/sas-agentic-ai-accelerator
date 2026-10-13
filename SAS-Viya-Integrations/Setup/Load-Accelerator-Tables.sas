@@ -232,9 +232,11 @@ run;
             end;
             outcome = "rows";
         end;
-        /* A table of that name that exists is replaced only where it is a release table, with every column of one:
+        /* A table of that name that exists is replaced only where it is a release table, with the columns of one:
            the parameter releaseTable can name any table of the CAS library, and another table of the site - a fact
-           sheet, the log table - is left as it is */
+           sheet, the log table - is left as it is. builder_part is not asked for: the release table of 2.2.0 and
+           earlier does not have it (measured on 2026-10-12: Public.ACCELERATOR_RELEASES of the test system had the
+           ten other columns), and the job replaces it */
         if staged == &_lat_rows. then do;
             table.tableExists result = present / caslib = "&caslib." name = "&releaseTable.";
             if present.exists != 0 then do;
@@ -246,7 +248,10 @@ run;
                     end;
                 end;
                 %do _lat_i = 1 %to &_lat_n.;
-                    if index(have, " %upcase(%scan(%scan(&_lat_vars., &_lat_i., %str( )), 1, %str(:))) ") == 0 then outcome = "foreign";
+                    %let _lat_v = %upcase(%scan(%scan(&_lat_vars., &_lat_i., %str( )), 1, %str(:)));
+                    %if &_lat_v. NE BUILDER_PART %then %do;
+                    if index(have, " &_lat_v. ") == 0 then outcome = "foreign";
+                    %end;
                 %end;
             end;
         end;

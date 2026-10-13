@@ -414,7 +414,8 @@ def test_the_job_fails_for_a_refusal_and_for_a_table_that_is_not_there_at_the_en
 def test_a_table_of_that_name_that_is_no_release_table_is_left_as_it_is():
     """Review-17/18 (open item 14): the parameter releaseTable could name any table of the CAS library, which the job
     then dropped and replaced - a fact sheet, the log table. A table of that name that exists is replaced only where it
-    has every column of the release table; otherwise it is left, the upload is dropped, and the job ends with an ERROR
+    has the columns of a release table - all but builder_part, which the release table of 2.2.0 lacks (measured on 2026-10-12);
+    otherwise it is left, the upload is dropped, and the job ends with an ERROR
     line and SYSCC 1012."""
     release = macro("_lat_release_table")
 
@@ -423,7 +424,9 @@ def test_a_table_of_that_name_that_is_no_release_table_is_left_as_it_is():
              'table.tableExists result = present / caslib = "&caslib." name = "&releaseTable.";',
              'table.columnInfo result = described / table = {caslib = "&caslib.", name = "&releaseTable."};',
              "have = have || upcase(column.Column) || \" \";",
-             'if index(have, " %upcase(%scan(%scan(&_lat_vars., &_lat_i., %str( )), 1, %str(:))) ") == 0 then outcome = "foreign";',
+             '%let _lat_v = %upcase(%scan(%scan(&_lat_vars., &_lat_i., %str( )), 1, %str(:)));',
+             '%if &_lat_v. NE BUILDER_PART %then %do;',
+             'if index(have, " &_lat_v. ") == 0 then outcome = "foreign";',
              'if staged == &_lat_rows. and outcome != "foreign" then do;',
              'table.dropTable status = dropped / caslib = "&caslib." name = "&releaseTable." quiet = true;',
              "else do;",
