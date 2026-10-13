@@ -3,7 +3,9 @@
 The program dropped each of its three tables and loaded the sheet behind it. A sheet that
 was not in the folder, or that CAS did not take, left the site without the table it had.
 Each sheet is now read and tried in CAS first, beside the table, and only a sheet CAS held
-completely takes its place.
+completely takes its place - the upload whose rows were counted, promoted under the name of
+the table, as Load-Accelerator-Tables does it for the release table; the sheet is not loaded
+a second time.
 
 The SAS code can not run here. The tests read it as text: the statements and their order.
 """
@@ -41,6 +43,11 @@ def read_macro():
     return code[code.index("%macro _lfs_read("):code.index("%mend _lfs_read;")]
 
 
+def swap_macro():
+    code = without_comments(program("Load-Fact-Sheets.sas"))
+    return code[code.index("%macro _lfs_swap("):code.index("%mend _lfs_swap;")]
+
+
 # ---------------------------------------------------------------------------
 # Load-Fact-Sheets.sas
 # ---------------------------------------------------------------------------
@@ -48,19 +55,12 @@ def read_macro():
 @pytest.mark.parametrize("file, work, table, folder", SHEETS, ids=[sheet[2] for sheet in SHEETS])
 def test_a_table_is_only_dropped_for_a_sheet_that_cas_held_completely(file, work, table, folder):
     code = without_comments(program("Load-Fact-Sheets.sas"))
-    block = (f"%_lfs_read({file}, {work}, {table});\n"
-             "%if &_lfs_ok. EQ 1 %then %do;\n"
-             '    proc casUtil inCASLib="&_lfs_caslib." outCASLib="&_lfs_caslib.";\n'
-             f"        dropTable casData='{table}' quiet;\n"
-             f"        load data=work.{work} casOut='{table}';\n"
-             f"        promote casData='{table}' casOut='{table}';\n"
-             f"        save casData='{table}' casOut='{table}' replace;\n"
-             "    run; quit;\n"
-             "%end;\n")
+    block = f"%_lfs_read({file}, {work}, {table});\n%_lfs_swap({table});\n"
 
     assert code.count(block) == 1
-    # the table is named in no other statement that drops, loads, promotes or saves
-    assert code.count(f"casData='{table}'") == 3 and code.count(f"casOut='{table}'") == 3
+    # the table is named nowhere else: no statement outside the two macros drops, loads, promotes or saves it
+    assert code.count(table) == 2 and code.count(work) == 2
+    assert "casData=" not in code and "proc casUtil" not in code.replace(read_macro(), "")
     # the file the program reads is the fact sheet the repository holds for that kind of model
     assert (REPOSITORY / folder / file).is_file()
 
@@ -107,6 +107,41 @@ def test_a_sheet_is_read_and_tried_in_cas_before_its_table_is_touched():
     assert macro.count("proc casUtil") == 1 and macro.count("proc cas;") == 1 and macro.count("proc import") == 1
 
 
+def test_the_counted_upload_takes_the_place_of_the_table_and_nothing_loads_the_sheet_again():
+    """Integrate-18 open item 5: the program tried each sheet beside its table, dropped that
+    trial, and then dropped the table and loaded the sheet a second time - a failure of CAS
+    between the drop and the second load left the site without that table, and the load that
+    took its place was not the one whose rows were counted. The counted upload is now kept and
+    promoted under the name of the table, the statements Load-Accelerator-Tables ran with on
+    2026-10-12 for the release table; a refused promote loads the table again from its file."""
+    read, swap = read_macro(), swap_macro()
+
+    # the trial is dropped only where it does not hold every row
+    in_order(read, "if staged != &_lfs_rows. then do;",
+             'table.dropTable / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW" quiet = true;',
+             'call symputx("_lfs_staged", staged, "L");')
+    # nothing happens for a sheet that was not read completely
+    in_order(swap, "%if &_lfs_ok. NE 1 %then %return;", "proc cas;")
+    # the table is dropped, the counted upload promoted under its name and saved; no load of the sheet
+    in_order(swap, 'table.dropTable status = dropped / caslib = "&_lfs_caslib." name = "&_lfs_table." quiet = true;',
+             'table.promote status = promoted / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW"',
+             'targetLib = "&_lfs_caslib." target = "&_lfs_table.";', "if promoted.severity == 0 then do;",
+             'table.save status = stored / table = {caslib = "&_lfs_caslib.", name = "&_lfs_table."}',
+             'caslib = "&_lfs_caslib." name = "&_lfs_table." replace = true;', 'if stored.severity == 0 then outcome = "loaded";',
+             "else do;", 'table.dropTable / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW" quiet = true;',
+             'table.loadTable status = restored / caslib = "&_lfs_caslib." path = "&_lfs_table..sashdat"',
+             'casOut = {caslib = "&_lfs_caslib.", name = "&_lfs_table.", promote = true};',
+             'call symputx("_lfs_outcome", outcome, "L");', "run; quit;")
+    assert "load data=" not in swap and "work." not in swap and swap.count("proc cas;") == 1
+    # every outcome but a saved table is a WARNING that says what the table holds; none is an ERROR or ends the program
+    warnings = re.findall(r"%put (WARNING: [^;]*);", swap)
+    assert len(warnings) == 3 and "ERROR" not in swap.upper()
+    for warning in warnings:
+        assert "&_lfs_caslib..&_lfs_table." in warning and not set(warning) & set("%'\"")
+    # one test for a sheet that was not read, and one for each WARNING
+    assert swap.count("%if") == swap.count("%put") + 1 and swap.count("%else %if") == 2
+
+
 def test_an_error_for_one_sheet_does_not_put_a_batch_session_into_syntax_check_mode():
     """Behind an error a batch session checks syntax only and runs no further step - measured on
     2026-10-12 for the first DATA step behind a program that ended with an error condition. The
@@ -130,7 +165,7 @@ def test_the_macro_and_its_flag_are_gone_at_the_end():
     tail = text[text.rindex("* Clean up;"):]
 
     assert "delete _lfs_llm_fact_sheet _lfs_embedding_fact_sheet _lfs_decision_fact_sheet;" in tail
-    in_order(tail, "cas mySess terminate;", "%sysmacdelete _lfs_read;", "options &_lfs_syntaxcheck.;",
+    in_order(tail, "cas mySess terminate;", "%sysmacdelete _lfs_read;", "%sysmacdelete _lfs_swap;", "options &_lfs_syntaxcheck.;",
              "%symdel _lfs_ok _lfs_syntaxcheck / nowarn;", "%symdel _lfs_path _lfs_caslib _lfs_clean_cas_session;")
     # the header says what the program does with a table that exists, and who includes the file
     head = text.split("*/")[0]

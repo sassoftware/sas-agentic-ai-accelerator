@@ -36,10 +36,10 @@
  * session, its rows are counted against the lines of the file, and only then
  * is the table dropped, the upload promoted under its name and saved. A file
  * that is not there, that has other columns or that CAS did not take leaves
- * the table as it is, with a WARNING. Load-Fact-Sheets.sas tries each sheet
- * beside its table in the same way, but drops that trial again: it then
- * drops the table and loads the sheet a second time, so the load that takes
- * the place of a fact sheet table is not the one whose rows were counted.
+ * the table as it is, with a WARNING. Load-Fact-Sheets.sas replaces each
+ * fact sheet table the same way: the upload whose rows were counted is
+ * promoted under the name of the table and saved, and the sheet is not
+ * loaded a second time.
  *
  * THE JOB RUNS AS THE USER WHO STARTS IT where its compute context does: the
  * job definition names the context in its parameter _contextName. In a

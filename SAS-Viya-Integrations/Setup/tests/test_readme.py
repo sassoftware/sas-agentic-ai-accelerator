@@ -96,9 +96,9 @@ def test_what_the_page_says_of_the_fact_sheet_program_and_of_the_four_widths():
     loader = section("Load-Accelerator-Tables")
 
     assert "does the same for each sheet" not in readme()
-    assert ("*Load-Fact-Sheets.sas* tries each sheet beside its table in the same way, but drops that trial again: it then drops the table "
-            "and loads the sheet a second time.") in loader
-    assert "a failure of CAS between the drop and the second load leaves the site without that table" in loader
+    assert ("*Load-Fact-Sheets.sas* replaces each fact sheet table the same way: the upload of the sheet whose rows were counted is "
+            "promoted under the name of the table and saved, and the sheet is not loaded a second time.") in loader
+    assert "second load leaves the site without that table" not in loader
     # the formatted length: what was measured, and why it changes nothing
     assert ("is 16 where the table of `mdb` has 6, 10, 8 and 8, for the four text columns whose longest value is shorter than 16 bytes "
             "(`version`, `release_date`, `change_type`, `builder_part`)") in loader

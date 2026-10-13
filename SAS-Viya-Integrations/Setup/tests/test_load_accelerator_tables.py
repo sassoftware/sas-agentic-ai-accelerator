@@ -206,28 +206,31 @@ def test_the_width_cas_keeps_for_display_cuts_no_value(release_file):
 
 def test_what_is_said_of_the_fact_sheet_program_is_what_it_does():
     """The header and the README said of the swap of the release table that Load-Fact-Sheets.sas does the
-    same for each sheet. It does not: it tries the sheet beside the table, drops that trial, and then
-    drops the table and loads the sheet a second time. The sentence says that now - and this test reads
-    the program, so that the sentence is looked at again when the program changes."""
+    same for each sheet, while it dropped its trial and loaded the sheet a second time. Now it
+    does the same: the counted upload is promoted under the name of the table. The sentence says that -
+    and this test reads the program, so that the sentence is looked at again when the program changes."""
     loader = re.sub(r"/\*.*?\*/", "", (REPOSITORY / "SAS-Viya-Integrations" / "Logging-Monitoring" / "Load-Fact-Sheets.sas")
                     .read_text(encoding="utf-8").replace("\r\n", "\n"), flags=re.DOTALL)
     trial = loader[loader.index("%macro _lfs_read("):loader.index("%mend _lfs_read;")]
 
-    # the trial is loaded beside the table, counted and dropped again; nothing promotes it
+    # the trial is loaded beside the table and counted, and dropped only where it does not hold every row
     in_order(trial, 'load data=work.&_lfs_work. casOut="&_lfs_table._NEW" replace;',
              'if upcase(entry.Name) == upcase("&_lfs_table._NEW") then staged = entry.Rows;',
+             'if staged != &_lfs_rows. then do;',
              'table.dropTable / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW" quiet = true;')
-    assert "promote" not in trial.lower() and loader.count("_NEW") == trial.count("_NEW")
-    # the table is then dropped in front of a second load of the sheet
-    for work, table in (("_lfs_llm_fact_sheet", "LLM_FACT_SHEET"), ("_lfs_embedding_fact_sheet", "EMBEDDING_FACT_SHEET"),
-                        ("_lfs_decision_fact_sheet", "DECISION_FACT_SHEET")):
-        in_order(loader, f"dropTable casData='{table}' quiet;", f"load data=work.{work} casOut='{table}';",
-                 f"promote casData='{table}' casOut='{table}';")
+    swap = loader[loader.index("%macro _lfs_swap("):loader.index("%mend _lfs_swap;")]
+    # the counted upload is promoted under the name of the table, as this job does it; nothing loads the sheet again
+    in_order(swap, 'table.dropTable status = dropped / caslib = "&_lfs_caslib." name = "&_lfs_table." quiet = true;',
+             'table.promote status = promoted / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW"',
+             'targetLib = "&_lfs_caslib." target = "&_lfs_table.";', 'table.save status = stored')
+    assert "promote" not in trial.lower() and "casData=" not in loader and loader.count("load data=") == 1
+    for table in ("LLM_FACT_SHEET", "EMBEDDING_FACT_SHEET", "DECISION_FACT_SHEET"):
+        assert f"%_lfs_swap({table});" in loader
 
-    said = ("Load-Fact-Sheets.sas tries each sheet beside its table in the same way, but drops that trial again: it then drops the table "
-            "and loads the sheet a second time, so the load that takes the place of a fact sheet table is not the one whose rows were counted.")
+    said = ("Load-Fact-Sheets.sas replaces each fact sheet table the same way: the upload whose rows were counted is promoted under "
+            "the name of the table and saved, and the sheet is not loaded a second time.")
     header = " ".join(program().split("*/")[0].replace("\n *", " ").split())
-    assert said in header and "does the same for each sheet" not in header
+    assert said in header and "drops that trial again" not in header
 
 def test_the_table_is_dropped_only_behind_an_upload_that_holds_every_row():
     release = macro("_lat_release_table")

@@ -14,7 +14,10 @@
     A table that exists is only replaced by a sheet that was read: a file
       that is not in the folder, a file without rows and a sheet that CAS
       does not take leave the table of that sheet as it is, with a WARNING,
-      and the other sheets are loaded all the same.
+      and the other sheets are loaded all the same. The upload whose rows
+      were counted is the one that takes the place of the table: the table
+      is dropped, the upload promoted under its name and saved, as the job
+      Load-Accelerator-Tables does it for the release table.
 
     The job definition Load-Accelerator-Tables includes this file from the
       content folder and loads the release table beside the three sheets.
@@ -55,10 +58,10 @@ options nosyntaxcheck;
 %end;
 
 /* Reads one sheet from the folder into WORK and tries it in CAS, beside the
-   table: it is loaded as <table>_NEW, a table of this session, its rows are
-   counted and it is dropped again. _lfs_ok is 1 when CAS held every row of
-   the sheet, so that the table is only dropped for a sheet that can take
-   its place. A file that is not there is not handed to PROC IMPORT, which
+   table: it is loaded as <table>_NEW, a table of this session, and its rows
+   are counted. _lfs_ok is 1 when CAS held every row of the sheet; that
+   upload is then kept for _lfs_swap, which puts it in the place of the
+   table, and an upload that does not hold every row is dropped again. A file that is not there is not handed to PROC IMPORT, which
    ends with an error for it: the sheet is a WARNING, and the sheets behind
    it are read. */
 %let _lfs_ok = 0;
@@ -117,7 +120,10 @@ options nosyntaxcheck;
                 end;
             end;
         end;
-        table.dropTable / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW" quiet = true;
+        /* an upload that does not hold every row takes the place of no table */
+        if staged != &_lfs_rows. then do;
+            table.dropTable / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW" quiet = true;
+        end;
         /* "L": the macro variable is local to this macro, and without a scope CASL writes to the global symbol table */
         call symputx("_lfs_staged", staged, "L");
     run; quit;
@@ -130,38 +136,56 @@ options nosyntaxcheck;
     %end;
 %mend _lfs_read;
 
+/* Puts the upload that _lfs_read counted in the place of the table, as the
+   job Load-Accelerator-Tables does it for the release table: the table is
+   dropped, <table>_NEW is promoted under the name of the table and saved.
+   The sheet is not loaded a second time, so the table that takes the place
+   is the upload whose rows were counted. Where the promote is refused, the
+   upload is dropped and the table is loaded again from the file it was
+   saved to before, which nothing has written over; each outcome other than
+   a saved table is a WARNING. Nothing happens for a sheet that was not
+   read completely. */
+%macro _lfs_swap(_lfs_table);
+    %local _lfs_outcome;
+    %if &_lfs_ok. NE 1 %then %return;
+    proc cas;
+        outcome = "replace";
+        table.dropTable status = dropped / caslib = "&_lfs_caslib." name = "&_lfs_table." quiet = true;
+        table.promote status = promoted / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW"
+            targetLib = "&_lfs_caslib." target = "&_lfs_table.";
+        if promoted.severity == 0 then do;
+            outcome = "save";
+            table.save status = stored / table = {caslib = "&_lfs_caslib.", name = "&_lfs_table."}
+                caslib = "&_lfs_caslib." name = "&_lfs_table." replace = true;
+            if stored.severity == 0 then outcome = "loaded";
+        end;
+        else do;
+            table.dropTable / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW" quiet = true;
+            table.loadTable status = restored / caslib = "&_lfs_caslib." path = "&_lfs_table..sashdat"
+                casOut = {caslib = "&_lfs_caslib.", name = "&_lfs_table.", promote = true};
+            if restored.severity == 0 then outcome = "restored";
+        end;
+        call symputx("_lfs_outcome", outcome, "L");
+    run; quit;
+    %if &_lfs_outcome. EQ restored %then
+        %put WARNING: The sheet could not take the place of the table &_lfs_caslib..&_lfs_table. - messages above. The table was loaded again from the file it was saved to before.;
+    %else %if &_lfs_outcome. EQ replace %then
+        %put WARNING: The sheet could not take the place of the table &_lfs_caslib..&_lfs_table. - messages above - and the table could not be loaded again from the file it was saved to before: load that file, or run this program again.;
+    %else %if &_lfs_outcome. EQ save %then
+        %put WARNING: The table &_lfs_caslib..&_lfs_table. holds the sheet and is promoted, but it could not be saved - messages above. Its saved file is the one of before.;
+%mend _lfs_swap;
+
 * Load the LLM Fact Sheet - Load/Promote/Save to CAS;
 %_lfs_read(llm_fact_sheet.csv, _lfs_llm_fact_sheet, LLM_FACT_SHEET);
-%if &_lfs_ok. EQ 1 %then %do;
-    proc casUtil inCASLib="&_lfs_caslib." outCASLib="&_lfs_caslib.";
-        dropTable casData='LLM_FACT_SHEET' quiet;
-        load data=work._lfs_llm_fact_sheet casOut='LLM_FACT_SHEET';
-        promote casData='LLM_FACT_SHEET' casOut='LLM_FACT_SHEET';
-        save casData='LLM_FACT_SHEET' casOut='LLM_FACT_SHEET' replace;
-    run; quit;
-%end;
+%_lfs_swap(LLM_FACT_SHEET);
 
 * Load the Embedding Fact Sheet - Load/Promote/Save to CAS;
 %_lfs_read(embedding_fact_sheet.csv, _lfs_embedding_fact_sheet, EMBEDDING_FACT_SHEET);
-%if &_lfs_ok. EQ 1 %then %do;
-    proc casUtil inCASLib="&_lfs_caslib." outCASLib="&_lfs_caslib.";
-        dropTable casData='EMBEDDING_FACT_SHEET' quiet;
-        load data=work._lfs_embedding_fact_sheet casOut='EMBEDDING_FACT_SHEET';
-        promote casData='EMBEDDING_FACT_SHEET' casOut='EMBEDDING_FACT_SHEET';
-        save casData='EMBEDDING_FACT_SHEET' casOut='EMBEDDING_FACT_SHEET' replace;
-    run; quit;
-%end;
+%_lfs_swap(EMBEDDING_FACT_SHEET);
 
 * Load the Decision Fact Sheet - Load/Promote/Save to CAS;
 %_lfs_read(decision_fact_sheet.csv, _lfs_decision_fact_sheet, DECISION_FACT_SHEET);
-%if &_lfs_ok. EQ 1 %then %do;
-    proc casUtil inCASLib="&_lfs_caslib." outCASLib="&_lfs_caslib.";
-        dropTable casData='DECISION_FACT_SHEET' quiet;
-        load data=work._lfs_decision_fact_sheet casOut='DECISION_FACT_SHEET';
-        promote casData='DECISION_FACT_SHEET' casOut='DECISION_FACT_SHEET';
-        save casData='DECISION_FACT_SHEET' casOut='DECISION_FACT_SHEET' replace;
-    run; quit;
-%end;
+%_lfs_swap(DECISION_FACT_SHEET);
 
 * Clean up;
 proc datasets lib=work noList noWarn;
@@ -171,6 +195,7 @@ run; quit;
     cas mySess terminate;
 %end;
 %sysmacdelete _lfs_read;
+%sysmacdelete _lfs_swap;
 options &_lfs_syntaxcheck.;
 %symdel _lfs_ok _lfs_syntaxcheck / nowarn;
 %symdel _lfs_path _lfs_caslib _lfs_clean_cas_session;
