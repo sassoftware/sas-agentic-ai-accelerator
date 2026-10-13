@@ -35,13 +35,260 @@ from mdb import cli
 from mdb.core import content
 from mdb.core.content import load_manifest
 from mdb.core.packages import (
-    NEUTRAL_USER, USER_FIELDS, _body, _report_wrapper, deflate, locate, named_users, neutralise_users,
-    package_differences,
+    NEUTRAL_USER, USER_FIELDS, USER_FIELDS_TEXT, _body, _report_wrapper, deflate, locate, named_users,
+    neutralise_users, package_differences,
 )
 from test_package_guards import checking, exporting, manifest, repo  # noqa: F401 - the fixtures of the gate tests
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 STAMP = "2026-10-13T09:19:08.741Z"
+
+#: The three fields, spelled out: the test pins the list, it does not read it.
+FIELDS = ("createdBy", "modifiedBy", "userName")
+
+
+# ---- 1: a package in the shape of a real export -------------------------------
+class Exported:
+    """A fabricated package dressed the way SAS Viya 2026.09 exports a folder
+    (the keys read off an export of 2026-10-13; the values are made up):
+
+    * the package, every summary and every body carry `createdBy` and
+      `modifiedBy` - a file in its `fileResource`, a folder in its `folder`,
+      a report in the `object` of its wrapper behind the compression;
+    * the body of every folder carries `userName` beside its `folder`
+      object (in that export the id of the one user who made and exported
+      everything; here `exporter`, so that a test tells the fields apart);
+    * every object below the root carries `contentSourceLocation`, the path
+      of the folder it sits in - for a root below /Users/<id> that path holds
+      the id, and so does the `contentRoot` default of a job definition.
+    """
+
+    def __init__(self, built, root_path: str, creator: str, exporter: str):
+        self.built, self.root_uri = built, built.root_uri
+        self.creator, self.exporter = creator, exporter
+        people = {"creationTimeStamp": STAMP, "createdBy": creator, "modifiedTimeStamp": STAMP, "modifiedBy": creator}
+        _root, items = locate(built.build(), built.root_uri)
+        for item in items:
+            obj, summary = item.obj, item.obj["summary"]
+            uri = summary["links"][0]["uri"]
+            links = [{"method": "GET", "rel": "self", "href": uri, "uri": uri, "type": "application/vnd.sas.x+json"}]
+            summary.update(people, version=2)
+            if item.path == "" and root_path.count("/") > 1:
+                obj["contentSourceLocation"] = root_path.rsplit("/", 1)[0]
+            elif item.path:
+                above = item.path.rpartition("/")[0]
+                obj["contentSourceLocation"] = root_path + (f"/{above}" if above else "")
+            wrapper = _report_wrapper(obj)
+            if wrapper is not None:
+                wrapper["object"].update(people)
+                obj["content"] = deflate(json.dumps(wrapper, separators=(",", ":")))
+                continue
+            body = _body(obj)
+            if item.kind == "folder":
+                parent = next((c["uri"] for c in item.detail.get("connectors") or []
+                               if c.get("type") == "parentFolder"), None)
+                folder = {**people, "version": 1, "id": summary["id"], **body.get("folder", {}), "type": "folder",
+                          "memberCount": 1, "links": links}
+                if parent:
+                    folder["parentFolderUri"] = parent
+                body = {"folder": folder, "userName": exporter}
+            elif "fileResource" in body:
+                body["fileResource"].update(people, id=summary["id"], links=links, version=2)
+            else:
+                body.update(people, id=summary["id"], links=links, version=2)
+                for parameter in body.get("parameters") or []:
+                    if parameter["name"] == "contentRoot":
+                        parameter["defaultValue"] = root_path
+            obj["content"] = b64(body)
+
+    def build(self) -> dict:
+        return {**self.built.build(), "creationTimeStamp": STAMP, "modifiedTimeStamp": STAMP,
+                "createdBy": self.creator, "modifiedBy": self.creator, "description": "", "links": []}
+
+
+def decoded(package: dict) -> list:
+    """Every part of a package as (kind, part, value): the package without
+    its objects, and per object what stands beside the transfer object, the
+    transfer object without its content, and the content decoded."""
+    parts = [("package", "top", {k: v for k, v in package.items() if k != "transferDetails"})]
+    for detail in package.get("transferDetails") or []:
+        obj = detail.get("transferObject") or {}
+        kind = (obj.get("summary") or {}).get("type") or "?"
+        parts.append((kind, "detail", {k: v for k, v in detail.items() if k != "transferObject"}))
+        parts.append((kind, "object", {k: v for k, v in obj.items() if k != "content"}))
+        wrapper = _report_wrapper(obj)
+        parts.append((kind, "content", wrapper if wrapper is not None else (_body(obj) or obj.get("content"))))
+    return parts
+
+
+def places(package: dict, needle: str, keys=None) -> dict:
+    """{(kind, part, key path): count} of the values that hold `needle`,
+    whatever their key is called - or, with `keys`, of the values at one of
+    those keys."""
+    found: dict = {}
+
+    def walk(value, path, where):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                walk(item, path + [key], where)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, path + ["[]"], where)
+        elif isinstance(value, str) and needle in value and (keys is None or path[-1] in keys):
+            key = (*where, "/".join(path))
+            found[key] = found.get(key, 0) + 1
+
+    for kind, part, value in decoded(package):
+        walk(value, [], (kind, part))
+    return found
+
+
+def test_the_fixture_has_the_shape_of_the_real_export(manifest):
+    """What the scan of the export of 2026-10-13 found, held on the fixture:
+    the id stands as a whole value in the three fields - `userName` in every
+    folder body - and nowhere else of an object that ships."""
+    dressed = Exported(package_of(manifest), CONTENT_ROOT, "fab.creator", "fab.exporter").build()
+    folders = [d for d in dressed["transferDetails"] if d["transferObject"]["summary"]["type"] == "folder"]
+    assert len(folders) == 7
+    for detail in folders:
+        body = _body(detail["transferObject"])
+        assert sorted(body) == ["folder", "userName"] and body["userName"] == "fab.exporter"
+        assert {"createdBy", "modifiedBy", "creationTimeStamp", "id", "links", "memberCount", "name"} <= set(
+            body["folder"])
+    assert {path.rsplit("/", 1)[-1] for (_k, _p, path) in places(dressed, "fab.")} == set(FIELDS)
+    # at the root of SAS Content the root folder has no parent and no source location; a folder below it has both
+    root, below = folders[0]["transferObject"], folders[1]["transferObject"]
+    assert "contentSourceLocation" not in root and "parentFolderUri" not in _body(root)["folder"]
+    assert below["contentSourceLocation"] == CONTENT_ROOT and _body(below)["folder"]["parentFolderUri"]
+
+
+def test_one_list_of_fields_for_the_neutralising_and_for_the_gate():
+    """review-19 (high): `neutralise_users` rewrote createdBy / modifiedBy,
+    `named_users` - what the gate asks - also counted userName. One list, and
+    the same parts of a package for both."""
+    assert USER_FIELDS == FIELDS and USER_FIELDS_TEXT == "createdBy / modifiedBy / userName"
+    wrapper = {"object": {"name": "R", **{field: f"object.{field}" for field in FIELDS}},
+               "transferableContent": {"content": "<SASReport/>", "contentVersion": 1, "reportStates": [
+                   {"content": "<SASReport/>", "reportState": {field: f"state.{field}" for field in FIELDS}}]}}
+    package = {**{field: f"top.{field}" for field in FIELDS}, "transferDetails": [
+        {"transferObject": {"summary": {"type": "report", "name": "R", **{f: f"summary.{f}" for f in FIELDS}},
+                            "content": deflate(json.dumps(wrapper))}},
+        {"transferObject": {"summary": {"type": "folder", "name": "F"},
+                            "content": b64({"folder": {field: f"folder.{field}" for field in FIELDS},
+                                            **{field: f"body.{field}" for field in FIELDS}})}}]}
+    named = named_users(package)
+    assert sorted(named) == sorted(f"{part}.{field}" for field in FIELDS
+                                   for part in ("top", "summary", "object", "state", "folder", "body"))
+    replaced = neutralise_users(package)
+    assert replaced == len(named) == 18
+    assert named_users(package) == {NEUTRAL_USER: 18}
+    assert places(package, ".createdBy") == places(package, ".modifiedBy") == places(package, ".userName") == {}
+    assert neutralise_users(package) == 0
+    # a wrapper that is not what the transfer service writes is read as far as it goes, by both
+    for odd in ({"object": "text", "transferableContent": "text"},
+                {"object": {"createdBy": "odd"}, "transferableContent": {"reportStates": {"reportState": {}}}},
+                {"object": None, "transferableContent": {"reportStates": ["text", {"reportState": "text"}]}}):
+        package = {"transferDetails": [{"transferObject": {"summary": {"type": "report", "name": "R"},
+                                                           "content": deflate(json.dumps(odd))}}]}
+        named = named_users(package)
+        assert named == ({"odd": 1} if isinstance(odd["object"], dict) else {})
+        assert neutralise_users(package) == len(named) and set(named_users(package)) <= {NEUTRAL_USER}
+
+
+def test_an_export_in_the_real_shape_is_written_and_names_no_one(exporting, manifest):
+    """review-19 (high) / live-19 defect 1: with `userName` in the folder
+    bodies an export of the content root ended with 'Nothing was written'; on
+    2026-10-13 the export of a test root printed the --keep-user-ids wording
+    without the flag, and the gate blamed createdBy / modifiedBy for it."""
+    dressed = Exported(package_of(manifest), CONTENT_ROOT, "fab.creator", "fab.exporter")
+    before = dressed.build()
+    named = sum(places(before, "fab.", keys=FIELDS).values())
+    assert named == sum(places(before, "fab.").values()) == sum(named_users(before).values())
+    result, text, target, _ = exporting(dressed)
+    assert result.exit_code == 0, text
+    assert "Nothing was written" not in text and "--keep-user-ids" not in text and "names the user id" not in text
+    assert (f"  Replaced the user id(s) fab.creator, fab.exporter in createdBy / modifiedBy / userName with "
+            f"'sas-agentic-ai-accelerator' ({named} place(s)); contentSourceLocation, the path of the folder each "
+            f"object was exported from, is left as it is ({CONTENT_ROOT}).\n") in text
+    written = json.loads(target.read_text(encoding="utf-8"))
+    assert "fab." not in target.read_text(encoding="utf-8") and places(written, "fab.") == {}
+    assert named_users(written) == {NEUTRAL_USER: named}
+    assert package_differences(written, manifest) == []
+    # the gate of the release passes the file the export wrote
+    assert CliRunner().invoke(cli.app, ["package-check", "--release"]).exit_code == 0
+
+
+def test_the_gate_names_the_fields_and_fix_does_what_its_sentence_says(checking, manifest):
+    """review-19: the gate said 'in createdBy / modifiedBy ... `mdb
+    package-check --fix` rewrites them', and after --fix the same line stood:
+    the ids were in userName."""
+    dressed = Exported(package_of(manifest), CONTENT_ROOT, "fab.creator", "fab.exporter").build()
+    for detail in dressed["transferDetails"]:               # as an export with only the two fields rewritten
+        detail["transferObject"]["summary"].update(createdBy=NEUTRAL_USER, modifiedBy=NEUTRAL_USER)
+    target = manifest.package_path
+    target.write_text(json.dumps(dressed, indent=2), encoding="utf-8", newline="\n")
+    left = sum(places(dressed, "fab.", keys=FIELDS).values())
+    result, text, _ = checking()
+    assert result.exit_code == 1
+    assert (f"SAS-Agentic-AI-Accelerator.json: the package names the user id(s) fab.creator, fab.exporter in "
+            f"createdBy / modifiedBy / userName ({left} place(s)) - an export of the release writes "
+            "'sas-agentic-ai-accelerator' there, and `mdb package-check --fix` rewrites them\n") in text
+    assert "A host, a per-user state, an option default or a user id is rewritten by --fix" in " ".join(text.split())
+    result, text, _ = checking("--fix")
+    assert result.exit_code == 0, text
+    assert (f"  SAS-Agentic-AI-Accelerator.json: user id(s) fab.creator, fab.exporter in createdBy / modifiedBy / "
+            f"userName -> sas-agentic-ai-accelerator ({left})\n") in text
+    assert "fab." not in target.read_text(encoding="utf-8")
+    assert places(json.loads(target.read_text(encoding="utf-8")), "fab.") == {}
+    result, text, _ = checking("--release")
+    assert result.exit_code == 0 and "names the user id" not in text
+
+
+def test_an_export_of_a_folder_below_a_user_says_where_the_id_stays(exporting, manifest, repo):
+    """The export of 2026-10-13 was made from a folder below /Users/<id>: there
+    the id is also PART of two paths, `contentSourceLocation` and the
+    `contentRoot` default of a job definition. The fields are rewritten, the
+    paths are left and the line names the folder - and such an export is
+    never the release file."""
+    root = "/Users/fab.exporter/My Folder/ZZ_VERIFY_R20/root1"
+
+    def dressed():
+        built = package_of(manifest, root="root1", above=("Users", "fab.exporter", "My Folder", "ZZ_VERIFY_R20"))
+        return Exported(built, root, "fab.exporter", "fab.exporter")
+    elsewhere = repo / "scratch" / "r20.json"
+    result, text, target, _ = exporting(dressed(), "--content-root", root, "--out", str(elsewhere),
+                                        "--allow-differences")
+    assert result.exit_code == 0, text
+    assert "--keep-user-ids" not in text and "names the user id" not in text
+    assert "job definition 'Prompt Builder/Optimize': 'parameters' differs from the parameters of its manifest entry" \
+        in text
+    replaced = re.search(r"  Replaced the user id\(s\) fab\.exporter in createdBy / modifiedBy / userName with "
+                         r"'sas-agentic-ai-accelerator' \((\d+) place\(s\)\); contentSourceLocation, the path of the "
+                         r"folder each object was exported from, is left as it is \(" + re.escape(root) + r"\)\.\n",
+                         text)
+    assert replaced, text
+    written = json.loads(elsewhere.read_text(encoding="utf-8"))
+    assert named_users(written) == {NEUTRAL_USER: sum(places(written, NEUTRAL_USER, keys=FIELDS).values())}
+    # where the id still stands: in the two paths, and nowhere else
+    assert {path for (_kind, _part, path) in places(written, "fab.exporter")} == {
+        "contentSourceLocation", "parameters/[]/defaultValue"}
+    locations = re.findall(r'"contentSourceLocation": "([^"]*)"', elsewhere.read_text(encoding="utf-8"))
+    assert len(locations) == written["transferObjectCount"]
+    assert all(value.startswith("/Users/fab.exporter/My Folder/ZZ_VERIFY_R20") for value in locations)
+
+    # --keep-user-ids: the line that says they were left, and only then
+    result, text, _, _ = exporting(dressed(), "--content-root", root, "--out", str(elsewhere), "--allow-differences",
+                                   "--keep-user-ids")
+    assert result.exit_code == 0, text
+    assert "Replaced the user id" not in text
+    assert re.search(r"  The file names the user id\(s\) fab\.exporter in createdBy / modifiedBy / userName \(\d+ "
+                     r"place\(s\): the package, its objects and their bodies\) - left as the export wrote them "
+                     r"\(--keep-user-ids\) - and the exported folder in contentSourceLocation\.\n", text), text
+
+    # the release file is written from the content root of the release only, wherever --out points
+    result, text, target, exported = exporting(dressed(), "--content-root", root, "--out", str(target))
+    assert result.exit_code == 2 and exported == [] and not target.exists()
+    assert f"{root} is not the content root of the release ({CONTENT_ROOT})" in text
 
 
 # ---- 4: the last line of a release export, the help texts ----------------------
@@ -70,6 +317,10 @@ def test_no_help_text_says_what_was_not_measured():
     assert [f"{name}: {match.group(0)}" for name, text in texts for match in NOT_RUN.finditer(text)] == []
     assert NOT_RUN.search("What the transfer service does with neutral user fields has not been measured.")
     assert not NOT_RUN.search("Nothing is run. A step that is not run keeps its id.")
+    export = dict(texts)["mdb package-export"]
+    assert "and `userName` in the body of a folder. They are replaced with the text" in export
+    assert "the release file is written from the content root of the release only" in export
+    assert "user ids (`createdBy`, `modifiedBy`, `userName`)" in dict(texts)["mdb package-check"]
 
 
 # ---- 2 and 3: real git repositories --------------------------------------------

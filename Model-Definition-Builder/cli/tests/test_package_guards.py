@@ -1256,7 +1256,7 @@ def test_an_export_replaces_the_user_ids_it_names(exporting, manifest, repo):
         detail["transferObject"]["summary"]["modifiedBy"] = "a.colleague"
     result, text, target, _ = exporting(built)
     assert result.exit_code == 0, text
-    assert ("  Replaced the user id(s) a.colleague, the.exporter in createdBy / modifiedBy with "
+    assert ("  Replaced the user id(s) a.colleague, the.exporter in createdBy / modifiedBy / userName with "
             f"'sas-agentic-ai-accelerator' (30 place(s)); contentSourceLocation, the path of the folder each object "
             f"was exported from, is left as it is ({CONTENT_ROOT}).\n") in text
     written = target.read_text(encoding="utf-8")
@@ -1270,9 +1270,9 @@ def test_an_export_replaces_the_user_ids_it_names(exporting, manifest, repo):
     result, text, _, _ = exporting(built, "--keep-user-ids", "--out", str(elsewhere), "--allow-differences")
     assert result.exit_code == 0, text
     assert "the.exporter" in elsewhere.read_text(encoding="utf-8")
-    assert ("the package names the user id(s) a.colleague, the.exporter in createdBy / modifiedBy (30 place(s)) - an "
-            "export of the release writes 'sas-agentic-ai-accelerator' there, and `mdb package-check --fix` rewrites "
-            "them") in package_differences(json.loads(elsewhere.read_text(encoding="utf-8")), manifest)
+    assert ("the package names the user id(s) a.colleague, the.exporter in createdBy / modifiedBy / userName (30 "
+            "place(s)) - an export of the release writes 'sas-agentic-ai-accelerator' there, and `mdb package-check "
+            "--fix` rewrites them") in package_differences(json.loads(elsewhere.read_text(encoding="utf-8")), manifest)
 
 
 EARLIER_PACKAGES = [REPO_ROOT / "SAS-Viya-Integrations" / name for name in (
@@ -1297,7 +1297,8 @@ def _decoded(package: dict) -> list:
 
 def _set_users(value, text):
     if isinstance(value, dict):
-        return {k: (text if k in ("createdBy", "modifiedBy") and isinstance(v, str) and v else _set_users(v, text))
+        return {k: (text if k in ("createdBy", "modifiedBy", "userName") and isinstance(v, str) and v
+                    else _set_users(v, text))
                 for k, v in value.items()}
     if isinstance(value, list):
         return [_set_users(v, text) for v in value]
@@ -1339,7 +1340,7 @@ def test_check_fix_rewrites_the_user_ids(checking, manifest):
     assert result.exit_code == 1 and "the package names the user id(s) the.exporter" in text
     result, text, _ = checking("--fix")
     assert result.exit_code == 0, text
-    assert "user id(s) the.exporter in createdBy / modifiedBy -> sas-agentic-ai-accelerator (15)" in text
+    assert "user id(s) the.exporter in createdBy / modifiedBy / userName -> sas-agentic-ai-accelerator (15)" in text
     assert "the.exporter" not in target.read_text(encoding="utf-8")
 
 

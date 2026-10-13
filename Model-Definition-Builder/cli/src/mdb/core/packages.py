@@ -1154,12 +1154,44 @@ def mapping_preview(package: dict) -> dict:
     return {"version": 1, "connectors": {"table": tables}, "substitutions": substitutions}
 
 
-#: What `mdb package-export` writes into createdBy / modifiedBy in place of
-#: the user ids of the exporting system: a text that is no user id.
+#: What `mdb package-export` writes into the USER_FIELDS in place of the
+#: user ids of the exporting system: a text that is no user id.
 NEUTRAL_USER = "sas-agentic-ai-accelerator"
 
-#: The fields of a package that hold a user id.
-USER_FIELDS = ("createdBy", "modifiedBy")
+#: The fields of a package whose value is a user id, by their key: who made
+#: an object, who changed it last, and `userName`, which stands in the body
+#: of a folder beside its `folder` object in the exports SAS Viya 2026.09
+#: made on 2026-10-12 and 2026-10-13 (in all twelve folder bodies of each;
+#: one user had made and exported everything, so whose id it is they do not
+#: tell). This is the ONE list: `neutralise_users` rewrites these fields and
+#: `named_users`, which the gate asks, counts them, in the same parts of a
+#: package (`_user_parts`). Read off those exports and the four packages up
+#: to 2.2.x by searching every value for the ids these fields hold: no other
+#: field of an object that ships has a user id as its value. The others that
+#: have one sit in what never ships - `userId` of a per-user report state,
+#: `principal`, `sharedBy`, `sharedWith` and the description of a rule or a
+#: share. A user id can also be PART of a path, in an export of a folder
+#: below /Users/<id>: in `contentSourceLocation` and in the default of a job
+#: definition's `contentRoot`. A path is not rewritten: the release file is
+#: only written from the content root of the manifest (`mdb package-export`).
+USER_FIELDS = ("createdBy", "modifiedBy", "userName")
+USER_FIELDS_TEXT = " / ".join(USER_FIELDS)
+
+
+def _user_parts(obj: dict) -> tuple:
+    """(the report wrapper of a transfer object or None, its body or None,
+    the parts of either that are searched for USER_FIELDS): of a report the
+    object of its wrapper and the state records of its per-user states,
+    behind the compression; of anything else its body (base64 JSON)."""
+    wrapper = _report_wrapper(obj)
+    if wrapper is not None:
+        transferable = wrapper.get("transferableContent")
+        states = transferable.get("reportStates") if isinstance(transferable, dict) else None
+        return wrapper, None, [wrapper.get("object")] + [
+            state.get("reportState") for state in (states if isinstance(states, list) else [])
+            if isinstance(state, dict)]
+    body = _body(obj)
+    return None, body, [] if body is None else [body]
 
 
 def _neutral(value) -> int:
@@ -1180,7 +1212,7 @@ def _neutral(value) -> int:
 
 
 def neutralise_users(package: dict) -> int:
-    """Write NEUTRAL_USER into every createdBy / modifiedBy a parsed package
+    """Write NEUTRAL_USER into every field of USER_FIELDS a parsed package
     holds - its own, those of the object summaries, those inside the bodies
     (base64 JSON) and inside a report's wrapper (behind the compression) -
     and change nothing else; returns how many were replaced.
@@ -1206,37 +1238,29 @@ def neutralise_users(package: dict) -> int:
         obj = detail.get("transferObject") or {}
         replaced += _neutral(obj.get("summary") or {})
         content = obj.get("content") or ""
-        wrapper = _report_wrapper(obj)
-        if wrapper is not None:
-            n = _neutral(wrapper.get("object") or {}) + _neutral(
-                [state.get("reportState") for state in (wrapper.get("transferableContent") or {}).get(
-                    "reportStates") or [] if isinstance(state, dict)])
-            if n:
-                flag = "FALSE" if content.startswith("FALSE###") else "TRUE"
-                obj["content"] = deflate(json.dumps(wrapper, separators=(",", ":"), ensure_ascii=False), flag)
-                replaced += n
-            continue
-        body = _body(obj)
-        if body is not None:
-            n = _neutral(body)
-            if n:
-                obj["content"] = base64.b64encode(
-                    json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).decode("ascii")
-                replaced += n
+        wrapper, body, parts = _user_parts(obj)
+        n = sum(_neutral(part) for part in parts)
+        if n and wrapper is not None:
+            flag = "FALSE" if content.startswith("FALSE###") else "TRUE"
+            obj["content"] = deflate(json.dumps(wrapper, separators=(",", ":"), ensure_ascii=False), flag)
+        elif n:
+            obj["content"] = base64.b64encode(
+                json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).decode("ascii")
+        replaced += n
     return replaced
 
 
 def named_users(package: dict) -> dict:
-    """{user id: number of places} for every `createdBy` / `modifiedBy` a
-    package holds: its own, those of the object summaries and those inside
-    the bodies. An export names the people who made the objects; nothing
-    here removes them (see `mdb package-export`)."""
+    """{user id: number of places} for every field of USER_FIELDS a package
+    holds: its own, those of the object summaries and those inside the
+    bodies and the report wrappers - the places `neutralise_users` rewrites,
+    so that after it only NEUTRAL_USER is named. Nothing here removes one."""
     found: dict = {}
 
     def walk(value) -> None:
         if isinstance(value, dict):
             for key, item in value.items():
-                if key in ("createdBy", "modifiedBy", "userName") and isinstance(item, str) and item:
+                if key in USER_FIELDS and isinstance(item, str) and item:
                     found[item] = found.get(item, 0) + 1
                 else:
                     walk(item)
@@ -1248,7 +1272,7 @@ def named_users(package: dict) -> dict:
     for detail in package.get("transferDetails") or []:
         obj = detail.get("transferObject") or {}
         walk(obj.get("summary") or {})
-        walk(_report_wrapper(obj).get("object") if _report_wrapper(obj) else _body(obj))
+        walk(_user_parts(obj)[2])
     return found
 
 
@@ -1468,7 +1492,7 @@ def package_findings(package: dict, manifest, package_name: str = "") -> list:
     * no object is in the package that the manifest does not list, none sits
       on a path that never ships, there is no authorization rule or share,
       the package has no field at its top that an export does not write, and
-      it names no user id in createdBy / modifiedBy (NEUTRAL_USER stands
+      it names no user id in a field of USER_FIELDS (NEUTRAL_USER stands
       there).
 
     Not compared, each for its reason: the description of a step or a job
@@ -1494,7 +1518,7 @@ def package_findings(package: dict, manifest, package_name: str = "") -> list:
     users = {user: n for user, n in named_users(package).items() if user != NEUTRAL_USER}
     if users:
         problems.append(Difference(
-            f"the package names the user id(s) {', '.join(sorted(users))} in createdBy / modifiedBy "
+            f"the package names the user id(s) {', '.join(sorted(users))} in {USER_FIELDS_TEXT} "
             f"({sum(users.values())} place(s)) - an export of the release writes '{NEUTRAL_USER}' there, and "
             "`mdb package-check --fix` rewrites them"))
     for item in items:

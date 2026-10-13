@@ -1769,8 +1769,8 @@ def package_export(
              "for a test folder that holds no report. Needs --out; the release file is never written that way."),
     keep_user_ids: bool = typer.Option(
         False, "--keep-user-ids",
-        help="Leave createdBy / modifiedBy as the export wrote them (the user ids of the exporting system). "
-             "Needs --out: the release file names no user."),
+        help="Leave createdBy / modifiedBy / userName as the export wrote them (the user ids of the exporting "
+             "system). Needs --out: the release file names no user."),
     timeout: int = typer.Option(600, "--timeout", help="Seconds to wait for the export job."),
 ):
     """Export the content folder to the one transfer package of the release.
@@ -1807,26 +1807,31 @@ def package_export(
 
     The export names people: `createdBy` / `modifiedBy` of the package, of
     every object and inside the bodies (also inside the compressed report
-    content). They are replaced with the text 'sas-agentic-ai-accelerator',
+    content), and `userName` in the body of a folder. They are replaced
+    with the text 'sas-agentic-ai-accelerator',
     and nothing else of the package changes; `mdb package-check` fails a
-    package that names a user id. --keep-user-ids leaves them (with --out
-    only). `contentSourceLocation` is left as it is: it is the path of the
-    folder an object was exported from - for the content root of the release
-    `/SAS Agentic AI Accelerator/...`, which names no one - and mdb reads it
-    to tell a package of a folder below others (`mdb builders-import` refuses
-    to hand such a package to the transfer service).
+    package that names a user id in one of these fields. --keep-user-ids
+    leaves them (with --out only). `contentSourceLocation` is left as it is:
+    it is the path of the folder an object was exported from, and mdb reads
+    it to tell a package of a folder below others (`mdb builders-import`
+    refuses to hand such a package to the transfer service). For the content
+    root of the release it is `/SAS Agentic AI Accelerator/...`, which names
+    no one; the export of a folder below `/Users/<user id>` carries that id
+    in these paths and in the `contentRoot` of its job definitions, which is
+    why the release file is written from the content root of the release
+    only.
     """
     from .core.content import content_root_problem
-    from .core.packages import (ALLOWED_HOSTS, NEUTRAL_USER, check_text, describe_findings, filter_package,
-                                named_users, neutralise_users, package_differences, reset_report_defaults,
-                                sanitise_text, strip_report_states)
+    from .core.packages import (ALLOWED_HOSTS, NEUTRAL_USER, USER_FIELDS_TEXT, check_text, describe_findings,
+                                filter_package, named_users, neutralise_users, package_differences,
+                                reset_report_defaults, sanitise_text, strip_report_states)
     from .viya.transfer import (delete_job, delete_package, download_package, folder_by_path, job_messages,
                                 leftover_line, start_export, wait_for_job)
     ctx = Context()
     manifest = _content_manifest(ctx)
     root = (content_root or manifest.content_root).rstrip("/")
     target = out or manifest.package_path
-    if out is None and root != manifest.content_root:
+    if root != manifest.content_root and (out is None or target.resolve() == manifest.package_path.resolve()):
         console.print(f"[red]{root} is not the content root of the release ({manifest.content_root}): an export "
                       f"of it is not written to {manifest.package}. Pass --out to write it somewhere else. "
                       "Nothing was exported.[/red]", highlight=False)
@@ -1944,15 +1949,18 @@ def package_export(
     console.print(f"[green]Wrote {target}[/green] ({package.get('transferObjectCount', '?')} objects: "
                   + ", ".join(f"{n} {kind}" for kind, n in counts.items()) + f"; {len(filtered.dropped)} left out).",
                   highlight=False)
+    # Each line says what was done: with --keep-user-ids the ids are left,
+    # without it they were replaced - and one that is still named after the
+    # replacement is a difference, printed above by the gate.
     users = {user: n for user, n in named_users(package).items() if user != NEUTRAL_USER}
-    if users:
-        console.print(f"  The file names the user id(s) {', '.join(sorted(users))} in createdBy / modifiedBy "
+    if keep_user_ids and users:
+        console.print(f"  The file names the user id(s) {', '.join(sorted(users))} in {USER_FIELDS_TEXT} "
                       f"({sum(users.values())} place(s): the package, its objects and their bodies) - left as the "
                       "export wrote them (--keep-user-ids) - and the exported folder in contentSourceLocation.",
                       markup=False, highlight=False, soft_wrap=True)
     elif neutralised:
         others = {user for user in exporters if user != NEUTRAL_USER}
-        console.print(f"  Replaced the user id(s) {', '.join(sorted(others))} in createdBy / modifiedBy with "
+        console.print(f"  Replaced the user id(s) {', '.join(sorted(others))} in {USER_FIELDS_TEXT} with "
                       f"'{NEUTRAL_USER}' ({neutralised} place(s)); contentSourceLocation, the path of the folder "
                       f"each object was exported from, is left as it is ({root}).",
                       markup=False, highlight=False, soft_wrap=True)
@@ -2700,7 +2708,7 @@ def package_check(
         False, "--fix",
         help="Before the check, rewrite what can be rewritten in the file: hosts to the placeholder, "
              "per-user report states removed, the Prompt Builder option defaults to the neutral values, user "
-             "ids in createdBy / modifiedBy to a neutral text"),
+             "ids in createdBy / modifiedBy / userName to a neutral text"),
     allow_missing: bool = typer.Option(
         False, "--allow-missing",
         help="End with exit code 0 when the package of the release is not in the checkout (not with --release) - "
@@ -2754,13 +2762,14 @@ def package_check(
     and exported from a commit that stays in the history of what is tagged.
 
     One line per difference, and exit code 1 when one of them fails. `--fix`
-    rewrites the hosts, the states and the option defaults in the file; a
+    rewrites the hosts, the states, the option defaults and the user ids
+    (`createdBy`, `modifiedBy`, `userName`) in the file; a
     difference in content is fixed in the folder (`mdb content-deploy`) and by
     exporting again. While the checkout holds no package of the release the
     command says so and ends with exit code 1, or 0 with --allow-missing.
     """
-    from .core.packages import (NEUTRAL_USER, PLACEHOLDER_HOST, named_users, neutralise_users, package_findings,
-                                reset_report_defaults, sanitise_text, strip_report_states)
+    from .core.packages import (NEUTRAL_USER, PLACEHOLDER_HOST, USER_FIELDS_TEXT, named_users, neutralise_users,
+                                package_findings, reset_report_defaults, sanitise_text, strip_report_states)
     ctx = Context()
     manifest = _content_manifest(ctx)
     if files:
@@ -2808,7 +2817,7 @@ def package_check(
             if neutralised:
                 # written the way `mdb package-export` writes a package
                 text = json.dumps(parsed, indent=2, ensure_ascii=False) + "\n"
-                console.print(f"  {path.name}: user id(s) {', '.join(users)} in createdBy / modifiedBy -> "
+                console.print(f"  {path.name}: user id(s) {', '.join(users)} in {USER_FIELDS_TEXT} -> "
                               f"{NEUTRAL_USER} ({neutralised})", highlight=False)
             if text != before:
                 path.write_text(text, encoding="utf-8", newline="")
@@ -2822,8 +2831,8 @@ def package_check(
                 console.print(f"{path.name}: {difference.text}", markup=False, highlight=False, soft_wrap=True)
     if total:
         console.print(f"[red]{total} difference(s) between the package and the checkout.[/red] A host, a "
-                      "per-user state or an option default is rewritten by --fix; anything else is put right "
-                      "in the content folder (`mdb content-deploy`) and by `mdb package-export`."
+                      "per-user state, an option default or a user id is rewritten by --fix; anything else is put "
+                      "right in the content folder (`mdb content-deploy`) and by `mdb package-export`."
                       + (f" ({drifted} more line(s) are drift and do not fail.)" if drifted else ""))
         raise typer.Exit(1)
     if drifted:
