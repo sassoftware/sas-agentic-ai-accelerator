@@ -984,8 +984,8 @@ def render_page(settings, lines, reports, session=None, viya_host=''):
                  + ': it shows what that session may read, which depends on how the system configures its compute context. '
                  + AS_YOURSELF + ' ')
     else:
-        whose = ('The page shows what the SAS session that built it may read: in a compute context that runs under a service account '
-                 'that is the service account. ')
+        whose = ('This page lists what the identity of the SAS session that built it can read. In a compute context that runs as a '
+                 'service account, that identity is the service account and not the person who opened the page. ')
     guide = settings['guideUrl'].rstrip('/')
     page = ['<!DOCTYPE html>', '<html lang="en">', '<head>', '<meta charset="utf-8">',
             '<meta name="viewport" content="width=device-width, initial-scale=1">',

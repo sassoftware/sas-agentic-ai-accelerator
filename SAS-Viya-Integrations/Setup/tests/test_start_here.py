@@ -915,7 +915,9 @@ def test_in_a_session_of_another_user_a_refused_line_advises_to_open_the_page_as
     other = run(monkeypatch, work(tmp_path, 'other'), site, harness.SERVICE_ACCOUNT_SESSION)
 
     assert as_user.page.count(ASK) == 11 and "does not run as you" not in as_user.page
-    assert "in a compute context that runs under a service account that is the service account" in as_user.page
+    assert ("This page lists what the identity of the SAS session that built it can read. In a compute context that runs as a service "
+            "account, that identity is the service account and not the person who opened the page.") in as_user.page
+    assert "that is the service account" not in as_user.page
     advice = (AS_YOURSELF[:-1] + " - or ask for the right the session lacks.").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     assert ASK not in other.page and other.page.count("<td>" + advice + "</td>") == 11
     note = re.search(r'<p class="note">(.*?)</p>', other.page).group(1).replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
