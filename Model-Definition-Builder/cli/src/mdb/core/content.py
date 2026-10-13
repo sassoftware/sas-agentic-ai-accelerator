@@ -828,10 +828,13 @@ GENERATORS: dict = {
 ANCESTOR = "ancestor"            # HEAD itself, or a commit HEAD descends from
 NOT_ANCESTOR = "not an ancestor"  # the clone holds it, on another line of history
 NOT_HELD = "not held"            # the clone does not hold it
-NOT_A_COMMIT = "not a commit"    # the text is no commit id at all
+NOT_A_COMMIT = "not a commit"    # the text is no commit id in full
 UNKNOWN = "unknown"              # no git, or the folder is no git checkout
 
-_COMMIT_ID = re.compile(r"[0-9a-f]{4,64}")
+#: A commit id as git writes it in full: 40 hexadecimal digits, 64 in a
+#: SHA-256 repository. An abbreviation is not one: git resolves it to whatever
+#: commit it fits today, and `checkout_commit` never writes one.
+_COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 def _git(repo_root, *args) -> Optional[subprocess.CompletedProcess]:
@@ -847,8 +850,9 @@ def commit_standing(repo_root, commit: str) -> str:
     answers: ANCESTOR (HEAD or a commit HEAD descends from), NOT_ANCESTOR
     (the clone holds it elsewhere), NOT_HELD (`git cat-file` does not know
     it - a commit of a branch that was squashed and deleted, which a fresh
-    clone does not fetch, or a clone too shallow), NOT_A_COMMIT (no
-    hexadecimal commit id), UNKNOWN (no git, or no checkout).
+    clone does not fetch, or a clone too shallow), NOT_A_COMMIT (no commit
+    id in full - `_COMMIT_ID`; an abbreviation is none), UNKNOWN (no git, or
+    no checkout).
 
     `git merge-base --is-ancestor` answers 0 or 1 only for a commit the
     clone holds; for one it does not hold, and for a text that is no commit,
@@ -900,7 +904,7 @@ def release_info_findings(expected: bytes, actual: bytes, repo_root=None) -> tup
 
     Wrong, whatever the checkout holds: not readable, another `kind`, a field
     release.json does not have, an entry listed twice, a commit that is no
-    commit id, a date that is not the date of the commit it names (where the
+    commit id in full, a date that is not the date of the commit it names (where the
     clone holds the commit). Behind the checkout - a difference in content:
     another release than this mdb, no commit, a commit that is not HEAD or an
     ancestor of it - one the clone holds elsewhere, one it does not hold, one
@@ -947,8 +951,8 @@ def release_info_findings(expected: bytes, actual: bytes, repo_root=None) -> tup
             "" if _COMMIT_ID.fullmatch(str(commit).strip()) else NOT_A_COMMIT)
         short = str(commit)[:12]
         if standing == NOT_A_COMMIT:
-            wrong.append(f"names the commit '{str(commit)[:80]}', which is no commit id (git names a commit with "
-                         "40 hexadecimal digits)")
+            wrong.append(f"names the commit '{str(commit)[:80]}', which is no commit id in full (git writes one "
+                         "with 40 hexadecimal digits, 64 in a SHA-256 repository)")
         elif standing == NOT_ANCESTOR:
             behind.append(f"names the commit {short}, which is not in the history of this checkout (the clone "
                           "holds it on another line of history)")

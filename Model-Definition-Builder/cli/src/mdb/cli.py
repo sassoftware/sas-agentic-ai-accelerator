@@ -2750,9 +2750,10 @@ def package_check(
     the clone holds elsewhere, one it does not hold (the commit of a branch
     that was squash-merged and deleted, which the tag's fresh clone does not
     fetch), and one git cannot place each fail with their own sentence; a
-    text that is no commit id, and a date that is not the commit's, fail in
-    both forms. So the folder of a release is deployed and exported from a
-    commit that stays in the history of what is tagged.
+    text that is no commit id in full (40 hexadecimal digits, 64 in a
+    SHA-256 repository - an abbreviation is none), and a date that is not
+    the commit's, fail in both forms. So the folder of a release is deployed
+    and exported from a commit that stays in the history of what is tagged.
 
     One line per difference, and exit code 1 when one of them fails. `--fix`
     rewrites the hosts, the states and the option defaults in the file; a

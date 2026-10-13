@@ -469,8 +469,8 @@ def test_release_json_is_held_to_its_kind_its_fields_its_release_and_its_commit(
         [], ["names the commit deadbeefdead, and git cannot say whether it is in the history of this checkout (git "
              "is not installed, or this folder is no git checkout)"])
     assert findings({"commit": "not-a-commit"}, content.NOT_A_COMMIT) == (
-        ["names the commit 'not-a-commit', which is no commit id (git names a commit with 40 hexadecimal digits)"],
-        [])
+        ["names the commit 'not-a-commit', which is no commit id in full (git writes one with 40 hexadecimal "
+         "digits, 64 in a SHA-256 repository)"], [])
     assert findings({"commit": "deadbeef" * 5}, content.ANCESTOR) == ([], [])
     # the date is the commit's: another one is something release.json was made to say
     assert findings({}, content.ANCESTOR, dated=info["date"]) == ([], [])
@@ -493,25 +493,26 @@ def test_git_says_where_a_commit_stands(tmp_path, monkeypatch):
         asked.append(command)
         return type("Done", (), {"returncode": codes.get(command[3], 0), "stdout": "", "stderr": ""})()
     monkeypatch.setattr(content.subprocess, "run", run)
-    assert content.commit_standing(tmp_path, "abcd") == content.ANCESTOR
+    abcd = "abcd" * 10                                       # a commit id in full
+    assert content.commit_standing(tmp_path, abcd) == content.ANCESTOR
     assert asked[-3:] == [["git", "-C", str(tmp_path), "rev-parse", "--git-dir"],
-                          ["git", "-C", str(tmp_path), "cat-file", "-e", "abcd^{commit}"],
-                          ["git", "-C", str(tmp_path), "merge-base", "--is-ancestor", "abcd", "HEAD"]]
+                          ["git", "-C", str(tmp_path), "cat-file", "-e", abcd + "^{commit}"],
+                          ["git", "-C", str(tmp_path), "merge-base", "--is-ancestor", abcd, "HEAD"]]
     codes["merge-base"] = 1
-    assert content.commit_standing(tmp_path, "abcd") == content.NOT_ANCESTOR
+    assert content.commit_standing(tmp_path, abcd) == content.NOT_ANCESTOR
     codes["cat-file"] = 128                                  # the clone does not hold it
-    assert content.commit_standing(tmp_path, "abcd") == content.NOT_HELD
+    assert content.commit_standing(tmp_path, abcd) == content.NOT_HELD
     codes["rev-parse"] = 128                                 # no checkout
-    assert content.commit_standing(tmp_path, "abcd") == content.UNKNOWN
+    assert content.commit_standing(tmp_path, abcd) == content.UNKNOWN
     assert content.commit_standing(tmp_path, "not-a-commit") == content.NOT_A_COMMIT
     assert content.commit_standing(tmp_path, "") == content.NOT_A_COMMIT
-    assert content.commit_standing(None, "abcd") == content.UNKNOWN
-    assert content.commit_in_history(tmp_path, "") is None and content.commit_in_history(None, "abcd") is None
+    assert content.commit_standing(None, abcd) == content.UNKNOWN
+    assert content.commit_in_history(tmp_path, "") is None and content.commit_in_history(None, abcd) is None
 
     def no_git(*args, **kwargs):
         raise FileNotFoundError("git")
     monkeypatch.setattr(content.subprocess, "run", no_git)
-    assert content.commit_standing(tmp_path, "abcd") == content.UNKNOWN and content.commit_date(tmp_path, "abcd") == ""
+    assert content.commit_standing(tmp_path, abcd) == content.UNKNOWN and content.commit_date(tmp_path, abcd) == ""
 
 
 GIT = __import__("shutil").which("git")
