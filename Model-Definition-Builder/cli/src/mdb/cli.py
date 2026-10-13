@@ -1741,7 +1741,7 @@ def content_deploy(
                               f"it sits in (its parameter contentRoot), and {to} is not the folder {only[0]} of a "
                               f"content root - a path that ends with /{only[0]}, with the content root in front of "
                               f"it. Nothing was written. Give the folder as <content root>/{only[0]}, or run `mdb "
-                              f"content-deploy --content-root <content root> --only {_shell_word(only[0])}`.",
+                              f"content-deploy --content-root \"<content root>\" --only {_shell_word(only[0])}`.",
                               style="red", markup=False, highlight=False, soft_wrap=True)
                 raise typer.Exit(2)
             settings = _deploy_settings(part_root or None, compute_context)

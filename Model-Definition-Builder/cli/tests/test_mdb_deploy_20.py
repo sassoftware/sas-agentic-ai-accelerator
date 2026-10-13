@@ -150,7 +150,7 @@ def test_the_content_root_of_a_folder_that_goes_elsewhere_is_the_one_it_belongs_
                 f"root it sits in (its parameter contentRoot), and {target} is not the folder Prompt Builder of a "
                 "content root - a path that ends with /Prompt Builder, with the content root in front of it. Nothing "
                 "was written. Give the folder as <content root>/Prompt Builder, or run `mdb content-deploy "
-                "--content-root <content root> --only \"Prompt Builder\"`.") in text
+                "--content-root \"<content root>\" --only \"Prompt Builder\"`.") in text
 
 
 def test_a_folder_without_a_job_that_reads_the_content_root_goes_anywhere(command):
