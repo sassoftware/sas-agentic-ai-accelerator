@@ -298,12 +298,18 @@ PATHS_WITH_MORE = [
     ("sascontent:/Users/o'brien/My Folder/o'brien's call.sas", ["/Users/o'brien/My Folder", "o'brien's call.sas"]),
     ("sasserver:/tmp/a;b/100% of R&D/call.sas", ["/tmp/a;b/100% of R&D/call.sas"]),
     ("sascontent:/Public/R&D; 100%/call.sas", ["/Public/R&D; 100%", "call.sas"]),
+    # a quotation mark, which the DATA step holds as a character of the path (measured, see the top of this file),
+    # and the path of that measurement
+    ('sasserver:/tmp/a "quoted" name/call.sas', ['/tmp/a "quoted" name/call.sas']),
+    ('sascontent:/Public/a "quoted" name/the "call".sas', ['/Public/a "quoted" name', 'the "call".sas']),
+    ("sasserver:/tmp/zz_verify_r20a_p;q'r\"s&t%u/call.sas", ["/tmp/zz_verify_r20a_p;q'r\"s&t%u/call.sas"]),
 ]
+PATH_IDS = ["apostrophes, server", "apostrophes, content", "the others, server", "the others, content", "quotation marks, server",
+            "quotation marks, content", "the path that was measured"]
 
 
 @pytest.mark.parametrize("name", ["LLM - Create LLM Call", "LLM - Get Options"])
-@pytest.mark.parametrize("path, texts", PATHS_WITH_MORE, ids=["apostrophes, server", "apostrophes, content", "the others, server",
-                                                              "the others, content"])
+@pytest.mark.parametrize("path, texts", PATHS_WITH_MORE, ids=PATH_IDS)
 def test_an_apostrophe_of_the_path_does_not_end_the_text_of_the_statement(name, path, texts):
     """The statement that assigns the file is resolved in open code, &_slo_fl_path. and a semicolon. Its
     texts stand between apostrophes, where SAS resolves nothing and ends no statement - so the one
@@ -646,8 +652,7 @@ def test_get_options_comes_with_a_ticked_box_and_an_empty_path():
 
 
 @pytest.mark.parametrize("path", ["", "sasserver:/tmp/llm/call.sas", "sascontent:/Public/LLM Calls/call.sas"] + [path for path, _ in PATHS_WITH_MORE],
-                         ids=["no path", "a file of the SAS server", "a file of SAS Content", "apostrophes, server", "apostrophes, content",
-                              "the others, server", "the others, content"])
+                         ids=["no path", "a file of the SAS server", "a file of SAS Content"] + PATH_IDS)
 def test_the_closing_note_of_get_options_ends_at_its_own_semicolon(path):
     """live-19, defect 2. The statement the DATA step makes for the path stands in the macro variable the NOTE
     names. The NOTE is one statement whatever that statement holds: its one semicolon is the last character of
