@@ -265,9 +265,12 @@ TAKEN = ("WARNING: CAS did not answer that there is no table Public.LLM_FACT_SHE
 @pytest.mark.parametrize("scope, answer", [("global", 2), ("session", 1)], ids=["a table of the site", "a table of the session"])
 def test_a_table_that_has_the_name_the_sheet_is_loaded_under_is_not_touched(scope, answer):
     """gate-20. The sheet is loaded as LLM_FACT_SHEET_NEW and that table is dropped again or promoted. A site can
-    have a table of that name: what CAS does with a table of the session that has the name of a global one has
-    not been measured, so the program does not rest on it. It asks before it loads, and where a table of the name
-    is there it loads nothing under it and drops nothing of it."""
+    have a table of that name. What CAS does with a table of the session that has the name of a global one was
+    measured once, on 2026-10-13 behind this change: the session that held both got 1 from tableExists, and its
+    first dropTable took the table of the session and left the global one. The program does not rest on that one
+    run. It asks before it loads, and where a table of the name is there it loads nothing under it and drops
+    nothing of it. Measured in the same pass from a copy of the program with three test table names and a global
+    table <table>_NEW: the WARNING with `tableExists said 2`, and both tables with the rows and the time of before."""
     cas = casl_harness.FakeCAS()
     cas.table("Public", "LLM_FACT_SHEET", COLUMNS, rows=28, of="the table of before")
     cas.table("Public", "LLM_FACT_SHEET_NEW", COLUMNS, rows=7, of="a table of the site", scope=scope)

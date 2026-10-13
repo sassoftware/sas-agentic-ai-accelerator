@@ -303,9 +303,12 @@ def test_a_table_of_the_site_that_has_the_name_of_the_table_of_the_session_is_no
 @pytest.mark.parametrize("scope, answer", [("global", 2), ("session", 1)], ids=["a table of the site", "a table of the session"])
 def test_a_table_that_has_the_name_the_file_is_uploaded_under_is_not_touched(scope, answer):
     """gate-20. The file is uploaded as ACCELERATOR_RELEASES_NEW, and that table is dropped again or promoted. A site
-    can have a table of that name. What CAS does with a table of the session that has the name of a global one has
-    not been measured, so the job does not rest on it: it asks before the upload, and where a table of the name is
-    there it uploads nothing under it and drops nothing of it."""
+    can have a table of that name. What CAS does with a table of the session that has the name of a global one was
+    measured once, on 2026-10-13 behind this change: the session that held both got 1 from tableExists, and its first
+    dropTable took the table of the session and left the global one. The job does not rest on that one run: it asks
+    before the upload, and where a table of the name is there it uploads nothing under it and drops nothing of it.
+    Measured in the same pass with a global table <releaseTable>_NEW of 19 rows: the WARNING with `tableExists said 2`,
+    no upload, and both tables with the rows and the time of before."""
     cas = casl_harness.FakeCAS(upload_rows=755)
     cas.table("Public", RELEASES, columns(), rows=453, of="the table of before")
     cas.table("Public", RELEASES + "_NEW", LOG_COLUMNS, rows=7, of="a table of the site", scope=scope)
