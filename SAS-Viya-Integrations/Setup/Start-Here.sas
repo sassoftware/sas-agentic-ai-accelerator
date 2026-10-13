@@ -68,7 +68,8 @@
  *   llmProject / embeddingProject / decisionProject
  *                    the projects of the definitions, by name
  *   computeContexts  compute contexts to look for, separated by |
- *   guideUrl         where the guides are (the website of the accelerator)
+ *   guideUrl         where the guides are (the website of the accelerator); an
+ *                    address of another host than that and this SAS Viya is text
  *
  * sh is short for Start Here
  ******************************************************************************/
@@ -864,6 +865,20 @@ def link(label, address, here=False):
     return f'<a href="{shown(address, 2000)}" rel="noopener noreferrer">{shown(label)}</a>'
 
 
+# The hosts a guide link of the page may point to: the website of the accelerator and this SAS Viya. The parameter
+# guideUrl can come with the request, so an address of another host is shown as text and is no link
+GUIDE_HOST = 'sassoftware.github.io'
+
+
+def guide_link(label, address, hosts):
+    """A link to a guide: clickable for an https address of one of the hosts, the label with the address as
+    text otherwise."""
+    host = re.match(r'https://([^/:?#@]+)(?:[/:?#]|$)', address or '')
+    if host and host.group(1).lower() in hosts:
+        return link(label, address)
+    return shown(label + ': ' + (address or ''))
+
+
 def rows_of(lines):
     rows = ['<table>', '<thead><tr><th scope="col">Check</th><th scope="col">State</th><th scope="col">Found</th>'
             '<th scope="col">What to do</th></tr></thead>', '<tbody>']
@@ -879,7 +894,7 @@ def counts_of(lines):
     return {state: sum(entry.get('count', 1) for entry in lines if entry['state'] == state) for state in (OK, MISSING, NOT_CHECKED)}
 
 
-def render_page(settings, lines, reports, session=None):
+def render_page(settings, lines, reports, session=None, viya_host=''):
     """The page as HTML text. Every text of it goes through shown()."""
     counts = counts_of(lines)
     session = session or {'other': False, 'context': ''}
@@ -918,8 +933,13 @@ def render_page(settings, lines, reports, session=None):
             page.append('<li>' + shown('The report ' + label + ' could not be looked for.') + '</li>')
         else:
             page.append('<li>' + shown('The report ' + label + ' was not found in ' + settings['contentRoot'] + '.') + '</li>')
+    own = re.match(r'https?://([^/:?#@]+)', viya_host or '')
+    hosts = {GUIDE_HOST} | ({own.group(1).lower()} if own else set())
     for label, path in GUIDES:
-        page.append('<li>' + link(label, guide + '/' + path) + '</li>')
+        page.append('<li>' + guide_link(label, guide + '/' + path, hosts) + '</li>')
+    if not re.match(r'https://([^/:?#@]+)', guide) or re.match(r'https://([^/:?#@]+)', guide).group(1).lower() not in hosts:
+        page.append('<li>' + shown('The parameter guideUrl names an address that is neither the website of the accelerator nor this SAS Viya: '
+                                   'the addresses of the guides are text, not links.') + '</li>')
     page += ['</ul>', '<h2>Installation check</h2>',
              '<p class="summary">' + shown(f'{counts[OK]} ok, {counts[MISSING]} missing, {counts[NOT_CHECKED]} not checked. ' + said,
                                            2 * TEXT_LIMIT) + '</p>',
@@ -1026,7 +1046,7 @@ def start_here():
         lines.insert(0, line('Installation check', 'Python package requests', MISSING, 'not installed, so SAS Viya could not be asked',
                              'Have requests installed into the Python of this compute context.'))
     with open(os.path.join(setting('_sh_work'), PAGE_FILE), 'w', encoding='utf-8', newline='\n') as file:
-        file.write(render_page(settings, lines, reports, session))
+        file.write(render_page(settings, lines, reports, session, setting('_sh_viyaHost')))
     counts = counts_of(lines)
     say('NOTE', f'Start Here: the page holds {sum(counts.values())} checks - {counts[OK]} ok, {counts[MISSING]} missing, '
                 f'{counts[NOT_CHECKED]} not checked.')

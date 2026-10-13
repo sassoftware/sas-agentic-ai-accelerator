@@ -953,7 +953,43 @@ def test_a_guide_address_that_is_no_http_address_is_no_link(monkeypatch, tmp_pat
     page = Page(done.page)
 
     assert len(page.links) == 2 and all(link["href"].startswith("/SASVisualAnalytics/") for link in page.links)
-    assert "User Guide: Prompt Builder" in page.texts
+    assert any(text.startswith("User Guide: Prompt Builder") for text in page.texts)
+
+
+@pytest.mark.parametrize("address, linked", [
+    ("https://sassoftware.github.io/sas-agentic-ai-accelerator", True),
+    ("https://sassoftware.github.io/sas-agentic-ai-accelerator/", True),
+    ("http://sassoftware.github.io/sas-agentic-ai-accelerator", False),
+    ("https://evil.example.com/sas-agentic-ai-accelerator", False),
+    ("https://sassoftware.github.io.evil.example.com/x", False),
+    ("https://user@evil.example.com/x", False),
+], ids=["the website", "the website with a slash", "the website without TLS", "another host", "a host that starts like it",
+        "an address with a user"])
+def test_a_guide_address_of_another_host_is_text(monkeypatch, tmp_path, address, linked):
+    """Review-17 and review-18 (open item 14): guideUrl took any http(s) address, and a job parameter can come with
+    the request - an address of this page could carry one that sends the reader elsewhere. The guides are links only
+    to the website of the accelerator and to this SAS Viya; any other address is shown as text, with one line that
+    says why."""
+    done = run(monkeypatch, tmp_path, settings={"guideUrl": address})
+    page = Page(done.page)
+    guides = [link for link in page.links if not link["href"].startswith("/SASVisualAnalytics/")]
+
+    if linked:
+        assert len(guides) == 5 and all(link["href"].startswith("https://sassoftware.github.io/sas-agentic-ai-accelerator/") for link in guides)
+        assert "the addresses of the guides are text, not links" not in done.page
+    else:
+        assert guides == []
+        assert any(text == "User Guide: Prompt Builder: " + address.rstrip("/") + "/User-Guide/Prompt-Builder" for text in page.texts)
+        assert "the addresses of the guides are text, not links" in done.page
+
+
+def test_a_guide_address_on_this_sas_viya_is_a_link(monkeypatch, tmp_path):
+    functions = load(monkeypatch, tmp_path).namespace
+    hosts = {"sassoftware.github.io", "viya.example.com"}
+
+    assert functions["guide_link"]("Guide", "https://viya.example.com/guides/x", hosts).startswith('<a href="https://viya.example.com/guides/x"')
+    assert functions["guide_link"]("Guide", "https://viya.example.com:443/guides/x", hosts).startswith("<a ")
+    assert functions["guide_link"]("Guide", "https://other.example.com/x", hosts) == "Guide: https://other.example.com/x"
 
 
 def test_a_report_that_is_not_there_is_named_and_not_linked(monkeypatch, tmp_path):
