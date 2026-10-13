@@ -9,6 +9,7 @@ import io
 import json
 import re
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,7 +28,8 @@ from mdb.viya import session as s
 from test_builder_commands import (FILE_PATH, PACKAGE_FILE, Site, _built,  # noqa: F401
                                    _site_with_its_own_objects, discovery, importing, no_discovery, out, site)
 from test_content_deploy import CORE, STEP_PATH, command, manifest, repo  # noqa: F401
-from test_mdb_release_20 import _deploy_and_export, _git, _with_commit, gate, needs_git  # noqa: F401
+from test_mdb_release_20 import (EARLIER, _deploy_and_export, _git, _site, _squash_merge, _tag_clone,  # noqa: F401
+                                 _with_commit, gate, needs_git)
 from test_session import URL, _answered, env, fake_sasctl  # noqa: F401
 
 REPOSITORY = Path(__file__).resolve().parents[3]
@@ -354,6 +356,60 @@ def test_only_the_id_of_a_commit_as_it_stands_is_a_commit_of_release_json(tmp_pa
             assert "is dated" not in printed and "does not hold" not in printed
     _with_commit(package_path, head)
     assert gate(checkout, "--release")[0] == 0
+
+
+# ---- a tag on the commit of the branch that added the package file ----------------------
+ON_MAIN = "git merge-base --is-ancestor HEAD origin/main"
+
+
+def test_the_workflow_asks_git_whether_a_tag_names_a_commit_of_main():
+    workflow = REPOSITORY / ".github" / "workflows" / "verify-model-definitions.yml"
+    if not workflow.is_file():
+        pytest.skip(f"{workflow} is not in this checkout")
+    text = workflow.read_text(encoding="utf-8").replace("\r\n", "\n")
+    steps = re.split(r"\n      - (?=name:|uses:)", text.split("    steps:", 1)[1])
+    asking = [step for step in steps if "merge-base --is-ancestor" in step]
+    assert len(asking) == 1 and "if: startsWith(github.ref, 'refs/tags/')\n" in asking[0]
+    assert f"if ! {ON_MAIN}; then\n" in asking[0] and re.search(r"\n\s+exit 1\n\s+fi\s*$", asking[0])
+    # it stands in front of the gate of the tag, and the checkout holds every branch for it
+    strict = next(step for step in steps if re.search(r"run: mdb package-check --release\s*$", step, re.M))
+    assert steps.index(asking[0]) < steps.index(strict) and "fetch-depth: 0" in text
+    procedure = " ".join((REPOSITORY / "CONTRIBUTING.md").read_text(encoding="utf-8").split())
+    assert ("The workflow runs the strict form for the tag, and a step in front of it fails for a tag whose commit "
+            "is not in the history of `main`.") in procedure
+
+
+@needs_git
+def test_a_tag_on_the_commit_of_the_branch_passes_the_gate_and_fails_that_step(tmp_path, gate):
+    """gate-20: a tag put on the commit of the branch that added the package
+    file passes `mdb package-check --release` in a fresh clone of the tag -
+    the commit release.json names is in its history - although that commit
+    is not on main. What the step of the workflow asks tells the two tags
+    apart."""
+    site = _site(tmp_path)
+    merged = _squash_merge(site, "feature/release", "Release work (#1)")
+    _git(site.owner, "fetch", "-q", "origin")
+    _git(site.owner, "switch", "-q", "--detach", "origin/main")
+    assert _deploy_and_export(site.owner) == merged
+    _git(site.owner, "switch", "-q", "-c", "release/package")
+    _git(site.owner, "rm", "-q", EARLIER)
+    _git(site.owner, "add", "SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json")
+    _git(site.owner, "commit", "-q", "-m", "the package of the release")
+    on_branch = _git(site.owner, "rev-parse", "HEAD")
+    _git(site.owner, "push", "-q", "origin", "release/package")
+    squashed = _squash_merge(site, "release/package", "The package of the release (#2)")
+    _git(site.owner, "fetch", "-q", "--prune", "origin")
+    _git(site.owner, "tag", "2.3.0", "origin/main")                       # as step 4 says
+    _git(site.owner, "tag", "2.3.1", on_branch)                           # as it warns against
+    _git(site.owner, "push", "-q", "origin", "2.3.0", "2.3.1")
+    asked = {}
+    for tag, commit in (("2.3.0", squashed), ("2.3.1", on_branch)):
+        clone = _tag_clone(site, tag)
+        assert _git(clone, "rev-parse", "HEAD") == commit
+        code, text = gate(clone, "--release")
+        assert code == 0, text
+        asked[tag] = subprocess.run(ON_MAIN.split(), cwd=clone, capture_output=True).returncode
+    assert asked == {"2.3.0": 0, "2.3.1": 1}
 
 
 def test_an_error_that_is_no_answer_of_the_token_address_is_passed_on():

@@ -44,7 +44,8 @@ name: Verify generated model definitions
 # user id. A release is tagged with its version, and on a tag the gate is
 # `mdb package-check --release`: every difference is an error, drift included,
 # and the commit release.json names has to be in the history of the tag. The
-# strict form also runs on a branch whose change replaces the package file.
+# tag itself has to name a commit of main, which a step of its own asks git.
+# The strict form also runs on a branch whose change replaces the package file.
 
 on:
   push:
@@ -150,6 +151,19 @@ jobs:
             echo "$package did not change: the lenient gate above is the check."
           else
             mdb package-check --release
+          fi
+      - name: A release tag names a commit of main
+        # CONTRIBUTING.md, step 4: the tag goes on the commit the second
+        # merge made on main. The gate below cannot tell - a tag on the
+        # commit of the branch that added the package file equals its
+        # checkout as well - so git is asked. The checkout above fetched
+        # every branch (fetch-depth: 0); without origin/main the step fails.
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "The tag $GITHUB_REF_NAME names a commit that is not in the history of main."
+            echo "A release is tagged on the commit of main that holds the package file (CONTRIBUTING.md, step 4)."
+            exit 1
           fi
       - name: The transfer package of a release equals the checkout
         # The gate of a release, on a tag only: every difference is an
