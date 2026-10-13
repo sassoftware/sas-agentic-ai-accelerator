@@ -26,7 +26,9 @@ name: Verify generated model definitions
 # Logging-Monitoring/, Setup/, the custom steps and the fact sheets in the
 # definition folders. Each of those is watched so that the change that makes the package
 # stale is the one that says so. CHANGELOG.md is watched because the release
-# table, in CAS and in the package, is built from it.
+# table, in CAS and in the package, is built from it. CONTRIBUTING.md is
+# watched because a test of the mdb suite follows the release procedure it
+# describes and reads its steps.
 # The two lists below are the same; tests/test_package_guards.py reads them
 # and the manifest, and fails for a source that no path here covers.
 #
@@ -68,6 +70,7 @@ on:
       - "LLM-Prompt-Builder/src/va/ddc.ts"
       - "LLM-Prompt-Builder/src/objects/rag-backends.ts"
       - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
       - "SAS-Viya-Integrations/Logging-Monitoring/**"
       - "SAS-Viya-Integrations/Setup/**"
       - "SCR-LLM-Deployment-YAML/**"
@@ -90,6 +93,7 @@ on:
       - "LLM-Prompt-Builder/src/va/ddc.ts"
       - "LLM-Prompt-Builder/src/objects/rag-backends.ts"
       - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
       - "SAS-Viya-Integrations/Logging-Monitoring/**"
       - "SAS-Viya-Integrations/Setup/**"
       - "SCR-LLM-Deployment-YAML/**"

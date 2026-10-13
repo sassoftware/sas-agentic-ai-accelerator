@@ -528,6 +528,19 @@ def test_a_deploy_from_the_branch_of_a_pull_request_fails_the_tag(tmp_path, gate
     assert f"file 'release.json' names the commit {deployed[:12]}, which this clone does not hold" in text
 
 
+def test_a_change_to_the_procedure_text_starts_the_workflow():
+    """The test of the procedure reads CONTRIBUTING.md. A pull request that
+    changes only that file has to start the workflow that runs the test, or
+    the failure shows up on somebody else's change."""
+    workflow = REPO_ROOT / ".github" / "workflows" / "verify-model-definitions.yml"
+    if not workflow.is_file():
+        pytest.skip(f"{workflow} is not in this checkout")
+    text = workflow.read_text(encoding="utf-8").replace("\r\n", "\n")
+    push, _, pull_request = text.partition("pull_request:")
+    for trigger, block in (("push", push), ("pull_request", pull_request.split("jobs:", 1)[0])):
+        assert '\n      - "CONTRIBUTING.md"\n' in block, trigger
+
+
 def _with_commit(package_path: Path, commit: str) -> None:
     """Write another commit into the release.json of a package file - a
     release.json edited by hand."""
