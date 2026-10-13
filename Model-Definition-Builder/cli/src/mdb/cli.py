@@ -1075,7 +1075,10 @@ def _viya_session():
         console.print(f"[dim]SAS Viya: {session.auth_summary}[/dim]")
         return session
     except ViyaConfigError as exc:
-        console.print(f"[red]{exc}[/red]")
+        # printed as it is, and as one line whatever the width of the terminal: the sentence of a refused
+        # sign-in holds what SAS Logon answered, and read as markup a `[/red]` in it ends the command with
+        # a traceback - and `cli[viya]` loses its bracket
+        console.print(str(exc), style="red", markup=False, highlight=False, soft_wrap=True)
         raise typer.Exit(2)
 
 

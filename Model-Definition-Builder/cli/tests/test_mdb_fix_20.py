@@ -5,6 +5,7 @@ found in mdb, each as a test that fails on the code before it. Every service
 is a fake (content_fakes, the fakes of test_builder_commands) or a made-up
 answer: nothing here says how SAS Viya answers.
 """
+import io
 import json
 import re
 import sys
@@ -12,12 +13,17 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
+from typer.testing import CliRunner
 
 from content_fakes import Response
+from mdb import cli
 from mdb.viya import answer as answering
 from mdb.viya import content as deploying
 from mdb.viya import session as s
 from test_session import URL, _answered, env, fake_sasctl  # noqa: F401
+
+REPOSITORY = Path(__file__).resolve().parents[3]
 
 
 # ---- the answer of a refused request: one function, one line ----------------------
@@ -171,6 +177,43 @@ def test_the_installed_sasctl_sends_the_grant_to_the_port(env, logon):
     with pytest.raises(s.ViyaSignInError, match="SAS Viya at http://127.0.0.1:4981 refused the sign-in of u"):
         s.create_session()
     assert logon.posted == ["http://127.0.0.1:4981/SASLogon/oauth/token#password"]
+
+
+def _console(monkeypatch, width=80):
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=out, width=width, force_terminal=False))
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=REPOSITORY))
+    return out
+
+
+@pytest.mark.parametrize("error, description", [
+    ("unauthorized", "[/red] closed [bold]bold"),
+    ("x[/]", "see [link=https://example.com]here[/link]"),
+])
+def test_what_sas_logon_answers_is_printed_as_it_is(logon, monkeypatch, error, description):
+    """review-20: the sentence was printed with markup on. A closing tag in
+    error or error_description ended the command with a MarkupError
+    traceback and exit code 1, and another tag was read as markup."""
+    out = _console(monkeypatch)
+    logon.body = json.dumps({"error": error, "error_description": description})
+    result = CliRunner().invoke(cli.app, ["content-deploy", "--dry-run"])
+    assert result.exit_code == 2 and isinstance(result.exception, SystemExit), result.exception
+    # one line at the width of a terminal, with the answer as it came
+    line, = out.getvalue().splitlines()
+    assert f'with error "{error}" and error_description "{description}". Check the credentials' in line
+    assert len(line) > 80 and "s3cret-p" not in line
+
+
+def test_the_sentence_for_a_missing_sasctl_keeps_its_bracket(monkeypatch):
+    """The same print: read as markup, `cli[viya]` lost `[viya]`."""
+    out = _console(monkeypatch, width=1000)
+    sentence = 'sasctl is not installed - install the Viya extra: pip install -e "Model-Definition-Builder/cli[viya]"'
+
+    def refuse():
+        raise s.ViyaConfigError(sentence)
+    monkeypatch.setattr(s, "create_session", refuse)
+    result = CliRunner().invoke(cli.app, ["content-deploy", "--dry-run"])
+    assert result.exit_code == 2 and out.getvalue() == sentence + "\n"
 
 
 def test_an_error_that_is_no_answer_of_the_token_address_is_passed_on():
