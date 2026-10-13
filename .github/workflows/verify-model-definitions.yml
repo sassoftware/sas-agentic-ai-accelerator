@@ -38,9 +38,11 @@ name: Verify generated model definitions
 # starting with "drift:" and does not fail - a contributor has no access to
 # the system the package is exported from. What a package must never be still
 # fails there: an object outside the manifest, a rule, a share, a host, a
-# per-user state, a report default that is not neutral, a missing entry. A
-# release is tagged with its version, and on a tag the gate is
-# `mdb package-check --release`: every difference is an error, drift included.
+# per-user state, a report default that is not neutral, a missing entry, a
+# user id. A release is tagged with its version, and on a tag the gate is
+# `mdb package-check --release`: every difference is an error, drift included,
+# and the commit release.json names has to be in the history of the tag. The
+# strict form also runs on a branch whose change replaces the package file.
 
 on:
   push:
@@ -125,8 +127,26 @@ jobs:
         # or carries a user's state. A difference in content against the
         # checkout is a "drift:" line and does not fail. --allow-missing is
         # for the time before the package of the release is in the
-        # repository; it goes with the commit that adds the file.
+        # repository; it goes with the commit that adds the file - and mdb
+        # no longer honours it once the package files of the earlier
+        # releases are gone, which that commit removes.
         run: mdb package-check --allow-missing
+      - name: A package file that changes equals the checkout
+        # A push or pull request that replaces the package file is held to
+        # the gate of a release: a difference in content inside it - another
+        # program, one more parameter, a host in a form - is drift for the
+        # lenient gate above and would pass until the tag.
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          package=SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then BASE=HEAD~1; fi
+          if git diff --quiet "$BASE" HEAD -- "$package"; then
+            echo "$package did not change: the lenient gate above is the check."
+          else
+            mdb package-check --release
+          fi
       - name: The transfer package of a release equals the checkout
         # The gate of a release, on a tag only: every difference is an
         # error, and a package that is missing is one.

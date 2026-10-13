@@ -1795,3 +1795,24 @@ def test_the_workflow_runs_the_lenient_gate_on_a_branch_and_the_strict_one_on_a_
     push = text.split("pull_request:", 1)[0]
     assert re.search(r"^    tags:\n      - '\[0-9\]\+\.\[0-9\]\+\.\[0-9\]\+'$", push, re.M)
     assert re.search(r"fetch-depth: 0", text)
+
+
+def test_a_change_that_replaces_the_package_file_meets_the_strict_gate_on_a_branch():
+    """review-18: drift inside a package that a pull request replaces - a
+    host in a form, another program, one more parameter - passed the branch
+    workflow and failed only on the tag. The strict form runs on a branch
+    whenever the change touches the package file."""
+    workflow = REPO_ROOT / ".github" / "workflows" / "verify-model-definitions.yml"
+    if not workflow.is_file():
+        pytest.skip(f"{workflow} is not in this checkout")
+    text = workflow.read_text(encoding="utf-8")
+    steps = re.split(r"\n      - (?=name:|uses:)", text.split("    steps:", 1)[1])
+    changed = [step for step in steps if "git diff --quiet" in step]
+    assert len(changed) == 1
+    step = changed[0]
+    assert "if: ${{ !startsWith(github.ref, 'refs/tags/') }}" in step
+    assert "package=SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json" in step
+    assert re.search(r"else\n\s+mdb package-check --release\n", step)
+    assert "github.event.pull_request.base.sha || github.event.before" in step
+    # the package file the step names is the manifest's
+    assert load_manifest(REPO_ROOT, check_sources=False).package == "SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json"
