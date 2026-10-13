@@ -216,7 +216,12 @@ entries:
   # ---- Logging and Monitoring -------------------------------------------------
   # The four pictures of the report are files that are its children. Their
   # names and hashes are as an export of 2026-10-12 held them; two of them are
-  # one picture under one name.
+  # one picture under one name. A hash is compared with the file inside a
+  # package - by `mdb package-export` in what the system exports, by
+  # `mdb package-check` in the package file - and with no file of the
+  # repository: like the report, the pictures come from the system the package
+  # is exported from, and the package of the release is their only copy here
+  # once the packages of earlier releases are removed.
   - path: Logging and Monitoring/LLM Usage Report
     kind: report
     checks:
