@@ -23,6 +23,7 @@ from log_parser_harness import (
     code_file_program,
     decision_block,
     embedding_block,
+    failed_block,
     llm_block,
     log_line,
     parse,
@@ -68,6 +69,11 @@ def gnu_sed():
 
 
 needs_gnu_sed = pytest.mark.skipif(not gnu_sed(), reason="the redaction of the collection script needs GNU sed")
+needs_bash = pytest.mark.skipif(not shutil.which("bash") or not gnu_sed(), reason="the collection script needs bash and GNU sed")
+
+
+def missing(value):
+    return value is None or value != value
 
 
 def redact(text, tmp_path):
@@ -120,8 +126,9 @@ def test_every_line_the_script_writes_went_through_the_redaction():
 # The line in front of the lines of every container (release 2.3.0)
 #
 # The tests take the script from the guide, as the ones above do: the bash block that starts with
-# "# Set the script variables for your environment". They hold the script of round 19, which the
-# guide carries from the commit that puts it there.
+# "# Set the script variables for your environment". They hold the script that keeps the lines of a
+# container apart from its own line (escape_llm_log), which the guide carries from the commit that
+# puts it there.
 # ---------------------------------------------------------------------------
 
 def collection_marker():
@@ -151,8 +158,11 @@ def test_the_script_writes_one_line_in_front_of_the_lines_of_every_container():
     # every container of every pod on its own, the line in front of its lines, both through the redaction
     loop = script[script.index("for pod in"):]
     assert "for container in $(kubectl get -n \"$llm_namespace\" \"$pod\" -o jsonpath='{.spec.containers[*].name}'); do" in loop
-    assert re.search(r"\{\n\s*printf .*\n\s*kubectl logs -n \"\$llm_namespace\" \"\$pod\" -c \"\$container\" --since=\"\$llm_logging_interval\"\n"
+    # the lines of the container reach the file through escape_llm_log, the line of the script does not; kubectl is
+    # called without --timestamps and without --prefix, so a line arrives as the container wrote it, from its start
+    assert re.search(r"\{\n\s*printf .*\n\s*kubectl logs -n \"\$llm_namespace\" \"\$pod\" -c \"\$container\" --since=\"\$llm_logging_interval\" \| escape_llm_log\n"
                      r"\s*\} \| redact_llm_log >> \"\$llm_log_path\"\n", loop)
+    assert script.count("escape_llm_log") == 2 and "--timestamps" not in script and "--prefix" not in script
     assert "--all-containers" not in script
     # kubectl only reads
     for command in re.findall(r"kubectl (\w+)", script):
@@ -164,8 +174,221 @@ def test_the_line_is_the_one_the_parser_takes():
     line = fmt.replace("\\n", "") % ("demo-llm-5d8f7c9b6-abcde", "demo-llm", "2026-10-13T09:00:00Z")
 
     assert collection_marker().fullmatch(line)
-    # no line a container writes starts like it: a log line starts with its time
+    # a log line starts with its time and is never taken for it; a line of a container that starts like it is another
+    # matter, which escape_llm_log is for
     assert not line[:4].isdigit() and not collection_marker().fullmatch(log_line("2026-01-05 09:00:00", "api", line))
+
+
+# ---------------------------------------------------------------------------
+# A line of a container that looks like the line of the script
+# ---------------------------------------------------------------------------
+
+LINE_START = "#=# llm-log-collection "
+
+
+def escape_expressions():
+    """The sed expressions of the script's escape_llm_log function, as the shell hands them to sed."""
+    match = re.search(r"^escape_llm_log\(\) \{\n(.*?)\n\}$", collection_script(), re.DOTALL | re.MULTILINE)
+    assert match, "the collection script does not define escape_llm_log"
+    command = shlex.split(match.group(1).replace("\\\n", " "))
+    assert command[:2] == ["sed", "-E"]
+    options, expressions = command[2::2], command[3::2]
+    assert options == ["-e"] * len(expressions)
+    return expressions
+
+
+def escaped_line():
+    """The pattern the parser takes the backslash off by, from the code file."""
+    found = re.search(r"^ESCAPED_LINE = re\.compile\(r'(.*)'\)$", code_file_program(), re.MULTILINE)
+    assert found, "the parser no longer defines ESCAPED_LINE"
+    return re.compile(found.group(1))
+
+
+def test_the_script_the_marker_and_the_parser_name_one_start_of_a_line():
+    """What makes a line of the shape certain in a file the script wrote: every line the parser can take for the line
+    of the script starts with LINE_START, the script puts a backslash in front of every line of a container that starts
+    with it - at the start of a line and behind a carriage return, where the parser begins a line as well, and with or
+    without backslashes in front, so that no two lines of a container become the same line - and the parser takes one
+    backslash off such a line."""
+    fmt, _ = marker_format()
+    assert fmt.startswith(LINE_START)
+    assert collection_marker().pattern.startswith(LINE_START) and re.escape(LINE_START).replace("\\", "") == LINE_START
+    expressions = escape_expressions()
+    assert expressions == ["s/(^|\\r)(\\\\*" + LINE_START + ")/\\1\\\\\\2/g", "$a\\"]
+    assert escaped_line().pattern == "\\\\+" + LINE_START
+    # the parser reads a file with universal newlines: a line begins at the start of the file, behind a line feed
+    # and behind a carriage return, and nowhere else
+    program = code_file_program()
+    assert "with open(file_path, 'r', encoding='utf-8', errors='replace') as f:" in program
+    assert "COLLECTION_MARKER.fullmatch(line.rstrip('\\r\\n'))" in program and program.count("COLLECTION_MARKER.") == 1
+
+
+def test_the_guide_says_what_the_script_does_with_a_line_that_looks_like_its_own(needs_the_script_of_this_release):
+    """Review-19: the guide said that no container writes a line that starts like the line of the script, and that a line
+    of that shape with an older time of collection is text. Neither is what the script and the parser do."""
+    guide = " ".join(GUIDE.read_text(encoding="utf-8").split())
+
+    assert "No container writes a line that starts like it" not in guide
+    assert "whose time of collection is older than" not in guide
+    assert "puts a backslash in front of every line of a container that starts like the line of the script" in guide
+    assert "takes the backslash off again" in guide
+    assert "has to put the backslash in front as the script does" in guide
+
+
+def collect(tmp_path, logs, collected_at="2026-10-13T09:00:00Z"):
+    """Runs the script as the guide prints it with a kubectl of the test that answers from files, and returns the text
+    of the file it wrote. logs is {(pod, container): the bytes 'kubectl logs' prints for it}, in the order the pods and
+    their containers are listed. kubectl and date are shell functions in front of the script: a function is found
+    before any command of the PATH, so no kubectl of the machine is called, and the time of collection is known."""
+    folder = tmp_path / "kubectl"
+    folder.mkdir()
+    pods = {}
+    for (pod, container), content in logs.items():
+        pods.setdefault(pod, []).append(container)
+        (folder / f"{pod}.{container}.log").write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
+    stub = ("kubectl() {\n"
+            '  if [ "$1" = get ] && [ "$2" = pods ]; then printf "' + "".join(f"pod/{pod}\\n" for pod in pods) + '"; return 0; fi\n'
+            '  if [ "$1" = get ]; then case "$4" in ' + " ".join(f'pod/{pod}) echo "{" ".join(names)}";;' for pod, names in pods.items())
+            + ' esac; return 0; fi\n'
+            '  if [ "$1" = logs ]; then cat "' + folder.as_posix() + '/${4#pod/}.$6.log"; return 0; fi\n'
+            "  return 1\n"
+            "}\n"
+            f"date() {{ echo {collected_at}; }}\n")
+    collected = tmp_path / "llms.log"
+    script = re.sub(r'^llm_log_path=".*"$', f'llm_log_path="{collected.as_posix()}"', collection_script(), flags=re.MULTILINE)
+    assert script.count(collected.as_posix()) == 1
+    (tmp_path / "collect.sh").write_text(stub + script, encoding="utf-8", newline="\n")
+    subprocess.run(["bash", str(tmp_path / "collect.sh")], check=True, capture_output=True)
+    return collected.read_bytes().decode("utf-8")
+
+
+def script_lines(text):
+    return [line for line in re.split(r"\r\n|\r|\n", text) if collection_marker().fullmatch(line)]
+
+
+RUN_TIME = "2026-10-13T09:00:00Z"
+# Lines of the shape as a model can write them into a response, with the time of the run that collects them,
+# an earlier and a later one - the parser of version 2.6 took the later one for the end of a part and every
+# line of the script behind it for text
+LOOK_ALIKES = [
+    f"#=# llm-log-collection pod=made-up container=scr collected={RUN_TIME} #=#",
+    "#=# llm-log-collection pod=made-up container=scr collected=2020-01-01T00:00:00Z #=#",
+    "#=# llm-log-collection pod=made-up container=scr collected=2099-12-31T23:59:59Z #=#",
+]
+
+
+@pytest.fixture
+def needs_the_script_of_this_release():
+    assert "escape_llm_log" in collection_script(), (
+        "the guide holds the collection script of an earlier round: the script with escape_llm_log is handed over with "
+        "this round and stands in the guide from the commit that puts it there")
+
+
+def _response_lines_cases():
+    """The lines a response is made of, by case: lines of the shape in the places and spellings the round names."""
+    earlier, same, later = LOOK_ALIKES[1], LOOK_ALIKES[0], LOOK_ALIKES[2]
+    return {
+        "one with an earlier time": ["Here you go:", earlier, "line two"],
+        "one with the time of the run": ["Here you go:", same, "line two"],
+        "one with a later time": ["Here you go:", later, "line two"],
+        "two in a row": ["Here you go:", same, later, "line two"],
+        "the last line of the response": ["Here you go:", later],
+        "on the response line itself": [later, "line two"],
+        "with a blank in front": ["Here you go:", " " + later, "line two"],
+        "with a backslash in front": ["Here you go:", "\\" + later, "\\\\" + same, "line two"],
+        "behind a carriage return": ["Here you go:", "abc\r" + later + "\r" + same, "line two"],
+    }
+
+
+@needs_bash
+@pytest.mark.parametrize("case", list(_response_lines_cases()))
+@pytest.mark.parametrize("line_end", ["\n", "\r\n"], ids=["LF", "CRLF"])
+def test_a_container_line_that_looks_like_the_line_of_the_script_ends_no_part(needs_the_script_of_this_release, monkeypatch, tmp_path, case, line_end):
+    """Review-19 B1. Two pods; the response of the first request of the first one holds lines that are, character for
+    character, lines the script could have written, and a request is running where the lines of that pod end. The
+    file the script writes has two lines of the shape - the two the script wrote -, and the parser gives the rows it
+    gives for the same logs without the look-alike lines: only the response differs, and it holds those lines as the
+    container wrote them."""
+    lines = _response_lines_cases()[case]
+    look_alikes = [line for line in lines if LINE_START in line]
+
+    def logs(response_lines):
+        first = llm_block(timestamp="2026-01-05 09:00:00", user_prompt="first", response="\n".join(response_lines))
+        running = llm_block(timestamp="2026-01-05 09:00:10", user_prompt="still running")
+        running = running[:next(index for index, line in enumerate(running) if " - scoreModel - INFO - prompt_length: " in line) + 1]
+        other_pod = llm_block(timestamp="2026-01-05 09:00:30", user_prompt="other pod")
+        return {("demo-llm-1", "scr"): as_log(first, running).replace("\n", line_end),
+                ("demo-llm-2", "scr"): as_log(other_pod).replace("\n", line_end)}
+
+    (tmp_path / "with").mkdir()
+    (tmp_path / "without").mkdir()
+    with_lines = collect(tmp_path / "with", logs(lines))
+    without = collect(tmp_path / "without", logs([line for line in lines if line not in look_alikes]))
+
+    assert [collection_marker().fullmatch(line).group(1) for line in script_lines(with_lines)] == ["demo-llm-1", "demo-llm-2"]
+    marked = parse(monkeypatch, tmp_path / "with", with_lines)
+    plain = parse(monkeypatch, tmp_path / "without", without)
+    assert list(marked["user_prompt"]) == ["first", "still running", "other pod"]
+    assert marked.drop(columns="response").equals(plain.drop(columns="response"))
+    assert list(marked["response"])[1:] == list(plain["response"])[1:]
+    # the response as the container wrote it: its lines without the blanks around them, joined by one blank
+    assert marked.loc[0, "response"] == " ".join(part.strip() for line in lines for part in line.split("\r"))
+    assert (marked.loc[0, "status_code"], marked.loc[0, "failed"]) == (200, 0)
+    assert missing(marked.loc[1, "failed"]) and (marked.loc[2, "status_code"], marked.loc[2, "failed"]) == (200, 0)
+
+
+@needs_bash
+@pytest.mark.parametrize("ending", ["\n", ""], ids=["with its line feed", "without a line feed"])
+def test_a_look_alike_as_the_last_line_of_a_pod_leaves_the_next_line_of_the_script_alone(needs_the_script_of_this_release, monkeypatch, tmp_path, ending):
+    """The last line 'kubectl logs' prints for a pod is a line of the shape, and with 'without a line feed' the output
+    ends in the middle of a line. The line of the script for the next pod still starts at the start of a line: the
+    script ends the last line of a container where it is not ended."""
+    first = as_log(llm_block(timestamp="2026-01-05 09:00:00", user_prompt="first", response="Here you go:")) + LOOK_ALIKES[2] + ending
+    second = as_log(llm_block(timestamp="2026-01-05 09:00:30", user_prompt="other pod"))
+    text = collect(tmp_path, {("demo-llm-1", "scr"): first, ("demo-llm-2", "scr"): second})
+
+    assert [collection_marker().fullmatch(line).group(1) for line in script_lines(text)] == ["demo-llm-1", "demo-llm-2"]
+    assert text.endswith("\n") and "\\" + LOOK_ALIKES[2] + "\n" in text
+    frame = parse(monkeypatch, tmp_path, text)
+    assert list(frame["user_prompt"]) == ["first", "other pod"] and list(frame["failed"]) == [0, 0]
+
+
+@needs_bash
+def test_look_alikes_outside_of_a_response_end_no_part_either(needs_the_script_of_this_release, monkeypatch, tmp_path):
+    """A line of the shape between two requests, in a traceback, and as the only thing a pod printed."""
+    failing = failed_block("2026-01-05 09:00:20", "demo_llm", [("systemPrompt", "s"), ("userPrompt", "failing"), ("options", "{}")],
+                           error=None, exception=LOOK_ALIKES[2])
+    logs = {("demo-llm-1", "scr"): as_log(llm_block(timestamp="2026-01-05 09:00:00", user_prompt="first"), [LOOK_ALIKES[0]],
+                                          llm_block(timestamp="2026-01-05 09:00:10", user_prompt="second"), failing),
+            ("demo-llm-2", "scr"): LOOK_ALIKES[2] + "\n",
+            ("demo-llm-3", "scr"): as_log(llm_block(timestamp="2026-01-05 09:00:30", user_prompt="other pod"))}
+    text = collect(tmp_path, logs)
+
+    assert [collection_marker().fullmatch(line).group(1) for line in script_lines(text)] == ["demo-llm-1", "demo-llm-2", "demo-llm-3"]
+    frame = parse(monkeypatch, tmp_path, text)
+    assert list(frame["user_prompt"]) == ["first", "second", "failing", "other pod"]
+    assert list(frame["failed"]) == [0, 0, 1, 0]
+    # the last line of the traceback, as the container wrote it
+    assert frame.loc[2, "error_text"].endswith(LOOK_ALIKES[2])
+
+
+@needs_gnu_sed
+def test_the_redaction_makes_no_line_of_the_shape_and_takes_no_backslash_away(tmp_path):
+    """The lines of a container are escaped first and redacted then, together with the line of the script. The
+    redaction changes what follows API_KEY: and what follows the name of three headers, and replaces it by REDACTED:
+    it puts nothing in front of a line, and what it takes away between a carriage return and the start of a look-alike
+    it replaces by text. Held with lines made for it."""
+    escaped = "\\" + LOOK_ALIKES[2]
+    for line in (escaped,
+                 "API_KEY:made-up-key," + "\r" + escaped,
+                 "API_KEY:made-up-key\r" + escaped,
+                 "Cookie: made-up\r" + escaped,
+                 "x API_KEY:" + escaped):
+        redacted = redact(line + "\n", tmp_path)
+        assert script_lines(redacted) == [], line
+        assert all(not part.startswith(LINE_START) for part in re.split(r"\r\n|\r|\n", redacted)), line
+    # and the line of the script itself passes as it is (the pod and the container are names of Kubernetes objects)
+    assert redact(LOOK_ALIKES[0] + "\n", tmp_path) == LOOK_ALIKES[0] + "\n"
 
 
 @needs_gnu_sed
@@ -175,36 +398,15 @@ def test_the_line_passes_the_redaction_as_it_is(tmp_path):
     assert redact(line + "\n", tmp_path) == line + "\n"
 
 
-needs_bash = pytest.mark.skipif(not shutil.which("bash") or not gnu_sed(), reason="the collection script needs bash and GNU sed")
-
-
 @needs_bash
 def test_a_collection_with_a_kubectl_that_answers_from_files_is_read_in_its_parts(monkeypatch, tmp_path):
     """The script as the guide prints it, run with a kubectl of the test that knows two pods - one with two containers
     - and answers 'kubectl logs' with a request block each. The file has one line in front of each container, the
     parser reads one row per request, and the same lines without those three lines are read the same."""
-    logs = tmp_path / "logs"
-    logs.mkdir()
     blocks = {("demo-llm-1", "scr"): llm_block(timestamp="2026-01-05 09:00:00", user_prompt="first"),
               ("demo-llm-2", "scr"): llm_block(timestamp="2026-01-05 08:59:59", user_prompt="second"),
               ("demo-llm-2", "sidecar"): llm_block(timestamp="2026-01-05 09:00:05", user_prompt="third")}
-    for (pod, container), block in blocks.items():
-        (logs / f"{pod}.{container}.log").write_text(as_log(block), encoding="utf-8", newline="\n")
-    # kubectl of the test is a shell function in front of the script: a function is found before any command of
-    # the PATH, so no kubectl of the machine is called
-    stub = ("kubectl() {\n"
-            '  if [ "$1" = get ] && [ "$2" = pods ]; then printf "pod/demo-llm-1\\npod/demo-llm-2\\n"; return 0; fi\n'
-            '  if [ "$1" = get ]; then case "$4" in pod/demo-llm-1) echo scr;; pod/demo-llm-2) echo "scr sidecar";; esac; return 0; fi\n'
-            '  if [ "$1" = logs ]; then cat "' + logs.as_posix() + '/${4#pod/}.$6.log"; return 0; fi\n'
-            "  return 1\n"
-            "}\n")
-    collected = tmp_path / "llms.log"
-    script = re.sub(r'^llm_log_path=".*"$', f'llm_log_path="{collected.as_posix()}"', collection_script(), flags=re.MULTILINE)
-    assert script.count(collected.as_posix()) == 1
-    (tmp_path / "collect.sh").write_text(stub + script, encoding="utf-8", newline="\n")
-    subprocess.run(["bash", str(tmp_path / "collect.sh")], check=True, capture_output=True)
-
-    text = collected.read_text(encoding="utf-8")
+    text = collect(tmp_path, {where: as_log(block) for where, block in blocks.items()})
     markers = [line for line in text.split("\n") if collection_marker().fullmatch(line)]
     assert [collection_marker().fullmatch(line).group(1, 2) for line in markers] == [("demo-llm-1", "scr"), ("demo-llm-2", "scr"),
                                                                                   ("demo-llm-2", "sidecar")]
