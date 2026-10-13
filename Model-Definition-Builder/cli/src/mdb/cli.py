@@ -18,7 +18,6 @@ from typing import Optional
 
 import typer
 from rich.console import Console
-from rich.markup import escape
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
@@ -46,15 +45,33 @@ app = typer.Typer(
     add_completion=False,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
-console = Console()
+# emoji off: rich otherwise prints a `:name:` in any text as a picture - `urn:id:1` as `urn` + a sign + `1` -,
+# also in a line that is printed with markup off
+console = Console(emoji=False)
+
+#: A pair of tags that prints nothing and styles nothing. `_plain` puts it behind backslashes that stand in
+#: front of a bracket or at the end of a value: rich reads backslashes together with the bracket behind them,
+#: which at the end of a value is the bracket of whatever the line goes on with.
+_NO_TAG = "[none][/none]"
+_BRACKET_OR_END = re.compile(r"(\\*)(\[|\Z)")
 
 
 def _plain(value) -> str:
-    """The text of an exception, or of what a service answered, for a line
-    that is printed with markup on: a bracket in it is text. Without this a
-    `[/folders/...]` in an answer of SAS Viya is read as the end of a tag,
-    and the command ends with a MarkupError in place of its line."""
-    return escape(str(value))
+    """A value for a text that rich reads with markup on - a line, a table
+    cell, a title, a prompt: the value is printed as it is, whatever stands
+    in it and whatever the text goes on with. Without this a `[/folders/...]`
+    in an answer of SAS Viya is read as the end of a tag, and the command
+    ends with a MarkupError in place of its line; another word in brackets
+    is not printed at all.
+
+    Every bracket is spelled `\\[`, which rich prints as the bracket. Where
+    backslashes stand in front of a bracket or at the end of the value they
+    are doubled and closed with `_NO_TAG`: rich prints half of the
+    backslashes in front of a tag, and all of them anywhere else."""
+    def spelled(found) -> str:
+        backslashes, bracket = found.groups()
+        return (backslashes * 2 + _NO_TAG if backslashes else "") + ("\\[" if bracket else "")
+    return _BRACKET_OR_END.sub(spelled, str(value))
 
 
 def _print_version(value: bool) -> None:
