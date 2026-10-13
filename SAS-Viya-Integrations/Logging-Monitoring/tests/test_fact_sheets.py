@@ -140,11 +140,11 @@ def test_the_counted_upload_takes_the_place_of_the_table_and_nothing_loads_the_s
     assert "load data=" not in swap and "work." not in swap and swap.count("proc cas;") == 1
     # every outcome but a saved table is a WARNING that says what the table holds; none is an ERROR or ends the program
     warnings = re.findall(r"%put (WARNING: [^;]*);", swap)
-    assert len(warnings) == 3 and "ERROR" not in swap.upper()
+    assert len(warnings) == 4 and "ERROR" not in swap.upper()
     for warning in warnings:
         assert "&_lfs_caslib..&_lfs_table." in warning and not set(warning) & set("%'\"")
     # one test for a sheet that was not read, and one for each WARNING
-    assert swap.count("%if") == swap.count("%put") + 1 and swap.count("%else %if") == 2
+    assert swap.count("%if") == swap.count("%put") + 1 and swap.count("%else %if") == 3
 
 
 def test_an_error_for_one_sheet_does_not_put_a_batch_session_into_syntax_check_mode():
@@ -239,3 +239,96 @@ def test_a_sheet_that_is_there_is_read_and_counted_as_before():
     in_order("\n".join(generated), "filename _lfs_fs filesrvc folderPath=", "proc import dataFile=_lfs_fs", "filename _lfs_fs clear;",
              'load data=work._lfs_llm_fact_sheet casOut="LLM_FACT_SHEET_NEW" replace;', "proc cas;")
     assert cas.exists("Public", "LLM_FACT_SHEET_NEW") == 1
+
+
+# ---------------------------------------------------------------------------
+# Followed: what became of the table, and the sentence that says it
+# ---------------------------------------------------------------------------
+
+BEFORE = {"columns": COLUMNS, "rows": 28, "of": "the table of before"}
+COULD_NOT = "WARNING: The sheet could not take the place of the table Public.LLM_FACT_SHEET - messages above"
+KEPT = COULD_NOT + ". The table of that name that is in memory was left as it is."
+RESTORED = COULD_NOT + ". The table was loaded again from the file it was saved to before."
+GONE = (COULD_NOT + " - and the table could not be loaded again from the file it was saved to before: load that file, or run this "
+        "program again.")
+NOT_SAVED = ("WARNING: The table Public.LLM_FACT_SHEET holds the sheet and is promoted, but it could not be saved - messages above. "
+             "Its saved file is the one of before.")
+
+
+def library(refuse=(), saved=True):
+    """The table of before, global and saved, and the upload of the sheet whose rows were counted."""
+    cas = casl_harness.FakeCAS(refuse=refuse)
+    cas.table("Public", "LLM_FACT_SHEET", COLUMNS, rows=28, of="the table of before")
+    if saved:
+        cas.file("Public", "LLM_FACT_SHEET.sashdat", COLUMNS, rows=28, of="the table of before")
+    cas.table("Public", "LLM_FACT_SHEET_NEW", COLUMNS, rows=30, of="the sheet", scope="session")
+    return cas
+
+
+def swapped(cas, **more):
+    generated, log, asked, macros = follow("_lfs_swap", cas, **dict({"_lfs_ok": "1"}, **more))
+    return log
+
+
+def in_memory(cas):
+    return cas.promoted.get(cas.key("Public", "LLM_FACT_SHEET"))
+
+
+def test_the_sheet_takes_the_place_of_the_table():
+    cas = library()
+
+    assert swapped(cas) == [] and cas.errors == [] and cas.session == {}
+    assert in_memory(cas) == {"columns": COLUMNS, "rows": 30, "of": "the sheet"}
+    assert cas.files[("public", "LLM_FACT_SHEET.sashdat")]["of"] == "the sheet"
+
+
+def test_a_table_that_could_not_be_dropped_is_said_to_be_left():
+    """gate-19. Where the drop of the table is refused, the promote is refused as well - the name is taken - and
+    so was the load from the saved file. The program then said that the table could not be loaded again from its
+    file, while the table of before was in memory. It asks whether a table of that name is in memory, loads
+    nothing over it and says that it was left."""
+    cas = library(refuse={("table.dropTable", "LLM_FACT_SHEET")})
+
+    assert swapped(cas) == [KEPT]
+    assert in_memory(cas) == BEFORE and cas.session == {} and cas.files[("public", "LLM_FACT_SHEET.sashdat")]["of"] == "the table of before"
+    assert not [action for action, _ in cas.calls if action == "table.loadTable"]
+    # the errors of the log are the two CAS wrote: none for a load that had to be refused
+    assert cas.errors == ["ERROR: table.dropTable: the table LLM_FACT_SHEET could not be dropped",
+                          "ERROR: table.promote: the table LLM_FACT_SHEET_NEW could not be promoted as LLM_FACT_SHEET"]
+
+
+def test_a_refused_promote_loads_the_table_again_from_its_file():
+    cas = library(refuse={("table.promote", "LLM_FACT_SHEET")})
+
+    assert swapped(cas) == [RESTORED]
+    assert in_memory(cas) == BEFORE and cas.session == {}
+    assert [parameters["path"] for action, parameters in cas.calls if action == "table.loadTable"] == ["LLM_FACT_SHEET.sashdat"]
+
+
+@pytest.mark.parametrize("saved", [True, False], ids=["the load is refused", "there is no saved file"])
+def test_a_refused_promote_and_a_load_that_fails_leave_no_table_and_say_so(saved):
+    cas = library(refuse={("table.promote", "LLM_FACT_SHEET")} | ({("table.loadTable", "LLM_FACT_SHEET")} if saved else set()), saved=saved)
+
+    assert swapped(cas) == [GONE]
+    assert in_memory(cas) is None and cas.session == {}
+    assert ("public", "LLM_FACT_SHEET.sashdat") in cas.files if saved else cas.files == {}
+
+
+def test_a_table_that_is_promoted_and_not_saved_says_so():
+    cas = library(refuse={("table.save", "LLM_FACT_SHEET")})
+
+    assert swapped(cas) == [NOT_SAVED]
+    assert in_memory(cas)["of"] == "the sheet" and cas.files[("public", "LLM_FACT_SHEET.sashdat")]["of"] == "the table of before"
+
+
+def test_each_outcome_has_one_sentence_and_the_sentences_differ():
+    """Five ways the swap can end, one line of the log for each but the one that worked - and for a sheet that
+    was not read completely nothing at all."""
+    assert len({KEPT, RESTORED, GONE, NOT_SAVED}) == 4
+    cas = library()
+    assert swapped(cas, _lfs_ok="0") == [] and cas.calls == [] and in_memory(cas) == BEFORE
+    swap = swap_macro()
+    assert re.findall(r"%if &_lfs_outcome\. EQ (\w+) %then", swap) == ["kept", "restored", "replace", "save"]
+    in_order(swap, 'table.dropTable / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW" quiet = true;',
+             'table.tableExists result = still / caslib = "&_lfs_caslib." name = "&_lfs_table.";',
+             'if still.exists != 0 then outcome = "kept";', "table.loadTable status = restored /")

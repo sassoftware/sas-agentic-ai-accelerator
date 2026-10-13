@@ -173,10 +173,12 @@ options nosyntaxcheck;
    dropped, <table>_NEW is promoted under the name of the table and saved.
    The sheet is not loaded a second time, so the table that takes the place
    is the upload whose rows were counted. Where the promote is refused, the
-   upload is dropped and the table is loaded again from the file it was
-   saved to before, which nothing has written over; each outcome other than
-   a saved table is a WARNING. Nothing happens for a sheet that was not
-   read completely. */
+   upload is dropped. A table of that name that is in memory then - the
+   table could not be dropped - is left as it is; where none is, the table
+   is loaded again from the file it was saved to before, which nothing has
+   written over. Each outcome other than a saved table is a WARNING that
+   says which of them it is. Nothing happens for a sheet that was not read
+   completely. */
 %macro _lfs_swap(_lfs_table);
     %local _lfs_outcome;
     %if &_lfs_ok. NE 1 %then %return;
@@ -193,13 +195,20 @@ options nosyntaxcheck;
         end;
         else do;
             table.dropTable / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW" quiet = true;
-            table.loadTable status = restored / caslib = "&_lfs_caslib." path = "&_lfs_table..sashdat"
-                casOut = {caslib = "&_lfs_caslib.", name = "&_lfs_table.", promote = true};
-            if restored.severity == 0 then outcome = "restored";
+            /* a table of that name that is in memory now was not dropped: it is left, and nothing is loaded */
+            table.tableExists result = still / caslib = "&_lfs_caslib." name = "&_lfs_table.";
+            if still.exists != 0 then outcome = "kept";
+            else do;
+                table.loadTable status = restored / caslib = "&_lfs_caslib." path = "&_lfs_table..sashdat"
+                    casOut = {caslib = "&_lfs_caslib.", name = "&_lfs_table.", promote = true};
+                if restored.severity == 0 then outcome = "restored";
+            end;
         end;
         call symputx("_lfs_outcome", outcome, "L");
     run; quit;
-    %if &_lfs_outcome. EQ restored %then
+    %if &_lfs_outcome. EQ kept %then
+        %put WARNING: The sheet could not take the place of the table &_lfs_caslib..&_lfs_table. - messages above. The table of that name that is in memory was left as it is.;
+    %else %if &_lfs_outcome. EQ restored %then
         %put WARNING: The sheet could not take the place of the table &_lfs_caslib..&_lfs_table. - messages above. The table was loaded again from the file it was saved to before.;
     %else %if &_lfs_outcome. EQ replace %then
         %put WARNING: The sheet could not take the place of the table &_lfs_caslib..&_lfs_table. - messages above - and the table could not be loaded again from the file it was saved to before: load that file, or run this program again.;
