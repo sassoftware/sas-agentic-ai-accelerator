@@ -142,7 +142,7 @@ quietly dropped. A single identity needs no manifest at all:
 
 ```bash
 mdb credentials-apply --identity-type group --identity PromptEngineers --dry-run
-mdb credentials-report --identity gerdaw --identity-type user
+mdb credentials-report --identity <user id> --identity-type user
 ```
 
 :::note A dry run cannot show you a diff
