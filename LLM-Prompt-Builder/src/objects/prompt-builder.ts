@@ -996,9 +996,13 @@ export async function buildPromptBuilder(
       // after every wait, before anything of this prompt-test is drawn.
       const loadToken = ++promptLoadToken;
       const superseded = (): boolean => loadToken !== promptLoadToken;
-      // Reset the in-memory experiment state of the previously selected prompt
-      resetExperimentTrackerState();
+      // Reset the in-memory experiment state of the previously selected
+      // prompt, and take that prompt-test out of the later steps.
+      const startedAfresh = resetExperimentTrackerState();
       const promptBuilderPromptSelectedModelID = self.options[self.selectedIndex].value;
+      // From here on the later steps show the prompt-test that was chosen -
+      // also a new one, which brings nothing and is filled by hand.
+      laterStepsShowPromptTest = promptBuilderPromptSelectedModelID !== `${promptBuilderInterfaceText?.promptSelect}`;
       // Load the prompt's documentation (and migrate a legacy function value);
       // the same registration says which kind of template this is.
       const promptDetails = await loadPromptDocumentation(promptBuilderPromptSelectedModelID);
@@ -1155,8 +1159,11 @@ export async function buildPromptBuilder(
             // from the freshly loaded runs (the render reads the closure variable).
             promptExperimentTracker = [...promptBuilderPreviousExperiment];
             createPromptExperimentTracker(promptExperimentTracker);
-            // Bring the most recent best prompt straight into the workbench
-            loadMostRecentBestRun();
+            // Bring the most recent best prompt straight into the workbench.
+            // Where nothing was open before, the later steps may hold what
+            // was typed there: it is kept for a prompt-test that brings no
+            // run, and makes way for the run of one that does.
+            loadMostRecentBestRun(!startedAfresh);
           } catch (error) {
             console.error('Failed to load the Prompt-Experiment-Tracker for the selected prompt.', error);
           }
@@ -1383,10 +1390,61 @@ export async function buildPromptBuilder(
       dialog.close();
     }
 
+    // Whether the steps after Setup show a prompt-test: set when one is
+    // chosen in the picker (or created, which chooses it), cleared when the
+    // steps are started afresh. While it is not set, what those steps hold was
+    // typed on a page with no prompt-test open and belongs to none.
+    let laterStepsShowPromptTest = false;
+
+    /**
+     * The steps after Setup as the page showed them when it was loaded: every
+     * field back to the value it had then (the defaults - a temperature from
+     * the model's options, a judge model from the report options - not
+     * blanks), no variable, no question, no result of an evaluation or an
+     * optimization.
+     *
+     * This is the one place that takes a prompt-test out of those steps. The
+     * steps keep everything in the DOM, and opening a prompt-test only ever
+     * wrote its best run into them (loadExperimentRun): a prompt-test that
+     * brought no run - a new one above all - was shown with the prompts, the
+     * variables, the models and options, the judges and the questions of the
+     * one that had been open before it (issue #47). It is called for both
+     * kinds of template, which share these steps, whenever a prompt-test is
+     * left (resetExperimentTrackerState) and before the best run of one is
+     * shown on steps that hold something typed without a prompt-test.
+     *
+     * The tracker and the manifest panel are not its business: they are
+     * emptied with the experiment state, for every change of the selection.
+     */
+    function startLaterStepsAfresh(): void {
+      laterStepsShowPromptTest = false;
+      // Rows are fields that did not exist when the page was built.
+      setPromptVariables([]);
+      const restored = promptBuilderStepper.restoreFreshState();
+      // A tick box or a choice of two shows and hides what depends on it
+      // (the options of an LLM, the council, the CAS pickers): each one that
+      // changed tells its listeners. The lists are left alone - some of
+      // theirs load from the server.
+      restored.forEach((field) => {
+        if (field instanceof HTMLInputElement && (field.type === 'checkbox' || field.type === 'radio')) {
+          field.dispatchEvent(new Event('change'));
+        }
+      });
+      // The judge model is a list: what it shows and hides is redrawn here.
+      updateJudgeControlsVisibility();
+      // The designer redraws its lint and tells the model cards and the Run
+      // button (the state template was emptied with the other fields).
+      decisionDesigner.setQuestions([]);
+      updateRunExperimentsButtonState();
+      clearEvaluation();
+      clearOptimizeRun();
+    }
+
     // Clear all in-memory experiment state and deactivate the prompt-bound
     // actions. Used when the project/prompt selection changes and after a
-    // prompt or project was deleted.
-    function resetExperimentTrackerState(): void {
+    // prompt or project was deleted. A prompt-test that was open is taken out
+    // of the later steps as well; the answer says whether that was done.
+    function resetExperimentTrackerState(): boolean {
       const prommpExperimentTargetContainer = document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-pet`);
       if (prommpExperimentTargetContainer) prommpExperimentTargetContainer.innerHTML = '';
       promptExperimentTracker = [];
@@ -1395,9 +1453,14 @@ export async function buildPromptBuilder(
       experimentsModified = false;
       promptExperimentResultContainer.innerHTML = '';
       promptExperimentSaveResultContainer.innerHTML = '';
+      // The line under Run Experiments names the models that failed in, or
+      // were left out of, the last run: it goes with the runs.
+      promptBuilderRunExperimentError.innerText = '';
       // Reset the manifest panel to its defaults; loading a run afterwards
       // re-applies that run's stored configuration
       applyManifestConfig(null);
+      const startedAfresh = laterStepsShowPromptTest;
+      if (startedAfresh) startLaterStepsAfresh();
       updateTrackerEmptyState();
       updateManifestButtonState();
       openInMMButton.classList.add('disabled');
@@ -1405,6 +1468,7 @@ export async function buildPromptBuilder(
       openInMMButton.removeAttribute('href');
       openInMMButton.onclick = null;
       deletePromptButton.disabled = true;
+      return startedAfresh;
     }
 
     // Build the confirmation-modal body describing which SAS Intelligent
@@ -4164,8 +4228,11 @@ export async function buildPromptBuilder(
 
     // Load the most recent run that has a best response selected. Runs
     // automatically after a prompt's tracker is loaded, so it stays silent
-    // when no best response has been selected yet.
-    function loadMostRecentBestRun(): void {
+    // when no best response has been selected yet. `ontoFreshSteps` starts
+    // the later steps afresh before the run is shown, so that a prompt-test
+    // with a run shows that run and the defaults, never the run mixed with
+    // what the steps held; with no such run the steps are left as they are.
+    function loadMostRecentBestRun(ontoFreshSteps = false): void {
       for (let index = promptExperimentTracker.length - 1; index >= 0; index--) {
         const trackerEntry = promptExperimentTracker[index];
         const hasBestPrompt = Object.keys(trackerEntry).some(
@@ -4173,6 +4240,10 @@ export async function buildPromptBuilder(
             !TRACKER_META_KEYS.includes(key) && (trackerEntry[key] as ModelExperimentData)?.best_prompt
         );
         if (hasBestPrompt) {
+          if (ontoFreshSteps) {
+            startLaterStepsAfresh();
+            laterStepsShowPromptTest = true;
+          }
           loadExperimentRun(index);
           return;
         }
@@ -5552,7 +5623,7 @@ ${scoreCodeReturn}`;
           statusLine: HTMLElement;
           resultBox: HTMLElement;
           historyContainer: HTMLElement;
-          logDetails: HTMLElement;
+          logDetails: HTMLDetailsElement;
           logRuntime: HTMLElement;
           logList: HTMLElement;
         }
@@ -5824,6 +5895,31 @@ ${scoreCodeReturn}`;
       // Follow the selection: render the selected prompt's optimization
       // history (no-op while the selection is unchanged).
       void refreshOptimizationHistory();
+    }
+
+    /**
+     * The Optimize step without what the prompt-test that was open left in
+     * it. The fields are put back by startLaterStepsAfresh; this is the rest.
+     */
+    function clearOptimizeRun(): void {
+      if (!optimizeUI) return;
+      // The CAS pickers were emptied with the other fields. The next time the
+      // CAS source is chosen the servers are asked for again, which also
+      // chooses the usual one and lists its caslibs - as on a page that was
+      // just loaded.
+      casServersPromise = null;
+      optimizeCasRowCount = null;
+      updateOptimizeState();
+      // A job that is still running goes on writing its state, its log and
+      // its result here, whichever prompt-test is open: they stay.
+      if (optimizeJobActive) return;
+      optimizeUI.statusLine.innerText = '';
+      optimizeUI.resultBox.innerHTML = '';
+      optimizeUI.logDetails.classList.add('d-none');
+      optimizeUI.logDetails.open = false;
+      optimizeUI.logRuntime.innerText = '';
+      optimizeUI.logList.innerText = '';
+      delete optimizeUI.logList.dataset.pending;
     }
 
     /** Stop polling the optimization job (finished, failed, or abandoned). */
@@ -7507,6 +7603,11 @@ ${scoreCodeReturn}`;
     // question. Every case is one call per selected decision model. The step
     // belongs to decision templates, so with them switched off neither the
     // pane nor anything in it exists.
+    //
+    // The evaluation of a template that is no longer open is taken off the
+    // step through this handle (see startLaterStepsAfresh); without the step
+    // there is nothing to take off.
+    let clearEvaluation = (): void => {};
     if (decisionEnabled) {
       const evaluatePane = paneOf('evaluate') as HTMLDivElement;
       const evaluationHeader = document.createElement('h2');
@@ -7636,6 +7737,16 @@ ${scoreCodeReturn}`;
       evaluationResults.id = `${evaluationPrefix}-results`;
       evaluationCard.wide.appendChild(evaluationResults);
       evaluatePane.appendChild(evaluationCard.element);
+      clearEvaluation = (): void => {
+        // The results hold the answers of that template, with a threshold
+        // slider per question.
+        evaluationResults.innerHTML = '';
+        evaluationStatus.innerText = '';
+        // The pickers were put back to "choose a server": the caslibs and
+        // tables listed for the server chosen before go with it.
+        fillEvaluationSelect(evaluationLibSelect, []);
+        fillEvaluationSelect(evaluationTableSelect, []);
+      };
       /** The cases and answers of the saved decision runs, per model. */
       const trackerEvaluationCases = (): { questions: DecisionQuestion[]; cases: EvaluationCase[]; answers: Map<string, (DecisionAnswers | null)[]> } => {
         const questions: DecisionQuestion[] = [];
@@ -7822,6 +7933,10 @@ ${scoreCodeReturn}`;
       updateRunExperimentsButtonState();
       updateManifestButtonState();
     }
+
+    // The page is built and nothing is opened yet: this is what the steps
+    // after Setup are put back to when a prompt-test is left.
+    promptBuilderStepper.rememberFreshState();
 
     // Handed out last: setKind ends in applyPromptMode, which reads what the
     // assembly above declares, so the controller must not exist before that.

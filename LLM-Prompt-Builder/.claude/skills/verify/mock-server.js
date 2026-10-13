@@ -115,6 +115,46 @@ trackerRows[5].judge_best = 1;
 trackerRows[6].judge_rank = 2;
 trackerRows[6].judge_best = 0;
 
+// POST /__manifested { on } swaps the tracker of `Used Prompt` (model-used)
+// for the one of a prompt-test that was manifested, so that opening it fills
+// every part of the later steps a saved run can fill: two variables in both
+// prompts, two LLMs with temperatures that are not their defaults, a council
+// of two judges with a chairman, self-judging and auto-judge, and the manifest
+// configuration of the best run (the LLM call included, two of the four
+// outputs, one output variable). A switch and not a fixture of its own: the
+// prompt-tests of proj-1 are counted by other checks. `on: false` serves the
+// plain tracker again.
+let manifestedTracker = false;
+const manifestedTrackerRows = [
+  headerRow(1, 'Sys 1', 'User 1'), modelRow(1, 'Response one'),
+  {
+    ...headerRow(2, 'You answer for {{customer}}.', 'Rate the order of {{amount}} EUR.'),
+    variables: [
+      { name: 'customer', description: 'Who asks', type: 'string', value: 'Ada' },
+      { name: 'amount', description: 'Order value', type: 'decimal', value: '12.5' },
+    ],
+    manifest: {
+      integratedLLMCall: true,
+      selectedOutputs: ['response', 'run_time'],
+      outputVariables: [{ name: 'sentiment', description: 'Tone of the answer', type: 'string', defaultValue: 'neutral' }],
+    },
+    judge_mode: 'council',
+    judge_panel: 'demo_llm,second_llm',
+    judge_ballots: [
+      { judgeModel: 'demo_llm', status: 'ok', ranking: ['demo_llm', 'second_llm'], confidence: 'high', reasoning: 'demo_llm is the more precise answer.' },
+      { judgeModel: 'second_llm', status: 'ok', ranking: ['demo_llm', 'second_llm'], confidence: 'high', reasoning: 'demo_llm answers the question that was asked.' },
+    ],
+    judge_chairman_model: 'contrarian_judge',
+    judge_chairman_reasoning: 'No tie to break.',
+    judge_confidence: 'high',
+    judge_reasoning: 'Both judges put demo_llm first.',
+    judge_include_self: 1,
+    judge_auto: 1,
+  },
+  { ...modelRow(2, 'Manifested answer', 'demo_llm', '{temperature:0.9}'), best_prompt: 1, judge_rank: 1, judge_best: 1 },
+  { ...modelRow(2, 'Second answer', 'second_llm', '{temperature:0.2,API_KEY:OpenAI}'), judge_rank: 2, judge_best: 0 },
+];
+
 // model-used: two distinct dependent decision flows, one of them reported
 // twice (flow + revision) to exercise the dedupe. model-free: no dependents.
 // model-err: the relationships query itself fails (fail-open path).
@@ -643,6 +683,13 @@ http
       // The decision fixtures live in a second project that only exists once a
       // suite asks for it, so the regression suite's project counts stay put.
       if (p === '/__decision') { decisionProject = true; return json(res, 200, {}); }
+      // The tracker of a manifested prompt-test for model-used (see above).
+      if (p === '/__manifested') {
+        let body = {};
+        try { body = JSON.parse(raw); } catch {}
+        manifestedTracker = body.on !== false;
+        return json(res, 200, { manifested: manifestedTracker });
+      }
 
       // ===== RAG Builder =======================================================
       // These routes come first: the RAG project listing is the projects route
@@ -1442,7 +1489,7 @@ http
       if (/^\/modelRepository\/models\/(model-free|model-err)\/contents$/.test(p) && req.method === 'GET') {
         return json(res, 200, { items: [] });
       }
-      if (p === '/files/files/trk-1/content') return json(res, 200, trackerRows);
+      if (p === '/files/files/trk-1/content') return json(res, 200, manifestedTracker ? manifestedTrackerRows : trackerRows);
       if (p === '/relationships/relationships' && req.method === 'POST') {
         let modelId = '';
         try {

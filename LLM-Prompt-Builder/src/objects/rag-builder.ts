@@ -2186,6 +2186,10 @@ export async function buildRagBuilder(
     capTokenWindow(false);
     followChunker(false);
     boundOverlap();
+    // The note under the overlap says what share of the window it is: read
+    // again for this setup's two numbers, or it keeps the reading of the
+    // setup before (and stays empty after one whose chunker has no overlap).
+    judgeOverlap();
     // A setup built on a vector database this deployment has since stopped
     // offering keeps naming it. The corpus is still there, so the setup can
     // be read, re-saved, manifested, launched and tested as before; what the
@@ -2849,10 +2853,32 @@ export async function buildRagBuilder(
     updateSelectionActions();
   }
 
-  async function loadSetup(): Promise<void> {
-    stopPolling();
+  /**
+   * The steps after Setup as the page showed them when it was loaded, before
+   * the setup that was chosen is drawn into them.
+   *
+   * The editor fields are set from the setup, or from the defaults of a new
+   * one, right after this (applySetup). What no setup carries stayed where
+   * the setup before had left it (issue #47): the question that was asked of
+   * its collection, the number of chunks, the chunks that came back and the
+   * open test panel, and the note of its last save or manifest.
+   */
+  const startLaterStepsAfresh = (): void => {
+    // Every field back to its first value, the two of the retrieval test
+    // among them. Nothing is derived here: applySetup does that for the
+    // setup it draws.
+    stepper.restoreFreshState();
     runCard.style.display = 'none';
     ledgerCard.style.display = 'none';
+    testCard.style.display = 'none';
+    testStatus.textContent = '';
+    testResults.replaceChildren();
+    clearSaveResult();
+  };
+
+  async function loadSetup(): Promise<void> {
+    stopPolling();
+    startLaterStepsAfresh();
     editorParts.forEach((part) => {
       part.style.display = selectedSetupID ? '' : 'none';
     });
@@ -4123,6 +4149,9 @@ export async function buildRagBuilder(
       );
     }
   }
+  // The page is built and no setup is opened yet: this is what the fields of
+  // the steps after Setup are put back to before a setup is drawn into them.
+  stepper.rememberFreshState();
   await loadSelectionLists();
 
   // Last, so the host never steers a builder that is still being put together.

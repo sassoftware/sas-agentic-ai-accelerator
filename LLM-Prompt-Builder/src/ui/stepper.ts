@@ -13,7 +13,22 @@
  * step is highlighted: a step is a place, not a task, and marking one as done
  * would claim something the builders cannot know - steps get revisited, and
  * some are skipped on purpose.
+ *
+ * The first step chooses the item (a prompt-test, a RAG setup); the steps
+ * after it show that item. Because their panes never leave the DOM, what an
+ * item put into them stays there until something takes it out - so the shell
+ * also keeps how those steps looked on the page that was just loaded, and
+ * puts them back to that when a builder starts another item
+ * (rememberFreshState, restoreFreshState).
  */
+
+/** A control that holds a value a person, or an item that was opened, put there. */
+export type StepField = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+
+/** A tick box or one choice of a group: its value is whether it is ticked. */
+function isTick(field: StepField): field is HTMLInputElement {
+  return field instanceof HTMLInputElement && (field.type === 'checkbox' || field.type === 'radio');
+}
 
 export interface StepDefinition {
   /** Stable key, used in the pane and button ids. */
@@ -45,6 +60,27 @@ export interface Stepper {
    * current step moves to the nearest visible one.
    */
   setVisible(index: number, visible: boolean): void;
+  /**
+   * Remember what every field of the steps after the first holds right now.
+   * A builder calls this once, when its page is built and before an item is
+   * opened: it is the state of those steps on a freshly loaded page, with
+   * every default the builder gave a field (a temperature from the model's
+   * options, a judge model from the report options), so no default has to be
+   * written down a second time to get back to it.
+   */
+  rememberFreshState(): void;
+  /**
+   * Put every remembered field back to that value and return the fields that
+   * held something else. Only the values are set; no event is sent, because
+   * what a field's listeners do (some load a list from the server) is the
+   * builder's to decide - it re-runs what follows from the fields, or sends
+   * the event itself.
+   *
+   * Fields that did not exist when the state was remembered - a row a person
+   * added, a control drawn for a result - are not known here: the builder
+   * removes those itself.
+   */
+  restoreFreshState(): StepField[];
 }
 
 export function createStepper(baseID: string, steps: StepDefinition[], labels: StepperLabels): Stepper {
@@ -168,6 +204,33 @@ export function createStepper(baseID: string, steps: StepDefinition[], labels: S
   }
   render();
 
+  // What the fields of the later steps held when the builder had built them.
+  const freshState = new Map<StepField, string | boolean>();
+  function rememberFreshState(): void {
+    freshState.clear();
+    panes.slice(1).forEach((pane) => {
+      pane.querySelectorAll<StepField>('input, textarea, select').forEach((field) => {
+        // The value of a file input cannot be set by a script.
+        if (field instanceof HTMLInputElement && field.type === 'file') return;
+        freshState.set(field, isTick(field) ? field.checked : field.value);
+      });
+    });
+  }
+  function restoreFreshState(): StepField[] {
+    const changed: StepField[] = [];
+    freshState.forEach((fresh, field) => {
+      if (isTick(field)) {
+        if (field.checked === fresh) return;
+        field.checked = fresh === true;
+      } else {
+        if (field.value === fresh) return;
+        field.value = String(fresh);
+      }
+      changed.push(field);
+    });
+    return changed;
+  }
+
   return {
     element,
     panes,
@@ -177,5 +240,7 @@ export function createStepper(baseID: string, steps: StepDefinition[], labels: S
       listeners.push(listener);
     },
     setVisible,
+    rememberFreshState,
+    restoreFreshState,
   };
 }

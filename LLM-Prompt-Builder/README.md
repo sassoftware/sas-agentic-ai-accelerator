@@ -440,7 +440,9 @@ src/
 `.claude/skills/verify/` holds a mock of the SAS Viya services the page calls
 and Playwright suites that drive the built bundle in the system Edge browser:
 the Prompt Builder (`verify.js`), decision templates (`verify-decision.js`), the
-RAG kind (`verify-rag.js`), the options group with its checkboxes
+RAG kind (`verify-rag.js`), a new item of each of the three kinds, which has to
+start as on a freshly loaded page whatever was open before
+(`verify-new-item.js`), the options group with its checkboxes
 (`verify-options.js`), the locale files (`verify-locales.js`) and the built
 page itself (`verify-tokens.js`: no text SAS Job Execution would substitute as
 a `$token$` - the build removes the one marker comment of the bundler that

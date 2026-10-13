@@ -2190,6 +2190,13 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   await page.selectOption('#LPB-prompt-dropdown', 'model-free');
   await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 0, 'a prompt-test without saved runs is open');
   await goStep('build');
+  // A prompt-test without a run brings no LLM, and keeps none of the one that
+  // was open before it (issue #47): the run that follows needs one ticked.
+  assert(
+    !(await page.isChecked('#model0')) && (await page.isDisabled('#app-obj-LPB-run-experiment')),
+    'a prompt-test without saved runs opens with no LLM ticked, whatever the prompt-test before it had selected'
+  );
+  await page.check('#model0');
   const errorsBefore = pageErrors.length;
   await openPromptDuringRun('model-used', 3);
   await sleep(400);
