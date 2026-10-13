@@ -1074,11 +1074,11 @@ def test_the_manifest_of_the_repository_deploys_and_passes_the_gate(monkeypatch)
     pictures = [(entry.path, listed["name"]) for entry in reports for listed in entry.files if listed["sha256"]]
     assert pictures, "no report of the manifest lists a file with its hash"
     import hashlib
-    # the .step files of the repository carry the user who saved them; the export neutralises those as it
-    # neutralises the users a registered step carries, so the package made here is neutralised the same way
+    # a step is registered without the user of its .step file, and the .step files of the repository name none:
+    # the package made here holds no user id, so the neutralisation of the export finds nothing to replace
     from mdb.core.packages import neutralise_users
     made = package_of(shipped).build()
-    assert neutralise_users(made) > 0
+    assert neutralise_users(made) == 0
     differences = package_differences(made, shipped)
     # each made-up picture is not the one the entry lists, and so the listed one is not in the package
     assert sorted(differences) == sorted(
