@@ -18,8 +18,9 @@ from typing import Optional
 
 import typer
 from rich.console import Console
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Confirm as _RichConfirm, Prompt as _RichPrompt
 from rich.table import Table
+from rich.text import Text
 
 from . import __version__
 from .core import drift, facts
@@ -48,6 +49,26 @@ app = typer.Typer(
 # emoji off: rich otherwise prints a `:name:` in any text as a picture - `urn:id:1` as `urn` + a sign + `1` -,
 # also in a line that is printed with markup off
 console = Console(emoji=False)
+
+
+class _EmojiOff:
+    """A prompt of rich reads the text it is handed with emoji on, whatever
+    the console says. The two prompts of mdb read it with emoji off, as
+    its console does."""
+
+    def __init__(self, prompt="", **options) -> None:
+        if isinstance(prompt, str):
+            prompt = Text.from_markup(prompt, style="prompt", emoji=False)
+        super().__init__(prompt, **options)
+
+
+class Prompt(_EmojiOff, _RichPrompt):
+    pass
+
+
+class Confirm(_EmojiOff, _RichConfirm):
+    pass
+
 
 #: A pair of tags that prints nothing and styles nothing. `_plain` puts it behind backslashes that stand in
 #: front of a bracket or at the end of a value: rich reads backslashes together with the bracket behind them,
@@ -175,7 +196,7 @@ class Context:
         for model_id in ids:
             folder = self.find_folder(model_id)
             if folder is None:
-                console.print(f"[red]{model_id}: no such folder in LLM-Definitions, Embedding-Definitions "
+                console.print(f"[red]{_plain(model_id)}: no such folder in LLM-Definitions, Embedding-Definitions "
                               "or Decision-Definitions[/red]")
                 raise typer.Exit(2)
             folders.append(folder)
@@ -197,7 +218,7 @@ def _print_issues(issues) -> bool:
     has_error = False
     for issue in issues:
         color = {"error": "red", "warning": "yellow", "info": "dim"}[issue.severity]
-        console.print(f"[{color}]{issue.format()}[/{color}]")
+        console.print(f"[{color}]{_plain(issue.format())}[/{color}]")
         has_error = has_error or issue.severity == "error"
     return has_error
 
@@ -207,9 +228,9 @@ def _print_issues(issues) -> bool:
 # ---------------------------------------------------------------------------
 
 def _pick_from_list(title: str, entries: list[str]) -> int:
-    console.print(f"\n[bold]{title}[/bold]")
+    console.print(f"\n[bold]{_plain(title)}[/bold]")
     for index, entry in enumerate(entries, start=1):
-        console.print(f"  {index}. {entry}")
+        console.print(f"  {_plain(index)}. {_plain(entry)}")
     while True:
         raw = Prompt.ask("Number", default="1")
         try:
@@ -255,7 +276,7 @@ def _catalog_for(adapter: ProviderAdapter, ctx: Context, offline: bool, verify_s
             session = make_session(verify_ssl)
             models = adapter.live_catalog(session, _env_api_key(adapter))
             if models:
-                console.print(f"[dim]Live catalog: {len(models)} models from {adapter.display_name}.[/dim]")
+                console.print(f"[dim]Live catalog: {len(models)} models from {_plain(adapter.display_name)}.[/dim]")
                 enriched = _enrich_from_static(models, static)
                 # A live listing does not carry everything a provider serves
                 # (OpenRouter's /models omits its decision models); the
@@ -268,7 +289,7 @@ def _catalog_for(adapter: ProviderAdapter, ctx: Context, offline: bool, verify_s
         except Exception as exc:
             console.print(f"[yellow]Live catalog unavailable ({_plain(exc)}) - falling back to the bundled snapshot.[/yellow]")
     if static:
-        console.print(f"[dim]Using bundled static catalog ({static[0].source}) - confirm pricing before relying on cost monitoring.[/dim]")
+        console.print(f"[dim]Using bundled static catalog ({_plain(static[0].source)}) - confirm pricing before relying on cost monitoring.[/dim]")
     return static
 
 
@@ -333,18 +354,18 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
         return
 
     unknown = "[dim]unknown[/dim]"
-    table = Table(title=f"Catalog-derived values for {manifest.model_id}")
+    table = Table(title=f"Catalog-derived values for {_plain(manifest.model_id)}")
     table.add_column("Section")
     table.add_column("Name")
     table.add_column("Value")
-    table.add_row("definition", "kind", manifest.kind.upper())
+    table.add_row("definition", "kind", _plain(manifest.kind.upper()))
     for name, spec in manifest.options.items():
         bounds = "" if spec.max is None else f"  (max {spec.max:g})"
-        table.add_row("options", name, f"{spec.default}{bounds}")
-    table.add_row("metadata", "description", metadata.description)
-    table.add_row("metadata", "context_length", str(metadata.context_length) if metadata.context_length else unknown)
-    table.add_row("metadata", "release_date", metadata.release_date or unknown)
-    table.add_row("metadata", "knowledge_cutoff", metadata.knowledge_cutoff or unknown)
+        table.add_row("options", _plain(name), f"{_plain(spec.default)}{_plain(bounds)}")
+    table.add_row("metadata", "description", _plain(metadata.description))
+    table.add_row("metadata", "context_length", _plain(metadata.context_length) if metadata.context_length else unknown)
+    table.add_row("metadata", "release_date", _plain(metadata.release_date) if metadata.release_date else unknown)
+    table.add_row("metadata", "knowledge_cutoff", _plain(metadata.knowledge_cutoff) if metadata.knowledge_cutoff else unknown)
     if manifest.kind in ("llm", "decision") and pricing.cost_type == "Tokens":
         table.add_row("pricing", "input_token_price",
                       unknown if pricing.input_token_price is None else f"{pricing.input_token_price:g}")
@@ -356,11 +377,11 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
     if adjust:
         console.print("[dim]Press Enter to keep a value.[/dim]")
         for name, spec in manifest.options.items():
-            raw = Prompt.ask(f"options.{name}.default", default=str(spec.default))
+            raw = Prompt.ask(f"options.{_plain(name)}.default", default=str(spec.default))
             try:
                 spec.default = _cast_like(spec.default, raw)
             except (TypeError, ValueError):
-                console.print(f"[yellow]'{raw}' does not fit {name} - keeping {spec.default}.[/yellow]")
+                console.print(f"[yellow]'{_plain(raw)}' does not fit {_plain(name)} - keeping {_plain(spec.default)}.[/yellow]")
         # Option NAMES are part of the provider contract (e.g. newer OpenAI
         # models take max_completion_tokens instead of max_tokens) - allow
         # fixing them here instead of editing definition.yaml afterwards.
@@ -374,19 +395,19 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
             if action.startswith("-"):
                 target = action[1:].strip()
                 if manifest.options.pop(target, None) is None:
-                    console.print(f"[yellow]No option named '{target}'.[/yellow]")
+                    console.print(f"[yellow]No option named '{_plain(target)}'.[/yellow]")
                 else:
-                    console.print(f"[dim]Dropped {target}.[/dim]")
+                    console.print(f"[dim]Dropped {_plain(target)}.[/dim]")
                 continue
             if "=" not in action:
                 console.print("[yellow]Use old=new to rename, -name to drop, or Enter to continue.[/yellow]")
                 continue
             old_name, new_name = (part.strip() for part in action.split("=", 1))
             if old_name not in manifest.options:
-                console.print(f"[yellow]No option named '{old_name}'.[/yellow]")
+                console.print(f"[yellow]No option named '{_plain(old_name)}'.[/yellow]")
                 continue
             if not new_name or new_name in manifest.options:
-                console.print(f"[yellow]'{new_name}' is empty or already exists.[/yellow]")
+                console.print(f"[yellow]'{_plain(new_name)}' is empty or already exists.[/yellow]")
                 continue
             manifest.options = {
                 (new_name if key == old_name else key): value
@@ -395,21 +416,21 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
             spec = manifest.options[new_name]
             if core is not None and new_name not in core.vocabulary and spec.type is None:
                 console.print(
-                    f"[yellow]'{new_name}' is not in the option vocabulary - generation will fail "
+                    f"[yellow]'{_plain(new_name)}' is not in the option vocabulary - generation will fail "
                     "unless you pick a vocabulary name or add an inline type in definition.yaml.[/yellow]"
                 )
             else:
-                console.print(f"[dim]Renamed {old_name} -> {new_name}.[/dim]")
+                console.print(f"[dim]Renamed {_plain(old_name)} -> {_plain(new_name)}.[/dim]")
         metadata.description = Prompt.ask("metadata.description", default=metadata.description)
         for attribute in ("release_date", "knowledge_cutoff"):
-            raw = Prompt.ask(f"metadata.{attribute}", default=getattr(metadata, attribute) or "").strip()
+            raw = Prompt.ask(f"metadata.{_plain(attribute)}", default=getattr(metadata, attribute) or "").strip()
             setattr(metadata, attribute, raw or None)
         raw = Prompt.ask("metadata.context_length",
                          default=str(metadata.context_length) if metadata.context_length else "").strip()
         try:
             metadata.context_length = int(float(raw)) if raw else None
         except ValueError:
-            console.print(f"[yellow]'{raw}' is not a number - keeping {metadata.context_length}.[/yellow]")
+            console.print(f"[yellow]'{_plain(raw)}' is not a number - keeping {_plain(metadata.context_length)}.[/yellow]")
     if manifest.kind in ("llm", "decision") and pricing.cost_type == "Tokens" and (adjust or pricing_unknown):
         if pricing_unknown:
             console.print(
@@ -419,13 +440,13 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
         for attribute, label in (("input_token_price", "pricing.input_token_price"),
                                  ("output_token_price", "pricing.output_token_price")):
             current = getattr(pricing, attribute)
-            raw = Prompt.ask(label, default="" if current is None else f"{current:g}").strip()
+            raw = Prompt.ask(_plain(label), default="" if current is None else f"{current:g}").strip()
             if raw == "":
                 continue
             try:
                 setattr(pricing, attribute, float(raw))
             except ValueError:
-                console.print(f"[yellow]'{raw}' is not a number - keeping {current}.[/yellow]")
+                console.print(f"[yellow]'{_plain(raw)}' is not a number - keeping {_plain(current)}.[/yellow]")
 
 
 @app.command()
@@ -472,16 +493,16 @@ def add(
         labels = [f"{adapters[i].display_name}  ({i})" for i in ids]
         provider = ids[_pick_from_list("Providers", labels)]
     if provider not in adapters:
-        console.print(f"[red]Unknown provider '{provider}'. Known: {', '.join(adapters)}[/red]")
+        console.print(f"[red]Unknown provider '{_plain(provider)}'. Known: {_plain(', '.join(adapters))}[/red]")
         raise typer.Exit(2)
     adapter = adapters[provider]
 
     if adapter.env_key_var:
         if _env_api_key(adapter):
-            console.print(f"[green]Using {adapter.env_key_var} from the environment/.env.[/green]")
+            console.print(f"[green]Using {_plain(adapter.env_key_var)} from the environment/.env.[/green]")
         else:
             console.print(
-                f"[yellow]No {adapter.env_key_var} found.[/yellow] Get one at {adapter.docs_url} "
+                f"[yellow]No {_plain(adapter.env_key_var)} found.[/yellow] Get one at {_plain(adapter.docs_url)} "
                 "and add it to your .env - catalog browsing may be limited and smoke tests will be skipped."
             )
 
@@ -500,11 +521,11 @@ def add(
             answers[question.param] = supplied
         elif yes:
             if question.required and not question.default:
-                console.print(f"[red]--yes needs --{question.param.replace('_', '-')} for {adapter.display_name}.[/red]")
+                console.print(f"[red]--yes needs --{_plain(question.param.replace('_', '-'))} for {_plain(adapter.display_name)}.[/red]")
                 raise typer.Exit(2)
             answers[question.param] = question.default
         else:
-            answers[question.param] = Prompt.ask(question.prompt, default=question.default or None)
+            answers[question.param] = Prompt.ask(_plain(question.prompt), default=question.default or None)
     # The definition KIND (llm vs embedding) decides the score template, the
     # destination folder (LLM-Definitions vs Embedding-Definitions) and the
     # Model Manager project - so --kind is honored for EVERY adapter that can
@@ -513,10 +534,10 @@ def add(
     supports_decision = getattr(adapter, "decision_template", None) is not None
     kind_is_flaggable = (supports_embedding or supports_decision) and "kind" not in question_params
     if kind is not None and kind not in KINDS:
-        console.print(f"[red]--kind must be one of {', '.join(KINDS)}.[/red]")
+        console.print(f"[red]--kind must be one of {_plain(', '.join(KINDS))}.[/red]")
         raise typer.Exit(2)
     if (kind == "embedding" and not supports_embedding) or (kind == "decision" and not supports_decision):
-        console.print(f"[red]Provider '{provider}' has no {kind} template - see mdb providers.[/red]")
+        console.print(f"[red]Provider '{_plain(provider)}' has no {_plain(kind)} template - see mdb providers.[/red]")
         raise typer.Exit(2)
     # Surface flags that this provider does not consume, so a misdirected flag
     # (e.g. --kind on an LLM-only provider) is not silently ignored.
@@ -524,8 +545,8 @@ def add(
         if flag_name == "kind" and kind_is_flaggable:
             continue
         if flag_value is not None and flag_name != "description" and flag_name not in question_params:
-            console.print(f"[yellow]--{flag_name.replace('_', '-')} is not used by provider "
-                          f"'{provider}' - ignored.[/yellow]")
+            console.print(f"[yellow]--{_plain(flag_name.replace('_', '-'))} is not used by provider "
+                          f"'{_plain(provider)}' - ignored.[/yellow]")
     if description:
         answers["description"] = description
     if answers.get("resource"):
@@ -533,7 +554,7 @@ def add(
             answers["commit_resource"] = commit_resource
         else:
             answers["commit_resource"] = Confirm.ask(
-                f"Bake '{answers['resource']}' into the definition as its default resource? "
+                f"Bake '{_plain(answers['resource'])}' into the definition as its default resource? "
                 "(No keeps it environment-driven via AZURE_OPENAI_RESOURCE)",
                 default=False,
             )
@@ -581,8 +602,8 @@ def add(
         # and the Model Manager project, and used to be visible only as an
         # easily-missed folder name near the end.
         kind_folder = kind_folder_name(manifest.kind)
-        console.print(f"\n[bold cyan]Adding a {manifest.kind.upper()} model definition -> "
-                      f"{kind_folder}/{final_id}/[/bold cyan]")
+        console.print(f"\n[bold cyan]Adding a {_plain(manifest.kind.upper())} model definition -> "
+                      f"{_plain(kind_folder)}/{_plain(final_id)}/[/bold cyan]")
         # The catalog-derived values steer scoring behavior and cost monitoring
         # - confirm them consciously by default; --accept-defaults / --yes skip
         # the review (unknown token pricing is still asked/warned about).
@@ -595,15 +616,15 @@ def add(
     defs_name = kind_folder_name(manifest.kind)
     folder = ctx.defs_dir(manifest.kind) / final_id
     if folder.exists() and any(folder.iterdir()):
-        console.print(f"[red]{folder} already exists and is not empty - pick another id or use mdb import.[/red]")
+        console.print(f"[red]{_plain(folder)} already exists and is not empty - pick another id or use mdb import.[/red]")
         raise typer.Exit(2)
 
     fact_sheet = ctx.fact_sheet(manifest.kind)
-    console.print(f"\n[bold]Will create {defs_name}/{final_id}/[/bold] with:")
-    console.print(f"  {MANIFEST_FILENAME}  (the only file you edit)")
+    console.print(f"\n[bold]Will create {_plain(defs_name)}/{_plain(final_id)}/[/bold] with:")
+    console.print(f"  {_plain(MANIFEST_FILENAME)}  (the only file you edit)")
     for name in sorted(rendered):
-        console.print(f"  {name}")
-    console.print(f"  + a row in {fact_sheet.name} (pricing source: {manifest.generation.catalog_provenance})")
+        console.print(f"  {_plain(name)}")
+    console.print(f"  + a row in {_plain(fact_sheet.name)} (pricing source: {_plain(manifest.generation.catalog_provenance)})")
     if not yes and not Confirm.ask("Write these files?", default=True):
         raise typer.Exit(0)
 
@@ -614,12 +635,12 @@ def add(
     drift.write_lock(folder, manifest_path.read_bytes(), rendered)
     facts.upsert_row(fact_sheet, manifest)
 
-    console.print(f"\n[green]Created {final_id} ({manifest.kind} definition, {len(rendered)} files + fact-sheet row).[/green]")
+    console.print(f"\n[green]Created {_plain(final_id)} ({_plain(manifest.kind)} definition, {len(rendered)} files + fact-sheet row).[/green]")
     console.print("Next steps:")
-    console.print(f"  1. mdb validate {final_id} --live     (smoke-test the provider before Viya)")
-    console.print(f"  2. mdb test {final_id}                (run the generated scoreModel() locally - what SCR will execute)")
-    console.print(f"  3. mdb register {final_id}            (register in SAS Model Manager)")
-    console.print(f"  4. mdb publish {final_id}             (publish to SCR - or mdb ship {final_id} for register + publish)")
+    console.print(f"  1. mdb validate {_plain(final_id)} --live     (smoke-test the provider before Viya)")
+    console.print(f"  2. mdb test {_plain(final_id)}                (run the generated scoreModel() locally - what SCR will execute)")
+    console.print(f"  3. mdb register {_plain(final_id)}            (register in SAS Model Manager)")
+    console.print(f"  4. mdb publish {_plain(final_id)}             (publish to SCR - or mdb ship {_plain(final_id)} for register + publish)")
 
 
 # ---------------------------------------------------------------------------
@@ -642,7 +663,7 @@ def generate(
             manifest = load_manifest(folder)
             rendered = render_assets(manifest, ctx.core)
         except Exception as exc:
-            console.print(f"[red]{model_id}: {_plain(exc)}[/red]")
+            console.print(f"[red]{_plain(model_id)}: {_plain(exc)}[/red]")
             failed = True
             continue
         classifications = drift.classify(folder, rendered)
@@ -651,9 +672,9 @@ def generate(
             if pending:
                 failed = True
                 for c in pending:
-                    console.print(f"[red]{model_id}/{c.filename}: {c.status.value}[/red]")
+                    console.print(f"[red]{_plain(model_id)}/{_plain(c.filename)}: {_plain(c.status.value)}[/red]")
             else:
-                console.print(f"[green]{model_id}: clean[/green]")
+                console.print(f"[green]{_plain(model_id)}: clean[/green]")
             continue
         blockers = [c for c in pending
                     if c.status in (drift.FileStatus.HAND_EDITED, drift.FileStatus.UNTRACKED)]
@@ -661,17 +682,17 @@ def generate(
             failed = True
             for c in blockers:
                 console.print(
-                    f"[red]{model_id}/{c.filename} was edited by hand.[/red] Fold the change into "
+                    f"[red]{_plain(model_id)}/{_plain(c.filename)} was edited by hand.[/red] Fold the change into "
                     f"definition.yaml, add it to generation.overrides, or rerun with --force."
                 )
             continue
         for c in pending:
             (folder / c.filename).write_bytes(rendered[c.filename])
         drift.write_lock(folder, (folder / MANIFEST_FILENAME).read_bytes(), rendered)
-        console.print(f"[green]{model_id}: {len(pending)} file(s) written, {len(classifications) - len(pending)} unchanged.[/green]")
+        console.print(f"[green]{_plain(model_id)}: {len(pending)} file(s) written, {len(classifications) - len(pending)} unchanged.[/green]")
         for option_name in list_custom_options(manifest, ctx.core):
             console.print(
-                f"[yellow]{model_id}: option '{option_name}' is not in the standardized vocabulary - "
+                f"[yellow]{_plain(model_id)}: option '{_plain(option_name)}' is not in the standardized vocabulary - "
                 "it is sent to the provider as-is and shows up in UIs under its raw name with your "
                 "description (no standardized label, no cross-provider translation). "
                 "Fine if intended; standardize it in definition-core/static/option-vocabulary.json otherwise.[/yellow]"
@@ -712,20 +733,20 @@ def validate(
             manifest = load_manifest(folder)
             adapter = adapters.get(manifest.provider.adapter)
             if adapter is None:
-                console.print(f"[yellow]{folder.name}: unknown adapter '{manifest.provider.adapter}' - skipped.[/yellow]")
+                console.print(f"[yellow]{_plain(folder.name)}: unknown adapter '{_plain(manifest.provider.adapter)}' - skipped.[/yellow]")
                 continue
             result = adapter.smoke_test(manifest, _env_api_key(adapter), session)
             if result.skipped:
-                console.print(f"[dim]{folder.name}: {_plain(result.detail)}[/dim]")
+                console.print(f"[dim]{_plain(folder.name)}: {_plain(result.detail)}[/dim]")
             elif result.ok:
-                console.print(f"[green]{folder.name}: {_plain(result.detail)}[/green]")
+                console.print(f"[green]{_plain(folder.name)}: {_plain(result.detail)}[/green]")
             elif result.inconclusive:
                 # Transient upstream state (e.g. rate-limited): says nothing
                 # about the definition - warn without failing the validation.
-                console.print(f"[yellow]{folder.name}: smoke test inconclusive - {_plain(result.detail)}[/yellow]")
+                console.print(f"[yellow]{_plain(folder.name)}: smoke test inconclusive - {_plain(result.detail)}[/yellow]")
             else:
                 has_error = True
-                console.print(f"[red]{folder.name}: smoke test failed - {_plain(result.detail)}[/red]")
+                console.print(f"[red]{_plain(folder.name)}: smoke test failed - {_plain(result.detail)}[/red]")
     raise typer.Exit(1 if has_error else 0)
 
 
@@ -747,7 +768,7 @@ def _rebuild_sheets(ctx: Context, prune: bool = False) -> bool:
             message += f", kept {summary['legacy_kept']} legacy row(s)"
         if summary["legacy_dropped"]:
             message += f", dropped {summary['legacy_dropped']} legacy row(s)"
-        console.print(message)
+        console.print(_plain(message))
     return rebuilt_any
 
 
@@ -787,7 +808,7 @@ def sync(
             continue
         manifest = load_manifest(folder)
         result = facts.upsert_row(ctx.fact_sheet(manifest.kind), manifest)
-        console.print(f"{folder.name}: fact-sheet row {result}")
+        console.print(f"{_plain(folder.name)}: fact-sheet row {_plain(result)}")
 
 
 @app.command("load-facts")
@@ -829,13 +850,13 @@ def load_facts(
     with _viya_session() as session:
         server_name = resolve_server(session, server_choice)
         console.print(
-            f"Loading fact sheets into CAS library [bold]{caslib}[/bold] on [bold]{server_name}[/bold]:"
+            f"Loading fact sheets into CAS library [bold]{_plain(caslib)}[/bold] on [bold]{_plain(server_name)}[/bold]:"
         )
         loaded = 0
         for kind in KINDS:
             sheet = ctx.fact_sheet(kind)
             if not sheet.is_file():
-                console.print(f"  [yellow]{sheet.name} not found - run 'mdb sync --rebuild' first, skipping.[/yellow]")
+                console.print(f"  [yellow]{_plain(sheet.name)} not found - run 'mdb sync --rebuild' first, skipping.[/yellow]")
                 continue
             try:
                 result = load_fact_sheet(session, sheet, kind, caslib, server_name)
@@ -845,7 +866,7 @@ def load_facts(
             loaded += 1
             # "dropped" reflects the loaded copy; the save step replaces any saved one
             suffix = " (replaced a loaded copy)" if result["dropped"] else ""
-            console.print(f"  {result['table']}: uploaded, promoted (global) and saved to disk{suffix}")
+            console.print(f"  {_plain(result['table'])}: uploaded, promoted (global) and saved to disk{_plain(suffix)}")
     if not loaded:
         console.print("[red]No fact sheet was loaded - generate them first with 'mdb sync --rebuild'.[/red]")
         raise typer.Exit(1)
@@ -884,12 +905,12 @@ def _releases_table() -> str:
 
 def _print_release_counts(summary: dict) -> None:
     counts = ", ".join(f"{name} {n}" for name, n in summary["by_component"].items())
-    console.print(f"  rows per component: {counts}")
+    console.print(f"  rows per component: {_plain(counts)}")
     # a Builder entry is one row per part it concerns, so the rows outnumber
     # the entries and the parts add up to more than the Builder's entries
     parts = ", ".join(f"{name} {n}" for name, n in summary["by_part"].items())
-    console.print(f"  rows per Builder part (builder_part): {parts} - {summary['rows']} rows "
-                  f"for {summary['entries']} changelog entries")
+    console.print(f"  rows per Builder part (builder_part): {_plain(parts)} - {_plain(summary['rows'])} rows "
+                  f"for {_plain(summary['entries'])} changelog entries")
 
 
 @app.command("load-releases")
@@ -939,26 +960,26 @@ def load_releases(
         except (OSError, ValueError) as exc:
             console.print(f"[red]{_plain(exc)}[/red]")
             raise typer.Exit(1)
-        console.print(f"Wrote {summary['rows']} rows for {summary['releases']} releases to {csv_out} "
-                      f"({current_words(summary)}).")
+        console.print(f"Wrote {_plain(summary['rows'])} rows for {_plain(summary['releases'])} releases to {_plain(csv_out)} "
+                      f"({_plain(current_words(summary))}).")
         _print_release_counts(summary)
         return
     caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
     server_choice = server or os.environ.get("SAS_CAS_SERVER")
     with _viya_session() as session:
         server_name = resolve_server(session, server_choice)
-        console.print(f"Loading the release table into CAS library [bold]{caslib}[/bold] on [bold]{server_name}[/bold]:")
+        console.print(f"Loading the release table into CAS library [bold]{_plain(caslib)}[/bold] on [bold]{_plain(server_name)}[/bold]:")
         try:
             summary = _load_releases(session, ctx, caslib, server_name, table_name, changelog)
         except (RuntimeError, ValueError) as exc:
             console.print(f"  [red]{_plain(exc)}[/red]")
             raise typer.Exit(1)
     suffix = " (replaced a loaded copy)" if summary["dropped"] else ""
-    console.print(f"  {table_name}: {summary['rows']} rows for {summary['releases']} releases, uploaded, "
-                  f"promoted (global) and saved to disk{suffix}")
+    console.print(f"  {_plain(table_name)}: {_plain(summary['rows'])} rows for {_plain(summary['releases'])} releases, uploaded, "
+                  f"promoted (global) and saved to disk{_plain(suffix)}")
     _print_release_counts(summary)
-    console.print(f"[green]Done. The table names the {current_words(summary)}. Assign "
-                  f"{caslib}.{table_name} to the Prompt Builder object in SAS Visual Analytics.[/green]")
+    console.print(f"[green]Done. The table names the {_plain(current_words(summary))}. Assign "
+                  f"{_plain(caslib)}.{_plain(table_name)} to the Prompt Builder object in SAS Visual Analytics.[/green]")
 
 
 # ---------------------------------------------------------------------------
@@ -974,10 +995,10 @@ def import_(
     ctx = Context()
     folder = ctx.find_folder(model_id)
     if folder is None:
-        console.print(f"[red]{model_id}: no such folder in LLM-Definitions or Embedding-Definitions[/red]")
+        console.print(f"[red]{_plain(model_id)}: no such folder in LLM-Definitions or Embedding-Definitions[/red]")
         raise typer.Exit(2)
     if (folder / MANIFEST_FILENAME).is_file():
-        console.print(f"[yellow]{model_id} already has a definition.yaml - nothing imported.[/yellow]")
+        console.print(f"[yellow]{_plain(model_id)} already has a definition.yaml - nothing imported.[/yellow]")
         raise typer.Exit(0)
     fact_sheet = ctx.fact_sheet(ctx.kind_of(folder))
     result = import_folder(folder, fact_sheet)
@@ -986,29 +1007,29 @@ def import_(
     try:
         rendered = render_assets(result.manifest, ctx.core)
     except GenerationError as exc:
-        console.print(f"[red]{model_id}: {_plain(exc)}[/red]")
+        console.print(f"[red]{_plain(model_id)}: {_plain(exc)}[/red]")
         console.print("Nothing was written - the folder stays fully hand-maintained. "
                       "Declare the option inline (type/description) in a definition.yaml "
                       "or extend the vocabulary, then rerun mdb import.")
         raise typer.Exit(1)
     manifest_path = result.manifest.save(folder)
-    console.print(f"[green]Wrote {manifest_path}.[/green]")
+    console.print(f"[green]Wrote {_plain(manifest_path)}.[/green]")
     for note in result.notes:
-        console.print(f"  [yellow]note:[/yellow] {note}")
+        console.print(f"  [yellow]note:[/yellow] {_plain(note)}")
     changed = [c for c in drift.classify(folder, rendered) if c.status != drift.FileStatus.UNCHANGED]
     if changed:
         console.print("\nRegenerating would change these files (intended normalizations included):")
         for c in changed:
-            console.print(f"  {c.filename} ({c.status.value})")
+            console.print(f"  {_plain(c.filename)} ({_plain(c.status.value)})")
     if apply:
         for c in changed:
             (folder / c.filename).write_bytes(rendered[c.filename])
         drift.write_lock(folder, manifest_path.read_bytes(), rendered)
         facts.upsert_row(fact_sheet, result.manifest)
-        console.print(f"[green]Converged {model_id} ({len(changed)} file(s) rewritten).[/green]")
-        console.print(f"Re-test before re-publishing: mdb validate {model_id} --live")
+        console.print(f"[green]Converged {_plain(model_id)} ({len(changed)} file(s) rewritten).[/green]")
+        console.print(f"Re-test before re-publishing: mdb validate {_plain(model_id)} --live")
     else:
-        console.print(f"\nReview definition.yaml, then converge with: mdb import {model_id} --apply")
+        console.print(f"\nReview definition.yaml, then converge with: mdb import {_plain(model_id)} --apply")
         console.print("(or delete definition.yaml to leave the folder fully hand-maintained)")
 
 
@@ -1027,7 +1048,7 @@ def test(
     ctx = Context()
     folder = ctx.find_folder(model_id)
     if folder is None:
-        console.print(f"[red]{model_id}: no such folder in LLM-Definitions or Embedding-Definitions[/red]")
+        console.print(f"[red]{_plain(model_id)}: no such folder in LLM-Definitions or Embedding-Definitions[/red]")
         raise typer.Exit(2)
     manifest = load_manifest(folder)
     adapters = load_adapters()
@@ -1036,7 +1057,7 @@ def test(
     if manifest.provider.auth.mode == "api_key":
         key = _env_api_key(adapter) if adapter else None
         if not key:
-            console.print(f"[red]No API key found ({adapter.env_key_var if adapter else 'unknown env var'}) - "
+            console.print(f"[red]No API key found ({_plain(adapter.env_key_var) if adapter else 'unknown env var'}) - "
                           "set it in the environment or .env.[/red]")
             raise typer.Exit(2)
         options["API_KEY"] = key
@@ -1049,35 +1070,35 @@ def test(
     # in a one-element list, the MAS REST API passes the plain string (#26).
     wrap = (lambda value: value) if mas else (lambda value: [value])
     convention = "MAS REST (plain strings)" if mas else "SCR (one-element lists)"
-    console.print(f"[dim]Calling scoreModel() from {score_path.name} - {convention}...[/dim]")
+    console.print(f"[dim]Calling scoreModel() from {_plain(score_path.name)} - {_plain(convention)}...[/dim]")
     table = Table(show_header=False)
     if manifest.kind == "decision":
         state = DECISION_TEST_STATE if prompt == "Reply with the single word OK." else prompt
         answers, answer, confidence, run_time, prompt_length, output_length = module.scoreModel(
             wrap(state), wrap(json.dumps(DECISION_TEST_QUESTIONS)), wrap(json.dumps(options))
         )
-        table.add_row("state", state)
-        table.add_row("answers", json.dumps(json.loads(answers), indent=1))
-        table.add_row("answer", f"{answer} (confidence {float(confidence):.3f})")
+        table.add_row("state", _plain(state))
+        table.add_row("answers", _plain(json.dumps(json.loads(answers), indent=1)))
+        table.add_row("answer", f"{_plain(answer)} (confidence {float(confidence):.3f})")
         table.add_row("run_time", f"{run_time:.2f}s")
-        table.add_row("prompt_length", str(prompt_length))
-        table.add_row("output_length", str(output_length))
+        table.add_row("prompt_length", _plain(prompt_length))
+        table.add_row("output_length", _plain(output_length))
     elif manifest.kind == "embedding":
         embedding, run_time, tokens = module.scoreModel(
             wrap(prompt), wrap("mdb-test"), wrap(json.dumps(options))
         )
         vector = json.loads(embedding)
-        table.add_row("embedding", f"{len(vector)}-dimension vector [{vector[0]:.5f}, {vector[1]:.5f}, ...]")
+        table.add_row("embedding", f"{len(vector)}-dimension vector \\[{vector[0]:.5f}, {vector[1]:.5f}, ...]")
         table.add_row("run_time", f"{run_time:.2f}s")
-        table.add_row("tokens", str(tokens))
+        table.add_row("tokens", _plain(tokens))
     else:
         response, run_time, prompt_length, output_length = module.scoreModel(
             wrap(prompt), wrap(system), wrap(json.dumps(options))
         )
-        table.add_row("response", str(response))
+        table.add_row("response", _plain(response))
         table.add_row("run_time", f"{run_time:.2f}s")
-        table.add_row("prompt_length", str(prompt_length))
-        table.add_row("output_length", str(output_length))
+        table.add_row("prompt_length", _plain(prompt_length))
+        table.add_row("output_length", _plain(output_length))
     console.print(table)
 
 
@@ -1098,7 +1119,7 @@ def _viya_session():
     from .viya.session import ViyaConfigError, create_session
     try:
         session = create_session()
-        console.print(f"[dim]SAS Viya: {session.auth_summary}[/dim]")
+        console.print(f"[dim]SAS Viya: {_plain(session.auth_summary)}[/dim]")
         return session
     except ViyaConfigError as exc:
         # printed as it is, and as one line whatever the width of the terminal: the sentence of a refused
@@ -1143,10 +1164,10 @@ def setup(
             try:
                 ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
             except Exception as exc:
-                console.print(f"[red]{kind}: {_plain(exc)}[/red]")
+                console.print(f"[red]{_plain(kind)}: {_plain(exc)}[/red]")
                 raise typer.Exit(1)
             for created in ensured.created:
-                console.print(f"[green]created {created}.[/green]")
+                console.print(f"[green]created {_plain(created)}.[/green]")
                 created_any = True
             repo_id = repo_id or ensured.repository_id
             repo_folder = repo_folder or ensured.repository_folder_id
@@ -1161,8 +1182,8 @@ def setup(
                 server_name = resolve_server(session, os.environ.get("SAS_CAS_SERVER"))
                 from .core.releases import current_words
                 summary = _load_releases(session, ctx, caslib, server_name, table_name)
-                console.print(f"[green]loaded {caslib}.{table_name} ({summary['rows']} rows, "
-                              f"{current_words(summary)}) - assign it to the Prompt Builder object in "
+                console.print(f"[green]loaded {_plain(caslib)}.{_plain(table_name)} ({_plain(summary['rows'])} rows, "
+                              f"{_plain(current_words(summary))}) - assign it to the Prompt Builder object in "
                               f"SAS Visual Analytics.[/green]")
             except (RuntimeError, ValueError) as exc:
                 console.print(f"[yellow]release table not loaded: {_plain(exc)} - run 'mdb load-releases' later.[/yellow]")
@@ -1181,7 +1202,7 @@ def setup(
                                 scr_endpoint, deployment_type), indent=4),
         encoding="utf-8")
     console.print(f"[green]Wrote sas-viya-cli-commands.txt (authorization rules) and llm-prompt-builder.json "
-                  f"(the Prompt Builder seed, with the LLM and the embedding project id) to {out_dir}/.[/green]")
+                  f"(the Prompt Builder seed, with the LLM and the embedding project id) to {_plain(out_dir)}/.[/green]")
     console.print("Review sas-viya-cli-commands.txt before running it - it creates access groups and rules.")
 
 
@@ -1240,7 +1261,7 @@ def options_save(
         out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(_json.dumps(options_file(deployment, captured), indent=2) + "\n",
                    encoding="utf-8")
-    console.print(f"[green]Wrote {file}. Keep it with your deployment records and run "
+    console.print(f"[green]Wrote {_plain(file)}. Keep it with your deployment records and run "
                   "`mdb options-restore` after importing a report package.[/green]")
 
 
@@ -1297,7 +1318,7 @@ def _capture_options(session, seeds: dict, strict: bool = False, content_root: s
             if strict:
                 raise _ReportUnreadable(report_name, f"it is in {folder} and its content cannot be read ({exc})") \
                     from exc
-            console.print(f"[yellow]{report_name}: content unreadable ({_plain(exc)}).[/yellow]")
+            console.print(f"[yellow]{_plain(report_name)}: content unreadable ({_plain(exc)}).[/yellow]")
             continue
         options = read_options(content)
         if not options:
@@ -1305,26 +1326,26 @@ def _capture_options(session, seeds: dict, strict: bool = False, content_root: s
                    "content is not what mdb reads")
             if strict:
                 raise _ReportUnreadable(report_name, why)
-            console.print(f"[yellow]{report_name}: {why} - passed over.[/yellow]")
+            console.print(f"[yellow]{_plain(report_name)}: {_plain(why)} - passed over.[/yellow]")
             continue
         live[report_name] = options
         if report_name in LEGACY_REPORTS:
-            console.print(f"[yellow]'{report_name}': read from the retired report of that name "
-                          f"and folded into the {', '.join(BUILDER_REPORTS)} section.[/yellow]")
+            console.print(f"[yellow]'{_plain(report_name)}': read from the retired report of that name "
+                          f"and folded into the {_plain(', '.join(BUILDER_REPORTS))} section.[/yellow]")
     folded, messages = fold_legacy(live)
     for message in messages:
-        console.print(f"[yellow]  {message}[/yellow]")
+        console.print(f"[yellow]  {_plain(message)}[/yellow]")
     captured: dict = {}
     for report_name in BUILDER_REPORTS:
         if report_name not in folded and report_name not in seeds:
-            console.print(f"[yellow]{report_name}: no live report and nothing "
+            console.print(f"[yellow]{_plain(report_name)}: no live report and nothing "
                           "discovered - skipped.[/yellow]")
             continue
         merged = merge_seed(seeds.get(report_name, {}), folded.get(report_name))
         captured[report_name] = merged
         source = ("report + discovery" if (report_name in folded and report_name in seeds)
                   else ("report" if report_name in folded else "discovery"))
-        console.print(f"[green]{report_name}: {len(merged)} options ({source}).[/green]")
+        console.print(f"[green]{_plain(report_name)}: {len(merged)} options ({_plain(source)}).[/green]")
     return captured
 
 
@@ -1359,12 +1380,12 @@ def options_restore(
 
     path = Path(file)
     if not path.exists():
-        console.print(f"[red]{file} not found - run `mdb options-save` first.[/red]")
+        console.print(f"[red]{_plain(file)} not found - run `mdb options-save` first.[/red]")
         raise typer.Exit(1)
     document = _json.loads(path.read_text(encoding="utf-8"))
     saved = document.get("reports", {})
     if not saved:
-        console.print(f"[red]{file} names no reports.[/red]")
+        console.print(f"[red]{_plain(file)} names no reports.[/red]")
         raise typer.Exit(1)
     here = os.environ.get("SAS_VIYA_URL", "")
     if document.get("deployment") and document["deployment"] != here:
@@ -1372,11 +1393,11 @@ def options_restore(
         # deliberate act. It is worth saying out loud because doing it by
         # ACCIDENT is the failure this command exists to prevent.
         console.print(f"[yellow]Note: these options were saved from "
-                      f"{document['deployment']}, not {here}.[/yellow]")
+                      f"{_plain(document['deployment'])}, not {_plain(here)}.[/yellow]")
     with _viya_session() as session:
         failures = _restore_options(session, saved, dry_run, _site_host(), content_root=content_root or "")
     if failures:
-        console.print(f"[red]Not every option {'would be' if dry_run else 'was'} restored.[/red] {file} "
+        console.print(f"[red]Not every option {'would be' if dry_run else 'was'} restored.[/red] {_plain(file)} "
                       "still holds all of them: fix what is reported above and run the command again.")
         raise typer.Exit(1)
 
@@ -1400,7 +1421,7 @@ def _fold_saved(saved: dict) -> dict:
     from .core.options import fold_legacy
     folded, messages = fold_legacy(saved)
     for message in messages:
-        console.print(f"[yellow]  {message}[/yellow]")
+        console.print(f"[yellow]  {_plain(message)}[/yellow]")
     return folded
 
 
@@ -1415,10 +1436,10 @@ def _warn_retired_reports(session, content_root: str = "") -> list[str]:
              if find_report_at(session, report_folder(content_root, name), name)]
     for name in found:
         console.print(
-            f"[yellow]A report named '{name}' still exists on this site. It is retired: the RAG Builder "
-            f"is part of the {MERGED_REPORT} report since 2.3.0, and the old report keeps serving the old "
-            f"standalone UI with its own options. Once the {MERGED_REPORT} report shows your RAG setups, "
-            f"delete the report '{name}' and the job definition 'RAG-Builder-UI' next to it "
+            f"[yellow]A report named '{_plain(name)}' still exists on this site. It is retired: the RAG Builder "
+            f"is part of the {_plain(MERGED_REPORT)} report since 2.3.0, and the old report keeps serving the old "
+            f"standalone UI with its own options. Once the {_plain(MERGED_REPORT)} report shows your RAG setups, "
+            f"delete the report '{_plain(name)}' and the job definition 'RAG-Builder-UI' next to it "
             "(SAS Environment Manager > Content, or SAS Drive). Nothing was deleted.[/yellow]")
     return found
 
@@ -1457,16 +1478,16 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
         if not report:
             if report_name in arriving:
                 then = f", and the {len(values)} saved option(s) are written then" if values else ""
-                console.print(f"[cyan]{report_name}: not on this site yet - it arrives with the import"
-                              f"{then}.[/cyan]")
+                console.print(f"[cyan]{_plain(report_name)}: not on this site yet - it arrives with the import"
+                              f"{_plain(then)}.[/cyan]")
             else:
-                console.print(f"[yellow]{report_name}: no such report in {folder or 'the content folder'} - "
+                console.print(f"[yellow]{_plain(report_name)}: no such report in {_plain(folder or 'the content folder')} - "
                               "skipped.[/yellow]")
             continue
         try:
             content, etag = get_content(session, report["id"])
         except Exception as exc:
-            console.print(f"[red]{report_name}: reading the report failed ({_plain(exc)}) - its options were not "
+            console.print(f"[red]{_plain(report_name)}: reading the report failed ({_plain(exc)}) - its options were not "
                           "written.[/red]", highlight=False)
             failures += 1
             continue
@@ -1474,30 +1495,30 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
         updated, rehosted = rehost_content(updated, host) if host else (updated, 0)
         with_import = [label for label in result.missing if label in arriving.get(report_name, ())]
         if with_import:
-            console.print(f"[cyan]  {report_name}: {len(with_import)} option(s) arrive with the imported "
-                          f"report and are written then: {', '.join(with_import)}[/cyan]")
+            console.print(f"[cyan]  {_plain(report_name)}: {len(with_import)} option(s) arrive with the imported "
+                          f"report and are written then: {_plain(', '.join(with_import))}[/cyan]")
         for label in result.missing:
             if label in with_import:
                 continue
-            console.print(f"[yellow]  {report_name}: '{label}' is not an option of "
+            console.print(f"[yellow]  {_plain(report_name)}: '{_plain(label)}' is not an option of "
                           "this report version - not written.[/yellow]")
         unwritten = [label for label in result.missing
                      if label not in with_import and label in MERGED_REPORT_LABELS]
         if unwritten:
-            console.print(f"[red]{report_name}: {len(unwritten)} option(s) the Prompt Builder reads cannot "
-                          f"be written ({', '.join(unwritten)}) - the report "
+            console.print(f"[red]{_plain(report_name)}: {len(unwritten)} option(s) the Prompt Builder reads cannot "
+                          f"be written ({_plain(', '.join(unwritten))}) - the report "
                           + ("the import brings" if report_name in arriving else "on this site")
                           + " is from before 2.3.0, or was not saved with the merged UI. Import the "
                           "package of this release (`mdb builders-import`), then restore again.[/red]")
         for label, value in result.rejected.items():
-            console.print(f"[red]  {report_name}: '{label}' is a checkbox in this report and '{value}' says "
+            console.print(f"[red]  {_plain(report_name)}: '{_plain(label)}' is a checkbox in this report and '{_plain(value)}' says "
                           "neither on nor off - not written. Use true or false.[/red]")
         if unwritten or result.rejected:
             failures += 1
         if not result.changed and not rehosted:
             # "already matches" is only true of a report that took every value.
             if values and not unwritten and not result.rejected:
-                console.print(f"[green]{report_name}: already matches "
+                console.print(f"[green]{_plain(report_name)}: already matches "
                               f"({len(result.unchanged)} options, no placeholder host).[/green]")
             continue
         what = []
@@ -1506,15 +1527,15 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
         if rehosted:
             what.append(f"placeholder host -> {host} ({rehosted} occurrence(s): the DDC URL and option defaults)")
         if dry_run:
-            console.print(f"[cyan]{report_name}: would restore " + "; ".join(what) + "[/cyan]")
+            console.print(f"[cyan]{_plain(report_name)}: would restore " + _plain("; ".join(what)) + "[/cyan]")
             continue
         try:
             put_content(session, report["id"], updated, etag)
         except Exception as exc:
-            console.print(f"[red]{report_name}: writing the report failed ({_plain(exc)}).[/red]")
+            console.print(f"[red]{_plain(report_name)}: writing the report failed ({_plain(exc)}).[/red]")
             failures += 1
             continue
-        console.print(f"[green]{report_name}: restored " + "; ".join(what) + "[/green]")
+        console.print(f"[green]{_plain(report_name)}: restored " + _plain("; ".join(what)) + "[/green]")
     _warn_retired_reports(session, content_root)
     return failures
 
@@ -1545,8 +1566,8 @@ def _discovered_seeds(session, ctx: "Context", otherwise: str = "", kinds=None) 
             try:
                 ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
             except Exception as exc:
-                console.print(f"[yellow]{report_name}: could not discover the {kind} project ({_plain(exc)})"
-                              + (f"; {otherwise}" if otherwise else "") + ".[/yellow]")
+                console.print(f"[yellow]{_plain(report_name)}: could not discover the {_plain(kind)} project ({_plain(exc)})"
+                              + (f"; {_plain(otherwise)}" if otherwise else "") + ".[/yellow]")
                 continue
             repository_id = repository_id or ensured.repository_id
             project_ids[kind] = ensured.project_id
@@ -1571,7 +1592,7 @@ def _content_manifest(ctx: "Context", check_sources: bool = True):
     try:
         return load_manifest(ctx.repo, check_sources=check_sources)
     except ManifestError as exc:
-        console.print(f"[red]The content manifest cannot be used[/red] ({exc.where}):", highlight=False)
+        console.print(f"[red]The content manifest cannot be used[/red] ({_plain(exc.where)}):", highlight=False)
         for problem in exc.problems:
             console.print(f"  {problem}", markup=False, highlight=False, soft_wrap=True)
         raise typer.Exit(2)
@@ -1802,7 +1823,7 @@ def content_deploy(
             console.print(f"  {line}", markup=False, highlight=False, soft_wrap=True)
     counts = ", ".join(f"{result.count(status)} {status}"
                        for status in (EQUAL, UPDATED, CREATED, NOT_DEPLOYED, NOT_ATTEMPTED) if result.count(status))
-    console.print(f"\n{len(result.outcomes)} entries: {counts or 'nothing done'}"
+    console.print(f"\n{len(result.outcomes)} entries: {_plain(counts or 'nothing done')}"
                   + (f", {len(result.failed)} FAILED" if result.failed else "") + ".", highlight=False)
     if result.stopped_at is not None:
         console.print(result.stop_line(), style="red", markup=False, highlight=False, soft_wrap=True)
@@ -1898,27 +1919,27 @@ def package_export(
     root = (content_root or manifest.content_root).rstrip("/")
     target = out or manifest.package_path
     if root != manifest.content_root and (out is None or target.resolve() == manifest.package_path.resolve()):
-        console.print(f"[red]{root} is not the content root of the release ({manifest.content_root}): an export "
-                      f"of it is not written to {manifest.package}. "
+        console.print(f"[red]{_plain(root)} is not the content root of the release ({_plain(manifest.content_root)}): an export "
+                      f"of it is not written to {_plain(manifest.package)}. "
                       + ("Pass --out to write it somewhere else." if out is None else "Name another file with --out.")
                       + " Nothing was exported.[/red]", highlight=False)
         raise typer.Exit(2)
     if allow_differences and (out is None or target.resolve() == manifest.package_path.resolve()):
-        console.print(f"[red]--allow-differences needs --out, and not {manifest.package}: the release file is "
+        console.print(f"[red]--allow-differences needs --out, and not {_plain(manifest.package)}: the release file is "
                       "only written when it equals the checkout. Nothing was exported.[/red]", highlight=False)
         raise typer.Exit(2)
     if keep_user_ids and (out is None or target.resolve() == manifest.package_path.resolve()):
-        console.print(f"[red]--keep-user-ids needs --out, and not {manifest.package}: the release file names no "
+        console.print(f"[red]--keep-user-ids needs --out, and not {_plain(manifest.package)}: the release file names no "
                       "user. Nothing was exported.[/red]", highlight=False)
         raise typer.Exit(2)
     if content_root_problem(root):
-        console.print(f"[red]{root}: {content_root_problem(root)}. Nothing was exported.[/red]", highlight=False)
+        console.print(f"[red]{_plain(root)}: {_plain(content_root_problem(root))}. Nothing was exported.[/red]", highlight=False)
         raise typer.Exit(2)
     package_name = name or root.rsplit("/", 1)[-1]
     with _viya_session() as session:
         try:
             folder_obj = folder_by_path(session, root)
-            console.print(f"Exporting [bold]{root}[/bold] as package [bold]{package_name}[/bold] ...",
+            console.print(f"Exporting [bold]{_plain(root)}[/bold] as package [bold]{_plain(package_name)}[/bold] ...",
                           highlight=False)
             job = start_export(session, package_name, [f"/folders/folders/{folder_obj['id']}"])
             job = wait_for_job(session, next(l["href"] for l in job["links"] if l["rel"] == "self"), timeout=timeout)
@@ -1926,9 +1947,9 @@ def package_export(
             console.print(f"[red]{_plain(exc)}[/red]")
             raise typer.Exit(1)
         if str(job.get("state", "")).lower() != "completed":
-            console.print(f"[red]The export job ended {job.get('state')} ({job.get('errorCount', 0)} error(s)).[/red]")
+            console.print(f"[red]The export job ended {_plain(job.get('state'))} ({_plain(job.get('errorCount', 0))} error(s)).[/red]")
             for line in job_messages(session, job):
-                console.print(f"  {line}")
+                console.print(f"  {_plain(line)}")
             raise typer.Exit(1)
         package_uri = job["packageUri"]
         try:
@@ -1970,12 +1991,12 @@ def package_export(
         console.print(f"[red]{_plain(exc)}[/red]")
         raise typer.Exit(1)
     for copy_name, labels in reset.items():
-        console.print(f"  reset {len(labels)} option default(s) of {copy_name} to the neutral values: "
-                      f"{', '.join(labels)}", highlight=False)
+        console.print(f"  reset {len(labels)} option default(s) of {_plain(copy_name)} to the neutral values: "
+                      f"{_plain(', '.join(labels))}", highlight=False)
     for report_name, n in states.items():
-        console.print(f"  removed {n} per-user report state(s) from report '{report_name}'")
+        console.print(f"  removed {_plain(n)} per-user report state(s) from report '{_plain(report_name)}'")
     for host, n in fixed.items():
-        console.print(f"  replaced {host} with the placeholder ({n} occurrence(s))")
+        console.print(f"  replaced {_plain(host)} with the placeholder ({_plain(n)} occurrence(s))")
     # Everything below is asked of the text, before there is a file: the
     # target is the package `mdb builders-import` reads when none is named,
     # and a package that is written and then found unfit is imported by the
@@ -1989,7 +2010,7 @@ def package_export(
         unfit = True
     result = check_text(text, target.name, ALLOWED_HOSTS)
     if not result.ok:
-        console.print(f"[red]The export still names a host after the rewrite: {describe_findings(result)}[/red]")
+        console.print(f"[red]The export still names a host after the rewrite: {_plain(describe_findings(result))}[/red]")
         unfit = True
     differences = [] if not result.ok else package_differences(package, manifest, target.name)
     for line in differences:
@@ -2005,16 +2026,16 @@ def package_export(
         unfit = True
     if unfit:
         console.print("[red]Nothing was written: " + (
-            f"{target.name} is as it was before the export." if target.exists() else
-            f"there is no {target.name}.") + "[/red]", highlight=False)
+            f"{_plain(target.name)} is as it was before the export." if target.exists() else
+            f"there is no {_plain(target.name)}.") + "[/red]", highlight=False)
         raise typer.Exit(1)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8", newline="\n")
     counts: dict = {}
     for kind, _name in _package_objects(package):
         counts[kind] = counts.get(kind, 0) + 1
-    console.print(f"[green]Wrote {target}[/green] ({package.get('transferObjectCount', '?')} objects: "
-                  + ", ".join(f"{n} {kind}" for kind, n in counts.items()) + f"; {len(filtered.dropped)} left out).",
+    console.print(f"[green]Wrote {_plain(target)}[/green] ({_plain(package.get('transferObjectCount', '?'))} objects: "
+                  + _plain(", ".join(f"{n} {kind}" for kind, n in counts.items())) + f"; {len(filtered.dropped)} left out).",
                   highlight=False)
     # Each line says what was done: with --keep-user-ids the ids are left,
     # without it they were replaced - and one that is still named after the
@@ -2062,7 +2083,7 @@ def package_export(
         console.print(f"The file equals the checkout and is not the release file ({manifest.package}): there is "
                       "nothing to commit.", markup=False, highlight=False, soft_wrap=True)
     if leftovers:
-        console.print(f"[yellow]{target.name} was written and checked; {len(leftovers)} object(s) of the export are "
+        console.print(f"[yellow]{_plain(target.name)} was written and checked; {len(leftovers)} object(s) of the export are "
                       "left on the server (named above). Exit code 3.[/yellow]", highlight=False)
         raise typer.Exit(3)
 
@@ -2443,9 +2464,9 @@ def builders_import(
     for path in files:
         if not path.is_file():
             if packages:
-                console.print(f"[red]{path} not found.[/red]", highlight=False)
+                console.print(f"[red]{_plain(path)} not found.[/red]", highlight=False)
             else:
-                console.print(f"[red]This checkout holds no {manifest.package} - the transfer package of the "
+                console.print(f"[red]This checkout holds no {_plain(manifest.package)} - the transfer package of the "
                               "release. Name a package file, or use a checkout that has it.[/red]", highlight=False)
             raise typer.Exit(2)
     root = (content_root or manifest.content_root).rstrip("/")
@@ -2455,7 +2476,7 @@ def builders_import(
     saved = None
     if options is not None:
         if not options.is_file():
-            console.print(f"[red]{options} not found - run `mdb options-save` first.[/red]")
+            console.print(f"[red]{_plain(options)} not found - run `mdb options-save` first.[/red]")
             raise typer.Exit(2)
         saved = json.loads(options.read_text(encoding="utf-8")).get("reports") or {}
 
@@ -2542,12 +2563,12 @@ def builders_import(
                 # the imported report's value. It is discovered instead.
                 missing = _missing_ids(live)
                 if missing and dry_run:
-                    console.print(f"Options: the report holds no value for {', '.join(missing)} - a run discovers "
+                    console.print(f"Options: the report holds no value for {_plain(', '.join(missing))} - a run discovers "
                                   "it from this deployment (which creates a missing project).", highlight=False)
                 elif missing:
                     found = _discover_missing(session, ctx, live, missing)
-                    console.print(f"Options: the report holds no value for {', '.join(missing)} - discovered from "
-                                  "this deployment: " + (", ".join(f"{k} {v}" for k, v in found.items()) or "nothing")
+                    console.print(f"Options: the report holds no value for {_plain(', '.join(missing))} - discovered from "
+                                  "this deployment: " + (_plain(", ".join(f"{k} {v}" for k, v in found.items()) or "nothing"))
                                   + ".", highlight=False)
                 if dry_run:
                     console.print("Options: read from the report on this site; a run keeps them in a file and "
@@ -2555,7 +2576,7 @@ def builders_import(
                 else:
                     captured_file = _keep_captured(live)
                     given = command(captured_file)
-                    console.print(f"Options: read from the report on this site and kept in {captured_file}; "
+                    console.print(f"Options: read from the report on this site and kept in {_plain(captured_file)}; "
                                   "they are written back after the import.", highlight=False)
         # The compute context for the job definitions: what was given goes
         # into every one that has the parameter; what the options that are
@@ -2582,15 +2603,15 @@ def builders_import(
                 table_from = f"{RELEASE_TABLE_PATH} of {path.name}"
                 break
         if no_releases:
-            console.print(f"Release table: not reloaded (--no-releases); reports bind to {releases_to}.")
+            console.print(f"Release table: not reloaded (--no-releases); reports bind to {_plain(releases_to)}.")
         elif dry_run:
-            console.print(f"Release table: would load {caslib}.{table_name} on {server_name} from {table_from}.",
+            console.print(f"Release table: would load {_plain(caslib)}.{_plain(table_name)} on {_plain(server_name)} from {_plain(table_from)}.",
                           highlight=False)
         else:
             try:
                 summary = _load_releases(session, ctx, caslib, server_name, table_name, csv_data=table_csv)
-                console.print(f"Release table: {caslib}.{table_name} loaded from {table_from} ({summary['rows']} "
-                              f"rows, {current_words(summary)}).", highlight=False)
+                console.print(f"Release table: {_plain(caslib)}.{_plain(table_name)} loaded from {_plain(table_from)} ({_plain(summary['rows'])} "
+                              f"rows, {_plain(current_words(summary))}).", highlight=False)
             except (RuntimeError, ValueError, UnicodeDecodeError) as exc:
                 console.print(f"[red]Release table not loaded: {_plain(exc)}[/red]")
                 raise typer.Exit(1)
@@ -2599,11 +2620,11 @@ def builders_import(
             counts: dict = {}
             for kind, _name in objects:
                 counts[kind] = counts.get(kind, 0) + 1
-            console.print(f"\n[bold]{path.name}[/bold] - {package.get('name')}: "
-                          + ", ".join(f"{n} {kind}" for kind, n in counts.items()), highlight=False)
+            console.print(f"\n[bold]{_plain(path.name)}[/bold] - {_plain(package.get('name'))}: "
+                          + _plain(", ".join(f"{n} {kind}" for kind, n in counts.items())), highlight=False)
             retired = legacy_objects(package)
             if retired:
-                console.print(f"  [yellow]This package predates 2.3.0: it carries {', '.join(retired)} - the "
+                console.print(f"  [yellow]This package predates 2.3.0: it carries {_plain(', '.join(retired))} - the "
                               "standalone RAG UI, which is part of the Prompt Builder now. Importing it brings "
                               "that UI back, and mdb does not configure its report. Use the package of a "
                               "2.3.0 checkout.[/yellow]")
@@ -2644,7 +2665,7 @@ def builders_import(
                     _mapping, changes = rehost_mapping(mapping_preview(reduced), host, DEFAULT_TABLE, releases_to,
                                                        library=report_caslib or None, server=server_name)
                     for change in changes:
-                        console.print(f"    mapping: {change}")
+                        console.print(f"    mapping: {_plain(change)}")
                 else:
                     uploaded = None
                     try:
@@ -2654,14 +2675,14 @@ def builders_import(
                         mapping, changes = rehost_mapping(mapping, host, DEFAULT_TABLE, releases_to,
                                                           library=report_caslib or None, server=server_name)
                         for change in changes:
-                            console.print(f"    mapping: {change}")
+                            console.print(f"    mapping: {_plain(change)}")
                         job = start_import(session, package.get("name") or path.stem,
                                            f"/transfer/packages/{uploaded['id']}", mapping)
                         job = wait_for_job(session, job_uri(job), timeout=timeout)
                         state = str(job.get("state", "")).lower()
                         if state != "completed" or job.get("errorCount"):
-                            console.print(f"    [red]import ended {job.get('state')} with "
-                                          f"{job.get('errorCount', 0)} error(s):[/red]")
+                            console.print(f"    [red]import ended {_plain(job.get('state'))} with "
+                                          f"{_plain(job.get('errorCount', 0))} error(s):[/red]")
                             for line in job_messages(session, job):
                                 console.print(f"      {line}", markup=False, highlight=False, soft_wrap=True)
                             package_failed = True
@@ -2707,7 +2728,7 @@ def builders_import(
                 else:
                     tally = ", ".join(f"{result.count(status)} {status}"
                                       for status in (EQUAL, UPDATED, CREATED, NOT_ATTEMPTED) if result.count(status))
-                    console.print(f"    {len(result.outcomes)} entries: {tally or 'nothing done'}"
+                    console.print(f"    {len(result.outcomes)} entries: {_plain(tally or 'nothing done')}"
                                   + (f", {len(result.failed)} FAILED" if result.failed else "") + ".",
                                   highlight=False)
                     if result.stopped_at is not None:
@@ -2736,10 +2757,10 @@ def builders_import(
             values = {}
         elif saved is not None:
             if options is not None:
-                console.print(f"\nRestoring builder options from {options}:", highlight=False)
+                console.print(f"\nRestoring builder options from {_plain(options)}:", highlight=False)
             else:
                 console.print("\nWriting back the options the report held before the import"
-                              + (f" ({captured_file}):" if captured_file else ":"), highlight=False)
+                              + (f" ({_plain(captured_file)}):" if captured_file else ":"), highlight=False)
             values = _fold_saved(saved)
         elif not targets:
             # Nothing arrived that discovery could configure, so nothing is
@@ -2769,7 +2790,7 @@ def builders_import(
             # the site is the report from before, and it has its values.
             for report_name in values:
                 if report_name in failed_reports:
-                    console.print(f"[yellow]{report_name}: its package did not import - options not "
+                    console.print(f"[yellow]{_plain(report_name)}: its package did not import - options not "
                                   "restored.[/yellow]")
             failures += _restore_options(
                 session, {name: v for name, v in values.items() if name not in failed_reports}, dry_run, host,
@@ -2824,7 +2845,7 @@ def builders_import(
         # every option it holds is back in the report; a run that did not get
         # there keeps it, and its repeat line names it
         captured_file.unlink()
-        console.print(f"Removed {captured_file}: every option it held is back in the report.", highlight=False)
+        console.print(f"Removed {_plain(captured_file)}: every option it held is back in the report.", highlight=False)
     console.print("\n[green]Done.[/green] Next: the Content Security Policy settings are described in the "
                   "administration guide, 'Deploying the Builder UIs', step 4."
                   + ("" if saved is not None or not targets else
@@ -2850,8 +2871,8 @@ def _write_content_rules(session, content_root: str, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / CONTENT_RULES_FILE).write_text(
         content_rules_text(content_root, (folder or {}).get("id")), encoding="utf-8")
-    console.print(f"Wrote {CONTENT_RULES_FILE} to {out_dir}/ - the package carries no authorization rule, "
-                  f"and these commands give the LLM Consumers group Read on {content_root}. Review the file "
+    console.print(f"Wrote {_plain(CONTENT_RULES_FILE)} to {_plain(out_dir)}/ - the package carries no authorization rule, "
+                  f"and these commands give the LLM Consumers group Read on {_plain(content_root)}. Review the file "
                   "before running it.", highlight=False)
 
 
@@ -2938,7 +2959,7 @@ def package_check(
             # they are gone, a missing package is a missing package
             earlier = earlier_packages_present(ctx.repo, manifest.package_path)
             allowed = allow_missing and not release and bool(earlier)
-            console.print(f"[{'yellow' if allowed else 'red'}]There is no {manifest.package} in this "
+            console.print(f"[{'yellow' if allowed else 'red'}]There is no {_plain(manifest.package)} in this "
                           f"checkout: nothing was checked.[/{'yellow' if allowed else 'red'}]",
                           highlight=False)
             if allow_missing and not release and not earlier:
@@ -2950,7 +2971,7 @@ def package_check(
     total = drifted = 0
     for path in targets:
         if not path.is_file():
-            console.print(f"[red]{path}: not a file[/red]", highlight=False)
+            console.print(f"[red]{_plain(path)}: not a file[/red]", highlight=False)
             raise typer.Exit(2)
         text = path.read_text(encoding="utf-8")
         if fix:
@@ -2959,21 +2980,21 @@ def package_check(
             text, removed = strip_report_states(text)
             text, fixed = sanitise_text(text, path.name)
             for copy_name, labels in reset.items():
-                console.print(f"  {path.name}: reset {len(labels)} option default(s) of {copy_name}: "
-                              f"{', '.join(labels)}", highlight=False)
+                console.print(f"  {_plain(path.name)}: reset {len(labels)} option default(s) of {_plain(copy_name)}: "
+                              f"{_plain(', '.join(labels))}", highlight=False)
             for report_name, n in sorted(removed.items()):
-                console.print(f"  {path.name}: removed {n} per-user report state(s) from report '{report_name}'",
+                console.print(f"  {_plain(path.name)}: removed {_plain(n)} per-user report state(s) from report '{_plain(report_name)}'",
                               highlight=False)
             for host, n in sorted(fixed.items()):
-                console.print(f"  {path.name}: {host} -> {PLACEHOLDER_HOST} ({n})", highlight=False)
+                console.print(f"  {_plain(path.name)}: {_plain(host)} -> {_plain(PLACEHOLDER_HOST)} ({_plain(n)})", highlight=False)
             parsed = json.loads(text)
             users = sorted(user for user in named_users(parsed) if user != NEUTRAL_USER)
             neutralised = neutralise_users(parsed)
             if neutralised:
                 # written the way `mdb package-export` writes a package
                 text = json.dumps(parsed, indent=2, ensure_ascii=False) + "\n"
-                console.print(f"  {path.name}: user id(s) {', '.join(users)} in {USER_FIELDS_TEXT} -> "
-                              f"{NEUTRAL_USER} ({neutralised})", highlight=False)
+                console.print(f"  {_plain(path.name)}: user id(s) {_plain(', '.join(users))} in {_plain(USER_FIELDS_TEXT)} -> "
+                              f"{_plain(NEUTRAL_USER)} ({_plain(neutralised)})", highlight=False)
             if text != before:
                 path.write_text(text, encoding="utf-8", newline="")
         for difference in package_findings(json.loads(text), manifest, path.name):
@@ -2985,13 +3006,13 @@ def package_check(
                 total += 1
                 console.print(f"{path.name}: {difference.text}", markup=False, highlight=False, soft_wrap=True)
     if total:
-        console.print(f"[red]{total} difference(s) between the package and the checkout.[/red] A host, a "
+        console.print(f"[red]{_plain(total)} difference(s) between the package and the checkout.[/red] A host, a "
                       "per-user state, an option default or a user id is rewritten by --fix; anything else is put "
                       "right in the content folder (`mdb content-deploy`) and by `mdb package-export`."
-                      + (f" ({drifted} more line(s) are drift and do not fail.)" if drifted else ""))
+                      + (f" ({_plain(drifted)} more line(s) are drift and do not fail.)" if drifted else ""))
         raise typer.Exit(1)
     if drifted:
-        console.print(f"[yellow]{len(targets)} package(s): {drifted} difference(s) in content to the checkout - "
+        console.print(f"[yellow]{len(targets)} package(s): {_plain(drifted)} difference(s) in content to the checkout - "
                       "drift, which does not fail between releases.[/yellow] The package holds the content of an "
                       "earlier commit; everything else about it is as it has to be. For a release the folder "
                       "is deployed and exported again, and `mdb package-check --release` has to pass.")
@@ -3021,7 +3042,7 @@ def register(
     if not all_ and ids:
         for folder in all_targets:
             if not (folder / MANIFEST_FILENAME).is_file():
-                console.print(f"[yellow]{folder.name}: no {MANIFEST_FILENAME} - adopt it with "
+                console.print(f"[yellow]{_plain(folder.name)}: no {_plain(MANIFEST_FILENAME)} - adopt it with "
                               "'mdb import' first, or it stays hand-maintained. Skipped.[/yellow]")
                 failed = True
     with _viya_session() as session:
@@ -3031,21 +3052,21 @@ def register(
                 if manifest.kind not in ensured_kinds:
                     ensured = ensure_repository_and_project(session, manifest.kind, ctx.core, responsible_party)
                     for created in ensured.created:
-                        console.print(f"[green]setup: created {created}.[/green]")
+                        console.print(f"[green]setup: created {_plain(created)}.[/green]")
                     ensured_kinds.add(manifest.kind)
                 row = facts.read_row(ctx.fact_sheet(manifest.kind), manifest.model_id)
                 if row is None:
-                    console.print(f"[yellow]{manifest.model_id}: no fact-sheet row - run mdb sync first "
+                    console.print(f"[yellow]{_plain(manifest.model_id)}: no fact-sheet row - run mdb sync first "
                                   "(cost monitoring metadata will be incomplete).[/yellow]")
                 result = register_model(session, manifest, folder, row, scr, update=update)
             except Exception as exc:
-                console.print(f"[red]{folder.name}: {_plain(exc)}[/red]")
+                console.print(f"[red]{_plain(folder.name)}: {_plain(exc)}[/red]")
                 failed = True
                 continue
             color = {"created": "green", "updated": "green", "skipped": "yellow"}[result.action]
             hint = "" if result.action != "skipped" else "  (already registered - use --update to replace)"
-            console.print(f"[{color}]{result.model_id}: {result.action}{hint}[/{color}] "
-                          f"{os.environ.get('SAS_VIYA_URL', '')}{result.url}")
+            console.print(f"[{color}]{_plain(result.model_id)}: {_plain(result.action)}{_plain(hint)}[/{color}] "
+                          f"{_plain(os.environ.get('SAS_VIYA_URL', ''))}{_plain(result.url)}")
     if not failed:
         console.print("Next: mdb publish <id> --wait")
     raise typer.Exit(1 if failed else 0)
@@ -3063,22 +3084,22 @@ def unregister(
     with _viya_session() as session:
         for model_id in ids:
             if not yes and not Confirm.ask(
-                f"Delete registered model '{model_id}' from SAS Model Manager?", default=False
+                f"Delete registered model '{_plain(model_id)}' from SAS Model Manager?", default=False
             ):
-                console.print(f"[yellow]{model_id}: skipped.[/yellow]")
+                console.print(f"[yellow]{_plain(model_id)}: skipped.[/yellow]")
                 continue
             try:
                 result = unregister_model(session, model_id)
             except Exception as exc:
-                console.print(f"[red]{model_id}: {_plain(exc)}[/red]")
+                console.print(f"[red]{_plain(model_id)}: {_plain(exc)}[/red]")
                 failed = True
                 continue
             if result == "deleted":
-                console.print(f"[green]{model_id}: deleted from SAS Model Manager.[/green]")
+                console.print(f"[green]{_plain(model_id)}: deleted from SAS Model Manager.[/green]")
                 console.print("[dim]  Note: a container already published to an SCR destination is not "
                               "removed by this - delete it at the publishing destination if needed.[/dim]")
             else:
-                console.print(f"[yellow]{model_id}: not registered - nothing to delete.[/yellow]")
+                console.print(f"[yellow]{_plain(model_id)}: not registered - nothing to delete.[/yellow]")
     raise typer.Exit(1 if failed else 0)
 
 
@@ -3101,15 +3122,15 @@ def pull(
             try:
                 result = pull_model(session, model_id, ctx.defs_dir, force=force)
             except Exception as exc:
-                console.print(f"[red]{model_id}: {_plain(exc)}[/red]")
+                console.print(f"[red]{_plain(model_id)}: {_plain(exc)}[/red]")
                 failed = True
                 continue
             defs_name = "LLM-Definitions" if result.kind == "llm" else "Embedding-Definitions"
             source = ("its stored definition.yaml" if result.had_definition
                       else "rebuilt modelConfiguration.json from the model's attributes"
                            if result.reconstructed_config else "its stored files")
-            console.print(f"[green]{model_id}: pulled to {defs_name}/{model_id}/[/green] "
-                          f"({len(result.files)} file(s); {source})")
+            console.print(f"[green]{_plain(model_id)}: pulled to {_plain(defs_name)}/{_plain(model_id)}/[/green] "
+                          f"({len(result.files)} file(s); {_plain(source)})")
             if adopt and not result.had_definition:
                 folder = ctx.defs_dir(result.kind) / model_id
                 fact_sheet = ctx.fact_sheet(result.kind)
@@ -3117,17 +3138,17 @@ def pull(
                     imported = import_folder(folder, fact_sheet)
                     imported.manifest.save(folder)
                     for note in imported.notes:
-                        console.print(f"  [yellow]note:[/yellow] {note}")
-                    console.print(f"[green]{model_id}: wrote definition.yaml - review it, then converge with "
-                                  f"'mdb import {model_id} --apply'.[/green]")
+                        console.print(f"  [yellow]note:[/yellow] {_plain(note)}")
+                    console.print(f"[green]{_plain(model_id)}: wrote definition.yaml - review it, then converge with "
+                                  f"'mdb import {_plain(model_id)} --apply'.[/green]")
                 except Exception as exc:
-                    console.print(f"[yellow]{model_id}: pulled, but could not reverse-engineer "
+                    console.print(f"[yellow]{_plain(model_id)}: pulled, but could not reverse-engineer "
                                   f"definition.yaml ({_plain(exc)}) - the folder stays hand-maintained.[/yellow]")
             elif result.had_definition:
                 console.print(f"  Already mdb-managed (definition.yaml pulled). Regenerate with "
-                              f"'mdb generate {model_id}'.")
+                              f"'mdb generate {_plain(model_id)}'.")
             else:
-                console.print(f"  Legacy folder. Adopt it with 'mdb import {model_id}' (or re-run with --import).")
+                console.print(f"  Legacy folder. Adopt it with 'mdb import {_plain(model_id)}' (or re-run with --import).")
     raise typer.Exit(1 if failed else 0)
 
 
@@ -3141,7 +3162,7 @@ def list_(
     from .viya.registry import list_registered_models
     kinds = (kind,) if kind in KINDS else KINDS
     if kind is not None and kind not in KINDS:
-        console.print(f"[red]--kind must be one of {', '.join(KINDS)}.[/red]")
+        console.print(f"[red]--kind must be one of {_plain(', '.join(KINDS))}.[/red]")
         raise typer.Exit(2)
     rows: list[dict] = []
     with _viya_session() as session:
@@ -3156,15 +3177,15 @@ def list_(
         return
     table = Table()
     for col in ("model_id", "kind", "provider", "type", "version", "status", "approval", "endpoint"):
-        table.add_column(col)
+        table.add_column(_plain(col))
     status_color = {"deployed": "green", "ready for validation": "yellow", "retired": "red"}
     for r in rows:
         status = r["modelStatus"] or "-"
         color = status_color.get(status, "dim")
         table.add_row(
-            r["model_id"], r["kind"], r["provider"] or "-", r["llmModelType"] or "-",
-            r["deploymentId"] or "-", f"[{color}]{status}[/{color}]",
-            r["approvalState"] or "-", r["endPoint"] or "-",
+            _plain(r["model_id"]), _plain(r["kind"]), _plain(r["provider"] or "-"), _plain(r["llmModelType"] or "-"),
+            _plain(r["deploymentId"] or "-"), f"[{color}]{_plain(status)}[/{color}]",
+            _plain(r["approvalState"] or "-"), _plain(r["endPoint"] or "-"),
         )
     console.print(table)
 
@@ -3191,20 +3212,20 @@ def publish(
             try:
                 state = publish_model(session, model_id, dest, wait=wait)
             except Exception as exc:
-                console.print(f"[red]{model_id}: {_plain(exc)}[/red]")
+                console.print(f"[red]{_plain(model_id)}: {_plain(exc)}[/red]")
                 failed = True
                 continue
             if state in ("requested", "completed"):
-                console.print(f"[green]{model_id}: publish {state} on {dest}[/green]")
+                console.print(f"[green]{_plain(model_id)}: publish {_plain(state)} on {_plain(dest)}[/green]")
                 # A published model is deployed and approved; advance the lifecycle
                 # attributes if they are not already there (non-fatal).
                 try:
                     if ensure_model_lifecycle(session, model_id, "deployed", "approved"):
-                        console.print(f"[dim]{model_id}: modelStatus=deployed, approvalState=approved[/dim]")
+                        console.print(f"[dim]{_plain(model_id)}: modelStatus=deployed, approvalState=approved[/dim]")
                 except Exception as exc:
-                    console.print(f"[yellow]{model_id}: could not update lifecycle attributes ({_plain(exc)}).[/yellow]")
+                    console.print(f"[yellow]{_plain(model_id)}: could not update lifecycle attributes ({_plain(exc)}).[/yellow]")
             else:
-                console.print(f"[red]{model_id}: publish {state} on {dest}[/red]")
+                console.print(f"[red]{_plain(model_id)}: publish {_plain(state)} on {_plain(dest)}[/red]")
                 failed = True
     raise typer.Exit(1 if failed else 0)
 
@@ -3219,7 +3240,7 @@ def ship(
     ctx = Context()
     folder = ctx.find_folder(model_id)
     if folder is None or not (folder / MANIFEST_FILENAME).is_file():
-        console.print(f"[red]{model_id}: no managed definition found.[/red]")
+        console.print(f"[red]{_plain(model_id)}: no managed definition found.[/red]")
         raise typer.Exit(2)
     manifest = load_manifest(folder)
     issues = validate_folder(folder, ctx.core, ctx.fact_sheet(manifest.kind))
@@ -3246,7 +3267,7 @@ def ship(
         except typer.Exit as exit_info:
             if exit_info.exit_code:
                 raise
-    console.print(f"[green]{model_id}: shipped.[/green]")
+    console.print(f"[green]{_plain(model_id)}: shipped.[/green]")
 
 
 @app.command()
@@ -3272,7 +3293,7 @@ def endpoints(
     table.add_column("kind")
     table.add_column("SCR endpoint")
     for entry in entries:
-        table.add_row(entry["model_id"], entry["kind"], entry["endpoint"])
+        table.add_row(_plain(entry["model_id"]), _plain(entry["kind"]), _plain(entry["endpoint"]))
     console.print(table)
 
 
@@ -3328,7 +3349,7 @@ def deploy(
         committed = (params.get("resource", "") if params.get("commit_resource") else "").strip()
         azure_resource = os.environ.get("AZURE_OPENAI_RESOURCE", "").strip() or committed
         if is_azure and not azure_resource:
-            console.print(f"[yellow]{manifest.model_id}: AZURE_OPENAI_RESOURCE is not set - the "
+            console.print(f"[yellow]{_plain(manifest.model_id)}: AZURE_OPENAI_RESOURCE is not set - the "
                           "rendered YAML keeps the placeholder; fill it in before applying.[/yellow]")
         lines = []
         for line in template.read_text(encoding="utf-8").splitlines():
@@ -3352,8 +3373,8 @@ def deploy(
             variant = " (environment-configured variant)"
         elif is_azure:
             variant = " (Azure variant - connection from the container environment)"
-        console.print(f"[green]{manifest.model_id}: {target}[/green]" + variant)
-    console.print(f"Apply with: kubectl apply -f {out_dir}/deploy-<model_id>.yaml -n <namespace>")
+        console.print(f"[green]{_plain(manifest.model_id)}: {_plain(target)}[/green]" + _plain(variant))
+    console.print(f"Apply with: kubectl apply -f {_plain(out_dir)}/deploy-<model_id>.yaml -n <namespace>")
 
 
 @app.command()
@@ -3387,10 +3408,10 @@ def radar(
     else:
         table = Table()
         for col in ("model_id", "provider", "status", "detail"):
-            table.add_column(col)
+            table.add_column(_plain(col))
         for r in results:
             color = {"ok": "green", "missing": "red", "not-serving": "red", "skipped": "dim"}[r.status]
-            table.add_row(r.model_id, r.provider, f"[{color}]{r.status}[/{color}]", r.detail)
+            table.add_row(_plain(r.model_id), _plain(r.provider), f"[{color}]{_plain(r.status)}[/{color}]", _plain(r.detail))
         console.print(table)
     dead = [r for r in results if r.status in ("missing", "not-serving")]
     if dead:
@@ -3418,17 +3439,17 @@ def retire(
     ctx = Context()
     folder = ctx.find_folder(model_id)
     if folder is None or not (folder / MANIFEST_FILENAME).is_file():
-        console.print(f"[red]{model_id}: no managed definition found.[/red]")
+        console.print(f"[red]{_plain(model_id)}: no managed definition found.[/red]")
         raise typer.Exit(2)
     manifest = load_manifest(folder)
     already_deprecated = "deprecated" in manifest.tags.extra
     if already_deprecated and not archive:
-        console.print(f"{model_id}: already deprecated.")
+        console.print(f"{_plain(model_id)}: already deprecated.")
         raise typer.Exit(0)
     # Tag + regenerate only when not already deprecated; an already-deprecated
     # definition passed with --archive proceeds straight to archiving.
     if already_deprecated:
-        console.print(f"{model_id}: already deprecated - archiving.")
+        console.print(f"{_plain(model_id)}: already deprecated - archiving.")
     else:
         manifest.tags.extra.append("deprecated")
         manifest.save(folder)
@@ -3437,7 +3458,7 @@ def retire(
                     if c.status in (drift.FileStatus.HAND_EDITED, drift.FileStatus.UNTRACKED)]
         if blockers:
             for c in blockers:
-                console.print(f"[red]{model_id}/{c.filename} was edited by hand - retire refuses to overwrite it.[/red]")
+                console.print(f"[red]{_plain(model_id)}/{_plain(c.filename)} was edited by hand - retire refuses to overwrite it.[/red]")
             console.print("Fold the edits into definition.yaml (or generation.overrides), run mdb generate --force, "
                           "then rerun mdb retire.")
             raise typer.Exit(1)
@@ -3448,7 +3469,7 @@ def retire(
         # --archive drops the row below.
         if not archive:
             facts.upsert_row(ctx.fact_sheet(manifest.kind), manifest)
-        console.print(f"[green]{model_id}: tagged deprecated and regenerated.[/green]")
+        console.print(f"[green]{_plain(model_id)}: tagged deprecated and regenerated.[/green]")
 
     # Also retire the registered model in SAS Model Manager, if reachable and
     # registered. Best-effort: retire stays a local tagging op when Viya is not
@@ -3458,17 +3479,17 @@ def retire(
         with create_session() as session:
             from .viya.registry import ensure_model_lifecycle
             if ensure_model_lifecycle(session, model_id, "retired", "retired"):
-                console.print(f"[green]{model_id}: modelStatus=retired, approvalState=retired in SAS Model Manager.[/green]")
+                console.print(f"[green]{_plain(model_id)}: modelStatus=retired, approvalState=retired in SAS Model Manager.[/green]")
             else:
-                console.print(f"[dim]{model_id}: not registered (or already retired) in SAS Model Manager.[/dim]")
+                console.print(f"[dim]{_plain(model_id)}: not registered (or already retired) in SAS Model Manager.[/dim]")
     except ViyaConfigError:
         console.print("[yellow]SAS Viya is not configured - the registered model's status was not updated.[/yellow]")
     except Exception as exc:
         console.print(f"[yellow]Could not update the registered model's status: {_plain(exc)}[/yellow]")
 
     if not archive:
-        console.print(f"Push the deprecated flag to the registered model with: mdb register {model_id} --update")
-        console.print(f"[dim]  Move it out of the active set entirely with: mdb retire {model_id} --archive[/dim]")
+        console.print(f"Push the deprecated flag to the registered model with: mdb register {_plain(model_id)} --update")
+        console.print(f"[dim]  Move it out of the active set entirely with: mdb retire {_plain(model_id)} --archive[/dim]")
         return
 
     # Archive the definition out of the active, tracked set. _archive/ is
@@ -3483,8 +3504,8 @@ def retire(
         shutil.rmtree(destination)
     shutil.move(str(folder), str(destination))
     fact_note = ", fact-sheet row removed" if removed == "removed" else ""
-    console.print(f"[green]{model_id}: archived to _archive/{manifest.kind}/{model_id}/ (git-ignored){fact_note}.[/green]")
-    console.print(f"[dim]  No longer in the tracked repo. Recover it with 'mdb pull {model_id}' or from git history.[/dim]")
+    console.print(f"[green]{_plain(model_id)}: archived to _archive/{_plain(manifest.kind)}/{_plain(model_id)}/ (git-ignored){_plain(fact_note)}.[/green]")
+    console.print(f"[dim]  No longer in the tracked repo. Recover it with 'mdb pull {_plain(model_id)}' or from git history.[/dim]")
 
 
 @app.command()
@@ -3507,7 +3528,7 @@ def providers():
         if decision_template is not None:
             served.append("decision")
         kinds = " + ".join(served)
-        table.add_row(adapter.id, adapter.display_name, kinds, adapter.env_key_var or "-", adapter.template)
+        table.add_row(_plain(adapter.id), _plain(adapter.display_name), _plain(kinds), _plain(adapter.env_key_var or "-"), _plain(adapter.template))
     console.print(table)
     console.print("Third-party adapters: pip packages exposing the 'mdb.providers' entry-point group.")
 
@@ -3566,8 +3587,8 @@ def provider_scaffold(name: str = typer.Argument(..., help="Adapter id (kebab-ca
     (pkg / "adapter.py").write_text(
         SCAFFOLD_ADAPTER.format(name=name, cls=cls, title=snake.title().replace("_", " "),
                                 env=snake.upper()), encoding="utf-8")
-    console.print(f"[green]Scaffolded {root}/[/green] - fill in the TODOs, then:")
-    console.print(f"  pip install -e {root} && mdb provider check {name}")
+    console.print(f"[green]Scaffolded {_plain(root)}/[/green] - fill in the TODOs, then:")
+    console.print(f"  pip install -e {_plain(root)} && mdb provider check {_plain(name)}")
 
 
 @provider_app.command("check")
@@ -3578,7 +3599,7 @@ def provider_check(adapter_id: str = typer.Argument(...)):
     adapters = load_adapters()
     adapter = adapters.get(adapter_id)
     if adapter is None:
-        console.print(f"[red]Adapter '{adapter_id}' not found (is its package installed?).[/red]")
+        console.print(f"[red]Adapter '{_plain(adapter_id)}' not found (is its package installed?).[/red]")
         raise typer.Exit(2)
     problems = []
     for attr in ("id", "display_name", "provider_tag", "template"):
@@ -3602,9 +3623,9 @@ def provider_check(adapter_id: str = typer.Argument(...)):
         problems.append(f"build/render failed: {exc}")
     if problems:
         for problem in problems:
-            console.print(f"[red]FAIL: {problem}[/red]")
+            console.print(f"[red]FAIL: {_plain(problem)}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]{adapter_id}: conformance checks passed.[/green]")
+    console.print(f"[green]{_plain(adapter_id)}: conformance checks passed.[/green]")
 
 
 def _credential_manifest(manifest: Optional[str], domain: str,
@@ -3621,7 +3642,7 @@ def _credential_manifest(manifest: Optional[str], domain: str,
     if not identities:
         path = Path(manifest or DEFAULT_MANIFEST)
         if not path.is_file():
-            console.print(f"[red]No credentials manifest at {path}.[/red]")
+            console.print(f"[red]No credentials manifest at {_plain(path)}.[/red]")
             console.print(
                 "Write one with [bold]mdb credentials-init[/bold] or "
                 "[bold]mdb credentials-add[/bold], or equip a single identity "
@@ -3662,7 +3683,7 @@ def _credential_scaffold(target: Path, env_file: str, domain: str) -> tuple[str,
 
     source = Path(env_file)
     if not source.is_file():
-        console.print(f"[red]No .env at {source}.[/red] Pass --env-file to point at one.")
+        console.print(f"[red]No .env at {_plain(source)}.[/red] Pass --env-file to point at one.")
         raise typer.Exit(2)
     try:
         entries = map_entries(read_name_value_file(source))
@@ -3671,7 +3692,7 @@ def _credential_scaffold(target: Path, env_file: str, domain: str) -> tuple[str,
         raise typer.Exit(2)
     if not entries:
         console.print(
-            f"[yellow]{source} carries no recognised entries — expected provider "
+            f"[yellow]{_plain(source)} carries no recognised entries — expected provider "
             "keys (OPENAI_API_KEY, …), <BACKEND>_RAG_USER/_PW pairs and/or "
             "<BACKEND>_HOST/_PORT/_DB/_SSLMODE settings. Writing the manifest "
             "anyway.[/yellow]")
@@ -3713,15 +3734,15 @@ def credentials_init(
     """
     target = Path(file)
     if target.exists() and not force:
-        console.print(f"[red]{target} already exists.[/red] Pass --force to overwrite it.")
+        console.print(f"[red]{_plain(target)} already exists.[/red] Pass --force to overwrite it.")
         raise typer.Exit(2)
     text, count = _credential_scaffold(target, env_file, domain)
     _write_new_manifest(target, text)
-    console.print(f"[green]Wrote {target} listing {count} available "
+    console.print(f"[green]Wrote {_plain(target)} listing {_plain(count)} available "
                   "entries (names only — no values).[/green]")
     console.print("Name the groups and users to equip — by hand, or with "
-                  f"[bold]mdb credentials-add group <id> --manifest {target}[/bold] — "
-                  f"then run [bold]mdb credentials-apply --manifest {target} --dry-run[/bold].")
+                  f"[bold]mdb credentials-add group <id> --manifest {_plain(target)}[/bold] — "
+                  f"then run [bold]mdb credentials-apply --manifest {_plain(target)} --dry-run[/bold].")
 
 
 def _only_names(only: Optional[list[str]]) -> Optional[tuple]:
@@ -3803,7 +3824,7 @@ def credentials_add(
         starter, count = _credential_scaffold(path, env_file or ".env", DEFAULT_DOMAIN)
     elif env_file:
         console.print(f"[yellow]--env-file is read only when the manifest is "
-                      f"created; {path} exists and names its own source.[/yellow]")
+                      f"created; {_plain(path)} exists and names its own source.[/yellow]")
     spelled = relative_source(Path(source).resolve(), path.resolve()) if source else None
     try:
         text = starter if created else read_manifest_text(path)
@@ -3815,8 +3836,8 @@ def credentials_add(
             # apply, in a manifest that already looks right.
             _, problem = planned_entries(edit.manifest, edit.identity)
             if problem:
-                console.print(f"[red]{identity_type} {identity}: {problem}[/red]")
-                console.print(f"Nothing was written to {path}.")
+                console.print(f"[red]{_plain(identity_type)} {_plain(identity)}: {_plain(problem)}[/red]")
+                console.print(f"Nothing was written to {_plain(path)}.")
                 raise typer.Exit(2)
         if created:
             _write_new_manifest(path, edit.text)
@@ -3828,28 +3849,28 @@ def credentials_add(
 
     who = f"{identity_type} {identity}"
     if created:
-        console.print(f"[green]Wrote {path} with {who} as its identity, listing "
-                      f"{count} available entries (names only — no values).[/green]")
+        console.print(f"[green]Wrote {_plain(path)} with {_plain(who)} as its identity, listing "
+                      f"{_plain(count)} available entries (names only — no values).[/green]")
     elif edit.outcome == "added":
-        console.print(f"[green]Added {who} to {path}.[/green]")
+        console.print(f"[green]Added {_plain(who)} to {_plain(path)}.[/green]")
     elif edit.outcome == "placeholder":
-        console.print(f"[green]Added {who} to {path}, in place of the "
-                      f"placeholder {PLACEHOLDER_ID}.[/green]")
+        console.print(f"[green]Added {_plain(who)} to {_plain(path)}, in place of the "
+                      f"placeholder {_plain(PLACEHOLDER_ID)}.[/green]")
     elif edit.outcome == "updated":
-        console.print(f"[green]Updated {who} in {path}:[/green]")
+        console.print(f"[green]Updated {_plain(who)} in {_plain(path)}:[/green]")
         for change in edit.changes:
-            console.print(f"  {change}")
+            console.print(f"  {_plain(change)}")
         if any(change.startswith("state:") for change in edit.changes):
-            console.print(f"{who} was marked for removal and is set back to "
+            console.print(f"{_plain(who)} was marked for removal and is set back to "
                           "present: the next apply writes its credential.")
     else:
-        console.print(f"{who} is already in {path} — nothing was changed.")
+        console.print(f"{_plain(who)} is already in {_plain(path)} — nothing was changed.")
     if edit.outcome in ("added", "placeholder"):
         if edit.identity.only:
-            console.print("  only: " + ", ".join(edit.identity.only))
+            console.print("  only: " + _plain(", ".join(edit.identity.only)))
         if spelled:
-            console.print(f"  source: {spelled}")
-    console.print(f"Next: [bold]mdb credentials-apply --manifest {path} --dry-run[/bold]")
+            console.print(f"  source: {_plain(spelled)}")
+    console.print(f"Next: [bold]mdb credentials-apply --manifest {_plain(path)} --dry-run[/bold]")
 
 
 @app.command("credentials-remove")
@@ -3885,7 +3906,7 @@ def credentials_remove(
         raise typer.Exit(2)
     path = Path(manifest or DEFAULT_MANIFEST)
     if not path.is_file():
-        console.print(f"[red]No credentials manifest at {path}.[/red]")
+        console.print(f"[red]No credentials manifest at {_plain(path)}.[/red]")
         console.print("A removal is recorded in a manifest: write one with "
                       "[bold]mdb credentials-init[/bold] first.")
         raise typer.Exit(2)
@@ -3900,21 +3921,21 @@ def credentials_remove(
 
     who = f"{identity_type} {identity}"
     if edit.outcome == "unchanged":
-        console.print(f"{who} is already marked `state: absent` in {path} — "
+        console.print(f"{_plain(who)} is already marked `state: absent` in {_plain(path)} — "
                       "nothing was changed.")
     elif edit.outcome == "updated":
-        console.print(f"[green]Marked {who} as `state: absent` in {path}.[/green]")
+        console.print(f"[green]Marked {_plain(who)} as `state: absent` in {_plain(path)}.[/green]")
     elif edit.outcome == "placeholder":
-        console.print(f"[green]Added {who} to {path} with `state: absent`, in "
-                      f"place of the placeholder {PLACEHOLDER_ID}.[/green]")
+        console.print(f"[green]Added {_plain(who)} to {_plain(path)} with `state: absent`, in "
+                      f"place of the placeholder {_plain(PLACEHOLDER_ID)}.[/green]")
     else:
-        console.print(f"[green]Added {who} to {path} with `state: absent`.[/green]")
+        console.print(f"[green]Added {_plain(who)} to {_plain(path)} with `state: absent`.[/green]")
     console.print("The credential is deleted on the server by the next "
-                  f"[bold]mdb credentials-apply --manifest {path}[/bold]; this "
+                  f"[bold]mdb credentials-apply --manifest {_plain(path)}[/bold]; this "
                   "command did not contact the server.")
     console.print("Keep the entry in the manifest: a line that is deleted from "
                   "the file removes nothing.")
-    console.print(f"Next: [bold]mdb credentials-apply --manifest {path} --dry-run[/bold]")
+    console.print(f"Next: [bold]mdb credentials-apply --manifest {_plain(path)} --dry-run[/bold]")
 
 
 @app.command("credentials-apply")
@@ -3998,7 +4019,7 @@ def credentials_apply(
             console.print(f"[red]{_plain(exc)}[/red]")
             raise typer.Exit(2)
 
-        table = Table(title=f"Credential domain '{plan.domain}'")
+        table = Table(title=f"Credential domain '{_plain(plan.domain)}'")
         table.add_column("Identity")
         table.add_column("Type")
         table.add_column("Action")
@@ -4006,27 +4027,27 @@ def credentials_apply(
         table.add_column("Currently")
         for step in steps:
             if not step.ok:
-                table.add_row(step.identity.id, step.identity.type,
-                              "[red]skip[/red]", "-", step.problem)
+                table.add_row(_plain(step.identity.id), _plain(step.identity.type),
+                              "[red]skip[/red]", "-", _plain(step.problem))
                 continue
             if step.action == "remove":
                 # Planned from `state: absent`. What is there now decides
                 # only what the line says, never whether the step runs.
                 held = (f"written by {step.existing_by} {step.existing_at[:10]}"
                         if step.found else "no credential — already gone")
-                table.add_row(step.identity.id, step.identity.type,
-                              "[yellow]remove[/yellow]", "-", held)
+                table.add_row(_plain(step.identity.id), _plain(step.identity.type),
+                              "[yellow]remove[/yellow]", "-", _plain(held))
                 continue
             held = (f"written by {step.existing_by} {step.existing_at[:10]}"
                     if step.action == "replace" else "no credential")
-            table.add_row(step.identity.id, step.identity.type,
+            table.add_row(_plain(step.identity.id), _plain(step.identity.type),
                           "replace" if step.action == "replace" else "create",
-                          str(len(step.entry_names)), held)
+                          _plain(len(step.entry_names)), _plain(held))
         console.print(table)
         usable = [step for step in steps if step.ok]
         writes = [step for step in usable if step.action != "remove"]
         if writes:
-            console.print("Entries: " + ", ".join(writes[0].entry_names))
+            console.print("Entries: " + _plain(", ".join(writes[0].entry_names)))
             if any(set(s.entry_names) != set(writes[0].entry_names) for s in writes):
                 console.print("[yellow]…and different sets for some identities; "
                               "see the manifest.[/yellow]")
@@ -4038,7 +4059,7 @@ def credentials_apply(
             raise typer.Exit(1)
         if dry_run:
             if any(step.identity.type == "group" for step in writes):
-                console.print(GROUP_REACH)
+                console.print(_plain(GROUP_REACH))
             console.print("[yellow]Dry run — nothing was written and nothing "
                           "was removed. The current contents of an existing "
                           "credential cannot be read back, so a replace is "
@@ -4049,7 +4070,7 @@ def credentials_apply(
         if writes and not skip_domain:
             try:
                 ensure_domain(session, plan.domain)
-                console.print(f"[green]Domain '{plan.domain}' is in place.[/green]")
+                console.print(f"[green]Domain '{_plain(plan.domain)}' is in place.[/green]")
             except CredentialError as exc:
                 console.print(f"[yellow]{_plain(exc)}[/yellow]")
                 console.print("[yellow]Continuing: the domain may already exist "
@@ -4063,21 +4084,21 @@ def credentials_apply(
             try:
                 if step.action == "remove":
                     if delete_credential(session, plan.domain, step.identity):
-                        console.print(f"[green]{who}: credential removed.[/green]")
+                        console.print(f"[green]{_plain(who)}: credential removed.[/green]")
                     else:
-                        console.print(f"{who}: no credential to remove — it "
+                        console.print(f"{_plain(who)}: no credential to remove — it "
                                       "is already gone.")
                     continue
                 put_credential(session, plan.domain, step.identity,
                                entries_for(plan, step.identity))
                 console.print(
-                    f"[green]{who}: {len(step.entry_names)} entries stored.[/green]")
+                    f"[green]{_plain(who)}: {len(step.entry_names)} entries stored.[/green]")
                 group_written = group_written or step.identity.type == "group"
             except CredentialError as exc:
                 failed += 1
                 console.print(f"[red]{_plain(exc)}[/red]")
         if group_written:
-            console.print(GROUP_REACH)
+            console.print(_plain(GROUP_REACH))
         if failed:
             raise typer.Exit(1)
         console.print("[green]Done. Check it with `mdb credentials-report`.[/green]")
@@ -4113,7 +4134,7 @@ def credentials_report(
 
     plan = _credential_manifest(manifest, domain, identity_type, identity,
                                 None, None)
-    table = Table(title=f"Credential domain '{plan.domain}'")
+    table = Table(title=f"Credential domain '{_plain(plan.domain)}'")
     table.add_column("Identity")
     table.add_column("Type")
     table.add_column("Credential")
@@ -4126,10 +4147,10 @@ def credentials_report(
             try:
                 body = fetch_credential(session, plan.domain, who)
             except CredentialError as exc:
-                table.add_row(who.id, who.type, "[red]unreadable[/red]", str(exc)[:40], "")
+                table.add_row(_plain(who.id), _plain(who.type), "[red]unreadable[/red]", _plain(str(exc)[:40]), "")
                 continue
             if body is None:
-                table.add_row(who.id, who.type,
+                table.add_row(_plain(who.id), _plain(who.type),
                               "[green]absent (as the manifest says)[/green]"
                               if who.absent else "[yellow]none[/yellow]", "", "")
                 continue
@@ -4139,20 +4160,20 @@ def credentials_report(
             )
             if who.absent:
                 lingering += 1
-                table.add_row(who.id, who.type,
-                              "[red]STILL THERE (manifest: absent)[/red]", *written)
+                table.add_row(_plain(who.id), _plain(who.type),
+                              "[red]STILL THERE (manifest: absent)[/red]", _plain(written[0]), _plain(written[1]))
                 continue
             held += 1
-            table.add_row(who.id, who.type, "[green]yes[/green]", *written)
+            table.add_row(_plain(who.id), _plain(who.type), "[green]yes[/green]", _plain(written[0]), _plain(written[1]))
     console.print(table)
     expected = [who for who in plan.identities if not who.absent]
-    console.print(f"{held} of {len(expected)} named identities hold a credential.")
+    console.print(f"{_plain(held)} of {len(expected)} named identities hold a credential.")
     marked = len(plan.identities) - len(expected)
     if marked:
-        console.print(f"{marked - lingering} of {marked} identities marked "
+        console.print(f"{_plain(marked - lingering)} of {_plain(marked)} identities marked "
                       "`state: absent` hold none.")
     if lingering:
-        console.print(f"[red]{lingering} credential(s) the manifest marks absent "
+        console.print(f"[red]{_plain(lingering)} credential(s) the manifest marks absent "
                       "are still there.[/red] Run [bold]mdb credentials-apply"
                       "[/bold] to remove them.")
     console.print("[dim]Contents are never shown: a credential read returns "
@@ -4166,7 +4187,7 @@ def schema_export():
     target = ctx.core.core_dir / "schema" / "manifest.schema.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes((json.dumps(export_json_schema(), indent=4, ensure_ascii=False) + "\n").encode("utf-8"))
-    console.print(f"[green]Wrote {target}[/green]")
+    console.print(f"[green]Wrote {_plain(target)}[/green]")
 
 
 def main() -> None:

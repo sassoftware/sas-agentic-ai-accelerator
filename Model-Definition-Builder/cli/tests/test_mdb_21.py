@@ -8,13 +8,22 @@ nothing here says how SAS Viya answers.
 import ast
 import io
 import itertools
+import re
 from pathlib import Path
+
+from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
 from rich.text import Text
+from typer.testing import CliRunner
 
+from content_fakes import package_of
 from mdb import cli
+from mdb.viya import transfer
+from test_content_deploy import command, manifest, repo  # noqa: F401
+from test_credentials_commands import mdb  # noqa: F401
+from test_package_guards import exporting  # noqa: F401
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 CLI_SOURCE = REPOSITORY / "Model-Definition-Builder/cli/src/mdb/cli.py"
@@ -83,3 +92,345 @@ def test_the_console_of_mdb_prints_no_picture_for_a_name_between_colons():
         cli.console.print("[dim]urn:id:1 :key: x:b:y[/dim]", highlight=False)
         cli.console.print("urn:id:1 :key: x:b:y", markup=False, highlight=False)
     assert printed.get() == "urn:id:1 :key: x:b:y\n" * 2
+
+
+@pytest.mark.parametrize("asking, answer, expected", [(cli.Prompt, "typed", "typed"), (cli.Confirm, "y", True)])
+def test_a_prompt_of_mdb_shows_its_question_as_it_is(asking, answer, expected):
+    """A prompt of rich reads its text with emoji on, whatever the console
+    says: the id in `Delete registered model 'ns:a:1' ...` was shown with a
+    picture. And a bracket of the value is text."""
+    out = io.StringIO()
+    shown = Console(file=out, width=1000, force_terminal=False)
+    question = f"Delete registered model '{cli._plain('ns:a:1 [/red] x:b:y')}' from SAS Model Manager?"
+    assert asking.ask(question, console=shown, stream=io.StringIO(answer + "\n")) == expected
+    assert out.getvalue().startswith("Delete registered model 'ns:a:1 [/red] x:b:y' from SAS Model Manager?")
+
+
+# ---- every text cli.py hands rich: which values it may hold -----------------------------
+#: The calls of cli.py that hand rich a text it reads with markup on, and where the text stands in them.
+TEXT_CALLS = {"console.print": "arguments", "table.add_row": "arguments", "table.add_column": "arguments",
+              "Table": "title", "Prompt.ask": "prompt", "Confirm.ask": "prompt"}
+#: The names that hold markup of mdb's own: the name of a colour, and one dimmed word. A test of its own
+#: holds each of them to a text mdb wrote.
+OWN_MARKUP = {"color", "unknown"}
+#: The tags mdb writes.
+TAGS = {"red", "green", "yellow", "dim", "bold", "cyan", "bold cyan"}
+
+
+def _tree():
+    return ast.parse(CLI_SOURCE.read_text(encoding="utf-8"))
+
+
+def _markup_off(call) -> bool:
+    return any(keyword.arg == "markup" and getattr(keyword.value, "value", None) is False
+               for keyword in call.keywords)
+
+
+def _a_number(node) -> bool:
+    """A number by its form: len(...), a number, a sum or difference of such."""
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
+        return _a_number(node.left) and _a_number(node.right)
+    return isinstance(node, ast.Call) and ast.unparse(node.func) == "len"
+
+
+def _numeric_format(part) -> bool:
+    """Whether a value of an f-string is written with a format that only a number takes (`:g`, `:.2f`, `:,`)."""
+    if part.format_spec is None or len(part.format_spec.values) != 1:
+        return False
+    spec = part.format_spec.values[0]
+    return isinstance(spec, ast.Constant) and bool(re.fullmatch(r"[0-9.,]*[dgfe%]|,", spec.value))
+
+
+def _value_faults(node) -> list:
+    """What is wrong with one value of a text: nothing where it goes
+    through `_plain`, is a number by its form, or is markup of mdb's own."""
+    if isinstance(node, ast.Constant) or _a_number(node):
+        return []
+    if isinstance(node, ast.IfExp):
+        return _value_faults(node.body) + _value_faults(node.orelse)
+    if isinstance(node, ast.Call) and ast.unparse(node.func) == "_plain":
+        return []
+    if isinstance(node, ast.Name) and node.id in OWN_MARKUP:
+        return []
+    return [f"line {node.lineno}: {ast.unparse(node)}"]
+
+
+def _text_faults(node, whole=("table",)) -> list:
+    """What is wrong with one text: a value that is not allowed in it."""
+    if isinstance(node, ast.Constant):
+        return []
+    if isinstance(node, ast.JoinedStr):
+        faults = []
+        for part in node.values:
+            if isinstance(part, ast.FormattedValue) and not _numeric_format(part):
+                faults += [f"line {part.lineno}: a conversion or a format in {ast.unparse(node)}"] \
+                    if part.conversion != -1 or part.format_spec is not None else _value_faults(part.value)
+        return faults
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _text_faults(node.left, ()) + _text_faults(node.right, ())
+    if isinstance(node, ast.IfExp):
+        return _text_faults(node.body, whole) + _text_faults(node.orelse, whole)
+    if isinstance(node, ast.Call) and ast.unparse(node.func) == "_plain":
+        return []
+    if isinstance(node, ast.Name) and node.id in (*whole, "unknown"):
+        return []                               # a table is no text; `unknown` is markup of mdb's own
+    return [f"line {node.lineno}: {ast.unparse(node)}"]
+
+
+def _texts(tree):
+    """(call, text) for every text cli.py hands rich with markup on."""
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call):
+            continue
+        where = TEXT_CALLS.get(ast.unparse(call.func))
+        if where is None or _markup_off(call):
+            continue
+        if where == "arguments":
+            assert not any(isinstance(argument, ast.Starred) for argument in call.args), ast.unparse(call)
+            yield from ((call, argument) for argument in call.args)
+        elif where == "title":
+            assert not call.args, ast.unparse(call)
+            yield from ((call, keyword.value) for keyword in call.keywords if keyword.arg in ("title", "caption"))
+        else:
+            yield call, call.args[0]
+
+
+def test_every_value_in_a_text_with_markup_on_goes_through_plain():
+    """review-20b and gate-20b: the round before closed the class for
+    exceptions and smoke-test details, and left the response of a model in
+    a table cell of `mdb test`, the value of an options file, the state and
+    the messages of an export job, the content root a user names, and the
+    names typed for the two credentials commands.
+
+    The rule holds for every value, also one mdb made itself: it is handed
+    to `_plain`, or it is a number by its form, or one of the two names that
+    hold markup of mdb's own.
+    """
+    faults = []
+    for _call, text in _texts(_tree()):
+        faults += _text_faults(text)
+    assert faults == []
+    # the places the two checks named, as they stand now
+    source = CLI_SOURCE.read_text(encoding="utf-8")
+    for line in ('table.add_row("response", _plain(response))', 'console.print(f"  {_plain(line)}")',
+                 "'{_plain(value)}' says", "ended {_plain(job.get('state'))}", "[bold]{_plain(root)}[/bold]",
+                 "{_plain(identity_type)} {_plain(identity)}: {_plain(problem)}"):
+        assert line in source, line
+
+
+def test_what_holds_markup_of_mdbs_own_is_a_text_mdb_wrote():
+    """The two names the rule lets through are bound to nothing a service
+    or a user gives: a constant, or one of the constant values of a dict."""
+    tree = _tree()
+
+    def colours(node, function) -> bool:
+        if isinstance(node, ast.Name):
+            bound = [a.value for a in ast.walk(function) if isinstance(a, ast.Assign)
+                     and any(isinstance(t, ast.Name) and t.id == node.id for t in a.targets)]
+            return len(bound) == 1 and colours(bound[0], function)
+        return isinstance(node, ast.Dict) and all(isinstance(v, ast.Constant) and v.value in TAGS for v in node.values)
+
+    bound_here = []
+    for function in ast.walk(tree):
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        for assign in ast.walk(function):
+            if not (isinstance(assign, ast.Assign) and len(assign.targets) == 1
+                    and isinstance(assign.targets[0], ast.Name) and assign.targets[0].id in OWN_MARKUP):
+                continue
+            bound_here.append(assign.targets[0])
+            value = assign.value
+            if isinstance(value, ast.Constant):
+                assert value.value == "[dim]unknown[/dim]", ast.unparse(assign)
+            elif isinstance(value, ast.Subscript):
+                assert colours(value.value, function), ast.unparse(assign)
+            else:                               # <dict of colours>.get(<key>, "<colour>")
+                assert (isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)
+                        and value.func.attr == "get" and colours(value.func.value, function)
+                        and isinstance(value.args[1], ast.Constant) and value.args[1].value in TAGS), \
+                    ast.unparse(assign)
+    assert len(bound_here) == 5
+    # and nothing else binds them: no loop variable, no argument, no `with ... as`
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in OWN_MARKUP and isinstance(node.ctx, ast.Store):
+            assert node in bound_here, node.lineno
+        assert not (isinstance(node, ast.arg) and node.arg in OWN_MARKUP), node.lineno
+
+
+def test_a_bracket_mdb_writes_into_a_text_with_markup_on_is_a_tag_or_spelled_as_a_bracket():
+    """`[reasoning]` behind a model of the catalog and `[y/N]` in a question
+    of an adapter were never printed: rich read them as tags it does not
+    know. Both are values and go through `_plain` now. In the constant part
+    of a text every bracket is one of the tags mdb writes, the tag of a
+    colour held in a name, or `\\[`."""
+    faults = []
+
+    def written(node):
+        """The constant parts of a text, as mdb wrote them; what `_plain` is handed is a value."""
+        if isinstance(node, ast.JoinedStr):
+            # a value stands as {} in the text: `[{color}]` is the tag of a colour
+            yield node.lineno, "".join(part.value if isinstance(part, ast.Constant) else "{}" for part in node.values)
+            for part in node.values:
+                if isinstance(part, ast.FormattedValue):
+                    yield from written(part.value)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            yield node.lineno, node.value
+        elif isinstance(node, ast.BinOp):
+            yield from written(node.left)
+            yield from written(node.right)
+        elif isinstance(node, ast.IfExp):
+            yield from written(node.body)
+            yield from written(node.orelse)
+
+    for _call, text in _texts(_tree()):
+        for lineno, constant in written(text):
+            for found in re.finditer(r"(\\*)\[([^\[\]]*)(\]?)", constant):
+                backslashes, name, closed = found.groups()
+                if len(backslashes) % 2 == 0 and not (closed and name.lstrip("/") in (*TAGS, "{}", "")):
+                    faults.append(f"line {lineno}: {found.group(0)!r}")
+    assert faults == []
+    assert _shown("7-dimension vector \\[0.1, nan, ...]") == "7-dimension vector [0.1, nan, ...]"
+
+
+def test_cli_py_hands_rich_a_text_in_no_other_way():
+    """The rule above reads the calls of TEXT_CALLS. Nothing else in cli.py
+    prints: no other method of the console but `print_json`, no table under
+    another name, no prompt but the two, no `print`, and `typer.echo` for
+    the version alone. No other module of mdb imports rich or typer."""
+    tree = _tree()
+    console_methods, echoed = set(), []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "console":
+            console_methods.add(node.attr)
+        if not isinstance(node, ast.Call):
+            continue
+        name = ast.unparse(node.func)
+        assert name not in ("print", "Panel", "Text", "typer.secho", "rich.print", "typer.BadParameter"), node.lineno
+        if name == "typer.echo":
+            echoed.append(ast.unparse(node))
+        if name.endswith((".add_row", ".add_column")):
+            assert name.split(".")[0] == "table", ast.unparse(node)
+        if name.endswith(".ask"):
+            assert name in ("Prompt.ask", "Confirm.ask"), ast.unparse(node)
+        if name == "Text.from_markup":
+            assert "emoji=False" in ast.unparse(node)
+    assert console_methods == {"print", "print_json"}
+    assert cli.Prompt.__mro__[1] is cli._EmojiOff and cli.Confirm.__mro__[1] is cli._EmojiOff
+    assert echoed == ["typer.echo(f'mdb {__version__}')"]
+    for assign in ast.walk(tree):
+        if isinstance(assign, ast.Assign) and isinstance(assign.value, ast.Call) \
+                and ast.unparse(assign.value.func) == "Table":
+            assert [ast.unparse(target) for target in assign.targets] == ["table"]
+    # no other module of mdb knows rich or typer: what one of them prints, it prints as it is
+    for path in sorted(CLI_SOURCE.parent.rglob("*.py")):
+        if path == CLI_SOURCE:
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            names = [alias.name for alias in node.names] if isinstance(node, ast.Import) else \
+                [node.module or ""] if isinstance(node, ast.ImportFrom) else []
+            assert not any(name.split(".")[0] in ("rich", "typer") for name in names), (path.name, node.lineno)
+
+
+# ---- the same through the commands the two checks named --------------------------------
+def _ended_by_itself(result) -> bool:
+    """The command ended with an exit code of its own, not with a traceback."""
+    return result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_the_state_and_the_messages_of_a_failed_export_job_are_printed_as_they_are(exporting, manifest, monkeypatch):
+    """gate-20b: `The folder [/folders/folders/abc] could not be exported.`
+    ended the command with a MarkupError, and `error [0] in task [export]:
+    timeout` was printed as `error [0] in task : timeout`."""
+    job = {"state": "failed [/red]", "errorCount": "[2]",
+           "links": [{"rel": "self", "href": "/transfer/exportJobs/j1"}]}
+    messages = ["a: failed The folder [/folders/folders/abc] could not be exported.",
+                "b: failed error [0] in task [export]: timeout \\"]
+    monkeypatch.setattr(transfer, "wait_for_job", lambda session, href, timeout=600: job)
+    monkeypatch.setattr(transfer, "job_messages", lambda session, job: messages)
+    result, text, target, _ = exporting(package_of(manifest))
+    assert result.exit_code == 1 and _ended_by_itself(result), result.exception
+    assert text.splitlines()[-3:] == ["The export job ended failed [/red] ([2] error(s)).",
+                                      "  " + messages[0], "  " + messages[1]]
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("root", ["/Teams/zz [two]/root", "/Teams/a[/b]/root", "/Teams/[bold]x\\"])
+def test_package_export_names_the_content_root_as_it_was_given(exporting, manifest, tmp_path, root):
+    """gate-20b: a folder name in brackets was dropped from the path in three
+    lines of package-export, and a root that holds `[/` ended the command
+    with a MarkupError. The three lines: the refusal without --out, the
+    refusal of an example folder, and the line that says what is exported."""
+    result, text, _target, _ = exporting(package_of(manifest), "--content-root", root)
+    assert result.exit_code == 2 and _ended_by_itself(result), result.exception
+    assert text.startswith(f"{root.rstrip('/')} is not the content root of the release (/SAS Agentic AI Accelerator)")
+
+    example = root.rstrip("/") + "/Example [1]"
+    result, text, _target, _ = exporting(package_of(manifest), "--content-root", example, "--out",
+                                         str(tmp_path / "x.json"))
+    assert result.exit_code == 2 and _ended_by_itself(result), result.exception
+    assert text == f"{example}: 'Example [1]' is showcase or example content, which never ships. " \
+                   "Nothing was exported.\n"
+
+    result, text, _target, _ = exporting(package_of(manifest), "--content-root", root, "--name", "pkg [1]",
+                                         "--out", str(tmp_path / "x.json"), "--allow-differences")
+    assert _ended_by_itself(result), result.exception
+    assert text.splitlines()[0] == f"Exporting {root.rstrip('/')} as package pkg [1] ..."
+
+
+def test_mdb_test_shows_the_response_of_a_model_as_it_is(monkeypatch, tmp_path):
+    """review-20b: the response is a table cell, which rich reads with
+    markup on - `Sure. [/INST] Here is the answer` ended `mdb test` with a
+    MarkupError."""
+    response = "Sure. [/INST] Here is the [bold]answer[/bold] :ok: \\"
+    (tmp_path / "score.py").write_text(
+        "def scoreModel(prompt, system, options):\n"
+        f"    return {response!r}, 0.25, 3, 4\n", encoding="utf-8")
+    described = SimpleNamespace(kind="llm", provider=SimpleNamespace(adapter="none",
+                                                                      auth=SimpleNamespace(mode="none")))
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(find_folder=lambda model_id: tmp_path))
+    monkeypatch.setattr(cli, "load_manifest", lambda folder: described)
+    monkeypatch.setattr(cli, "load_adapters", lambda: {})
+    monkeypatch.setattr(cli, "effective_score_file", lambda manifest: "score.py")
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=out, width=200, force_terminal=False, emoji=False))
+    result = CliRunner().invoke(cli.app, ["test", "made_up_model"])
+    assert result.exit_code == 0 and _ended_by_itself(result), result.exception
+    row = next(line for line in out.getvalue().splitlines() if "response" in line)
+    assert [cell.strip() for cell in row.strip("│").split("│")] == ["response", response]
+
+
+def test_a_value_of_an_options_file_that_is_no_switch_is_named_as_it_stands(monkeypatch):
+    """review-20b: `'[/x]' says neither on nor off` between colour tags."""
+    from mdb.core import options
+    from mdb.viya import reports
+    value = "[/x] maybe [bold]"
+    monkeypatch.setattr(reports, "find_report_at",
+                        lambda session, folder, name, strict=False: {"id": "r1"} if name == "Prompt Builder" else None)
+    monkeypatch.setattr(reports, "get_content", lambda session, report_id: ("<report/>", "etag"))
+    monkeypatch.setattr(options, "write_options", lambda content, values: (content, SimpleNamespace(
+        missing=[], rejected={"enableRag": value}, changed=False, applied=[], unchanged=[])))
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=out, width=1000, force_terminal=False, emoji=False))
+    assert cli._restore_options(object(), {"Prompt Builder": {"enableRag": value}}, dry_run=True) == 1
+    assert out.getvalue() == (f"  Prompt Builder: 'enableRag' is a checkbox in this report and '{value}' says "
+                              "neither on nor off - not written. Use true or false.\n")
+
+
+def test_the_two_credentials_commands_name_what_was_typed_as_it_was_typed(mdb):
+    """The merge of 2026-10-14 measured it: `mdb credentials-add group
+    "team[/red]"`, `--only "No[/red]Such"` and `mdb credentials-remove user
+    "a[/b]"` each ended with a MarkupError and exit code 1."""
+    code, said = mdb("credentials-add", "group", "team[/red]")
+    assert code == 0 and "with group team[/red] as its identity" in said
+    code, said = mdb("credentials-add", "group", "G3 [x]", "--only", "No[/red]Such")
+    assert code == 2 and "group G3 [x]: the source does not carry No[/red]Such" in said
+    assert "G3" not in mdb.path.read_text(encoding="utf-8")
+    code, said = mdb("credentials-remove", "user", "a[/b]")
+    assert code == 0 and "Added user a[/b] to credentials.yaml with `state: absent`." in said
+    code, said = mdb("credentials-add", "user", "a[/b]", "--only", "OpenAI")
+    assert code == 0 and "Updated user a[/b] in credentials.yaml:" in said and "  state: absent -> present" in said
+    code, said = mdb("credentials-add", "group", "RAG [team]", "--only", "OpenAI", "--manifest", "sub [1]/c.yaml")
+    assert code == 0 and "  only: OpenAI\n" in said
+    assert "Next: mdb credentials-apply --manifest sub [1]" in said
