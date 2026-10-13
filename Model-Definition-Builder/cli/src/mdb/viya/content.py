@@ -39,11 +39,14 @@ folder half made. An entry that fails before anything was sent - two
 objects of its name in the folder, an object that cannot be read - is FAILED
 too, and the run goes on: nothing was written for it.
 
-RELEASE.JSON IS WRITTEN LAST, and only when every entry in front of it was
-written: the record of a folder names a release only when the folder holds
-it. A run that stopped, or in which an entry FAILED, leaves the release.json
-an earlier run wrote as it is - so the folder's own record names the last
-release that was written in full, or there is none.
+RELEASE.JSON IS WRITTEN LAST, only by a run that covers every object of the
+manifest, and only when every entry in front of it was written: the record of
+a folder names a release only when the folder holds it. A run that stopped,
+or in which an entry FAILED, leaves the release.json an earlier run wrote as
+it is, and so does a run of a part of the manifest (`only`): one that names
+release.json among its entries is refused before anything is sent - so the
+folder's own record names the last release that was written in full, or
+there is none.
 
 WHAT IS NEVER WRITTEN. An object outside the folders of the source. A member
 of a folder can be a REFERENCE to an object that lives somewhere else; a
@@ -425,6 +428,12 @@ def is_release_record(entry) -> bool:
                                      or entry.path == RELEASE_RECORD)
 
 
+#: Why a run that covers a part of the manifest and names release.json is refused.
+RECORD_NEEDS_ALL = ("release.json is the record of the whole folder and is written only by a run that covers every "
+                    "entry of the manifest: this run covers a part of it (--only), so nothing was written - leave "
+                    "release.json out of --only, or run without --only")
+
+
 def _ensure_root(session, content_root: str, dry_run: bool, create: bool = True) -> tuple:
     """(folder id or None, the folders made for it) for the content root: no
     folder for a root that is there. A missing root is created with every
@@ -488,7 +497,9 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
     `content_root` itself is created, with a line for that folder, which is
     no entry and no outcome of the result. `only` restricts
     the run to the entries at or below the given paths (and the folders above
-    them); everything else is not looked at. `settings` maps the name of a
+    them); everything else is not looked at, and a part that names
+    release.json is a DeployError before anything is sent (RECORD_NEEDS_ALL).
+    `settings` maps the name of a
     job definition parameter to the value to write there, into every job
     definition that has the parameter (the compute context that was given,
     the content root); `new_values` to the value a job definition gets only
@@ -509,6 +520,10 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
     # when everything in front of it was written
     objects = [entry for entry in objects if not is_release_record(entry)] \
         + [entry for entry in objects if is_release_record(entry)]
+    # ... and only by a run that covers every object of the manifest: a run of
+    # a part that names release.json is refused before anything is sent
+    if len(objects) != len(manifest.objects()) and any(is_release_record(entry) for entry in objects):
+        raise DeployError(RECORD_NEEDS_ALL)
 
     def done(entry, status: str, note: str = "") -> Outcome:
         outcome = Outcome(entry, status, note)
@@ -773,6 +788,8 @@ def deploy_to(session, manifest, entry, target: str, dry_run: bool = False, sour
     try:
         if entry.kind not in _DEPLOYERS:
             raise DeployError(f"a {entry.kind} is not updated this way")
+        if is_release_record(entry):
+            raise DeployError(RECORD_NEEDS_ALL)
         found = resolve_target(session, entry.kind, target)
         where = f"the {_WORD[entry.kind]} '{found['name'] or '?'}' " + (
             f"in {found['folder']}" if found["folder"] else "(the Folders service did not say in which folder)")

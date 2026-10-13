@@ -69,6 +69,47 @@ def _flat(text: str) -> str:
     return " ".join(text.replace("`", "").split())
 
 
+# ---- release.json: only by a run that covers the whole manifest ------------------
+def test_a_run_of_a_part_does_not_write_the_record_of_the_whole_folder(command, manifest):
+    """review-19: `--only release.json` on a fresh site wrote a release.json
+    that names the release and every hash into a folder that held nothing
+    else. Such a run is refused, with one line, before anything is sent."""
+    for args in (("--only", "release.json"), ("--only", "RAG", "--only", "release.json"),
+                 ("--only", "release.json", "--dry-run")):
+        result, text, viya = command(*args)
+        assert result.exit_code == 1, text
+        assert text.count(deploying.RECORD_NEEDS_ALL) == 1
+        assert "Done." not in text and "Nothing was written.\n" not in text
+        # nothing was asked and nothing was written: not even the content root was made
+        assert viya.calls == [] and viya.folders == {}
+    assert deploying.RECORD_NEEDS_ALL == (
+        "release.json is the record of the whole folder and is written only by a run that covers every entry of the "
+        "manifest: this run covers a part of it (--only), so nothing was written - leave release.json out of "
+        "--only, or run without --only")
+    # the function itself holds the rule, not only the command
+    with pytest.raises(DeployError, match="release.json is the record of the whole folder"):
+        deploy(Viya(), manifest, only=["release.json"])
+    # a part that does not name it is deployed as before, and release.json is not looked at
+    result, text, viya = command("--only", "RAG")
+    assert result.exit_code == 0 and "release.json" not in text and viya.at(f"{CONTENT_ROOT}/release.json") == []
+    # parts that together are the whole manifest are a run of every entry
+    whole = Viya()
+    result = deploy(whole, manifest, only=["release.json", "Data", "RAG", "Prompt Builder"])
+    assert result.failed == [] and len(whole.at(f"{CONTENT_ROOT}/release.json")) == 1
+
+
+def test_the_record_is_not_written_into_a_file_a_site_has_elsewhere(command, manifest):
+    """The same hole by another door: `--only release.json --to <a file>`."""
+    viya = Viya()
+    theirs = viya.put_member("/Team/Other/release.json", "/files/files/", b"{}\n")
+    viya.calls.clear()
+    outcome = deploy_to(viya, manifest, manifest.find("release.json", "file"), "/Team/Other/release.json")
+    assert (outcome.status, outcome.note) == (FAILED, deploying.RECORD_NEEDS_ALL)
+    assert viya.calls == [] and viya.files[theirs] == b"{}\n"
+    result, text, _ = command("--only", "release.json", "--to", "/Team/Other/release.json")
+    assert result.exit_code == 1 and deploying.RECORD_NEEDS_ALL in text and "Nothing was updated." in text
+
+
 # ---- what a refused write answered, and the line for the content root -------------
 #: A refusal in the shape the pass of 2026-10-13 recorded for a PUT of a file's content whose If-Match was
 #: no longer the ETag of the file. Every value is made up.

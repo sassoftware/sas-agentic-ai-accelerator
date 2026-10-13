@@ -868,9 +868,9 @@ def test_only_a_part_of_the_folder_is_deployed_when_one_is_named(command):
     assert result.exit_code == 0, text
     assert viya.tree("/Team") == ["RAG", "RAG/rag_core", "RAG/rag_core/adapters", ADAPTERS]
     # one object, and two parts
-    result, text, viya = command("--only", "release.json", "--only", "Data", "--dry-run")
+    result, text, viya = command("--only", UI, "--only", "Data", "--dry-run")
     assert result.exit_code == 0, text
-    assert "3 entries: 3 created." in text and "RAG" not in text
+    assert "4 entries: 4 created." in text and "RAG" not in text
     result, text, _ = command("--only", "Logging and Monitoring")
     assert result.exit_code == 2
     assert "--only Logging and Monitoring: the manifest lists nothing at or below that path." in text
