@@ -70,6 +70,16 @@
 /* 1 once the DATA step that stacks the run tables has ended without an
    error. The output table is replaced only behind such a step */
 %let _rcv_stacked = 0;
+/* 1 once every step that prices the runs has ended without an error: only
+   then is the cost table of this run handed to CAS */
+%let _rcv_priced = 0;
+
+/* No table of WORK that this program writes is left from an earlier run in
+   the same SAS session: a step that ended with an error must not leave the
+   table of an earlier run in its place */
+proc datasets lib=work nolist nowarn;
+    delete _rcv_runs _rcv_runs_n _rcv_cost _rcv_facts _rcv_llm;
+run; quit;
 
 /* A CAS session that is connected is used as it is, and only a session this
    program started is ended at its end. The option SESSREF keeps the name of
@@ -127,6 +137,27 @@ caslib _all_ assign;
 %mend _rcv_stack_runs;
 %_rcv_stack_runs;
 
+/* ---- price the runs, or leave at the first refusal ------------------------
+   The steps below read the stacked runs. Behind a list without a table, which
+   has written its ERROR line, they do not run at all, and behind a step that
+   did not stack the run tables - SAS wrote why - one ERROR line says that the
+   output table was left as it is. Measured on 2026-10-12: with an empty list
+   the program went on behind its own ERROR line, and SAS wrote "ERROR: File
+   WORK._RCV_RUNS.DATA does not exist.", "ERROR: File WORK._RCV_COST.DATA does
+   not exist." and two WARNINGs; with a table that is not there "ERROR: File
+   WORK._RCV_COST.DATA does not exist." and three WARNINGs before the closing
+   ERROR line. A step below that ends with an error ends the macro the same
+   way, with one ERROR line. Wrapped in a macro because a condition inside a
+   condition is not valid in open code.                                      */
+%macro _rcv_price;
+    %if &_rcv_stacked. NE 1 %then %do;
+        %if &_rcv_failed. NE 1 %then %do;
+            %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built, and a table of that name in &_rcv_out_caslib. was left as it is: the run tables of the setting _rcv_runs_tables could not be stacked. The lines above say why.;
+            %let _rcv_failed = 1;
+        %end;
+        %return;
+    %end;
+
 /* ---- normalise the run measures to numeric --------------------------------
    The history publish stages its CAS tables as varchar (see the Load step's
    cas_stage), so a table published before that was fixed carries its counts
@@ -171,6 +202,11 @@ data work._rcv_runs_n;
     enrich_model = "";
 %end;
 run;
+    %if &syserr. GT 4 %then %do;
+        %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built, and a table of that name in &_rcv_out_caslib. was left as it is: a step that prices the runs ended with an error. The lines above say why.;
+        %let _rcv_failed = 1;
+        %return;
+    %end;
 
 /* ---- normalise the prices to numeric -------------------------------------
    The fact sheets use "." as the not-applicable placeholder, so a column
@@ -185,6 +221,11 @@ data work._rcv_facts;
     _unit_tokens  = input(cats(input_token_price), ?? best32.);
     _unit_seconds = input(cats(second_cost),       ?? best32.);
 run;
+    %if &syserr. GT 4 %then %do;
+        %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built, and a table of that name in &_rcv_out_caslib. was left as it is: a step that prices the runs ended with an error. The lines above say why.;
+        %let _rcv_failed = 1;
+        %return;
+    %end;
 
 /* the same treatment for the LLM sheet, which prices the Enrich stage */
 data work._rcv_llm;
@@ -198,6 +239,11 @@ data work._rcv_llm;
     rename provider = llm_provider cost_type = llm_cost_type
            deployment_type = llm_deployment;
 run;
+    %if &syserr. GT 4 %then %do;
+        %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built, and a table of that name in &_rcv_out_caslib. was left as it is: a step that prices the runs ended with an error. The lines above say why.;
+        %let _rcv_failed = 1;
+        %return;
+    %end;
 
 /* ---- price them ---------------------------------------------------------- */
 proc sql;
@@ -263,19 +309,32 @@ proc sql;
       on r.enrich_model = l.model_id
     order by r.started_at desc;
 quit;
+    %if &syserr. GT 4 %then %do;
+        %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built, and a table of that name in &_rcv_out_caslib. was left as it is: a step that prices the runs ended with an error. The lines above say why.;
+        %let _rcv_failed = 1;
+        %return;
+    %end;
 
 /* enrich_cost_total is scaffolding for the sum above; the reportable columns
    are enrich_cost (missing when unpriced) and total_cost. */
 data work._rcv_cost;
     set work._rcv_cost(drop = enrich_cost_total);
 run;
+    %if &syserr. GT 4 %then %do;
+        %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built, and a table of that name in &_rcv_out_caslib. was left as it is: a step that prices the runs ended with an error. The lines above say why.;
+        %let _rcv_failed = 1;
+        %return;
+    %end;
+    %let _rcv_priced = 1;
+%mend _rcv_price;
+%_rcv_price;
 
 /* ---- publish, and say what became of it -----------------------------------
    The output table is dropped and loaded only where this run has a cost
-   table to put in its place: the run tables were stacked without an error,
-   and WORK._RCV_COST is there with its columns. Behind an error on the way -
-   a run table that is not in the CAS library, for one - the table of an
-   earlier run stays as it is.
+   table to put in its place: the run tables were stacked and priced without
+   an error, and WORK._RCV_COST is there with its columns. Behind an error on
+   the way - a run table that is not in the CAS library, for one - the table
+   of an earlier run stays as it is, and the macro is not called.
 
    The closing NOTE is written when CAS holds the table with the rows of this
    run, and an ERROR line when it does not. Measured on 2026-10-12: a run that
@@ -289,7 +348,7 @@ run;
     %let _rcv_rows = -1;
     %let _rcv_vars = 0;
     %let _rcv_built = -1;
-    %if &_rcv_stacked. EQ 1 and %sysfunc(exist(work._rcv_cost)) %then %do;
+    %if &_rcv_priced. EQ 1 and %sysfunc(exist(work._rcv_cost)) %then %do;
         %let _rcv_dsid = %sysfunc(open(work._rcv_cost));
         %if &_rcv_dsid. GT 0 %then %do;
             %let _rcv_rows = %sysfunc(attrn(&_rcv_dsid., nlobs));
@@ -357,8 +416,12 @@ run;
         %let _rcv_failed = 1;
     %end;
 %mend _rcv_publish;
-%_rcv_publish;
+/* Only a run that priced its runs has a cost table to hand to CAS */
+%if &_rcv_priced. EQ 1 %then %do;
+    %_rcv_publish;
+%end;
 %sysmacdelete _rcv_stack_runs;
+%sysmacdelete _rcv_price;
 %sysmacdelete _rcv_publish;
 
 proc datasets lib=work nolist nowarn;
@@ -376,4 +439,4 @@ run; quit;
 %end;
 %symdel _rcv_fact_caslib _rcv_runs_caslib _rcv_runs_tables _rcv_has_enrich
         _rcv_out_caslib _rcv_out_table _rcv_i _rcv_t _rcv_unpriced
-        _rcv_unpriced_llm _rcv_clean_cas_session _rcv_failed _rcv_stacked / nowarn;
+        _rcv_unpriced_llm _rcv_clean_cas_session _rcv_failed _rcv_stacked _rcv_priced / nowarn;

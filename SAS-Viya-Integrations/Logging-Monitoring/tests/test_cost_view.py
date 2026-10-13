@@ -148,6 +148,88 @@ def test_a_step_that_ended_with_an_error_is_not_stacked():
 
 
 # ---------------------------------------------------------------------------
+# Leaving at the first refusal
+# ---------------------------------------------------------------------------
+
+def price(stacked, failed, syserr=0, fails_at=None):
+    """What the macro that prices the runs does: (the statements it generates, the lines it writes, the macro
+    variables behind it). fails_at is the number of the step (1 to 5) whose return code is 1012."""
+    macros = Macros({"_rcv_stacked": stacked, "_rcv_failed": failed, "_rcv_priced": 0, "syserr": syserr, "_rcv_has_enrich": 1,
+                     "_rcv_out_caslib": "casuser", "_rcv_out_table": "ZZ_VERIFY_COST", "_rcv_fact_caslib": "Public"})
+    steps = []
+
+    def stand_in(line, table):
+        # each step ends with RUN or QUIT: the return code the next check reads is the one of that step
+        if line in ("run;", "quit;"):
+            steps.append(line)
+            table.symbols["syserr"] = "1012" if len(steps) == fails_at else "0"
+
+    generated, log = macros.run(text(), "_rcv_price", stand_in)
+    return generated, log, macros
+
+
+CLOSING = ("ERROR: Build-RAG-Cost-View: ZZ_VERIFY_COST was not built, and a table of that name in casuser was left as it is: the run tables "
+           "of the setting _rcv_runs_tables could not be stacked. The lines above say why.")
+STEP_FAILED = ("ERROR: Build-RAG-Cost-View: ZZ_VERIFY_COST was not built, and a table of that name in casuser was left as it is: a step "
+               "that prices the runs ended with an error. The lines above say why.")
+
+
+def test_a_list_without_a_table_is_its_one_error_line_and_nothing_runs_behind_it():
+    """Measured on 2026-10-12 with an empty list: behind the ERROR line of the program SAS wrote
+    'File WORK._RCV_RUNS.DATA does not exist.', 'File WORK._RCV_COST.DATA does not exist.' and two
+    WARNINGs. Now no step that reads a table of WORK is generated behind it, and no second ERROR line."""
+    _, stacking_log, stacked = stack("")
+    generated, log, macros = price(stacked["_rcv_stacked"], stacked["_rcv_failed"])
+
+    assert stacking_log == ["ERROR: Build-RAG-Cost-View: the setting _rcv_runs_tables names no run table, no run was read."]
+    assert generated == [] and log == []
+    assert macros["_rcv_failed"] == "1" and macros["_rcv_priced"] == "0"
+
+
+def test_run_tables_that_were_not_stacked_are_one_error_line_and_nothing_runs_behind_them():
+    """Measured on 2026-10-12 with a table that is not there: behind SAS's own ERROR line for the table
+    'File WORK._RCV_COST.DATA does not exist.' and three WARNINGs, then the closing ERROR. Now the closing
+    ERROR line follows SAS's line, and nothing else."""
+    generated, log, macros = price(0, 0)
+
+    assert generated == [] and log == [CLOSING]
+    assert macros["_rcv_failed"] == "1" and macros["_rcv_priced"] == "0"
+
+
+def test_run_tables_that_were_stacked_are_priced():
+    generated, log, macros = price(1, 0)
+
+    assert log == [] and macros["_rcv_priced"] == "1" and macros["_rcv_failed"] == "0"
+    assert generated[0] == "data _null_;" and "create table work._rcv_cost as" in generated
+    assert generated[-3:] == ["data work._rcv_cost;", "set work._rcv_cost(drop = enrich_cost_total);", "run;"]
+
+
+@pytest.mark.parametrize("fails_at", [1, 2, 3, 4, 5, 6])
+def test_a_step_that_prices_the_runs_and_ends_with_an_error_is_the_last_one(fails_at):
+    """A step behind the stacking that ends with an error - in a SAS Studio session, where an error does not
+    put SAS into syntax check mode - is the last step: one ERROR line, and no cost table is handed to CAS.
+    The steps are counted by their RUN or QUIT statement; the first one is the look at the columns."""
+    generated, log, macros = price(1, 0, fails_at=fails_at)
+
+    if fails_at == 1:
+        # the look at the columns of the stacked table is no step that prices them
+        assert log == [] and macros["_rcv_priced"] == "1"
+        return
+    assert log == [STEP_FAILED] and macros["_rcv_priced"] == "0" and macros["_rcv_failed"] == "1"
+    assert sum(line in ("run;", "quit;") for line in generated) == fails_at
+
+
+def test_no_table_of_work_is_left_from_an_earlier_run():
+    program = code()
+    cleared = "proc datasets lib=work nolist nowarn;\n    delete _rcv_runs _rcv_runs_n _rcv_cost _rcv_facts _rcv_llm;\nrun; quit;\n"
+
+    assert program.count(cleared) == 2
+    assert program.index(cleared) < program.index("%macro _rcv_stack_runs;")
+    assert program.index("%_rcv_stack_runs;") < program.index("%macro _rcv_price;") < program.index("%_rcv_price;")
+    assert program.index("%_rcv_price;") < program.index("%macro _rcv_publish;")
+
+
+# ---------------------------------------------------------------------------
 # The output table and the last line of the run
 # ---------------------------------------------------------------------------
 
@@ -167,7 +249,7 @@ def publish(stacked=1, cost_table=(15, 30), in_cas=15, unpriced=(0, 0)):
         "attrn": lambda args: {"nlobs": cost_table[0], "nvars": cost_table[1]}[args[1]] if args[0] == "7" else ".",
         "close": lambda args: 0,
     }
-    macros = Macros({"_rcv_stacked": stacked, "_rcv_out_caslib": "casuser", "_rcv_out_table": "ZZ_VERIFY_COST", "_rcv_failed": 0}, functions)
+    macros = Macros({"_rcv_priced": stacked, "_rcv_out_caslib": "casuser", "_rcv_out_table": "ZZ_VERIFY_COST", "_rcv_failed": 0}, functions)
 
     def stand_in(line, table):
         # PROC CAS hands the rows it found to the macro variable, PROC SQL the two counts
@@ -243,7 +325,10 @@ def test_the_closing_note_of_the_cost_view_names_the_table_it_wrote():
     assert positions == sorted(positions)
     # the output table is dropped in one statement, which stands behind the condition
     assert program.count("droptable") == 1 and program.count("proc casUtil") == 1
-    assert "%if &_rcv_stacked. EQ 1 and %sysfunc(exist(work._rcv_cost)) %then %do;" in publishing
+    assert "%if &_rcv_priced. EQ 1 and %sysfunc(exist(work._rcv_cost)) %then %do;" in publishing
+    # and the macro is called only behind a run that priced its runs
+    assert "%if &_rcv_priced. EQ 1 %then %do;\n    %_rcv_publish;\n%end;\n" in program
+    assert re.findall(r"^\s*%_rcv_publish;", program, flags=re.MULTILINE) == ["    %_rcv_publish;"]
     assert "%let _rcv_vars = %sysfunc(attrn(&_rcv_dsid., nvars));" in publishing and "%let _rcv_rows = %sysfunc(attrn(&_rcv_dsid., nlobs));" in publishing
 
 
@@ -260,14 +345,15 @@ def test_a_run_with_an_error_line_ends_with_the_condition_code_of_a_failed_job()
     assert program.index("cas _rcvSess terminate;") < program.index(block)
     # every ERROR line of the program sets what that statement reads, and nothing else does
     errors = re.findall(r"%put (ERROR: [^;]*);\s*(\S[^;]*;)", program)
-    assert len(errors) == 3 and all(following == "%let _rcv_failed = 1;" for _, following in errors)
-    assert re.findall(r"%let _rcv_failed\s*=\s*(\d);", program) == ["0", "1", "1", "1"]
+    # the list without a table, the run tables that were not stacked, the five steps that price the runs, the two of the publish
+    assert len(errors) == 9 and all(following == "%let _rcv_failed = 1;" for _, following in errors)
+    assert re.findall(r"%let _rcv_failed\s*=\s*(\d);", program) == ["0"] + ["1"] * 9
     for message, _ in errors:
         assert message.startswith("ERROR: Build-RAG-Cost-View: ") and message.endswith(".")
         assert not set(message) & set("%'\"") and message.count("(") == message.count(")"), message
     assert not re.search(r"\babort\b|%abort|endsas", program, flags=re.IGNORECASE)
-    # the two macros are gone at the end
-    assert "%sysmacdelete _rcv_stack_runs;" in program and "%sysmacdelete _rcv_publish;" in program
+    # the three macros are gone at the end
+    assert all(f"%sysmacdelete {name};" in program for name in ("_rcv_stack_runs", "_rcv_price", "_rcv_publish"))
 
 
 def test_the_harness_reads_arguments_as_the_macro_processor_does():
