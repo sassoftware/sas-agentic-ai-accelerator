@@ -439,21 +439,49 @@ def test_the_command_to_repeat_is_not_refused_its_reports_again(importing, no_di
     assert importing.uploaded == {} and fake.written == []
 
 
-def test_where_one_package_went_through_the_repeat_says_which_one_needs_a_run_of_its_own(importing, tmp_path):
+def test_where_one_package_went_through_the_repeat_is_two_commands_that_end_well(importing, tmp_path, out):
     """Two packages, the reports of one refused: --no-reports for the repeat
-    would leave out the reports of the other as well. The command stays as
-    it was run, and its sentence says that it ends the same way and what to
-    do about it."""
+    would leave out the reports of the other as well. review-20: the command
+    as it was run, which the line then named, ends with exit code 1 every
+    time. The repeat is two lines - the run without the refused package, and
+    that package with --no-reports - and each, RUN AS PRINTED, ends well."""
     nested = {**_built(root="root1", location="/Users/me/My Folder/ZZ_VERIFY_R20").build(), "name": "A test root"}
     other = tmp_path / "pkgs" / "nested.json"
     main = tmp_path / "SAS-Viya-Integrations" / PACKAGE_FILE
     result, fake, text = importing(Site(), str(main), str(other), "--no-files", extra=[(other, nested)])
     assert result.exit_code == 1, text
     assert "imported 3 object(s) through the transfer service." in text and "nested.json" in text
-    assert "--no-reports" not in _repeat(text)
-    assert ("(it imports again and configures the report from this deployment; the reports of nested.json are not "
-            "imported by it either - the line above says why - and it ends with exit code 1 for them: bring that "
-            "package in a run of its own with --no-reports)") in text
+    first, second, said = text.split("then run:\n", 1)[1].splitlines()[:3]
+    assert first == f"mdb builders-import {cli._shell_word(main)} --no-releases --no-files"
+    assert second == f"mdb builders-import {cli._shell_word(other)} --no-releases --no-reports --no-files"
+    assert said == ("(it imports again and configures the report from this deployment; two lines, because the "
+                    "reports of nested.json are not imported into /SAS Agentic AI Accelerator - the line above says "
+                    "why: the first is the run without nested.json, the second brings nested.json with "
+                    "--no-reports)")
+    for line, holds in ((first, "imported 3 object(s) through the transfer service."),
+                        (second, "NOT imported - left out (--no-reports).")):
+        importing.uploaded.clear()
+        before = len(out.getvalue())
+        again = CliRunner().invoke(cli.app, shlex.split(line)[1:])
+        printed = out.getvalue()[before:]
+        assert again.exit_code == 0, printed
+        assert holds in printed and "then run:" not in printed and "    7 entries: 7 equal." in printed
+        assert bool(importing.uploaded) == (line is first)
+
+
+def test_the_two_commands_load_the_release_table_from_where_the_run_took_it():
+    """The run loads the table from the first package that holds one, else
+    from the changelog. Split in two, only the line with that package loads
+    it again; the other carries --no-releases."""
+    a, b, c = Path("a.json"), Path("b.json"), Path("c.json")
+    parts = cli._repeat_parts
+    # (packages, --no-reports, --no-releases): the others first, the refused ones behind
+    assert parts([a, b], [b], a, False) == [([a], False, False), ([b], True, True)]
+    assert parts([a, b], [b], None, False) == [([a], False, False), ([b], True, True)]      # from the changelog
+    assert parts([b, a], [b], b, False) == [([a], False, True), ([b], True, False)]         # the refused one holds it
+    assert parts([a, b, c], [a, c], c, False) == [([b], False, True), ([a, c], True, False)]
+    # a run that did not load the table names no line that does
+    assert parts([a, b], [b], a, True) == [([a], False, True), ([b], True, True)]
 
 
 # ---- what a refused write answered, and the line for the content root -------------

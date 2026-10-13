@@ -2102,6 +2102,25 @@ def _import_command(packages, options, caslib, table, server, no_releases: bool,
     return " ".join(words)
 
 
+def _repeat_parts(packages: list, refused: list, holder, no_releases: bool) -> list:
+    """[(packages, --no-reports, --no-releases)] of the two commands a
+    failed import names where the reports of some packages went to the
+    transfer service and those of others (`refused`) were refused for the
+    content root: first the others, as the run was given, then the refused
+    ones with --no-reports. Each ends well once what the run reported is
+    fixed; the one command for all of them is refused the same reports
+    every time.
+
+    The run loaded the release table from one source - the first package
+    that holds one (`holder`), else the changelog. Only the line with that
+    package loads it again (the first line where no package holds one); the
+    other gets --no-releases, so that neither line replaces the table with
+    one from another source."""
+    others = [path for path in packages if path not in refused]
+    first_loads = holder is None or holder in others
+    return [(others, False, no_releases or not first_loads), (refused, True, no_releases or first_loads)]
+
+
 def _live_options(session, content_root: str = "") -> dict:
     """{report name: {option: value}} as the Builder report at its place
     below `content_root` holds them now - a retired report folded in, as
@@ -2368,7 +2387,9 @@ def builders_import(
     A run that did not do everything ends with exit code 1 and the command to
     go on with: `mdb builders-import` with the options of the run - and with
     --no-reports added where the reports were refused for the content root
-    and no package's reports went to the transfer service - or `mdb
+    and no package's reports went to the transfer service; two commands
+    where the reports of one package went there and those of another were
+    refused, the second for that package with --no-reports - or `mdb
     options-restore` where only options are left to write. The tasks of the
     import job are read to the end: one that ended
     with a warning or an error is printed and counts. The in-place part stops
@@ -2411,10 +2432,19 @@ def builders_import(
         """The command line as it was given, for the line that says how to
         go on - with the options file a run kept, once there is one, and
         with --no-reports where the same command would be refused its
-        reports again (`repeat_without_reports`, below)."""
-        return _import_command(packages, options_file, caslib_given, table, server, no_releases, timeout,
-                               report_caslib, content_root, compute_context, repeat_without_reports,
-                               no_options_capture, create, out, no_files)
+        reports again (`repeat_without_reports`, below). Two lines where
+        the reports of one package went to the transfer service and those
+        of another were refused (`_repeat_parts`): the same command ends
+        with exit code 1 every time it is run."""
+        def line(paths, without_reports: bool, without_releases: bool) -> str:
+            return _import_command(paths, options_file, caslib_given, table, server, without_releases, timeout,
+                                   report_caslib, content_root, compute_context, without_reports,
+                                   no_options_capture, create, out, no_files)
+        if not repeat_in_two:
+            return line(packages, repeat_without_reports, no_releases)
+        holder = next((path for path, _package, source, _refusal in plans if source.release_table() is not None),
+                      None)
+        return "\n".join(line(*part) for part in _repeat_parts(files, refused_paths, holder, no_releases))
 
     caslib_given = caslib
     caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
@@ -2440,12 +2470,15 @@ def builders_import(
     # The command a failed run names must not fail for the reason this one
     # did. Reports that are refused for this content root are refused by the
     # same command again: where no package's reports go to the transfer
-    # service, the repeat leaves the reports out; where some do, its
-    # sentence says which package needs a run of its own.
-    refused_for_root = [path.name for path, _package, source, refusal in plans
-                        if source.reports and refusal is not None and not no_reports]
+    # service, the repeat leaves the reports out; where some do, the repeat
+    # is two commands - the packages that are not refused as the run was
+    # given, and the refused ones with --no-reports.
+    refused_paths = [path for path, _package, source, refusal in plans
+                     if source.reports and refusal is not None and not no_reports]
+    refused_for_root = [path.name for path in refused_paths]
     reports_through = any(source.reports and refusal is None for _path, _package, source, refusal in plans)
     repeat_without_reports = no_reports or (bool(refused_for_root) and not reports_through)
+    repeat_in_two = bool(refused_for_root) and reports_through
     given = command(options)
     with _viya_session() as session:
         host = host_of(os.environ.get("SAS_VIYA_URL") or getattr(session, "hostname", "") or "")
@@ -2724,9 +2757,10 @@ def builders_import(
                 reports_note = (f"; --no-reports is added here, because the reports are not imported into {root} - "
                                 "the line above says why")
             else:
-                reports_note = (f"; the reports of {', '.join(refused_for_root)} are not imported by it either - "
-                                "the line above says why - and it ends with exit code 1 for them: bring that "
-                                "package in a run of its own with --no-reports")
+                names = ", ".join(refused_for_root)
+                reports_note = (f"; two lines, because the reports of {names} are not imported into {root} - the "
+                                f"line above says why: the first is the run without {names}, the second brings "
+                                f"{names} with --no-reports")
             if saved is None and not arriving:
                 # no Builder report was imported, so the repeat imports and configures none either
                 again = given
