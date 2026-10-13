@@ -971,6 +971,53 @@ def test_a_manifest_that_cannot_be_used_stops_the_command_before_it_signs_in(com
 
 
 # ---- the manifest of this repository -----------------------------------------
+def test_a_package_of_the_repository_manifest_is_imported_in_place(monkeypatch):
+    """integrate-18: the import of a package made from the REPOSITORY
+    manifest had run only in a scratch simulation. A second root that holds
+    a file, a step and a job definition of it under other ids and with other
+    content: those three are updated under their own ids, everything else is
+    created, one object of each name, and a second run finds it all equal."""
+    from pathlib import Path
+
+    from content_fakes import package_of
+    from mdb.core.packages import PackageSource
+
+    monkeypatch.setattr(content, "checkout_commit", lambda root: ("c" * 40, "2026-10-12T09:31:55+02:00"))
+    shipped = load_manifest(Path(__file__).resolve().parents[3])
+    root2 = "/Users/me/My Folder/ZZ_VERIFY_R19/root2"
+    viya = Viya()
+    mine = {
+        "RAG/rag_core/tokens.py": viya.put_member(f"{root2}/RAG/rag_core/tokens.py", "/files/files/", b"OTHER = 1\n"),
+        "RAG/steps/RAG - Embed Chunks.step": viya.put_member(
+            f"{root2}/RAG/steps/RAG - Embed Chunks.step", "/dataFlows/steps/",
+            {**content.step_body(shipped, shipped.find("RAG/steps/RAG - Embed Chunks.step", "step")),
+             "templates": {"SAS": "%put another release;\n"}}),
+        "Start Here": viya.put_member(f"{root2}/Start Here", "/jobDefinitions/definitions/", {
+            **content.job_definition_body(shipped, shipped.find("Start Here", "jobDefinition")),
+            "code": "%put another release;\n"})}
+    source = PackageSource(package_of(shipped).build(), shipped)
+    in_place = source.manifest(root2)
+    objects = [entry for entry in shipped.objects() if entry.kind != "report"]
+    assert sorted(e.path for e in in_place.objects() if e.kind != "report") == sorted(e.path for e in objects)
+    result = deploy(viya, in_place, root2, source=source, reports=False)
+    statuses = {o.entry.path: o.status for o in result.outcomes}
+    assert result.failed == [] and result.stopped_at is None
+    assert {path for path, status in statuses.items() if status == UPDATED} == set(mine)
+    assert {path for path, status in statuses.items() if status == EQUAL} == {"RAG", "RAG/rag_core", "RAG/steps"}
+    assert result.count(CREATED) == len(result.outcomes) - 6
+    for path, uri in mine.items():
+        assert viya.at(f"{root2}/{path}") == [uri], path                    # the site's own id, one object
+    assert viya.files[mine["RAG/rag_core/tokens.py"]] == content.file_bytes(
+        shipped, shipped.find("RAG/rag_core/tokens.py", "file"))
+    start, _ = viya.jobs[mine["Start Here"]]
+    assert {p["name"]: p["defaultValue"] for p in start["parameters"]}["contentRoot"] == shipped.content_root
+    # nothing went to the content root of the release, and nothing was deleted
+    assert viya.folder_id(shipped.content_root) is None
+    assert not [call for call in viya.wrote() if call[0] == "DELETE"]
+    again = deploy(viya, in_place, root2, source=source, reports=False)
+    assert {o.status for o in again.outcomes} == {EQUAL}
+
+
 def test_the_manifest_of_the_repository_deploys_and_passes_the_gate(monkeypatch):
     """The tests above run on a manifest of a few entries. This one takes the
     list that ships: a dry run on an empty site names every entry of it and

@@ -42,8 +42,9 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
-from content_fakes import (ALL_NEUTRAL, CONTENT_ROOT, PACKAGE, STEP, STEP_NAME, Package, as_registered, make_repo,
-                           package_of)
+from content_fakes import (ALL_NEUTRAL, CONTENT_ROOT, PACKAGE, STEP, STEP_NAME, Package, Viya, as_registered,
+                           make_repo, package_of)
+from mdb.viya.content import deploy
 from mdb import cli
 from mdb.core import content
 from mdb.core.content import load_manifest, parse_manifest
@@ -781,6 +782,8 @@ def test_what_a_package_holds_and_is_not_brought_in_place_is_named(manifest):
     assert source.left_out == [
         "folder 'Users' (not below the root folder of the package)",
         "file 'orphan.png' (not below the root folder of the package)",
+        "folder 'RAG/generated' ('generated' holds what the Prompt Builder generates for a site's own setups, which "
+        "never ships)",
         "file 'RAG/generated/pipeline.yaml' ('generated' holds what the Prompt Builder generates for a site's own "
         "setups, which never ships)",
         "rule '7cab3bd6' (mdb imports no authorization rule and no share)"]
@@ -791,6 +794,102 @@ def test_what_a_package_holds_and_is_not_brought_in_place_is_named(manifest):
     with pytest.raises(ValueError, match="the package holds 2 objects at this path - none is taken"):
         source.file_bytes(listed.find("RAG/rag_core/__init__.py", "file"))
     assert source.file_bytes(listed.find("RAG/rag_core/adapters/__init__.py", "file")) == b"ADAPTERS = 1\n"
+
+
+def test_the_paths_of_a_package_are_held_to_the_rule_of_the_manifest(manifest):
+    """review-18: a folder named '..' or an object whose name holds a slash
+    became an entry, and the deploy asked the Folders service to create
+    folders of those names. They are not taken - with everything below such
+    a folder - and each gets a line that says why."""
+    built = package_of(manifest)
+    built.folder("..")
+    built.file("../../Victim/evil2.py", b"x = 1\n")
+    built.file("RAG/a\\b.py", b"x = 2\n")
+    built.file("RAG/ trailing.py", b"x = 3\n")
+    built.file("RAG/slash.py", b"x = 4\n")
+    built.details[-1]["transferObject"]["summary"]["name"] = "x/y.py"           # a name with a slash in it
+    built.file("RAG/rag_core/ok.py", b"ok = 1\n")
+    source = PackageSource(built.build(), manifest)
+    lines = "\n".join(source.left_out)
+    assert "file 'RAG/x/y.py' (its name holds a slash" in lines
+    assert ("folder '..' (its name is '..' - a path below the content root is made of names without a slash, not "
+            "empty, not '.' or '..', and with no blank at either end)") in lines
+    assert "folder '../..' (its name is '..'" in lines
+    assert "file '../../Victim/evil2.py' (the name of the folder '..' above it is '..'" in lines
+    assert "file 'RAG/a\\b.py' (its name holds a slash" in lines
+    assert "file 'RAG/ trailing.py' (its name starts or ends with a blank" in lines
+    listed = source.manifest(CONTENT_ROOT)
+    assert not [e for e in listed.all_entries() if ".." in e.path.split("/") or "\\" in e.path or " trailing" in e.path]
+    assert listed.find("RAG/rag_core/ok.py", "file") is not None
+
+
+def test_an_object_of_a_kind_mdb_does_not_import_is_named_for_that(manifest):
+    """It was 'not below the root folder of the package' - which it was."""
+    built = package_of(manifest)
+    built._add("dataFlow", "a flow.flw", "/dataFlows/dataFlows/", "", built.folder("RAG"))
+    source = PackageSource(built.build(), manifest)
+    assert ("dataFlow 'RAG/a flow.flw' (mdb does not import a dataFlow: it brings files, custom steps and job "
+            "definitions in place, and reports through the transfer service)") in source.left_out
+
+
+def test_an_empty_folder_of_a_package_is_brought_in_place(manifest):
+    """It got no line and was not created."""
+    built = package_of(manifest)
+    built.folder("Empty Folder")
+    built.folder("RAG/also empty")
+    source = PackageSource(built.build(), manifest)
+    assert source.empty_folders == ["Empty Folder", "RAG/also empty"]
+    listed = source.manifest(CONTENT_ROOT)
+    assert listed.find("Empty Folder", "folder") is not None and not listed.find("Empty Folder", "folder").implied
+    # the folder of a report is the transfer service's, not an empty folder
+    assert "Prompt Builder" not in source.empty_folders
+    viya = Viya()
+    result = deploy(viya, listed, CONTENT_ROOT, source=source, reports=False)
+    assert {o.entry.path: o.status for o in result.outcomes}["Empty Folder"] == "created"
+    assert viya.folder_id(f"{CONTENT_ROOT}/Empty Folder") and viya.folder_id(f"{CONTENT_ROOT}/RAG/also empty")
+    # a package of empty folders only still has something to bring
+    only = Package()
+    only.folder("Just a folder")
+    assert PackageSource(only.build()).has_content
+
+
+def test_a_package_names_the_folder_it_was_exported_from(manifest):
+    """An export made in SAS Environment Manager from a folder below others
+    holds the folders above it; mdb took the topmost for the root, so the
+    in-place paths started with the folders above the content. The package's
+    one requested item is the folder that was exported."""
+    built = package_of(manifest, above=("Users", "me", "My Folder"))
+    package = built.build(requested=[built.root_uri])
+    root, items = locate(package)
+    assert root == built.root_uri
+    assert {item.path for item in items if item.kind == "file"} >= {"release.json", "RAG/rag_core/__init__.py"}
+    assert PackageSource(package, manifest).manifest(CONTENT_ROOT).find("RAG/rag_core/__init__.py", "file")
+    # without it, the topmost folder - as before
+    root, _items = locate(built.build())
+    assert root != built.root_uri
+
+
+def test_the_part_for_the_transfer_service_carries_no_field_an_export_does_not_write(manifest):
+    built = _with_pictures(manifest)
+    package = {**built.build(), "authorization": {"token": "x"}}
+    reduced, _held = reports_package(package, built.root_uri)
+    assert "authorization" not in reduced and "authorization" in package
+    source = PackageSource(package, manifest)
+    assert ("the field(s) authorization at the top of the package (an export does not write them, and they are not "
+            "handed to the transfer service)") in source.left_out
+
+
+def test_a_file_a_report_shows_from_a_folder_is_named(manifest):
+    built = package_of(manifest)
+    shown = built.file("Prompt Builder/shown.png", b"\x89PNG")
+    report = next(d["transferObject"]["summary"]["links"][0]["uri"] for d in built.details
+                  if d["transferObject"]["summary"]["type"] == "report")
+    built.attach(report, shown)
+    source = PackageSource(built.build(), manifest)
+    assert source.notes == [
+        f"report '{REPORT}' shows the file 'Prompt Builder/shown.png' ({shown}) from a folder: the file is brought in "
+        "place and has the id this site gives it, and the report keeps naming the id of the package - open the "
+        "report and check that it shows the file"]
 
 
 def test_the_folder_a_package_was_exported_from_is_read_from_its_root_folder(manifest):

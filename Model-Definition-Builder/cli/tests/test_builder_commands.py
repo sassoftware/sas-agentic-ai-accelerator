@@ -1118,6 +1118,25 @@ def test_the_in_place_part_stops_at_the_first_write_that_fails(importing, no_dis
     assert "Not attempted behind it: 1 entry." in text and viya.at(f"{CONTENT_ROOT}/RAG/rag_core/later.py") == []
 
 
+def test_every_object_of_the_package_gets_a_line(importing, no_discovery):
+    """review-18: an empty folder of the package got no line and was not
+    created, a folder named '..' was created (inside the root), and an object
+    of a kind mdb does not know was 'not below the root folder'."""
+    no_discovery()
+    viya = importing.viya
+    built = _built(report=False)
+    built.folder("Empty Folder")
+    built.file("../../Victim/evil2.py", b"x = 1\n")
+    built._add("dataFlow", "a flow.flw", "/dataFlows/dataFlows/", "", built.folder("RAG"))
+    result, fake, text = importing(Site(), package=built.build())
+    assert result.exit_code == 0, text
+    assert "    created      folder        Empty Folder\n" in text and viya.folder_id(f"{CONTENT_ROOT}/Empty Folder")
+    assert "  not imported: folder '..' (its name is '..'" in text
+    assert "  not imported: file '../../Victim/evil2.py' (the name of the folder '..' above it is '..'" in text
+    assert "  not imported: dataFlow 'RAG/a flow.flw' (mdb does not import a dataFlow" in text
+    assert ".." not in viya.tree(CONTENT_ROOT) and viya.folder_id("/Victim") is None
+
+
 # ---- where the content goes, and where the reports may ------------------------------
 ROOT2 = "/Users/me/My Folder/ZZ_VERIFY_R18/root2"
 START_JOB = {"type": "Compute", "code": "%put start here;\n", "parameters": [

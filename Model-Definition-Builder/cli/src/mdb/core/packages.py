@@ -656,8 +656,12 @@ def locate(package: dict, root_uri: Optional[str] = None) -> tuple:
     a test root works like `/SAS Agentic AI Accelerator`.
 
     `root_uri` is the folder that was exported (`/folders/folders/<id>`).
-    Without it the root is the one folder of the package that has no parent in
-    the package. Where several have none, the root is the folder they all sit
+    Without it the root is the folder the package itself says was exported:
+    its one requested item, where that is a folder of the package - an
+    export made in SAS Environment Manager from a folder below others holds
+    the folders above it too, and the topmost of them is not the content.
+    Where the package does not say, the root is the one folder that has no
+    parent in the package; where several have none, the folder they all sit
     in when there is one (a package without an object for its root folder),
     else the one with the most objects below.
     """
@@ -677,6 +681,9 @@ def locate(package: dict, root_uri: Optional[str] = None) -> tuple:
             uri = parents.get(uri)
         return walked
 
+    requested = package.get("requestedItems")
+    if root_uri is None and isinstance(requested, list) and len(requested) == 1 and requested[0] in folders:
+        root_uri = requested[0]
     if root_uri is None:
         tops = [uri for uri in folders if parents.get(uri) not in folders]
         above = {parents.get(uri) for uri in tops}
@@ -872,6 +879,40 @@ _STEP_INSTANCE_KEYS = ("id", "links", "version", "eTag", "createdBy", "modifiedB
 _PARAMETER_KEYS = ("version", "name", "defaultValue", "type", "label", "required")
 
 
+def _name_problem(name) -> Optional[str]:
+    """Why a name cannot be one part of a path below the content root, or
+    None: the rule the content manifest has for each part of a path."""
+    text = str(name)
+    if not text.strip():
+        return "is empty"
+    if text in (".", ".."):
+        return f"is '{text}'"
+    if "/" in text or "\\" in text:
+        return "holds a slash"
+    if text != text.strip():
+        return "starts or ends with a blank"
+    return None
+
+
+def _path_check(items: list):
+    """A function that says why the path of a located object cannot be
+    taken (or None): its own name, or the name of a folder above it, is not
+    a name a path can hold. A folder of such a name takes everything below
+    it along - nothing is created inside a folder named '..'."""
+    bad_folders = {item.path: _name_problem(item.name) for item in items
+                   if item.kind == "folder" and item.path and _name_problem(item.name)}
+
+    def check(item) -> Optional[str]:
+        own = _name_problem(item.name)
+        if own:
+            return f"its name {own}"
+        for folder, problem in bad_folders.items():
+            if item.path and item.path != folder and item.path.startswith(folder + "/"):
+                return f"the name of the folder '{folder}' above it {problem}"
+        return None
+    return check
+
+
 class PackageSource:
     """What a transfer package holds for each file, custom step and job
     definition - the source `mdb builders-import` hands to the write path of
@@ -889,11 +930,19 @@ class PackageSource:
       and the form as the property `form`.
 
     The entries are the package's own: every such object below its root
-    folder, at the path the package gives it. Not brought this way, and
-    named in `left_out`: an authorization rule or share, an object that is
-    not below the root folder, an object on a path that never ships. Reports
-    and the files that are children of a report are `reports` / `children`:
-    they go through the transfer service or not at all.
+    folder, at the path the package gives it - the manifest of the checkout
+    does not limit them, the never-ship rule and the path rule do. An empty
+    folder of the package is an entry too, and is created. Not brought this
+    way, and named in `left_out` with the reason: an authorization rule or
+    share, an object that is not below the root folder, an object of a kind
+    mdb does not import, an object on a path that never ships, and an object
+    whose name - or the name of a folder above it - cannot be a part of a
+    path (empty, '.', '..', a slash in it, a blank at either end: the rule
+    the manifest has for a path). Reports and the files that are children of
+    a report are `reports` / `children`: they go through the transfer
+    service or not at all. `notes` says what a report shows from a folder:
+    such a file is brought in place under the id the site gives it, while
+    the report keeps naming the id of the package.
 
     `checkout` is the content manifest of the checkout, where there is one:
     it says which parameters of a job definition are site settings.
@@ -910,18 +959,35 @@ class PackageSource:
         self.left_out: list = []
         self.reports: list = []
         self.children: list = []
+        self.notes: list = []
+        unknown = sorted(set(map(str, package)) - set(PACKAGE_FIELDS))
+        if unknown:
+            self.left_out.append(f"the field(s) {', '.join(unknown)} at the top of the package (an export does not "
+                                 "write them, and they are not handed to the transfer service)")
+        bad_path = _path_check(self.items)
+        folders: list = []
         for item in self.items:
             kind = MANIFEST_KIND.get(item.kind)
             if item.kind in GRANT_KINDS:
                 self.left_out.append(f"{item.kind} '{item.name}' (mdb imports no authorization rule and no share)")
             elif item.owner is not None:
                 self.children.append(item)
-            elif kind is None or item.path is None:
+            elif item.path is None:
                 self.left_out.append(f"{item.kind} '{item.name}' (not below the root folder of the package)")
-            elif kind == "folder":
+            elif kind is None:
+                self.left_out.append(f"{item.kind} '{item.path}' (mdb does not import a {item.kind}: it brings files, "
+                                     "custom steps and job definitions in place, and reports through the transfer "
+                                     "service)")
+            elif item.path == "":
                 continue
+            elif bad_path(item):
+                self.left_out.append(f"{item.kind} '{item.path}' ({bad_path(item)} - a path below the content root "
+                                     "is made of names without a slash, not empty, not '.' or '..', and with no "
+                                     "blank at either end)")
             elif _content.never_ship(item.path):
                 self.left_out.append(f"{item.shown} ({_content.never_ship(item.path)}, which never ships)")
+            elif kind == "folder":
+                folders.append(item)
             elif kind == "report":
                 self.reports.append(item)
             else:
@@ -930,17 +996,33 @@ class PackageSource:
         self.left_out += [f"file '{item.name}' (belongs to report '{item.owner}', which is not imported)"
                           for item in self.children if item.owner not in report_paths]
         self.children = [item for item in self.children if item.owner in report_paths]
+        # an empty folder of the package: nothing below it at all, not even a report
+        below = [path for _kind, path in self._at] + [item.path for item in self.reports] \
+            + [item.path for item in folders]
+        self.empty_folders = [item.path for item in folders
+                              if not any(path.startswith(item.path + "/") for path in below)]
+        # a file a report shows from a folder (not a child of the report) is brought in place
+        placed = {item.uri: item for items in self._at.values() for item in items if item.kind == "file"}
+        for report in self.reports:
+            for connector in _connectors(report.detail):
+                shown = placed.get(connector.get("uri"))
+                if shown is not None and connector.get("type") != "parentFolder":
+                    self.notes.append(
+                        f"report '{report.path}' shows the file '{shown.path}' ({shown.uri}) from a folder: the file is "
+                        "brought in place and has the id this site gives it, and the report keeps naming the id of "
+                        "the package - open the report and check that it shows the file")
 
     @property
     def has_content(self) -> bool:
-        """Whether the package holds a file, a step or a job definition to
-        bring in place."""
-        return bool(self._at)
+        """Whether the package holds a file, a step, a job definition or an
+        empty folder to bring in place."""
+        return bool(self._at) or bool(self.empty_folders)
 
     def manifest(self, content_root: str) -> "_content.ContentManifest":
         """The entries of the package as a manifest whose content root is
         the folder they are brought into."""
-        entries = [_content.Entry(path=path, kind=kind) for kind, path in self._at]
+        entries = [_content.Entry(path=path, kind="folder") for path in self.empty_folders]
+        entries += [_content.Entry(path=path, kind=kind) for kind, path in self._at]
         entries += [_content.Entry(path=item.path, kind="report") for item in self.reports]
         repo_root = self.checkout.repo_root if self.checkout is not None else Path(".")
         return _content.ContentManifest(repo_root=repo_root, content_root=content_root.rstrip("/"),
@@ -1008,8 +1090,13 @@ def reports_package(package: dict, root_uri: Optional[str] = None) -> tuple:
     package itself is not changed. The list is empty when the package holds
     no report - then there is nothing to hand to the transfer service."""
     reduced = json.loads(json.dumps(package))
+    # a field at the top that an export does not write is not handed on
+    for key in [key for key in reduced if key not in PACKAGE_FIELDS]:
+        del reduced[key]
     _root, items = locate(reduced, root_uri)
-    reports = [item for item in items if item.kind == "report" and item.path and not _content.never_ship(item.path)]
+    bad_path = _path_check(items)
+    reports = [item for item in items if item.kind == "report" and item.path and not _content.never_ship(item.path)
+               and not bad_path(item)]
     if not reports:
         return reduced, []
     paths = {item.path for item in reports}

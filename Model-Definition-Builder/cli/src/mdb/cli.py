@@ -2292,6 +2292,8 @@ def builders_import(
                               "2.3.0 checkout.[/yellow]")
             for line in source.left_out:
                 console.print(f"  not imported: {line}", markup=False, highlight=False, soft_wrap=True)
+            for line in source.notes:
+                console.print(f"  note: {line}", style="yellow", markup=False, highlight=False, soft_wrap=True)
             package_failed = False
             if not source.reports and not source.has_content:
                 console.print("  Nothing of this package can be imported: no report, file, custom step or job "
