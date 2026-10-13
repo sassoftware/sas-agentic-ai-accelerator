@@ -394,9 +394,10 @@ def _sign_in(make, attempts: int | None = None, sleep=None):
     grant that is answered "Bad credentials" (`_bad_credentials`), which is
     what a wrong password got on 2026-10-13, is not asked again: a wrong
     password costs one failed sign-in. That refusal is not the one seen
-    while sign-ins overlapped: the traceback saved on 2026-10-12 ends in
-    sasctl's `response.raise_for_status()`, which sasctl 1.11.8 reaches only
-    for a 401 whose `error_description` does not say "Bad credentials".
+    while sign-ins overlapped: the traceback saved on 2026-10-12 ends at the
+    last `response.raise_for_status()` of sasctl's token request
+    (core.py:1405 of sasctl 1.11.8), which a 401 reaches only with a JSON
+    body whose `error_description` does not say "Bad credentials".
     Anything that is not a refused sign-in (the server not reachable, a
     certificate) is passed on at once. The refusal that is passed on carries
     the number of sign-ins made as SIGN_INS_MADE.
