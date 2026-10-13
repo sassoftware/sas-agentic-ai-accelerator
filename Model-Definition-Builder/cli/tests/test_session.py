@@ -200,35 +200,24 @@ def test_a_refused_password_grant_is_asked_again(env):
     assert len(asked) == 3 and waited == [2, 5]
 
 
-def test_a_wrong_password_is_passed_on_after_the_second_try(env):
+def test_a_wrong_password_is_passed_on_at_the_first_try(env):
     """review-19 / gate-19: a wrong password cost three failed sign-ins per
-    command. What sasctl raises for the answer "Bad credentials" is asked
-    once more and no further."""
+    command, and review-20 / gate-20: then two. What sasctl raises for the
+    answer "Bad credentials" is not asked again, whatever the setting says:
+    the refusal seen while sign-ins overlapped left sasctl another way."""
     waited, asked = [], []
 
     def make():
         asked.append(1)
         raise AuthenticationError("Authentication failed for user 'u'.")
-    with pytest.raises(AuthenticationError) as caught:
-        s._sign_in(make, sleep=waited.append)
-    assert len(asked) == s.BAD_CREDENTIALS_ATTEMPTS == 2 and waited == [2] and s.LOGIN_ATTEMPTS == 3
-    assert getattr(caught.value, s.SIGN_INS_MADE) == 2
-    # a site that locks an account after a few failed sign-ins switches the repeat off
-    del asked[:], waited[:]
-    env.setenv(s.LOGIN_ATTEMPTS_ENV, "1")
-    with pytest.raises(AuthenticationError) as caught:
-        s._sign_in(make, sleep=waited.append)
-    assert len(asked) == 1 and waited == [] and getattr(caught.value, s.SIGN_INS_MADE) == 1
-    env.setenv(s.LOGIN_ATTEMPTS_ENV, "not a number")
-    with pytest.raises(AuthenticationError):
-        s._sign_in(make, sleep=waited.append)
-    assert len(asked) == 1 + 2
-    # a higher number is for the refusal that is not "Bad credentials"
-    del asked[:]
-    env.setenv(s.LOGIN_ATTEMPTS_ENV, "5")
-    with pytest.raises(AuthenticationError):
-        s._sign_in(make, sleep=waited.append)
-    assert len(asked) == 2
+    for setting in (None, "1", "not a number", "5"):
+        del asked[:]
+        if setting:
+            env.setenv(s.LOGIN_ATTEMPTS_ENV, setting)
+        with pytest.raises(AuthenticationError) as caught:
+            s._sign_in(make, sleep=waited.append)
+        assert len(asked) == 1 and waited == [] and getattr(caught.value, s.SIGN_INS_MADE) == 1, setting
+    assert s.LOGIN_ATTEMPTS == 3 and not hasattr(s, "BAD_CREDENTIALS_ATTEMPTS")
 
 
 def test_anything_but_a_refused_sign_in_is_not_repeated(env):
@@ -251,7 +240,8 @@ def test_only_the_password_grant_is_repeated(env, monkeypatch, tmp_path):
         def __init__(self, *args, **kwargs):
             calls.append(args)
             if len(calls) == 1:
-                raise AuthenticationError("refused")
+                # the grant: the 401 that is not "Bad credentials"; the token: sasctl's own error
+                raise _refused_grant() if len(args) == 3 else AuthenticationError("refused")
 
     monkeypatch.setitem(sys.modules, "sasctl", types.SimpleNamespace(Session=Session))
     monkeypatch.setattr("time.sleep", lambda seconds: None)
@@ -411,9 +401,9 @@ def test_the_answer_of_a_refused_sign_in_is_read():
 
 
 @pytest.mark.parametrize("body, limit, sign_ins, said", [
-    (BAD_CREDENTIALS_BODY, None, 2, 'with error "invalid_client" and error_description "Bad credentials"'),
+    (BAD_CREDENTIALS_BODY, None, 1, 'with error "invalid_client" and error_description "Bad credentials"'),
     (BAD_CREDENTIALS_BODY, "1", 1, 'with error "invalid_client" and error_description "Bad credentials"'),
-    (BAD_CREDENTIALS_BODY, "5", 2, 'with error "invalid_client" and error_description "Bad credentials"'),
+    (BAD_CREDENTIALS_BODY, "5", 1, 'with error "invalid_client" and error_description "Bad credentials"'),
     ('{"error":"unauthorized","error_description":"Too many sign-ins"}', None, 3,
      'with error "unauthorized" and error_description "Too many sign-ins"'),
     ('{"error":"unauthorized","error_description":"Too many sign-ins"}', "5", 5,
@@ -423,7 +413,7 @@ def test_the_answer_of_a_refused_sign_in_is_read():
 def test_the_sentence_names_the_answer_and_the_sign_ins_made(env, monkeypatch, body, limit, sign_ins, said):
     """review-19 / gate-19: the sentence said `asked 3 time(s)` from the
     setting, whatever was sent, and nothing of what SAS Logon answered. The
-    answer measured for a wrong password is asked twice at most."""
+    answer measured for a wrong password is asked once."""
     asked = []
 
     class Session:
@@ -449,9 +439,9 @@ def test_the_sentence_names_the_answer_and_the_sign_ins_made(env, monkeypatch, b
 
 
 def test_a_refusal_that_changes_is_judged_by_the_answer_of_each_sign_in(env):
-    """The refusal seen while sign-ins overlapped, then the answer to a wrong
-    password: the second sign-in is the last. The other way round the third
-    is still made."""
+    """A refusal that is not "Bad credentials", then the answer to a wrong
+    password: the second sign-in is the last. The other way round the first
+    is."""
     def answers(*bodies):
         left = list(bodies)
 
@@ -467,7 +457,7 @@ def test_a_refusal_that_changes_is_judged_by_the_answer_of_each_sign_in(env):
     del asked[:]
     with pytest.raises(HTTPError) as caught:
         s._sign_in(answers(BAD_CREDENTIALS_BODY, other, other), sleep=lambda seconds: None)
-    assert len(asked) == 3 == getattr(caught.value, s.SIGN_INS_MADE)
+    assert len(asked) == 1 == getattr(caught.value, s.SIGN_INS_MADE)
 
 
 def test_sasctl_itself_hands_the_measured_answer_on_as_mdb_reads_it(env, monkeypatch):
@@ -503,9 +493,9 @@ def test_sasctl_itself_hands_the_measured_answer_on_as_mdb_reads_it(env, monkeyp
         s.create_session()
     assert type(caught.value.__cause__).__name__ == "AuthenticationError"
     assert getattr(caught.value.__cause__, "response", None) is None
-    assert posted == [f"{TOKEN_URL}#password"] * 2
+    assert posted == [f"{TOKEN_URL}#password"]
     assert str(caught.value).startswith(
-        f"SAS Viya at {URL} refused the sign-in of u with SAS_VIYA_USER + SAS_VIYA_PASSWORD (2 sign-ins made): "
+        f"SAS Viya at {URL} refused the sign-in of u with SAS_VIYA_USER + SAS_VIYA_PASSWORD (1 sign-in made): "
         "Authentication failed for user 'u' - sasctl says so for an answer whose error_description says "
         '"Bad credentials". Check the credentials')
 

@@ -249,13 +249,11 @@ LOGIN_ATTEMPTS = 3
 LOGIN_WAIT = (2, 5)
 LOGIN_ATTEMPTS_ENV = "MDB_LOGIN_ATTEMPTS"
 
-#: What the answer to a wrong password says in `error_description`, and how
-#: often a grant that is answered so is asked in all - never more often than
-#: the number above. Measured on 2026-10-13: a password grant with a wrong
-#: password got 401 with the JSON body
+#: What the answer to a wrong password says in `error_description`; a grant
+#: that is answered so is not asked again. Measured on 2026-10-13: a password
+#: grant with a wrong password got 401 with the JSON body
 #: {"error":"invalid_client","error_description":"Bad credentials"}.
 BAD_CREDENTIALS = "bad credentials"
-BAD_CREDENTIALS_ATTEMPTS = 2
 
 #: The attribute `_sign_in` gives the refusal it passes on: how many sign-ins
 #: were made.
@@ -352,13 +350,16 @@ def _sign_in(make, attempts: int | None = None, sleep=None):
     sign-ins overlapped (2026-10-11 and 2026-10-12; the command went through
     when it was run again, and the body of that 401 was not recorded). So a
     refused grant is asked again - LOGIN_ATTEMPTS times in all - before the
-    refusal is passed on. A grant that is answered "Bad credentials"
-    (`_bad_credentials`), which is what a wrong password got on 2026-10-13,
-    is asked BAD_CREDENTIALS_ATTEMPTS times at most: a wrong password costs
-    two failed sign-ins, and one with MDB_LOGIN_ATTEMPTS=1, which switches
-    every repeat off. Anything that is not a refused sign-in (the server not
-    reachable, a certificate) is passed on at once. The refusal that is
-    passed on carries the number of sign-ins made as SIGN_INS_MADE.
+    refusal is passed on; MDB_LOGIN_ATTEMPTS=1 switches the repeat off. A
+    grant that is answered "Bad credentials" (`_bad_credentials`), which is
+    what a wrong password got on 2026-10-13, is not asked again: a wrong
+    password costs one failed sign-in. That refusal is not the one seen
+    while sign-ins overlapped: the traceback saved on 2026-10-12 ends in
+    sasctl's `response.raise_for_status()`, which sasctl 1.11.8 reaches only
+    for a 401 whose `error_description` does not say "Bad credentials".
+    Anything that is not a refused sign-in (the server not reachable, a
+    certificate) is passed on at once. The refusal that is passed on carries
+    the number of sign-ins made as SIGN_INS_MADE.
     """
     import time
 
@@ -372,7 +373,7 @@ def _sign_in(make, attempts: int | None = None, sleep=None):
         except Exception as exc:
             if not _refused_sign_in(exc):
                 raise
-            if attempt >= (min(attempts, BAD_CREDENTIALS_ATTEMPTS) if _bad_credentials(exc) else attempts):
+            if attempt >= attempts or _bad_credentials(exc):
                 setattr(exc, SIGN_INS_MADE, attempt)
                 raise
             sleep(LOGIN_WAIT[min(attempt - 1, len(LOGIN_WAIT) - 1)])
