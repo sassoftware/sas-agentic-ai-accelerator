@@ -65,7 +65,8 @@
  *                 identity of the person who starts the job
  *   contentRoot   the content folder (default /SAS Agentic AI Accelerator)
  *   caslib        the CAS library of the tables (default Public)
- *   releaseTable  the name of the release table (default ACCELERATOR_RELEASES)
+ *   releaseTable  the name of the release table (default ACCELERATOR_RELEASES);
+ *                 a table of that name that lacks a column of one is left as it is
  *
  * lat is short for Load Accelerator Tables
  ******************************************************************************/
@@ -231,7 +232,25 @@ run;
             end;
             outcome = "rows";
         end;
+        /* A table of that name that exists is replaced only where it is a release table, with every column of one:
+           the parameter releaseTable can name any table of the CAS library, and another table of the site - a fact
+           sheet, the log table - is left as it is */
         if staged == &_lat_rows. then do;
+            table.tableExists result = present / caslib = "&caslib." name = "&releaseTable.";
+            if present.exists != 0 then do;
+                table.columnInfo result = described / table = {caslib = "&caslib.", name = "&releaseTable."};
+                have = " ";
+                if exists(described, "ColumnInfo") then do;
+                    do column over described.ColumnInfo;
+                        have = have || upcase(column.Column) || " ";
+                    end;
+                end;
+                %do _lat_i = 1 %to &_lat_n.;
+                    if index(have, " %upcase(%scan(%scan(&_lat_vars., &_lat_i., %str( )), 1, %str(:))) ") == 0 then outcome = "foreign";
+                %end;
+            end;
+        end;
+        if staged == &_lat_rows. and outcome != "foreign" then do;
             outcome = "replace";
             table.dropTable status = dropped / caslib = "&caslib." name = "&releaseTable." quiet = true;
             table.promote status = promoted / caslib = "&caslib." name = "&releaseTable._NEW"
@@ -252,6 +271,11 @@ run;
         call symputx("_lat_staged", staged, "L");
     quit;
 
+    %if &_lat_outcome. EQ foreign %then %do;
+        %put ERROR: Load-Accelerator-Tables: the table &caslib..&releaseTable. is no release table - it lacks columns of one - and was left as it is: the parameter releaseTable names another table.;
+        %let _lat_failed = 1;
+        %return;
+    %end;
     %if &_lat_outcome. EQ loaded %then
         %put NOTE: Load-Accelerator-Tables: the release table &caslib..&releaseTable. was loaded with &_lat_rows. rows, promoted and saved.;
     %else %if &_lat_outcome. EQ upload %then
