@@ -64,10 +64,12 @@ error stream - `InsecureRequestWarning` where TLS verification is off - does
 not stop the PowerShell script, also with its streams redirected, and both
 scripts end with the exit code of `mdb`. The command they call, `mdb
 content-deploy --only RAG --to <folder>`, created the 41 entries of the runtime
-directly in a test folder on SAS Viya 2026.09 on 2026-10-12. The scripts as
-callers of `mdb` have **not run against SAS Viya**: a dry run of the
-PowerShell script was reported that day with `41 entries: 41 equal.`, but
-what was saved of it does not show the command that started it.
+directly in a test folder on SAS Viya 2026.09 on 2026-10-12. On 2026-10-13
+the PowerShell script ran as a dry run for a test folder, with every stream
+redirected into a file and its command line saved beside it: the file held
+the warning and `41 entries: 41 equal.`, and the request log GET requests
+only; the exit code of the script was not saved. **Not run against SAS
+Viya**: the bash script, a run without `-DryRun` / `-n`, and `-Create` / `-c`.
 
 **Nothing is ever fetched from the internet at run time**, so both ways work
 in an air-gapped deployment: the SAS Content folder is the distribution
