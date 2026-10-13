@@ -14,14 +14,18 @@
  * definition names that context in its parameter _contextName, and a request
  * can name another one - .../SASJobExecution/?_program=<content root>/Start
  * Here, followed by the parameter _contextName with the name of the context.
- * Measured on 2026-10-12, without the parameter: the job ran in the SAS Job
- * Execution compute context under a service account, SAS Viya answered
- * every request with 401, and the page had 15 lines that were not checked.
+ * What the session of a compute context may read depends on how the system
+ * configures that context. Measured on the test system on 2026-10-12, in its
+ * SAS Job Execution compute context: on one run SAS Viya answered every
+ * request with 401 and the page had 15 lines that were not checked; on a
+ * later run the same day the page was built completely (97 lines ok), by a
+ * session whose user (SYSUSERID) was not the user it was started for
+ * (SYS_COMPUTE_SESSION_OWNER, which SAS Job Execution sets).
  * Where every request is refused the page says so in one line at its top,
- * with what to do, in place of those lines; and it says in that line that
- * the session does not run as the person who opened it where the user of
- * the session (SYSUSERID) is another one than the user the session was
- * started for (SYS_COMPUTE_SESSION_OWNER, which SAS Job Execution sets).
+ * with what to do, in place of those lines. The line says that the session
+ * runs as another user than the person who opened the page where the two
+ * users differ - a domain written behind @ or in front of a backslash is no
+ * difference -, and whose rights to ask for where they are the same.
  *
  * WHAT IT CHECKS, each as one line with ok / missing / not checked and one
  * sentence what to do:
@@ -189,6 +193,9 @@ SESSION = 'SAS session of this page'
 # What a file of the Files service is addressed by
 FILE_URI = re.compile(r'/files/files/[0-9A-Za-z-]+')
 ASK_ADMINISTRATOR = 'Ask an administrator to open this page, or for the right to read it.'
+# What to do where every request of a session that runs as the person who opened the page was refused
+SIGN_IN_REFUSED = 'Open this page again. If the line stays, ask an administrator why SAS Viya does not take the sign-in of your session.'
+ASK_RIGHTS = 'Ask an administrator for the rights to read what this page checks.'
 # How the page is opened under the identity of the person who opens it. The parameter is written
 # with the character it starts with in an address, which this block holds as a number only
 AS_YOURSELF = ('Open this page in a compute context that runs as you: add ' + chr(38) + '_contextName=<the name of that compute context> '
@@ -237,12 +244,20 @@ def ask_again(status):
 # The SAS session that builds the page
 # ---------------------------------------------------------------------------
 
+def person_of(user):
+    """A user id as the person it names: a system can write one person with a domain behind @ or
+    in front of a backslash, and in upper or lower case."""
+    return text_of(user).lower().split(chr(92))[-1].split('@')[0].strip()
+
+
 def session_of(session_user, opened_by, context):
     """What is known of the SAS session: whether it runs as another user than the one it was
-    started for, and its compute context. The two user ids are compared here and go no
-    further - neither is a text of the page."""
-    runs_as, started_for = text_of(session_user).lower(), text_of(opened_by).lower()
-    return {'other': bool(runs_as and started_for and runs_as != started_for), 'context': text_of(context)}
+    started for (other), whether it is known to run as that user (own) - neither is known where
+    one of the two ids is missing -, and its compute context. The two user ids are compared here
+    and go no further - neither is a text of the page."""
+    runs_as, started_for = person_of(session_user), person_of(opened_by)
+    known = bool(runs_as and started_for)
+    return {'other': known and runs_as != started_for, 'own': known and runs_as == started_for, 'context': text_of(context)}
 
 
 def recorded(get, statuses):
@@ -261,17 +276,24 @@ def recorded(get, statuses):
 def one_line_for_a_refused_session(lines, statuses, session):
     """Where SAS Viya refused every request of the session, the lines that would say so one by
     one - and the ones that were not looked for because of them - are taken out, and one line
-    at the top stands for them: what it is and what to do. Measured on 2026-10-12 for a job that
-    ran under a service account: 15 lines that were not checked, 12 of them with the advice to
-    ask an administrator. The line counts as the checks it stands for."""
+    at the top stands for them: what it is and what to do. Measured on 2026-10-12 for a job in
+    the SAS Job Execution compute context of the test system: 15 lines that were not checked, 12
+    of them with the advice to ask an administrator - and on a later run that day in the same
+    context no request was refused and the line was not there. The line counts as the checks it
+    stands for. For a session that runs as the person who opened the page the refusal is about
+    that person: 403 is a right to ask for, 401 a sign-in that SAS Viya did not take."""
     if not statuses or any(status not in REFUSED for status in statuses):
         return lines
     kept = [entry for entry in lines if entry['state'] != NOT_CHECKED]
     codes = ' and '.join(str(status) for status in sorted(set(statuses)))
-    where = ' of the compute context ' + session['context'] if session['context'] else ''
+    where = ', in the compute context ' + session['context'] if session['context'] else ''
     if session['other']:
-        found = f'SAS Viya refused every request of this page (HTTP {codes}): its SAS session runs under a service account{where}, not as you'
+        found = (f'SAS Viya refused every request of this page (HTTP {codes}): its SAS session runs as another user than you{where}, '
+                 'and what such a session may read depends on how the system configures its compute context')
         todo = AS_YOURSELF
+    elif session.get('own'):
+        found = f'SAS Viya refused every request of this page (HTTP {codes}), which ran as you' + where
+        todo = ' '.join(([SIGN_IN_REFUSED] if 401 in statuses else []) + ([ASK_RIGHTS] if 403 in statuses else []))
     else:
         found = f'SAS Viya refused every request of this page (HTTP {codes})' + (', which ran in the compute context ' + session['context']
                                                                                  if session['context'] else '')
@@ -873,7 +895,8 @@ def render_page(settings, lines, reports, session=None):
     elif session['other']:
         whose = ('This page was built by a SAS session that does not run as you'
                  + (', in the compute context ' + session['context'] if session['context'] else '')
-                 + ': it shows what that session may read. ' + AS_YOURSELF + ' ')
+                 + ': it shows what that session may read, which depends on how the system configures its compute context. '
+                 + AS_YOURSELF + ' ')
     else:
         whose = ('The page shows what the SAS session that built it may read: in a compute context that runs under a service account '
                  'that is the service account. ')
@@ -1010,8 +1033,10 @@ def start_here():
     refused = [entry for entry in lines if entry['section'] == SESSION]
     if refused:
         # the log takes no ampersand, so the parameter is named and not written as in an address
-        say('NOTE', 'Start Here: ' + refused[0]['found'] + '. Open the page in a compute context that runs as you: the parameter '
-                    '_contextName, in the address of the page or in the job definition, names the context.')
+        todo = refused[0]['todo'] if chr(38) not in refused[0]['todo'] else (
+            'Open the page in a compute context that runs as you: the parameter _contextName, in the address of the page or in the '
+            'job definition, names the context.')
+        say('NOTE', 'Start Here: ' + refused[0]['found'] + '. ' + todo)
     hand_over('_sh_rc', '0')
 
 

@@ -471,12 +471,13 @@ def not_checked_rows(page):
     return re.findall(r'<tr><td>(.*?)</td><td class="state unchecked">', page)
 
 
-def test_a_session_under_a_service_account_that_is_refused_everything_gets_one_line(monkeypatch, tmp_path):
-    """Measured on 2026-10-12: opened without the parameter _contextName the job ran in the SAS Job
-    Execution compute context under a service account, every request was answered 401, and the page
-    read '13 ok, 0 missing, 15 not checked': fifteen lines, twelve of which advised to ask an
-    administrator. The made-up system gives the same fifteen lines; the page now has one, at its
-    top, with what it is and what to do."""
+def test_a_session_of_another_user_that_is_refused_everything_gets_one_line(monkeypatch, tmp_path):
+    """Measured on 2026-10-12 on one run: opened without the parameter _contextName the job ran in the
+    SAS Job Execution compute context, every request was answered 401, and the page read '13 ok, 0
+    missing, 15 not checked': fifteen lines, twelve of which advised to ask an administrator. (On a
+    later run that day the same context built the whole page: what its sessions may read depends on
+    how the system configures it.) The made-up system gives the same fifteen lines; the page now has
+    one, at its top, with what it is and what to do."""
     site = Site()
     site.refuse("/", 401)
     lines, _ = lines_of(monkeypatch, tmp_path, site)
@@ -484,8 +485,9 @@ def test_a_session_under_a_service_account_that_is_refused_everything_gets_one_l
     assert [entry["todo"] for entry in lines].count(ASK) == 12        # the page of before
 
     done = run(monkeypatch, tmp_path, refusing("/", 401), harness.SERVICE_ACCOUNT_SESSION)
-    said = ("SAS Viya refused every request of this page (HTTP 401): its SAS session runs under a service account of the compute context "
-            "SAS Job Execution compute context, not as you")
+    said = ("SAS Viya refused every request of this page (HTTP 401): its SAS session runs as another user than you, in the compute "
+            "context SAS Job Execution compute context, and what such a session may read depends on how the system configures its compute "
+            "context")
 
     assert done.rc == "0"
     assert summary_of(done.page) == "13 ok, 0 missing, 15 not checked. " + said + ". " + AS_YOURSELF
@@ -507,23 +509,55 @@ def test_a_session_under_a_service_account_that_is_refused_everything_gets_one_l
     assert "svc4410" not in everything and "uid7781" not in everything
 
 
-@pytest.mark.parametrize("session, what", [
-    ({}, "SAS Viya refused every request of this page (HTTP 401)"),
-    (harness.OWN_SESSION, "SAS Viya refused every request of this page (HTTP 401), which ran in the compute context SAS Studio compute context"),
-    (dict(harness.OWN_SESSION, SYSUSERID="UID7781"),
-     "SAS Viya refused every request of this page (HTTP 401), which ran in the compute context SAS Studio compute context"),
-], ids=["a session that names neither", "the user who opened the page", "the same user in other letters"])
-def test_a_session_that_is_refused_everything_and_runs_as_the_user_says_no_service_account(monkeypatch, tmp_path, session, what):
-    done = run(monkeypatch, tmp_path, refusing("/", 401), session)
+SIGN_IN = "Open this page again. If the line stays, ask an administrator why SAS Viya does not take the sign-in of your session."
+RIGHTS = "Ask an administrator for the rights to read what this page checks."
 
-    assert summary_of(done.page) == ("13 ok, 0 missing, 15 not checked. " + what + ". Open this page again. If the line stays, "
-                                     + AS_YOURSELF[0].lower() + AS_YOURSELF[1:])
-    assert not_checked_rows(done.page) == ["Requests to SAS Viya"] and "service account" not in summary_of(done.page)
+
+def test_a_session_that_names_neither_user_and_is_refused_everything_says_both_ways_out(monkeypatch, tmp_path):
+    """A session that does not say whose it is - the program run in SAS Studio - can be another user's: the
+    line names the compute context it ran in where that is known, and the way to open the page as oneself."""
+    done = run(monkeypatch, tmp_path, refusing("/", 401), {})
+
+    assert summary_of(done.page) == ("13 ok, 0 missing, 15 not checked. SAS Viya refused every request of this page (HTTP 401). Open this "
+                                     "page again. If the line stays, " + AS_YOURSELF[0].lower() + AS_YOURSELF[1:])
+    assert not_checked_rows(done.page) == ["Requests to SAS Viya"] and "another user" not in summary_of(done.page)
+
+
+@pytest.mark.parametrize("session", [harness.OWN_SESSION, dict(harness.OWN_SESSION, SYSUSERID="UID7781"),
+                                     dict(harness.OWN_SESSION, SYSUSERID="uid7781@EXAMPLE.COM"),
+                                     dict(harness.OWN_SESSION, SYSUSERID="EXAMPLE" + chr(92) + "uid7781")],
+                         ids=["the user who opened the page", "the same user in other letters", "the same user with a domain behind @",
+                              "the same user with a domain in front of a backslash"])
+@pytest.mark.parametrize("status, todo", [(401, SIGN_IN), (403, RIGHTS)], ids=["401", "403"])
+def test_a_session_of_the_user_that_is_refused_everything_is_told_what_to_ask_for(monkeypatch, tmp_path, session, status, todo):
+    """Review-18: a user in his own session who lacks every right was told to open the page again and then in a
+    compute context that runs as him - which it did already. The session runs as the person who opened the
+    page: a 403 is a right to ask for, a 401 a sign-in that SAS Viya did not take. One person written with a
+    domain is the same person: the page said 'does not run as you' for him."""
+    done = run(monkeypatch, tmp_path, refusing("/", status), session)
+    said = (f"SAS Viya refused every request of this page (HTTP {status}), which ran as you, in the compute context SAS Studio "
+            "compute context")
+
+    assert summary_of(done.page) == "13 ok, 0 missing, 15 not checked. " + said + ". " + todo
+    assert not_checked_rows(done.page) == ["Requests to SAS Viya"]
+    assert "another user" not in done.page and "_contextName" not in summary_of(done.page)
+    # the log says the same, and the advice holds no ampersand
+    assert done.sas.messages[-1] == ("NOTE", "Start Here: " + said + ". " + todo)
+
+
+def test_a_session_of_the_user_refused_with_401_and_403_is_told_both(monkeypatch, tmp_path):
+    site = refusing("/", 401)
+    site.refuse("/casManagement/", 403)
+    site.prefixes = dict(sorted(site.prefixes.items(), key=lambda item: -len(item[0])))
+    done = run(monkeypatch, tmp_path, site, harness.OWN_SESSION)
+
+    assert summary_of(done.page).endswith("(HTTP 401 and 403), which ran as you, in the compute context SAS Studio compute context. "
+                                          + SIGN_IN + " " + RIGHTS)
 
 
 def test_the_one_line_names_the_answers_that_refused(monkeypatch, tmp_path):
     done = run(monkeypatch, tmp_path, refusing("/", 403), harness.SERVICE_ACCOUNT_SESSION)
-    assert "refused every request of this page (HTTP 403): its SAS session runs under a service account" in summary_of(done.page)
+    assert "refused every request of this page (HTTP 403): its SAS session runs as another user than you" in summary_of(done.page)
 
     site = refusing("/", 401)
     site.refuse("/casManagement/", 403)
@@ -534,7 +568,8 @@ def test_the_one_line_names_the_answers_that_refused(monkeypatch, tmp_path):
 
     # a session whose compute context is not known says the same without it
     done = run(monkeypatch, tmp_path, refusing("/", 401), dict(harness.SERVICE_ACCOUNT_SESSION, _sh_hasContext="0"))
-    assert "(HTTP 401): its SAS session runs under a service account, not as you. " in summary_of(done.page)
+    assert ("(HTTP 401): its SAS session runs as another user than you, and what such a session may read depends on how the system "
+            "configures its compute context. ") in summary_of(done.page)
 
 
 @pytest.mark.parametrize("answered", ["/folders/", "/compute/", "/credentials/"])
@@ -592,7 +627,8 @@ def test_in_a_session_of_another_user_a_refused_line_advises_to_open_the_page_as
     assert ASK not in other.page and other.page.count("<td>" + advice + "</td>") == 6
     note = re.search(r'<p class="note">(.*?)</p>', other.page).group(1).replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
     assert note == (f"Content root {ROOT}. This page was built by a SAS session that does not run as you, in the compute context SAS Job "
-                    "Execution compute context: it shows what that session may read. " + AS_YOURSELF + " It changed nothing: it only read.")
+                    "Execution compute context: it shows what that session may read, which depends on how the system configures its "
+                    "compute context. " + AS_YOURSELF + " It changed nothing: it only read.")
     assert "svc4410" not in other.page and "uid7781" not in other.page
     # the rows and their states are the same for both sessions
     states_of = lambda page: re.findall(r'<td class="state (\w+)">', page)
@@ -603,13 +639,17 @@ def test_the_two_users_are_compared_and_go_no_further(monkeypatch, tmp_path):
     functions = load(monkeypatch, tmp_path).namespace
     session_of = functions["session_of"]
 
-    assert session_of("svc4410", "uid7781", "A context") == {"other": True, "context": "A context"}
-    assert session_of("uid7781", "UID7781 ", " A context ") == {"other": False, "context": "A context"}
-    # a session that does not name one of the two is not said to be another user's
+    assert session_of("svc4410", "uid7781", "A context") == {"other": True, "own": False, "context": "A context"}
+    assert session_of("uid7781", "UID7781 ", " A context ") == {"other": False, "own": True, "context": "A context"}
+    # one person written with a domain is one person; two persons of one domain are two
+    for runs_as in ("uid7781@EXAMPLE.COM", "EXAMPLE" + chr(92) + "uid7781", "example" + chr(92) + "UID7781@example.com"):
+        assert session_of(runs_as, "uid7781", "")["own"] is True, runs_as
+    assert session_of("svc4410@EXAMPLE.COM", "uid7781@EXAMPLE.COM", "")["other"] is True
+    # a session that does not name one of the two is neither another user's nor known to be the user's own
     for runs_as, started_for in (("svc4410", ""), ("", "uid7781"), ("", ""), ("svc4410", None), (None, None)):
-        assert session_of(runs_as, started_for, "")["other"] is False
-    # what the page is handed holds no user: a flag and the name of the context
-    assert set(session_of("svc4410", "uid7781", "A context")) == {"other", "context"}
+        assert session_of(runs_as, started_for, "")["other"] is False and session_of(runs_as, started_for, "")["own"] is False
+    # what the page is handed holds no user: two flags and the name of the context
+    assert set(session_of("svc4410", "uid7781", "A context")) == {"other", "own", "context"}
 
 
 def test_the_session_is_asked_only_for_what_it_has(monkeypatch, tmp_path):
@@ -634,7 +674,12 @@ def test_the_session_is_asked_only_for_what_it_has(monkeypatch, tmp_path):
 def test_the_header_and_the_page_without_python_name_the_parameter():
     header = harness.program().split("*/")[0]
     assert re.search(r"^ \*   _contextName     the compute context the job runs in", header, flags=re.MULTILINE)
-    assert "Measured on 2026-10-12, without the parameter: the job ran in the SAS Job\n * Execution compute context under a service account" in header
+    flat = " ".join(line.lstrip(" *") for line in header.split("\n"))
+    # what was measured on which run, and that it depends on the configuration of the context: no sentence says that it always refuses
+    assert ("What the session of a compute context may read depends on how the system configures that context. Measured on the test "
+            "system on 2026-10-12, in its SAS Job Execution compute context: on one run SAS Viya answered every request with 401 and the "
+            "page had 15 lines that were not checked; on a later run the same day the page was built completely (97 lines ok)") in " ".join(flat.split())
+    assert "under a service account, SAS Viya answered" not in flat and "always" not in flat
     code = re.sub(r"/\*.*?\*/", "", harness.sas_code(), flags=re.DOTALL)
     fallback = " ".join(re.findall(r"put '(.*)';", code))
     assert "the parameter _contextName, in the address of this page or in the job definition, names the context" in fallback

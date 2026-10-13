@@ -46,9 +46,12 @@
  * context that runs under a service account the SAS session is that account,
  * and the log says so in one NOTE: the user of the session (SYSUSERID) is
  * then another one than the user SAS Job Execution started the session for
- * (SYS_COMPUTE_SESSION_OWNER). Measured on 2026-10-12 for the page Start
- * Here in such a context: SAS Viya answered every request of the session
- * with 401.
+ * (SYS_COMPUTE_SESSION_OWNER) - a domain written behind @ or in front of a
+ * backslash is no difference. What such a session may read depends on how
+ * the system configures its context. Measured on 2026-10-12 in the SAS Job
+ * Execution compute context of the test system: the log held the NOTE, and
+ * the job read the folder Data and loaded the release table, as it did in
+ * the SAS Studio compute context.
  *
  * THE JOB FAILS when one of the four tables is not in the CAS library at its
  * end, or when a parameter is refused: it then writes an ERROR line and sets
@@ -127,11 +130,13 @@ data _null_;
     end;
     /* Whose session this is. SAS Job Execution names the user a session was
        started for; a session without that name - the program run in SAS
-       Studio - is not asked. The two users are compared as text and neither
-       is written to the log. */
+       Studio - is not asked. The two users are compared as the persons they
+       name - a domain behind @ or in front of a backslash is dropped, the
+       case does not count - and neither is written to the log. */
     if symexist('SYS_COMPUTE_SESSION_OWNER') then do;
-        _lat_value = symget('SYS_COMPUTE_SESSION_OWNER');
-        if lengthn(_lat_value) > 0 and upcase(strip(_lat_value)) ne upcase(strip(symget('SYSUSERID'))) then do;
+        _lat_value = lowcase(scan(scan(strip(symget('SYS_COMPUTE_SESSION_OWNER')), -1, '\'), 1, '@'));
+        _lat_user = lowcase(scan(scan(strip(symget('SYSUSERID')), -1, '\'), 1, '@'));
+        if lengthn(_lat_value) > 0 and strip(_lat_value) ne strip(_lat_user) then do;
             putLog 'NOTE: Load-Accelerator-Tables: this SAS session does not run as the user who started the job, but under the account of its compute context. A file that is reported as not found below may be one that account may not read.';
             putLog 'NOTE- To run the job as yourself, start it with the parameter _contextName and the name of a compute context that runs as you.';
         end;

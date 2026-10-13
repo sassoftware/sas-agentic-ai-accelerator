@@ -411,8 +411,8 @@ def test_start_here_names_a_compute_context_of_any_wording_as_text(monkeypatch, 
     assert unsafe_messages(run.sas.messages) == []
     assert [kind for kind, _ in run.sas.messages] == ["NOTE", "NOTE"]
     # the parentheses of the message are brackets where the name of the context holds one without its partner
-    assert re.match(r"Start Here: SAS Viya refused every request of this page [(\[]HTTP 401[)\]]: its SAS session runs under a service account "
-                    r"of the compute context ", run.sas.messages[1][1])
+    assert re.match(r"Start Here: SAS Viya refused every request of this page [(\[]HTTP 401[)\]]: its SAS session runs as another user than "
+                    r"you, in the compute context ", run.sas.messages[1][1])
     handed = {name: value for name, value in run.sas.macro_variables.items() if name not in page.DEFAULT_SETTINGS and name not in SESSION_OF_START_HERE}
     assert handed == {"_sh_rc": "0"}
     assert "svc " not in run.page and "uid " not in run.page and run.page.count("<script") == 0

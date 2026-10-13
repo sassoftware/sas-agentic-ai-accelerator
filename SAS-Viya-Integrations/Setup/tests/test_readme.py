@@ -48,20 +48,23 @@ def context_of(entry):
 
 
 def test_both_jobs_are_opened_in_a_compute_context_that_runs_as_the_user():
-    """Measured on 2026-10-12: without _contextName the page ran under a service account, and SAS Viya
-    refused every request. The README gives each address with the parameter."""
+    """Measured on 2026-10-12 in the SAS Job Execution compute context: on one run SAS Viya refused every
+    request of the page, on a later run the page was built completely. The README gives each address with
+    the parameter, says what was seen on which run, and claims of no context that it always refuses."""
     start, loader = section("Start Here"), section("Load-Accelerator-Tables")
 
     assert ("https://<your SAS Viya host>/SASJobExecution/?_program=/SAS Agentic AI Accelerator/Start Here"
             "&_contextName=<a compute context that runs as you>\n") in start
     assert ("https://<your SAS Viya host>/SASJobExecution/?_program=/SAS Agentic AI Accelerator/Data/Load-Accelerator-Tables"
             "&_contextName=<a compute context that runs as you>\n") in loader
-    # what was measured, with the numbers of that page
-    assert "the job ran in the `SAS Job Execution compute context`, which runs its sessions under a service account on that system" in start
+    # what was measured on each of the two runs, with the numbers of their pages
+    assert "What the session of a compute context may read depends on how the system configures that context." in start
     assert "the page read `13 ok, 0 missing, 15 not checked` - fifteen lines, twelve of them with the advice to ask an administrator" in start
-    assert "Opened with `&_contextName=SAS Studio compute context` the same page had 97 lines that were ok." in start
+    assert "opened with `&_contextName=SAS Studio compute context` the same page had 97 lines that were ok." in start
+    assert "On a later run the same day the page was built completely in that context - `97 ok, 2 missing, 1 not checked`" in start
+    assert "runs its sessions under a service account" not in start and "always" not in start
     assert "the page has one line at its top in place of those lines" in start
-    assert "the program compares the two and writes neither to the page" in start
+    assert "The program compares the two - a domain written behind `@` or in front of a backslash is no difference - and writes neither" in start
     assert "the log then holds one NOTE that the session does not run as the user who started the job" in loader.replace("The log", "the log")
 
 

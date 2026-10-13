@@ -331,14 +331,17 @@ def test_the_parameters_of_the_job_and_what_the_program_takes_without_them():
 
 
 def test_a_session_that_does_not_run_as_the_user_who_started_the_job_is_one_note():
-    """Start Here was measured on 2026-10-12 in a compute context under a service account: SAS Viya answered
-    every request of that session with 401. The job that loads the tables says in one NOTE when its session
-    is such a one - SAS Job Execution names the user a session was started for - and how it is run as oneself."""
+    """Measured on 2026-10-12 in the SAS Job Execution compute context: the NOTE, and then the job read the folder
+    Data and loaded the release table. The job says in one NOTE when its session runs as another user than the
+    one SAS Job Execution started it for, and how it is run as oneself. One person written with a domain behind
+    @ or in front of a backslash is one person (review-18): the two are compared as the persons they name."""
     text = code()
     check = text[text.index("data _null_;"):text.index("run;") + 4]
 
-    in_order(check, "if symexist('SYS_COMPUTE_SESSION_OWNER') then do;", "_lat_value = symget('SYS_COMPUTE_SESSION_OWNER');",
-             "if lengthn(_lat_value) > 0 and upcase(strip(_lat_value)) ne upcase(strip(symget('SYSUSERID'))) then do;",
+    in_order(check, "if symexist('SYS_COMPUTE_SESSION_OWNER') then do;",
+             "_lat_value = lowcase(scan(scan(strip(symget('SYS_COMPUTE_SESSION_OWNER')), -1, '\\'), 1, '@'));",
+             "_lat_user = lowcase(scan(scan(strip(symget('SYSUSERID')), -1, '\\'), 1, '@'));",
+             "if lengthn(_lat_value) > 0 and strip(_lat_value) ne strip(_lat_user) then do;",
              "putLog 'NOTE: Load-Accelerator-Tables: this SAS session does not run as the user who started the job,",
              "putLog 'NOTE- To run the job as yourself, start it with the parameter _contextName and the name of a compute context that runs as you.';")
     # the session is asked for the user only where it names one, and no statement resolves either user
