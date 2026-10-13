@@ -33,6 +33,7 @@ from typing import Callable, Optional
 from urllib.parse import quote, urlparse
 
 from ..core.packages import PLACEHOLDER_HOST
+from .answer import answer
 
 EXPORT_REQUEST = "application/vnd.sas.transfer.export.request+json"
 IMPORT_REQUEST = "application/vnd.sas.transfer.import.request+json"
@@ -43,7 +44,7 @@ DEFAULT_TIMEOUT = 600
 
 
 def _failure(what: str, response) -> RuntimeError:
-    return RuntimeError(f"{what}: HTTP {response.status_code} {response.text[:300]}")
+    return RuntimeError(f"{what}: {answer(response)}")
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +176,7 @@ def _delete(session, uri: str, what: str) -> None:
     except Exception as exc:                                   # a timeout, a dropped connection
         raise RuntimeError(f"no answer to the delete of {what} {uri} ({type(exc).__name__}: {exc})") from exc
     if response is not None and not getattr(response, "ok", True):
-        raise RuntimeError(f"deleting {what} {uri} was refused: HTTP {response.status_code} "
-                           f"{str(getattr(response, 'text', ''))[:300]}")
+        raise RuntimeError(f"deleting {what} {uri} was refused: {answer(response)}")
 
 
 def leftover_line(uri: str, what: str = "package") -> str:

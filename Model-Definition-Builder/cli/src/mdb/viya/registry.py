@@ -21,6 +21,7 @@ from typing import Optional
 from ..core.generator import effective_score_file
 from ..core.manifest import MANIFEST_FILENAME, ModelManifest
 from ..core.options import SEED_PROJECT_LABELS
+from .answer import answer
 
 KIND_PROJECT = {
     "llm": "LLM Model Project",
@@ -173,8 +174,8 @@ def ensure_repository_and_project(session, kind: str, core, responsible_party: s
             existing_repo = mr.get_repository(REPOSITORY)
             if existing_repo is None:
                 raise RuntimeError(
-                    f"Could not create the '{REPOSITORY}' repository: HTTP {response.status_code} "
-                    f"{response.text[:200]} - you may need a SAS administrator to grant repository rights."
+                    f"Could not create the '{REPOSITORY}' repository: {answer(response)} - you may need a SAS "
+                    "administrator to grant repository rights."
                 )
         else:
             created.append(f"repository '{REPOSITORY}'")
@@ -487,7 +488,7 @@ def ensure_model_lifecycle(session, model_name: str,
         },
     )
     if response.status_code >= 300:
-        raise RuntimeError(f"Updating model lifecycle failed: HTTP {response.status_code} {response.text[:200]}")
+        raise RuntimeError(f"Updating model lifecycle failed: {answer(response)}")
     return True
 
 
@@ -676,7 +677,7 @@ def register_model(session, manifest: ModelManifest, folder: Path, fact_row: dic
             files={"files": (name, path.read_bytes())},
         )
         if response.status_code >= 300:
-            raise RuntimeError(f"Updating content {name} failed: HTTP {response.status_code} {response.text[:300]}")
+            raise RuntimeError(f"Updating content {name} failed: {answer(response)}")
     details = mr.get_model_details(model_id)
     body = dict(details.items())
     body.update(attributes)
@@ -698,7 +699,7 @@ def register_model(session, manifest: ModelManifest, folder: Path, fact_row: dic
         },
     )
     if response.status_code >= 300:
-        raise RuntimeError(f"Updating model attributes failed: HTTP {response.status_code} {response.text[:300]}")
+        raise RuntimeError(f"Updating model attributes failed: {answer(response)}")
     return RegisterResult("updated", manifest.model_id, _link(model_id))
 
 
@@ -754,7 +755,7 @@ def publish_model(session, model_name: str, destination: str,
         },
     )
     if response.status_code != 201:
-        raise RuntimeError(f"Publish request failed: HTTP {response.status_code} {response.text[:300]}")
+        raise RuntimeError(f"Publish request failed: {answer(response)}")
     if not wait:
         return "requested"
     deadline = time.time() + timeout_s

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from .answer import answer
+
 #: Report content travels as BIRD XML on both legs - core/options.py rewrites
 #: XML. The service serves the same report as JSON when asked, so the read pins
 #: the representation instead of trusting the server default, and the write
@@ -14,9 +16,9 @@ CONTENT_MEDIA = "application/vnd.sas.report.content+xml"
 
 
 def _failure(what: str, response) -> RuntimeError:
-    # A SAS REST error body carries errorCode / message / details - the part
+    # A SAS REST error body carries errorCode / message / remediation - the part
     # that turns "400 Bad Request" into a diagnosis, so it travels with the error.
-    return RuntimeError(f"{what}: HTTP {response.status_code} {response.text[:300]}")
+    return RuntimeError(f"{what}: {answer(response)}")
 
 
 def find_report(session, name: str, strict: bool = False) -> Optional[dict]:

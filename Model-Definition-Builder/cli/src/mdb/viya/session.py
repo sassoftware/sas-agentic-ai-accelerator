@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .answer import one_line
+
 TOKEN_ENV = "SAS_VIYA_TOKEN"
 USER_ENV = "SAS_VIYA_USER"
 PASSWORD_ENV = "SAS_VIYA_PASSWORD"
@@ -291,7 +293,7 @@ def _refused_sign_in(exc: Exception) -> bool:
 
 def _answer(exc: Exception) -> tuple:
     """(error, error_description) of the answer a refused sign-in carries,
-    each "" where it cannot be read.
+    each whole and on one line, and "" where it cannot be read.
 
     sasctl hands the answer of the token address on in one of its two ways
     only: the HTTPError of requests carries it as `response`, and its JSON
@@ -303,7 +305,7 @@ def _answer(exc: Exception) -> tuple:
         return "", ""
     if not isinstance(body, dict):
         return "", ""
-    return tuple(" ".join(str(body.get(key) or "").split())[:200] for key in ("error", "error_description"))
+    return tuple(one_line(body.get(key) or "") for key in ("error", "error_description"))
 
 
 def _bad_credentials(exc: Exception) -> bool:
