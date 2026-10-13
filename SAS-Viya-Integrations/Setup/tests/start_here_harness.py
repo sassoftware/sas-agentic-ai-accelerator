@@ -183,6 +183,22 @@ class Site:
             "type": "child", "createdBy": "uid7781", "addedBy": "uid9024"})
         return uri
 
+    def twin(self, path, kind, first=False):
+        """Puts one more object of that name and kind into the folder, beside what is there: a child with an id of
+        its own. A second folder has members of its own - one file - and is no folder of a path. Whether SAS Viya
+        lets a folder hold two such objects was not measured for every kind; mdb content-deploy has a line for it.
+        Returns its uri."""
+        folder, _, name = path.rpartition("/")
+        identifier = self._id("tttttttt")
+        if kind == "folder":
+            self.folders[identifier] = [{"id": self._id("mmmmmmmm"), "name": "__init__.py", "contentType": "file", "type": "child",
+                                         "uri": "/files/files/" + self._id("oooooooo")}]
+        entry = {"id": self._id("mmmmmmmm"), "name": name, "contentType": MEMBER_TYPE.get(kind, kind), "uri": URI_OF[kind] + identifier,
+                 "type": "child", "createdBy": "uid7781", "addedBy": "uid9024"}
+        members = self.folders[self.folder_ids[folder]]
+        members.insert(0, entry) if first else members.append(entry)
+        return entry["uri"]
+
     def refer(self, path, kind="file", first=False):
         """Puts a reference into a folder, under the name of the path: a member that names an object of that kind
         which lives elsewhere. The member has the shape that was read on SAS Viya 2026.09 on 2026-10-13 for a

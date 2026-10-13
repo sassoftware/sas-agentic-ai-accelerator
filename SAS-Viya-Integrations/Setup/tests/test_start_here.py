@@ -268,15 +268,26 @@ def test_no_advice_of_the_page_tells_to_upload_something(monkeypatch, tmp_path):
         assert "mdb content-deploy" in advice and "Import the package of the accelerator again" in advice
 
 
-def test_a_step_is_found_with_or_without_the_ending_of_its_file(monkeypatch, tmp_path):
-    entries = [("release.json", "file"), ("Custom Steps/MM - Get All Repositories", "step"), ("Custom Steps/LLM - List Available LLMs.step", "step")]
+def test_a_step_is_found_under_the_name_of_its_entry_to_the_letter(monkeypatch, tmp_path):
+    """The page had looked for a step under its name with and without the ending .step, objects and references
+    alike, where mdb content-deploy takes the name of the entry as it is (viya/content.py, _named): a step that is
+    registered under the other spelling is no step of the entry there, and mdb registers the one of the entry
+    beside it. The manifest names every step with the ending, and so does the step file. The page takes the name
+    as mdb does."""
+    entries = [("release.json", "file"), ("Custom Steps/MM - Get All Repositories", "step"), ("Custom Steps/LLM - List Available LLMs.step", "step"),
+               ("Custom Steps/LLM - Get Options.step", "step")]
     site = Site(entries=[("release.json", "file")])
     site.release["entries"] = [{"path": path, "kind": kind} for path, kind in entries]
     site.add("Custom Steps/MM - Get All Repositories.step", "step")
     site.add("Custom Steps/LLM - List Available LLMs", "step")
+    site.add("Custom Steps/LLM - Get Options.step", "step")
     lines, _ = lines_of(monkeypatch, tmp_path, site)
 
-    assert set(states(lines, "Content").values()) == {OK}
+    assert states(lines, "Content") == {"release.json (file)": OK, "Custom Steps/MM - Get All Repositories (step)": MISSING,
+                                        "Custom Steps/LLM - List Available LLMs.step (step)": MISSING,
+                                        "Custom Steps/LLM - Get Options.step (step)": OK}
+    for what in ("Custom Steps/MM - Get All Repositories (step)", "Custom Steps/LLM - List Available LLMs.step (step)"):
+        assert one(lines, what)["found"] == "not in its folder"
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +297,7 @@ def test_a_step_is_found_with_or_without_the_ending_of_its_file(monkeypatch, tmp
 REFERENCE_FOUND = "a reference of that name is in its folder, and the object it names lives elsewhere"
 REMOVE = "Remove the reference from the folder. Then: "
 DEPLOY = "Import the package of the accelerator again, or run mdb content-deploy."
-REFERENCE_BESIDE = "present, and a reference of that name is in its folder, which names an object that lives elsewhere"
+REFERENCE_BESIDE ="present, and a reference of that name is in its folder, which names an object that lives elsewhere"
 REMOVE_ONLY = "Remove the reference from the folder: while it is there, the import and mdb content-deploy write nothing for this entry."
 
 
@@ -379,13 +390,15 @@ def test_a_file_with_a_reference_of_its_name_beside_it_is_no_line_that_is_ok(mon
 ], ids=["file", "step", "job definition", "folder"])
 def test_a_reference_of_the_name_and_kind_of_an_entry_beside_its_object_stands_in_its_way(monkeypatch, tmp_path, path, kind):
     """Every kind of entry mdb writes: the object and a reference to an object of that kind under one name. What
-    lies below a folder, and the report the page links, are read as without the reference."""
+    lies below a folder, and the report the page links, are read as without the reference; mdb writes nothing below
+    such a folder, and the line of the folder says so."""
     site = Site()
     site.refer(path, kind)
     lines, reports = lines_of(monkeypatch, tmp_path, site)
     entry = one(lines, f"{path} ({kind})")
 
-    assert (entry["state"], entry["found"], entry["todo"]) == (MISSING, REFERENCE_BESIDE, REMOVE_ONLY)
+    below = " Nothing is written below the folder either." if kind == "folder" else ""
+    assert (entry["state"], entry["found"], entry["todo"]) == (MISSING, REFERENCE_BESIDE, REMOVE_ONLY + below)
     assert [other["what"] for other in lines if other["state"] != OK] == [f"{path} ({kind})"]
     assert reports["Prompt Builder"] == site.folders[site.folder_ids["Prompt Builder"]][0]["uri"]
 
@@ -521,11 +534,20 @@ def test_the_page_and_mdb_have_one_rule_for_a_reference():
     assert ast.literal_eval(of_the_page.group(1)) == ast.literal_eval(table.group(1)) == harness.URI_OF
     assert 'return [m for m in members if m.get("name") == name and str(m.get("uri") or "").startswith(prefix)]' in mdb
     assert "return [m for m in _named(members, name, kind) if is_reference(m)]" in mdb
-    assert "[found for found in named if found[0] == REFERENCE and found[1].startswith(of_kind)])" in block
-    # the two places that judge an entry ask the one function
-    assert block.count("def named_as(members, names, kind):") == 1
-    assert block.count("references = named_as(members, [RELEASE_FILE], 'file')[1]") == 1
-    assert block.count("present, references = named_as(members, names, kind)") == 1 and block.count("named_as(") == 3
+    assert "return [m for m in _named(members, name, kind) if not is_reference(m)]" in mdb
+    # the page: the name of the entry as it is, and the kind by the uri - for an object as for a reference
+    assert ("    named = members.get(name, [])\n"
+            "    of_kind = KIND_URI.get(kind, '')\n"
+            "    return ([found for found in named if found[0] != REFERENCE and found[1].startswith(of_kind)],\n"
+            "            [found for found in named if found[0] == REFERENCE and found[1].startswith(of_kind)],\n"
+            "            [found for found in named if found[0] != REFERENCE and not found[1].startswith(of_kind)])\n") in block
+    # the three places that judge what has the name of an entry ask the one function, each with the name as it is
+    assert block.count("def named_as(members, name, kind):") == 1
+    assert block.count("files, references, _ = named_as(members, RELEASE_FILE, 'file')") == 1
+    assert block.count("there, references, others = named_as(members, name, kind)") == 1
+    assert block.count("folders = named_as(parent_members, name, 'folder')[0]") == 1 and block.count("named_as(") == 4
+    # no second spelling of a name is looked for, and no kind is told by another table
+    assert ".step'" not in block and "MEMBER_TYPES" not in block
 
 
 def test_the_program_tells_a_reference_by_the_type_of_the_member():
@@ -540,10 +562,14 @@ def test_the_program_tells_a_reference_by_the_type_of_the_member():
     assert 'return str(member.get("type") or "child").lower() == "reference"' in mdb
     # the header of the program says what a reference is to the page
     header = " ".join(line.lstrip(" *") for line in harness.program().split("*/")[0].split("\n"))
-    assert ("A member of a folder that is a reference to an object elsewhere is no entry: it is not followed. A reference that has the "
+    assert ("What a folder holds under the name of an entry is told the way mdb content-deploy tells it: a member has the name of "
+            "the entry to the letter, and is of its kind by what its uri starts with. "
+            "A member of a folder that is a reference to an object elsewhere is no entry: it is not followed. A reference that has the "
             "name of an entry and names an object of the kind of the entry stands in the way of that entry - mdb content-deploy and "
             "the import write nothing for it -, and the line of the entry says so, where the reference is all the folder holds under "
-            "that name and where it lies beside the object. A report that is there is present whatever lies beside it: mdb "
+            "that name and where it lies beside the object. Two objects of the name and kind of an entry stand in its way as well - "
+            "nothing says which one is meant -, and what lies below a name two folders have is not checked. "
+            "A report that is there is present whatever lies beside it: mdb "
             "writes no report and fails none over a reference. A reference to an object of another kind is no part of the check"
             ) in " ".join(header.split())
 

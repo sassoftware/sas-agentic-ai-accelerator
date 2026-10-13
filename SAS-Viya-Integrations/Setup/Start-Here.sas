@@ -31,13 +31,19 @@
  * sentence what to do:
  *   - the release: release.json in the content root (version, commit, date)
  *   - the content: every entry release.json lists, present in this content
- *     root yes or no, so the page needs no checkout. A member of a folder
+ *     root yes or no, so the page needs no checkout. What a folder holds
+ *     under the name of an entry is told the way mdb content-deploy tells
+ *     it: a member has the name of the entry to the letter, and is of its
+ *     kind by what its uri starts with. A member of a folder
  *     that is a reference to an object elsewhere is no entry: it is not
  *     followed. A reference that has the name of an entry and names an
  *     object of the kind of the entry stands in the way of that entry - mdb
  *     content-deploy and the import write nothing for it -, and the line
  *     of the entry says so, where the reference is all the folder holds
- *     under that name and where it lies beside the object. A report that
+ *     under that name and where it lies beside the object. Two objects of
+ *     the name and kind of an entry stand in its way as well - nothing says
+ *     which one is meant -, and what lies below a name two folders have is
+ *     not checked. A report that
  *     is there is present whatever lies beside it: mdb writes no report
  *     and fails none over a reference. A reference to an object of
  *     another kind is no part of the check
@@ -153,6 +159,8 @@ MISSING = 'missing'
 NOT_CHECKED = 'not checked'
 # What read_json gives as the status of an answer that came and is no JSON
 NO_JSON = -1
+# What read_folders gives as the status of a folder whose name two or more folders have, and of every folder below it
+NOT_ONE = -2
 
 RELEASE_FILE = 'release.json'
 # The two reports of the content folder, by their path below the content root
@@ -178,9 +186,6 @@ CHAIN_TABLES = (
     ('RAG_RUNS', 'Link-Logs-To-Models.sas', GET_ALL_PROMPTS),
     ('MODEL_CATALOG', 'Link-Logs-To-Models.sas', GET_ALL_PROMPTS),
 )
-# What a folder member is called for each kind of entry release.json lists
-MEMBER_TYPES = {'folder': ('folder',), 'file': ('file',), 'step': ('flowStep',), 'jobDefinition': ('jobDefinition',),
-                'report': ('report',)}
 # The Python packages of each part: (part, name to install, module, names its version is found under, the least version, needed for)
 PACKAGES = (
     ('Logging and Monitoring', 'pandas', 'pandas', ('pandas',), '', 'the log parser and the link program'),
@@ -238,12 +243,18 @@ REFERENCE = 'reference'
 REFERENCE_FOUND = 'a reference of that name is in its folder, and the object it names lives elsewhere'
 REFERENCE_TODO = 'Remove the reference from the folder. Then: '
 # What the uri of an object of each kind of entry starts with: the uri of a reference is the one of the object it
-# names. mdb fails an entry for a reference that has its name and names an object of its kind, alone or beside the
-# object, and for no other reference (viya/content.py, _references_named). The page judges an entry the same way
+# names. mdb tells what a folder holds under the name of an entry by the name, to the letter, and by this table
+# (viya/content.py, _named). It fails an entry for a reference that has its name and names an object of its kind,
+# alone or beside the object, and for two objects of its name and kind. It writes no report and fails none over
+# what a folder holds. The page judges an entry the same way
 KIND_URI = {'file': '/files/files/', 'step': '/dataFlows/steps/', 'jobDefinition': '/jobDefinitions/definitions/',
             'report': '/reports/reports/', 'folder': '/folders/folders/'}
 REFERENCE_BESIDE = 'present, and a reference of that name is in its folder, which names an object that lives elsewhere'
 REFERENCE_BESIDE_TODO = 'Remove the reference from the folder: while it is there, the import and mdb content-deploy write nothing for this entry.'
+# Two objects of the name and kind of an entry in one folder: the entry is there, and nothing is written for it
+NOT_ONE_TODO = 'Remove or rename all but one of them: while they are there, the import and mdb content-deploy write nothing for this entry.'
+# What the line of a folder adds to either: mdb writes nothing into a folder whose entry it fails, nor below it
+BELOW_TOO = ' Nothing is written below the folder either.'
 
 
 # ---------------------------------------------------------------------------
@@ -267,13 +278,17 @@ def not_read(status, what):
         return NOT_CHECKED, f'{what}: the service did not answer'
     if status == NO_JSON:
         return NOT_CHECKED, f'{what}: the answer could not be read'
+    if status == NOT_ONE:
+        return NOT_CHECKED, f'{what} was not read: it is, or lies below, one of two or more folders of one name, and nothing says which one is meant'
     return NOT_CHECKED, f'{what}: the service answered HTTP {status}'
 
 
 def ask_again(status):
-    """What to do about a request that was not answered with 200 or 404."""
+    """What to do about a request that was not answered with 200 or 404, and about a folder that was not read."""
     if status in REFUSED:
         return ASK_ADMINISTRATOR
+    if status == NOT_ONE:
+        return 'Remove or rename all but one of the folders of that name.'
     return 'Open this page again. If the line stays, look at the state of the service in SAS Environment Manager.'
 
 
@@ -435,14 +450,21 @@ def member(members, name, kinds):
     return ([found for found in named if found[0] in kinds] or named or [('', '')])[0]
 
 
-def named_as(members, names, kind):
-    """What a folder holds under the names of an entry of a kind: (its objects, the references that stand in the
-    way of the entry). A reference is no object of the folder. It stands in the way where the uri it names is the
-    uri of an object of that kind; a reference to an object of another kind is in neither list."""
-    named = [found for candidate in names for found in members.get(candidate, [])]
+def named_as(members, name, kind):
+    """What a folder holds under the name of an entry of a kind, told as mdb tells it: (its objects of that kind,
+    the references that stand in the way of the entry, its objects of another kind). The name is the one of the
+    entry, to the letter. An object or a reference is of the kind where its uri starts as the uri of an object of
+    that kind does. A reference is no object of the folder, and one to an object of another kind is in no list."""
+    named = members.get(name, [])
     of_kind = KIND_URI.get(kind, '')
-    return ([found for found in named if found[0] != REFERENCE],
-            [found for found in named if found[0] == REFERENCE and found[1].startswith(of_kind)])
+    return ([found for found in named if found[0] != REFERENCE and found[1].startswith(of_kind)],
+            [found for found in named if found[0] == REFERENCE and found[1].startswith(of_kind)],
+            [found for found in named if found[0] != REFERENCE and not found[1].startswith(of_kind)])
+
+
+def not_one(count):
+    """What the line of an entry says of two or more objects of its name and kind."""
+    return f'{count} objects of that name and kind are in its folder, and nothing says which one is meant'
 
 
 def read_root(get, root):
@@ -457,19 +479,21 @@ def read_root(get, root):
 
 def read_folders(get, listings, wanted):
     """Adds the members of the folders below the content root that are asked for and not read
-    yet. A folder that is not there is 404, one whose parent could not be listed has the status
-    of the parent."""
+    yet. A folder is told as the entry of one is: by its name and by what its uri starts with.
+    A folder that is not there is 404, one whose parent could not be listed has the status of
+    the parent. Where two or more folders have the name, none of them is read: nothing says
+    which one is meant, whichever the listing names first."""
     for path in sorted({part for part in wanted if part and part not in listings}, key=lambda part: (part.count('/'), part)):
         parent, _, name = path.rpartition('/')
         parent_status, parent_members = listings.get(parent, (404, {}))
         if parent_status != 200:
             listings[path] = (parent_status, {})
             continue
-        kind, uri = member(parent_members, name, ('folder',))
-        if kind != 'folder' or not uri.startswith('/folders/folders/'):
-            listings[path] = (404, {})
-            continue
-        listings[path] = members_of(get, uri)
+        folders = named_as(parent_members, name, 'folder')[0]
+        if len(folders) == 1:
+            listings[path] = members_of(get, folders[0][1])
+        else:
+            listings[path] = (NOT_ONE if folders else 404, {})
     return listings
 
 
@@ -496,8 +520,11 @@ def release_of(get, listings):
         state, found = not_read(status, 'the content root')
         return None, [line(section, 'Content root', state, found, ask_again(status))]
     kind, uri = member(members, RELEASE_FILE, ('file',))
-    references = named_as(members, [RELEASE_FILE], 'file')[1]
+    files, references, _ = named_as(members, RELEASE_FILE, 'file')
     deploy = 'Import the package of the accelerator again, or run mdb content-deploy, which writes the file.'
+    if len(files) > 1:
+        # none of them is read: the entries the page checks would be the ones of whichever the listing names first
+        return None, [line(section, RELEASE_FILE, MISSING, not_one(len(files)), NOT_ONE_TODO)]
     if references and kind != 'file':
         return None, [line(section, RELEASE_FILE, MISSING, REFERENCE_FOUND, REFERENCE_TODO + deploy)]
     if not uri or kind != 'file':
@@ -552,28 +579,33 @@ def entry_line(path, kind, listings):
     if status != 200:
         state, found = not_read(status, 'its folder')
         return line(section, what, state, found, ask_again(status))
-    names = [name] + ([name + '.step'] if kind == 'step' and not name.endswith('.step') else [])
-    names += [name[:-5]] if kind == 'step' and name.endswith('.step') else []
     # a reference is no object of the folder: only what is left is looked at for the entry
-    present, references = named_as(members, names, kind)
-    wanted = MEMBER_TYPES.get(kind)
-    there = [found for found in present if wanted is None or found[0] in wanted]
+    there, references, others = named_as(members, name, kind)
+    if there and kind == 'report':
+        # mdb writes no report and fails none over what its folder holds: a report that is there is present
+        return line(section, what, OK, 'present')
     if references and not there:
         return line(section, what, MISSING, REFERENCE_FOUND, REFERENCE_TODO + deploy)
-    if references and kind != 'report':
-        # the object is there, so the entry is counted as present, and its line is shown with the ones that are not ok.
-        # Not for a report: mdb writes none and fails none over a reference, so a report that is there is present
-        return dict(line(section, what, MISSING, REFERENCE_BESIDE, REFERENCE_BESIDE_TODO), present=True)
-    if not present:
-        return line(section, what, MISSING, 'not in its folder', deploy)
-    uploaded = kind == 'step' and any(found[0] == 'file' for found in present)
+    below = BELOW_TOO if kind == 'folder' else ''
+    if len(there) > 1 and kind in KIND_URI:
+        # the entry is there, so it is counted as present, and its line is shown with the ones that are not ok. Two
+        # objects come before a reference beside them: below two folders nothing is read, and their line says why.
+        # An entry without a kind mdb knows has no objects of its kind to count: any object of its name is the entry
+        return dict(line(section, what, MISSING, not_one(len(there)), NOT_ONE_TODO + below), present=True)
+    if references:
+        # the same for a reference beside the object
+        return dict(line(section, what, MISSING, REFERENCE_BESIDE, REFERENCE_BESIDE_TODO + below), present=True)
+    uploaded = kind == 'step' and any(found[1].startswith(KIND_URI['file']) for found in others)
     if there:
         if uploaded:
             return line(section, what, OK, 'present, and a file of that name lies beside it', STEP_BESIDE)
         return line(section, what, OK, 'present')
     if uploaded:
         return line(section, what, MISSING, 'a file of that name is there, and no registered step', STEP_UPLOADED)
-    return line(section, what, MISSING, f'the object of that name is a {present[0][0] or "member of another kind"}', deploy)
+    if not others:
+        return line(section, what, MISSING, 'not in its folder', deploy)
+    told = next((known for known, starts in KIND_URI.items() if others[0][1].startswith(starts)), 'member of another kind')
+    return line(section, what, MISSING, f'the object of that name is a {told}', deploy)
 
 
 def content_lines(release, listings):
