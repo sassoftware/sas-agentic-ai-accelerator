@@ -139,8 +139,8 @@ def test_an_unknown_identity_type_is_refused_by_name(tmp_path):
 def test_group_and_user_address_different_endpoints():
     assert credential_path("d", Identity("group", "PromptEngineers")) == \
         "/credentials/domains/d/groups/PromptEngineers"
-    assert credential_path("d", Identity("user", "gerdaw")) == \
-        "/credentials/domains/d/users/gerdaw"
+    assert credential_path("d", Identity("user", "some.user")) == \
+        "/credentials/domains/d/users/some.user"
 
 
 # ---- planning -------------------------------------------------------------
