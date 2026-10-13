@@ -275,12 +275,13 @@ def _refused_sign_in(exc: Exception) -> bool:
     Both are recognised by name and by what they carry, so that this module
     imports neither sasctl nor requests to say so. A 401 from any other
     address, and any other status of the token address, is not a refused
-    sign-in.
+    sign-in. Any other exception is one only where sasctl raised it over a
+    401 of the token address (`_held_answer`).
     """
     if type(exc).__name__ == "AuthenticationError":
         return True
     if type(exc).__name__ != "HTTPError":
-        return False
+        return _held_answer(exc) is not None
     response = getattr(exc, "response", None)
     url = str(getattr(response, "url", "") or getattr(getattr(exc, "request", None), "url", "") or "")
     status = getattr(response, "status_code", None)
@@ -289,16 +290,41 @@ def _refused_sign_in(exc: Exception) -> bool:
     return status == 401 and TOKEN_PATH in (url or str(exc))
 
 
+def _held_answer(exc: Exception):
+    """The 401 answer of the token address that a frame in the traceback of
+    `exc` holds, or None.
+
+    sasctl (1.11.8 was read) reads the body of a 401 of the token address
+    before it raises, and some bodies leave it as an exception that is
+    neither of its two ways and carries no response: a JSON body that is no
+    object, or whose `error_description` is no text (AttributeError), and an
+    `error_description` that says "Unauthorized grant type" (RuntimeError).
+    The frame of sasctl that read the answer still holds it."""
+    found = None
+    frame = getattr(exc, "__traceback__", None)
+    while frame is not None:
+        for value in list(frame.tb_frame.f_locals.values()):
+            try:
+                if getattr(value, "status_code", None) == 401 and TOKEN_PATH in str(getattr(value, "url", "") or ""):
+                    found = value
+            except Exception:       # a local that cannot be asked
+                pass
+        frame = frame.tb_next
+    return found
+
+
 def _answer(exc: Exception) -> tuple:
     """(error, error_description) of the answer a refused sign-in carries,
     each whole and on one line, and "" where it cannot be read.
 
-    sasctl hands the answer of the token address on in one of its two ways
-    only: the HTTPError of requests carries it as `response`, and its JSON
-    body names both fields. sasctl's own AuthenticationError carries no
-    response - sasctl has read the body by then (see `_bad_credentials`)."""
+    The HTTPError of requests carries the answer of the token address as
+    `response`, and its JSON body names both fields. sasctl's own
+    AuthenticationError carries no response - sasctl has read the body by
+    then (see `_bad_credentials`); for it, and for anything else sasctl
+    raised over the answer, the answer is the one `_held_answer` finds."""
+    response = getattr(exc, "response", None)
     try:
-        body = getattr(exc, "response", None).json()
+        body = (_held_answer(exc) if response is None else response).json()
     except Exception:       # no response, no JSON
         return "", ""
     if not isinstance(body, dict):
@@ -314,7 +340,8 @@ def _bad_credentials(exc: Exception) -> bool:
     sasctl (1.11.8 was read, and a test runs the one installed) raises its
     AuthenticationError for the password grant where the token address
     answered 401 with "bad credentials" in the `error_description` of its
-    JSON body, and passes every other 401 on as the HTTPError of requests."""
+    JSON body, and passes another 401 on as the HTTPError of requests - or,
+    for some bodies, as what `_held_answer` names."""
     return type(exc).__name__ == "AuthenticationError" or BAD_CREDENTIALS in _answer(exc)[1].lower()
 
 
@@ -324,14 +351,15 @@ def _refusal(exc: Exception, grant: bool = False) -> str:
     `error` and the `error_description` of the answer where it carries them.
     `grant` says that the refusal is one of the password grant - there
     sasctl's AuthenticationError stands for an `error_description` that mdb
-    cannot read itself (`_bad_credentials`)."""
-    if type(exc).__name__ == "HTTPError":
+    cannot read itself (`_bad_credentials`). Every other refused sign-in is
+    a 401 of the token address (`_refused_sign_in`) and is said as one."""
+    if type(exc).__name__ != "AuthenticationError":
         error, description = _answer(exc)
         said = [f'{name} "{value}"' for name, value in (("error", error), ("error_description", description)) if value]
         return f"HTTP 401 from {TOKEN_PATH}" + (
             f" with {' and '.join(said)}" if said else " (no error_description could be read from the answer)")
     text = str(exc).strip().rstrip(".") or type(exc).__name__
-    if grant and type(exc).__name__ == "AuthenticationError":
+    if grant:
         return f'{text} - sasctl says so for an answer whose error_description says "Bad credentials"'
     return text
 

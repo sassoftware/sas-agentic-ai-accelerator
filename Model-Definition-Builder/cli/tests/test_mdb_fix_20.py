@@ -7,6 +7,7 @@ answer: nothing here says how SAS Viya answers.
 """
 import json
 import re
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,7 +17,7 @@ from content_fakes import Response
 from mdb.viya import answer as answering
 from mdb.viya import content as deploying
 from mdb.viya import session as s
-from test_session import _answered
+from test_session import URL, _answered, env  # noqa: F401
 
 
 # ---- the answer of a refused request: one function, one line ----------------------
@@ -92,3 +93,77 @@ def test_the_sentence_of_a_refused_sign_in_shows_the_answer_whole():
     assert s._refusal(refused).endswith('Ask an administrator."')
     # a value that is no text is shown as the JSON it is
     assert s._answer(_answered('{"error":5,"error_description":{"reason":"locked"}}')) == ("5", '{"reason": "locked"}')
+
+
+# ---- a 401 of the token address that sasctl raises as something else ----------------
+@pytest.fixture
+def logon(env, monkeypatch):
+    """The real sasctl with the transport of requests replaced: every POST is
+    answered 401 with the body the test sets. Skipped where sasctl is not
+    installed (the `viya` extra)."""
+    sasctl = pytest.importorskip("sasctl")
+    import requests
+
+    state = SimpleNamespace(body="", posted=[])
+
+    def post(self, url, **kwargs):
+        state.posted.append(url)
+        response = requests.Response()
+        response.status_code, response.url = 401, url
+        response._content = state.body.encode("utf-8")
+        response.headers["Content-Type"] = "application/json"
+        return response
+
+    monkeypatch.setattr(requests.Session, "post", post)
+    monkeypatch.setitem(sys.modules, "sasctl", sasctl)
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    env.setenv(s.URL_ENV, URL)
+    env.setenv(s.USER_ENV, "u")
+    env.setenv(s.PASSWORD_ENV, "s3cret-p")
+    env.setenv("SAS_VIYA_VERIFY_SSL", "false")
+    return state
+
+
+@pytest.mark.parametrize("body, raised, said", [
+    ('["Bad credentials"]', "AttributeError", "(no error_description could be read from the answer)"),
+    ('{"error":null,"error_description":null}', "AttributeError",
+     "(no error_description could be read from the answer)"),
+    ('{"error":"unauthorized","error_description":5}', "AttributeError",
+     'with error "unauthorized" and error_description "5"'),
+    ('{"error":"invalid_client","error_description":"Unauthorized grant type: password"}', "RuntimeError",
+     'with error "invalid_client" and error_description "Unauthorized grant type: password"'),
+])
+def test_a_401_that_sasctl_raises_as_something_else_is_a_refused_sign_in(logon, body, raised, said):
+    """review-20: a 401 of the token address whose body is no object, whose
+    error_description is no text, or says 'Unauthorized grant type', leaves
+    sasctl as AttributeError or RuntimeError - and the command ended with a
+    traceback after one sign-in."""
+    logon.body = body
+    with pytest.raises(s.ViyaSignInError) as caught:
+        s.create_session()
+    assert type(caught.value.__cause__).__name__ == raised and len(logon.posted) == 3
+    assert str(caught.value).startswith(
+        f"SAS Viya at {URL} refused the sign-in of u with SAS_VIYA_USER + SAS_VIYA_PASSWORD (3 sign-ins made): "
+        f"HTTP 401 from /SASLogon/oauth/token {said}. Check the credentials")
+    assert "s3cret-p" not in str(caught.value)
+
+
+def test_an_error_that_is_no_answer_of_the_token_address_is_passed_on():
+    """What tells the refusal: a frame of the traceback holds a 401 of the
+    token address. The same error without one, with another status or from
+    another address is the defect it looks like."""
+    def raised(status, url):
+        answer = SimpleNamespace(status_code=status, url=url, json=lambda: {"error_description": 5})  # noqa: F841
+        try:
+            raise AttributeError("'int' object has no attribute 'lower'")
+        except AttributeError as exc:
+            return exc
+    token = f"{URL}/SASLogon/oauth/token#password"
+    assert s._refused_sign_in(raised(401, token)) and s._answer(raised(401, token)) == ("", "5")
+    assert not s._refused_sign_in(raised(503, token))
+    assert not s._refused_sign_in(raised(401, f"{URL}/folders/folders"))
+    assert not s._refused_sign_in(AttributeError("'int' object has no attribute 'lower'"))
+    waited = []
+    with pytest.raises(AttributeError):
+        s._sign_in(lambda: (_ for _ in ()).throw(AttributeError("a defect")), sleep=waited.append)
+    assert waited == []
