@@ -1237,7 +1237,9 @@ def test_the_about_tab_names_the_five_tables():
     for words in ("Prompt experiments", "Prompt optimizations", "RAG setups", "RAG runs", "Model catalog",
                   "modelID, runID, model", "modelID, optimizationId", "modelID, run_id"):
         assert words in about
-    assert by_id["textChangelog"]["text"].startswith("* Version: 2.3 (12OCT2026)")
+    assert by_id["textChangelog"]["text"].startswith("* Version: 2.4 (13OCT2026)\n      - The column names of a run table and of a "
+                                                    "ledger are handed to the INDEXW function through %SUPERQ, as one text\n")
+    assert "\n* Version: 2.3 (12OCT2026)" in by_id["textChangelog"]["text"]
     assert "\n* Version: 2.2 (12OCT2026)" in by_id["textChangelog"]["text"]
     assert "\n* Version: 2.1 (12OCT2026)" in by_id["textChangelog"]["text"] and "* Version: 2.0 (11OCT2026)" in by_id["textChangelog"]["text"]
     # what versions 2.2 and 2.3 say, beside the place of the program it is about
@@ -1273,7 +1275,7 @@ def test_the_about_tab_says_of_the_condition_code_what_was_measured():
             "the log held _FLW_ACTION_START_ for the step and neither _FLW_ACTION_TABLE_ nor _FLW_ACTION_END_"):
         assert measured in about, measured
     assert "in the code of a flow the first of them is the end action of the flow" in tail
-    changelog = by_id["textChangelog"]["text"].split("* Version: 2.2 (12OCT2026)")[0]
+    changelog = by_id["textChangelog"]["text"].split("* Version: 2.2 (12OCT2026)")[0].split("* Version: 2.3 (12OCT2026)")[1]
     assert changelog.count("\n      - ") == 2 and "what was measured" in changelog
 
 
@@ -1796,7 +1798,7 @@ def test_a_setup_without_a_run_table_gives_the_runs_its_ledger_names(monkeypatch
     assert "length &_gap_length_rag_runs.;" in statements and "call missing(of &_gap_runs_texts. &_gap_runs_numbers.);" in statements
     assert "proc append base=work._gap_all_rag_runs data=work._gap_runs_one;" in statements
     # a ledger of another shape is said and left
-    assert ("%if %sysfunc(indexw(%str( &_gap_lhave.), RUN_ID)) EQ 0 or %sysfunc(indexw(%str( &_gap_lhave.), UPDATED_AT)) EQ 0 "
+    assert ("%if %sysfunc(indexw(%str( )%superq(_gap_lhave), RUN_ID)) EQ 0 or %sysfunc(indexw(%str( )%superq(_gap_lhave), UPDATED_AT)) EQ 0 "
             "%then %do;") in statements
     # nothing loads, saves, drops or changes a table of a setup
     for action in ("loadTable", "table.save", "dropTable", "alterTable", "table.promote", "load casData", "casOut", "casutil"):

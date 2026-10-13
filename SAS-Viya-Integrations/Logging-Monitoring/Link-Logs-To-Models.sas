@@ -142,9 +142,9 @@ run; quit;
 %let _lnk_log_exists = 0;
 %let _lnk_catalog_exists = 0;
 %let _lnk_runs_exists = 0;
-%_lnk_ensure_loaded(&_lnk_log_caslib., &_lnk_log_table., _lnk_log_exists);
-%_lnk_ensure_loaded(&_lnk_catalog_caslib., &_lnk_catalog_table., _lnk_catalog_exists);
-%_lnk_ensure_loaded(&_lnk_runs_caslib., &_lnk_runs_table., _lnk_runs_exists);
+%_lnk_ensure_loaded(%superq(_lnk_log_caslib), %superq(_lnk_log_table), _lnk_log_exists);
+%_lnk_ensure_loaded(%superq(_lnk_catalog_caslib), %superq(_lnk_catalog_table), _lnk_catalog_exists);
+%_lnk_ensure_loaded(%superq(_lnk_runs_caslib), %superq(_lnk_runs_table), _lnk_runs_exists);
 
 * Without the log table or the catalog nothing is linked. Each case is one ERROR line and the Python below is skipped;
 %let _lnk_ready = 1;

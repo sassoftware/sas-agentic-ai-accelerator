@@ -180,7 +180,7 @@ def test_log_table_that_was_loaded_from_its_saved_file_and_not_linked_is_put_in_
 
     assert macro.count(LOADED_AND_NOT_LINKED) == 1
     # Loaded by this program: not in memory when the scope was asked, which is before the macro that loads, and in memory behind it
-    assert program.index("call symputx('_lnk_log_scope', found.exists);") < program.index("%_lnk_ensure_loaded(&_lnk_log_caslib., &_lnk_log_table., _lnk_log_exists);")
+    assert program.index("call symputx('_lnk_log_scope', found.exists);") < program.index("%_lnk_ensure_loaded(%superq(_lnk_log_caslib), %superq(_lnk_log_table), _lnk_log_exists);")
     assert 'casOut = {casLib = "&_lnk_lib.", name = "&_lnk_name."};' in program
     # The run that links nothing, and the table without rows: the two runs that end with a NOTE and build no table
     assert loaded_and_not_linked(_lnk_unchanged=1, _lnk_row_count=6, _lnk_log_scope=0, _lnk_log_exists=1)

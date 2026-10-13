@@ -244,3 +244,43 @@ def test_the_readme_shows_a_site_program_with_settings_of_the_program():
         assert name in section, name
         for variable in defaults:
             assert f"`{variable}`" in section, variable
+
+
+# ---------------------------------------------------------------------------
+# A setting or a list of names handed to a macro function or a macro as one text
+# ---------------------------------------------------------------------------
+
+def test_the_settings_link_logs_hands_to_its_macro_are_one_argument_each():
+    """Review-18 (open item 16): %_lnk_ensure_loaded was called with six settings as references with an
+    ampersand, so a value with a comma - a name list pasted into the wrong setting - was two arguments and
+    the call failed. The settings are handed over through %superq, which the macro processor takes as one
+    argument whatever it holds."""
+    from macro_harness import Macros, arguments
+
+    program = (FOLDER / "Link-Logs-To-Models.sas").read_text(encoding="utf-8").replace("\r\n", "\n")
+    calls = re.findall(r"^%_lnk_ensure_loaded\((.*)\);$", program, flags=re.MULTILINE)
+    assert len(calls) == 3
+    values = {name: "A,B" for name in ("_lnk_log_caslib", "_lnk_log_table", "_lnk_catalog_caslib", "_lnk_catalog_table",
+                                       "_lnk_runs_caslib", "_lnk_runs_table")}
+    macros = Macros(values)
+    for call in calls:
+        assert len(arguments(macros.resolve(call))) == 3, call
+        assert "&" not in call
+    # the way it was written: the comma of a value ends an argument
+    assert len(arguments(macros.resolve("&_lnk_log_caslib., &_lnk_log_table., _lnk_log_exists"))) == 5
+
+
+def test_the_column_names_get_all_prompts_looks_for_are_one_text():
+    """The same for %sysfunc(indexw(...)) in Get-All-Prompts.sas: the column names of a run table are handed to it
+    through %superq, so a name list with a comma is one argument."""
+    from macro_harness import Macros, arguments
+
+    program = (FOLDER / "Get-All-Prompts.sas").read_text(encoding="utf-8").replace("\r\n", "\n")
+    looks = re.findall(r"%sysfunc\(indexw\((.*?), (RUN_ID|UPDATED_AT|%upcase\(&_gap_col\.\))\)\)", program)
+    assert len(looks) == 5 and {text for text, _ in looks} == {"%str( )%superq(_gap_lhave)", "%str( )%superq(_gap_have)"}
+    macros = Macros({"_gap_have": "A,B RUN_ID", "_gap_lhave": "A,B UPDATED_AT"})
+    for text, word in looks:
+        assert len(arguments(macros.resolve(f"{text}, RUN_ID"))) == 2, text
+    # the way it was written - %str masks its own text, not the value a reference in it resolves to - a comma of a
+    # name ends an argument
+    assert len(arguments(macros.resolve(" &_gap_have., RUN_ID"))) == 3
