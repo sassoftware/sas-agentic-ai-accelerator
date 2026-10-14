@@ -126,7 +126,8 @@ export function isBlankName(name: string): boolean {
  * X are disabled, and Escape and a click beside the dialog are ignored. A
  * creation that is out cannot be called back, and a dialog closed over it
  * left its answer - a refusal above all - in a place nobody looks at. The
- * caller closes the dialog itself with `dialog.close()` once the thing exists.
+ * caller closes the dialog itself with `dialog.close()` once the thing exists;
+ * that empties the two fields, which otherwise keep what was typed.
  *
  * `onSave` reports what went wrong with `dialog.showError`. Should it end with
  * an error instead (a request that throws where no one expected it), the
@@ -244,6 +245,13 @@ export function createCreateModal(
     },
     close: () => {
       closed = true;
+      // The thing exists: the dialog opens empty for the next one. What was
+      // typed is kept only where nothing was created (Cancel, a refusal) -
+      // kept after a creation, the next opening offered the name and the
+      // description of the thing just created, and the description went to
+      // SAS Model Manager with the next one.
+      nameInput.value = '';
+      descriptionInput.value = '';
       Modal.getInstance(wrapper)?.hide();
     },
   };
