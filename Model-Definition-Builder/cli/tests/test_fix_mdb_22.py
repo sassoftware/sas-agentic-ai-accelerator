@@ -103,3 +103,35 @@ def test_an_id_with_a_control_character_or_a_blank_at_an_end_is_refused(mdb, who
 @pytest.mark.parametrize("who", ["G1", "LLM Consumers", "ada.lovelace@example.com", "Jörg", "a-b_c"])
 def test_an_id_a_line_shows_as_it_is_is_taken(who):
     assert credentials.Identity(type="group", id=who).id == who
+
+
+# ---- live-22a defect 1: the advice of an export that differs, for a folder of a test -----------
+def test_the_advice_of_an_export_of_a_test_folder_says_what_content_deploy_leaves(exporting, manifest, monkeypatch):
+    """live-22a: a test root deployed by `mdb content-deploy --create` was
+    exported with 4 differences - the contentRoot of two job definitions and
+    two reports - and the line advised `mdb content-deploy` to bring the
+    folder to the checkout, which cannot clear one of them."""
+    root = "/Users/me/My Folder/ZZ_VERIFY_R22/root"
+    # the folder as `mdb content-deploy --content-root <root> --create` leaves it, read off the site in memory
+    viya, held = Viya(), cli._viya_session
+    monkeypatch.setattr(cli, "_viya_session", lambda: viya)
+    assert CliRunner().invoke(cli.app, ["content-deploy", "--content-root", root, "--create"]).exit_code == 0
+    monkeypatch.setattr(cli, "_viya_session", held)
+    optimize, = viya.at(f"{root}/Prompt Builder/Optimize")
+    deployed = viya.jobs[optimize][0]
+    assert {p["name"]: p["defaultValue"] for p in deployed["parameters"]}["contentRoot"] == root
+    assert viya.at(f"{root}/{REPORT}") == []
+    built = package_of(manifest, change={"Prompt Builder/Optimize": deployed, REPORT: None}, root="root")
+    out = str(manifest.repo_root / "scratch" / "r22.json")
+    result, text, _, _ = exporting(built, "--content-root", root, "--out", out)
+    assert result.exit_code == 1, text
+    assert "job definition 'Prompt Builder/Optimize': 'parameters' differs" in text
+    assert f"report '{REPORT}' is in the manifest but not in the package" in text
+    assert ("In a folder other than /SAS Agentic AI Accelerator that command writes the folder into the "
+            "contentRoot of the job definitions and brings no report, so a difference in either stays: "
+            "--allow-differences writes the file all the same.") in " ".join(text.split())
+    result, text, _, _ = exporting(built, "--content-root", root, "--out", out, "--allow-differences")
+    assert result.exit_code == 0, text
+    # the content root of the release: content-deploy writes the root the manifest names, and a report is imported
+    result, text, _, _ = exporting(package_of(manifest, change={REPORT: None}))
+    assert result.exit_code == 1 and "In a folder other than" not in text, text

@@ -2029,7 +2029,10 @@ def package_export(
     generated, a name starting with ZZ_VERIFY), listed or not. Bring the
     folder to the checkout with `mdb content-deploy` first; a report that lacks
     an option of the current UI has to be saved once with that UI in SAS Visual
-    Analytics.
+    Analytics. In a folder other than the content root of the release,
+    `mdb content-deploy` writes that folder into the contentRoot of the job
+    definitions and brings no report: an export of such a folder is written
+    with --allow-differences.
 
     Of the files a report brings along, those stay that are children of the
     report and that its manifest entry lists; a picture the report shows from
@@ -2175,7 +2178,13 @@ def package_export(
         deploy_it = "mdb content-deploy" + _given("--content-root", root, manifest.content_root)
         console.print(f"[red]{len(differences)} difference(s) between the export and the checkout.[/red] Run "
                       f"`{_plain(deploy_it)}` to bring the folder to the checkout, and for a report open it in "
-                      "SAS Visual Analytics with the current UI and save it; then export again.")
+                      "SAS Visual Analytics with the current UI and save it; then export again."
+                      # a folder other than the release's: content-deploy writes the folder into contentRoot and
+                      # brings no report, so these two differences stay whatever it runs (live-22a)
+                      + ("" if root == manifest.content_root else
+                         f" In a folder other than {_plain(manifest.content_root)} that command writes the folder "
+                         "into the contentRoot of the job definitions and brings no report, so a difference in "
+                         "either stays: --allow-differences writes the file all the same."))
         unfit = True
     if unfit:
         console.print("[red]Nothing was written: " + (
