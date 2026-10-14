@@ -183,11 +183,15 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   await waitUntil(async () => page.isVisible('#app-obj-LPB-pet-0-run-nested-jev_mock-body .pb-answers'), 'answers rendered');
   assert((await page.$$('#app-obj-LPB-pet-0 .pb-answer-expected.is-match')).length === 2, 'both answers match their expected answers');
   assert(await page.$('#app-obj-LPB-pet-0 .bestPrompt'), 'the correct run carries the best icon');
+  // The box is what Manifest takes, and says so; that the answers matched is
+  // a note of its own (verify-outcomes.js: a run ticked whose answers did not).
   const bestLabel = await page.textContent('label[for="best-prompt-0-jev_mock"]');
-  assert(bestLabel.includes('Correct'), `the checkbox reads Correct in decision mode (got ${bestLabel})`);
+  assert(bestLabel.trim() === 'Use for Manifest', `the checkbox reads "Use for Manifest" in decision mode (got ${bestLabel})`);
+  const matchedNote = await page.$eval('#app-obj-LPB-pet-0-run-nested-jev_mock-body', (body) => body.querySelector('.pb-expected-all-matched')?.textContent ?? '');
+  assert(matchedNote === 'All expected answers matched', `the run whose answers all match carries the note that they do (got "${matchedNote}")`);
   assert((await page.$$('#app-obj-LPB-pet-0 .pb-prob-line')).length >= 4, 'probability bars are drawn per option');
   const legendText = await page.textContent('#app-obj-LPB-pet-legend');
-  assert(legendText.includes('Correct') && !legendText.includes('Judge the run'), 'the legend reads for a decision template');
+  assert(legendText.includes('Use for Manifest') && !legendText.includes('Judge the run'), 'the legend reads for a decision template');
 
   // ---- run against the decision model -----------------------------------------
   await resetLog();

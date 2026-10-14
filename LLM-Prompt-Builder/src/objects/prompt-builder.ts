@@ -3868,12 +3868,23 @@ export async function buildPromptBuilder(
                   const bestPromptLabel = document.createElement('label');
                   bestPromptLabel.className = 'form-check-label';
                   bestPromptLabel.htmlFor = `best-prompt-${index}-${promptExperimentRunModelKey}`;
+                  // On a decision run the box says what it does - the run
+                  // Manifest takes - not that the answers matched: it is ticked
+                  // where they did, and a person may tick it on any run. That
+                  // they matched is a note of its own, from the answers and the
+                  // expected answers the run was made with.
                   bestPromptLabel.innerText = (runIsDecision
                     ? promptBuilderInterfaceText.promptExperimentModelCorrect
                     : promptBuilderInterfaceText.promptExperimentModelPromptBest) as string;
                   bestPromptDiv.appendChild(bestPromptCheckbox);
                   bestPromptDiv.appendChild(bestPromptLabel);
                   promptExperimentContainerModelContainerAccordionItemBodyContainerBodyLine.appendChild(bestPromptDiv);
+                  if (runIsDecision && allExpectedMatch(runQuestions, parseAnswers(modelData.response), runExpected) === true) {
+                    const matchedNote = document.createElement('span');
+                    matchedNote.classList.add('pb-expected-all-matched', 'small', 'text-success');
+                    matchedNote.innerText = `${promptBuilderInterfaceText.promptExperimentAllExpectedMatched}`;
+                    promptExperimentContainerModelContainerAccordionItemBodyContainerBodyLine.appendChild(matchedNote);
+                  }
                 } else if (promptExperimentRunModelKeyAttribute === 'prompt_length') {
                   promptExperimentContainerModelContainerAccordionItemBodyContainerBodyLine.innerHTML = `<b>${promptBuilderInterfaceText.promptExperimentModelPromptLength}</b> ${escapeHtml(promptExperimentRunModelKeyValue)}`;
                 } else if (promptExperimentRunModelKeyAttribute === 'output_length') {

@@ -31,6 +31,9 @@
  *     opened while the usage was asked. A Delete project that stops part of
  *     the way shows what is left, in both builders, and says what was
  *     deleted.
+ *   - A decision run: its box reads "Use for Manifest", also where it is
+ *     ticked over answers that did not match, and the note that every
+ *     expected answer matched stands on the run where they did.
  *   - A setup opened twice while its question about a running ingestion is
  *     out keeps Launch off until the last question is answered; a setup
  *     created and not read back says that its buttons stay off, and Try
@@ -945,6 +948,48 @@ function writesCensus() {
       `Create prompt-test whose creation is stored and its answer lost reads the project back, finds the prompt-test, closes the dialog and opens it (created: ${created ? created.id : 'none'}; open: ${open}; dialog open: ${dialogOpen}; "${clip(error)}")`
     );
     if (created) await fetch(`${BASE}/modelRepository/models/${created.id}`, { method: 'DELETE' });
+  });
+
+  // A decision run: the box is what Manifest takes. Ticked on a run whose
+  // answers did not match, it says nothing untrue; the note that the answers
+  // matched stands on the run where they did, and only there.
+  await road('the box of a decision run that Manifest takes, ticked on a run whose answers did not match', async (page) => {
+    await openPage(page, 'decision');
+    const rows = await (await fetch(BASE + '/files/files/dtrk-1/content')).json();
+    const header = rows.find((row) => row.model === '' || row.model === undefined);
+    const answer = rows.find((row) => row !== header);
+    const missed = JSON.parse(answer.response);
+    missed.team = { ...missed.team, choice: 'technical' };
+    const second = [
+      { ...header, runId: 2 },
+      { ...answer, runId: 2, best_prompt: 1, response: JSON.stringify(missed) },
+    ];
+    await page.route('**/files/files/dtrk-1/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([...rows, ...second]) }));
+    await openPromptTest(page, 'proj-2', 'model-dec');
+    await waitUntil(async () => (await page.$$(`${lpb('pet')} .pet-run-delete`)).length === 2, 'both runs are drawn', 15000);
+    const runs = await page.$$eval(`${lpb('pet')} [id^="best-prompt-"]`, (boxes) =>
+      boxes.map((box) => {
+        const body = box.closest('.accordion-body');
+        return {
+          id: box.id,
+          ticked: box.checked,
+          label: (document.querySelector(`label[for="${box.id}"]`)?.textContent || '').trim(),
+          note: (body?.querySelector('.pb-expected-all-matched')?.textContent || '').trim(),
+          matched: body ? body.querySelectorAll('.pb-answer-expected.is-match').length : 0,
+          missed: body ? body.querySelectorAll('.pb-answer-expected.is-miss').length : 0,
+        };
+      })
+    );
+    const legend = await textOf(page, lpb('pet-legend'));
+    const ok =
+      runs.length === 2 && runs.every((run) => run.ticked && run.label === 'Use for Manifest') &&
+      runs.filter((run) => run.missed === 0).every((run) => run.note === 'All expected answers matched') &&
+      runs.filter((run) => run.missed > 0).length === 1 && runs.filter((run) => run.missed > 0).every((run) => run.note === '') &&
+      legend.includes('Use for Manifest') && !legend.includes('Correct');
+    step(
+      ok,
+      `a decision run: the box reads "Use for Manifest" also where it is ticked over answers that did not match, the note "All expected answers matched" stands on the run whose answers all matched and not on the other, and the legend says what the box does (runs: ${JSON.stringify(runs)}; legend: "${clip(legend)}")`
+    );
   });
 
   await road('a change of the prompt-test list sent by a script while Save Experiments is out', async (page) => {
