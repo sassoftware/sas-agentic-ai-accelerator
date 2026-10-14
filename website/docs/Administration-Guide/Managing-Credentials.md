@@ -123,11 +123,11 @@ mdb credentials-remove group FormerTeam     # mark a credential for removal
 `credentials-init` reads your `.env` and writes a manifest listing the entries
 it actually carries — names only, never a value — so you can see what is
 available to hand out before deciding who gets it. All five commands default
-to `credentials.yaml` in the working directory; `--file` (for
-`credentials-init`) and `--manifest` (for the other four) put it anywhere you
-keep deployment records. The manifest is the one place a rollout is managed
-from: identities are added to it, narrowed in it and marked for removal in it,
-and `credentials-apply` carries out what it says.
+to `credentials.yaml` in the working directory, and `--manifest` (`-m`) puts
+it anywhere you keep deployment records; `credentials-init` still reads
+`--file` / `-f`, the earlier name of the option. The manifest is the one place
+a rollout is managed from: identities are added to it, narrowed in it and
+marked for removal in it, and `credentials-apply` carries out what it says.
 
 The manifest says **who** gets keys and **where those keys come from**. It
 never contains a key, so unlike the `.env` it is meant to be committed and
@@ -154,7 +154,10 @@ in the … credential domain* (see
 [Who resolves what](#the-model-one-domain-named-entries-per-identity-credentials)).
 After a run that plans or writes a group credential, `credentials-apply`
 prints one line to that effect: *A group credential reaches only the members
-of that group, and a user's own credential replaces it for that user.*
+of that group, and a user's own credential replaces it for that user.* Its
+last line names the report of the same manifest -
+`mdb credentials-report --manifest <file>` - or, for a run with `--identity`,
+of the same identities and domain. A path with a blank is printed in quotes.
 
 Paths inside a manifest resolve against **the manifest's own directory**, not
 your working directory, so a manifest and the `.env` files it names can be
@@ -195,16 +198,19 @@ as its next step (`mdb credentials-apply --manifest <file> --dry-run`).
 | `--source` | This identity's own key file. The path is the one you type in the shell, relative to the working directory; it is written into the manifest relative to the manifest. |
 | `--manifest`, `-m` | The manifest to edit. Default: `credentials.yaml` in the working directory. |
 | `--env-file` | The `.env` a **new** manifest points at. Default: `.env` in the working directory. Not read when the manifest exists. |
+| `--domain` | The credential domain a **new** manifest targets. Default: `agentic-ai-keys`. Not read when the manifest exists. |
 
 What it does with the file:
 
 - **Only that identity changes.** Comments, blank lines, the order and the
-  other identities stay byte for byte as they are. A new identity is written
+  other identities stay byte for byte as they are - but for the two comment
+  lines `credentials-init` writes above its placeholder, which leave with the
+  placeholder. A new identity is written
   in block style (`- type: group` / `id: …`) after the last one; an identity
   that is written `{type: group, id: …}` keeps that style when it is updated.
 - **The placeholder is replaced.** A manifest from `credentials-init` names
   the identity `CHANGE-ME-to-a-real-group`; the first identity that is added
-  takes its place.
+  takes its place. The comment about the placeholder above it leaves with it.
 - **No manifest yet:** it is written the way `credentials-init` writes it,
   from the `.env`, with the identity in place of the placeholder. Without a
   `.env` nothing is written.
@@ -220,9 +226,11 @@ What it does with the file:
 The edit is made in the text of the file, because the YAML library `mdb` uses
 would drop every comment on a rewrite. Before the file is written, the result
 is read back and has to be the manifest that was there plus the one change.
-Two layouts are refused with a message, and the file is left alone: an
+Three layouts are refused with a message, and the file is left alone: an
 `identities` list that is not written one `- ` line per identity (for example
-`identities: [{…}, {…}]`), and an identity that is listed more than once.
+`identities: [{…}, {…}]`), an identity that is listed more than once, and an
+`only:` list that is to be rewritten and holds a comment between its entries -
+nothing says which entry of the new list such a comment belongs to.
 
 ### Removing a credential: `state: absent`
 
@@ -270,8 +278,10 @@ service cannot list who holds a credential, so `mdb` cannot know what a
 deleted line once said. Leave the entry in the file with `state: absent`
 until the report shows the credential as absent.
 
-The removal was run against a stand-in for the credentials service in the
-test suite of `mdb`, not against a SAS Viya server.
+`credentials-add` and `credentials-remove` were run on files. The removal by
+`state: absent` and the plan and the report that show it were run against a
+stand-in for the credentials service in the test suite of `mdb`, not against
+a SAS Viya server.
 
 :::note A dry run cannot show you a diff
 Reading a credential returns its metadata — who wrote it, and when — and
