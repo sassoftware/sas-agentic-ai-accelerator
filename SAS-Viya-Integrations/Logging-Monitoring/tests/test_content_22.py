@@ -10,7 +10,9 @@ against the made-up CAS library of log_parser_table_harness:
   of the class takes the actions from the program itself, refuses each one in turn and follows every state of the
   setting, with the table in memory and with the table as its saved file only;
 - the link program took such a listing for a library without the saved file as well: the table of the ingestion runs
-  counted as not there, and the rows were linked without it.
+  counted as not there, and the rows were linked without it;
+- the last test takes every table.fileInfo of the programs that are not frozen from the files and asks that a
+  refusal is read as no answer before the listing is.
 
 Run with: python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests
 """
@@ -345,3 +347,35 @@ def test_the_link_says_so_where_a_table_is_not_there():
 
     assert put == ["NOTE: The table Public.RAG_RUNS was not found, so no embedding row is linked to an ingestion run."]
     assert macros["_lnk_runs_exists"] == "0" and macros["_lnk_ready"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# The class across the programs: every listing of saved files has an answer for a refusal
+# ---------------------------------------------------------------------------
+
+FROZEN = ("RAG-Ingestion/Ingest-Documents.sas", "RAG-Ingestion/Test-Retrieval.sas", "Prompt-Optimization/Optimize-Prompt-DSPy.sas")
+
+
+def test_every_listing_of_saved_files_takes_a_refusal_for_no_answer():
+    """Every table.fileInfo of the programs of SAS-Viya-Integrations that are not frozen, taken from the files: the
+    statement behind it reads a severity other than 0 as a listing CAS refused - the parser counts -3 or sets
+    _log_cas_refused, the link sets -1, the loader sets the outcome unlisted - before it reads the listing. Each of
+    them is followed above or in test_loader_followed.py."""
+    root = CODE_FILE.parents[1]
+    found = {}
+    for path in sorted(root.rglob("*.sas")):
+        relative = path.relative_to(root).as_posix()
+        if relative in FROZEN or "/tests/" in relative:
+            continue
+        text = re.sub(r"/\*.*?\*/", "", path.read_text(encoding="utf-8").replace("\r\n", "\n"), flags=re.DOTALL)
+        for match in re.finditer(r"table\.fileInfo result\s*=\s*\w+ status\s*=\s*(\w+) /[^;]*;\n\s*(.*)\n", text):
+            found.setdefault(relative, []).append(match.group(2).strip())
+            assert re.fullmatch(rf"if {match.group(1)}\.severity (NE|!=) 0 then .*;", match.group(2).strip()), (relative, match.group(2))
+        assert "table.fileInfo" not in re.sub(r"table\.fileInfo result\s*=\s*\w+ status\s*=\s*\w+ /", "", text), relative
+    assert found == {
+        "Logging-Monitoring/Link-Logs-To-Models.sas": ["if listed.severity NE 0 then call symputx('_lnk_log_saved', -1);",
+                                                       "if listed.severity NE 0 then filesListed = 0;"],
+        "Logging-Monitoring/Log-Parser-Code.sas": ["if countedListed.severity NE 0 then targetRows = -3;",
+                                                   "if listed.severity NE 0 then call symputx('_log_cas_refused', '1');"],
+        "Setup/Load-Accelerator-Tables.sas": ['if listed.severity != 0 then outcome = "unlisted";'],
+    }
