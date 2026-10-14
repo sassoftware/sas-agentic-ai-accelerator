@@ -26,6 +26,14 @@
  * button that is off for a reason of its own is still off afterwards, and one
  * that is switched on meanwhile cannot be used before the write has ended.
  *
+ * A disabled control stops a person, not a script: the search field that
+ * stands in for a list sets the value of its list and sends `change` itself,
+ * and so can any other code. While a write is out such a change is undone -
+ * a list gets back the entry it had when the write began (its first entry,
+ * the placeholder, where that one has left the list meanwhile), a tick box
+ * or a choice its state - and goes no further: the builder's own handlers
+ * never hear of it.
+ *
  * A creation does not come through here. Its dialog lies over the page and
  * cannot be closed while the creation is out (see createCreateModal), so
  * nothing under it can be chosen meanwhile.
@@ -45,9 +53,36 @@ export function createSelectionLock(id: string): SelectionLock {
   const block = document.createElement('fieldset');
   block.id = id;
   let writesOut = 0;
+  // What the lists and the tick boxes held when the first write began.
+  const held = new Map<HTMLSelectElement | HTMLInputElement, string | boolean>();
+  block.addEventListener(
+    'change',
+    (event) => {
+      const control = event.target;
+      if (writesOut === 0 || !(control instanceof HTMLSelectElement || control instanceof HTMLInputElement) || !held.has(control)) return;
+      if (control instanceof HTMLSelectElement) {
+        control.value = String(held.get(control));
+        if (control.selectedIndex < 0) control.selectedIndex = 0;
+      } else {
+        // A choice that was made took the mark from the other choices of its
+        // group: all of them get theirs back.
+        held.forEach((state, box) => {
+          if (box instanceof HTMLInputElement) box.checked = Boolean(state);
+        });
+      }
+      event.stopImmediatePropagation();
+    },
+    // Before the handlers of the control itself.
+    true
+  );
   return {
     block,
     async during<T>(write: () => Promise<T>): Promise<T> {
+      if (writesOut === 0) {
+        held.clear();
+        block.querySelectorAll('select').forEach((list) => held.set(list, list.value));
+        block.querySelectorAll<HTMLInputElement>('input[type="checkbox"], input[type="radio"]').forEach((box) => held.set(box, box.checked));
+      }
       writesOut += 1;
       block.disabled = true;
       block.setAttribute('aria-busy', 'true');
