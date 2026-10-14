@@ -95,7 +95,7 @@ const waitFor = async (wanted) => {
     const run = spawnSync(process.execPath, [path.join(WORK, `${suite}.cjs`), ...(NEEDS_MOCK(suite) ? [] : [PROJECT])], {
       cwd: WORK,
       // VERIFY_DIST: the token scan reads the bundle the mocks serve.
-      env: { ...process.env, VERIFY_BASE: BASE, VERIFY_DIST: DIST },
+      env: { ...process.env, VERIFY_BASE: BASE, VERIFY_DIST: DIST, VERIFY_PROJECT: PROJECT },
       encoding: 'utf8',
       maxBuffer: 1 << 28,
     });

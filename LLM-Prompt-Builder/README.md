@@ -412,8 +412,9 @@ src/
     cas-api.ts              CAS servers, caslibs and tables
   ui/                       stepper (the step row of both builders), kind
                             selector (the "What are you building?" cards),
-                            selection lock (what is open cannot be changed
-                            while a write to SAS Model Manager is out),
+                            selection lock (while a write to SAS Model Manager
+                            is out, what is open cannot be changed and the
+                            buttons that write to it are off),
                             instruction card, accordion, combobox, modals, doc
                             sections, list filter, markdown (marked +
                             DOMPurify), option controls, toasts, HTML escaping,
@@ -443,8 +444,9 @@ and Playwright suites that drive the built bundle in the system Edge browser:
 the Prompt Builder (`verify.js`), decision templates (`verify-decision.js`), the
 RAG kind (`verify-rag.js`), a new item of each of the three kinds, which has to
 start as on a freshly loaded page whatever was open before or is still running
-for it (`verify-new-item.js`), the lock on what is open while a write to SAS
-Model Manager is out (`verify-write-lock.js`), what a write answered and what
+for it (`verify-new-item.js`), the lock on what is open and on the buttons
+that write while a write to SAS Model Manager is out (`verify-write-lock.js`),
+what a write answered and what
 one item, one write or one dialog leaves for the next (`verify-outcomes.js`),
 the options group with its checkboxes
 (`verify-options.js`), the locale files (`verify-locales.js`) and the built

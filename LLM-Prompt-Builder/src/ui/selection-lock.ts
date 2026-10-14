@@ -37,6 +37,14 @@
  * A creation does not come through here. Its dialog lies over the page and
  * cannot be closed while the creation is out (see createCreateModal), so
  * nothing under it can be chosen meanwhile.
+ *
+ * The buttons that write the open item - a save, a manifest, a delete - are
+ * off for as long as any write is out, its own included: a write is a row of
+ * requests, and a second one started between two of them wrote over what the
+ * first had just written (a Save setup that landed after the job reference
+ * of a manifest left the stored setup without its job). Those that are not
+ * inside `block` follow `busy`, and the builder sets them again when it
+ * changes (`onChange`).
  */
 export interface SelectionLock {
   /** Holds the controls that decide what is open; `aria-busy` while a write is out. */
@@ -47,6 +55,10 @@ export interface SelectionLock {
    * promise has settled. Writes may overlap and may be nested.
    */
   during<T>(write: () => Promise<T>): Promise<T>;
+  /** Whether a write is out. */
+  readonly busy: boolean;
+  /** Called when the first write begins (before it is called) and when the last one has ended. */
+  onChange(listener: () => void): void;
 }
 
 export function createSelectionLock(id: string): SelectionLock {
@@ -75,10 +87,13 @@ export function createSelectionLock(id: string): SelectionLock {
     // Before the handlers of the control itself.
     true
   );
+  const listeners: Array<() => void> = [];
+  const changed = (): void => listeners.forEach((listener) => listener());
   return {
     block,
     async during<T>(write: () => Promise<T>): Promise<T> {
-      if (writesOut === 0) {
+      const first = writesOut === 0;
+      if (first) {
         held.clear();
         block.querySelectorAll('select').forEach((list) => held.set(list, list.value));
         block.querySelectorAll<HTMLInputElement>('input[type="checkbox"], input[type="radio"]').forEach((box) => held.set(box, box.checked));
@@ -86,6 +101,7 @@ export function createSelectionLock(id: string): SelectionLock {
       writesOut += 1;
       block.disabled = true;
       block.setAttribute('aria-busy', 'true');
+      if (first) changed();
       try {
         return await write();
       } finally {
@@ -93,8 +109,15 @@ export function createSelectionLock(id: string): SelectionLock {
         if (writesOut === 0) {
           block.disabled = false;
           block.removeAttribute('aria-busy');
+          changed();
         }
       }
+    },
+    get busy(): boolean {
+      return writesOut > 0;
+    },
+    onChange(listener: () => void): void {
+      listeners.push(listener);
     },
   };
 }

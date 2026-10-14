@@ -7,7 +7,10 @@
  * Experiments uploaded a tracker without a run to the prompt-test it was
  * clicked for, and Save setup wrote to two setups and said "saved" on the
  * wrong one. So the controls that decide what is open - the kind, the
- * project, the item, Create, Delete - cannot be used while a write is out.
+ * project, the item, Create, Delete - cannot be used while a write is out,
+ * and neither can any button that starts a write (WRITE_BUTTONS): a Save
+ * setup clicked between two stages of a manifest wrote the setup without the
+ * job the manifest had just written into it.
  *
  * Every write path of the page is driven the same way (`probe`):
  *
@@ -108,7 +111,96 @@ const RAG_CONTROLS = [
 // What has to be usable again once a write has ended, whatever is open then.
 const ALWAYS_USABLE = ['the project list', 'the search field of the project list', 'Create project'];
 
+/**
+ * The buttons that start a write, read from the sources: every call of
+ * `selectionLock.during(` belongs to the click handler it stands in, or to
+ * the function it stands in, whose click handlers are then looked for. They
+ * are off while any write is out - a save started between two requests of a
+ * manifest wrote over what the manifest had written - so each of them joins
+ * the controls every write path checks. WRITE_BUTTONS says where each one is
+ * on the page; a button the sources name that is not in it, or an entry of
+ * it the sources no longer name, is a failed check.
+ */
+const WRITE_BUTTONS = {
+  'prompt-builder.ts': {
+    promptDocSaveButton: ['Save documentation', '#app-obj-LPB .pb-doc-section > button'],
+    deletePromptButton: ['Delete prompt-test', '#LPB-delete-prompt-button'],
+    deleteProjectButton: ['Delete project', '#LPB-delete-project-button'],
+    promptExperimentSaveButton: ['Save Experiments', '#app-obj-LPB-pet-save-button'],
+    promptExperimentCreateModelButton: ['Manifest', '#app-obj-LPB-pet-create-model-button'],
+    deleteButton: ['the delete of an optimization run', '#app-obj-LPB-pane-optimize .pb-optimize-history-delete'],
+    optimizeCompareButton: ['Compare targets', '#app-obj-LPB-optimize-compare'],
+    optimizeRunButton: ['Run optimization', '#app-obj-LPB-optimize-run'],
+  },
+  'rag-builder.ts': {
+    deleteSetupButton: ['Delete setup', '#app-obj-RGB-delete-setup'],
+    deleteProjectButton: ['Delete project', '#app-obj-RGB-delete-project'],
+    docSaveButton: ['Save documentation', '#app-obj-RGB-save-documentation'],
+    saveButton: ['Save setup', '#app-obj-RGB-save'],
+    manifestButton: ['Manifest setup', '#app-obj-RGB-manifest'],
+  },
+};
+function writeButtonsInSource(text) {
+  const lines = text.split('\n');
+  const indent = (line) => line.length - line.trimStart().length;
+  const CLICK = /^\s*(\w+)\.(?:onclick\s*=|addEventListener\(\s*'click')/;
+  const FUNCTION = /^\s*(?:async\s+)?function\s+(\w+)\s*\(|^\s*const\s+(\w+)\s*=\s*(?:async\s*)?(?:function\b|\()/;
+  const buttons = new Set();
+  const unresolved = [];
+  const callersOf = (name) => {
+    const found = [];
+    lines.forEach((line, index) => {
+      const click = CLICK.exec(line);
+      if (click && lines.slice(index, index + 6).join('\n').match(new RegExp(`\\b${name}\\b`))) found.push(click[1]);
+    });
+    return found;
+  };
+  lines.forEach((line, at) => {
+    if (!line.includes('selectionLock.during(')) return;
+    const own = CLICK.exec(line);
+    if (own) return buttons.add(own[1]);
+    let level = indent(line);
+    for (let index = at - 1; index >= 0; index--) {
+      const above = lines[index];
+      if (!above.trim() || indent(above) >= level) continue;
+      level = indent(above);
+      const click = CLICK.exec(above);
+      if (click) return buttons.add(click[1]);
+      const fn = FUNCTION.exec(above);
+      if (fn) {
+        const callers = callersOf(fn[1] || fn[2]);
+        callers.forEach((caller) => buttons.add(caller));
+        if (!callers.length) unresolved.push(`line ${at + 1} in ${fn[1] || fn[2]}`);
+        return;
+      }
+    }
+    unresolved.push(`line ${at + 1}`);
+  });
+  return { buttons: [...buttons], unresolved };
+}
+
 (async () => {
+  // The write buttons of the sources join the controls of their builder.
+  {
+    const fs = require('fs');
+    const path = require('path');
+    const project = process.env.VERIFY_PROJECT || path.resolve(__dirname, '..', '..', '..');
+    for (const [file, known] of Object.entries(WRITE_BUTTONS)) {
+      let found = { buttons: [], unresolved: [`${file} not found under ${project} (set VERIFY_PROJECT)`] };
+      try {
+        found = writeButtonsInSource(fs.readFileSync(path.join(project, 'src', 'objects', file), 'utf8'));
+      } catch {
+        /* reported below */
+      }
+      const unknown = found.buttons.filter((name) => !known[name]);
+      const gone = Object.keys(known).filter((name) => !found.buttons.includes(name));
+      step(
+        found.buttons.length > 0 && unknown.length === 0 && gone.length === 0 && found.unresolved.length === 0,
+        `${file}: every button whose click starts a write is known to this suite (found: ${found.buttons.join(', ') || 'none'}; not known here: ${unknown.join(', ') || 'none'}; known here but not found: ${gone.join(', ') || 'none'}; writes no button was found for: ${found.unresolved.join(', ') || 'none'})`
+      );
+      (file === 'rag-builder.ts' ? RAG_CONTROLS : PROMPT_CONTROLS).push(...Object.values(known));
+    }
+  }
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   const pageErrors = [];
   const dialogs = [];
@@ -264,7 +356,7 @@ const ALWAYS_USABLE = ['the project list', 'the search field of the project list
   const lockedDuring = (seen, what, opening) => {
     step(
       seen.couldUse.length === 0 && seen.looks >= 3,
-      `${what}: while the write is out, none of the controls that change what is open can be used (usable at some moment: ${seen.couldUse.join(', ') || 'none'}; looked ${seen.looks} times; requests that write: ${seen.writes.length})`
+      `${what}: while the write is out, none of the controls that change what is open or start a write can be used (usable at some moment: ${seen.couldUse.join(', ') || 'none'}; looked ${seen.looks} times; requests that write: ${seen.writes.length})`
     );
     step(
       !seen.gotThere && seen.openAfter === seen.openBefore,

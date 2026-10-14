@@ -4449,11 +4449,13 @@ export async function buildPromptBuilder(
           (key) => !TRACKER_META_KEYS.includes(key) && (trackerEntry[key] as ModelExperimentData)?.best_prompt
         )
       );
+      // Off as well while a write of the prompt-test is out (see
+      // createSelectionLock); the hint is about the best response only.
       setDisabledHint(
         promptExperimentCreateModelButton,
         promptExperimentCreateModelButtonWrapper,
-        !hasBestPrompt,
-        `${promptBuilderInterfaceText?.promptBuilderCreateModelNoBestPrompt}`
+        !hasBestPrompt || selectionLock.busy,
+        hasBestPrompt ? '' : `${promptBuilderInterfaceText?.promptBuilderCreateModelNoBestPrompt}`
       );
       // The optimize panel gates on the same tracker state (its dataset is the
       // runs with a Best Response), so refresh it wherever the manifest button
@@ -4462,6 +4464,20 @@ export async function buildPromptBuilder(
       updateTrackerSummary();
     }
     updateManifestButtonState();
+    // The buttons that write the open prompt-test outside the Setup card -
+    // Save Experiments, Manifest, Run optimization, Compare targets and the
+    // delete of an optimization run - are off while any write is out, their
+    // own included: a save started between two requests of a manifest wrote
+    // the tracker beside it.
+    selectionLock.onChange(() => {
+      promptExperimentSaveButton.disabled = selectionLock.busy;
+      updateManifestButtonState();
+      optimizeUI?.historyContainer
+        .querySelectorAll<HTMLButtonElement>('.pb-optimize-history-delete')
+        .forEach((button) => {
+          button.disabled = selectionLock.busy;
+        });
+    });
     // Manifest section: configure how the best prompt becomes a model, with
     // the action button below the configuration.
     const promptExperimentManifestHeader = document.createElement('h2');
@@ -4965,8 +4981,9 @@ export async function buildPromptBuilder(
         resultContainer.replaceChildren(line);
         return false;
       } finally {
-        // Re-enable the save button
-        promptExperimentSaveTargetButton.disabled = false;
+        // Usable again once no write is out - this save may be the first
+        // stage of a manifest or an optimization (see createSelectionLock).
+        promptExperimentSaveTargetButton.disabled = selectionLock.busy;
         promptExperimentSaveTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderSaveExperimentsButton}`;
       }
     }
@@ -6016,14 +6033,15 @@ ${scoreCodeReturn}`;
         );
       else if (selectedOptimizer === 'gepa' && optimizeUI.judgeSelect.value === '')
         disabledHint = `${promptBuilderInterfaceText?.promptBuilderOptimizeGepaNeedsJudge}`;
-      setDisabledHint(optimizeUI.runButton, optimizeUI.runWrapper, disabledHint !== '', disabledHint);
+      // Off as well while a write of the prompt-test is out (see createSelectionLock).
+      setDisabledHint(optimizeUI.runButton, optimizeUI.runWrapper, disabledHint !== '' || selectionLock.busy, disabledHint);
       // Say why the run is blocked in the open, not only on hover.
       const showBanner = disabledHint !== '' && !jobShown;
       optimizeUI.banner.classList.toggle('d-none', !showBanner);
       optimizeUI.banner.innerText = showBanner ? disabledHint : '';
       // The compare entry point only needs a prompt and a quiet job slot —
       // its own modal handles candidate/sample validation.
-      optimizeUI.compareButton.disabled = optimizeJobActive || !configReady || !promptSelected;
+      optimizeUI.compareButton.disabled = optimizeJobActive || !configReady || !promptSelected || selectionLock.busy;
       // Follow the selection: render the selected prompt's optimization
       // history (no-op while the selection is unchanged).
       void refreshOptimizationHistory();
@@ -6349,6 +6367,8 @@ ${scoreCodeReturn}`;
         event.stopPropagation();
         void deleteOptimizationRun(entry);
       };
+      // Off while a write of the prompt-test is out (see createSelectionLock).
+      deleteButton.disabled = selectionLock.busy;
       summaryActions.appendChild(deleteButton);
       summary.appendChild(summaryActions);
       row.appendChild(summary);

@@ -544,6 +544,45 @@ const MANIFEST_BOX = lpb('pet-save-result');
     await post('/__ragfail');
   });
 
+  // While the stored setup is read, the fields hold the defaults of a new
+  // setup: a save or a manifest then would write those over it.
+  await road('the buttons that write a setup while it is read', async (page) => {
+    await openPage(page, 'rag');
+    await choose(page, 'RGB', rgb('project'), 'rag-proj');
+    let release;
+    const released = new Promise((resolve) => (release = resolve));
+    let held = 0;
+    await page.route('**/modelRepository/models/rag-setup-1/contents**', async (route) => {
+      if (route.request().method() === 'GET') {
+        held += 1;
+        await released;
+      }
+      await route.continue().catch(() => {});
+    });
+    await resetLog();
+    await page.selectOption(rgb('setup'), 'rag-setup-1');
+    await waitUntil(async () => held > 0, 'the setup is read');
+    await goStep(page, 'RGB', 'store');
+    const off = async () => ({
+      save: await page.isDisabled(rgb('save')),
+      manifest: await page.isDisabled(rgb('manifest')),
+      documentation: await page.isDisabled(rgb('save-documentation')),
+    });
+    const whileRead = await off();
+    await page.click(rgb('manifest'), { timeout: 800, force: true }).catch(() => {});
+    await page.click(rgb('save'), { timeout: 800, force: true }).catch(() => {});
+    await page.waitForTimeout(500);
+    const writesWhileRead = (await getLog()).filter((entry) => entry.method !== 'GET').length;
+    release();
+    await waitUntil(async () => !(await page.isDisabled(rgb('manifest'))), 'the setup is read', 15000).catch(() => {});
+    await atRest();
+    const afterRead = await off();
+    step(
+      Object.values(whileRead).every(Boolean) && writesWhileRead === 0 && !Object.values(afterRead).some(Boolean),
+      `Save setup, Manifest setup and Save documentation are off while the stored setup is read, a click then writes nothing, and they can be used once it is drawn (while read: ${JSON.stringify(whileRead)}; writes: ${writesWhileRead}; afterwards off: ${JSON.stringify(afterRead)})`
+    );
+  });
+
   await road('the Manifest button while the model version is asked for', async (page) => {
     await openPage(page, 'rag');
     await openSetup(page, 'rag-setup-1');

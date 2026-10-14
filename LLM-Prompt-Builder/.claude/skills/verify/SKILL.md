@@ -337,7 +337,13 @@ RAG side (stateful; the block sits before the generic routes):
   write - for a delete, the delete of an optimization run and Compare
   targets, when their dialog has closed - and ends with the write, also
   when it failed. A creation does not take it: its dialog lies over the
-  page. A script is not stopped by a disabled control: a `change` a script
+  page. The buttons that start a write and stand outside those fieldsets
+  (Save Experiments, Manifest, Run optimization, Compare targets, the
+  delete of an optimization run; Save setup, Manifest setup and the Save
+  documentation of the RAG Builder) are off while any write is out, their
+  own included, and the three of the RAG Builder also while the stored
+  setup is read: a check that clicks one of them right after a setup was
+  chosen waits (as `page.click` does) until it can be used. A script is not stopped by a disabled control: a `change` a script
   sends to a list or a tick box inside the fieldset while the lock is on
   (`pickByScript` in `verify-outcomes.js`, which does what the search field
   of a list does) is undone and reaches no handler. Every request of the

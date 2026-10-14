@@ -1992,6 +1992,21 @@ export async function buildRagBuilder(
     'ragBuilderManifestTitle',
     'Save the setup, generate the ingestion job and the Studio flow, register the retrieval model, and record a new model version.'
   );
+  /**
+   * The three buttons that write the open setup - Save setup, Manifest setup
+   * and Save documentation - are usable only while a setup is open, what is
+   * stored of it is on the page, and no write is out (see createSelectionLock).
+   * A click while the stored setup was still being read wrote the fields as
+   * they stood: the defaults, which every new setup starts from.
+   */
+  let setupReading = false;
+  const updateSetupWrites = (): void => {
+    const off = !selectedSetupID || setupReading || selectionLock.busy;
+    saveButton.disabled = off;
+    manifestButton.disabled = off;
+    docSaveButton.disabled = off;
+  };
+  selectionLock.onChange(updateSetupWrites);
   const launchButton = actionButton(operateActions, 'launch', str('ragBuilderLaunchButton', 'Launch ingestion'));
   launchButton.disabled = true;
   launchButton.title = str('ragBuilderLaunchNeedsJob', 'Manifest the setup first.');
@@ -2196,6 +2211,8 @@ export async function buildRagBuilder(
 
   // ---- data plumbing --------------------------------------------------------
 
+  /** The enrichment that applySetup put back last, settled once it is drawn. */
+  let enrichmentRestored: Promise<void> = Promise.resolve();
   const applySetup = (setup: RagSetup): void => {
     ragDoc.setValues(setup.documentation);
     const storedPath = String(setup.source.path || '');
@@ -2255,7 +2272,7 @@ export async function buildRagBuilder(
     updateLaunchState();
     // The enrichment has to read the prompt's score code back before it can
     // draw its inputs, so it settles a round trip after the rest of the form.
-    void restoreEnrichment(setup);
+    enrichmentRestored = restoreEnrichment(setup);
   };
 
   const updateLaunchState = (): void => {
@@ -2383,7 +2400,6 @@ export async function buildRagBuilder(
     const documentation = collectDocumentation();
     clearStatus();
     const previous = docSaveButton.textContent;
-    docSaveButton.disabled = true;
     docSaveButton.innerHTML =
       '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
     try {
@@ -2411,7 +2427,6 @@ export async function buildRagBuilder(
       showStatus('danger', str('ragBuilderDocSaveFailed', 'Saving the documentation failed - check your Model Manager permissions.'));
     } finally {
       docSaveButton.textContent = previous;
-      docSaveButton.disabled = !selectedSetupID;
     }
   }
 
@@ -3002,40 +3017,53 @@ export async function buildRagBuilder(
     setupNotices.forEach((notice) => {
       notice.style.display = selectedSetupID ? 'none' : '';
     });
-    // set before the early return: deselecting must disable the button too
-    docSaveButton.disabled = !selectedSetupID;
+    // Set before the early return: deselecting must disable the buttons too.
+    // A setup is read before its buttons can write it.
+    setupReading = Boolean(selectedSetupID);
+    updateSetupWrites();
     if (!selectedSetupID) {
       showEmptyEditor();
       return;
     }
     const setupID = selectedSetupID;
-    applySetup(defaultSetup(config));
-    const contents = await getModelContents(setupID);
-    if (!shown()) return;
-    const setupItem = contents.find((item) => item.name === SETUP_FILE);
-    if (setupItem?.fileUri) {
-      try {
-        const response = await getFileContent(setupItem.fileUri);
-        if (!shown()) return;
-        if (response.ok) {
-          const stored = await response.json();
+    try {
+      applySetup(defaultSetup(config));
+      const contents = await getModelContents(setupID);
+      if (!shown()) return;
+      const setupItem = contents.find((item) => item.name === SETUP_FILE);
+      if (setupItem?.fileUri) {
+        try {
+          const response = await getFileContent(setupItem.fileUri);
           if (!shown()) return;
-          applySetup({ ...defaultSetup(config), ...stored } as RagSetup);
+          if (response.ok) {
+            const stored = await response.json();
+            if (!shown()) return;
+            applySetup({ ...defaultSetup(config), ...stored } as RagSetup);
+          }
+        } catch {
+          if (!shown()) return;
+          showStatus('danger', str('ragBuilderLoadSetupError', 'The stored rag-setup.json could not be read - starting from defaults.'));
         }
-      } catch {
+      } else {
+        // No stored setup yet, but documentation may already have been saved on
+        // its own. The attributes are then the only copy, so read them back
+        // rather than showing empty fields over text that exists.
+        try {
+          const details = await getModelDetails(setupID);
+          if (details && shown()) ragDoc.setValues(details as Record<string, unknown>);
+        } catch (error) {
+          console.debug('RAG Builder: reading documentation attributes failed', error);
+        }
+      }
+    } finally {
+      // Read, or given up as before: the buttons can write the setup once its
+      // enrichment is drawn as well. A setup opened meanwhile is read anew.
+      const read = (): void => {
         if (!shown()) return;
-        showStatus('danger', str('ragBuilderLoadSetupError', 'The stored rag-setup.json could not be read - starting from defaults.'));
-      }
-    } else {
-      // No stored setup yet, but documentation may already have been saved on
-      // its own. The attributes are then the only copy, so read them back
-      // rather than showing empty fields over text that exists.
-      try {
-        const details = await getModelDetails(setupID);
-        if (details && shown()) ragDoc.setValues(details as Record<string, unknown>);
-      } catch (error) {
-        console.debug('RAG Builder: reading documentation attributes failed', error);
-      }
+        setupReading = false;
+        updateSetupWrites();
+      };
+      void enrichmentRestored.then(read, read);
     }
     // The setup is drawn. An ingestion that was launched for it from this
     // page and has not been seen to end is shown again, and followed.
@@ -3073,7 +3101,6 @@ export async function buildRagBuilder(
       showSaveErrors(problems);
       return false;
     }
-    saveButton.disabled = true;
     try {
       // 1. the two artifacts (onConflict=update keeps one copy each)
       written((await createModelContent(selectedSetupID, setup, SETUP_FILE, 'documentation')).status_code, SETUP_FILE);
@@ -3126,8 +3153,6 @@ export async function buildRagBuilder(
       // what the result box said before this save is gone.
       showSaveFailure(message, []);
       return false;
-    } finally {
-      saveButton.disabled = false;
     }
   }
 
@@ -3301,11 +3326,10 @@ export async function buildRagBuilder(
       showStatus('danger', str('ragBuilderRegisterNeedsSetup', 'Select or create a RAG setup first.'));
       return;
     }
-    // Off from the click until the last request of the manifest - the new
-    // model version - has ended: one manifest per click. The stages leave the
-    // button alone; one of them gave it back before the version was asked
-    // for, and a second click started a second manifest beside the first.
-    manifestButton.disabled = true;
+    // The button, Save setup and Save documentation are off from the click
+    // until the last request of the manifest - the new model version - has
+    // ended (see updateSetupWrites): one manifest per click, and no save
+    // between two of its stages.
     try {
       // Each stage with what it is called while it runs and what is true once
       // it went through.
@@ -3384,7 +3408,6 @@ export async function buildRagBuilder(
       );
     } finally {
       manifestButton.textContent = str('ragBuilderManifestButton', 'Manifest setup');
-      manifestButton.disabled = false;
     }
   }
 
