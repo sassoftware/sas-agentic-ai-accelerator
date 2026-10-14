@@ -9,6 +9,11 @@ from mdb.core.paths import core_dir, fact_sheet_path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
+#: The seconds a test waits for a process it starts - mdb, a shell, a deploy script - before it fails. A
+#: machine that other work slows down a hundredfold took more than 120 s to start mdb (review-22a); the
+#: limit is there for a process that hangs, not to time one that is slow.
+PROCESS_TIMEOUT = 1800
+
 
 @pytest.fixture(scope="session")
 def repo_root() -> Path:

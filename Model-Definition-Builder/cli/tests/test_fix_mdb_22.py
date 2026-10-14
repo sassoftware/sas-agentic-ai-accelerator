@@ -3,6 +3,7 @@
 """What the gate, the review and the live pass of round 22 found in mdb at
 fb65e09, each with the input that showed it. Nothing signs in anywhere: the
 service is a fake in memory and sasctl a stand-in."""
+import ast
 import io
 import json
 import shutil
@@ -21,6 +22,7 @@ from mdb.core.generator import CoreAssets
 from mdb.core.paths import core_dir, fact_sheet_path
 from mdb.viya import credentials
 from mdb.viya import session as s
+from conftest import PROCESS_TIMEOUT
 from test_credentials_commands import mdb  # noqa: F401
 from test_package_guards import REPORT, exporting, manifest, repo  # noqa: F401
 
@@ -158,3 +160,19 @@ def test_the_summary_of_an_export_names_the_content_root_of_the_job_definitions(
     result, text, _, _ = exporting(built, "--content-root", root, "--out", out, "--allow-differences",
                                    "--keep-user-ids")
     assert result.exit_code == 0 and "the contentRoot of the job definitions is left as it is too." in text, text
+
+
+# ---- review[4]: a test of mdb gives one answer on a machine that other work slows down ---------
+def test_every_process_a_test_of_mdb_starts_has_the_one_limit():
+    """review-22a: in a full run on a machine slowed down a hundredfold, the
+    subprocess of mdb that test_mdb_22 starts ran into its limit of 120 s;
+    the deploy-script tests had 120 s and 60 s. Every limit a test sets on a
+    process it starts is PROCESS_TIMEOUT."""
+    limits = []
+    for path in sorted(Path(__file__).resolve().parent.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)                     and isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess":
+                limits += [(path.name, node.lineno, ast.unparse(k.value)) for k in node.keywords if k.arg == "timeout"]
+    assert len(limits) == 5 and {name for name, _, _ in limits} == {"test_mdb_22.py", "test_deploy_scripts.py"}
+    assert [limit for limit in limits if limit[2] != "PROCESS_TIMEOUT"] == []
+    assert PROCESS_TIMEOUT >= 1800

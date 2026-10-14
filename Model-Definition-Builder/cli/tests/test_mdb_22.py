@@ -26,6 +26,7 @@ from typer.testing import CliRunner
 from mdb import cli
 from mdb.viya import credentials
 from mdb.viya import session as s
+from conftest import PROCESS_TIMEOUT
 from test_credentials_commands import _Response, mdb  # noqa: F401
 
 SOURCE = Path(cli.__file__).resolve().parent
@@ -99,7 +100,7 @@ def _run(tmp_path: Path, mode: str, *args: str):
     environment = dict(os.environ, PYTHONPATH=os.pathsep.join([str(SOURCE.parent), os.environ.get("PYTHONPATH", "")]),
                        COLUMNS="200", PYTHONIOENCODING="utf-8")
     done = subprocess.run([sys.executable, str(script), str(tmp_path), mode, *args], capture_output=True,
-                          text=True, encoding="utf-8", env=environment, timeout=120)
+                          text=True, encoding="utf-8", env=environment, timeout=PROCESS_TIMEOUT)
     return done.returncode, done.stdout, done.stderr
 
 

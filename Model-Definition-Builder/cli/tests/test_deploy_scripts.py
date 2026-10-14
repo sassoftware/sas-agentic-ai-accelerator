@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import PROCESS_TIMEOUT
+
 FOLDER = Path(__file__).resolve().parents[3] / "SAS-Viya-Integrations" / "Other"
 POWERSHELL = shutil.which("powershell.exe") if os.name == "nt" else None
 
@@ -37,7 +39,7 @@ def _bash_that_reads_this_checkout():
         return None
     try:
         seen = subprocess.run([bash, "-c", f'test -f "{(FOLDER / "deploy-rag-content.sh").as_posix()}"'],
-                              capture_output=True, timeout=60)
+                              capture_output=True, timeout=PROCESS_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         return None
     return bash if seen.returncode == 0 else None
@@ -79,7 +81,7 @@ def test_a_warning_on_stderr_does_not_stop_the_powershell_script(tmp_path, code)
         f"& '{FOLDER / 'deploy-rag-content.ps1'}' -ContentRoot '/Team/Retrieval' -DryRun *> '{out}'\n"
         "exit $LASTEXITCODE\n", encoding="utf-8")
     done = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(runner)],
-                          capture_output=True, text=True, timeout=120)
+                          capture_output=True, text=True, timeout=PROCESS_TIMEOUT)
     text = out.read_text(encoding="utf-16") if out.read_bytes()[:2] == b"\xff\xfe" else out.read_text()
     assert done.returncode == code, (done.stdout, done.stderr, text)
     # mdb ran to its end: its warning, its own line, and the arguments the script gave it
@@ -93,7 +95,7 @@ def test_the_powershell_script_passes_create_on(tmp_path):
     env = {**os.environ, "PATH": f"{standin}{os.pathsep}{os.environ['PATH']}", "MDB_STANDIN_EXIT": "0"}
     done = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                            str(FOLDER / "deploy-rag-content.ps1"), "-ContentRoot", "/Team/New", "-Create"],
-                          capture_output=True, text=True, timeout=120, env=env)
+                          capture_output=True, text=True, timeout=PROCESS_TIMEOUT, env=env)
     assert done.returncode == 0, done.stderr
     assert "args: content-deploy --only RAG --to /Team/New --create" in done.stdout
 
@@ -110,7 +112,7 @@ def test_a_warning_on_stderr_does_not_stop_the_bash_script(tmp_path, code):
         bin_dir = f"/{bin_dir[0].lower()}{bin_dir[2:]}"                # Git Bash spells C:/x as /c/x
     command = (f'export PATH="{bin_dir}:$PATH" MDB_STANDIN_EXIT={code}; '
                f'bash "{script}" -r "/Team/Retrieval" -c -n 2>&1')
-    done = subprocess.run([BASH, "-c", command], capture_output=True, text=True, timeout=120)
+    done = subprocess.run([BASH, "-c", command], capture_output=True, text=True, timeout=PROCESS_TIMEOUT)
     assert done.returncode == code, (done.stdout, done.stderr)
     assert WARNING in done.stdout and "41 entries: 41 equal." in done.stdout
     assert "args: content-deploy --only RAG --to /Team/Retrieval --create --dry-run" in done.stdout
