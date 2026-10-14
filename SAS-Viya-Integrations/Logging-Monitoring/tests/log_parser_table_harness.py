@@ -179,9 +179,14 @@ def casl_as_python(casl):
         opened = re.fullmatch(r"(else )?if (.*) then do", statement, flags=re.DOTALL)
         single = re.fullmatch(r"(else )?if (.*?) then (.*)", statement, flags=re.DOTALL)
         loop = re.fullmatch(r"do (\w+) over ([\w.]+)", statement)
+        otherwise = re.fullmatch(r"else (?!if |do$)(.*)", statement, flags=re.DOTALL)
         if statement == "else do":
             lines += ["    " * depth + "else:", "    " * (depth + 1) + "pass"]
             depth += 1
+        elif otherwise:
+            # ELSE with one statement behind it
+            lines.append("    " * depth + "else:")
+            lines += ["    " * (depth + 1) + line for line in _casl_simple(otherwise.group(1))]
         elif opened:
             lines += ["    " * depth + ("elif " if opened.group(1) else "if ") + _casl_expression(opened.group(2)) + ":", "    " * (depth + 1) + "pass"]
             depth += 1

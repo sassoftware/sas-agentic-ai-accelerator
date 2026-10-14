@@ -8,7 +8,9 @@ against the made-up CAS library of log_parser_table_harness:
 - the same holds for the whole class: every action of CAS whose answer the count and the output macro go by - the
   question whether a table is there, the listings of the tables, of the saved files and of the columns. The last test
   of the class takes the actions from the program itself, refuses each one in turn and follows every state of the
-  setting, with the table in memory and with the table as its saved file only.
+  setting, with the table in memory and with the table as its saved file only;
+- the link program took such a listing for a library without the saved file as well: the table of the ingestion runs
+  counted as not there, and the rows were linked without it.
 
 Run with: python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests
 """
@@ -236,3 +238,110 @@ def test_the_step_says_it_in_its_about_tab_and_its_changelog():
     entry = texts["textChangelog"][:texts["textChangelog"].index("* Version: 2.9 (")]
     assert "CAS refuses" in entry and "writes nothing" in entry
     assert "an action that CAS refused" in texts["textAbout"]
+
+
+# ---------------------------------------------------------------------------
+# The same class in the link program: a listing of the saved files that CAS refused
+# ---------------------------------------------------------------------------
+
+LINK_FILE = CODE_FILE.parent / "Link-Logs-To-Models.sas"
+LINK_REFUSED = ("CAS refused to list the saved files of a CAS library the program reads, so it is not known whether a table that is "
+                "not in memory is there as a saved file or whether the log table has one. Nothing was linked and the tables were left "
+                "as they are.")
+
+
+def _follow_link(library, save_table="1"):
+    """The statements of Link-Logs-To-Models.sas from the look for a saved file of the log table to the decision
+    whether the links are made (_lnk_ready), against the made-up CAS library: the macro statements with the
+    macro language of log_parser_table_harness, each PROC CAS step with its CASL. Returns (lines of %put, macros)."""
+    import casl_harness
+    from log_parser_table_harness import Macros
+
+    program = LINK_FILE.read_text(encoding="utf-8").replace("\r\n", "\n")
+    macros = Macros({"_lnk_save_table": save_table, "_lnk_log_caslib": LIB, "_lnk_log_table": TABLE,
+                     "_lnk_catalog_caslib": LIB, "_lnk_catalog_table": "MODEL_CATALOG", "_lnk_runs_caslib": LIB,
+                     "_lnk_runs_table": "RAG_RUNS"})
+    put = []
+    state = {"cas": None}
+
+    def on_text(line, found):
+        if not line or line.startswith("*"):
+            return
+        if line == "proc cas;":
+            state["cas"] = [line]
+            return
+        assert state["cas"] is not None, "a line of SAS code this test does not follow: " + line
+        state["cas"].append(line)
+        if line in ("quit;", "run; quit;"):
+            for variable, value in library.run("\n".join(state["cas"])).items():
+                found.symbols[variable.lower()] = value
+            state["cas"] = None
+
+    def run(text, name):
+        put.extend(macros.run(casl_harness.in_blocks(text, name), name, on_text)[1])
+
+    def open_code(start, stop):
+        return "%macro _open_code;\n" + program[program.index(start):program.index(stop)] + "%mend _open_code;\n"
+
+    run(open_code("%let _lnk_log_saved = 0;", "* Sets the macro variable named in _lnk_flag"), "_open_code")
+    for lib, name, flag in ((LIB, TABLE, "_lnk_log_exists"), (LIB, "MODEL_CATALOG", "_lnk_catalog_exists"), (LIB, "RAG_RUNS", "_lnk_runs_exists")):
+        macros.symbols.update({"_lnk_lib": lib, "_lnk_name": name, "_lnk_flag": flag})
+        run(program, "_lnk_ensure_loaded")
+    run(open_code("%let _lnk_ready = 1;", "* The number of rows of the log table."), "_open_code")
+    return [line[len("ERROR: "):] if line.startswith("ERROR: ") else line for line in put], macros
+
+
+def _link_library(saved_only=(), refuse=()):
+    """The three tables of the link in Public, in memory - promoted and saved - or as their saved file only."""
+    from log_parser_table_harness import table_of
+    library = Library(refuse=refuse)
+    for name in (TABLE, "MODEL_CATALOG", "RAG_RUNS"):
+        table = table_of([("name", "varchar")], [{"name": name}])
+        library.put_file(LIB, name + ".sashdat", table)
+        if name not in saved_only:
+            library.put(LIB, name, table)
+    return library
+
+
+@pytest.mark.parametrize("saved_only", [(TABLE,), ("MODEL_CATALOG",), ("RAG_RUNS",)], ids=["log table", "catalog", "ingestion runs"])
+def test_the_link_takes_no_table_for_one_that_is_not_there_where_cas_refused_the_listing(saved_only):
+    """Up to this change a table that is only its saved file counted as not there where CAS refused to list the
+    files: an ERROR that named the log table or the catalog as not found, and for the table of the ingestion runs a
+    NOTE - and the rows were linked without it."""
+    library = _link_library(saved_only, refuse={"table.fileInfo"})
+    put, macros = _follow_link(library)
+
+    assert put == [LINK_REFUSED] and macros["_lnk_ready"] == "0"
+    assert macros[{TABLE: "_lnk_log_exists", "MODEL_CATALOG": "_lnk_catalog_exists", "RAG_RUNS": "_lnk_runs_exists"}[saved_only[0]]] == "-1"
+
+
+def test_the_link_does_not_take_a_refused_listing_for_a_log_table_without_a_saved_file():
+    """With _lnk_save_table 0 the program asks whether the log table in memory has a saved file, which it then saves
+    again: a listing CAS refused is no answer, so nothing is linked."""
+    put, macros = _follow_link(_link_library(refuse={"table.fileInfo"}), save_table="0")
+
+    assert put == [LINK_REFUSED] and macros["_lnk_log_saved"] == "-1" and macros["_lnk_ready"] == "0"
+
+
+@pytest.mark.parametrize("save_table", ["1", "0"])
+def test_the_link_goes_on_where_cas_lists_the_files(save_table):
+    put, macros = _follow_link(_link_library(saved_only=("RAG_RUNS",)), save_table=save_table)
+
+    assert put == [] and macros["_lnk_ready"] == "1" and macros["_lnk_runs_exists"] == "1"
+    assert macros["_lnk_log_saved"] == ("0" if save_table == "1" else "1")
+
+
+def test_the_readme_quotes_the_line_of_the_link():
+    readme = " ".join((CODE_FILE.parent / "README.md").read_text(encoding="utf-8").split())
+    assert "`ERROR: " + LINK_REFUSED + "`" in readme
+    assert "a log table or a catalog that was not found, a listing of saved files that CAS refused, a table the program refused," in readme
+
+
+def test_the_link_says_so_where_a_table_is_not_there():
+    library = _link_library()
+    library.promoted.pop(library.key(LIB, "RAG_RUNS"))
+    library.files.pop((LIB.lower(), "RAG_RUNS.sashdat"))
+    put, macros = _follow_link(library)
+
+    assert put == ["NOTE: The table Public.RAG_RUNS was not found, so no embedding row is linked to an ingestion run."]
+    assert macros["_lnk_runs_exists"] == "0" and macros["_lnk_ready"] == "1"

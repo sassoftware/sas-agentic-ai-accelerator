@@ -90,6 +90,8 @@ run; quit;
     proc cas;
         table.fileInfo result=listing status=listed /
             casLib = "&_lnk_log_caslib.";
+        /* -1: CAS refused the listing, which says nothing about the file */
+        if listed.severity NE 0 then call symputx('_lnk_log_saved', -1);
         if listed.severity EQ 0 then do;
             if exists(listing, 'FileInfo') then do;
                 do savedEntry over listing.FileInfo;
@@ -100,9 +102,10 @@ run; quit;
     run; quit;
 %end;
 
-* Sets the macro variable named in _lnk_flag to 1 when the table is in memory, after loading it from its saved file when it is not;
+* Sets the macro variable named in _lnk_flag to 1 when the table is in memory, after loading it from its saved file when it is not, and to -1 where the table is not in memory and CAS refused to list the saved files;
 %macro _lnk_ensure_loaded(_lnk_lib, _lnk_name, _lnk_flag);
     proc cas;
+        filesListed = 1;
         table.tableExists result=found /
             casLib = "&_lnk_lib.",
             name = "&_lnk_name.";
@@ -115,6 +118,7 @@ run; quit;
             savedFile = '';
             table.fileInfo result=listing status=listed /
                 casLib = "&_lnk_lib.";
+            if listed.severity NE 0 then filesListed = 0;
             if listed.severity EQ 0 then do;
                 if exists(listing, 'FileInfo') then do;
                     do savedEntry over listing.FileInfo;
@@ -135,6 +139,7 @@ run; quit;
         end;
 
         if found.exists GE 1 then call symputx("&_lnk_flag.", 1);
+        else if filesListed EQ 0 then call symputx("&_lnk_flag.", -1);
         else call symputx("&_lnk_flag.", 0);
     run; quit;
 %mend _lnk_ensure_loaded;
@@ -148,7 +153,12 @@ run; quit;
 
 * Without the log table or the catalog nothing is linked. Each case is one ERROR line and the Python below is skipped;
 %let _lnk_ready = 1;
-%if &_lnk_log_exists. NE 1 %then %do;
+* A listing of the saved files that CAS refused is not taken for a CAS library without them: a table that is not in memory is not taken for one that is not there, and a saved file of the log table not for one that is not there either;
+%if &_lnk_log_exists. EQ -1 or &_lnk_catalog_exists. EQ -1 or &_lnk_runs_exists. EQ -1 or &_lnk_log_saved. EQ -1 %then %do;
+    %put ERROR: CAS refused to list the saved files of a CAS library the program reads, so it is not known whether a table that is not in memory is there as a saved file or whether the log table has one. Nothing was linked and the tables were left as they are.;
+    %let _lnk_ready = 0;
+%end;
+%if &_lnk_ready. EQ 1 and &_lnk_log_exists. NE 1 %then %do;
     %put ERROR: The log table &_lnk_log_caslib..&_lnk_log_table. was not found. Run Log-Parser-Code.sas or the step LLM - Log Parser first, it writes the table that is linked here.;
     %let _lnk_ready = 0;
 %end;
