@@ -28,7 +28,7 @@ The package is exported from the content folder of the maintainers' system **aft
 - seven tests of `mdb` are skipped with the reason *the package is exported from the owner's system after this round* — the six that read the shipped package and the one that wants the four packages of earlier releases gone;
 - those four packages are still in the repository. They are older than this page and are not what it describes.
 
-The commands of this section ran on the test system in six passes, twice on 2026-10-12, three times on 2026-10-13 and once on 2026-10-14, in test content roots and as they were then: what the first found changed the import, the second measured the import in place, the third what was built after the second, the fourth what was built after the third, the fifth what was changed after the fourth, and the sixth what was changed after the fifth. [What was measured, and what has not run](#the-package-on-sas-viya) has all six.
+The commands of this section ran on the test system in seven passes, twice on 2026-10-12, three times on 2026-10-13 and twice on 2026-10-14, in test content roots and as they were then: what the first found changed the import, the second measured the import in place, the third what was built after the second, the fourth what was built after the third, the fifth what was changed after the fourth, the sixth what was changed after the fifth, and the seventh what was changed after the sixth. [What was measured, and what has not run](#the-package-on-sas-viya) has all seven.
 :::
 
 ### First install and upgrade {#first-install-and-upgrade}
@@ -214,7 +214,7 @@ On a site that upgrades, this is also what gives the people who used the RAG Bui
 
 ### What was measured, and what has not run {#the-package-on-sas-viya}
 
-The commands of this section ran on SAS Viya 2026.09 in six passes, twice on 2026-10-12, three times on 2026-10-13 and once on 2026-10-14, each with the commands as they were then, in test content roots below the folder of a user. The content folder of the system was only read, and no pass imported a package through the transfer service with `mdb` as it is now.
+The commands of this section ran on SAS Viya 2026.09 in seven passes, twice on 2026-10-12, three times on 2026-10-13 and twice on 2026-10-14, each with the commands as they were then, in test content roots below the folder of a user. The content folder of the system was only read, and no pass imported a package through the transfer service with `mdb` as it is now.
 
 **The first pass, and what it changed.**
 
