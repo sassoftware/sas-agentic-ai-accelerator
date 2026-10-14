@@ -7,7 +7,7 @@ library, and which lines it writes to the log. The CASL is turned into Python st
 statement and run. This module knows the part of CASL the programs it is used for are written in
 
     name = expression;                     || == != and or, "text", numbers, true / false, a.b
-    if ... then do; ... end;  else do; ... end;  if ... then <statement>;  else if ... then <statement>;
+    if ... then do; ... end;  else do; ... end;  if ... then <statement>;  else if ... then <statement>;  else <statement>;
     do <name> over <result>.<table>; ... end;
     <action> result = <name> status = <name> / <parameters>;      and the UPLOAD statement
     call symputx("name", value, "L");
