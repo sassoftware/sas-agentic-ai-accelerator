@@ -187,8 +187,9 @@ what the manifest marks absent; so is any `--identity-type`, `--env-file` or
 `credentials-add`, and so is an identity named twice with `--identity`. An
 empty value of any option (what a variable of the shell that is not set
 gives) ends the command with exit code 2 before anything is read or written,
-as does a `--manifest` that names a folder. An identity id with a line break
-is refused.
+as does a `--manifest` that names a folder. An identity id with a line break,
+another control character, an invisible character of format (U+200B) or a
+blank at either end is refused: every line names an id as it is and unquoted.
 
 ### Adding an identity: `mdb credentials-add`
 
