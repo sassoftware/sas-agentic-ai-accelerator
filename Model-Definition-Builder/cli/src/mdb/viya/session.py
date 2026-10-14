@@ -102,6 +102,39 @@ def _port(url: str) -> int | None:
         return None
 
 
+def _address_problem(url: str) -> str:
+    """Why an address of SAS Viya cannot be used, or "". Asked before any
+    request: sasctl takes the scheme and the host from the address and
+    builds every request from them, so an address it reads another way than
+    its author ends in a request to another place and a traceback.
+
+    * `host:8443` - a port and no scheme: sasctl reads `host` as the scheme
+      and asks `host://host:8443/...`. A host alone it takes as https.
+    * A port that is no number from 1 to 65535 was dropped, and the default
+      port was asked.
+    * A scheme other than https or http has no connection.
+    * An IPv6 address in brackets loses its brackets in sasctl."""
+    if "://" not in url:
+        return "it holds a colon, and no scheme (https://) stands in front of the host" if ":" in url else ""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return "it cannot be read as an address"
+    if parsed.scheme.lower() not in ("https", "http"):
+        return "its scheme is neither https nor http"
+    try:
+        port = parsed.port
+    except ValueError:
+        port = 0
+    if port == 0:
+        return "its port is no number from 1 to 65535"
+    if not parsed.hostname:
+        return "it names no host"
+    if ":" in parsed.hostname:
+        return "its host is an IPv6 address, which sasctl - what mdb signs in with - does not ask"
+    return ""
+
+
 def _fmt(when: datetime | None) -> str:
     return when.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if when else "?"
 
@@ -167,12 +200,20 @@ def resolve_auth(now: datetime | None = None) -> Auth:
     user, password = _env(USER_ENV), _env(PASSWORD_ENV)
     login = None if (token or (user and password)) else cli_login()
 
+    named_by = URL_ENV
     if not url and login and login.endpoint:
-        url = login.endpoint
+        url, named_by = login.endpoint, f"The sas-endpoint of the SAS Viya CLI profile {login.profile}"
     if not url:
         raise ViyaConfigError(
             f"Missing Viya configuration: {URL_ENV} (set it in the environment or .env"
             f"{', or log in with the SAS Viya CLI whose profile names the server' if not token else ''})."
+        )
+    problem = _address_problem(url)
+    if problem:
+        raise ViyaConfigError(
+            f"{named_by} is {url!r}, which mdb cannot use: {problem}. Give the address of SAS Viya as "
+            "https://<host>, or https://<host>:<port> where it listens on a port of its own. Nothing was asked "
+            "of SAS Viya."
         )
 
     if token:

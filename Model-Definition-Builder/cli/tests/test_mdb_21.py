@@ -10,6 +10,7 @@ import io
 import itertools
 import re
 import shlex
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,10 +22,12 @@ from typer.testing import CliRunner
 from content_fakes import Viya, package_of
 from mdb import cli
 from mdb.core import content
+from mdb.viya import session as s
 from mdb.viya import transfer
 from test_content_deploy import command, manifest, repo  # noqa: F401
 from test_credentials_commands import mdb  # noqa: F401
 from test_package_guards import exporting  # noqa: F401
+from test_session import env, fake_sasctl  # noqa: F401
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 CLI_SOURCE = REPOSITORY / "Model-Definition-Builder/cli/src/mdb/cli.py"
@@ -743,3 +746,68 @@ def test_the_command_for_a_test_folder_runs_as_printed_for_a_folder_that_is_not_
     assert ("created      folder" in out.getvalue()) and viya.tree(folder)
     assert not [path for method, path in viya.wrote() if path.startswith("/transfer")]
     assert not (repo / cli.CONTENT_RULES_FILE).exists()
+
+
+# ---- the address of SAS Viya, and what the token address answers ------------------------
+ADDRESS = ("which mdb cannot use: {}. Give the address of SAS Viya as https://<host>, or https://<host>:<port> "
+           "where it listens on a port of its own. Nothing was asked of SAS Viya.")
+NO_SCHEME = "it holds a colon, and no scheme (https://) stands in front of the host"
+NO_PORT = "its port is no number from 1 to 65535"
+
+
+@pytest.mark.parametrize("url, problem", [
+    ("https://127.0.0.1:4983x", NO_PORT),             # gate-20b: asked at port 80, ConnectionError
+    ("https://viya.example.com:99999", NO_PORT), ("https://viya.example.com:0", NO_PORT),
+    ("https://viya.example.com:-1", NO_PORT), ("https://viya.example.com:8443:1", NO_PORT),
+    ("viya.example.com:8443", NO_SCHEME),             # review-20b: POST viya.example.com://viya.example.com:8443/...
+    ("localhost:8443", NO_SCHEME), ("[::1]:8443", NO_SCHEME), ("https:/viya.example.com", NO_SCHEME),
+    ("viya.example.com/path:1", NO_SCHEME),
+    ("https://[::1]:8443", "its host is an IPv6 address, which sasctl - what mdb signs in with - does not ask"),
+    ("https://", "it names no host"), ("https://:8443", "it names no host"),
+    ("ftp://viya.example.com", "its scheme is neither https nor http"),
+    ("https://[::1", "it cannot be read as an address"),
+])
+def test_an_address_that_cannot_be_used_is_refused_before_any_request(env, fake_sasctl, monkeypatch, url, problem):
+    """gate-20b and review-20b: a port that is no number was dropped and the
+    default port asked; `host:8443` made sasctl ask `host://host:8443/...`.
+    Both ended with a traceback. The address is judged before sasctl sees
+    it, for a password and for a token."""
+    env.setenv(s.URL_ENV, url)
+    for credentials in ({s.USER_ENV: "u", s.PASSWORD_ENV: "p"}, {s.TOKEN_ENV: "not-a-jwt"}):
+        for name in (s.USER_ENV, s.PASSWORD_ENV, s.TOKEN_ENV):
+            env.delenv(name, raising=False)
+        for name, value in credentials.items():
+            env.setenv(name, value)
+        with pytest.raises(s.ViyaConfigError) as caught:
+            s.create_session()
+        assert str(caught.value) == f"SAS_VIYA_URL is {url!r}, " + ADDRESS.format(problem)
+    assert fake_sasctl == []
+    # through a command: the one line, exit code 2
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=out, width=80, force_terminal=False, emoji=False))
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=REPOSITORY))
+    result = CliRunner().invoke(cli.app, ["content-deploy", "--dry-run"])
+    assert result.exit_code == 2 and _ended_by_itself(result), result.exception
+    assert out.getvalue() == f"SAS_VIYA_URL is {url!r}, " + ADDRESS.format(problem) + "\n"
+
+
+@pytest.mark.parametrize("url, port", [
+    ("https://viya.example.com", None), ("viya.example.com", None), ("https://viya.example.com:8443", 8443),
+    ("https://viya.example.com:8443/", 8443), ("HTTPS://viya.example.com:443", 443), ("http://127.0.0.1:4983", 4983),
+    ("https://viya.example.com:", None), ("https://viya.example.com/SASLogon", None), ("http://localhost:65535", 65535),
+])
+def test_an_address_that_can_be_used_reaches_sasctl_as_it_did(env, fake_sasctl, url, port):
+    env.setenv(s.URL_ENV, url)
+    env.setenv(s.TOKEN_ENV, "not-a-jwt")
+    s.create_session()
+    assert fake_sasctl == [((url,), {"token": "not-a-jwt", "verify_ssl": True, **({"port": port} if port else {})})]
+
+
+def test_the_address_of_a_cli_profile_is_judged_the_same_way(env, tmp_path):
+    from test_session import _cli_login
+    _cli_login(tmp_path, endpoint="viya.example.com:8443", profile="Site")
+    env.setenv(s.CLI_PROFILE_ENV, "Site")
+    with pytest.raises(s.ViyaConfigError) as caught:
+        s.resolve_auth()
+    assert str(caught.value) == ("The sas-endpoint of the SAS Viya CLI profile Site is 'viya.example.com:8443', "
+                                 + ADDRESS.format(NO_SCHEME))
