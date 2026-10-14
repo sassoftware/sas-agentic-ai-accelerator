@@ -1053,3 +1053,14 @@ def test_a_new_manifest_of_credentials_add_takes_the_domain_it_is_given(mdb, tmp
     other = tmp_path / "other.yaml"
     assert mdb("credentials-add", "group", "G", "--manifest", str(other))[0] == 0
     assert credentials.Manifest.load(other).domain == "agentic-ai-keys"
+
+
+@pytest.mark.parametrize("readme", ["Model-Definition-Builder/README.md", "SAS-Viya-Integrations/README.md"])
+def test_a_readme_that_names_the_credentials_commands_names_all_five(readme):
+    """The two READMEs named `mdb credentials-apply` or none of the
+    commands; `credentials-add`, `credentials-remove` and `state: absent`
+    were in the changelog, the guide and the help alone."""
+    text = (REPOSITORY / readme).read_text(encoding="utf-8")
+    for command in CREDENTIAL_COMMANDS:
+        assert f"`mdb {command}`" in text, command
+    assert "`state: absent`" in text

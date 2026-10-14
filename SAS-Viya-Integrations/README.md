@@ -53,7 +53,7 @@ The RAG steps are described in the [RAG user guide](https://sassoftware.github.i
 | File | Purpose |
 | --- | --- |
 | `create-credential-domain.ps1` / `.sh` | Create the `agentic-ai-keys` credential domain and one identity's credential from your `.env` - provider API keys and vector-store credentials. See [Managing Credentials](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials) |
-| `credentials.example.yaml` | A manifest for `mdb credentials-apply`, which equips many identities at once |
+| `credentials.example.yaml` | A manifest for `mdb credentials-apply`, which equips many identities at once and removes the credential of an identity the manifest marks `state: absent`. `mdb credentials-add` and `mdb credentials-remove` edit such a manifest, `mdb credentials-init` writes a starter one, and `mdb credentials-report` shows who holds a credential |
 | `deploy-rag-content.ps1` / `.sh` | Run `mdb content-deploy --only RAG --to <RAG content root>`: bring `rag_core`, the two job programs, the retrieval model template and the RAG steps in the RAG content root to the state of the checkout, in place. `-ContentRoot` / `-r` names the RAG content root, `/SAS Agentic AI Accelerator/RAG` by default and a folder of any name; `-Create` / `-c` creates it where it is not there; `-DryRun` / `-n` lists what would change. A warning mdb writes to the error stream does not stop either script; the exit code is mdb's |
 
 ### Logging-Monitoring
