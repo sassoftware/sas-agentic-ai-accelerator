@@ -656,6 +656,10 @@ export async function buildPromptBuilder(
     // Experiment-tracker rows for THIS object instance. Kept in the closure
     // (not on window) so two prompt-builder panes don't clobber each other.
     let petRows: PETRow[] = [];
+    // The runs SAS Model Manager holds for the open prompt-test could not be
+    // read when it was opened (its contents or its tracker): the page shows
+    // none of them, and a save would replace them with what the page holds.
+    let storedRunsUnread = false;
 
     const promptBuilderContainer = document.createElement('div');
     promptBuilderContainer.setAttribute('id', `${paneID}-obj-${promptBuilderObject?.id}`);
@@ -1043,12 +1047,15 @@ export async function buildPromptBuilder(
       if (promptDetails) applyPromptMode(isDecisionTemplate(promptDetails) ? 'decision' : 'llm');
       // Get the ID of a previously created Prompt Experiment Tracker and delete it
       let promptBuilderAvailablePTE: Awaited<ReturnType<typeof getModelContents>> = [];
+      let contentsRead = true;
       try {
         promptBuilderAvailablePTE = await getModelContents(promptBuilderPromptSelectedModelID);
       } catch (error) {
         console.error('Failed to load model contents for the selected prompt.', error);
+        contentsRead = false;
       }
       if (superseded()) return;
+      storedRunsUnread = !contentsRead;
       for (const promptBuilderAvailablepte in promptBuilderAvailablePTE) {
         if (promptBuilderAvailablePTE[promptBuilderAvailablepte]?.name === 'Prompt-Experiment-Tracker.json') {
           // A tracker that cannot be parsed must not abort the handler — the
@@ -1181,8 +1188,13 @@ export async function buildPromptBuilder(
             loadMostRecentBestRun(!startedAfresh);
           } catch (error) {
             console.error('Failed to load the Prompt-Experiment-Tracker for the selected prompt.', error);
+            if (!superseded()) storedRunsUnread = true;
           }
         }
+      }
+      if (storedRunsUnread && !superseded()) {
+        showStoredRunsUnread(promptExperimentSaveResultContainer);
+        showToast(`${promptBuilderInterfaceText?.promptBuilderStoredRunsUnread}`);
       }
       // The prompt-test is on the page: from here on the later steps show it
       // - also a new one, which brought nothing and is filled by hand - and
@@ -1474,6 +1486,7 @@ export async function buildPromptBuilder(
       promptExperimentTracker = [];
       promptExperimentTrackerRunID = 0;
       petRows = [];
+      storedRunsUnread = false;
       experimentsModified = false;
       promptExperimentResultContainer.innerHTML = '';
       promptExperimentSaveResultContainer.innerHTML = '';
@@ -4953,6 +4966,13 @@ export async function buildPromptBuilder(
     // Result message for a plain Save (shown next to the Save button).
     const promptExperimentSaveResultContainer = document.createElement('div');
     promptExperimentSaveResultContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-save-only-result`;
+    // The line that the stored runs of the open prompt-test were not read.
+    function showStoredRunsUnread(container: HTMLElement): void {
+      const line = document.createElement('p');
+      line.classList.add('text-danger', 'pet-runs-unread');
+      line.innerText = `${promptBuilderInterfaceText?.promptBuilderStoredRunsUnread}`;
+      container.replaceChildren(line);
+    }
 
     /**
      * A write SAS Model Manager refused is a write that failed. The calls that
@@ -5000,6 +5020,12 @@ export async function buildPromptBuilder(
         // Check if a prompt test was selected
         if (promptExperimentRunModel === promptBuilderInterfaceText.promptSelect) {
           alert(promptBuilderInterfaceText.promptExperimentSaveModelsPromptAlert);
+          return false;
+        }
+        // The upload replaces the stored tracker: not over runs the page
+        // could not read.
+        if (storedRunsUnread) {
+          showStoredRunsUnread(resultContainer);
           return false;
         }
         // A tracker that is stored already is kept in a new model version, and
@@ -6231,8 +6257,9 @@ ${scoreCodeReturn}`;
     }
 
     /**
-     * Read a model's job-written optimization tracker. Null when the tracker
-     * does not exist or is not (yet) readable.
+     * Read a model's job-written optimization tracker. An empty list when the
+     * model holds no tracker; null when the contents or the tracker could not
+     * be read.
      */
     async function readOptimizationEntries(modelId: string): Promise<OptimizationTrackerEntry[] | null> {
       try {
@@ -6240,7 +6267,8 @@ ${scoreCodeReturn}`;
         const trackerContent = sourceContents.find(
           (modelContent) => modelContent.name === 'Prompt-Optimization-Tracker.json'
         );
-        if (!trackerContent?.fileUri) return null;
+        if (!trackerContent) return [];
+        if (!trackerContent.fileUri) return null;
         const response = await getFileContent(String(trackerContent.fileUri));
         const trackerEntries = (await response.json()) as OptimizationTrackerEntry[];
         return Array.isArray(trackerEntries) ? trackerEntries : null;
@@ -6721,15 +6749,22 @@ ${scoreCodeReturn}`;
       if (!confirmed) return;
       await selectionLock.during(async () => {
         // Each write is read (see written), and one that is refused or throws
-        // ends the delete with the toast of a deletion that failed; the
-        // history is read again either way and shows what is stored.
+        // ends the delete with the toast of a deletion that failed - or, for
+        // an upload or delete of the tracker that got no answer, with the
+        // toast that the run may have been deleted or not; the history is
+        // read again either way.
         // The entries of the other runs are never deleted to be written back:
         // the tracker is replaced in one upload (onConflict=update), and
         // deleted only when no run is left in it. Whichever write fails, the
-        // tracker is the earlier one or the new one.
+        // tracker is the earlier one or the new one. A tracker that cannot be
+        // read is not written at all: its other runs are not known.
         let entryRemoved = false;
+        // The upload or the delete of the tracker is out: when it gets no
+        // answer, the run may have been deleted or not.
+        let trackerWriteOut = false;
         try {
-          const trackerEntries = (await readOptimizationEntries(modelId)) ?? [];
+          const trackerEntries = await readOptimizationEntries(modelId);
+          if (!trackerEntries) throw new Error('The optimization tracker could not be read');
           const remaining = trackerEntries.filter(
             (candidate) => candidate.optimizationId !== entry.optimizationId
           );
@@ -6739,9 +6774,15 @@ ${scoreCodeReturn}`;
             (modelContent) => modelContent.name === 'Prompt-Optimization-Tracker.json'
           );
           if (remaining.length > 0) {
-            written((await createModelContent(modelId, remaining, 'Prompt-Optimization-Tracker.json')).status_code, 'Prompt-Optimization-Tracker.json');
+            trackerWriteOut = true;
+            const upload = await createModelContent(modelId, remaining, 'Prompt-Optimization-Tracker.json');
+            trackerWriteOut = false;
+            written(upload.status_code, 'Prompt-Optimization-Tracker.json');
           } else if (trackerContent?.id) {
-            written(await deleteModelContent(modelId, trackerContent.id), 'The delete of the optimization tracker');
+            trackerWriteOut = true;
+            const status = await deleteModelContent(modelId, trackerContent.id);
+            trackerWriteOut = false;
+            written(status, 'The delete of the optimization tracker');
           }
           entryRemoved = true;
           // Drop the run's dataset snapshot alongside its entry.
@@ -6758,7 +6799,9 @@ ${scoreCodeReturn}`;
           showToast(
             entryRemoved
               ? `${promptBuilderInterfaceText?.promptBuilderOptimizeHistorySnapshotLeft}`.replace('{file}', () => String(entry.datasetSnapshot))
-              : `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`
+              : trackerWriteOut
+                ? `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteUnknown}`
+                : `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`
           );
         }
         // The history that is read again is the one of this prompt-test.

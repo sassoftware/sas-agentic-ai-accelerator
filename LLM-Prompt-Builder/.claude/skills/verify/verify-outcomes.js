@@ -11,7 +11,9 @@
  *     Save Experiments, the writes of the delete of an optimization run, and
  *     in the RAG Builder the job reference and the Studio flow copy of
  *     Manifest setup and its model version. Nothing is deleted to be
- *     written back: a refused upload loses no run.
+ *     written back: a refused upload loses no run. The delete of an
+ *     optimization run whose tracker cannot be read writes nothing; one whose
+ *     upload was stored without an answer says the run may have been deleted.
  *   - A delete whose request gets no answer says so; a Delete prompt-test or
  *     Delete project opens no dialog when another item was opened while the
  *     usage was asked. A Delete project that stops part of the way shows
@@ -374,10 +376,20 @@ const MANIFEST_BOX = lpb('pet-save-result');
   // The tracker of model-used as this suite serves it: the run of the mock
   // and a second one, and - where asked - the dataset snapshot of the first
   // in the contents. Writes to it are answered here, not by the mock.
-  const servedTracker = async (page, { snapshot = false, refuseUpload = false, refuseSnapshot = false } = {}) => {
+  // `state.failNextRead` ('refused', 'abort' or 'html') makes the next read
+  // of the tracker fail; `storeThenNoAnswer` stores an upload of the tracker
+  // and then gives the page no answer.
+  const servedTracker = async (page, { snapshot = false, refuseUpload = false, refuseSnapshot = false, storeThenNoAnswer = false } = {}) => {
     const first = (await (await fetch(BASE + '/files/files/opttrk-1/content')).json())[0];
-    const state = { entries: [first, { ...first, optimizationId: 2, jobId: 'job-second', datasetSnapshot: null }], writes: [] };
-    await page.route('**/files/files/opttrk-1/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(state.entries) }));
+    const state = { entries: [first, { ...first, optimizationId: 2, jobId: 'job-second', datasetSnapshot: null }], writes: [], failNextRead: null };
+    await page.route('**/files/files/opttrk-1/content', (route) => {
+      const failure = state.failNextRead;
+      state.failNextRead = null;
+      if (failure === 'abort') return route.abort('failed');
+      if (failure === 'html') return route.fulfill({ status: 200, contentType: 'text/html', body: '<html><body>Bad gateway</body></html>' });
+      if (failure) return refuse(route);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(state.entries) });
+    });
     await page.route('**/modelRepository/models/model-used/**', async (route) => {
       const request = route.request();
       const url = request.url();
@@ -393,6 +405,7 @@ const MANIFEST_BOX = lpb('pet-save-result');
         if (refuseUpload) return refuse(route);
         const m = body.match(/\r\n\r\n([\s\S]*?)\r\n--/);
         state.entries = m ? JSON.parse(m[1]) : state.entries;
+        if (storeThenNoAnswer) return route.abort('failed');
         return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ id: 'c-opttrk' }) });
       }
       if (request.method() === 'DELETE' && url.endsWith('/contents/c-opttrk')) {
@@ -441,6 +454,42 @@ const MANIFEST_BOX = lpb('pet-save-result');
         !said.some((text) => text.startsWith('Optimization run deleted')) &&
         after === 1 && state.entries.length === 1 && state.entries[0].optimizationId === 2,
       `the delete of an optimization run whose snapshot is refused says that the run left the history and that its snapshot may still be stored, and the history lists the other run (toasts: ${JSON.stringify(said)}; entries shown: ${after}; stored: ${JSON.stringify(state.entries.map((entry) => entry.optimizationId))})`
+    );
+  });
+
+  // The tracker cannot be read at the delete: its other runs are not known,
+  // and nothing is written - before, an empty list stood in for them and the
+  // tracker was deleted with every run.
+  for (const failure of ['refused', 'abort', 'html']) {
+    await road(`the delete of an optimization run whose tracker cannot be read (${failure})`, async (page) => {
+      await openPage(page);
+      const state = await servedTracker(page);
+      await openPromptTest(page, 'proj-1', 'model-used');
+      await goStep(page, 'LPB', 'optimize');
+      await page.waitForSelector(`${lpb('pane-optimize')} .pb-optimize-history-entry`, { timeout: 15000 });
+      state.failNextRead = failure;
+      const { said, after } = await deleteFirstRun(page);
+      step(
+        said.some((text) => text.startsWith('The deletion failed')) && !said.some((text) => text.startsWith('Optimization run deleted')) &&
+          after === 2 && state.entries.length === 2 && state.writes.filter((write) => !write.includes('/modelVersions')).length === 0,
+        `the delete of an optimization run whose tracker cannot be read (${failure}) writes nothing and says the deletion failed: both runs are stored and listed (toasts: ${JSON.stringify(said)}; entries shown: ${after}; stored: ${state.entries.length}; writes: ${JSON.stringify(state.writes)})`
+      );
+    });
+  }
+
+  // The upload of the other runs is stored, and its answer is lost: whether
+  // the run was deleted is not known to the page, and the toast says so.
+  await road('the delete of an optimization run whose upload is stored without an answer', async (page) => {
+    await openPage(page);
+    const state = await servedTracker(page, { storeThenNoAnswer: true });
+    await openPromptTest(page, 'proj-1', 'model-used');
+    await goStep(page, 'LPB', 'optimize');
+    const { said, after } = await deleteFirstRun(page);
+    step(
+      said.some((text) => text.startsWith('The deletion of the run got no usable answer from SAS Model Manager: the run may have been deleted or not.')) &&
+        !said.some((text) => text.startsWith('The deletion failed') || text.startsWith('Optimization run deleted')) &&
+        after === 1 && state.entries.length === 1 && state.entries[0].optimizationId === 2,
+      `the delete of an optimization run whose upload is stored without an answer says that the run may have been deleted, under a history that lists the other run (toasts: ${JSON.stringify(said)}; entries shown: ${after}; stored: ${JSON.stringify(state.entries.map((entry) => entry.optimizationId))})`
     );
   });
 

@@ -275,6 +275,7 @@
     "promptExperimentSaveSucessResponse": "The experiment has been saved. Here is a link to the prompt: ",
     "promptExperimentSaveFailureResponse": "The experiment couldn't be saved. Please ensure that you have write access to the prompt model in SAS Model Manager.",
     "promptExperimentSaveStopped": "Saving the experiments did not finish: a request to SAS Model Manager failed or got no usable answer. The prompt holds the experiments it held before this save, or these; the runs are still on this page. Save again; if that fails too, check the connection to SAS Viya and your permissions on the prompt model.",
+    "promptBuilderStoredRunsUnread": "The saved runs of this prompt-test could not be read from SAS Model Manager, so Save Experiments - also as the first step of a manifest or an optimization - writes nothing: it would replace them with the runs shown here. Choose another entry in the list and then this prompt-test again to read them.",
     "promptBuilderModelInferenceFailed": "The model call failed, please check with the Administrator.",
     "promptBuilderCreateModelButton": "Manifest Best Prompt",
     "promptBuilderCreateModelNoBestPrompt": "You have to select a Best Prompt using the checkboxes.",
@@ -499,7 +500,8 @@
     "promptBuilderOptimizeHistoryDeleteButton": "Delete this optimization run",
     "promptBuilderOptimizeHistoryDeleteConfirm": "The run's entry and its dataset snapshot are removed from the prompt (a model version preserves the audit trail). This cannot be undone from here.",
     "promptBuilderOptimizeHistoryDeletedToast": "Optimization run deleted.",
-    "promptBuilderOptimizeHistorySnapshotLeft": "The run was removed from the optimization history, but the delete of its dataset snapshot {file} failed: the snapshot may still be stored with the prompt. Please ensure you have the required permissions in SAS Model Manager."
+    "promptBuilderOptimizeHistorySnapshotLeft": "The run was removed from the optimization history, but the delete of its dataset snapshot {file} failed: the snapshot may still be stored with the prompt. Please ensure you have the required permissions in SAS Model Manager.",
+    "promptBuilderOptimizeHistoryDeleteUnknown": "The deletion of the run got no usable answer from SAS Model Manager: the run may have been deleted or not."
   },
   "ragBuilder": {
     "ragBuilderHeading": "RAG Builder",
@@ -547,7 +549,7 @@
     "ragBuilderLaunchButton": "Launch ingestion",
     "ragBuilderLedgerButton": "Browse ledger",
     "ragBuilderTestButton": "Test retrieval",
-    "ragBuilderLoadSetupError": "The stored rag-setup.json could not be read - starting from defaults.",
+    "ragBuilderLoadSetupError": "The stored setup could not be read from SAS Model Manager, so Save setup, Manifest setup and Save documentation stay off: they would write the fields shown here over it. Choose another entry in the list and then this setup again to read it.",
     "ragBuilderValidateSource": "The document folder path is required.",
     "ragBuilderValidateStore": "This store has no host or database in the credential domain, so a setup saved here cannot ingest.",
     "ragBuilderValidateCollection": "The collection must be a lowercase identifier (letters, digits, underscores; starts with a letter).",

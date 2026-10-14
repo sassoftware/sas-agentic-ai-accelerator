@@ -1547,7 +1547,6 @@ export async function buildRagBuilder(
           contents.find((item) => String(item.name ?? '').toLowerCase().endsWith('.py'));
         if (!score?.fileUri) return;
         const response = await getFileContent(String(score.fileUri), 'text/plain');
-        if (!response.ok) return;
         contract = readPromptContract(await response.text());
       } catch (error) {
         console.debug('RAG Builder: reading the prompt score code failed', error);
@@ -2455,7 +2454,6 @@ export async function buildRagBuilder(
     const setupItem = contents.find((item) => item.name === SETUP_FILE);
     if (!setupItem?.fileUri) return null;
     const response = await getFileContent(setupItem.fileUri);
-    if (!response.ok) return null;
     return { ...defaultSetup(config), ...(await response.json()) } as RagSetup;
   }
 
@@ -3083,6 +3081,10 @@ export async function buildRagBuilder(
       return;
     }
     const setupID = selectedSetupID;
+    // What is stored of the setup could not be read - its contents, its
+    // rag-setup.json or the attributes that hold its documentation. Its
+    // buttons then stay off: they would write the fields shown over it.
+    let unread = false;
     try {
       applySetup(defaultSetup(config));
       const contents = await getModelContents(setupID);
@@ -3092,14 +3094,12 @@ export async function buildRagBuilder(
         try {
           const response = await getFileContent(setupItem.fileUri);
           if (!shown()) return;
-          if (response.ok) {
-            const stored = await response.json();
-            if (!shown()) return;
-            applySetup({ ...defaultSetup(config), ...stored } as RagSetup);
-          }
-        } catch {
+          const stored = await response.json();
           if (!shown()) return;
-          showStatus('danger', str('ragBuilderLoadSetupError', 'The stored rag-setup.json could not be read - starting from defaults.'));
+          applySetup({ ...defaultSetup(config), ...stored } as RagSetup);
+        } catch (error) {
+          console.error('RAG Builder: reading the stored setup failed', error);
+          unread = true;
         }
       } else {
         // No stored setup yet, but documentation may already have been saved on
@@ -3107,16 +3107,21 @@ export async function buildRagBuilder(
         // rather than showing empty fields over text that exists.
         try {
           const details = await getModelDetails(setupID);
-          if (details && shown()) ragDoc.setValues(details as Record<string, unknown>);
+          if (!details) throw new Error('The setup was answered with an error');
+          if (shown()) ragDoc.setValues(details as Record<string, unknown>);
         } catch (error) {
-          console.debug('RAG Builder: reading documentation attributes failed', error);
+          console.error('RAG Builder: reading documentation attributes failed', error);
+          unread = true;
         }
       }
+    } catch (error) {
+      console.error('RAG Builder: listing the contents of the setup failed', error);
+      unread = true;
     } finally {
-      // Read, or given up as before: the buttons can write the setup once its
-      // enrichment is drawn as well. A setup opened meanwhile is read anew.
+      // Read: the buttons can write the setup once its enrichment is drawn as
+      // well. A setup opened meanwhile is read anew.
       const read = (): void => {
-        if (!shown()) return;
+        if (!shown() || unread) return;
         setupReading = false;
         updateSetupWrites();
       };
@@ -3125,6 +3130,15 @@ export async function buildRagBuilder(
     // The setup is drawn. An ingestion that was launched for it from this
     // page and has not been seen to end is shown again, and followed.
     if (!shown()) return;
+    if (unread) {
+      showStatus(
+        'danger',
+        str(
+          'ragBuilderLoadSetupError',
+          'The stored setup could not be read from SAS Model Manager, so Save setup, Manifest setup and Save documentation stay off: they would write the fields shown here over it. Choose another entry in the list and then this setup again to read it.'
+        )
+      );
+    }
     // One this page does not know of - the page was loaded again after the
     // launch, or the job was started elsewhere - is asked of SAS Job
     // Execution: the newest job of the setup's job definition that has not

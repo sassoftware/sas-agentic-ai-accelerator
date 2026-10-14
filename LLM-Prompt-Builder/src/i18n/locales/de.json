@@ -275,6 +275,7 @@
     "promptExperimentSaveSucessResponse": "Der Experimentlauf wurde erfolgreich gespeichert. Hier ist ein Link zu dem Prompt: ",
     "promptExperimentSaveFailureResponse": "Der Experimentlauf konnte nicht gespeichert werden. Bitte versichere dich, dass du Schreibrechte auf den Prompt im SAS Model Manager hast.",
     "promptExperimentSaveStopped": "Das Speichern der Experimente wurde nicht abgeschlossen: Eine Anfrage an den SAS Model Manager ist fehlgeschlagen oder blieb ohne verwertbare Antwort. Beim Prompt sind die Experimente gespeichert, die er vor diesem Speichern hatte, oder diese hier; die Läufe stehen weiterhin auf dieser Seite. Speichern Sie erneut; schlägt auch das fehl, prüfen Sie die Verbindung zu SAS Viya und Ihre Berechtigungen für das Prompt-Modell.",
+    "promptBuilderStoredRunsUnread": "Die gespeicherten Läufe dieses Prompt-Tests konnten nicht aus dem SAS Model Manager gelesen werden, daher schreibt „Experimente speichern“ – auch als erster Schritt eines Manifests oder einer Optimierung – nichts: Es würde sie durch die hier gezeigten Läufe ersetzen. Wählen Sie einen anderen Eintrag der Liste und dann wieder diesen Prompt-Test, um sie zu lesen.",
     "promptBuilderModelInferenceFailed": "Der Modellaufruf ist fehlgeschlagen, bitte kontaktiere den Administrator.",
     "promptBuilderCreateModelButton": "Besten Prompt manifestieren",
     "promptBuilderCreateModelNoBestPrompt": "Sie müssen einen besten Prompt über die Checkboxen auswählen.",
@@ -499,7 +500,8 @@
     "promptBuilderOptimizeHistoryDeleteButton": "Diesen Optimierungslauf löschen",
     "promptBuilderOptimizeHistoryDeleteConfirm": "Der Eintrag des Laufs und sein Datensatz-Snapshot werden vom Prompt entfernt (eine Modellversion bewahrt den Prüfpfad). Das lässt sich hier nicht rückgängig machen.",
     "promptBuilderOptimizeHistoryDeletedToast": "Optimierungslauf gelöscht.",
-    "promptBuilderOptimizeHistorySnapshotLeft": "Der Lauf wurde aus dem Optimierungsverlauf entfernt, aber das Löschen seines Datensatz-Snapshots {file} ist fehlgeschlagen: Der Snapshot kann weiterhin beim Prompt gespeichert sein. Bitte stellen Sie sicher, dass Sie die erforderlichen Berechtigungen im SAS Model Manager haben."
+    "promptBuilderOptimizeHistorySnapshotLeft": "Der Lauf wurde aus dem Optimierungsverlauf entfernt, aber das Löschen seines Datensatz-Snapshots {file} ist fehlgeschlagen: Der Snapshot kann weiterhin beim Prompt gespeichert sein. Bitte stellen Sie sicher, dass Sie die erforderlichen Berechtigungen im SAS Model Manager haben.",
+    "promptBuilderOptimizeHistoryDeleteUnknown": "Das Löschen des Laufs hat vom SAS Model Manager keine verwertbare Antwort erhalten: Der Lauf ist möglicherweise gelöscht worden oder nicht."
   },
   "ragBuilder": {
     "ragBuilderHeading": "RAG Builder",
@@ -547,7 +549,7 @@
     "ragBuilderLaunchButton": "Ingestion starten",
     "ragBuilderLedgerButton": "Ledger durchsuchen",
     "ragBuilderTestButton": "Retrieval testen",
-    "ragBuilderLoadSetupError": "Die gespeicherte rag-setup.json konnte nicht gelesen werden - es wird mit Standardwerten begonnen.",
+    "ragBuilderLoadSetupError": "Das gespeicherte Setup konnte nicht aus dem SAS Model Manager gelesen werden, daher bleiben Setup speichern, Setup manifestieren und Dokumentation speichern gesperrt: Sie würden die hier gezeigten Felder darüberschreiben. Wählen Sie einen anderen Eintrag der Liste und dann wieder dieses Setup, um es zu lesen.",
     "ragBuilderValidateSource": "Der Pfad zum Dokumentordner ist erforderlich.",
     "ragBuilderValidateStore": "Für diese Datenbank sind in der Credential-Domain kein Host und keine Datenbank hinterlegt; eine hier gespeicherte Konfiguration kann nicht laden.",
     "ragBuilderValidateCollection": "Die Collection muss ein Kleinbuchstaben-Bezeichner sein (Buchstaben, Ziffern, Unterstriche; beginnt mit einem Buchstaben).",
