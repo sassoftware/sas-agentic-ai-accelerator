@@ -47,3 +47,23 @@ def test_an_address_with_a_backslash_is_named_with_one(env):
         assert str(exc).startswith("SAS_VIYA_URL is 'C:\\viya', which mdb cannot use")
     else:
         raise AssertionError("not refused")
+
+
+# ---- a key file handed as the manifest is not printed -------------------------------------
+def test_a_key_file_handed_as_the_manifest_is_refused_without_its_text(mdb):
+    """review-21a case 2: `--manifest .env` printed the YAML error with the
+    line it stopped at - a line of the .env with its value."""
+    (mdb.path.parent / "keys.env").write_text(
+        "OPENAI_API_KEY=sk-made-up-x\nPGVECTOR_RAG_PW=pg-made-up: password\n", encoding="utf-8")
+    for args in (("credentials-add", "group", "G"), ("credentials-remove", "group", "G"), ("credentials-apply",),
+                 ("credentials-report",)):
+        code, said = mdb(*args, "--manifest", "keys.env")
+        assert code == 2, args
+        assert "keys.env is not valid YAML (the reader stopped at line 2, column 27). Nothing of its text is shown" in said
+        assert "made-up" not in said and "password" not in said, said
+    # the problem the reader names can be a word of the file: an alias
+    (mdb.path.parent / "alias.yaml").write_text("identities: *made-up-alias\n", encoding="utf-8")
+    for args in (("credentials-remove", "group", "G"), ("credentials-apply",)):
+        code, said = mdb(*args, "--manifest", "alias.yaml")
+        assert code == 2 and "alias.yaml is not valid YAML (the reader stopped at line 1" in said, said
+        assert "made-up" not in said

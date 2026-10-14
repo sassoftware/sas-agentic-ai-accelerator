@@ -231,6 +231,18 @@ def write_manifest_text(path: Path, text: str) -> None:
         raise CredentialError(f"cannot write {path}: {exc}") from exc
 
 
+def _not_yaml(path: Path, exc) -> CredentialError:
+    """The refusal of a manifest YAML cannot read: where the reader stopped,
+    and nothing of the text. The error of the YAML library quotes the line it
+    stopped at, and a key file handed as the manifest by mistake
+    (`--manifest .env`) would be printed with a value; the problem it names
+    can be a word of the file as well (an alias)."""
+    mark = getattr(exc, "problem_mark", None) or getattr(exc, "context_mark", None)
+    where = f" (the reader stopped at line {mark.line + 1}, column {mark.column + 1})" if mark else ""
+    return CredentialError(f"{path} is not valid YAML{where}. Nothing of its text is shown: a key file "
+                           "handed as the manifest would be shown with its values.")
+
+
 def encode(entries: dict) -> dict:
     """The `secrets` map as the domain stores it (base64, per domain type)."""
     return {
@@ -306,7 +318,7 @@ class Manifest:
         try:
             raw = yaml.safe_load(text) or {}
         except yaml.YAMLError as exc:
-            raise CredentialError(f"{path} is not valid YAML: {exc}") from exc
+            raise _not_yaml(path, exc) from None
         if not isinstance(raw, dict):
             raise CredentialError(f"{path}: expected a mapping at the top level")
 
@@ -527,7 +539,7 @@ def _identities_node(text: str, path: Path):
     try:
         root = yaml.compose(text, Loader=yaml.SafeLoader)
     except yaml.YAMLError as exc:
-        raise CredentialError(f"{path} is not valid YAML: {exc}") from exc
+        raise _not_yaml(path, exc) from None
     name = listed = None
     if isinstance(root, yaml.MappingNode):
         for key, value in root.value:
