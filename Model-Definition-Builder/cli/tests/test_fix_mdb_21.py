@@ -296,6 +296,31 @@ def test_apply_and_report_refuse_an_identity_listed_twice(mdb, order):
     assert mdb("credentials-add", "group", "LLMConsumers")[0] == 2
 
 
+def test_a_domain_the_manifest_does_not_name_is_refused(mdb):
+    """review-21a case 7: with a manifest, --domain of apply and report was
+    not read and nothing said so - `mdb credentials-apply --domain
+    zz_throwaway` went to agentic-ai-keys, and since this release it also
+    removes there."""
+    mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: A, state: absent}\n", encoding="utf-8")
+    for args in (("credentials-apply", "--dry-run"), ("credentials-apply",), ("credentials-report",)):
+        code, said = mdb(*args, "--domain", "zz_throwaway")
+        assert code == 2, args
+        assert ("--domain zz_throwaway is read only with --identity: credentials.yaml names the credential domain "
+                "agentic-ai-keys. Nothing was asked of SAS Viya.") in said
+    assert mdb.site.calls == []
+    # the domain the manifest names, given or not, is the run's
+    for given in ((), ("--domain", "agentic-ai-keys")):
+        code, said = mdb("credentials-apply", "--dry-run", *given)
+        assert code == 0 and "Credential domain 'agentic-ai-keys'" in said
+    # with --identity the option names the domain, and its default is still agentic-ai-keys
+    code, said = mdb("credentials-report", "--identity", "A", "--domain", "zz_throwaway")
+    assert code == 0 and "Credential domain 'zz_throwaway'" in said
+    assert mdb.site.calls[-1] == ("GET", "/credentials/domains/zz_throwaway/groups/A")
+    code, said = mdb("credentials-apply", "--identity", "A")
+    assert code == 0 and said.rstrip().endswith("Check it with `mdb credentials-report --identity A`.")
+    assert ("PUT", "/credentials/domains/agentic-ai-keys/groups/A") in mdb.site.calls
+
+
 def test_the_requests_of_apply_name_the_identity_whole(mdb):
     mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: 'Sales#EMEA'}\n"
                         "  - {type: group, id: '../x', state: absent}\n", encoding="utf-8")

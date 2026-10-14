@@ -3680,12 +3680,14 @@ def provider_check(adapter_id: str = typer.Argument(...)):
     console.print(f"[green]{_plain(adapter_id)}: conformance checks passed.[/green]")
 
 
-def _credential_manifest(manifest: Optional[str], domain: str,
+def _credential_manifest(manifest: Optional[str], domain: Optional[str],
                          identity_type: str, identities: Optional[list[str]],
                          env_file: Optional[str], keys_file: Optional[str]):
-    """A manifest from a file, or one assembled from the flags."""
+    """A manifest from a file, or one assembled from the flags. `domain` is
+    --domain as given, None where it was not: a manifest names its own, and
+    a --domain that names another one is refused."""
     from .viya.credentials import (
-        DEFAULT_MANIFEST, CredentialError, Identity, Manifest,
+        DEFAULT_DOMAIN, DEFAULT_MANIFEST, CredentialError, Identity, Manifest,
     )
 
     # Naming identities on the command line is the single-identity mode and
@@ -3718,6 +3720,12 @@ def _credential_manifest(manifest: Optional[str], domain: str,
             console.print(f"{path}: {'; '.join(twice)} - make each one entry by hand first. Nothing was asked of "
                           "SAS Viya.", style="red", markup=False, highlight=False, soft_wrap=True)
             raise typer.Exit(2)
+        if domain is not None and domain != loaded.domain:
+            # the run would go to the domain of the manifest - and remove there what it marks absent
+            console.print(f"--domain {domain} is read only with --identity: {path} names the credential domain "
+                          f"{loaded.domain}. Nothing was asked of SAS Viya.", style="red", markup=False,
+                          highlight=False, soft_wrap=True)
+            raise typer.Exit(2)
         return loaded
     if manifest:
         console.print("[yellow]--identity was given, so --manifest is "
@@ -3725,7 +3733,7 @@ def _credential_manifest(manifest: Optional[str], domain: str,
     source = Path(keys_file or env_file or ".env").resolve()
     try:
         return Manifest(
-            domain=domain,
+            domain=domain or DEFAULT_DOMAIN,
             source=source,
             identities=[Identity(type=identity_type, id=who,
                                  verbatim=bool(keys_file))
@@ -4050,8 +4058,10 @@ def credentials_apply(
     identity_type: str = typer.Option(
         "group", "--identity-type",
         help="user or group. A user credential overrides a group one"),
-    domain: str = typer.Option(
-        "agentic-ai-keys", "--domain", help="Credential domain to write into"),
+    domain: Optional[str] = typer.Option(
+        None, "--domain",
+        help="Credential domain to write into, with --identity (default: agentic-ai-keys); a manifest names its "
+             "own"),
     env_file: Optional[str] = typer.Option(
         None, "--env-file", help="Source .env (default: ./.env)"),
     keys_file: Optional[str] = typer.Option(
@@ -4220,8 +4230,9 @@ def credentials_report(
         None, "--identity", "-i", help="Identity id to ask about; repeat for several"),
     identity_type: str = typer.Option(
         "group", "--identity-type", help="user or group"),
-    domain: str = typer.Option(
-        "agentic-ai-keys", "--domain", help="Credential domain to inspect"),
+    domain: Optional[str] = typer.Option(
+        None, "--domain",
+        help="Credential domain to inspect, with --identity (default: agentic-ai-keys); a manifest names its own"),
 ):
     """Who holds a credential in the domain, and who wrote it.
 
