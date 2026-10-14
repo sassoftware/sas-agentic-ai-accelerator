@@ -17,6 +17,23 @@ export interface ViyaFetchOptions {
   contentType?: string;
 }
 
+/**
+ * How long a request to SAS Viya may stay without an answer: then it is
+ * given up and fails as a request without an answer does. Without a bound a
+ * request that never got one held what waited for it for good - a write kept
+ * the selection of its builder locked (see createSelectionLock) until the
+ * page was reloaded. Two minutes is far beyond what a request of this page
+ * takes; the calls to the model containers do not come through here.
+ */
+const REQUEST_TIMEOUT_MS = 120_000;
+
+/** `fetch`, given up after REQUEST_TIMEOUT_MS - also while the body is read. */
+function fetchWithin(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  window.setTimeout(() => controller.abort(new Error(`no answer within ${REQUEST_TIMEOUT_MS / 1000} s`)), REQUEST_TIMEOUT_MS);
+  return fetch(url, { ...init, signal: controller.signal });
+}
+
 // The session warm-ups that are under way, by service (the first path
 // segment). Requests sent in parallel all get their 449 before the first of
 // them has established the session, and then share its warm-up. An entry is
@@ -44,7 +61,7 @@ function establishServiceSession(viyaHost: string, path: string): Promise<void> 
   if (!service) return Promise.resolve();
   let warmUp = sessionWarmUps.get(service);
   if (!warmUp) {
-    warmUp = fetch(`${viyaHost}/${service}/`, {
+    warmUp = fetchWithin(`${viyaHost}/${service}/`, {
       method: 'GET',
       headers: { Accept: 'application/json' },
       credentials: 'include',
@@ -99,7 +116,7 @@ export async function viyaFetch(
     fetchOptions.body = options.body;
   }
 
-  let response = await fetch(url, fetchOptions);
+  let response = await fetchWithin(url, fetchOptions);
 
   // No session with this service yet: establish it and send the request
   // again, once. A second 449 goes back to the caller as it is. This comes
@@ -107,7 +124,7 @@ export async function viyaFetch(
   // the service really answers - and that answer may be the CSRF 403.
   if (response.status === 449) {
     await establishServiceSession(state.config.viyaHost, path);
-    response = await fetch(url, fetchOptions);
+    response = await fetchWithin(url, fetchOptions);
   }
 
   // Handle CSRF token refresh
@@ -120,7 +137,7 @@ export async function viyaFetch(
     if (newToken) {
       state.csrfToken = newToken;
       headers['X-CSRF-TOKEN'] = newToken;
-      response = await fetch(url, { ...fetchOptions, headers });
+      response = await fetchWithin(url, { ...fetchOptions, headers });
     }
   }
 
