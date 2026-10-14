@@ -2896,7 +2896,7 @@ export async function buildRagBuilder(
     try {
       // Opens the editor on the new setup, with the defaults; what it then
       // asks SAS Model Manager for is what a new setup does not have yet.
-      await loadSetup();
+      if (!(await loadSetup())) readBack = false;
     } catch (error) {
       console.error('Reading the new RAG setup failed.', error);
       readBack = false;
@@ -3067,7 +3067,12 @@ export async function buildRagBuilder(
     updateLaunchState();
   };
 
-  async function loadSetup(): Promise<void> {
+  /**
+   * Open the selected setup in the editor. Answers whether what is stored of
+   * it was read - also true with no setup selected, or when another one was
+   * opened meanwhile.
+   */
+  async function loadSetup(): Promise<boolean> {
     stopPolling();
     startLaterStepsAfresh();
     // The banner says something about the setup or the project that was on
@@ -3089,7 +3094,7 @@ export async function buildRagBuilder(
     updateSetupWrites();
     if (!selectedSetupID) {
       showEmptyEditor();
-      return;
+      return true;
     }
     const setupID = selectedSetupID;
     // What is stored of the setup could not be read - its contents, its
@@ -3099,14 +3104,14 @@ export async function buildRagBuilder(
     try {
       applySetup(defaultSetup(config));
       const contents = await getModelContents(setupID);
-      if (!shown()) return;
+      if (!shown()) return true;
       const setupItem = contents.find((item) => item.name === SETUP_FILE);
       if (setupItem?.fileUri) {
         try {
           const response = await getFileContent(setupItem.fileUri);
-          if (!shown()) return;
+          if (!shown()) return true;
           const stored = await response.json();
-          if (!shown()) return;
+          if (!shown()) return true;
           applySetup({ ...defaultSetup(config), ...stored } as RagSetup);
         } catch (error) {
           console.error('RAG Builder: reading the stored setup failed', error);
@@ -3140,7 +3145,7 @@ export async function buildRagBuilder(
     }
     // The setup is drawn. An ingestion that was launched for it from this
     // page and has not been seen to end is shown again, and followed.
-    if (!shown()) return;
+    if (!shown()) return true;
     if (unread) {
       showStatus(
         'danger',
@@ -3166,7 +3171,7 @@ export async function buildRagBuilder(
         console.debug('RAG Builder: asking for a running ingestion failed', error);
       }
       if (askingForRunOf === setupID) askingForRunOf = '';
-      if (!shown()) return;
+      if (!shown()) return true;
       if (running && !ingestionRuns.has(setupID)) {
         const created = Date.parse(String(running.creationTimeStamp ?? ''));
         ingestionRuns.set(setupID, { jobId: String(running.id), startedAt: Number.isNaN(created) ? Date.now() : created });
@@ -3174,6 +3179,7 @@ export async function buildRagBuilder(
       updateLaunchState();
     }
     followIngestion(setupID, false);
+    return !unread;
   }
 
   async function saveSetup(): Promise<boolean> {
