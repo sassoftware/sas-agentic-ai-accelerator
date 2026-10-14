@@ -9,9 +9,10 @@ from mdb.core.paths import core_dir, fact_sheet_path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-#: The seconds a test waits for a process it starts - mdb, a shell, a deploy script - before it fails. A
-#: machine that other work slows down a hundredfold took more than 120 s to start mdb (review-22a); the
-#: limit is there for a process that hangs, not to time one that is slow.
+#: The seconds a test waits for a process it starts - mdb, a shell, a deploy script, git - before it fails. A
+#: full run of this suite on a machine under other work took 4098 s (review-22a), where a run of the same commit
+#: took 258 s (fix-mdb-22), about 16 times as long; in it a test that started mdb with a limit of 120 s failed,
+#: and its trace was not kept. The limit is there for a process that hangs, not to time one that is slow.
 PROCESS_TIMEOUT = 1800
 
 

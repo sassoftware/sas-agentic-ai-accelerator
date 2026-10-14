@@ -30,6 +30,7 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
+from conftest import PROCESS_TIMEOUT
 from content_fakes import CONTENT_ROOT, b64, make_repo, package_of
 from mdb import cli
 from mdb.core import content
@@ -360,7 +361,8 @@ needs_git = pytest.mark.skipif(GIT is None, reason="no git on this machine")
 def _git(cwd, *args) -> str:
     done = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c",
                            "init.defaultBranch=main", "-c", "core.autocrlf=false", "-c", "commit.gpgsign=false",
-                           "-c", "tag.gpgsign=false", *args], cwd=cwd, capture_output=True, text=True)
+                           "-c", "tag.gpgsign=false", *args], cwd=cwd, capture_output=True, text=True,
+                          timeout=PROCESS_TIMEOUT)
     assert done.returncode == 0, f"git {' '.join(args)}: {done.stderr}"
     return done.stdout.strip()
 
@@ -488,7 +490,8 @@ def test_the_release_procedure_on_a_main_that_takes_squash_merges_only(tmp_path,
     assert "1 package(s): every entry of the manifest is in the package and equals the checkout" in text
     assert not (clone / EARLIER).exists()
     # a tag on the commit of the branch that added the file is a tag of a commit that is not on main
-    done = subprocess.run(["git", "merge-base", "--is-ancestor", on_branch, "origin/main"], cwd=site.owner)
+    done = subprocess.run(["git", "merge-base", "--is-ancestor", on_branch, "origin/main"], cwd=site.owner,
+                          timeout=PROCESS_TIMEOUT)
     assert done.returncode == 1
     # CONTRIBUTING.md names these steps with these commands
     procedure = " ".join((REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8").split())

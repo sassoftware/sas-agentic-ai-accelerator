@@ -19,6 +19,7 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
+from conftest import PROCESS_TIMEOUT
 from content_fakes import CONTENT_ROOT, Response, make_repo, package_of
 from mdb import cli
 from mdb.core import content
@@ -429,7 +430,8 @@ def test_a_tag_on_the_commit_of_the_branch_passes_the_gate_and_fails_that_step(t
         assert _git(clone, "rev-parse", "HEAD") == commit
         code, text = gate(clone, "--release")
         assert code == 0, text
-        asked[tag] = subprocess.run(ON_MAIN.split(), cwd=clone, capture_output=True).returncode
+        asked[tag] = subprocess.run(ON_MAIN.split(), cwd=clone, capture_output=True,
+                                    timeout=PROCESS_TIMEOUT).returncode
     assert asked == {"2.3.0": 0, "2.3.1": 1}
 
 

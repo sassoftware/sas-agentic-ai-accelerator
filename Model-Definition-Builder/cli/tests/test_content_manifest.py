@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from conftest import PROCESS_TIMEOUT
 from content_fakes import CONTENT_ROOT, MANIFEST, PACKAGE, STEP, STEP_NAME, as_registered, make_repo
 from mdb import __version__
 from mdb.core import content
@@ -529,7 +530,7 @@ def _git(cwd, *args) -> str:
     import subprocess
     done = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c",
                            "init.defaultBranch=main", "-c", "core.autocrlf=false", *args],
-                          cwd=cwd, capture_output=True, text=True, check=True)
+                          cwd=cwd, capture_output=True, text=True, check=True, timeout=PROCESS_TIMEOUT)
     return done.stdout.strip()
 
 

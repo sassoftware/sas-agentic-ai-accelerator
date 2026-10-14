@@ -164,17 +164,30 @@ def test_the_summary_of_an_export_names_the_content_root_of_the_job_definitions(
 
 # ---- review[4]: a test of mdb gives one answer on a machine that other work slows down ---------
 def test_every_process_a_test_of_mdb_starts_has_the_one_limit():
-    """review-22a: in a full run on a machine slowed down a hundredfold, the
-    subprocess of mdb that test_mdb_22 starts ran into its limit of 120 s;
-    the deploy-script tests had 120 s and 60 s. Every limit a test sets on a
-    process it starts is PROCESS_TIMEOUT."""
-    limits = []
+    """review-22a: a full run on a machine under other work took 4098 s,
+    where a run of the same commit took 258 s; in it the test of test_mdb_22
+    that starts mdb with a limit of 120 s failed (its trace was not kept),
+    and the deploy-script tests had 120 s and 60 s. review-22b: the git
+    processes four tests start had no limit at all. Every call of the
+    module subprocess in every file of the tests - with a timeout keyword
+    or without one - has the one limit PROCESS_TIMEOUT, and no test starts a
+    process another way."""
+    calls = []
     for path in sorted(Path(__file__).resolve().parent.glob("*.py")):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)                     and isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess":
-                limits += [(path.name, node.lineno, ast.unparse(k.value)) for k in node.keywords if k.arg == "timeout"]
-    assert len(limits) == 5 and {name for name, _, _ in limits} == {"test_mdb_22.py", "test_deploy_scripts.py"}
-    assert [limit for limit in limits if limit[2] != "PROCESS_TIMEOUT"] == []
+            if isinstance(node, ast.ImportFrom):
+                assert node.module not in ("subprocess", "os", "asyncio"), (path.name, node.lineno)
+            if not isinstance(node, ast.Call):
+                continue
+            name = ast.unparse(node.func)
+            assert not name.startswith(("os.system", "os.popen", "os.spawn", "os.exec", "asyncio.create_subprocess",
+                                        "pty.")), (path.name, node.lineno, name)
+            if name.split(".")[-2:-1] == ["subprocess"]:
+                limit = [ast.unparse(k.value) for k in node.keywords if k.arg == "timeout"]
+                calls.append((path.name, node.lineno, limit))
+    assert {name for name, _, _ in calls} == {"test_mdb_22.py", "test_deploy_scripts.py", "test_content_manifest.py",
+                                              "test_mdb_fix_20.py", "test_mdb_release_20.py"}, calls
+    assert len(calls) == 9 and [call for call in calls if call[2] != ["PROCESS_TIMEOUT"]] == [], calls
     assert PROCESS_TIMEOUT >= 1800
 
 
