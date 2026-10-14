@@ -24,7 +24,26 @@ import pytest
 
 FOLDER = Path(__file__).resolve().parents[3] / "SAS-Viya-Integrations" / "Other"
 POWERSHELL = shutil.which("powershell.exe") if os.name == "nt" else None
-BASH = shutil.which("bash")
+
+
+def _bash_that_reads_this_checkout():
+    """The bash on the PATH, where it finds the script at the path the test
+    hands it. On Windows the first `bash` of a PowerShell or cmd session is
+    commonly the launcher of the Windows Subsystem for Linux, which knows no
+    `C:/...` path: with it the script is `No such file or directory`, which
+    says nothing about the script. Git Bash reads the path."""
+    bash = shutil.which("bash")
+    if bash is None:
+        return None
+    try:
+        seen = subprocess.run([bash, "-c", f'test -f "{(FOLDER / "deploy-rag-content.sh").as_posix()}"'],
+                              capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return bash if seen.returncode == 0 else None
+
+
+BASH = _bash_that_reads_this_checkout()
 WARNING = "InsecureRequestWarning: Unverified HTTPS request"
 
 
@@ -79,7 +98,7 @@ def test_the_powershell_script_passes_create_on(tmp_path):
     assert "args: content-deploy --only RAG --to /Team/New --create" in done.stdout
 
 
-@pytest.mark.skipif(BASH is None, reason="no bash on this machine")
+@pytest.mark.skipif(BASH is None, reason="no bash on this machine that reads the path of this checkout")
 @pytest.mark.parametrize("code", [0, 1])
 def test_a_warning_on_stderr_does_not_stop_the_bash_script(tmp_path, code):
     """`set -euo pipefail` looks at exit codes, not at stderr: the warning is
