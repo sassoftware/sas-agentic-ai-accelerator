@@ -448,6 +448,7 @@ for it (`verify-new-item.js`), the lock on what is open and on the buttons
 that write while a write to SAS Model Manager is out (`verify-write-lock.js`),
 what a write answered and what
 one item, one write or one dialog leaves for the next (`verify-outcomes.js`),
+a read of what is stored that fails and is not taken for it (`verify-reads.js`),
 the options group with its checkboxes
 (`verify-options.js`), the locale files (`verify-locales.js`) and the built
 page itself (`verify-tokens.js`: no text SAS Job Execution would substitute as
