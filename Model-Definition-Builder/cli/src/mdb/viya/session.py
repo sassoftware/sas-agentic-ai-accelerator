@@ -137,8 +137,8 @@ def _address_problem(url: str) -> str:
         return "its scheme is neither https nor http"
     if "//" in url.split("://", 1)[1]:
         return "it holds a second // behind the scheme"
-    if "@" in parsed.netloc:
-        return (f"it holds a user or a password in front of the host - mdb signs in with {USER_ENV} + "
+    if "@" in url.split("://", 1)[1]:
+        return (f"it holds an @, as a user or a password in front of the host does - mdb signs in with {USER_ENV} + "
                 f"{PASSWORD_ENV}, {TOKEN_ENV} or a SAS Viya CLI login")
     try:
         port = parsed.port
@@ -155,12 +155,12 @@ def _address_problem(url: str) -> str:
 
 def _shown(url: str) -> str:
     """An address as a line may show it: without a user and a password in
-    front of the host."""
-    scheme, separator, rest = url.partition("://")
-    host, slash, path = rest.partition("/")
-    if separator and "@" in host:
-        return f"{scheme}://***@{host.rsplit('@', 1)[1]}{slash}{path}"
-    return url
+    front of the host - everything up to the last `@`, also where a
+    password holds a `/` or the address has no scheme."""
+    if "@" not in url:
+        return url
+    scheme, separator, _ = url.partition("://")
+    return (scheme + separator if separator else "") + "***@" + url.rsplit("@", 1)[1]
 
 
 def _fmt(when: datetime | None) -> str:

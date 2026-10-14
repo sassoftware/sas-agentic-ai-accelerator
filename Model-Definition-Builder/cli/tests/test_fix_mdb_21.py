@@ -447,10 +447,17 @@ def test_a_value_reaches_the_terminal_without_a_control_character():
     ("https//viya.example.com", None, "it holds a slash, and no scheme (https://) stands in front of the host"),
     ("//viya.example.com", None, "it holds a slash, and no scheme (https://) stands in front of the host"),
     ("http://someone:secret@127.0.0.1:4981", "http://***@127.0.0.1:4981",
-     "it holds a user or a password in front of the host - mdb signs in with SAS_VIYA_USER + SAS_VIYA_PASSWORD, "
+     "it holds an @, as a user or a password in front of the host does - mdb signs in with SAS_VIYA_USER + "
+     "SAS_VIYA_PASSWORD, "
      "SAS_VIYA_TOKEN or a SAS Viya CLI login"),
+    ("http://u:pa/ss@viya.example.com", "http://***@viya.example.com",
+     "it holds an @, as a user or a password in front of the host does - mdb signs in with SAS_VIYA_USER + "
+     "SAS_VIYA_PASSWORD, SAS_VIYA_TOKEN or a SAS Viya CLI login"),
+    ("u:secret@viya.example.com", "***@viya.example.com",
+     "it holds a colon, and no scheme (https://) stands in front of the host"),
     ("https://ada@viya.example.com/SASLogon", "https://***@viya.example.com/SASLogon",
-     "it holds a user or a password in front of the host - mdb signs in with SAS_VIYA_USER + SAS_VIYA_PASSWORD, "
+     "it holds an @, as a user or a password in front of the host does - mdb signs in with SAS_VIYA_USER + "
+     "SAS_VIYA_PASSWORD, "
      "SAS_VIYA_TOKEN or a SAS Viya CLI login"),
 ])
 def test_an_address_sasctl_would_read_another_way_is_refused(env, url, shown, problem):
