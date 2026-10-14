@@ -27,10 +27,10 @@
  * documentation, Manifest for a prompt template and for a decision template,
  * Delete prompt-test, Delete project, the delete of an optimization run,
  * Compare targets and Run optimization (which save first); in the RAG Builder
- * Save setup, Save documentation, Manifest setup, Delete setup and Delete
- * project. A creation is not among them: its dialog lies over the page and
- * cannot be closed while the creation is out, which verify.js and
- * verify-rag.js check.
+ * Save setup (also one that is refused), Save documentation, Manifest setup,
+ * Delete setup and Delete project. A creation is not among them: its dialog
+ * lies over the page and cannot be closed while the creation is out, which
+ * verify.js and verify-rag.js check.
  *
  * The suite goes on after a check that failed, and after a road that stopped,
  * so one run says what holds for every write path. The mock is found at
@@ -763,6 +763,28 @@ const ALWAYS_USABLE = ['the project list', 'the search field of the project list
       now && (await openSetupIs(page)) === 'rag-setup-2' && (await saveResult(page)).text === '',
       `Save setup: the same attempt then opens the other setup, which shows no note of that save (got there: ${now}, open: ${await openSetupIs(page)}, note: "${clip((await saveResult(page)).text)}")`
     );
+  });
+
+  await road('RAG setup: Save setup that is refused', async (page) => {
+    await openRagBuilder(page);
+    await chooseRagProject(page, 'rag-proj');
+    await openRagSetup(page, 'rag-setup-1');
+    await goStep(page, 'RGB', 'store');
+    const seen = await probe(page, {
+      controls: RAG_CONTROLS,
+      start: () => page.click(rgb('save')),
+      attempt: reachForAnotherSetup(page),
+      open: () => openSetupIs(page),
+      idle: async () => !(await page.$eval(rgb('save'), (button) => button.disabled)),
+      hold: { fault: (request) => (request.method() === 'POST' && /\/contents/.test(request.url()) ? 500 : null) },
+    });
+    lockedDuring(seen, 'Save setup, refused', 'to open another setup');
+    const note = await saveResult(page);
+    step(
+      note.kind === 'alert-danger' && /failed/i.test(note.text) && seen.openAfter === 'rag-setup-1',
+      `Save setup, refused: the note that the save failed stands on the setup it was made for (open: ${seen.openAfter}, note: "${clip(note.text)}")`
+    );
+    usableAgain(seen, 'Save setup, refused', ['the setup list', 'Create setup', 'Delete setup']);
   });
 
   await road('RAG setup: Save documentation', async (page) => {

@@ -2343,6 +2343,17 @@ export async function buildRagBuilder(
   const collectDocumentation = (): RagSetup['documentation'] => ({ ...ragDoc.values() });
 
   /**
+   * A write SAS Model Manager refused is a write that failed. The service
+   * answers a refusal with a status and a JSON body, and the calls that
+   * upload a file or update a model hand that status back instead of
+   * throwing: a save that went on over it said "saved" for a file, an
+   * attribute or a tag that was not written.
+   */
+  const written = (status: number, what: string): void => {
+    if (status >= 300) throw new Error(`${what} was refused with HTTP ${status}`);
+  };
+
+  /**
    * Save the documentation ALONE.
    *
    * The model-card attributes are written and the documentation block inside
@@ -2364,19 +2375,21 @@ export async function buildRagBuilder(
     try {
       const stored = await readStoredSetup();
       if (stored) {
-        await createModelContent(
+        const upload = await createModelContent(
           selectedSetupID,
           { ...stored, documentation },
           SETUP_FILE,
           'documentation'
         );
+        written(upload.status_code, SETUP_FILE);
       }
       // The model's own attributes ARE the documentation - the same fields a
       // prompt records, so one governance query reads both kinds of artifact
       // and there is no second copy to drift.
-      await updateModelAttributes(selectedSetupID, {
+      const updated = await updateModelAttributes(selectedSetupID, {
         ...Object.fromEntries(MODEL_CARD_FIELDS.map((field) => [field, documentation[field]])),
       });
+      written(updated, 'the model card');
       await removeStaleDocumentation();
       showStatus('success', str('ragBuilderDocSaved', 'Documentation saved to the Model Manager model.'));
     } catch (error) {
@@ -3018,8 +3031,11 @@ export async function buildRagBuilder(
     saveButton.disabled = true;
     try {
       // 1. the two artifacts (onConflict=update keeps one copy each)
-      await createModelContent(selectedSetupID, setup, SETUP_FILE, 'documentation');
-      await createModelContent(selectedSetupID, renderPipelineYaml(setup), PIPELINE_FILE, 'documentation', 'text/plain');
+      written((await createModelContent(selectedSetupID, setup, SETUP_FILE, 'documentation')).status_code, SETUP_FILE);
+      written(
+        (await createModelContent(selectedSetupID, renderPipelineYaml(setup), PIPELINE_FILE, 'documentation', 'text/plain')).status_code,
+        PIPELINE_FILE
+      );
       // A setup saved before the model card moved into the model's own
       // attributes carries a documentation.md that no longer gets updated.
       // Left alone it would sit beside the attributes disagreeing with them,
@@ -3027,7 +3043,7 @@ export async function buildRagBuilder(
       await removeStaleDocumentation();
       // 2. registration metadata (owner requirements 2026-07-28): description,
       //    trainTable = the ingestion ledger, and the retrieval in/out contract
-      await updateModelAttributes(selectedSetupID, {
+      const attributesStatus = await updateModelAttributes(selectedSetupID, {
         // the model card, under the same attribute names a prompt uses, so
         // one governance query reads both kinds of artifact. The model's own
         // description is authored in the create dialog and left alone here.
@@ -3042,14 +3058,16 @@ export async function buildRagBuilder(
         scoreCodeType: 'python',
         trainCodeType: 'python',
       });
+      written(attributesStatus, 'the model card and the registration');
       // 3. tags: LLM/RAG plus one for the embedding model and one for the
       //    vector database (previously managed stack tags are replaced)
-      await updateModelTags(selectedSetupID, managedTags, [
+      const tagsStatus = await updateModelTags(selectedSetupID, managedTags, [
         'LLM',
         'RAG',
         setup.embedding.model,
         setup.store.backend,
       ]);
+      written(tagsStatus, 'the tags');
       managedTags = [setup.embedding.model, setup.store.backend];
       showSaveSuccess(
         str('ragBuilderSaveSuccess', 'RAG setup saved to Model Manager (rag-setup.json, pipeline.yaml, the model card as model properties, tags, ledger reference and variable definitions).')
