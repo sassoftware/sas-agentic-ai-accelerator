@@ -91,6 +91,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from .answer import answer
+
 #: `.env` variable -> domain entry name, for the LLM providers. An entry name
 #: is the KeyName a definition's `API_KEY` option references (`key_name` in
 #: definition.yaml, `API_KEY.default` in options.json): the Prompt Builder
@@ -964,8 +966,7 @@ def fetch_credential(session, domain: str, identity: Identity) -> Optional[dict]
         return None
     if response.status_code >= 300:
         raise CredentialError(
-            f"reading the credential for {identity.type} '{identity.id}' failed: "
-            f"HTTP {response.status_code}")
+            f"reading the credential for {identity.type} '{identity.id}' failed: {answer(response)}")
     try:
         return response.json()
     except ValueError:
@@ -1012,13 +1013,18 @@ def put_credential(session, domain: str, identity: Identity, entries: dict) -> N
         headers={"Content-Type": "application/json", "Accept": "application/json"},
     )
     if response.status_code >= 300:
-        detail = ""
+        said = f"HTTP {response.status_code}"
         if response.status_code in (401, 403):
-            detail = (" — writing a GROUP credential requires SAS "
-                      "administrator rights; a user may write their own")
+            said += (" — writing a GROUP credential requires SAS "
+                     "administrator rights; a user may write their own")
+        elif response.status_code == 404:
+            # the answer names why - errorCode 12310, "... the group identity ... does not exist" (measured on
+            # 2026-10-14). This request carried the values, so an answer that holds one is not shown.
+            answered = answer(response)
+            if not any(value and value in answered for value in (*entries.values(), *body["secrets"].values())):
+                said = answered
         raise CredentialError(
-            f"storing the credential for {identity.type} '{identity.id}' failed: "
-            f"HTTP {response.status_code}{detail}")
+            f"storing the credential for {identity.type} '{identity.id}' failed: {said}")
 
 
 def delete_credential(session, domain: str, identity: Identity) -> bool:
@@ -1028,6 +1034,5 @@ def delete_credential(session, domain: str, identity: Identity) -> bool:
         return False
     if response.status_code >= 300:
         raise CredentialError(
-            f"removing the credential for {identity.type} '{identity.id}' failed: "
-            f"HTTP {response.status_code}")
+            f"removing the credential for {identity.type} '{identity.id}' failed: {answer(response)}")
     return True

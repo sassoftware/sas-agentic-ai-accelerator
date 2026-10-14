@@ -4,6 +4,8 @@
 with the input that showed it. The service is a fake in memory and the token
 address a stand-in for the transport of requests: no test signs in anywhere,
 and every key is made up."""
+import json
+
 import pytest
 
 from mdb.viya import credentials
@@ -165,6 +167,48 @@ def test_an_id_that_is_a_step_of_the_path_is_refused(mdb):
     mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: '..', state: absent}\n", encoding="utf-8")
     code, said = mdb("credentials-apply")
     assert code == 2 and "'..' cannot be named in the address of a credential" in said and mdb.site.calls == []
+
+
+class _Answer(_Response):
+    """An answer with a text, as requests gives one."""
+
+    def __init__(self, status_code: int, payload: dict):
+        super().__init__(status_code, payload)
+        self.text = json.dumps(payload)
+
+
+NO_GROUP = {"errorCode": 12310, "httpStatusCode": 404,
+            "message": "The credential could not be stored because the group identity ZZ_NOGROUP does not exist."}
+
+
+def test_a_refused_write_of_a_credential_names_the_reason_of_the_service(mdb):
+    """live-21a: for a group that does not exist the apply printed only
+    `storing the credential for group 'ZZ_VERIFY_R21a_NOGROUP' failed: HTTP
+    404` and dropped the reason the service gave (errorCode 12310)."""
+    from test_credentials_commands import SECRETS
+    mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: ZZ_NOGROUP}\n"
+                        "  - {type: group, id: Former, state: absent}\n", encoding="utf-8")
+    mdb.site.holds("groups", "Former")
+    put = mdb.site.put
+    mdb.site.put = lambda path, **kw: _Answer(404, NO_GROUP) if path.endswith("ZZ_NOGROUP") else put(path, **kw)
+    mdb.site.delete = lambda path, **_: _Answer(403, {"message": "You are not allowed [to] delete it."})
+    code, said = mdb("credentials-apply")
+    assert code == 1
+    assert ("storing the credential for group 'ZZ_NOGROUP' failed: HTTP 404 The credential could not be stored "
+            "because the group identity ZZ_NOGROUP does not exist. (errorCode 12310)") in said
+    assert "removing the credential for group 'Former' failed: HTTP 403 You are not allowed [to] delete it." in said
+    get = mdb.site.get
+    mdb.site.get = lambda path, **_: _Answer(503, {"message": "The service is [not] available."})
+    code, said = mdb("credentials-report")
+    assert "reading the credential for group 'Former' failed: HTTP 503 The service is [not] available." in said
+    mdb.site.get = get
+    # an answer to the write that holds a value it carried is not shown - plain or as the service stores it
+    for echoed in (SECRETS[0], credentials.encode({"OpenAI": SECRETS[0]})["OpenAI"]):
+        mdb.site.put = lambda path, **kw: (_Answer(404, {"message": f"no such group for {echoed}"})
+                                           if path.endswith("ZZ_NOGROUP") else put(path, **kw))
+        code, said = mdb("credentials-apply")
+        assert code == 1 and "storing the credential for group 'ZZ_NOGROUP' failed: HTTP 404\n" in said
+        assert echoed not in said
 
 
 def test_the_requests_of_apply_name_the_identity_whole(mdb):
