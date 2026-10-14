@@ -214,3 +214,108 @@ def test_the_default_a_prompt_shows_holds_no_control_character(control):
     assert f"(desc{cli._printable(control)}end)" in shown, repr(shown)
     assert not re.search(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", shown), repr(shown)
     assert cli.Confirm.ask("Write these files?", default=True, console=console, stream=io.StringIO("")) is True
+
+
+# ---- M4: the sign-in ---------------------------------------------------------------------------
+URL = "https://viya.example.com"
+
+
+@pytest.fixture
+def token_address(monkeypatch, tmp_path):
+    """The real sasctl, with the transport of requests replaced: `answer` is
+    (status, body, the address it landed at) or an exception to raise."""
+    pytest.importorskip("sasctl")
+    import requests
+    for name in (s.URL_ENV, s.TOKEN_ENV, s.USER_ENV, s.PASSWORD_ENV, s.CLI_PROFILE_ENV):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    monkeypatch.setenv(s.URL_ENV, URL)
+    monkeypatch.setenv(s.USER_ENV, "u")
+    monkeypatch.setenv(s.PASSWORD_ENV, "s3cret-p")
+    monkeypatch.setenv("SAS_VIYA_VERIFY_SSL", "false")
+    posted = []
+
+    def post(self, url, **kwargs):
+        posted.append(url)
+        if isinstance(post.answer, Exception):
+            raise post.answer
+        status, body, landed = post.answer
+        response = requests.Response()
+        response.status_code, response.url = status, landed or url
+        response._content = body.encode("utf-8")
+        if landed:
+            earlier = requests.Response()
+            earlier.status_code, earlier.url = 302, url
+            response.history = [earlier]
+        return response
+
+    monkeypatch.setattr(requests.Session, "post", post)
+    post.posted = posted
+    return post
+
+
+NO_TOKEN = ("SAS Viya at https://viya.example.com did not answer the sign-in of u with SAS_VIYA_USER + "
+            "SAS_VIYA_PASSWORD{made} with a token: {said}. mdb reads only HTTP 401 as a refusal of the credentials, "
+            "and asks no other answer again: run the command again, and where the answer stays the same, look at "
+            "SAS Logon.")
+
+
+@pytest.mark.parametrize("body", ['{"access_token": null}', '{"access_token": 5}', '{"access_token": ""}',
+                                  '{"access_token": ["x"]}'])
+def test_a_200_whose_access_token_is_no_text_ends_at_the_sign_in(token_address, body):
+    """gate-21b: `{"access_token": null}` was taken as a sign-in; the first
+    request ended with exit code 1 and a TypeError on the line of the folder
+    lookup."""
+    token_address.answer = (200, body, None)
+    with pytest.raises(s.ViyaSignInError) as caught:
+        s.create_session()
+    assert str(caught.value) == NO_TOKEN.format(
+        made="", said="the answer to the sign-in holds no access token mdb could read")
+    assert len(token_address.posted) == 1 and "s3cret-p" not in str(caught.value)
+
+
+@pytest.mark.parametrize("body", ["<html>login</html>", '{"hello": 1}'])
+def test_a_redirect_to_a_page_that_answers_200_is_one_line(token_address, body):
+    """review-21b: a redirect of the token address to a login page that
+    answers 200 - HTML, or JSON without a token - ended with a traceback."""
+    token_address.answer = (200, body, f"{URL}/SASLogon/login")
+    with pytest.raises(s.ViyaSignInError) as caught:
+        s.create_session()
+    assert str(caught.value) == NO_TOKEN.format(made=" (1 sign-in made)", said=(
+        "HTTP 200 from /SASLogon/login, where /SASLogon/oauth/token sent the sign-in on, without an access token "
+        "mdb could read"))
+
+
+def test_an_address_where_nothing_answers_is_one_line(token_address, monkeypatch):
+    """gate-21b: `SAS_VIYA_URL=http://127.0.0.1:` ended with the traceback
+    of requests (ConnectionError) and exit code 1."""
+    import requests
+    token_address.answer = requests.exceptions.ConnectionError(
+        "HTTPConnectionPool(host='127.0.0.1', port=80): Max retries exceeded with url: /SASLogon/oauth/token")
+    with pytest.raises(s.ViyaSignInError) as caught:
+        s.create_session()
+    assert str(caught.value) == (
+        "SAS Viya at https://viya.example.com could not be asked for the sign-in of u with SAS_VIYA_USER + "
+        "SAS_VIYA_PASSWORD: ConnectionError (HTTPConnectionPool(host='127.0.0.1', port=80): Max retries exceeded "
+        "with url: /SASLogon/oauth/token). Check SAS_VIYA_URL and that SAS Viya can be reached from here.")
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=out, width=80, force_terminal=False))
+    result = CliRunner().invoke(cli.app, ["credentials-report", "--identity", "G"])
+    assert result.exit_code == 2 and isinstance(result.exception, SystemExit)
+    assert out.getvalue().count("\n") == 1 and "ConnectionError" in out.getvalue()
+
+
+def test_the_texts_say_that_blanks_at_either_end_of_the_address_are_taken_out(monkeypatch, tmp_path):
+    """gate-21b: a blank at either end and a trailing tab or line break of
+    SAS_VIYA_URL were taken out without a word, while the texts said that a
+    blank ends a command with one line."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv(s.TOKEN_ENV, "not-a-jwt")
+    for value in (" http://127.0.0.1:4983", "http://127.0.0.1:4983 ", "http://127.0.0.1:4983\t",
+                  "http://127.0.0.1:4983\n"):
+        monkeypatch.setenv(s.URL_ENV, value)
+        assert s.resolve_auth().url == "http://127.0.0.1:4983"
+    readme = " ".join((REPOSITORY / "Model-Definition-Builder" / "README.md").read_text(encoding="utf-8").split())
+    assert "a blank inside it, a second `//`" in readme
+    assert "Blanks, tabs and line breaks at either end of the value are taken out" in readme

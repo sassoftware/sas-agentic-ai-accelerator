@@ -48,9 +48,10 @@ class ViyaConfigError(RuntimeError):
 
 
 class ViyaSignInError(ViyaConfigError):
-    """The sign-in gave no session: SAS Viya refused the credentials, or the
-    token address answered with another error. A command ends with its
-    sentence, as it does for credentials that are missing."""
+    """The sign-in gave no session: SAS Viya refused the credentials, the
+    token address answered with another error or with no token, or the
+    request got no answer at all. A command ends with its sentence, as it
+    does for credentials that are missing."""
 
 
 @dataclass(frozen=True)
@@ -300,6 +301,11 @@ def create_session():
     # argument of its own: without it a port in SAS_VIYA_URL is dropped
     port = _port(auth.url)
     where = {"port": port} if port else {}
+    from requests.exceptions import RequestException
+    if auth.method == "password":
+        how = f"the sign-in of {auth.user} with {USER_ENV} + {PASSWORD_ENV}"
+    else:
+        how = f"the access token ({TOKEN_ENV if auth.method == 'token' else 'the SAS Viya CLI login'})"
     try:
         if auth.method == "password":
             session = _sign_in(lambda: Session(auth.url, auth.user, auth.password, verify_ssl=verify, **where))
@@ -308,14 +314,18 @@ def create_session():
     except Exception as exc:
         status = _token_address_status(exc)
         if not _refused_sign_in(exc) and status is None:
+            if isinstance(exc, RequestException):
+                # nothing answered - no server at that host and port, a certificate, a timeout: one line, no
+                # traceback; what requests says names the address and the cause, nothing that was sent
+                raise ViyaSignInError(
+                    f"SAS Viya at {auth.url} could not be asked for {how}: {type(exc).__name__} "
+                    f"({one_line(str(exc))}). Check {URL_ENV} and that SAS Viya can be reached from here."
+                ) from exc
             raise
         # An answer of the token address is an answer, not a defect of mdb: one sentence, no traceback.
         if auth.method == "password":
             made = getattr(exc, SIGN_INS_MADE, 1)
-            how = (f"the sign-in of {auth.user} with {USER_ENV} + {PASSWORD_ENV} "
-                   f"({made} sign-in{'' if made == 1 else 's'} made)")
-        else:
-            how = f"the access token ({TOKEN_ENV if auth.method == 'token' else 'the SAS Viya CLI login'})"
+            how += f" ({made} sign-in{'' if made == 1 else 's'} made)"
         if not _refused_sign_in(exc):
             # any other status of the token address: mdb does not read it as a word about the credentials,
             # and does not ask again
@@ -328,6 +338,14 @@ def create_session():
             f"SAS Viya at {auth.url} refused {how}: {_refusal(exc, auth.method == 'password')}. Check the "
             f"credentials - or use another way in: {THE_THREE_WAYS}."
         ) from exc
+    held = getattr(session, "auth", None)
+    if hasattr(held, "access_token") and not (isinstance(held.access_token, str) and held.access_token):
+        # sasctl takes a JSON answer whose access_token is null or a number for a token; the first request
+        # then ended with a TypeError, on a line about that request
+        raise ViyaSignInError(
+            f"SAS Viya at {auth.url} did not answer {how} with a token: the answer to the sign-in holds no "
+            "access token mdb could read. mdb reads only HTTP 401 as a refusal of the credentials, and asks no "
+            "other answer again: run the command again, and where the answer stays the same, look at SAS Logon.")
     session.auth_summary = auth.summary
     return session
 
@@ -403,7 +421,9 @@ def _token_address_status(exc: Exception):
     read the answer still holds it (`_held_answer`)."""
     if type(exc).__name__ != "HTTPError":
         held = _held_answer(exc, None)
-        return held.status_code if held is not None and held.status_code != 401 else None
+        if held is None or (held.status_code == 401 and TOKEN_PATH in str(getattr(held, "url", "") or "")):
+            return None
+        return held.status_code
     response = getattr(exc, "response", None)
     url = str(getattr(response, "url", "") or getattr(getattr(exc, "request", None), "url", "") or "")
     asked = [url] + [str(getattr(earlier, "url", "") or "") for earlier in getattr(response, "history", None) or []]
@@ -415,7 +435,10 @@ def _token_address_status(exc: Exception):
 
 def _held_answer(exc: Exception, status=401):
     """The 401 answer of the token address that a frame in the traceback of
-    `exc` holds, or None. With `status` None: its answer of any status.
+    `exc` holds, or None. With `status` None: its answer of any status, and
+    also the answer of an address the token address redirected the sign-in
+    to - a login page that answers 200 - which carries the token address in
+    its history.
 
     sasctl (1.11.8 was read) reads the body of a 401 of the token address
     before it raises, and some bodies leave it as an exception that is
@@ -429,8 +452,11 @@ def _held_answer(exc: Exception, status=401):
         for value in list(frame.tb_frame.f_locals.values()):
             try:
                 code = getattr(value, "status_code", None)
+                asked = [getattr(value, "url", "")]
+                if status is None:
+                    asked += [getattr(earlier, "url", "") for earlier in getattr(value, "history", None) or []]
                 if (code == status if status is not None else isinstance(code, int) and not isinstance(code, bool)) \
-                        and TOKEN_PATH in str(getattr(value, "url", "") or ""):
+                        and any(TOKEN_PATH in str(address or "") for address in asked):
                     found = value
             except Exception:       # a local that cannot be asked
                 pass
