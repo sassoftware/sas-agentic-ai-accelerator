@@ -667,3 +667,49 @@ def test_what_is_left_alone_is_called_by_the_word_of_its_kind(shipped):
         f"  {step} (reference to a file - not the registered step that is listed under this name)"])
     for raw in ("jobDefinition", "casManagement", "dataFlows"):
         assert all(raw not in line.split(" (", 1)[1].split(" at ")[0] for line in left), raw
+
+
+# ---- an empty value where a path is expected ---------------------------------------------
+@pytest.mark.parametrize("args", [("--only", ""), ("--only", "/"), ("--only", "//", "--dry-run"),
+                                  ("--only", "RAG", "--only", ""), ("--only", "", "--to", "/Team/Other")])
+def test_an_only_that_names_nothing_is_refused_and_nothing_is_deployed(command, args):
+    """gate-20b: `mdb content-deploy --only ""` - what `--only "$PART"`
+    gives where the variable is not set - deployed every entry of the
+    manifest, release.json with them; `--only /` did the same."""
+    result, text, viya = command(*args)
+    assert result.exit_code == 2 and _ended_by_itself(result), result.exception
+    assert viya.calls == []
+    value = "" if "" in args else args[1]
+    assert text == (f'--only "{value}" names no path of the manifest: an empty value - what a variable of the shell '
+                    "that is not set gives - or nothing but slashes. Nothing was deployed. Without --only every "
+                    "entry is deployed.\n")
+
+
+def test_a_path_that_is_named_is_still_taken_with_its_slashes(command):
+    result, text, viya = command("--only", "/RAG/", "--dry-run")
+    assert result.exit_code == 0 and "(only RAG):" in text and viya.wrote() == []
+
+
+@pytest.mark.parametrize("words", [("content-deploy",), ("content-deploy", "--dry-run"), ("package-export",),
+                                   ("builders-import",), ("builders-import", "--dry-run"), ("options-save",),
+                                   ("options-restore",)])
+def test_an_empty_content_root_is_refused_by_every_command_that_takes_one(monkeypatch, repo, tmp_path, words):
+    """The same for --content-root: read as not given, an empty value is
+    the content root of the release - a command typed for a test folder,
+    `--content-root "$ROOT"` with the variable not set, read or wrote the
+    folder a site works in."""
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=out, width=1000, force_terminal=False, emoji=False))
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=repo))
+    monkeypatch.setattr(cli, "_viya_session", lambda: pytest.fail("the command signed in"))
+    monkeypatch.chdir(tmp_path)
+    before = sorted(str(path) for path in tmp_path.rglob("*"))
+    for value in ("", "  "):
+        out.seek(0)
+        out.truncate()
+        result = CliRunner().invoke(cli.app, [*words, "--content-root", value])
+        assert result.exit_code == 2 and _ended_by_itself(result), result.exception
+        assert out.getvalue() == ("--content-root is empty - what a variable of the shell that is not set gives. "
+                                  "Nothing was done. Without --content-root the command takes the content root "
+                                  "the manifest names.\n")
+    assert sorted(str(path) for path in tmp_path.rglob("*")) == before

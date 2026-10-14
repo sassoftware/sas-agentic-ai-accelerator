@@ -1249,6 +1249,7 @@ def options_save(
     from .core.options import options_file
 
     ctx = Context()
+    content_root = _given_root(content_root)
     with _viya_session() as session:
         seeds = {} if reports_only else _discovered_seeds(session, ctx, "capturing the report only")
         captured = _capture_options(session, seeds, content_root=content_root or "")
@@ -1378,6 +1379,7 @@ def options_restore(
     """
     import json as _json
 
+    content_root = _given_root(content_root)
     path = Path(file)
     if not path.exists():
         console.print(f"[red]{_plain(file)} not found - run `mdb options-save` first.[/red]")
@@ -1612,6 +1614,19 @@ def _emit_outcome(outcome, indent: str = "  ") -> None:
                   markup=False, highlight=False, soft_wrap=True)
 
 
+def _given_root(content_root: Optional[str]) -> Optional[str]:
+    """--content-root as it was given, for the five commands that take it. An
+    empty value is refused: read as not given it is the content root of the
+    release, so a command typed for a test folder with a variable that is
+    not set would read or write the folder a site works in."""
+    if content_root is not None and not content_root.strip():
+        console.print("--content-root is empty - what a variable of the shell that is not set gives. Nothing "
+                      "was done. Without --content-root the command takes the content root the manifest "
+                      "names.", style="red", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(2)
+    return content_root
+
+
 def _deploy_settings(content_root_given: Optional[str], compute_context: Optional[str]) -> dict:
     """The values a deploy or an import writes into every job definition that
     has the parameter, by its name: the compute context where one was given,
@@ -1732,11 +1747,20 @@ def content_deploy(
                                DeployError, deploy, deploy_to, record_in_part, selected)
     ctx = Context()
     manifest = _content_manifest(ctx)
+    content_root = _given_root(content_root)
     root = (content_root or manifest.content_root).rstrip("/")
     if not root.startswith("/"):
         console.print("[red]--content-root must be a SAS Content path, starting with a slash.[/red]")
         raise typer.Exit(2)
-    only = [path.strip("/") for path in only or [] if path and path.strip("/")]
+    for path in only or []:
+        if not path.strip("/"):
+            # read as not given, such a value selects every entry of the manifest - release.json with them
+            console.print(f'--only "{path}" names no path of the manifest: an empty value - what a variable '
+                          "of the shell that is not set gives - or nothing but slashes. Nothing was deployed. "
+                          "Without --only every entry is deployed.", style="red", markup=False,
+                          highlight=False, soft_wrap=True)
+            raise typer.Exit(2)
+    only = [path.strip("/") for path in only or []]
     for path in only:
         if not selected(manifest, [path])[1] and manifest.find(path, "folder") is None:
             console.print(f"--only {path}: the manifest lists nothing at or below that path.", style="red",
@@ -1916,6 +1940,7 @@ def package_export(
                                 leftover_line, start_export, wait_for_job)
     ctx = Context()
     manifest = _content_manifest(ctx)
+    content_root = _given_root(content_root)
     root = (content_root or manifest.content_root).rstrip("/")
     target = out or manifest.package_path
     if root != manifest.content_root and (out is None or target.resolve() == manifest.package_path.resolve()):
@@ -2460,6 +2485,7 @@ def builders_import(
                                 upload_package_bytes, wait_for_job)
     ctx = Context()
     manifest = _content_manifest(ctx, check_sources=False)
+    content_root = _given_root(content_root)
     files = [Path(p) for p in packages] if packages else [manifest.package_path]
     for path in files:
         if not path.is_file():
