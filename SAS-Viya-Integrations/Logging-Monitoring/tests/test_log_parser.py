@@ -307,12 +307,15 @@ def test_what_appending_found_is_handed_on_in_two_macro_variables(program):
     deleted = next(line for line in clean_up.split("\n") if line.startswith("%symdel ") and "_log_target_scope" in line)
     for name in ("_log_clean_cas_session", "_casSessionUUID", "_log_row_count", "_log_target_scope", "_log_target_unloaded",
                  "_log_fixed_rename", "_log_fixed_assign", "_log_fixed_drop", "_log_append_syserr", "_log_table_mode",
-                 "_log_target_rows", "_log_row_repeats", "_log_target_has_id", "_log_compare_syserr"):
+                 "_log_target_rows", "_log_row_repeats", "_log_target_has_id", "_log_compare_syserr", "_log_target_has_failed",
+                 "_log_kept_rows", "_log_took_rows", "_log_append_nothing"):
         assert f" {name}" in deleted, name
-    # Replace mode never asks: the lookup runs in append mode only, and the setting itself is read in one place
+    # Replace mode never asks: the lookup runs in append mode only, and the setting itself is read in one place.
+    # The mode is asked for three times: for the lookup, for the ERROR line of a saved table that could not be
+    # loaded, and for the NOTE of a run that appended
     macro = _output_macro(program)
     assert macro.index("%if &_log_table_mode. EQ APPEND %then %do;") < macro.index("call symputx('_log_target_scope'")
-    assert macro.count("%if &_log_table_mode. EQ APPEND %then %do;") == 2
+    assert macro.count("%if &_log_table_mode. EQ APPEND %then %do;") == 3
     assert "_log_append_table. %then" not in program and "&_log_append_table." not in program
 
 
@@ -321,14 +324,17 @@ def test_saved_table_that_can_not_be_loaded_is_not_overwritten(program):
     program = program()
     swap = _swap(program)
 
-    refused = swap[swap.index("%if &_log_target_unloaded. %then %do;"):swap.index("%else %do;")]
-    assert "print (error)" in refused
+    refused = swap[swap.index("%if &_log_target_unloaded. %then %do;"):swap.index("%else %if &_log_append_nothing. %then %do;")]
+    # one line for a run that appends and one for a run that replaces, which counts the rows of the table first
+    assert refused.count("print (error)") == 2
     assert "could not be loaded, nothing was appended and the saved file was left as it is." in refused
+    assert "could not be loaded, nothing was replaced and the saved file was left as it is." in refused
     assert "tableWritten = False;" in refused
     # No table is built, dropped or renamed in that branch
+    written = swap[swap.index("/* The new table is built beside the existing one"):]
     for action in ("table.copyTable", "table.dropTable", "table.alterTable", "table.promote"):
         assert action not in refused, action
-        assert action in swap[swap.index("%else %do;"):], action
+        assert action in written, action
     # And nothing is saved without a written table
     save = swap[swap.index("%if &_log_save_table. %then %do;"):]
     assert save.index("if tableWritten then do;") < save.index("table.save")
@@ -354,8 +360,21 @@ def test_existing_rows_and_new_rows_become_one_table_beside_the_existing_one(pro
     read = 'set _llmtgt."&_log_target_table_name."n(&_log_fixed_rename. in=_log_existing_row) _llmsrc._TEMP_LLM_LOGS;'
     built = statements.index("data _llmtgt._TEMP_LLM_LOGS_ALL;")
     assert statements[built + 1].startswith("length timestamp 8 model varchar(*) ")
-    assert statements[statements.index(read):] == [read, "&_log_fixed_assign.", "&_log_fixed_drop.", "run;", "%let _log_append_syserr = &syserr.;",
-                                                   "libname _llmtgt clear;", "libname _llmsrc clear;"]
+    assert statements[statements.index(read):][:5] == [read, "&_log_fixed_assign.", "&_log_fixed_drop.", "run;", "%let _log_append_syserr = &syserr.;"]
+    # behind it the step that takes out the rows a row of the log takes the place of, only where there is such a row
+    taken_out = statements.index("%if &_log_took_rows. GT 0 %then %do;")
+    assert statements.index(read) < taken_out and statements[taken_out:] == [
+        "%if &_log_took_rows. GT 0 %then %do;",
+        "data _llmtgt._TEMP_LLM_LOGS_ALL _llmsrc._TEMP_LLM_LOGS_OUT(keep=transaction_id);",
+        "merge _llmtgt._TEMP_LLM_LOGS_ALL _llmsrc._TEMP_LLM_LOGS_GONE(in=_log_gone_row);",
+        "by transaction_id model timestamp;",
+        "if _log_gone_row and failed EQ . then output _llmsrc._TEMP_LLM_LOGS_OUT;",
+        "else output _llmtgt._TEMP_LLM_LOGS_ALL;",
+        "run;",
+        "%let _log_append_syserr = %sysfunc(max(&_log_append_syserr., &syserr.));",
+        "%end;", "%end;", "libname _llmtgt clear;", "libname _llmsrc clear;"]
+    # no table is built where every request of the log is in the table already
+    assert statements[built - 1] == "%if &_log_append_nothing. EQ 0 %then %do;"
     assert built < statements.index(read)
 
     # The swap takes that table where there was a table to append to, and the rows of the log otherwise
@@ -708,7 +727,8 @@ def test_a_run_that_replaces_says_how_many_rows_it_replaced(program):
     macro, swap = _output_macro(program), " ".join(_swap(program).split())
 
     # counted while the rows are still there: in front of the swap, for a run that replaces only
-    counted = "%if &_log_table_mode. EQ REPLACE %then %do;\n            %_log_count_target;\n        %end;"
+    counted = ("%if &_log_table_mode. EQ REPLACE %then %do;\n            %_log_count_target;\n            %if &_log_target_rows. LT 0 %then %do;\n"
+               "                %let _log_target_unloaded = 1;\n            %end;\n        %end;")
     assert macro.index("%if &_log_row_count. GT 0 %then %do;") < macro.index(counted) < macro.index("table.dropTable")
     assert program.count("%_log_count_target;") == 2
     # said behind the save, for a table that was written and held rows
@@ -720,82 +740,82 @@ def test_a_run_that_replaces_says_how_many_rows_it_replaced(program):
 
 @BOTH_PROGRAMS
 def test_a_run_that_appends_leaves_out_the_requests_the_table_holds_already(program):
-    """Two DATA steps in front of the one that appends: the transaction IDs of the table become a table of their own,
-    and the rows of the log are merged with it. The rows that are kept take the place of the rows of the log, so the
-    step that appends and the count behind it read what is appended."""
+    """Two DATA steps in front of the one that appends: what the rows of the table are known by - transaction ID, model
+    and time - becomes a table of its own, and the rows of the log are merged with it. The rows that are kept take the
+    place of the rows of the log, so the step that appends and the count behind it read what is appended. What the
+    steps do with rows is followed in test_log_parser_output_table.py."""
     program = program()
     step = _append_step(program)
     statements = [line.strip() for line in step.split("\n") if line.strip()]
 
     start = statements.index("%if &_log_target_has_id. %then %do;")
-    assert statements[start:start + 15] == [
+    compared = statements.index("%let _log_compare_syserr = %sysfunc(max(&_log_compare_syserr., &syserr.));")
+    assert statements[start:compared + 1] == [
         "%if &_log_target_has_id. %then %do;",
-        "data _llmsrc._TEMP_LLM_LOGS_SEEN(keep=transaction_id);",
-        "length transaction_id varchar(*);",
-        'set _llmtgt."&_log_target_table_name."n(keep=transaction_id rename=(transaction_id=_log_seen_id));',
+        "data _llmsrc._TEMP_LLM_LOGS_SEEN(keep=transaction_id model timestamp _log_seen_whole);",
+        "length transaction_id varchar(*) model varchar(*);",
+        "%if &_log_target_has_failed. %then %do;",
+        'set _llmtgt."&_log_target_table_name."n(keep=transaction_id model timestamp failed rename=(transaction_id=_log_seen_id model=_log_seen_model));',
+        "_log_seen_whole = (failed NE .);",
+        "%end;",
+        "%else %do;",
+        'set _llmtgt."&_log_target_table_name."n(keep=transaction_id model timestamp rename=(transaction_id=_log_seen_id model=_log_seen_model));',
+        "_log_seen_whole = 1;",
+        "%end;",
         "transaction_id = trimn(_log_seen_id);",
+        "model = trimn(_log_seen_model);",
         "if transaction_id NE '';",
         "run;",
         "%let _log_compare_syserr = &syserr.;",
-        "data _llmsrc._TEMP_LLM_LOGS;",
+        "data _llmsrc._TEMP_LLM_LOGS(drop=_log_seen_whole _log_id_whole) _llmsrc._TEMP_LLM_LOGS_GONE(keep=transaction_id model timestamp);",
         "merge _llmsrc._TEMP_LLM_LOGS(in=_log_new_row) _llmsrc._TEMP_LLM_LOGS_SEEN(in=_log_seen_row);",
-        "by transaction_id;",
-        "if _log_new_row and not _log_seen_row;",
+        "by transaction_id model timestamp;",
+        "retain _log_id_whole;",
+        "if first.timestamp then _log_id_whole = 0;",
+        "if _log_seen_row and _log_seen_whole then _log_id_whole = 1;",
+        "if _log_new_row and not _log_seen_row then output _llmsrc._TEMP_LLM_LOGS;",
+        "else if _log_new_row and last.timestamp and failed NE . and not _log_id_whole then do;",
+        "output _llmsrc._TEMP_LLM_LOGS;",
+        "output _llmsrc._TEMP_LLM_LOGS_GONE;",
+        "end;",
         "run;",
-        "%let _log_compare_syserr = %sysfunc(max(&_log_compare_syserr., &syserr.));",
-        "%end;"]
+        "%let _log_compare_syserr = %sysfunc(max(&_log_compare_syserr., &syserr.));"]
     # behind the librefs and in front of the step that appends
     assert statements.index("libname _llmsrc cas caslib='CASUSER';") < start < statements.index("data _llmtgt._TEMP_LLM_LOGS_ALL;")
-    # only where the table has a text column of that name: a table of twelve columns holds nothing to compare with
-    assert ("if lowcase(strip(Column)) EQ 'transaction_id' and lowcase(strip(Type)) in ('char' 'varchar') "
-            "then call symputx('_log_target_has_id', '1');") in step
+    # what is left of the rows of the log is counted behind the comparison, and a run that has none left builds no table
+    counted = " ".join(" ".join(statements[compared + 1:statements.index("%if &_log_append_nothing. EQ 0 %then %do;")]).split())
+    assert ("call symputx('_log_kept_rows', keptRows); call symputx('_log_took_rows', tookRows); run; quit; "
+            "/* Every request of the log is in the table already: no table is built, and the swap writes nothing */ "
+            "%if &_log_kept_rows. EQ 0 %then %do; %if &_log_compare_syserr. EQ 0 or &_log_compare_syserr. EQ 4 %then %do; "
+            "%let _log_append_nothing = 1; %end; %end; %end;") in counted
+    assert "if upcase(listedTable.Name) EQ '_TEMP_LLM_LOGS' then keptRows = listedTable.Rows;" in counted
+    assert "if upcase(listedTable.Name) EQ '_TEMP_LLM_LOGS_GONE' then tookRows = listedTable.Rows;" in counted
+    # only where the table has the three columns a request is known by: a table of twelve columns holds nothing to
+    # compare with, and neither does a table whose time is no number
+    for column, kinds in (("transaction_id", "('char' 'varchar')"), ("model", "('char' 'varchar')"), ("timestamp", "('double')")):
+        assert f"if lowcase(strip(Column)) EQ '{column}' and lowcase(strip(Type)) in {kinds} then knownBy + 1;" in step
+    assert "if lastColumn and knownBy EQ 3 then call symputx('_log_target_has_id', '1');" in step
+    assert step.count("call symputx('_log_target_has_id'") == 1 and step.count("knownBy + 1;") == 3
+    # and a row of the table is only known as one without a response and without an error where failed is a number
+    assert ("if lowcase(strip(Column)) EQ 'failed' and lowcase(strip(Type)) in ('double' 'int32' 'int64') "
+            "then call symputx('_log_target_has_failed', '1');") in step
     before_the_macro = program[:program.index("%macro _log_handle_output_table;")]
     assert "%let _log_target_has_id = 0;\n%let _log_compare_syserr = 0;\n" in before_the_macro
     # rows that were not compared are not appended: the swap is refused with the line of an append that did not finish
     swap = " ".join(_swap(program).split())
     refused = "%if &_log_compare_syserr. NE 0 and &_log_compare_syserr. NE 4 %then %do; stagedComplete = False; %end;"
-    assert swap.index("stagedRows NE existingRows + uploadedRows then stagedComplete = False;") < swap.index(refused) \
+    assert swap.index("stagedRows + removedRows NE existingRows + uploadedRows then stagedComplete = False;") < swap.index(refused) \
         < swap.index("if staged.exists GE 1 and stagedComplete then do;")
     # the table of the IDs is dropped with the rows of the log
     last = program[program.index("%else %if &_log_row_count. EQ 0 %then %do;"):program.index("%mend _log_handle_output_table;")]
     assert re.search(r"table\.dropTable /\s+casLib = 'CASUSER',\s+table = '_TEMP_LLM_LOGS_SEEN',\s+quiet = True;", last)
 
 
-def _merged(log_rows, table_ids):
-    """The rows the two DATA steps keep, by the rules of the DATA step: the first step writes the transaction IDs of
-    the table that are not empty, and the MERGE with BY puts the rows of both tables that have the same ID in one
-    group. A row of the log is written when no row of the table is in its group."""
-    seen = {identifier.rstrip(" ") for identifier in table_ids if identifier.rstrip(" ") != ""}
-    return [row for row in log_rows if (row["transaction_id"] or "") not in seen]
-
-
-def test_what_the_merge_keeps(monkeypatch, tmp_path):
-    first = llm_block(timestamp="2026-01-05 09:00:00", user_prompt="First made-up question?")
-    second = llm_block(timestamp="2026-01-05 09:10:00", user_prompt="Second made-up question?")
-    third = llm_block(timestamp="2026-01-05 09:20:00", user_prompt="Third made-up question?")
-    # a request whose lines name no transaction: the lines of its transaction and the Response Data line are gone
-    unnamed = [line for line in llm_block(timestamp="2026-01-05 09:30:00", user_prompt="Fourth made-up question?")
-               if " - transaction_" not in line and "Response Data:" not in line]
-    run = run_parser(monkeypatch, _write(tmp_path, as_log(first, second, third, unnamed)), table_mode="APPEND")
-    rows = run.uploads[0]["frame"].to_dict("records")
-    rows = [dict(row, transaction_id=None if missing(row["transaction_id"]) else row["transaction_id"]) for row in rows]
-    ids = [row["transaction_id"] for row in rows]
-    assert ids[3] is None and len(set(ids[:3])) == 3
-
-    # the table holds the first request, the second one twice, and rows without an ID - of a 2.2 table, or of
-    # requests that got none
-    kept = _merged(rows, [ids[0], ids[1], ids[1], "", "", ""])
-    assert [row["transaction_id"] for row in kept] == [ids[2], None]
-    # a table that holds its IDs with a fixed length
-    assert [row["transaction_id"] for row in _merged(rows, [ids[2].ljust(64)])] == [ids[0], ids[1], None]
-    # a table without any of them
-    assert _merged(rows, ["", ""]) == rows and _merged(rows, []) == rows
-
-
 def test_a_run_that_appends_uploads_a_request_of_the_log_once(monkeypatch, tmp_path):
-    """A file that was collected twice holds every request twice. A run that appends uploads the row of the first
-    time, in the order of the file, and counts the others; a run that replaces or starts a table uploads the file
-    as it is."""
+    """A file that was collected twice holds every request twice. Every run uploads the row of the first time, in the
+    order of the file, and counts the others - a run that appends, a run that replaces and a run that starts a table.
+    Measured on 2026-10-13 with version 2.8, which did so for a run that appends only: a run that replaced wrote
+    2,048 rows from a file that held 1,024 requests twice."""
     first = llm_block(timestamp="2026-01-05 09:00:00", user_prompt="First made-up question?")
     second = decision_block(timestamp="2026-01-05 09:10:00")
     third = embedding_block(timestamp="2026-01-05 09:20:00")
@@ -809,9 +829,9 @@ def test_a_run_that_appends_uploads_a_request_of_the_log_once(monkeypatch, tmp_p
 
     for mode in ("REPLACE", "START"):
         other = run_parser(monkeypatch, log, table_mode=mode)
-        assert other.row_count == "6" and other.sas.macro_variables["_log_row_repeats"] == "0"
-        assert list(other.uploads[0]["frame"]["transaction_id"]) == list(frame["transaction_id"]) * 2
-    # the request is known by its transaction ID and by nothing else: the same request ID under two transactions is two requests
+        assert other.row_count == "3" and other.sas.macro_variables["_log_row_repeats"] == "3"
+        assert list(other.uploads[0]["frame"]["transaction_id"]) == list(frame["transaction_id"])
+    # the request ID is no part of what a request is known by: the same request ID under two transactions is two requests
     again = llm_block(timestamp="2026-01-05 09:40:00", user_prompt="First made-up question?", request_id="a" * 32, transaction=made_up_id("one"))
     other = llm_block(timestamp="2026-01-05 09:50:00", user_prompt="First made-up question?", request_id="a" * 32, transaction=made_up_id("two"))
     run = run_parser(monkeypatch, _write(tmp_path, as_log(again, other), "same-request-id.log"), table_mode="APPEND")
@@ -836,33 +856,44 @@ def test_the_python_sets_the_repeats_in_front_of_the_upload_and_the_row_count_be
     guarded = tree.body[-1]
     statements = [ast.unparse(statement) for statement in guarded.body]
 
-    mode = next(index for index, statement in enumerate(statements) if statement.startswith("if SAS.symget('_log_table_mode') == 'APPEND':"))
-    assert statements[mode - 1] == "repeats = 0" and statements[mode + 1] == "put_number('_log_row_repeats', repeats)"
+    counted = statements.index("put_number('_log_row_repeats', repeats)")
+    assert statements[counted - 6:counted] == [
+        "named = df['transaction_id'].notna() & (df['transaction_id'] != '')",
+        "whole_first = df[named].assign(_log_part=df.loc[named, 'failed'].isna()).sort_values('_log_part', kind='stable')",
+        "kept = whole_first.drop_duplicates(subset=['transaction_id', 'model', 'timestamp'], keep='first').index",
+        "again = named & ~df.index.isin(kept)",
+        "repeats = int(again.sum())",
+        "df = df[~again].reset_index(drop=True)"]
     upload = next(index for index, statement in enumerate(statements) if "conn.upload_frame(" in statement)
-    assert mode < upload < len(statements) - 1 and statements[-1] == "put_number('_log_row_count', len(df))"
-    assert "keep='first'" in statements[mode] and "subset=['transaction_id']" in statements[mode]
+    assert counted < upload < len(statements) - 1 and statements[-1] == "put_number('_log_row_count', len(df))"
+    # in every state of the setting: the Python does not ask for the mode of the run
+    assert "_log_table_mode" not in python_block(code_file_program())
 
 
 @BOTH_PROGRAMS
 def test_a_run_that_appends_says_its_numbers_in_one_note(program):
-    """The requests of the log, the ones that were appended and the ones that were left out, with the rows of the
-    table before and after: read = appended + left out, and the table holds what it held and what was appended.
-    The swap has checked the second of the two before the table was put in place."""
+    """The requests of the log, the ones that were appended, the ones that took the place of a row and the ones that
+    were left out, with the rows of the table before and after: read = appended + took the place + left out, and the
+    table holds what it held and what was appended, with the rows that took the place of a row in the place of the
+    rows that were taken out. The swap has checked the second of the two before the table was put in place."""
     program = program()
     swap = " ".join(_swap(program).split())
 
-    onto = ('print (note) (string) readRows || " request(s) were read from the log. " || (string) uploadedRows || " were appended to the '
-            'table &_log_target_table_lib..&_log_target_table_name., which held " || (string) existingRows || " row(s) and holds " || '
-            '(string) stagedRows || " now. " || (string) (readRows - uploadedRows) || " were left out, as a request with their '
-            'transaction_id is there already: " || (string) (&_log_row_count. - uploadedRows) || " in the table, &_log_row_repeats. '
-            'earlier in the log.";')
+    onto = ('print (note) (string) readRows || " request(s) were read from the log. " || (string) (uploadedRows - &_log_took_rows.) || '
+            '" were appended to the table &_log_target_table_lib..&_log_target_table_name. " || "and &_log_took_rows. took the place of " '
+            '|| (string) removedRows || " row(s) of it whose failed was missing: the table held " || (string) existingRows || " row(s) '
+            'and holds " || (string) stagedRows || " now. " || (string) (readRows - uploadedRows) || " were left out, as another row '
+            'holds their request: " || (string) (&_log_row_count. - uploadedRows) || " a row of the table, &_log_row_repeats. a row of '
+            'the log.";')
     started = ('print (note) (string) readRows || " request(s) were read from the log. &_log_row_count. were written to the table '
                '&_log_target_table_lib..&_log_target_table_name., " || "which was not there before. &_log_row_repeats. were left out, '
-               'as a request with their transaction_id stands earlier in the log.";')
+               'as another row of the log holds their request.";')
     notes = swap[swap.index("%if &_log_table_mode. EQ APPEND %then %do; if tableWritten then do;"):]
     assert notes.index("readRows = &_log_row_count. + &_log_row_repeats.;") < notes.index("%if &_log_target_scope. GE 1 %then %do; " + onto) \
         < notes.index("%else %do; " + started)
-    assert swap.count("print (note)") == 3 and swap.index("table.save") < swap.index("print (note)")
+    # five NOTEs: the rows a run that replaces took away, the requests a run that replaces or starts a table left
+    # out, a run that appends and writes nothing, and the two of a run that appends
+    assert swap.count("print (note)") == 5 and swap.index("table.save") < swap.index("print (note)")
     # what the NOTE calls appended is what the swap counted in the rows of the log behind the merge
     assert swap.index("if upcase(listedTable.Name) EQ '_TEMP_LLM_LOGS' then uploadedRows = listedTable.Rows;") < swap.index(onto)
     # no text of a message is longer than the 262 bytes SAS writes a NOTE about its quotation marks for, with room for the names
@@ -1090,9 +1121,9 @@ def test_about_tab_names_every_column_and_what_the_program_does_with_it(monkeypa
 def test_about_tab_is_about_the_program_and_the_changelog_starts_with_this_version():
     texts = _about_tab()
 
-    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.8 (")
+    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.9 (")
     changelog = texts["textChangelog"]
-    assert (changelog.index("Version: 2.8") < changelog.index("Version: 2.7") < changelog.index("Version: 2.6") < changelog.index("Version: 2.5") < changelog.index("Version: 2.4") < changelog.index("Version: 2.3") < changelog.index("Version: 2.2")
+    assert (changelog.index("Version: 2.9") < changelog.index("Version: 2.8") < changelog.index("Version: 2.7") < changelog.index("Version: 2.6") < changelog.index("Version: 2.5") < changelog.index("Version: 2.4") < changelog.index("Version: 2.3") < changelog.index("Version: 2.2")
             < changelog.index("Version: 2.1") < changelog.index("Version: 2.0"))
     # What a release has not run yet is said in the changelog of the release, not in the step
     for name, text in texts.items():
@@ -1169,7 +1200,7 @@ def test_readme_says_of_the_line_of_the_script_what_the_parser_does():
     assert "so is what stands in front of the first line of the script in a file that is appended to" in readme
     assert "so a NOTE counts the request lines that were read that way" in readme
     assert "Every request whose `failed` is missing is counted once" in readme
-    assert "versions 2.8 and 2.4 of the two steps" in readme and _about_tab()["textChangelog"].startswith("* Version: 2.8 (")
+    assert "versions 2.9 and 2.4 of the two steps" in readme and _about_tab()["textChangelog"].startswith("* Version: 2.9 (")
     assert "not run in sas" not in readme.lower()
 
 
@@ -3907,7 +3938,7 @@ def test_append_asks_the_data_step_for_its_result_before_the_existing_table_is_d
     step, swap = _append_step(program), " ".join(_swap(program).split())
 
     # The return code is taken right behind the step, and it starts at 0 in every run
-    assert "    run;\n                %let _log_append_syserr = &syserr.;\n" in step
+    assert "    run;\n                    %let _log_append_syserr = &syserr.;\n" in step
     assert "%let _log_append_syserr = 0;\n" in program[:program.index("%macro _log_handle_output_table;")]
     # The rows: of the existing table and of the new one from the listing of their caslib, of the log from CASUSER
     assert 'table.tableInfo result=targetTables / casLib = "&_log_target_table_lib.";' in swap
@@ -3916,11 +3947,16 @@ def test_append_asks_the_data_step_for_its_result_before_the_existing_table_is_d
     assert "if upcase(listedTable.Name) EQ '_TEMP_LLM_LOGS_ALL' then stagedRows = listedTable.Rows;" in swap
     assert "table.tableInfo result=uploadTables / casLib = 'CASUSER';" in swap
     assert "if upcase(listedTable.Name) EQ '_TEMP_LLM_LOGS' then uploadedRows = listedTable.Rows;" in swap
-    refused = ("if &_log_append_syserr. GT 4 or existingRows LT 0 or uploadedRows LT 0 or stagedRows NE existingRows + uploadedRows "
+    refused = ("if &_log_append_syserr. GT 4 or existingRows LT 0 or uploadedRows LT 0 or stagedRows + removedRows NE existingRows + uploadedRows "
                "then stagedComplete = False;")
     assert refused in swap
+    # The rows that were taken out for rows of the log are counted where the step that takes them out ran, and there
+    # are at least as many of them as rows of the log that took their place
+    assert ("%if &_log_took_rows. GT 0 %then %do; if upcase(listedTable.Name) EQ '_TEMP_LLM_LOGS_OUT' then removedRows = listedTable.Rows; "
+            "%end;") in swap
+    assert refused + " if removedRows LT &_log_took_rows. then stagedComplete = False;" in swap
     # A table that could not be counted is no reason to go on: the three counts start at -1
-    assert "existingRows = -1; uploadedRows = -1; stagedRows = -1;" in swap
+    assert "existingRows = -1; uploadedRows = -1; stagedRows = -1; removedRows = 0;" in swap
     # Only in append mode: a table that is copied has no DATA step to ask
     assert swap.index("%if &_log_target_scope. GE 1 %then %do; stagedTable = '_TEMP_LLM_LOGS_ALL';") < swap.index(refused) < swap.index("%else %do; stagedTable =")
     assert swap.index("stagedComplete = True;") < swap.index(refused) < swap.index("if staged.exists GE 1 and stagedComplete then do;") < swap.index("table.dropTable")
@@ -3935,14 +3971,15 @@ def test_append_that_did_not_finish_leaves_the_table_with_one_error_line(program
     in_append_mode = otherwise[otherwise.index("%if &_log_target_scope. GE 1 %then %do;"):otherwise.index("%else %do;")]
     assert ('print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is. '
             'The DATA step that appends ended with the return code &_log_append_syserr. and wrote " || (string) stagedRows || " rows, '
-            'the table held " || (string) existingRows || " and the log " || (string) uploadedRows || " (-1 stands for a table that was '
-            'not found). The DATA steps that leave out the requests the table holds already ended with the return code '
+            'the table held " || (string) existingRows || " and the log " || (string) uploadedRows || ", and " || (string) removedRows '
+            '|| " rows of the table were taken out for &_log_took_rows. rows of the log (-1 stands for a table that was not found). " '
+            '|| "The DATA steps that leave out the requests the table holds already ended with the return code '
             '&_log_compare_syserr..";') in in_append_mode
     # What the step left behind is dropped, the existing table is not named in that branch
     assert "table.dropTable / casLib = \"&_log_target_table_lib.\", name = '_TEMP_LLM_LOGS_ALL', quiet = True;" in in_append_mode
     assert 'name = "&_log_target_table_name."' not in otherwise
     # No message goes through %put with a semicolon in it
-    assert ";" not in re.sub(r'" \|\| \(string\) \w+ \|\| "', "", in_append_mode[in_append_mode.index('"The new table'):in_append_mode.index('.";')])
+    assert ";" not in re.sub(r'" \|\| (\(string\) \w+ \|\| )?"', "", in_append_mode[in_append_mode.index('"The new table'):in_append_mode.index('.";')])
 
 
 @BOTH_PROGRAMS
@@ -3958,6 +3995,6 @@ def test_appended_table_keeps_the_label_of_the_table_it_replaces(program):
              "table this program starts where it had none */ "
              "if existingLabel EQ '' then existingLabel = 'Extracted LLM Log Data'; "
              'table.alterTable / casLib = "&_log_target_table_lib.", name = "&_log_target_table_name.", label = existingLabel; %end;')
-    assert read < drop < rename < swap.index(label) < swap.index("table.promote")
+    assert read < drop < rename < swap.index(label) < swap.index("table.promote", swap.index(label))
     # The label of a table that is started is the one the upload gives it
     assert "label='Extracted LLM Log Data'," in program()
