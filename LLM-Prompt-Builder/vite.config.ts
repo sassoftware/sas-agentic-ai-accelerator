@@ -6,7 +6,8 @@
  * templates and RAG setups in one bundle).
  *
  * `npm run build` produces a single self-contained `dist/index.html`:
- *   - vite-plugin-singlefile inlines all JS and CSS into the one HTML file.
+ *   - inlineIntoHtml() puts the one script and the one stylesheet of the
+ *     build into the HTML file.
  *   - goTemplateSafeScripts() then base64-encodes every inline <script> body so
  *     the SAS Job Execution Go template engine does not choke on the `{{`/`}}`
  *     sequences that a minified bundle inevitably contains, and removes the
@@ -18,7 +19,68 @@
  * in the Job Execution CSP (see README).
  */
 import { defineConfig, type Plugin } from 'vite';
-import { viteSingleFile } from 'vite-plugin-singlefile';
+
+/**
+ * Put the one script and the one stylesheet of the build into index.html, the
+ * way vite-plugin-singlefile 2.3.3 did, which this replaces (its file
+ * patterns pulled micromatch and braces into the build): the
+ * `<script ... src="...">` of the entry chunk becomes a `<script ...>` that
+ * holds its code, the `<link ... href="...">` of the stylesheet a
+ * `<style ...>` that holds the CSS, and both files leave the bundle. The
+ * build is one chunk (`codeSplitting: false` below) with every asset inlined
+ * into it, so anything else in the bundle would be a file the single page
+ * does not carry: the build stops instead.
+ */
+function inlineIntoHtml(): Plugin {
+  // A file name as a pattern: its dots and other special characters literal.
+  const literal = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return {
+    name: 'inline-into-html',
+    enforce: 'post',
+    generateBundle(_options, bundle) {
+      const files = Object.values(bundle);
+      const pages = files.filter((file) => file.type === 'asset' && /\.html?$/.test(file.fileName));
+      const chunks = files.filter((file) => file.type === 'chunk');
+      const styles = files.filter((file) => file.type === 'asset' && file.fileName.endsWith('.css'));
+      const others = files.filter((file) => !pages.includes(file) && !chunks.includes(file) && !styles.includes(file));
+      if (pages.length !== 1 || chunks.length !== 1 || styles.length > 1 || others.length > 0) {
+        this.error(
+          `inline-into-html expects one page, one script and at most one stylesheet; the build has ${files.map((file) => file.fileName).join(', ')}`
+        );
+      }
+      const page = pages[0];
+      const chunk = chunks[0];
+      if (page.type !== 'asset' || chunk.type !== 'chunk') return;
+      let html = typeof page.source === 'string' ? page.source : new TextDecoder().decode(page.source);
+      const withScript = html.replace(
+        new RegExp(`<script([^>]*?) src="(?:[^"]*?/)?${literal(chunk.fileName)}"([^>]*)></script>`),
+        // A function, so that a `$` in the code is not read as a pattern of
+        // the replacement. Text inside the script that would end it or open
+        // a comment is written as an escape.
+        (_match, before: string, after: string) =>
+          `<script${before}${after}>${chunk.code
+            .replace(/"?__VITE_PRELOAD__"?/g, 'void 0')
+            .replace(/<(\/script>|!--)/g, '\\x3C$1')
+            .trim()}</script>`
+      );
+      if (withScript === html) this.error(`inline-into-html found no <script> for ${chunk.fileName}`);
+      html = withScript;
+      for (const style of styles) {
+        if (style.type !== 'asset') continue;
+        const css = typeof style.source === 'string' ? style.source : new TextDecoder().decode(style.source);
+        const withStyle = html.replace(
+          new RegExp(`<link([^>]*?) href="(?:[^"]*?/)?${literal(style.fileName)}"([^>]*)>`),
+          (_match, before: string, after: string) => `<style${before}${after}>${css.replace('@charset "UTF-8";', '').trim()}</style>`
+        );
+        if (withStyle === html) this.error(`inline-into-html found no <link> for ${style.fileName}`);
+        html = withStyle;
+      }
+      page.source = html;
+      delete bundle[chunk.fileName];
+      for (const style of styles) delete bundle[style.fileName];
+    },
+  };
+}
 
 /**
  * Base64-encode every inline <script> so its content survives Go template
@@ -116,13 +178,17 @@ export default defineConfig({
   // No public directory: a single-file build inlines everything (locales are
   // imported as modules, not fetched at runtime).
   publicDir: false,
-  plugins: [normalizeTemplateEol(), viteSingleFile(), goTemplateSafeScripts()],
+  plugins: [normalizeTemplateEol(), inlineIntoHtml(), goTemplateSafeScripts()],
   build: {
     outDir: 'dist',
     // Inline every asset regardless of size so nothing is emitted as a
     // separate file alongside the HTML.
-    assetsInlineLimit: 100_000_000,
+    assetsInlineLimit: () => true,
+    // One stylesheet and one script, which inlineIntoHtml() puts into the page.
     cssCodeSplit: false,
+    rolldownOptions: { output: { codeSplitting: false } },
+    // The one script is the whole page; its size is no warning.
+    chunkSizeWarningLimit: 100_000_000,
   },
   server: {
     proxy: Object.fromEntries(
