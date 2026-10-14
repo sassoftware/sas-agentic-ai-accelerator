@@ -36,6 +36,7 @@ from .core.paths import (
     RepoNotFoundError, archive_dir, core_dir, definitions_dir, fact_sheet_path, find_repo_root,
     kind_folder_name, kind_of_folder,
 )
+from .core.printable import CONTROL, printable
 from .core.validator import validate_all, validate_folder
 from .providers import load_adapters
 from .providers.base import CatalogModel, ProviderAdapter, slugify
@@ -112,16 +113,8 @@ app = typer.Typer(
     cls=_Commands,
     pretty_exceptions_show_locals=False,
 )
-#: The control characters a terminal may act on that rich leaves in a text: every C0 character but the tab and
-#: the line end, DEL and the C1 range. rich itself takes out the carriage return, the bell, the backspace, the
-#: vertical tab and the form feed; an ESC, the C1 CSI byte or a NUL of an answer of a server or of a model went
-#: to the terminal, which acted on it (gate-21a N1, review-21a).
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
-
-
-def _printable(text: str) -> str:
-    """A text without the control characters of `_CONTROL`."""
-    return _CONTROL.sub("", text)
+#: What a text loses before it is printed: core/printable.py, which every other print of mdb uses too.
+_CONTROL, _printable = CONTROL, printable
 
 
 class _Console(Console):

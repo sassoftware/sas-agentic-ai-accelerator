@@ -21,6 +21,7 @@ from typing import Optional
 from ..core.generator import effective_score_file
 from ..core.manifest import MANIFEST_FILENAME, ModelManifest
 from ..core.options import SEED_PROJECT_LABELS
+from ..core.printable import printable
 from .answer import answer
 
 KIND_PROJECT = {
@@ -664,7 +665,7 @@ def register_model(session, manifest: ModelManifest, folder: Path, fact_row: dic
     )
     if version.status_code >= 300:
         # Non-fatal: some releases version implicitly on content change
-        print(f"note: model version bump returned HTTP {version.status_code} - continuing")
+        print(printable(f"note: model version bump returned HTTP {version.status_code} - continuing"))
     # Re-uploading inputVar.json/outputVar.json makes Model Manager re-import the
     # variables; without clearing the existing ones first they accumulate as
     # duplicates on every --update. Delete them before the content upload

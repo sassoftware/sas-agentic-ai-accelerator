@@ -11,7 +11,8 @@ Models registered by the framework's legacy Python scripts — or by `mdb` befor
 `endPoint`, and the `modelStatus`/`approvalState` lifecycle), and may have
 **duplicated** input/output variables from repeated `--update` runs. This skill
 retrieves that information for every registered model and tells you exactly which
-ones to backfill. It is **read-only** (GETs only).
+ones to backfill. It is **read-only** (GETs only). What SAS Logon and SAS Model Manager answer
+is printed without its control characters, as every line of `mdb` is.
 
 See `Model-Definition-Builder/MIGRATION.md` for the full migration context.
 
