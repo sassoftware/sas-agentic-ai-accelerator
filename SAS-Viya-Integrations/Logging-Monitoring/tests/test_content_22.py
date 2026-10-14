@@ -337,6 +337,10 @@ def test_the_readme_quotes_the_line_of_the_link():
     readme = " ".join((CODE_FILE.parent / "README.md").read_text(encoding="utf-8").split())
     assert "`ERROR: " + LINK_REFUSED + "`" in readme
     assert "a log table or a catalog that was not found, a listing of saved files that CAS refused, a table the program refused," in readme
+    # the saved file of the log table is looked for in front of the load, whether the table is in memory or not
+    assert "or for the saved file of the log table, which is looked for where `_lnk_save_table` is not `1` -," in readme
+    program = LINK_FILE.read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert program.index("%if &_lnk_save_table. NE 1 %then %do;") < program.index("%macro _lnk_ensure_loaded")
 
 
 def test_the_link_says_so_where_a_table_is_not_there():
