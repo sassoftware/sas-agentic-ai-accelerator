@@ -125,7 +125,9 @@ def test_every_macro_variable_of_the_program_is_removed_at_its_end():
 
 def test_missing_table_is_one_error_line_that_names_the_program_that_writes_it():
     errors = re.findall(r"^\s*%put (ERROR: .*);$", code_file_program(), flags=re.MULTILINE)
-    log_missing, catalog_missing, not_linked = errors
+    # content-22: in front of them the line of a listing of saved files that CAS refused, which names no table as not found
+    refused, log_missing, catalog_missing, not_linked = errors
+    assert refused.startswith("ERROR: CAS refused to list the saved files") and "not found" not in refused
     assert "Log-Parser-Code.sas" in log_missing and "LLM - Log Parser" in log_missing
     assert "Get-All-Prompts.sas" in catalog_missing and "&_lnk_catalog_caslib..&_lnk_catalog_table." in catalog_missing
     assert "left as it is" in catalog_missing and "left as it is" in not_linked

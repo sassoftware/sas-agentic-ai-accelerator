@@ -54,6 +54,9 @@ ERROR_LINES = {
         "%put ERROR: The table &_log_target_table_lib..&_log_target_table_name. holds &_log_target_rows. rows and _log_append_table is not set": "%let _log_ready = 0;",
         "%put ERROR: The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded and _log_append_table is not set": "%let _log_ready = 0;",
         "%put ERROR: The rows of the table &_log_target_table_lib..&_log_target_table_name. could not be counted and _log_append_table is not set": "%let _log_ready = 0;",
+        # content-22: an action of the count that CAS refused, and one that a run which appends or replaces goes by
+        "%put ERROR: CAS refused an action that the count of the rows of the table": "%let _log_ready = 0;",
+        'print (error) "CAS refused an action that the run needs for the table': "call symputx('_log_failed', '1');",
         'print (error) "The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded': "call symputx('_log_failed', '1');",
         'print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is. The DATA step': "call symputx('_log_failed', '1');",
         'print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is.";': "call symputx('_log_failed', '1');",
@@ -64,6 +67,8 @@ ERROR_LINES = {
         "%put ERROR: The experiments could not be read from SAS Model Manager": "%let _gap_failed = 1;",
     },
     "Link-Logs-To-Models.sas": {
+        # content-22: a listing of saved files that CAS refused
+        "%put ERROR: CAS refused to list the saved files of a CAS library the program reads": "%let _lnk_ready = 0;",
         "%put ERROR: The log table &_lnk_log_caslib..&_lnk_log_table. was not found.": "%let _lnk_ready = 0;",
         "%put ERROR: The catalog table &_lnk_catalog_caslib..&_lnk_catalog_table. was not found.": "%let _lnk_ready = 0;",
         'print (error) "The new table could not be created': "call symputx('_lnk_failed', 1);",
