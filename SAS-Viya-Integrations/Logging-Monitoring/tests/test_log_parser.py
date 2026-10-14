@@ -385,9 +385,10 @@ def test_existing_rows_and_new_rows_become_one_table_beside_the_existing_one(pro
     # The existing table is only dropped once its replacement exists
     exists, drop, rename = (swap.index(text) for text in ("if staged.exists GE 1 and stagedComplete then do;", "table.dropTable", "table.alterTable"))
     assert exists < drop < rename
-    # The existing table is dropped twice, and what a DATA step that did not finish left behind once
-    assert len(re.findall(r'table\.dropTable /\s+casLib = "&_log_target_table_lib\.",\s+name = "&_log_target_table_name\.",', swap)) == 2
-    assert swap.count("table.dropTable") == 3
+    # The existing table is dropped twice, what a DATA step that did not finish left behind once, and a table the run
+    # loaded from its saved file for an append that did not finish once (test_fix_content_21)
+    assert len(re.findall(r'table\.dropTable /\s+casLib = "&_log_target_table_lib\.",\s+name = "&_log_target_table_name\.",', swap)) == 3
+    assert swap.count("table.dropTable") == 4
     assert 'print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is.";' in swap[rename:]
 
 
@@ -3983,7 +3984,10 @@ def test_append_that_did_not_finish_leaves_the_table_with_one_error_line(program
             '&_log_compare_syserr..";') in in_append_mode
     # What the step left behind is dropped, the existing table is not named in that branch
     assert "table.dropTable / casLib = \"&_log_target_table_lib.\", name = '_TEMP_LLM_LOGS_ALL', quiet = True;" in in_append_mode
-    assert 'name = "&_log_target_table_name."' not in otherwise
+    # the existing table is named only where this run loaded it from its saved file for the append (test_fix_content_21)
+    loaded = otherwise[otherwise.index("%if &_log_target_loaded. %then %do;"):]
+    loaded = loaded[:loaded.index("%end;") + len("%end;")]
+    assert 'name = "&_log_target_table_name."' not in otherwise.replace(loaded, "")
     # No message goes through %put with a semicolon in it
     assert ";" not in re.sub(r'" \|\| (\(string\) \w+ \|\| )?"', "", in_append_mode[in_append_mode.index('"The new table'):in_append_mode.index('.";')])
 

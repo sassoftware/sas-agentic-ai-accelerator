@@ -160,9 +160,10 @@ quit;
 * The requests the Python code left out, as the log holds them more than once: a request is written once in every run;
 %let _log_row_repeats = 0;
 
-* What append mode finds in CAS. The output macro sets both: the table the rows are appended to (0 there is none, 1 a table of this session, 2 a promoted table) and whether a saved table could not be loaded;
+* What append mode finds in CAS. The output macro sets the three: the table the rows are appended to (0 there is none, 1 a table of this session, 2 a promoted table), whether a saved table could not be loaded, and whether this run loaded it from its saved file;
 %let _log_target_scope = 0;
 %let _log_target_unloaded = 0;
+%let _log_target_loaded = 0;
 * What the DATA step of append mode is given for the text columns that the existing table holds as CHAR. The output macro sets the three, and they stay empty where there is no such column;
 %let _log_fixed_rename = ;
 %let _log_fixed_assign = ;
@@ -1690,6 +1691,9 @@ run; quit;
                 else if savedFile NE '' then do;
                     call symputx('_log_target_unloaded', '1');
                 end;
+                if savedFile NE '' and re.exists EQ 1 then do;
+                    call symputx('_log_target_loaded', '1');
+                end;
 
                 /* The table of an earlier run that did not get to its end must not pass for the one of this run */
                 table.dropTable /
@@ -1975,6 +1979,13 @@ run; quit;
                             casLib = "&_log_target_table_lib.",
                             name = '_TEMP_LLM_LOGS_ALL',
                             quiet = True;
+                        /* A table this run loaded from its saved file for the append goes again: the table is left as the run found it, its saved file */
+                        %if &_log_target_loaded. %then %do;
+                            table.dropTable /
+                                casLib = "&_log_target_table_lib.",
+                                name = "&_log_target_table_name.",
+                                quiet = True;
+                        %end;
                     %end;
                     %else %do;
                         print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is.";
@@ -2068,5 +2079,5 @@ run; quit;
 %if &_log_row_count. LT 0 or &_log_failed. EQ 1 %then %do;
     %let SYSCC = 1012;
 %end;
-%symdel _log_ready _log_failed _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded _log_fixed_rename _log_fixed_assign _log_fixed_drop _log_append_syserr _log_table_mode _log_target_rows _log_row_repeats _log_target_has_id _log_compare_syserr _log_target_has_failed _log_kept_rows _log_took_rows _log_append_nothing;
+%symdel _log_ready _log_failed _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded _log_target_loaded _log_fixed_rename _log_fixed_assign _log_fixed_drop _log_append_syserr _log_table_mode _log_target_rows _log_row_repeats _log_target_has_id _log_compare_syserr _log_target_has_failed _log_kept_rows _log_took_rows _log_append_nothing;
 %symdel _log_path _log_target_table_engine _log_target_table_lib _log_target_table_name _log_append_table _log_promote_table _log_save_table;
