@@ -70,13 +70,15 @@
     %let _lnk_clean_cas_session = 0;
 %end;
 
+* A macro variable that a PROC CAS step sets starts at the value of a question CAS did not answer: a step that halts - its session ended, say - sets none, and its value is then no answer;
+%let _casSessionUUID = ;
 proc cas;
     session.sessionId result = sessresults;
     call symputx('_casSessionUUID', sessresults[1]);
 quit;
 
-* What the log table is before it is linked: 2 a promoted table, 1 a table of this session, 0 not in memory, -1 CAS refused the question;
-%let _lnk_log_scope = 0;
+* What the log table is before it is linked: 2 a promoted table, 1 a table of this session, 0 not in memory, -1 CAS did not answer the question;
+%let _lnk_log_scope = -1;
 proc cas;
     table.tableExists result=found status=asked /
         casLib = "&_lnk_log_caslib.",
@@ -88,12 +90,14 @@ run; quit;
 * Whether the CAS library holds a saved file of the log table. Asked only when the table is not saved anyway;
 %let _lnk_log_saved = 0;
 %if &_lnk_save_table. NE 1 %then %do;
+    %let _lnk_log_saved = -1;
     proc cas;
         table.fileInfo result=listing status=listed /
             casLib = "&_lnk_log_caslib.";
         /* -1: CAS refused the listing, which says nothing about the file */
         if listed.severity NE 0 then call symputx('_lnk_log_saved', -1);
         if listed.severity EQ 0 then do;
+            call symputx('_lnk_log_saved', 0);
             if exists(listing, 'FileInfo') then do;
                 do savedEntry over listing.FileInfo;
                     if upcase(savedEntry.Name) EQ upcase("&_lnk_log_table..sashdat") then call symputx('_lnk_log_saved', 1);
@@ -147,18 +151,18 @@ run; quit;
     run; quit;
 %mend _lnk_ensure_loaded;
 
-%let _lnk_log_exists = 0;
-%let _lnk_catalog_exists = 0;
-%let _lnk_runs_exists = 0;
+%let _lnk_log_exists = -1;
+%let _lnk_catalog_exists = -1;
+%let _lnk_runs_exists = -1;
 %_lnk_ensure_loaded(%superq(_lnk_log_caslib), %superq(_lnk_log_table), _lnk_log_exists);
 %_lnk_ensure_loaded(%superq(_lnk_catalog_caslib), %superq(_lnk_catalog_table), _lnk_catalog_exists);
 %_lnk_ensure_loaded(%superq(_lnk_runs_caslib), %superq(_lnk_runs_table), _lnk_runs_exists);
 
 * Without the log table or the catalog nothing is linked. Each case is one ERROR line and the Python below is skipped;
 %let _lnk_ready = 1;
-* A question whether a table is in memory or a listing of the saved files that CAS refused is no answer: a table is not taken for one that is not there, and a saved file of the log table not for one that is not there either;
+* A question whether a table is in memory or a listing of the saved files that CAS refused, or that a PROC CAS step that halted did not get to, is no answer: a table is not taken for one that is not there, and a saved file of the log table not for one that is not there either;
 %if &_lnk_log_scope. EQ -1 or &_lnk_log_exists. EQ -1 or &_lnk_catalog_exists. EQ -1 or &_lnk_runs_exists. EQ -1 or &_lnk_log_saved. EQ -1 %then %do;
-    %put ERROR: CAS refused to say whether a table the program reads is in memory or to list the saved files of its CAS library, so it is not known whether that table is there or whether the log table has a saved file. Nothing was linked and the tables were left as they are.;
+    %put ERROR: CAS did not say whether a table the program reads is in memory or did not list the saved files of its CAS library, so it is not known whether that table is there or whether the log table has a saved file. Nothing was linked and the tables were left as they are.;
     %let _lnk_ready = 0;
 %end;
 %if &_lnk_ready. EQ 1 and &_lnk_log_exists. NE 1 %then %do;
@@ -1372,27 +1376,41 @@ def quoted(value):
 
 
 def run_action(conn, action, **parameters):
-    """Runs a CAS action and raises when it reports an error."""
+    """Runs a CAS action that writes and raises when it reports an error. What it wrote is read behind it."""
     result = conn.retrieve(action, **parameters)
     if getattr(result, 'severity', 0) > 1:
         raise RuntimeError(f"The CAS action {action} failed: {getattr(result, 'reason', '')} {getattr(result, 'status', '')}".strip())
     return result
 
 
+def read_action(conn, action, **parameters):
+    """Runs a CAS action whose answer the program reads, and raises for an answer of a severity other than 0. CAS
+    gives an action the severity 0 when it ended normally, 1 for a warning and 2 for an error. The CASL of this
+    program takes an action whose answer it reads for one CAS refused at any severity other than 0, and so does
+    this function: what a warning means for table.fetch, table.columnInfo, simple.numRows and table.tableInfo was
+    not looked at, so an answer with one is not taken for what the table holds."""
+    result = conn.retrieve(action, **parameters)
+    severity = getattr(result, 'severity', 0)
+    if severity != 0:
+        raise RuntimeError(f"The answer of CAS to the action {action} has the severity {severity}, and only 0 is taken for an answer: "
+                           f"{getattr(result, 'reason', '')} {getattr(result, 'status', '')}".strip())
+    return result
+
+
 def columns_of(conn, caslib, name):
     """The columns of a CAS table in their order, as (name, label) pairs."""
-    info = run_action(conn, 'table.columnInfo', table={'caslib': caslib, 'name': name})['ColumnInfo']
+    info = read_action(conn, 'table.columnInfo', table={'caslib': caslib, 'name': name})['ColumnInfo']
     labels = info['Label'] if 'Label' in info.columns else [''] * len(info)
     return [(str(column), text(label)) for column, label in zip(info['Column'], labels)]
 
 
 def label_of(conn, caslib, name):
-    """The label of a CAS table. The empty text when it has none or it can not be read."""
+    """The label of a CAS table, the empty text when it has none. None where CAS did not answer the question."""
     try:
-        info = conn.retrieve('table.tableInfo', caslib=caslib, name=name)['TableInfo']
-        return text(info['Label'].iloc[0]).strip() if 'Label' in info.columns and len(info) > 0 else ''
+        info = read_action(conn, 'table.tableInfo', caslib=caslib, name=name)['TableInfo']
     except Exception:
-        return ''
+        return None
+    return text(info['Label'].iloc[0]).strip() if 'Label' in info.columns and len(info) > 0 else ''
 
 
 def read_table(conn, caslib, name, columns=None, where=None):
@@ -1407,7 +1425,7 @@ def read_table(conn, caslib, name, columns=None, where=None):
         parameters = {'table': table, 'from': first, 'to': first + READ_PAGE - 1, 'maxRows': READ_PAGE, 'index': False, 'sasTypes': False}
         if columns:
             parameters['fetchVars'] = [{'name': column} for column in columns]
-        page = run_action(conn, 'table.fetch', **parameters).get('Fetch')
+        page = read_action(conn, 'table.fetch', **parameters).get('Fetch')
         if page is None or len(page) == 0:
             break
         frames.append(pd.DataFrame(page))
@@ -1420,7 +1438,7 @@ def read_table(conn, caslib, name, columns=None, where=None):
 
 
 def row_count(conn, caslib, name):
-    return int(run_action(conn, 'simple.numRows', table={'caslib': caslib, 'name': name})['numrows'])
+    return int(read_action(conn, 'simple.numRows', table={'caslib': caslib, 'name': name})['numrows'])
 
 
 def link_table(conn, settings, log=print):
@@ -1518,7 +1536,9 @@ def link_table(conn, settings, log=print):
         # Without the new table the SAS program leaves the log table as it is
         conn.retrieve('table.dropTable', caslib=log_caslib, name=new_table, quiet=True)
         raise
-    if table_label:
+    if table_label is None:
+        log(f"The label of the table {log_caslib}.{log_table} could not be read, so the linked table has none.")
+    elif table_label:
         # The label of the table is no part of its rows: the new table is given the one the table had.
         # A label that can not be set is no reason to keep the links back
         labelled = conn.retrieve('table.alterTable', caslib=log_caslib, name=new_table, label=table_label)
@@ -1571,6 +1591,8 @@ run; quit;
 * Replace the log table by the new one, promote and save it;
 %macro _lnk_handle_output_table;
     %if &_lnk_row_count. GT 0 and &_lnk_unchanged. NE 1 %then %do;
+        /* 1 until the step below reached its end with the new table in place: a step that halts sets nothing */
+        %let _lnk_failed = 1;
         proc cas;
             /* The new table was built beside the existing one, which is only dropped once its replacement exists.
                A new table that CAS did not say is there takes the place of nothing, also where it refused the question */
@@ -1579,6 +1601,7 @@ run; quit;
                 casLib = "&_lnk_log_caslib.",
                 name = "&_lnk_log_table._NEW";
             if stagedAsked.severity EQ 0 then stagedThere = staged.exists;
+            else stagedThere = -1;
 
             if stagedThere GE 1 then do;
                 /* Dropped twice, as a session table of that name hides a promoted one */
@@ -1607,7 +1630,9 @@ run; quit;
                 tableWritten = True;
             end;
             else do;
-                print (error) "The new table could not be created, the table &_lnk_log_caslib..&_lnk_log_table. was left as it is.";
+                /* Where CAS refused the question the new table was built and may be there: the line says what is known */
+                if stagedThere LT 0 then print (error) "CAS refused to say whether the new table &_lnk_log_caslib..&_lnk_log_table._NEW is there, so it did not take the place of the table &_lnk_log_caslib..&_lnk_log_table., which was left as it is.";
+                else print (error) "The new table could not be created, the table &_lnk_log_caslib..&_lnk_log_table. was left as it is.";
                 tableWritten = False;
                 call symputx('_lnk_failed', 1);
             end;
@@ -1622,6 +1647,7 @@ run; quit;
                         replace = True;
                 end;
             %end;
+            if tableWritten then call symputx('_lnk_failed', 0);
         run; quit;
     %end;
     %else %if &_lnk_row_count. EQ 0 %then %do;
@@ -1638,6 +1664,7 @@ run; quit;
        not written again */
     %if (&_lnk_unchanged. EQ 1 or &_lnk_row_count. EQ 0) and &_lnk_log_scope. EQ 0 and &_lnk_log_exists. EQ 1 %then %do;
         %if &_lnk_promote_table. %then %do;
+            %let _lnk_log_scope = -1;
             proc cas;
                 table.promote /
                     casLib = "&_lnk_log_caslib.",
@@ -1656,7 +1683,7 @@ run; quit;
             %put NOTE: The table &_lnk_log_caslib..&_lnk_log_table. was not in memory. It was loaded from its saved file and promoted as it was loaded, the saved file was left as it is.;
         %end;
         %else %if &_lnk_log_scope. EQ -1 %then %do;
-            %put WARNING: The table &_lnk_log_caslib..&_lnk_log_table. was not in memory. It was loaded from its saved file, and CAS refused to say whether it was promoted then: where it was not, it is a table of this CAS session and gone when the session ends. The saved file was left as it is.;
+            %put WARNING: The table &_lnk_log_caslib..&_lnk_log_table. was not in memory. It was loaded from its saved file, and CAS did not say whether it was promoted then: where it was not, it is a table of this CAS session and gone when the session ends. The saved file was left as it is.;
         %end;
         %else %if &_lnk_promote_table. %then %do;
             %put WARNING: The table &_lnk_log_caslib..&_lnk_log_table. was not in memory. It was loaded from its saved file and could not be promoted, so it is a table of this CAS session and gone when the session ends. The saved file was left as it is.;
