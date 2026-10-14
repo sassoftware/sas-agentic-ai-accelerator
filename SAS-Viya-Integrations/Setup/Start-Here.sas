@@ -250,7 +250,9 @@ REFERENCE_TODO = 'Remove the reference from the folder. Then: '
 # names. mdb tells what a folder holds under the name of an entry by the name, to the letter, and by this table
 # (viya/content.py, _named). It fails an entry for a reference that has its name and names an object of its kind,
 # alone or beside the object, and for two objects of its name and kind. It writes no report and fails none over
-# what a folder holds. The page judges an entry the same way
+# what a folder holds. The page judges what a folder holds under the name of an entry the same way. Below a folder
+# mdb fails, the two differ: mdb looks at nothing there, and the page reads the one folder of the name - its line
+# says that nothing is written below it - and reads nothing where two folders have the name
 KIND_URI = {'file': '/files/files/', 'step': '/dataFlows/steps/', 'jobDefinition': '/jobDefinitions/definitions/',
             'report': '/reports/reports/', 'folder': '/folders/folders/'}
 REFERENCE_BESIDE = 'present, and a reference of that name is in its folder, which names an object that lives elsewhere'

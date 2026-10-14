@@ -551,6 +551,11 @@ def test_the_page_and_mdb_have_one_rule_for_a_reference():
     assert block.count("folders = named_as(parent_members, name, 'folder')[0]") == 1 and block.count("named_as(") == 4
     # no second spelling of a name is looked for, and no kind is told by another table
     assert ".step'" not in block and "MEMBER_TYPES" not in block
+    # the program says where the two differ, which tests/test_start_here_one_rule.py holds in its second table
+    comment = " ".join(line.lstrip("# ") for line in block[block.index("# What the uri of an object of each kind"):block.index("KIND_URI = ")].split("\n"))
+    assert ("The page judges what a folder holds under the name of an entry the same way. Below a folder mdb fails, the two differ: mdb "
+            "looks at nothing there, and the page reads the one folder of the name - its line says that nothing is written below it - and "
+            "reads nothing where two folders have the name") in comment
 
 
 def test_the_program_tells_a_reference_by_the_type_of_the_member():
