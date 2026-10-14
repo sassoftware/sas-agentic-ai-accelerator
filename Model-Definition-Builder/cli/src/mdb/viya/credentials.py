@@ -91,7 +91,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from .answer import answer
+from .answer import answer, one_line
 
 #: `.env` variable -> domain entry name, for the LLM providers. An entry name
 #: is the KeyName a definition's `API_KEY` option references (`key_name` in
@@ -1038,10 +1038,21 @@ def put_credential(session, domain: str, identity: Identity, entries: dict) -> N
             # the answer names why - errorCode 12310, "... the group identity ... does not exist" (measured on
             # 2026-10-14). This request carried the values, so an answer that holds one is not shown.
             answered = answer(response)
-            if not any(value and value in answered for value in (*entries.values(), *body["secrets"].values())):
+            if not _echoes(response, answered, (*entries.values(), *body["secrets"].values())):
                 said = answered
-        raise CredentialError(
-            f"storing the credential for {identity.type} '{identity.id}' failed: {said}")
+        raise CredentialError(f"{what} failed: {said}")
+
+
+def _echoes(response, answered: str, values) -> bool:
+    """Whether an answer holds one of `values`: the line `answered` that
+    answer() made of it, or its whole body. Both are compared as answer()
+    makes a line - every run of blanks, tabs and line breaks one blank - so
+    a value with two blanks or a line break is found in a line that holds
+    it collapsed; and the whole body is looked at too, because answer() ends
+    a long body that is no JSON error at 300 characters, which can cut a
+    value in two."""
+    texts = (answered, one_line(str(getattr(response, "text", "") or "")))
+    return any(value and value in text for value in (one_line(str(raw)) for raw in values) for text in texts)
 
 
 def delete_credential(session, domain: str, identity: Identity) -> bool:
