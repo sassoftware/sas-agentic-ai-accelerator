@@ -450,7 +450,9 @@ export async function getTaggedModels(
 }
 
 /**
- * Create a new model version.
+ * Create a new model version. Throws when SAS Model Manager refuses it: the
+ * error body of a refusal is JSON as well, and was handed back as if it were
+ * the new version.
  */
 export async function createModelVersion(
   modelID: string,
@@ -464,5 +466,6 @@ export async function createModelVersion(
       contentType: 'application/vnd.sas.models.model.version+json',
     }
   );
+  if (!response.ok) throw new Error(`Creating a model version was refused with HTTP ${response.status}`);
   return response.json();
 }

@@ -4851,6 +4851,17 @@ export async function buildPromptBuilder(
     const promptExperimentSaveResultContainer = document.createElement('div');
     promptExperimentSaveResultContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-save-only-result`;
 
+    /**
+     * A write SAS Model Manager refused is a write that failed. The calls that
+     * upload, delete or update hand the status back instead of throwing; a
+     * row of writes that went on over a refusal said "saved", "manifested" or
+     * "deleted" for what was not written. This throws, so that the row takes
+     * the way it takes when a request throws.
+     */
+    function written(status: number, what: string): void {
+      if (status >= 300) throw new Error(`${what} was refused with HTTP ${status}`);
+    }
+
     // Save the experiments to the SAS Model Manager. The success/failure
     // message goes to `resultContainer` — next to Save for a plain save, or the
     // manifest box when called as the first step of manifesting.
@@ -4893,7 +4904,10 @@ export async function buildPromptBuilder(
         for (const promptBuilderAvailablepte in promptBuilderAvailablePTE) {
           if (promptBuilderAvailablePTE[promptBuilderAvailablepte]?.name === 'Prompt-Experiment-Tracker.json') {
             await createModelVersion(promptExperimentRunModel);
-            await deleteModelContent(promptExperimentRunModel, promptBuilderAvailablePTE[promptBuilderAvailablepte]?.id ?? '');
+            written(
+              await deleteModelContent(promptExperimentRunModel, promptBuilderAvailablePTE[promptBuilderAvailablepte]?.id ?? ''),
+              'The delete of the stored tracker'
+            );
           }
         }
         // Create the new Prompt Experiment Tracker
@@ -5332,12 +5346,14 @@ ${scoreCodeReturn}`;
         const mainfestPromptScoreCodeBlob = new Blob([scoreCode], { type: 'text/x-python' });
         // Clean up previous variables first
         const modelVariables = await getModelVariables(promptExperimentRunModel);
+        // Every write of the manifest is read (see written): a refusal stops
+        // it where a request that throws stops it.
         for (let i = 0; i < modelVariables.length; i++) {
-          await deleteModelVariable(promptExperimentRunModel, modelVariables[i]!.id!);
+          written(await deleteModelVariable(promptExperimentRunModel, modelVariables[i]!.id!), 'The delete of a variable');
         }
         const validatedModelName = validateAndCorrectPackageName(promptExperimentRunModelName);
-        await createModelContent(promptExperimentRunModel, promptInputs, 'inputVar.json', 'inputVariables');
-        await createModelContent(promptExperimentRunModel, outputVars, 'outputVar.json', 'outputVariables');
+        written((await createModelContent(promptExperimentRunModel, promptInputs, 'inputVar.json', 'inputVariables')).status_code, 'inputVar.json');
+        written((await createModelContent(promptExperimentRunModel, outputVars, 'outputVar.json', 'outputVariables')).status_code, 'outputVar.json');
         if (
           !(await storeManifestScoreCode(
             promptExperimentRunModel,
@@ -5386,11 +5402,16 @@ ${scoreCodeReturn}`;
         // A stale one from an earlier manifest is removed when the LLM call is
         // no longer included.
         if (integratedLLMCall) {
-          await createModelContent(
-            promptExperimentRunModel,
-            [{ step: 'install requests', command: 'pip3 -q install requests' }],
-            'requirements.json',
-            'python pickle'
+          written(
+            (
+              await createModelContent(
+                promptExperimentRunModel,
+                [{ step: 'install requests', command: 'pip3 -q install requests' }],
+                'requirements.json',
+                'python pickle'
+              )
+            ).status_code,
+            'requirements.json'
           );
         } else {
           const manifestModelContents = await getModelContents(promptExperimentRunModel);
@@ -5398,7 +5419,7 @@ ${scoreCodeReturn}`;
             (modelContent) => modelContent.name === 'requirements.json'
           );
           if (staleRequirements?.id) {
-            await deleteModelContent(promptExperimentRunModel, staleRequirements.id);
+            written(await deleteModelContent(promptExperimentRunModel, staleRequirements.id), 'The delete of requirements.json');
           }
         }
         // Copy the winning LLM's governance/cost attributes onto the manifested
@@ -5426,11 +5447,9 @@ ${scoreCodeReturn}`;
           manifestAttributes.modelCardCustomChartReport = modelCardChart;
           manifestAttributes.modelCardCustomChartEnabled = true;
         }
-        try {
-          await updateModelAttributes(promptExperimentRunModel, manifestAttributes);
-        } catch (error) {
-          console.error('Failed to copy the LLM attributes onto the manifested model.', error);
-        }
+        // The last write. Refused or thrown, the manifest is not completed:
+        // the line of runManifest says that the attributes may be missing.
+        written(await updateModelAttributes(promptExperimentRunModel, manifestAttributes), 'The update of the attributes');
         showToast(`${promptBuilderInterfaceText?.promptBuilderManifestToast}`);
       } else {
         if (promptExperimentResultTargetContainer) {
@@ -5539,12 +5558,14 @@ ${scoreCodeReturn}`;
         sslVerify: tlsVerificationOn,
       });
       const modelVariables = await getModelVariables(promptExperimentRunModel);
+      // Every write of the manifest is read (see written): a refusal stops it
+      // where a request that throws stops it.
       for (const variable of modelVariables) {
-        await deleteModelVariable(promptExperimentRunModel, variable.id!);
+        written(await deleteModelVariable(promptExperimentRunModel, variable.id!), 'The delete of a variable');
       }
       const validatedModelName = validateAndCorrectPackageName(promptExperimentRunModelName);
-      await createModelContent(promptExperimentRunModel, manifest.inputs, 'inputVar.json', 'inputVariables');
-      await createModelContent(promptExperimentRunModel, manifest.outputs, 'outputVar.json', 'outputVariables');
+      written((await createModelContent(promptExperimentRunModel, manifest.inputs, 'inputVar.json', 'inputVariables')).status_code, 'inputVar.json');
+      written((await createModelContent(promptExperimentRunModel, manifest.outputs, 'outputVar.json', 'outputVariables')).status_code, 'outputVar.json');
       if (
         !(await storeManifestScoreCode(
           promptExperimentRunModel,
@@ -5579,11 +5600,16 @@ ${scoreCodeReturn}`;
         console.error('Failed to update the tags of the manifested model.', error);
       }
       if (!manifestTagsWritten) reportTlsTagFailure(tlsVerificationOn);
-      await createModelContent(
-        promptExperimentRunModel,
-        [{ step: 'install requests', command: 'pip3 -q install requests' }],
-        'requirements.json',
-        'python pickle'
+      written(
+        (
+          await createModelContent(
+            promptExperimentRunModel,
+            [{ step: 'install requests', command: 'pip3 -q install requests' }],
+            'requirements.json',
+            'python pickle'
+          )
+        ).status_code,
+        'requirements.json'
       );
       await ensureLLMCostAttributes(chosen.model);
       const decisionModel = llmAttributesByName.get(chosen.model);
@@ -5602,11 +5628,9 @@ ${scoreCodeReturn}`;
         manifestAttributes.modelCardCustomChartReport = modelCardChart;
         manifestAttributes.modelCardCustomChartEnabled = true;
       }
-      try {
-        await updateModelAttributes(promptExperimentRunModel, manifestAttributes);
-      } catch (error) {
-        console.error('Failed to copy the decision model attributes onto the manifested model.', error);
-      }
+      // The last write. Refused or thrown, the manifest is not completed: the
+      // line of runManifest says that the attributes may be missing.
+      written(await updateModelAttributes(promptExperimentRunModel, manifestAttributes), 'The update of the attributes');
       showToast(`${promptBuilderInterfaceText?.promptBuilderManifestToast}`);
       restore();
     }
@@ -6592,27 +6616,35 @@ ${scoreCodeReturn}`;
       });
       if (!confirmed) return;
       await selectionLock.during(async () => {
-        const trackerEntries = (await readOptimizationEntries(modelId)) ?? [];
-        const remaining = trackerEntries.filter(
-          (candidate) => candidate.optimizationId !== entry.optimizationId
-        );
-        await createModelVersion(modelId);
-        const contents = await getModelContents(modelId);
-        const trackerContent = contents.find(
-          (modelContent) => modelContent.name === 'Prompt-Optimization-Tracker.json'
-        );
-        if (trackerContent?.id) await deleteModelContent(modelId, trackerContent.id);
-        if (remaining.length > 0) {
-          await createModelContent(modelId, remaining, 'Prompt-Optimization-Tracker.json');
-        }
-        // Drop the run's dataset snapshot alongside its entry.
-        if (entry.datasetSnapshot) {
-          const snapshotContent = contents.find(
-            (modelContent) => modelContent.name === entry.datasetSnapshot
+        // Each write is read (see written), and one that is refused or throws
+        // ends the delete with the toast of a deletion that failed; the
+        // history is read again either way and shows what is stored.
+        try {
+          const trackerEntries = (await readOptimizationEntries(modelId)) ?? [];
+          const remaining = trackerEntries.filter(
+            (candidate) => candidate.optimizationId !== entry.optimizationId
           );
-          if (snapshotContent?.id) await deleteModelContent(modelId, snapshotContent.id);
+          await createModelVersion(modelId);
+          const contents = await getModelContents(modelId);
+          const trackerContent = contents.find(
+            (modelContent) => modelContent.name === 'Prompt-Optimization-Tracker.json'
+          );
+          if (trackerContent?.id) written(await deleteModelContent(modelId, trackerContent.id), 'The delete of the optimization tracker');
+          if (remaining.length > 0) {
+            written((await createModelContent(modelId, remaining, 'Prompt-Optimization-Tracker.json')).status_code, 'Prompt-Optimization-Tracker.json');
+          }
+          // Drop the run's dataset snapshot alongside its entry.
+          if (entry.datasetSnapshot) {
+            const snapshotContent = contents.find(
+              (modelContent) => modelContent.name === entry.datasetSnapshot
+            );
+            if (snapshotContent?.id) written(await deleteModelContent(modelId, snapshotContent.id), 'The delete of the dataset snapshot');
+          }
+          showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeletedToast}`);
+        } catch (error) {
+          console.error('Deleting the optimization run failed.', error);
+          showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
         }
-        showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeletedToast}`);
         // The history that is read again is the one of this prompt-test.
         await refreshOptimizationHistory(true);
       });
