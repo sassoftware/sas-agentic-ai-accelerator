@@ -127,7 +127,7 @@ def test_missing_table_is_one_error_line_that_names_the_program_that_writes_it()
     errors = re.findall(r"^\s*%put (ERROR: .*);$", code_file_program(), flags=re.MULTILINE)
     # content-22: in front of them the line of a listing of saved files that CAS refused, which names no table as not found
     refused, log_missing, catalog_missing, not_linked = errors
-    assert refused.startswith("ERROR: CAS refused to list the saved files") and "not found" not in refused
+    assert refused.startswith("ERROR: CAS refused to say whether a table the program reads is in memory") and "not found" not in refused
     assert "Log-Parser-Code.sas" in log_missing and "LLM - Log Parser" in log_missing
     assert "Get-All-Prompts.sas" in catalog_missing and "&_lnk_catalog_caslib..&_lnk_catalog_table." in catalog_missing
     assert "left as it is" in catalog_missing and "left as it is" in not_linked
@@ -209,17 +209,22 @@ def test_log_table_that_was_loaded_from_its_saved_file_and_not_linked_is_put_in_
     assert not re.search(r"table\.save|dropTable|rename|loadTable", block)
     # One line for each way it can end, none of them an ERROR line: a run with nothing to link is no failed job
     lines = re.findall(r"^\s*%put (\w+): (.*);$", block, flags=re.MULTILINE)
-    assert [kind for kind, _ in lines] == ["NOTE", "WARNING", "NOTE"]
-    assert re.findall(r"^        %(?:else )?(?:%?if (.*) %then )?%do;$", block, flags=re.MULTILINE) == ["&_lnk_promote_table.", "&_lnk_log_scope. EQ 2", "&_lnk_promote_table.", ""]
-    promoted, not_promoted, not_asked = [message for _, message in lines]
+    # fix-content-22: and a WARNING where CAS refused to say whether the table is promoted
+    assert [kind for kind, _ in lines] == ["NOTE", "WARNING", "WARNING", "NOTE"]
+    assert re.findall(r"^        %(?:else )?(?:%?if (.*) %then )?%do;$", block, flags=re.MULTILINE) == [
+        "&_lnk_promote_table.", "&_lnk_log_scope. EQ 2", "&_lnk_log_scope. EQ -1", "&_lnk_promote_table.", ""]
+    promoted, not_answered, not_promoted, not_asked = [message for _, message in lines]
     assert promoted == ("The table &_lnk_log_caslib..&_lnk_log_table. was not in memory. It was loaded from its saved file and promoted as it was loaded, "
                         "the saved file was left as it is.")
+    assert not_answered == ("The table &_lnk_log_caslib..&_lnk_log_table. was not in memory. It was loaded from its saved file, and CAS refused "
+                            "to say whether it was promoted then: where it was not, it is a table of this CAS session and gone when the session "
+                            "ends. The saved file was left as it is.")
     for message in (not_promoted, not_asked):
         assert message.startswith("The table &_lnk_log_caslib..&_lnk_log_table. was not in memory. It was loaded from its saved file and ")
         assert "so it is a table of this CAS session and gone when the session ends. The saved file was left as it is." in message
     assert "could not be promoted" in not_promoted and "not promoted, as _lnk_promote_table is not 1" in not_asked
     # A message of the SAS code holds nothing that ends its statement or starts a macro call but the variables it names
-    for message in (promoted, not_promoted, not_asked):
+    for message in (promoted, not_answered, not_promoted, not_asked):
         assert not re.search(r"[;%'\"]", message) and set(re.findall(r"&(\w+)\.", message)) == {"_lnk_log_caslib", "_lnk_log_table"}
 
 
@@ -236,7 +241,7 @@ def test_promoted_table_stays_promoted_and_a_saved_one_is_saved_again_whatever_t
 
     # 2 is what tableExists answers for a promoted table. It is asked of the log table before the macro that loads a saved table runs
     scope = program.index("call symputx('_lnk_log_scope', found.exists);")
-    asked = program.rindex("table.tableExists result=found /", 0, scope)
+    asked = program.rindex("table.tableExists result=found status=asked /", 0, scope)
     assert 'casLib = "&_lnk_log_caslib.",' in program[asked:scope] and 'name = "&_lnk_log_table.";' in program[asked:scope]
     assert program.index("%let _lnk_log_scope = 0;") < scope < program.index("%macro _lnk_ensure_loaded")
     # The saved file is looked for by its name without case, and only when the table is not saved anyway

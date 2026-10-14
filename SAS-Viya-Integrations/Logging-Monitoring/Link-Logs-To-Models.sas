@@ -75,13 +75,14 @@ proc cas;
     call symputx('_casSessionUUID', sessresults[1]);
 quit;
 
-* What the log table is before it is linked: 2 a promoted table, 1 a table of this session, 0 not in memory;
+* What the log table is before it is linked: 2 a promoted table, 1 a table of this session, 0 not in memory, -1 CAS refused the question;
 %let _lnk_log_scope = 0;
 proc cas;
-    table.tableExists result=found /
+    table.tableExists result=found status=asked /
         casLib = "&_lnk_log_caslib.",
         name = "&_lnk_log_table.";
-    call symputx('_lnk_log_scope', found.exists);
+    if asked.severity NE 0 then call symputx('_lnk_log_scope', -1);
+    else call symputx('_lnk_log_scope', found.exists);
 run; quit;
 
 * Whether the CAS library holds a saved file of the log table. Asked only when the table is not saved anyway;
@@ -102,23 +103,24 @@ run; quit;
     run; quit;
 %end;
 
-* Sets the macro variable named in _lnk_flag to 1 when the table is in memory, after loading it from its saved file when it is not, and to -1 where the table is not in memory and CAS refused to list the saved files;
+* Sets the macro variable named in _lnk_flag to 1 when the table is in memory, after loading it from its saved file when it is not, and to -1 where CAS refused the question whether it is in memory, or where it is not and CAS refused to list the saved files;
 %macro _lnk_ensure_loaded(_lnk_lib, _lnk_name, _lnk_flag);
     proc cas;
-        filesListed = 1;
-        table.tableExists result=found /
+        answered = 1;
+        table.tableExists result=found status=asked /
             casLib = "&_lnk_lib.",
             name = "&_lnk_name.";
+        if asked.severity NE 0 then answered = 0;
 
         /* A table that was saved but is not in memory, which is how a restart of the CAS server
            leaves it, is loaded back. The whole caslib is listed, so a file that does not exist is
            not an error. The file keeps the case the table name was saved with and a CAS table name
            has none: the exact name is taken when there is one, otherwise the same name in another case */
-        if found.exists EQ 0 then do;
+        else if found.exists EQ 0 then do;
             savedFile = '';
             table.fileInfo result=listing status=listed /
                 casLib = "&_lnk_lib.";
-            if listed.severity NE 0 then filesListed = 0;
+            if listed.severity NE 0 then answered = 0;
             if listed.severity EQ 0 then do;
                 if exists(listing, 'FileInfo') then do;
                     do savedEntry over listing.FileInfo;
@@ -132,14 +134,15 @@ run; quit;
                     casLib = "&_lnk_lib.",
                     path = savedFile,
                     casOut = {casLib = "&_lnk_lib.", name = "&_lnk_name."};
-                table.tableExists result=found /
+                table.tableExists result=found status=asked /
                     casLib = "&_lnk_lib.",
                     name = "&_lnk_name.";
+                if asked.severity NE 0 then answered = 0;
             end;
         end;
 
-        if found.exists GE 1 then call symputx("&_lnk_flag.", 1);
-        else if filesListed EQ 0 then call symputx("&_lnk_flag.", -1);
+        if answered EQ 0 then call symputx("&_lnk_flag.", -1);
+        else if found.exists GE 1 then call symputx("&_lnk_flag.", 1);
         else call symputx("&_lnk_flag.", 0);
     run; quit;
 %mend _lnk_ensure_loaded;
@@ -153,9 +156,9 @@ run; quit;
 
 * Without the log table or the catalog nothing is linked. Each case is one ERROR line and the Python below is skipped;
 %let _lnk_ready = 1;
-* A listing of the saved files that CAS refused is not taken for a CAS library without them: a table that is not in memory is not taken for one that is not there, and a saved file of the log table not for one that is not there either;
-%if &_lnk_log_exists. EQ -1 or &_lnk_catalog_exists. EQ -1 or &_lnk_runs_exists. EQ -1 or &_lnk_log_saved. EQ -1 %then %do;
-    %put ERROR: CAS refused to list the saved files of a CAS library the program reads, so it is not known whether a table that is not in memory is there as a saved file or whether the log table has one. Nothing was linked and the tables were left as they are.;
+* A question whether a table is in memory or a listing of the saved files that CAS refused is no answer: a table is not taken for one that is not there, and a saved file of the log table not for one that is not there either;
+%if &_lnk_log_scope. EQ -1 or &_lnk_log_exists. EQ -1 or &_lnk_catalog_exists. EQ -1 or &_lnk_runs_exists. EQ -1 or &_lnk_log_saved. EQ -1 %then %do;
+    %put ERROR: CAS refused to say whether a table the program reads is in memory or to list the saved files of its CAS library, so it is not known whether that table is there or whether the log table has a saved file. Nothing was linked and the tables were left as they are.;
     %let _lnk_ready = 0;
 %end;
 %if &_lnk_ready. EQ 1 and &_lnk_log_exists. NE 1 %then %do;
@@ -1569,12 +1572,15 @@ run; quit;
 %macro _lnk_handle_output_table;
     %if &_lnk_row_count. GT 0 and &_lnk_unchanged. NE 1 %then %do;
         proc cas;
-            /* The new table was built beside the existing one, which is only dropped once its replacement exists */
-            table.tableExists result=staged /
+            /* The new table was built beside the existing one, which is only dropped once its replacement exists.
+               A new table that CAS did not say is there takes the place of nothing, also where it refused the question */
+            stagedThere = 0;
+            table.tableExists result=staged status=stagedAsked /
                 casLib = "&_lnk_log_caslib.",
                 name = "&_lnk_log_table._NEW";
+            if stagedAsked.severity EQ 0 then stagedThere = staged.exists;
 
-            if staged.exists GE 1 then do;
+            if stagedThere GE 1 then do;
                 /* Dropped twice, as a session table of that name hides a promoted one */
                 table.dropTable /
                     casLib = "&_lnk_log_caslib.",
@@ -1639,14 +1645,18 @@ run; quit;
                     targetLib = "&_lnk_log_caslib.",
                     target = "&_lnk_log_table.",
                     quiet = True;
-                table.tableExists result=found /
+                table.tableExists result=found status=asked /
                     casLib = "&_lnk_log_caslib.",
                     name = "&_lnk_log_table.";
-                call symputx('_lnk_log_scope', found.exists);
+                if asked.severity NE 0 then call symputx('_lnk_log_scope', -1);
+                else call symputx('_lnk_log_scope', found.exists);
             run; quit;
         %end;
         %if &_lnk_log_scope. EQ 2 %then %do;
             %put NOTE: The table &_lnk_log_caslib..&_lnk_log_table. was not in memory. It was loaded from its saved file and promoted as it was loaded, the saved file was left as it is.;
+        %end;
+        %else %if &_lnk_log_scope. EQ -1 %then %do;
+            %put WARNING: The table &_lnk_log_caslib..&_lnk_log_table. was not in memory. It was loaded from its saved file, and CAS refused to say whether it was promoted then: where it was not, it is a table of this CAS session and gone when the session ends. The saved file was left as it is.;
         %end;
         %else %if &_lnk_promote_table. %then %do;
             %put WARNING: The table &_lnk_log_caslib..&_lnk_log_table. was not in memory. It was loaded from its saved file and could not be promoted, so it is a table of this CAS session and gone when the session ends. The saved file was left as it is.;

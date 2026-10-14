@@ -247,13 +247,15 @@ def test_the_step_says_it_in_its_about_tab_and_its_changelog():
 # ---------------------------------------------------------------------------
 
 LINK_FILE = CODE_FILE.parent / "Link-Logs-To-Models.sas"
-LINK_REFUSED = ("CAS refused to list the saved files of a CAS library the program reads, so it is not known whether a table that is "
-                "not in memory is there as a saved file or whether the log table has one. Nothing was linked and the tables were left "
-                "as they are.")
+# fix-content-22: the line names the question whether a table is in memory as well
+LINK_REFUSED = ("CAS refused to say whether a table the program reads is in memory or to list the saved files of its CAS library, so "
+                "it is not known whether that table is there or whether the log table has a saved file. Nothing was linked and the "
+                "tables were left as they are.")
 
 
 def _follow_link(library, save_table="1"):
-    """The statements of Link-Logs-To-Models.sas from the look for a saved file of the log table to the decision
+    """The statements of Link-Logs-To-Models.sas from the question what the log table is (fix-content-22: it reads a
+    refusal as well) and the look for a saved file of the log table to the decision
     whether the links are made (_lnk_ready), against the made-up CAS library: the macro statements with the
     macro language of log_parser_table_harness, each PROC CAS step with its CASL. Returns (lines of %put, macros)."""
     import casl_harness
@@ -285,7 +287,7 @@ def _follow_link(library, save_table="1"):
     def open_code(start, stop):
         return "%macro _open_code;\n" + program[program.index(start):program.index(stop)] + "%mend _open_code;\n"
 
-    run(open_code("%let _lnk_log_saved = 0;", "* Sets the macro variable named in _lnk_flag"), "_open_code")
+    run(open_code("%let _lnk_log_scope = 0;", "* Sets the macro variable named in _lnk_flag"), "_open_code")
     for lib, name, flag in ((LIB, TABLE, "_lnk_log_exists"), (LIB, "MODEL_CATALOG", "_lnk_catalog_exists"), (LIB, "RAG_RUNS", "_lnk_runs_exists")):
         macros.symbols.update({"_lnk_lib": lib, "_lnk_name": name, "_lnk_flag": flag})
         run(program, "_lnk_ensure_loaded")
@@ -336,7 +338,7 @@ def test_the_link_goes_on_where_cas_lists_the_files(save_table):
 def test_the_readme_quotes_the_line_of_the_link():
     readme = " ".join((CODE_FILE.parent / "README.md").read_text(encoding="utf-8").split())
     assert "`ERROR: " + LINK_REFUSED + "`" in readme
-    assert "a log table or a catalog that was not found, a listing of saved files that CAS refused, a table the program refused," in readme
+    assert "a log table or a catalog that was not found, a question or a listing of saved files that CAS refused, a table the program refused," in readme
     # the saved file of the log table is looked for in front of the load, whether the table is in memory or not
     assert "or for the saved file of the log table, which is looked for where `_lnk_save_table` is not `1` -," in readme
     program = LINK_FILE.read_text(encoding="utf-8").replace("\r\n", "\n")
@@ -378,7 +380,7 @@ def test_every_listing_of_saved_files_takes_a_refusal_for_no_answer():
         assert "table.fileInfo" not in re.sub(r"table\.fileInfo result\s*=\s*\w+ status\s*=\s*\w+ /", "", text), relative
     assert found == {
         "Logging-Monitoring/Link-Logs-To-Models.sas": ["if listed.severity NE 0 then call symputx('_lnk_log_saved', -1);",
-                                                       "if listed.severity NE 0 then filesListed = 0;"],
+                                                       "if listed.severity NE 0 then answered = 0;"],
         "Logging-Monitoring/Log-Parser-Code.sas": ["if countedListed.severity NE 0 then targetRows = -3;",
                                                    "if listed.severity NE 0 then call symputx('_log_cas_refused', '1');"],
         "Setup/Load-Accelerator-Tables.sas": ['if listed.severity != 0 then outcome = "unlisted";'],

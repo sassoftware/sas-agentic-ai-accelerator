@@ -68,7 +68,7 @@ ERROR_LINES = {
     },
     "Link-Logs-To-Models.sas": {
         # content-22: a listing of saved files that CAS refused
-        "%put ERROR: CAS refused to list the saved files of a CAS library the program reads": "%let _lnk_ready = 0;",
+        "%put ERROR: CAS refused to say whether a table the program reads is in memory": "%let _lnk_ready = 0;",
         "%put ERROR: The log table &_lnk_log_caslib..&_lnk_log_table. was not found.": "%let _lnk_ready = 0;",
         "%put ERROR: The catalog table &_lnk_catalog_caslib..&_lnk_catalog_table. was not found.": "%let _lnk_ready = 0;",
         'print (error) "The new table could not be created': "call symputx('_lnk_failed', 1);",
