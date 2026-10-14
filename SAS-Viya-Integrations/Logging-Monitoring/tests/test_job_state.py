@@ -55,11 +55,13 @@ ERROR_LINES = {
         "%put ERROR: The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded and _log_append_table is not set": "%let _log_ready = 0;",
         "%put ERROR: The rows of the table &_log_target_table_lib..&_log_target_table_name. could not be counted and _log_append_table is not set": "%let _log_ready = 0;",
         # content-22: an action of the count that CAS refused, and one that a run which appends or replaces goes by
-        "%put ERROR: CAS refused an action that the count of the rows of the table": "%let _log_ready = 0;",
-        'print (error) "CAS refused an action that the run needs for the table': "call symputx('_log_failed', '1');",
-        'print (error) "The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded': "call symputx('_log_failed', '1');",
-        'print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is. The DATA step': "call symputx('_log_failed', '1');",
-        'print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is.";': "call symputx('_log_failed', '1');",
+        # content-23: or did not run - a step that halted
+        "%put ERROR: CAS refused or did not run an action that the count of the rows of the table": "%let _log_ready = 0;",
+        # content-23: the step that writes the table sets _log_failed as its last statement, to what runFailed holds
+        'print (error) "CAS refused or did not run an action that the run needs for the table': "runFailed = 1;",
+        'print (error) "The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded': "runFailed = 1;",
+        'print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is. The DATA step': "runFailed = 1;",
+        'print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is.";': "runFailed = 1;",
         "%put ERROR: The log could not be parsed": None,
     },
     "Get-All-Prompts.sas": {
@@ -67,11 +69,13 @@ ERROR_LINES = {
         "%put ERROR: The experiments could not be read from SAS Model Manager": "%let _gap_failed = 1;",
     },
     "Link-Logs-To-Models.sas": {
-        # content-22: a listing of saved files that CAS refused
-        "%put ERROR: CAS refused to say whether a table the program reads is in memory": "%let _lnk_ready = 0;",
+        # content-22: a listing of saved files that CAS refused; content-23: or that a step that halted did not get to
+        "%put ERROR: CAS did not say whether a table the program reads is in memory": "%let _lnk_ready = 0;",
         "%put ERROR: The log table &_lnk_log_caslib..&_lnk_log_table. was not found.": "%let _lnk_ready = 0;",
         "%put ERROR: The catalog table &_lnk_catalog_caslib..&_lnk_catalog_table. was not found.": "%let _lnk_ready = 0;",
-        'print (error) "The new table could not be created': "call symputx('_lnk_failed', 1);",
+        # content-23: a question for the new table that CAS refused has a line of its own
+        'if stagedThere LT 0 then print (error) "CAS refused to say whether the new table': "call symputx('_lnk_failed', 1);",
+        'else print (error) "The new table could not be created': "call symputx('_lnk_failed', 1);",
         "%put ERROR: The rows could not be linked": None,
     },
 }
@@ -80,6 +84,10 @@ ERROR_LINES["LLM - Get All Prompts.step"] = dict(
     {"%put ERROR: The selected output library does not point to a CASlib, nothing was read or written.": "%let _gap_failed = 1;"},
     **ERROR_LINES["Get-All-Prompts.sas"])
 WRITES_AN_ERROR = re.compile(r"%put ERROR:|putlog\s+['\"]ERROR:|print \(error\)", re.IGNORECASE)
+# content-23: a PROC CAS step that sets the flag is preceded by a %LET that sets it to 1 - a step that halts runs none of
+# its statements, and PROC CAS writes the ERROR lines of the halt - and sets it as its last statement to what it found
+HALT_GUARDS = {"_log_failed": ("%let _log_failed = 1;", "call symputx('_log_failed', runFailed);"),
+               "_lnk_failed": ("%let _lnk_failed = 1;", "if tableWritten then call symputx('_lnk_failed', 0);")}
 
 
 def sas_code(program):
@@ -167,14 +175,24 @@ def test_nothing_but_an_error_line_sets_what_the_condition_reads(name):
     setting = [line.strip() for line in code.split("\n") if re.search(rf"%let {flag}\s*=|symputx\('{flag}'", line)]
     with_a_flag = [statement for statement in ERROR_LINES[name].values() if statement and flag in statement]
 
+    guards = HALT_GUARDS.get(flag, ())
     assert setting[0] == f"%let {flag} = 0;" and setting.count(f"%let {flag} = 0;") == 1
-    assert sorted(setting[1:]) == sorted(with_a_flag)
+    assert sorted(set(setting[1:])) == sorted(set(with_a_flag) | set(guards))
+    assert all(setting.count(statement) == 1 for statement in guards)
     # No line that writes a NOTE or a WARNING stands in front of a statement that sets it
     lines = [line.strip() for line in code.split("\n")]
     for index, line in enumerate(lines):
+        if line in guards:
+            # the %LET stands right in front of its step, and the step sets the flag as its last statement
+            assert lines[index + 1] == ("proc cas;" if line.startswith("%let") else "run; quit;"), line
+            continue
         if flag in line and (line.startswith("%let") or "symputx" in line) and not line.endswith("= 0;"):
             before = " ".join(lines[max(0, index - 6):index])
             assert WRITES_AN_ERROR.search(before), line
+        if line == "runFailed = 1;":
+            assert WRITES_AN_ERROR.search(" ".join(lines[max(0, index - 6):index])), index
+    if flag == "_log_failed":
+        assert [line for line in lines if line.startswith("runFailed =")] == ["runFailed = 0;"] + ["runFailed = 1;"] * 4
     assert flag in next(line for line in reversed(lines) if line.startswith(("%symdel", "_gap_out_catalog")) and flag in line)
 
 

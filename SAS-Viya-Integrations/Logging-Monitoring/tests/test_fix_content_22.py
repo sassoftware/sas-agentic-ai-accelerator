@@ -244,7 +244,9 @@ def _linked(refuse_asks=()):
 def test_a_new_table_that_cas_did_not_say_is_there_takes_the_place_of_nothing():
     library, put, macros = _linked(refuse_asks={(TABLE + "_NEW", 1)})
 
-    assert ("ERROR", f"The new table could not be created, the table {LIB}.{TABLE} was left as it is.") in library.lines
+    # content-23: the table was created, and CAS refused to say so - the line says what is known
+    assert ("ERROR", f"CAS refused to say whether the new table {LIB}.{TABLE}_NEW is there, so it did not take the place of the table "
+                     f"{LIB}.{TABLE}, which was left as it is.") in library.lines
     assert macros["_lnk_failed"] == "1"
     assert library.get(LIB, TABLE)["rows"] == [{"name": "before"}] and library.exists(LIB, TABLE) == 2
     assert not [action for action, _ in library.calls if action in ("table.dropTable", "table.alterTable", "table.save")]
@@ -256,7 +258,7 @@ def test_a_new_table_that_cas_says_is_there_takes_the_place_of_the_log_table():
     assert macros["_lnk_failed"] == "0" and library.get(LIB, TABLE)["rows"] == [{"name": "linked"}] and library.exists(LIB, TABLE) == 2
 
 
-PROMOTE_UNANSWERED = (f"WARNING: The table {LIB}.{TABLE} was not in memory. It was loaded from its saved file, and CAS refused to say "
+PROMOTE_UNANSWERED = (f"WARNING: The table {LIB}.{TABLE} was not in memory. It was loaded from its saved file, and CAS did not say "
                       "whether it was promoted then: where it was not, it is a table of this CAS session and gone when the session ends. "
                       "The saved file was left as it is.")
 
@@ -364,7 +366,7 @@ def test_the_sheet_is_not_loaded_where_cas_refused_the_question_for_the_name_it_
     cas.table("Public", "LLM_FACT_SHEET", sheets.COLUMNS, rows=28, of="the table of before")
     generated, log, asked, macros = sheets.follow("_lfs_read", cas, status="200", there=1, rows=30, loads=30)
 
-    assert log == ["WARNING: CAS refused to say whether there is a table Public.LLM_FACT_SHEET_NEW, the name the sheet is loaded under "
+    assert log == ["WARNING: CAS did not say whether there is a table Public.LLM_FACT_SHEET_NEW, the name the sheet is loaded under "
                    "first. The file llm_fact_sheet.csv was not loaded into CAS, the table Public.LLM_FACT_SHEET was left as it is."]
     assert macros["_lfs_ok"] == "0" and not [line for line in generated if "load data=" in line]
     assert cas.session == {} and sheets.in_memory(cas)["of"] == "the table of before"
@@ -448,5 +450,5 @@ def test_a_setup_whose_tables_cas_answered_for_is_read_as_before():
 
 def test_the_note_names_both_causes():
     program = (INTEGRATIONS / "Logging-Monitoring" / "Get-All-Prompts.sas").read_text(encoding="utf-8")
-    assert ("%put NOTE: The CAS library &_gap_rs_caslib. of the run table &_gap_rs_table. is not available in this session, or CAS refused "
-            "to say whether it, the table or its ledger table is there, so its runs are not in &_gap_out_rag_runs..;") in program
+    assert ("%put NOTE: The CAS library &_gap_rs_caslib. of the run table &_gap_rs_table. is not available in this session, or CAS did not "
+            "say whether it, the table or its ledger table is there, so its runs are not in &_gap_out_rag_runs..;") in program

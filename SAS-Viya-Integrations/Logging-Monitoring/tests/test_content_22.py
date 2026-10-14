@@ -28,11 +28,11 @@ LIB, TABLE = "Public", "LLM_LOGS"
 PROGRAMS = pytest.mark.parametrize("program", [code_file_program, step_program], ids=["code file", "step"])
 STATES = [None, "0", "1"]
 
-REFUSED_START = ("CAS refused an action that the count of the rows of the table Public.LLM_LOGS needs and _log_append_table is not set, "
+REFUSED_START = ("CAS refused or did not run an action that the count of the rows of the table Public.LLM_LOGS needs and _log_append_table is not set, "
                  "so nothing was read and nothing was written - not the table and not its saved file.")
-REFUSED = {"1": "CAS refused an action that the run needs for the table Public.LLM_LOGS, nothing was appended and neither the table nor "
+REFUSED = {"1": "CAS refused or did not run an action that the run needs for the table Public.LLM_LOGS, nothing was appended and neither the table nor "
                 "its saved file was written.",
-           "0": "CAS refused an action that the run needs for the table Public.LLM_LOGS, nothing was replaced and neither the table nor "
+           "0": "CAS refused or did not run an action that the run needs for the table Public.LLM_LOGS, nothing was replaced and neither the table nor "
                 "its saved file was written.",
            None: REFUSED_START}
 OF_CAS = re.compile(r"The action table\.\w+ was refused\.|The action stopped due to errors\.")
@@ -236,10 +236,11 @@ def _about():
 
 def test_the_step_says_it_in_its_about_tab_and_its_changelog():
     texts = _about()
-    assert texts["textChangelog"].startswith("* Version: 2.10 (14OCT2026)\n")
-    entry = texts["textChangelog"][:texts["textChangelog"].index("* Version: 2.9 (")]
+    # content-23: 2.11 stands in front of it, and the About tab names an action CAS did not run as well
+    assert texts["textChangelog"].startswith("* Version: 2.11 (15OCT2026)\n")
+    entry = texts["textChangelog"][texts["textChangelog"].index("* Version: 2.10 (14OCT2026)\n"):texts["textChangelog"].index("* Version: 2.9 (")]
     assert "CAS refuses" in entry and "writes nothing" in entry
-    assert "an action that CAS refused" in texts["textAbout"]
+    assert "an action that the step goes by and that CAS refused or did not run" in texts["textAbout"]
 
 
 # ---------------------------------------------------------------------------
@@ -247,8 +248,8 @@ def test_the_step_says_it_in_its_about_tab_and_its_changelog():
 # ---------------------------------------------------------------------------
 
 LINK_FILE = CODE_FILE.parent / "Link-Logs-To-Models.sas"
-# fix-content-22: the line names the question whether a table is in memory as well
-LINK_REFUSED = ("CAS refused to say whether a table the program reads is in memory or to list the saved files of its CAS library, so "
+# fix-content-22: the line names the question whether a table is in memory as well; content-23: and a step that halted
+LINK_REFUSED = ("CAS did not say whether a table the program reads is in memory or did not list the saved files of its CAS library, so "
                 "it is not known whether that table is there or whether the log table has a saved file. Nothing was linked and the "
                 "tables were left as they are.")
 
@@ -287,7 +288,7 @@ def _follow_link(library, save_table="1"):
     def open_code(start, stop):
         return "%macro _open_code;\n" + program[program.index(start):program.index(stop)] + "%mend _open_code;\n"
 
-    run(open_code("%let _lnk_log_scope = 0;", "* Sets the macro variable named in _lnk_flag"), "_open_code")
+    run(open_code("%let _lnk_log_scope = -1;", "* Sets the macro variable named in _lnk_flag"), "_open_code")
     for lib, name, flag in ((LIB, TABLE, "_lnk_log_exists"), (LIB, "MODEL_CATALOG", "_lnk_catalog_exists"), (LIB, "RAG_RUNS", "_lnk_runs_exists")):
         macros.symbols.update({"_lnk_lib": lib, "_lnk_name": name, "_lnk_flag": flag})
         run(program, "_lnk_ensure_loaded")
@@ -338,7 +339,7 @@ def test_the_link_goes_on_where_cas_lists_the_files(save_table):
 def test_the_readme_quotes_the_line_of_the_link():
     readme = " ".join((CODE_FILE.parent / "README.md").read_text(encoding="utf-8").split())
     assert "`ERROR: " + LINK_REFUSED + "`" in readme
-    assert "a log table or a catalog that was not found, a question or a listing of saved files that CAS refused, a table the program refused," in readme
+    assert "a log table or a catalog that was not found, a question or a listing of saved files that CAS refused or did not answer, a table the program refused," in readme
     # the saved file of the log table is looked for in front of the load, whether the table is in memory or not
     assert "or for the saved file of the log table, which is looked for where `_lnk_save_table` is not `1` -," in readme
     program = LINK_FILE.read_text(encoding="utf-8").replace("\r\n", "\n")
@@ -382,6 +383,6 @@ def test_every_listing_of_saved_files_takes_a_refusal_for_no_answer():
         "Logging-Monitoring/Link-Logs-To-Models.sas": ["if listed.severity NE 0 then call symputx('_lnk_log_saved', -1);",
                                                        "if listed.severity NE 0 then answered = 0;"],
         "Logging-Monitoring/Log-Parser-Code.sas": ["if countedListed.severity NE 0 then targetRows = -3;",
-                                                   "if listed.severity NE 0 then call symputx('_log_cas_refused', '1');"],
+                                                   "if listed.severity NE 0 then targetExists = -1;"],
         "Setup/Load-Accelerator-Tables.sas": ['if listed.severity != 0 then outcome = "unlisted";'],
     }
