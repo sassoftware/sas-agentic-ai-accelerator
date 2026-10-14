@@ -319,3 +319,113 @@ def test_the_texts_say_that_blanks_at_either_end_of_the_address_are_taken_out(mo
     readme = " ".join((REPOSITORY / "Model-Definition-Builder" / "README.md").read_text(encoding="utf-8").split())
     assert "a blank inside it, a second `//`" in readme
     assert "Blanks, tabs and line breaks at either end of the value are taken out" in readme
+
+
+# ---- M5: what an option names -------------------------------------------------------------------
+def _parameters():
+    """(command, parameter) of every parameter of every command of mdb that
+    takes a text or a path, from the Typer app itself."""
+    import typer.main
+    found = []
+
+    def walk(command, name):
+        for sub_name, sub in sorted(getattr(command, "commands", {}).items()):
+            walk(sub, f"{name} {sub_name}".strip())
+        for param in getattr(command, "params", ()):
+            if not getattr(param, "is_flag", False) and param.type.name in ("text", "str", "path"):
+                found.append((name, param))
+    walk(typer.main.get_command(cli.app), "")
+    return found
+
+
+def _invocation(command: str, param, value: str) -> list:
+    """The command with `value` for one parameter, and a value that is not
+    empty for every argument before it."""
+    words = command.split()
+    if param.param_type_name == "option":
+        return [*words, param.opts[0], value]
+    group = __import__("typer.main", fromlist=["get_command"]).get_command(cli.app)
+    for word in words:
+        group = group.commands[word]
+    arguments = [p for p in group.params if p.param_type_name == "argument"]
+    return [*words, *("x" if p.name != param.name else value for p in arguments)]
+
+
+def _shown(param) -> str:
+    return " / ".join(word for word in param.opts if word.startswith("--")) or (param.metavar or param.name.upper())
+
+
+PARAMETERS = _parameters()
+
+
+def test_the_parameters_are_found_from_the_app():
+    names = {(command, _shown(param)) for command, param in PARAMETERS}
+    assert len(PARAMETERS) >= 85
+    assert {("builders-import", "--options"), ("builders-import", "--caslib"), ("load-facts", "--caslib"),
+            ("load-releases", "--caslib"), ("content-deploy", "--compute-context"), ("package-export", "--name"),
+            ("credentials-apply", "--identity-type"), ("provider check", "ADAPTER_ID")} <= names
+
+
+@pytest.mark.parametrize("value", ["", " ", "\t"])
+@pytest.mark.parametrize("command, param", PARAMETERS, ids=[f"{c}:{_shown(p)}" for c, p in PARAMETERS])
+def test_an_empty_value_of_a_path_or_a_name_is_refused_with_exit_code_2(monkeypatch, tmp_path, command, param,
+                                                                        value):
+    """review-21b: the class 'an empty value is read as not given' was not
+    closed - `builders-import --options ""` read `.`, an empty --caslib
+    loaded into Public, an empty --compute-context or --name fell back to the
+    default; `credentials-add --only` with a tab was not refused as empty.
+    Every parameter that takes a text or a path refuses it, before the
+    command does anything, with exit code 2 - but the two whose value is the
+    text itself."""
+    monkeypatch.chdir(tmp_path)
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=out, width=1000, force_terminal=False))
+    def ran():
+        raise AssertionError("the command ran")
+    monkeypatch.setattr(cli, "Context", ran)
+    monkeypatch.setattr(cli, "_viya_session", ran)
+    result = CliRunner().invoke(cli.app, _invocation(command, param, value))
+    said = out.getvalue()
+    if (command, _shown(param)) in cli._TEXT_ITSELF:
+        assert "is empty" not in said
+        return
+    assert result.exit_code == 2 and isinstance(result.exception, SystemExit), (result.output, said)
+    if (command, _shown(param)) == ("content-deploy", "--only"):
+        # rich prints a tab as blanks up to the next tab stop
+        assert said.startswith('--only "') and '" names no path of the manifest: an empty value' in said, said
+    else:
+        line = ("--content-root is empty - what a variable of the shell that is not set gives. "
+                if _shown(param) == "--content-root" else
+                f"{_shown(param)} is empty - what a variable of the shell that is not set gives - and names no ")
+        assert said.startswith(line), said
+    assert said.count("\n") == 1, said
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("command", ["options-save", "options-restore"])
+def test_options_save_and_restore_refuse_a_folder_with_one_exit_code(monkeypatch, tmp_path, command):
+    """review-21b: `--file .` ended options-save with exit code 2 and
+    options-restore with exit code 1."""
+    from types import SimpleNamespace
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=REPOSITORY))
+    monkeypatch.setattr(cli, "_viya_session", lambda: pytest.fail("signed in"))
+    result = CliRunner().invoke(cli.app, [command, "--file", "."])
+    assert result.exit_code == 2
+
+
+def test_builders_import_refuses_an_options_file_that_is_a_folder(monkeypatch, tmp_path):
+    """review-21b: `builders-import --options .` said '. not found - run `mdb
+    options-save --file .` first', a command that is refused."""
+    from types import SimpleNamespace
+    out = io.StringIO()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "saved").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "console", Console(file=out, width=1000, force_terminal=False))
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=REPOSITORY))
+    monkeypatch.setattr(cli, "_content_manifest", lambda ctx, check_sources=True: SimpleNamespace(
+        package_path=tmp_path / "package.json", content_root="/SAS Agentic AI Accelerator"))
+    monkeypatch.setattr(cli, "_viya_session", lambda: pytest.fail("signed in"))
+    result = CliRunner().invoke(cli.app, ["builders-import", "package.json", "--options", "saved"])
+    assert result.exit_code == 2 and out.getvalue() == "saved is a folder, not an options file.\n", out.getvalue()

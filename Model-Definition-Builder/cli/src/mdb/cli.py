@@ -21,6 +21,7 @@ from rich.console import Console
 from rich.prompt import Confirm as _RichConfirm, Prompt as _RichPrompt
 from rich.table import Table
 from rich.text import Text
+from typer.core import TyperGroup
 
 from . import __version__
 from .core import drift, facts
@@ -39,6 +40,67 @@ from .core.validator import validate_all, validate_folder
 from .providers import load_adapters
 from .providers.base import CatalogModel, ProviderAdapter, slugify
 
+#: The parameters whose value is a text that is used as it is, an empty one included - neither a path nor a name.
+_TEXT_ITSELF = {("test", "--prompt"), ("test", "--system")}
+
+#: What a parameter names, for the line that refuses it empty, where that is not its own name: by the name of the
+#: parameter, or by (command, name of the parameter).
+_NAMES_NO = {
+    **dict.fromkeys(("manifest", "file", "env_file", "keys_file", "source", "options", "changelog", "csv",
+                     "packages", "files", ("package-export", "out")), "file"),
+    "out": "folder", "domain": "credential domain", "caslib": "CAS library", "report_caslib": "CAS library",
+    "server": "CAS server", "ids": "model id", "only": "entry name", "to": "target",
+}
+
+
+def _refuse_empty_values(command, name: str) -> None:
+    """Every parameter of a command - and of the commands of a group - that
+    takes a text or a path, an option or an argument, refuses an empty value
+    and one of blanks alone, with exit code 2 and one line, before the
+    command does anything: all but the two of _TEXT_ITSELF, whose empty
+    value is used as it is. Read as not given, such a value is the default -
+    the file, the folder, the library a site works with - so a command typed
+    for another one with a variable of the shell that is not set would read
+    or write that. The value is looked at as it was typed, before a path
+    type makes `.` of an empty one."""
+    for sub_name, sub in getattr(command, "commands", {}).items():
+        _refuse_empty_values(sub, f"{name} {sub_name}")
+    for param in getattr(command, "params", ()):
+        option = " / ".join(word for word in param.opts if word.startswith("--")) or (
+            param.metavar or param.name.upper())
+        if getattr(param, "is_flag", False) or param.type.name not in ("text", "str", "path") \
+                or (name, option) in _TEXT_ITSELF or getattr(param, "_mdb_refuses_empty", False):
+            continue
+
+        def checked(ctx, value, _process=param.process_value, _param=param, _option=option):
+            for given in value if isinstance(value, (list, tuple)) else (value,):
+                if isinstance(given, str) and not given.strip():
+                    _refuse_empty(name, _param.name, _option, given)
+            return _process(ctx, value)
+
+        param.process_value = checked
+        param._mdb_refuses_empty = True
+
+
+def _refuse_empty(command: str, name: str, option: str, value: str) -> None:
+    """The line that refuses an empty value of one parameter, and exit code 2."""
+    if name == "content_root":
+        _given_root(value)
+    if (command, name) == ("content-deploy", "only"):
+        _no_manifest_path(value)
+    _not_empty(option, value, _NAMES_NO.get((command, name)) or _NAMES_NO.get(name) or name.replace("_", " "))
+
+
+class _Commands(TyperGroup):
+    """The commands of mdb, each with `_refuse_empty_values`."""
+
+    def get_command(self, ctx, cmd_name):
+        command = super().get_command(ctx, cmd_name)
+        if command is not None:
+            _refuse_empty_values(command, cmd_name)
+        return command
+
+
 # pretty_exceptions_show_locals: with the default of typer 0.12.0 - the lowest version pyproject.toml allows - a
 # traceback prints the locals of every frame, and those of the credentials commands hold the values they write
 app = typer.Typer(
@@ -47,6 +109,7 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
     context_settings={"help_option_names": ["-h", "--help"]},
+    cls=_Commands,
     pretty_exceptions_show_locals=False,
 )
 #: The control characters a terminal may act on that rich leaves in a text: every C0 character but the tab and
@@ -1430,7 +1493,7 @@ def options_restore(
     path = Path(_not_empty("--file", file, "file"))
     if path.is_dir():
         console.print(f"[red]{_plain(file)} is a folder, not an options file.[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(2)
     if not path.exists():
         save = "mdb options-save" + _given_file("--file", file, OPTIONS_FILE) + _given("--content-root", content_root)
         console.print(f"[red]{_plain(file)} not found - run `{_plain(save)}` first.[/red]")
@@ -1684,6 +1747,16 @@ def _given_root(content_root: Optional[str]) -> Optional[str]:
     return content_root
 
 
+def _no_manifest_path(path: str) -> None:
+    """The refusal of an --only of `mdb content-deploy` that names no path:
+    read as not given, such a value selects every entry of the manifest -
+    release.json with them."""
+    console.print(f'--only "{path}" names no path of the manifest: an empty value - what a variable of the shell '
+                  "that is not set gives - or nothing but slashes. Nothing was deployed. Without --only every entry "
+                  "is deployed.", style="red", markup=False, highlight=False, soft_wrap=True)
+    raise typer.Exit(2)
+
+
 def _deploy_settings(content_root_given: Optional[str], compute_context: Optional[str]) -> dict:
     """The values a deploy or an import writes into every job definition that
     has the parameter, by its name: the compute context where one was given,
@@ -1810,13 +1883,8 @@ def content_deploy(
         console.print(_ROOT_NOT_A_FOLDER, style="red", markup=False, highlight=False)
         raise typer.Exit(2)
     for path in only or []:
-        if not path.strip("/"):
-            # read as not given, such a value selects every entry of the manifest - release.json with them
-            console.print(f'--only "{path}" names no path of the manifest: an empty value - what a variable '
-                          "of the shell that is not set gives - or nothing but slashes. Nothing was deployed. "
-                          "Without --only every entry is deployed.", style="red", markup=False,
-                          highlight=False, soft_wrap=True)
-            raise typer.Exit(2)
+        if not path.strip().strip("/"):
+            _no_manifest_path(path)
     only = [path.strip("/") for path in only or []]
     for path in only:
         if not selected(manifest, [path])[1] and manifest.find(path, "folder") is None:
@@ -2228,9 +2296,9 @@ def _import_command(packages, options, caslib, table, server, no_releases: bool,
     that tells an admin to run it again - every option of the command but
     --dry-run, after which no such line is printed. An argument that was not
     given is left out, so the repeat reads the same environment the first
-    run did - and so is an empty --caslib, --report-caslib, --table or
-    --server, which the run reads as not given, and an --out that names the
-    current directory, which is its default."""
+    run did - and so is an --out that names the current directory, which is
+    its default. An empty value never gets this far: the command refuses it
+    (`_refuse_empty_values`)."""
     words = ["mdb", "builders-import", *(_shell_word(path) for path in packages or [])]
     if options is not None:
         words += ["--options", _shell_word(options)]
@@ -2579,6 +2647,9 @@ def builders_import(
         raise typer.Exit(2)
     saved = None
     if options is not None:
+        if options.is_dir():
+            console.print(f"[red]{_plain(options)} is a folder, not an options file.[/red]")
+            raise typer.Exit(2)
         if not options.is_file():
             save = "mdb options-save" + _given("--file", options, OPTIONS_FILE) \
                 + _given("--content-root", content_root)
