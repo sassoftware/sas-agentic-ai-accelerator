@@ -557,6 +557,7 @@
     "ragBuilderRunDone": "Ingestion-Lauf abgeschlossen - sehen Sie sich die Meilensteine an und durchsuchen Sie den Ledger.",
     "ragBuilderRunDoneWithFailures": "Ingestion-Lauf abgeschlossen, aber {count} Dokument(e) sind fehlgeschlagen und nicht in der Collection - das Ledger nennt jedes davon mit seinem Fehler.",
     "ragBuilderRunFailed": "Der Ingestion-Lauf war nicht erfolgreich - der Grund steht in den Meilensteinen/im Log.",
+    "ragBuilderRunLost": "Der Zustand dieses Laufs konnte dreimal nacheinander nicht aus SAS Job Execution gelesen werden; er wird hier nicht mehr verfolgt. Er kann noch laufen: Sehen Sie sich den Job in SAS Job Execution an, bevor Sie die Ingestion erneut starten.",
     "ragBuilderRunLaunchError": "Der Start des Ingestion-Jobs ist fehlgeschlagen - prüfen Sie die Browser-Konsole.",
     "ragBuilderJobSourceMissing": "Ingest-Documents.sas wurde unter dem Content-Root nicht gefunden - führen Sie zuerst das deploy-rag-content-Skript aus.",
     "ragBuilderJobFolderError": "Der Ordner {folder} konnte nicht angelegt oder erreicht werden - prüfen Sie den Pfad und Ihre Berechtigungen. Die erste Ebene des Pfads muss bereits existieren.",

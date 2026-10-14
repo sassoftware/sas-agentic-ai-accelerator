@@ -557,6 +557,7 @@
     "ragBuilderRunDone": "Ingestion run completed - see the milestones and browse the ledger.",
     "ragBuilderRunDoneWithFailures": "Ingestion run completed, but {count} document(s) failed and are not in the collection - the ledger names each of them with its error.",
     "ragBuilderRunFailed": "The ingestion run did not succeed - see the milestones/log for the reason.",
+    "ragBuilderRunLost": "The state of this run could not be read from SAS Job Execution three times in a row, so it is no longer followed here. It may still be running: look at the job in SAS Job Execution before you launch the ingestion again.",
     "ragBuilderRunLaunchError": "Launching the ingestion job failed - check the browser console.",
     "ragBuilderJobSourceMissing": "Ingest-Documents.sas was not found under the content root - run the deploy-rag-content script first.",
     "ragBuilderJobFolderError": "The folder {folder} could not be created or reached - check the path and your permissions on it. The first level of the path has to exist already.",

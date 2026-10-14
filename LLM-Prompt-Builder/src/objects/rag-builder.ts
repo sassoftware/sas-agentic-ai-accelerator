@@ -3466,10 +3466,16 @@ export async function buildRagBuilder(
         runMilestones.appendChild(item);
       }
     };
+    // Polls that failed one after the other. A job whose state cannot be read
+    // - its record is gone, the service refuses it - would keep Launch off
+    // for this setup until the page is reloaded; after the third such poll
+    // the run is no longer followed, and the card says why and what to do.
+    let failedPolls = 0;
     const poll = async (): Promise<void> => {
       try {
         const current = await getJob(jobId);
         if (!shown()) return;
+        failedPolls = 0;
         const state = String(current.state ?? 'running');
         setRunBadge(state);
         runStateText.textContent = `${str('ragBuilderRunStateLabel', 'State:')} ${state}`;
@@ -3535,6 +3541,18 @@ export async function buildRagBuilder(
         }
       } catch (error) {
         console.debug('RAG Builder: ingestion poll failed', error);
+        if (!shown()) return;
+        failedPolls += 1;
+        if (failedPolls < 3) return;
+        stopPolling();
+        stopRunClock();
+        runClock.textContent = '';
+        if (ingestionRuns.get(setupID) === run) ingestionRuns.delete(setupID);
+        updateLaunchState();
+        runNote.textContent = str(
+          'ragBuilderRunLost',
+          'The state of this run could not be read from SAS Job Execution three times in a row, so it is no longer followed here. It may still be running: look at the job in SAS Job Execution before you launch the ingestion again.'
+        );
       }
     };
     pollTimer = window.setInterval(() => void poll(), 5000);
