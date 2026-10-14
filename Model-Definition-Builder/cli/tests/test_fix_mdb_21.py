@@ -401,6 +401,44 @@ def test_a_content_root_that_is_no_folder_is_named_so(monkeypatch, tmp_path, com
                               "itself, the root of SAS Content.\n")
 
 
+#: An answer of a server or of a model with what a terminal acts on: clear the screen, move the cursor, set the
+#: title (OSC ... BEL), the C1 CSI byte, NUL, DEL.
+ESCAPES = "refused \x1b[2J\x1b[1;1H \x1b]0;owned\x07 tail \x9b31m \x00 \x7f [/red] done"
+
+
+def test_a_value_reaches_the_terminal_without_a_control_character():
+    """gate-21a N1, review-21a: ESC, an OSC title sequence, the C1 CSI byte,
+    NUL and DEL of a value reached the terminal, with markup on and off, in
+    a table cell and with force_terminal; rich takes out the bell only, so
+    an OSC sequence lost its end and swallowed what followed."""
+    import io
+    from rich.table import Table
+    from mdb import cli
+    kept = "refused [2J[1;1H ]0;owned tail 31m   [/red] done"
+    for terminal in (False, True):
+        console = cli._Console(file=io.StringIO(), width=1000, force_terminal=terminal, emoji=False,
+                               color_system=None)
+        console.print(f"[red]{cli._plain(ESCAPES)}[/red]", highlight=False, soft_wrap=True)
+        console.print(ESCAPES, markup=False, highlight=False, soft_wrap=True)
+        table = Table(title=cli._plain(ESCAPES))
+        table.add_column("Value")
+        table.add_row(cli._plain(ESCAPES))
+        console.print(table)
+        printed = console.file.getvalue()
+        assert not cli._CONTROL.search(printed.replace("\n", "")), repr(printed)
+        assert printed.count(kept) == 4, repr(printed)
+    # the console of mdb is one of these, and a prompt reads its question without them
+    assert type(cli.console) is cli._Console
+    shown = cli._Console(file=io.StringIO(), width=1000, force_terminal=False, emoji=False)
+    assert cli.Prompt.ask(f"Delete '{cli._plain(ESCAPES)}'?", console=shown, stream=io.StringIO("x\n")) == "x"
+    assert shown.file.getvalue().startswith(f"Delete '{kept}'?")
+    # --json output keeps them, as escapes
+    shown = cli._Console(file=io.StringIO(), width=1000, force_terminal=False, emoji=False)
+    shown.print_json(json.dumps([ESCAPES, "Grüne"]))
+    assert not cli._CONTROL.search(shown.file.getvalue().replace("\n", ""))
+    assert json.loads(shown.file.getvalue()) == [ESCAPES, "Grüne"]
+
+
 def test_the_requests_of_apply_name_the_identity_whole(mdb):
     mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: 'Sales#EMEA'}\n"
                         "  - {type: group, id: '../x', state: absent}\n", encoding="utf-8")

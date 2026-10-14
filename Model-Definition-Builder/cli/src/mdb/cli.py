@@ -46,19 +46,48 @@ app = typer.Typer(
     add_completion=False,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+#: The control characters a terminal may act on that rich leaves in a text: every C0 character but the tab and
+#: the line end, DEL and the C1 range. rich itself takes out the carriage return, the bell, the backspace, the
+#: vertical tab and the form feed; an ESC, the C1 CSI byte or a NUL of an answer of a server or of a model went
+#: to the terminal, which acted on it (gate-21a N1, review-21a).
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _printable(text: str) -> str:
+    """A text without the control characters of `_CONTROL`."""
+    return _CONTROL.sub("", text)
+
+
+class _Console(Console):
+    """The console of mdb: every text it is handed - a line with markup on
+    or off, a table cell, a title - is turned into rich's own text here, and
+    loses its control characters (`_printable`) first."""
+
+    def render_str(self, text: str, *args, **options):
+        return super().render_str(_printable(text), *args, **options)
+
+    def print_json(self, *args, **options) -> None:
+        """--json output is JSON: a control character of a value stays in it,
+        written as an escape (`\\u001b`). rich writes the C0 range so
+        already; DEL and the C1 range only where every character outside
+        ASCII is written so."""
+        options["ensure_ascii"] = True
+        super().print_json(*args, **options)
+
+
 # emoji off: rich otherwise prints a `:name:` in any text as a picture - `urn:id:1` as `urn` + a sign + `1` -,
 # also in a line that is printed with markup off
-console = Console(emoji=False)
+console = _Console(emoji=False)
 
 
 class _EmojiOff:
     """A prompt of rich reads the text it is handed with emoji on, whatever
     the console says. The two prompts of mdb read it with emoji off, as
-    its console does."""
+    its console does, and without control characters."""
 
     def __init__(self, prompt="", **options) -> None:
         if isinstance(prompt, str):
-            prompt = Text.from_markup(prompt, style="prompt", emoji=False)
+            prompt = Text.from_markup(_printable(prompt), style="prompt", emoji=False)
         super().__init__(prompt, **options)
 
 
