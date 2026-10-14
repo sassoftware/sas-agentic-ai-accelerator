@@ -35,6 +35,7 @@
  * The mock is found at VERIFY_BASE (default http://localhost:4173).
  */
 const { chromium } = require('playwright');
+const fetch = require('./mock-fetch.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const results = [];
@@ -73,6 +74,8 @@ const MANIFEST_BOX = lpb('pet-save-result');
   let pageErrors = [];
   const newPage = async ({ clock = false } = {}) => {
     const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
+    // A loaded machine can take longer than Playwright's 30 s to load the page.
+    page.setDefaultNavigationTimeout(180000);
     page.on('pageerror', (e) => {
       pageErrors.push(e.message);
       console.log('[pageerror]', e.message);
@@ -680,9 +683,13 @@ const MANIFEST_BOX = lpb('pet-save-result');
     await openPage(page, 'rag');
     await openSetup(page, 'rag-setup-1');
     await goStep(page, 'RGB', 'store');
+    // Manifest setup is off until the stored setup is read, and page.click
+    // waits for that: a click before it manifested the defaults, which the
+    // validation refused, and the flow line was missing on its own setup.
     await page.click(rgb('manifest'));
     await waitUntil(() => manifestEnded(page), 'the manifest has ended', 60000);
     await atRest();
+    const said = await textOf(page, rgb('save-result'));
     const line = /Studio flow: RAG Ingest - Policy Handbook/;
     const own = await textOf(page, rgb('pane-store'));
     await choose(page, 'RGB', rgb('setup'), 'rag-setup-ss');
@@ -691,7 +698,7 @@ const MANIFEST_BOX = lpb('pet-save-result');
     const created = await textOf(page, rgb('pane-store'));
     step(
       line.test(own) && !/Studio flow: RAG Ingest/.test(other) && !/Studio flow: RAG Ingest/.test(created),
-      `Store & output: the line that names the flow of a manifest stands on its setup only - not on another one opened next, nor on a new one (own: ${line.test(own)}; another: ${/Studio flow: RAG Ingest/.test(other)}; new: ${/Studio flow: RAG Ingest/.test(created)})`
+      `Store & output: the line that names the flow of a manifest stands on its setup only - not on another one opened next, nor on a new one (own: ${line.test(own)}; another: ${/Studio flow: RAG Ingest/.test(other)}; new: ${/Studio flow: RAG Ingest/.test(created)}; the manifest said: "${clip(said)}")`
     );
   });
 

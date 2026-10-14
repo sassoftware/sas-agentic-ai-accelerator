@@ -33,6 +33,7 @@
  * sections that ran, so a partial run cannot pass for a full one.
  */
 const { chromium } = require('playwright');
+const fetch = require('./mock-fetch.cjs');
 const { resolvePython, compilePython, evaluateInModule } = require('./python-check.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
@@ -200,6 +201,8 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
   const pageErrors = [];
   const newPage = async () => {
     const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
+    // A loaded machine can take longer than Playwright's 30 s to load the page.
+    page.setDefaultNavigationTimeout(180000);
     page.on('pageerror', (e) => {
       pageErrors.push(e.message);
       console.log('[pageerror]', e.message);

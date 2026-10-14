@@ -13,6 +13,7 @@
  */
 const crypto = require('crypto');
 const { chromium } = require('playwright');
+const fetch = require('./mock-fetch.cjs');
 const { resolvePython, compilePython, callScoreModel, withoutTlsDefault, expectedTlsVerify, tlsVerifyOf } = require('./python-check.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');

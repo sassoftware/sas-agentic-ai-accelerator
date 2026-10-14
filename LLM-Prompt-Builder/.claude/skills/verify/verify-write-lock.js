@@ -44,6 +44,7 @@
  * VERIFY_BASE (default http://localhost:4173).
  */
 const { chromium } = require('playwright');
+const fetch = require('./mock-fetch.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const results = [];
@@ -206,6 +207,8 @@ function writeButtonsInSource(text) {
   const dialogs = [];
   const newPage = async () => {
     const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
+    // A loaded machine can take longer than Playwright's 30 s to load the page.
+    page.setDefaultNavigationTimeout(180000);
     page.on('pageerror', (e) => {
       pageErrors.push(e.message);
       console.log('[pageerror]', e.message);
@@ -336,7 +339,9 @@ function writeButtonsInSource(text) {
         quietSince = quietSince || Date.now();
         if (Date.now() - quietSince >= 600) break;
       }
-      if (Date.now() - started > 90000) throw new Error('the write did not end');
+      // Longer than the two minutes after which the page gives a request up,
+      // which a loaded machine can reach.
+      if (Date.now() - started > 300000) throw new Error('the write did not end');
       await sleep(60);
     }
     await page.unroute('**/*', hold.handler);
@@ -378,25 +383,41 @@ function writeButtonsInSource(text) {
         .map((match) => match[1])
     ),
   ];
+  // How long an attempt waits for its control. DURING a write a short time:
+  // the control is to stay disabled, and Playwright would wait for it to be
+  // enabled, i.e. for the write to end. AFTER the write the control is to be
+  // usable, and a loaded machine may take seconds to draw it.
+  const DURING = 500;
+  const AFTER = 30000;
   // As a person chooses an entry: the search field that stands in for the
   // list, then the entry in the list it opens.
-  const pickAsAPerson = async (page, select, value) => {
+  const pickAsAPerson = async (page, select, value, timeout = DURING) => {
     try {
-      await page.click(`${select}-combobox`, { timeout: 500 });
-      await page.click(`${select}-combobox-list .dropdown-item[data-value="${value}"]`, { timeout: 500 });
+      await page.click(`${select}-combobox`, { timeout });
+      await page.click(`${select}-combobox-list .dropdown-item[data-value="${value}"]`, { timeout });
       return true;
     } catch {
       return false;
     }
   };
   // As a person chooses a kind: a click on its card.
-  const clickCard = async (page, radio) => {
+  const clickCard = async (page, radio, timeout = DURING) => {
     try {
-      await page.click(`label[for="${radio}"]`, { timeout: 500 });
+      await page.click(`label[for="${radio}"]`, { timeout });
     } catch {
       /* the card took no click */
     }
     return page.$eval(`#${radio}`, (element) => element.checked);
+  };
+  // What a check after a write reads once the page has drawn it - or, when it
+  // never does, after `timeout`: the check then fails with what is there.
+  const eventually = async (read, timeout = AFTER) => {
+    const start = Date.now();
+    for (;;) {
+      const value = await read();
+      if (value || Date.now() - start > timeout) return value;
+      await sleep(200);
+    }
   };
 
   // ============================================================================
@@ -445,9 +466,9 @@ function writeButtonsInSource(text) {
   };
   const openPromptTestIs = (page) => valueOf(page, '#LPB-prompt-dropdown');
   // The other prompt-test a person reaches for while a write is out.
-  const reachForAnotherPromptTest = (page, modelId = 'model-free') => async () => {
+  const reachForAnotherPromptTest = (page, modelId = 'model-free', timeout = DURING) => async () => {
     await goStep(page, 'LPB', 'setup');
-    return pickAsAPerson(page, '#LPB-prompt-dropdown', modelId);
+    return pickAsAPerson(page, '#LPB-prompt-dropdown', modelId, timeout);
   };
   // The runs SAS Model Manager holds for the fixture prompt-test.
   const storedRows = async () => (await (await fetch(BASE + '/files/files/trk-1/content')).json()).length;
@@ -478,8 +499,9 @@ function writeButtonsInSource(text) {
       `Save Experiments: the note that the experiments are saved stands beside the button of the prompt-test they were saved for (open: ${seen.openAfter}, note: "${clip(note)}")`
     );
     usableAgain(seen, 'Save Experiments', ['the prompt-test list', 'Create prompt-test', 'Delete prompt-test']);
-    const now = await reachForAnotherPromptTest(page)();
+    const now = await reachForAnotherPromptTest(page, 'model-free', AFTER)();
     await atRest();
+    await eventually(async () => (await openPromptTestIs(page)) === 'model-free');
     step(
       now && (await openPromptTestIs(page)) === 'model-free' && (await textOf(page, lpb('pet-save-only-result'))) === '',
       `Save Experiments: the same attempt then opens the other prompt-test, which shows no note of that save (got there: ${now}, open: ${await openPromptTestIs(page)}, note: "${clip(await textOf(page, lpb('pet-save-only-result')))}")`
@@ -570,7 +592,8 @@ function writeButtonsInSource(text) {
     await openPromptBuilder(page, 'decision');
     await choosePromptProject(page, 'proj-2');
     await openPromptTest(page, 'model-dec');
-    const runs = await savedRuns(page);
+    // The runs are drawn a moment after the last answer of the opening.
+    const runs = await eventually(() => savedRuns(page));
     await goStep(page, 'LPB', 'finalize');
     const label = await textOf(page, lpb('pet-create-model-button'));
     const seen = await probe(page, {
@@ -620,8 +643,9 @@ function writeButtonsInSource(text) {
       `Delete prompt-test: the prompt-test is deleted and has left the list, and no prompt-test is open (deleted: ${deletes.join(', ') || 'none'}, picker: "${after}", runs on the page: ${await savedRuns(page)})`
     );
     usableAgain(seen, 'Delete prompt-test', ['the prompt-test list', 'Create prompt-test', 'Delete project']);
-    const now = await reachForAnotherPromptTest(page, 'model-used')();
+    const now = await reachForAnotherPromptTest(page, 'model-used', AFTER)();
     await atRest();
+    await eventually(async () => (await openPromptTestIs(page)) === 'model-used' && (await savedRuns(page)) > 0);
     step(now && (await openPromptTestIs(page)) === 'model-used' && (await savedRuns(page)) > 0, `Delete prompt-test: the same attempt then opens the other prompt-test with its runs (got there: ${now}, open: ${await openPromptTestIs(page)}, runs: ${await savedRuns(page)})`);
   });
 
@@ -661,8 +685,9 @@ function writeButtonsInSource(text) {
       `Delete project: its prompt-test and the project are deleted, the project has left the list and none is chosen (deleted: ${deletes.join(', ') || 'none'}, picker: "${after}")`
     );
     usableAgain(seen, 'Delete project', ['Create prompt-test']);
-    const now = await pickAsAPerson(page, '#LPB-project-dropdown', 'proj-1');
+    const now = await pickAsAPerson(page, '#LPB-project-dropdown', 'proj-1', AFTER);
     await atRest();
+    await eventually(async () => (await openProject()) === 'proj-1' && (await listed(page, '#LPB-prompt-dropdown', 'model-used')));
     step(now && (await openProject()) === 'proj-1' && (await listed(page, '#LPB-prompt-dropdown', 'model-used')), `Delete project: the same attempt then chooses the other project and lists its prompt-tests (got there: ${now}, project: ${await openProject()})`);
   });
 
@@ -818,9 +843,9 @@ function writeButtonsInSource(text) {
     return id;
   };
   const openSetupIs = (page) => valueOf(page, rgb('setup'));
-  const reachForAnotherSetup = (page, setupId = 'rag-setup-2') => async () => {
+  const reachForAnotherSetup = (page, setupId = 'rag-setup-2', timeout = DURING) => async () => {
     await goStep(page, 'RGB', 'setup');
-    return pickAsAPerson(page, rgb('setup'), setupId);
+    return pickAsAPerson(page, rgb('setup'), setupId, timeout);
   };
   // What the result box beside Save setup and Manifest setup says.
   const saveResult = async (page) => ({
@@ -853,8 +878,9 @@ function writeButtonsInSource(text) {
       `Save setup: the note that the setup is saved stands on the setup that was saved (open: ${seen.openAfter}, note: "${clip(note.text)}")`
     );
     usableAgain(seen, 'Save setup', ['the setup list', 'Create setup', 'Delete setup']);
-    const now = await reachForAnotherSetup(page)();
+    const now = await reachForAnotherSetup(page, 'rag-setup-2', AFTER)();
     await atRest();
+    await eventually(async () => (await openSetupIs(page)) === 'rag-setup-2');
     step(
       now && (await openSetupIs(page)) === 'rag-setup-2' && (await saveResult(page)).text === '',
       `Save setup: the same attempt then opens the other setup, which shows no note of that save (got there: ${now}, open: ${await openSetupIs(page)}, note: "${clip((await saveResult(page)).text)}")`
@@ -963,8 +989,9 @@ function writeButtonsInSource(text) {
       `Delete setup: the setup is deleted and has left the list, and no setup is open (deleted: ${deletes.join(', ') || 'none'}, picker: "${after}", editor shown: ${editorShown})`
     );
     usableAgain(seen, 'Delete setup', ['the setup list', 'Create setup', 'Delete project']);
-    const now = await reachForAnotherSetup(page, 'rag-setup-1')();
+    const now = await reachForAnotherSetup(page, 'rag-setup-1', AFTER)();
     await atRest();
+    await eventually(async () => (await openSetupIs(page)) === 'rag-setup-1' && (await valueOf(page, rgb('tables-prefix'))) === 'RAGDEMO');
     step(now && (await openSetupIs(page)) === 'rag-setup-1' && (await valueOf(page, rgb('tables-prefix'))) === 'RAGDEMO', `Delete setup: the same attempt then opens the other setup with its configuration (got there: ${now}, open: ${await openSetupIs(page)}, table prefix: ${await valueOf(page, rgb('tables-prefix'))})`);
   });
 
@@ -1003,8 +1030,9 @@ function writeButtonsInSource(text) {
       `Delete project (RAG): its setup and the project are deleted, the project has left the list and none is chosen (deleted: ${deletes.join(', ') || 'none'}, picker: "${after}")`
     );
     usableAgain(seen, 'Delete project (RAG)', ['Create setup']);
-    const now = await pickAsAPerson(page, rgb('project'), 'rag-proj');
+    const now = await pickAsAPerson(page, rgb('project'), 'rag-proj', AFTER);
     await atRest();
+    await eventually(async () => (await openProject()) === 'rag-proj' && (await listed(page, rgb('setup'), 'rag-setup-1')));
     step(now && (await openProject()) === 'rag-proj' && (await listed(page, rgb('setup'), 'rag-setup-1')), `Delete project (RAG): the same attempt then chooses the other project and lists its setups (got there: ${now}, project: ${await openProject()})`);
   });
 

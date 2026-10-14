@@ -77,6 +77,7 @@
  * http://localhost:4173).
  */
 const { chromium } = require('playwright');
+const fetch = require('./mock-fetch.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const results = [];
@@ -323,6 +324,8 @@ function same(got, wanted, label, fieldsOnly = false) {
   const dialogs = [];
   const newPage = async () => {
     const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
+    // A loaded machine can take longer than Playwright's 30 s to load the page.
+    page.setDefaultNavigationTimeout(180000);
     page.on('pageerror', (e) => {
       pageErrors.push(e.message);
       console.log('[pageerror]', e.message);
@@ -457,7 +460,12 @@ function same(got, wanted, label, fieldsOnly = false) {
     await page.fill(nameField, 'never created');
     await page.click(`${modal} .btn-secondary`);
     await page.waitForSelector('.modal.show', { state: 'detached' });
-    await page.fill(nameField, '');
+    // The field is emptied by script, as `fill` would do it: once the dialog
+    // has faded out it is hidden, and `fill` waits for a field to be visible.
+    await page.$eval(nameField, (field) => {
+      field.value = '';
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    });
   };
   const lpb = (suffix) => `#app-obj-LPB-${suffix}`;
   // Choose an entry of a list that a search field stands in for on the page:

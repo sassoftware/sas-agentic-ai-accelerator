@@ -89,6 +89,7 @@
  *     `all-keys`.
  */
 const { chromium } = require('playwright');
+const fetch = require('./mock-fetch.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const VERBOSE = process.env.VERIFY_VERBOSE === '1';

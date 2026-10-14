@@ -62,6 +62,13 @@ const waitFor = async (wanted) => {
   const unknown = wanted.filter((name) => !SUITES.includes(name));
   if (unknown.length) throw new Error(`unknown suite: ${unknown.join(', ')} (there are: ${SUITES.join(', ')})`);
   const suites = wanted.length ? wanted : SUITES;
+  // A suite that sends requests to its mock from Node takes fetch from
+  // mock-fetch.cjs, which sends a request that got no answer again.
+  const bare = SUITES.filter((suite) => {
+    const text = fs.readFileSync(path.join(SKILL, `${suite}.js`), 'utf8');
+    return /(?<![.\w])fetch\(/.test(text) && !text.includes("const fetch = require('./mock-fetch.cjs');");
+  });
+  if (bare.length) throw new Error(`${bare.join(', ')} send requests to the mock without mock-fetch.cjs - add "const fetch = require('./mock-fetch.cjs');"`);
   if (suites.some(NEEDS_MOCK)) {
     try {
       require.resolve('playwright', { paths: [WORK] });

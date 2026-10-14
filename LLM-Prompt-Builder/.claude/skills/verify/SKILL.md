@@ -28,6 +28,14 @@ output is in `out-<suite>.log`, the mock's in `mock-<suite>.log`. Suite names
 as arguments run a subset (`run-all.cjs verify-rag verify-options`). The exit
 code is 1 when a suite failed or stopped before its summary.
 
+A suite sends its requests to the mock from Node through `mock-fetch.cjs`
+(`const fetch = require('./mock-fetch.cjs');`), which sends a request that
+got no answer again, up to three times: on a loaded machine Node's fetch can
+fail ("fetch failed") on a request that checks nothing of the page.
+`run-all.cjs` refuses a suite that calls `fetch(` without it. The pages that
+`verify-new-item.js`, `verify-outcomes.js`, `verify-rag.js`, `verify-reads.js`
+and `verify-write-lock.js` open wait up to 180 s for a navigation.
+
 The committed `dist/index.html` must equal a fresh build, or the
 `verify-prompt-builder.yml` CI check fails: after the last source change run
 `npm run build` and commit the bundle with it. No CI job runs these suites.
@@ -93,8 +101,8 @@ group still needs a look in a real report.
 
 ## By hand
 
-1. Copy `mock-server.js`, the suites and `python-check.cjs` into a scratch
-   folder, the `.js` files renamed to `.cjs`: the harness is CommonJS, and
+1. Copy `mock-server.js`, the suites, `python-check.cjs` and `mock-fetch.cjs`
+   into a scratch folder, the `.js` files renamed to `.cjs`: the harness is CommonJS, and
    `LLM-Prompt-Builder/package.json` declares `"type": "module"`, so running it
    in place fails. (`verify-locales.js` and `verify-tokens.js` are the
    exception - they run where they lie:
