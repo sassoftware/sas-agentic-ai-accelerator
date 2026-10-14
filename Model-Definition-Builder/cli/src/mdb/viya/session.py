@@ -113,8 +113,10 @@ def _address_problem(url: str) -> str:
       and asks `host://host:8443/...`. A host alone it takes as https.
     * A port that is no number from 1 to 65535 was dropped, and the default
       port was asked.
-    * A scheme other than https or http has no connection.
-    * An IPv6 address in brackets loses its brackets in sasctl."""
+    * A scheme other than https or http: sasctl sends with requests, which
+      connects for these two alone.
+    * An IPv6 address in brackets: sasctl takes the host without its
+      brackets and builds an address from it that names no host."""
     if "://" not in url:
         return "it holds a colon, and no scheme (https://) stands in front of the host" if ":" in url else ""
     try:
@@ -363,9 +365,10 @@ def _token_address_status(exc: Exception):
     """The HTTP status the token address answered with, where an exception
     is the HTTPError of requests for an answer of that address that is no
     401 - a 500, a 503, a 400, a 403, a 429 - and None for anything else.
-    Such an answer is no refused sign-in: it says nothing about the
-    credentials, and no repeat is known to change it. It ends a command
-    with one line all the same."""
+    mdb does not read such an answer as a refusal of the credentials and
+    does not ask again: what a 400 or a 403 of SAS Logon means was not
+    measured, and no repeat is known to change one. It ends a command with
+    one line all the same."""
     if type(exc).__name__ != "HTTPError":
         return None
     response = getattr(exc, "response", None)
