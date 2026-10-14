@@ -956,13 +956,28 @@ def credential_path(domain: str, identity: Identity) -> str:
     return f"/credentials/domains/{_segment(domain)}/{identity.path_segment}/{_segment(identity.id)}"
 
 
+def _asked(what: str, request):
+    """The answer to one request of this module, or a CredentialError that
+    says `<what> failed: no answer (<kind of exception>)` where the request
+    raised - a connection reset, a timeout. One line, and nothing of the
+    request: a PUT carries every value of a credential, and the text of an
+    exception may quote what was sent."""
+    try:
+        return request()
+    except CredentialError:            # an address this module refuses to build (`_segment`)
+        raise
+    except Exception as exc:
+        raise CredentialError(f"{what} failed: no answer ({type(exc).__name__})") from None
+
+
 def fetch_credential(session, domain: str, identity: Identity) -> Optional[dict]:
     """The credential's METADATA, or None when the identity has none.
 
     Never carries secrets: the service omits the map entirely on a GET, which
     is why nothing downstream can diff content.
     """
-    response = session.get(credential_path(domain, identity))
+    response = _asked(f"reading the credential for {identity.type} '{identity.id}'",
+                      lambda: session.get(credential_path(domain, identity)))
     if response.status_code == 404:
         return None
     if response.status_code >= 300:
@@ -983,12 +998,12 @@ def ensure_domain(session, domain: str) -> None:
     """
     import json
 
-    response = session.put(
+    response = _asked(f"creating or updating the domain '{domain}'", lambda: session.put(
         f"/credentials/domains/{_segment(domain)}",
         data=json.dumps({"id": domain, "type": DOMAIN_TYPE,
                          "description": DOMAIN_DESCRIPTION}),
         headers={"Content-Type": "application/json", "Accept": "application/json"},
-    )
+    ))
     if response.status_code >= 300:
         raise CredentialError(
             f"creating or updating the domain '{domain}' failed: HTTP "
@@ -1008,11 +1023,12 @@ def put_credential(session, domain: str, identity: Identity, entries: dict) -> N
         "properties": {},
         "secrets": encode(entries),
     }
-    response = session.put(
+    what = f"storing the credential for {identity.type} '{identity.id}'"
+    response = _asked(what, lambda: session.put(
         credential_path(domain, identity),
         data=json.dumps(body),
         headers={"Content-Type": "application/json", "Accept": "application/json"},
-    )
+    ))
     if response.status_code >= 300:
         said = f"HTTP {response.status_code}"
         if response.status_code in (401, 403):
@@ -1030,7 +1046,8 @@ def put_credential(session, domain: str, identity: Identity, entries: dict) -> N
 
 def delete_credential(session, domain: str, identity: Identity) -> bool:
     """Remove one identity's credential. True when something was removed."""
-    response = session.delete(credential_path(domain, identity))
+    response = _asked(f"removing the credential for {identity.type} '{identity.id}'",
+                      lambda: session.delete(credential_path(domain, identity)))
     if response.status_code == 404:
         return False
     if response.status_code >= 300:

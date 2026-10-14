@@ -39,12 +39,15 @@ from .core.validator import validate_all, validate_folder
 from .providers import load_adapters
 from .providers.base import CatalogModel, ProviderAdapter, slugify
 
+# pretty_exceptions_show_locals: with the default of typer 0.12.0 - the lowest version pyproject.toml allows - a
+# traceback prints the locals of every frame, and those of the credentials commands hold the values they write
 app = typer.Typer(
     name="mdb",
     help="Model Definition Builder for the SAS Agentic AI Accelerator.",
     no_args_is_help=True,
     add_completion=False,
     context_settings={"help_option_names": ["-h", "--help"]},
+    pretty_exceptions_show_locals=False,
 )
 #: The control characters a terminal may act on that rich leaves in a text: every C0 character but the tab and
 #: the line end, DEL and the C1 range. rich itself takes out the carriage return, the bell, the backspace, the
@@ -3633,6 +3636,7 @@ def providers():
 provider_app = typer.Typer(
     help="Third-party provider adapter tooling.",
     context_settings={"help_option_names": ["-h", "--help"]},
+    pretty_exceptions_show_locals=False,
 )
 app.add_typer(provider_app, name="provider")
 
