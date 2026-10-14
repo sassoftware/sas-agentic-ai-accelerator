@@ -248,10 +248,16 @@ def as_python(casl):
         opened = re.fullmatch(r"(else )?if (.*) then do", statement, flags=re.DOTALL)
         single = re.fullmatch(r"(else )?if (.*?) then (.*)", statement, flags=re.DOTALL)
         loop = re.fullmatch(r"do (\w+) over ([\w.]+)", statement)
+        # ELSE with one statement behind it, as log_parser_table_harness reads it
+        otherwise = re.fullmatch(r"else (?!if |do$)(.*)", statement, flags=re.DOTALL)
         if statement == "else do":
             emit("else:")
             depth += 1
             emit("pass")
+        elif otherwise:
+            emit("else:")
+            for line in _simple(otherwise.group(1)):
+                lines.append("    " * (depth + 1) + line)
         elif opened:
             emit(("elif " if opened.group(1) else "if ") + _expression(opened.group(2)) + ":")
             depth += 1
