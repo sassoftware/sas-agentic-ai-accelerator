@@ -985,7 +985,7 @@ http
           const kind = (definition.body.parameters || []).some((parameter) => parameter.name === 'question') ? 'retrieval' : 'ingestion';
           const id = `${kind === 'retrieval' ? 'ragtest' : 'ragrun'}-${++ragJobCount}`;
           const armed = kind === 'retrieval' ? 'retrieval' : 'run';
-          ragJobs[id] = { id, kind, name: request.name, definitionId: definition.body.id, args: request.arguments || {}, polls: 0, failure: ragFailures[armed] || '' };
+          ragJobs[id] = { id, kind, name: request.name, definitionId: definition.body.id, args: request.arguments || {}, polls: 0, failure: ragFailures[armed] || '', created: new Date().toISOString() };
           delete ragFailures[armed];
           if (kind === 'ingestion') {
             ragJobs[id].failedDocuments = Number(ragFailures.documents) || 0;
@@ -993,6 +993,21 @@ http
           }
           return json(res, 201, { id, state: 'pending' });
         }
+      }
+      // The jobs that have not ended, newest first, as a page that was loaded
+      // again asks for them (a filter on the state). Listing a job is no poll:
+      // it does not move the job on.
+      if (p === '/jobExecution/jobs' && req.method === 'GET' && /state/.test(u.searchParams.get('filter') || '')) {
+        const items = Object.values(ragJobs)
+          .filter((job) => job.polls < 2)
+          .reverse()
+          .map((job) => ({
+            id: job.id,
+            state: 'running',
+            creationTimeStamp: job.created,
+            jobRequest: { name: job.name, jobDefinitionUri: `/jobDefinitions/definitions/${job.definitionId}`, arguments: job.args },
+          }));
+        return json(res, 200, { count: items.length, items });
       }
       const ragJobRoute = /^\/jobExecution\/jobs\/(rag(?:run|test)-\d+)$/.exec(p);
       if (ragJobRoute && ragJobs[ragJobRoute[1]] && req.method === 'GET') {

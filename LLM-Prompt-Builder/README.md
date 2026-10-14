@@ -153,32 +153,31 @@ is a default written at manifest time:
   written once the score code is stored.
 - A request that fails outright while a prompt or decision template is
   manifested (no answer, or the error page of an ingress instead of an answer
-  from SAS Model Manager) leaves the button usable again, and where it stops
-  the manifest, a line beside the button says so and no toast says
-  "manifested":
+  from SAS Model Manager), and a write SAS Model Manager refuses with a
+  status, leave the button usable again, and where they stop the manifest, a
+  line beside the button says so and no toast says "manifested":
   - in the save of the experiments, which a click on the button does first:
     the save did not finish, and *Not manifested* - the manifest is not
     started, also when the save is refused with an answer;
   - before the score code: *Not manifested*, the model keeps the score code
     and the tags it had;
-  - in the upload of the score code itself: *The manifest was not completed,
-    and it is not known whether the score code of this run is stored*. The
+  - in the upload of the score code itself, when it fails outright: *The
+    manifest was not completed, and it is not known whether the score code of
+    this run is stored*. The
     service may have stored the code before the answer was lost; the page
     reads nothing back, so until the next manifest that completes, the tag may
     not match the score code the model holds. `retrieve_context.py` of a RAG
     setup is reported the same way (*It is not known whether SAS Model Manager
     stored retrieve_context.py*);
   - in the step for `requirements.json` (written, or removed again for the
-    *Call LLM* node variant), after the score code and the tags: *The manifest
-    was not completed*.
+    *Call LLM* node variant), after the score code and the tags, and in the
+    last step, which copies the attributes of the LLM or of the decision model
+    onto the manifested model: *The manifest was not completed*.
 
-  Two requests after the score code do not stop the manifest, because the
-  model holds its score code by then. A tag update that fails - refused or
+  One request after the score code does not stop the manifest, because the
+  model holds its score code by then: a tag update that fails - refused or
   outright - gets the line named above while the manifest goes on, and the
-  toast "manifested" is shown when it reaches its end. The last step, which
-  copies the attributes of the LLM or of the decision model onto the
-  manifested model, is best effort: when it fails, the toast is shown and the
-  page says nothing (the browser console has the error). In every other case
+  toast "manifested" is shown when it reaches its end. In every other case
   manifest again once the service answers.
 - The environment of the destination still decides when it says something:
   `LLMCONTAINERSSLVERIFY` set to `false`, `no` or `0` switches verification
@@ -445,8 +444,9 @@ the Prompt Builder (`verify.js`), decision templates (`verify-decision.js`), the
 RAG kind (`verify-rag.js`), a new item of each of the three kinds, which has to
 start as on a freshly loaded page whatever was open before or is still running
 for it (`verify-new-item.js`), the lock on what is open while a write to SAS
-Model Manager is out (`verify-write-lock.js`), the options group with its
-checkboxes
+Model Manager is out (`verify-write-lock.js`), what a write answered and what
+one item, one write or one dialog leaves for the next (`verify-outcomes.js`),
+the options group with its checkboxes
 (`verify-options.js`), the locale files (`verify-locales.js`) and the built
 page itself (`verify-tokens.js`: no text SAS Job Execution would substitute as
 a `$token$` - the build removes the one marker comment of the bundler that
