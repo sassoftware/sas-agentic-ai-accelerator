@@ -3183,7 +3183,6 @@ export async function buildRagBuilder(
     // function correct on its own.
     if (!(await saveSetup())) return false;
     const setup = collectSetup();
-    manifestButton.disabled = true;
     try {
       // the golden-path job source, exactly as deployed
       const jobsFolder = await getFolderByPath(`${config.contentRoot}/jobs`);
@@ -3258,8 +3257,6 @@ export async function buildRagBuilder(
       console.error('Generating the ingestion job failed.', error);
       showStatus('danger', str('ragBuilderJobGenerateError', 'Generating the ingestion job failed - check the browser console and your permissions on the content root.'));
       return false;
-    } finally {
-      manifestButton.disabled = false;
     }
   }
 
@@ -3278,6 +3275,10 @@ export async function buildRagBuilder(
       showStatus('danger', str('ragBuilderRegisterNeedsSetup', 'Select or create a RAG setup first.'));
       return;
     }
+    // Off from the click until the last request of the manifest - the new
+    // model version - has ended: one manifest per click. The stages leave the
+    // button alone; one of them gave it back before the version was asked
+    // for, and a second click started a second manifest beside the first.
     manifestButton.disabled = true;
     try {
       // Each stage with what it is called while it runs and what is true once
@@ -3531,7 +3532,6 @@ export async function buildRagBuilder(
       showSaveErrors(problems);
       return false;
     }
-    manifestButton.disabled = true;
     try {
       // Resolved fresh: a redeploy of the custom steps mints new ids, and a
       // flow holding a stale one fails at code generation, far from the cause.
@@ -3608,8 +3608,6 @@ export async function buildRagBuilder(
         ),
       ]);
       return false;
-    } finally {
-      manifestButton.disabled = false;
     }
   }
 
@@ -3635,7 +3633,6 @@ export async function buildRagBuilder(
       showSaveErrors(problems);
       return false;
     }
-    manifestButton.disabled = true;
     try {
       const modelsFolder = await getFolderByPath(`${config.contentRoot}/models`);
       const templateFile = modelsFolder
@@ -3728,8 +3725,6 @@ export async function buildRagBuilder(
         ),
       ]);
       return false;
-    } finally {
-      manifestButton.disabled = false;
     }
   }
 
