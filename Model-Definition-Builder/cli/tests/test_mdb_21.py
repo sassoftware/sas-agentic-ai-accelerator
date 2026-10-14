@@ -347,6 +347,22 @@ def test_cli_py_hands_rich_a_text_in_no_other_way():
         if isinstance(assign, ast.Assign) and isinstance(assign.value, ast.Call) \
                 and ast.unparse(assign.value.func) == "Table":
             assert [ast.unparse(target) for target in assign.targets] == ["table"]
+    # `table` is let through as a whole text because it is a Table: in every function that prints it or
+    # fills it, the name is bound to one - and to nothing else (two commands have an option of that name)
+    for function in ast.walk(tree):
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        used = [node for node in ast.walk(function) if isinstance(node, ast.Call) and (
+            ast.unparse(node.func) in ("table.add_row", "table.add_column")
+            or ast.unparse(node.func) == "console.print" and any(
+                isinstance(argument, ast.Name) and argument.id == "table" for argument in node.args))]
+        if used:
+            bound = [node.value for node in ast.walk(function) if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == "table" for target in node.targets)]
+            assert bound and all(isinstance(value, ast.Call) and ast.unparse(value.func) == "Table"
+                                 for value in bound), function.name
+            assert "table" not in [argument.arg for argument in function.args.args + function.args.kwonlyargs], \
+                function.name
     # no other module of mdb knows rich or typer: what one of them prints, it prints as it is
     for path in sorted(CLI_SOURCE.parent.rglob("*.py")):
         if path == CLI_SOURCE:
