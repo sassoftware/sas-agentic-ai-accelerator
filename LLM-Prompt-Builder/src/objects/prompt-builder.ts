@@ -1555,7 +1555,14 @@ export async function buildPromptBuilder(
           cancelText: `${promptBuilderInterfaceText?.promptBuilderDeleteCancelButton}`,
         });
         if (!confirmed) return;
-        const deleteStatus = await selectionLock.during(() => deleteModel(promptModelID));
+        // A request that gets no usable answer is a deletion that failed, as
+        // a refusal is: said, not left as an error nobody sees.
+        let deleteStatus = 0;
+        try {
+          deleteStatus = await selectionLock.during(() => deleteModel(promptModelID));
+        } catch (error) {
+          console.error('Deleting the prompt-test failed.', error);
+        }
         if (deleteStatus === 204) {
           promptBuilderProjectPrompts = promptBuilderProjectPrompts.filter((item) => item.value !== promptModelID);
           promptFilter.setUsers(promptBuilderProjectPrompts);
@@ -1623,12 +1630,19 @@ export async function buildPromptBuilder(
         // release, deleting them one by one is deterministic.
         // One write, from the first prompt-test to the project (null: a
         // prompt-test could not be deleted, and the project was not asked).
-        const projectDeleteStatus = await selectionLock.during(async () => {
-          for (const projectPrompt of projectPrompts) {
-            if ((await deleteModel(projectPrompt.value)) !== 204) return null;
-          }
-          return deleteModelProject(projectID);
-        });
+        // A request that gets no usable answer is a deletion that failed, as a
+        // refusal is.
+        let projectDeleteStatus: number | null = null;
+        try {
+          projectDeleteStatus = await selectionLock.during(async () => {
+            for (const projectPrompt of projectPrompts) {
+              if ((await deleteModel(projectPrompt.value)) !== 204) return null;
+            }
+            return deleteModelProject(projectID);
+          });
+        } catch (error) {
+          console.error('Deleting the project failed.', error);
+        }
         if (projectDeleteStatus === 204) {
           promptBuilderAllProjects = promptBuilderAllProjects.filter((item) => item.value !== projectID);
           projectFilter.setUsers(promptBuilderAllProjects);
