@@ -159,6 +159,8 @@ def fake_sasctl(monkeypatch):
             calls.append((args, kwargs))
 
     monkeypatch.setitem(sys.modules, "sasctl", types.SimpleNamespace(Session=Session))
+    # the HEAD a token is asked with before the command: answered
+    monkeypatch.setattr(s, "_probe", lambda session, url: None)
     return calls
 
 

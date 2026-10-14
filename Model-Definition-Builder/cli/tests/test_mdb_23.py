@@ -2,23 +2,29 @@
 # SPDX-License-Identifier: Apache-2.0
 """What the gate and the review of round 22 found in mdb at 5290563, each as
 a class: the test takes every member from the code - every print of every
-Python file of Model-Definition-Builder, every code point. Nothing signs in
-anywhere: the transport of requests is replaced, and answers nothing."""
+Python file of Model-Definition-Builder, every code point, every command
+that reaches SAS Viya. Nothing signs in anywhere: the transport of requests
+is replaced, and answers nothing."""
 import ast
 import importlib.util
 import io
 import json
 import os
+import shutil
 import sys
 import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import requests
+from typer.testing import CliRunner
 
 from mdb import cli
+from mdb.core.generator import CoreAssets
 from mdb.core.manifest import ModelManifest
+from mdb.core.paths import core_dir, fact_sheet_path
 from mdb.core.printable import CONTROL
 from mdb.viya import credentials
 from mdb.viya import session as s
@@ -270,3 +276,157 @@ def test_a_domain_a_line_shows_as_another_is_refused_by_every_command(mdb, comma
                         encoding="utf-8")
     code, said = mdb("credentials-report")
     assert code == 2 and said.startswith("a credential domain cannot hold") and mdb.site.calls == []
+
+
+# ---- M3: a command that reaches SAS Viya ends with one line where nothing answers ---------------
+def _reaching_sas_viya() -> dict:
+    """{command name: function} of every command of the app that asks SAS
+    Viya anything: the function, or a function it calls, calls
+    `create_session` - read from cli.py."""
+    tree = ast.parse(Path(cli.__file__).read_text(encoding="utf-8"))
+    called = {node.name: {ast.unparse(c.func) for c in ast.walk(node) if isinstance(c, ast.Call)}
+              for node in tree.body if isinstance(node, ast.FunctionDef)}
+    reaching, grown = {"create_session"}, True
+    while grown:
+        grown = False
+        for name, calls in called.items():
+            if name not in reaching and calls & reaching:
+                reaching.add(name)
+                grown = True
+    listed = [("", info) for info in cli.app.registered_commands] + [
+        (f"{group.name} ", info) for group in cli.app.registered_groups
+        for info in group.typer_instance.registered_commands]
+    assert len(listed) > 30 and any(prefix for prefix, _ in listed)
+    commands = {}
+    for prefix, info in listed:
+        name = prefix + (info.name or info.callback.__name__.lower().replace("_", "-"))
+        if info.callback.__name__ in reaching:
+            commands[name] = info.callback
+    return commands
+
+
+#: What each command is given to get as far as SAS Viya. The test fails for a command that reaches SAS Viya
+#: and is not here.
+def _arguments(command: str, tmp: Path, monkeypatch, repo_root: Path) -> list:
+    if command == "retire":
+        # retire tags the definition before it asks SAS Viya: a copy of one definition and of its fact sheet
+        definitions = tmp / "LLM-Definitions"
+        shutil.copytree(repo_root / "LLM-Definitions" / "smollm_135m", definitions / "smollm_135m")
+        sheet = fact_sheet_path(repo_root, "llm")
+        shutil.copy(sheet, definitions / sheet.name)
+        core = CoreAssets.load(core_dir(repo_root))
+        monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(
+            repo=tmp, core=core, find_folder=lambda model_id: definitions / model_id,
+            fact_sheet=lambda kind: definitions / sheet.name))
+        return ["smollm_135m"]
+    saved = tmp / "saved-options.json"
+    saved.write_text(json.dumps({"reports": {"Prompt Builder": {"enableRag": True}}}), encoding="utf-8")
+    keys = tmp / "keys.env"
+    keys.write_text("OPENAI_API_KEY=made-up\n", encoding="utf-8")
+    return {
+        "load-facts": [], "load-releases": [], "setup": ["--out", str(tmp / "setup")],
+        "options-save": ["--file", str(tmp / "options.json")], "options-restore": ["--file", str(saved)],
+        "content-deploy": ["--dry-run"], "package-export": ["--out", str(tmp / "package.json")],
+        "builders-import": [str(repo_root / "SAS-Viya-Integrations" / "SAS Agentic AI Accelerator.json"), "--dry-run",
+                            "--out", str(tmp / "import")],
+        "register": ["smollm_135m"], "unregister": ["smollm_135m", "--yes"], "pull": ["smollm_135m"],
+        "list": [], "publish": ["smollm_135m", "-d", "maslocal"], "ship": ["smollm_135m", "-d", "maslocal"],
+        "credentials-apply": ["--identity", "G1", "--env-file", str(keys), "--dry-run"],
+        "credentials-report": ["--identity", "G1"],
+    }[command]
+
+
+def test_the_commands_that_reach_sas_viya_are_known():
+    assert set(_reaching_sas_viya()) == {
+        "load-facts", "load-releases", "setup", "options-save", "options-restore", "content-deploy", "package-export",
+        "builders-import", "register", "unregister", "pull", "list", "publish", "ship", "retire",
+        "credentials-apply", "credentials-report"}
+
+
+def _run(command, tmp_path, monkeypatch, repo_root, way, kind):
+    """One command, one way in, a transport that raises `kind`; what one
+    run patches is undone before the next."""
+    tmp = tmp_path / way / command
+    tmp.mkdir(parents=True)
+    with monkeypatch.context() as patched:
+        _sign_in_env(patched, way, home=tmp / "home")
+        patched.setenv("MDB_REPO", str(repo_root))
+        patched.chdir(tmp)
+        sent = _no_transport(patched, kind)
+        args = _arguments(command, tmp, patched, repo_root)
+        out = io.StringIO()
+        patched.setattr(cli, "console", cli._Console(file=out, width=1000, force_terminal=False, emoji=False))
+        result = CliRunner().invoke(cli.app, [command, *args])
+    assert result.exception is None or isinstance(result.exception, SystemExit), (command, way, result.exception)
+    return result.exit_code, out.getvalue() + result.output, sent
+
+
+@pytest.mark.parametrize("way", ["password", "token", "cli"])
+def test_every_command_that_reaches_sas_viya_ends_with_one_line_where_nothing_answers(
+        tmp_path, monkeypatch, repo_root, way):
+    """review-22a, fix-22's OWNER TO CONFIRM (decided: fixed): with
+    SAS_VIYA_TOKEN or a CLI login, a command against an address where
+    nothing answers ended with the traceback of requests (load-facts,
+    options-save: exit code 1) - the token is taken without a request, so
+    the first request of the command was the first to get no answer. Every
+    command that reaches SAS Viya now ends there with the one line of the
+    password sign-in, and its exit code, for each way in: 2 - and 0 for
+    retire, which says it after `The registered model's status was not
+    updated:` and goes on."""
+    commands = _reaching_sas_viya()
+    asked = {"password": [("POST", f"{VIYA}/SASLogon/oauth/token#password")], "token": [("HEAD", f"{VIYA}/")],
+             "cli": [("HEAD", f"{VIYA}/")]}[way]
+    how = {"password": "for the sign-in of u with SAS_VIYA_USER + SAS_VIYA_PASSWORD",
+           "token": "with the access token (SAS_VIYA_TOKEN)",
+           "cli": "with the access token (the SAS Viya CLI login)"}[way]
+    for command in sorted(commands):
+        code, text, sent = _run(command, tmp_path, monkeypatch, repo_root, way, requests.exceptions.ConnectionError)
+        assert "Traceback" not in text and code == (0 if command == "retire" else 2), (command, code, text)
+        lines = [line for line in text.splitlines() if f"SAS Viya at {VIYA}" in line]
+        assert len(lines) == 1, (command, text)
+        line = lines[0]
+        prefix = "The registered model's status was not updated: " if command == "retire" else ""
+        assert line.startswith(f"{prefix}SAS Viya at {VIYA} could not be asked {how}: ConnectionError ("), line
+        assert line.endswith(NO_ANSWER), (command, line)
+        assert sent == asked, (command, sent)
+
+
+@pytest.mark.parametrize("kind", [requests.exceptions.SSLError, requests.exceptions.ConnectTimeout,
+                                  requests.exceptions.ReadTimeout])
+@pytest.mark.parametrize("way", ["password", "token", "cli"])
+def test_a_certificate_and_a_timeout_end_with_the_one_line_too(tmp_path, monkeypatch, repo_root, way, kind):
+    """The line names 'a port nothing listens on, a certificate, a
+    timeout'. sasctl (1.11.8) raises a RuntimeError ('SSL handshake failed')
+    in the place of the SSLError of requests where REQUESTS_CA_BUNDLE is not
+    set, and the command ended with its traceback - with the password too."""
+    code, text, sent = _run("list", tmp_path, monkeypatch, repo_root, way, kind)
+    assert "Traceback" not in text and code == 2, text
+    line, = [line for line in text.splitlines() if f"SAS Viya at {VIYA}" in line]
+    assert f" could not be asked " in line and f": {kind.__name__} (" in line and line.endswith(NO_ANSWER), line
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize("status, said", [(401, 'Bearer error="invalid_token", error_description="Access token '
+                                                 'expired"'), (401, ""), (404, ""), (302, "")])
+def test_a_token_that_is_answered_reaches_the_command(monkeypatch, tmp_path, status, said):
+    """Any answer to the request a token is asked with is enough, and what
+    it says is not read: a 401, a 404 or a redirect of `/` goes on to the
+    command, as before. sasctl's own `request` reads a 401 that says
+    'access token expired' and asks the token address again - and with a
+    token alone ends with a ValueError -, so the HEAD is sent past it."""
+    _sign_in_env(monkeypatch, "token", home=tmp_path)
+    sent, carried = [], []
+
+    def send(self, request, **options):
+        sent.append((request.method, request.url))
+        carried.append(request.headers.get("Authorization"))
+        answer = requests.Response()
+        answer.status_code, answer.url, answer.request = status, request.url, request
+        answer.headers["WWW-Authenticate"] = said
+        answer.headers["Location"] = f"{VIYA}/SASLogon/login"
+        answer.raw = io.BytesIO(b"")
+        return answer
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
+    session = s.create_session()
+    assert sent == [("HEAD", f"{VIYA}/")] and session.auth_summary == f"{VIYA} with SAS_VIYA_TOKEN"
+    assert carried == ["Bearer not-a-jwt"]

@@ -17,6 +17,12 @@ configured wins):
 ``SAS_VIYA_URL`` names the server; when it is unset, the CLI profile's
 ``sas-endpoint`` is used. The CLI profile is ``Default`` unless
 ``SAS_CLI_PROFILE`` (the CLI's own variable) says otherwise.
+
+The sign-in asks SAS Viya before the command does: the password grant is a
+request of its own (asked again where it is refused, see `_sign_in`), and
+with a token (1 and 3) one HEAD of the address is sent, whose answer is not
+read. Where that request gets no answer the command ends with one line
+(ViyaSignInError).
 """
 from __future__ import annotations
 
@@ -301,7 +307,6 @@ def create_session():
     # argument of its own: without it a port in SAS_VIYA_URL is dropped
     port = _port(auth.url)
     where = {"port": port} if port else {}
-    from requests.exceptions import RequestException
     if auth.method == "password":
         how = f"the sign-in of {auth.user} with {USER_ENV} + {PASSWORD_ENV}"
     else:
@@ -314,12 +319,13 @@ def create_session():
     except Exception as exc:
         status = _token_address_status(exc)
         if not _refused_sign_in(exc) and status is None:
-            if isinstance(exc, RequestException):
+            missing = _unanswered(exc)
+            if missing is not None:
                 # nothing answered - no server at that host and port, a certificate, a timeout: one line, no
                 # traceback; what requests says names the address and the cause, nothing that was sent
                 raise ViyaSignInError(
-                    f"SAS Viya at {auth.url} could not be asked for {how}: {type(exc).__name__} "
-                    f"({one_line(str(exc))}). Check {URL_ENV} and that SAS Viya can be reached from here."
+                    f"SAS Viya at {auth.url} could not be asked for {how}: {type(missing).__name__} "
+                    f"({one_line(str(missing))}). Check {URL_ENV} and that SAS Viya can be reached from here."
                 ) from exc
             raise
         # An answer of the token address is an answer, not a defect of mdb: one sentence, no traceback.
@@ -346,8 +352,49 @@ def create_session():
             f"SAS Viya at {auth.url} did not answer {how} with a token: the answer to the sign-in holds no "
             "access token mdb could read. mdb reads only HTTP 401 as a refusal of the credentials, and asks no "
             "other answer again: run the command again, and where the answer stays the same, look at SAS Logon.")
+    if auth.method != "password":
+        # a token is taken without a request, so an address where nothing answers was found by the first request
+        # of the command - which ended with the traceback of requests, or with a line of its own for each identity
+        # of credentials-report. One request without an effect is asked first, as the password grant is: any
+        # answer is enough, and what it says is not read
+        try:
+            _probe(session, auth.url)
+        except Exception as exc:
+            missing = _unanswered(exc)
+            if missing is None:
+                raise
+            raise ViyaSignInError(
+                f"SAS Viya at {auth.url} could not be asked with {how}: {type(missing).__name__} "
+                f"({one_line(str(missing))}). Check {URL_ENV} and that SAS Viya can be reached from here."
+            ) from exc
     session.auth_summary = auth.summary
     return session
+
+
+def _probe(session, url: str) -> None:
+    """One HEAD of the address `url` names (its scheme, host and port), with
+    what the session sends - the token, the certificate check, the proxies.
+    It is sent past sasctl's own `request`, which reads a 401 that says
+    'access token expired' and asks the token address again: the answer is
+    not read, whatever it is."""
+    import requests
+    parsed = urlparse(url if "://" in url else f"https://{url}")
+    requests.Session.request(session, "HEAD", f"{parsed.scheme}://{parsed.netloc}/", allow_redirects=False)
+
+
+def _unanswered(exc: Exception):
+    """The exception of requests that `exc` is, or that sasctl raised it
+    over, and None for anything else - here, what a request ends with where
+    nothing answered: no server at that host and port, a certificate, a
+    timeout. sasctl (1.11.8 was read) raises a RuntimeError ('SSL handshake
+    failed ...') in the place of the SSLError of requests where
+    REQUESTS_CA_BUNDLE is not set; the SSLError is its context."""
+    from requests.exceptions import RequestException, SSLError
+    if isinstance(exc, RequestException):
+        return exc
+    if isinstance(exc, RuntimeError) and isinstance(exc.__context__, SSLError):
+        return exc.__context__
+    return None
 
 
 #: How often the password grant is asked, and the seconds waited before the

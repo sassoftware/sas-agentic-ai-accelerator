@@ -3,7 +3,9 @@
 """Audit the models registered in SAS Model Manager for the attributes and
 lifecycle that mdb 1.6.0 populates, and flag duplicated input/output variables.
 
-Read-only: it performs GETs only, never writes. For each registered model it
+Read-only: besides the sign-in (the password grant, or with a token or the
+SAS Viya CLI login one HEAD of the address) it sends GET requests only, and
+never writes. For each registered model it
 fetches the full model detail (the list summary omits custom attributes such as
 llmodelType) plus the variable list, and reports what a pre-1.6.0 registration
 is missing and the exact remediation command.
