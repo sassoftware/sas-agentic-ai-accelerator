@@ -3699,6 +3699,20 @@ def _credential_manifest(manifest: Optional[str], domain: str,
         raise typer.Exit(2)
 
 
+def _given_domain(domain: Optional[str]) -> Optional[str]:
+    """--domain as it was given, for the four credentials commands that take
+    it. An empty value is refused: a manifest written with it names no domain
+    and is read as one for agentic-ai-keys, so a command typed for another
+    domain with a variable that is not set would end in the domain a site
+    works with."""
+    if domain is not None and not domain.strip():
+        console.print("--domain is empty - what a variable of the shell that is not set gives - and names no "
+                      "credential domain. Nothing was done.", style="red", markup=False, highlight=False,
+                      soft_wrap=True)
+        raise typer.Exit(2)
+    return domain
+
+
 def _credential_scaffold(target: Path, env_file: str, domain: str) -> tuple[str, int]:
     """The starter manifest for `target` as text, and how many entries its
     source carries. Writes nothing; ends the command when the source is not
@@ -3761,6 +3775,7 @@ def credentials_init(
     or with `mdb credentials-add group <id>`, which also writes this manifest
     when there is none yet.
     """
+    domain = _given_domain(domain)
     target = Path(manifest)
     if target.exists() and not force:
         console.print(f"[red]{_plain(target)} already exists.[/red] Pass --force to overwrite it.")
@@ -3851,6 +3866,7 @@ def credentials_add(
     if identity_type not in ("user", "group"):
         console.print("[red]The type must be user or group.[/red]")
         raise typer.Exit(2)
+    domain = _given_domain(domain)
     names = _only_names(only)
     if names == ():
         console.print("[red]--only was given without an entry name.[/red]")
@@ -3929,6 +3945,9 @@ def credentials_remove(
 
     It writes `state: absent` on that identity — adding the identity when the
     manifest does not list it — and nothing else: no call goes to SAS Viya.
+    (In a manifest that still names the placeholder of `credentials-init`
+    the identity takes the placeholder's place, and the comment about the
+    placeholder leaves with it.)
     The credential is deleted on the server by the next
     `mdb credentials-apply`, which shows the action `remove` in its plan and
     in a --dry-run.
@@ -4049,6 +4068,7 @@ def credentials_apply(
     if identity_type not in ("user", "group"):
         console.print("[red]--identity-type must be user or group.[/red]")
         raise typer.Exit(2)
+    domain = _given_domain(domain)
     try:
         plan = _credential_manifest(manifest, domain, identity_type, identity,
                                     env_file, keys_file)
@@ -4176,6 +4196,7 @@ def credentials_report(
     """
     from .viya.credentials import CredentialError, fetch_credential
 
+    domain = _given_domain(domain)
     plan = _credential_manifest(manifest, domain, identity_type, identity,
                                 None, None)
     table = Table(title=f"Credential domain '{_plain(plan.domain)}'")

@@ -225,6 +225,24 @@ def test_every_value_in_a_text_with_markup_on_goes_through_plain():
         assert line in source, line
 
 
+def test_plain_is_used_for_a_text_with_markup_on_and_nowhere_else():
+    """`_plain` spells a bracket `\\[`, which is the bracket only where rich
+    reads markup. In a line printed with markup off, in the text of an
+    exception or in a file the backslash would stand. Every call of it sits
+    in one of the calls of TEXT_CALLS that has markup on."""
+    tree = _tree()
+    inside = {}
+    for call in ast.walk(tree):
+        if isinstance(call, ast.Call) and ast.unparse(call.func) in TEXT_CALLS:
+            for node in ast.walk(call):
+                inside.setdefault(id(node), []).append(call)
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and ast.unparse(node.func) == "_plain"]
+    assert len(calls) > 400
+    for node in calls:
+        around = inside.get(id(node), [])
+        assert around and not any(_markup_off(call) for call in around), node.lineno
+
+
 def test_what_holds_markup_of_mdbs_own_is_a_text_mdb_wrote():
     """The two names the rule lets through are bound to nothing a service
     or a user gives: a constant, or one of the constant values of a dict."""
@@ -1053,6 +1071,26 @@ def test_a_new_manifest_of_credentials_add_takes_the_domain_it_is_given(mdb, tmp
     other = tmp_path / "other.yaml"
     assert mdb("credentials-add", "group", "G", "--manifest", str(other))[0] == 0
     assert credentials.Manifest.load(other).domain == "agentic-ai-keys"
+
+
+@pytest.mark.parametrize("words", [
+    ("credentials-init",), ("credentials-add", "group", "ZZ_GROUP"), ("credentials-apply", "--identity", "ZZ_GROUP"),
+    ("credentials-apply", "--identity", "ZZ_GROUP", "--dry-run"), ("credentials-report", "--identity", "ZZ_GROUP"),
+])
+def test_an_empty_domain_is_refused_and_does_not_become_the_domain_of_the_accelerator(mdb, monkeypatch, words):
+    """`--domain "$DOMAIN"` with the variable not set: `credentials-init` and
+    `credentials-add` wrote a manifest that names no domain, which is read as
+    one for agentic-ai-keys - the next apply went to the domain a site works
+    with. An empty --domain ends each of the four commands that take it."""
+    monkeypatch.setattr(cli, "_viya_session", lambda: pytest.fail("the command signed in"))
+    for value in ("", " "):
+        out = io.StringIO()
+        monkeypatch.setattr(cli, "console", Console(file=out, width=1000, force_terminal=False, emoji=False))
+        result = CliRunner().invoke(cli.app, [*words, "--domain", value])
+        assert result.exit_code == 2 and _ended_by_itself(result), result.exception
+        assert out.getvalue() == ("--domain is empty - what a variable of the shell that is not set gives - and "
+                                  "names no credential domain. Nothing was done.\n")
+    assert not mdb.path.exists() and mdb.site.calls == []
 
 
 @pytest.mark.parametrize("readme", ["Model-Definition-Builder/README.md", "SAS-Viya-Integrations/README.md"])
