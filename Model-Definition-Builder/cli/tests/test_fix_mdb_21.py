@@ -259,6 +259,24 @@ def test_the_report_counts_a_credential_that_could_not_be_read_neither_way(mdb):
     assert "2 of 2 identities marked `state: absent` hold none.\n" in said
 
 
+def test_the_report_says_whom_a_group_credential_reaches(mdb):
+    """review-21a, from FINDINGS item 10: apply prints the reach of a group
+    credential, the report showed `yes` for a group without it - the picture
+    a colleague's failed rollout had."""
+    from mdb.viya.credentials import GROUP_REACH
+    mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: PromptEngineers}\n"
+                        "  - {type: user, id: ada}\n  - {type: group, id: Gone, state: absent}\n", encoding="utf-8")
+    code, said = mdb("credentials-report")
+    assert code == 0 and GROUP_REACH not in said                 # nobody holds one
+    mdb.site.holds("users", "ada")
+    mdb.site.holds("groups", "Gone")                             # a group that is to lose its credential
+    code, said = mdb("credentials-report")
+    assert GROUP_REACH not in said
+    mdb.site.holds("groups", "PromptEngineers")
+    code, said = mdb("credentials-report")
+    assert said.count(GROUP_REACH) == 1
+
+
 def test_the_requests_of_apply_name_the_identity_whole(mdb):
     mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: 'Sales#EMEA'}\n"
                         "  - {type: group, id: '../x', state: absent}\n", encoding="utf-8")

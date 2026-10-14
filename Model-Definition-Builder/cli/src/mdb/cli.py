@@ -4226,8 +4226,11 @@ def credentials_report(
     it is shown as `absent` once its credential is gone, and as
     `STILL THERE` while the credential exists — until the next
     `mdb credentials-apply` removes it.
+
+    Where a group holds a credential, the report says once that a group
+    credential reaches only the members of that group.
     """
-    from .viya.credentials import DEFAULT_MANIFEST, CredentialError, fetch_credential
+    from .viya.credentials import DEFAULT_MANIFEST, GROUP_REACH, CredentialError, fetch_credential
 
     domain = _given_domain(domain)
     plan = _credential_manifest(manifest, domain, identity_type, identity,
@@ -4241,6 +4244,7 @@ def credentials_report(
     held = 0
     lingering = 0
     unread = []
+    group_held = False
     with _viya_session() as session:
         for who in plan.identities:
             try:
@@ -4265,6 +4269,7 @@ def credentials_report(
                               "[red]STILL THERE (manifest: absent)[/red]", _plain(written[0]), _plain(written[1]))
                 continue
             held += 1
+            group_held = group_held or who.type == "group"
             table.add_row(_plain(who.id), _plain(who.type), "[green]yes[/green]", _plain(written[0]), _plain(written[1]))
     console.print(table)
     expected = [who for who in plan.identities if not who.absent]
@@ -4278,6 +4283,9 @@ def credentials_report(
         console.print(f"{_plain(marked - lingering - unread_absent)} of {_plain(marked)} identities marked "
                       "`state: absent` hold none"
                       + (f"; {_plain(unread_absent)} could not be read." if unread_absent else "."))
+    if group_held:
+        # `yes` for a group is not yet a key for the people who open the Builder
+        console.print(_plain(GROUP_REACH))
     if lingering:
         console.print(f"[red]{_plain(lingering)} credential(s) the manifest marks absent "
                       "are still there.[/red] Run [bold]mdb credentials-apply"

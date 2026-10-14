@@ -145,7 +145,8 @@ PLACEHOLDER_COMMENT = (
     "# `mdb credentials-add` replaces this placeholder.",
 )
 
-#: Said once per apply that writes a group credential. A credential written
+#: Said once by an apply that plans or writes a group credential, and by a
+#: report in which a group holds one. A credential written
 #: for a group the users are not members of looks like a finished rollout and
 #: leaves every one of them without a key.
 GROUP_REACH = (
