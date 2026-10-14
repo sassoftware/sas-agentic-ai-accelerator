@@ -290,11 +290,12 @@ def create_session():
         else:
             how = f"the access token ({TOKEN_ENV if auth.method == 'token' else 'the SAS Viya CLI login'})"
         if not _refused_sign_in(exc):
-            # any other status of the token address: no word about the credentials, and not asked again
+            # any other status of the token address: mdb does not read it as a word about the credentials,
+            # and does not ask again
             raise ViyaSignInError(
-                f"SAS Viya at {auth.url} did not answer {how} with a token: {_said(exc, status)}. That is no "
-                "refusal of the credentials (a refusal is HTTP 401), and the sign-in was not repeated: run the "
-                "command again, and where the answer stays the same, SAS Logon is where to look."
+                f"SAS Viya at {auth.url} did not answer {how} with a token: {_said(exc, status)}. mdb reads "
+                "only HTTP 401 as a refusal of the credentials, and asks no other answer again: run the command "
+                "again, and where the answer stays the same, look at SAS Logon."
             ) from exc
         raise ViyaSignInError(
             f"SAS Viya at {auth.url} refused {how}: {_refusal(exc, auth.method == 'password')}. Check the "

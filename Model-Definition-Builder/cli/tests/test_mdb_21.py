@@ -883,9 +883,9 @@ def test_another_status_of_the_token_address_ends_with_one_line(token_address, m
     assert len(token_address.posted) == 1 and token_address.waited == []
     assert out.getvalue() == (
         "SAS Viya at https://viya.example.com did not answer the sign-in of u with SAS_VIYA_USER + "
-        f"SAS_VIYA_PASSWORD (1 sign-in made) with a token: HTTP {status} from /SASLogon/oauth/token {said}. That is "
-        "no refusal of the credentials (a refusal is HTTP 401), and the sign-in was not repeated: run the command "
-        "again, and where the answer stays the same, SAS Logon is where to look.\n")
+        f"SAS_VIYA_PASSWORD (1 sign-in made) with a token: HTTP {status} from /SASLogon/oauth/token {said}. mdb "
+        "reads only HTTP 401 as a refusal of the credentials, and asks no other answer again: run the command "
+        "again, and where the answer stays the same, look at SAS Logon.\n")
     assert "s3cret-p" not in out.getvalue()
 
 
