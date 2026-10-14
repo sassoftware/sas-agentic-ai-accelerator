@@ -314,9 +314,20 @@ and no other; `.` and `..` alone are refused. How SAS Viya answers for an id
 with such characters was not measured.
 
 `credentials-add` and `credentials-remove` were run on files. The removal by
-`state: absent` and the plan and the report that show it were run against a
-stand-in for the credentials service in the test suite of `mdb`, not against
-a SAS Viya server.
+`state: absent`, the plan and the report that show it were measured on
+2026-10-14 in a credential domain and a group made for the pass, with the
+commands as they were before the fix-up of that day: the apply created the
+domain and the credential of the group with its three entries; after
+`credentials-remove` the next apply deleted it - HTTP 204 - without writing
+the domain, and the report said `absent (as the manifest says)`; an apply
+once more said that there was none to remove and ended with exit code 0; and
+a credential the manifest marked absent while it was there was
+`STILL THERE (manifest: absent)`. The lookup the Prompt Builder makes found
+the group credential with `lookupInGroup=true` and answered 404 without it.
+What the fix-up of that day changed - the comment on the `state:` line, the
+refusals of apply and report, the line and the count of the report - ran
+against a stand-in for the credentials service in the test suite of `mdb`,
+not against a SAS Viya server.
 
 :::note A dry run cannot show you a diff
 Reading a credential returns its metadata — who wrote it, and when — and
