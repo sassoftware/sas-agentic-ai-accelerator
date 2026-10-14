@@ -320,8 +320,10 @@ timeout - ends with one line, `... failed: no answer (<kind of exception>)`,
 that names nothing of the request. No traceback of `mdb` shows the locals of
 a frame. The id of an identity is percent-encoded as
 one segment of the address, so an id with `#`, `?` or `/` names that identity
-and no other; `.` and `..` alone are refused. How SAS Viya answers for an id
-with such characters was not measured.
+and no other; `.` and `..` alone are refused. Measured on 2026-10-14 in a
+second pass: an identity `ZZ#X` marked absent was asked for as
+`.../groups/ZZ%23X`, and SAS Viya answered 404 (errorCode 12302), its
+answer for a credential that is not there. `?` and `/` were not tried.
 
 `credentials-add` and `credentials-remove` were run on files. The removal by
 `state: absent`, the plan and the report that show it were measured on
@@ -334,10 +336,18 @@ once more said that there was none to remove and ended with exit code 0; and
 a credential the manifest marked absent while it was there was
 `STILL THERE (manifest: absent)`. The lookup the Prompt Builder makes found
 the group credential with `lookupInGroup=true` and answered 404 without it.
-What the fix-up of that day changed - the comment on the `state:` line, the
-refusals of apply and report, the line and the count of the report - ran
-against a stand-in for the credentials service in the test suite of `mdb`,
-not against a SAS Viya server.
+Of what the fix-up of that day changed, a second pass that day measured
+three things: a write for a group that does not exist printed the reason of
+the service - `storing the credential for group '<group>' failed: HTTP 404
+The credential could not be created because the group identity "<group>"
+does not exist. (errorCode 12310)` - and ended with exit code 1; the report
+printed the line about a group credential once; and a `--domain` other
+than the one of the manifest ended `credentials-apply` with exit code 2
+before any request. The comment on the `state:` line, the refusal of an
+identity listed twice and the count of a credential that could not be read
+ran against a stand-in for the credentials service in the test suite of
+`mdb`, not against a SAS Viya server, as did everything changed after that
+pass.
 
 :::note A dry run cannot show you a diff
 Reading a credential returns its metadata — who wrote it, and when — and
