@@ -393,20 +393,29 @@ def _token_address_status(exc: Exception):
     mdb does not read such an answer as a refusal of the credentials and
     does not ask again: what a 400 or a 403 of SAS Logon means was not
     measured, and no repeat is known to change one. It ends a command with
-    one line all the same."""
+    one line all the same.
+
+    Two more answers are the token address's (gate-21a, against a
+    stand-in): a redirect - the HTTPError is then of the address it led to,
+    and the token address stands in its history -, and an answer sasctl
+    could not read a token from - a 200 whose body is no JSON, or no
+    `access_token` - which ends in a TypeError of sasctl; the frame that
+    read the answer still holds it (`_held_answer`)."""
     if type(exc).__name__ != "HTTPError":
-        return None
+        held = _held_answer(exc, None)
+        return held.status_code if held is not None and held.status_code != 401 else None
     response = getattr(exc, "response", None)
     url = str(getattr(response, "url", "") or getattr(getattr(exc, "request", None), "url", "") or "")
+    asked = [url] + [str(getattr(earlier, "url", "") or "") for earlier in getattr(response, "history", None) or []]
     status = getattr(response, "status_code", None)
-    if not isinstance(status, int) or isinstance(status, bool) or status == 401 or TOKEN_PATH not in url:
+    if not isinstance(status, int) or isinstance(status, bool) or (status == 401 and TOKEN_PATH in url):
         return None
-    return status
+    return status if any(TOKEN_PATH in address for address in asked) else None
 
 
-def _held_answer(exc: Exception):
+def _held_answer(exc: Exception, status=401):
     """The 401 answer of the token address that a frame in the traceback of
-    `exc` holds, or None.
+    `exc` holds, or None. With `status` None: its answer of any status.
 
     sasctl (1.11.8 was read) reads the body of a 401 of the token address
     before it raises, and some bodies leave it as an exception that is
@@ -419,7 +428,9 @@ def _held_answer(exc: Exception):
     while frame is not None:
         for value in list(frame.tb_frame.f_locals.values()):
             try:
-                if getattr(value, "status_code", None) == 401 and TOKEN_PATH in str(getattr(value, "url", "") or ""):
+                code = getattr(value, "status_code", None)
+                if (code == status if status is not None else isinstance(code, int) and not isinstance(code, bool)) \
+                        and TOKEN_PATH in str(getattr(value, "url", "") or ""):
                     found = value
             except Exception:       # a local that cannot be asked
                 pass
@@ -484,10 +495,20 @@ def _refusal(exc: Exception, grant: bool = False) -> str:
 
 def _said(exc: Exception, status: int = 401) -> str:
     """The status of an answer of the token address, with the `error` and the
-    `error_description` of its body where it carries them."""
+    `error_description` of its body where it carries them. An answer that
+    came from where the token address redirected the sign-in names that
+    path (no host, nothing behind it); a 2xx is one no token could be read
+    from."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        response = _held_answer(exc, None)
+    path = urlparse(str(getattr(response, "url", "") or "")).path
+    where = TOKEN_PATH if not path or TOKEN_PATH in path else f"{path}, where {TOKEN_PATH} sent the sign-in on"
+    if 200 <= status < 300:
+        return f"HTTP {status} from {where}, without an access token mdb could read"
     error, description = _answer(exc)
     said = [f'{name} "{value}"' for name, value in (("error", error), ("error_description", description)) if value]
-    return f"HTTP {status} from {TOKEN_PATH}" + (
+    return f"HTTP {status} from {where}" + (
         f" with {' and '.join(said)}" if said else " (no error_description could be read from the answer)")
 
 

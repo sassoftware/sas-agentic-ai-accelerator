@@ -477,6 +477,61 @@ def test_an_address_mdb_took_before_is_taken(env, url):
     assert s.resolve_auth().url == url
 
 
+URL = "https://viya.example.com"
+TOKEN_URL = f"{URL}/SASLogon/oauth/token#password"
+
+
+@pytest.mark.parametrize("answer, said", [
+    ((200, "<html>login</html>", None),
+     "HTTP 200 from /SASLogon/oauth/token, without an access token mdb could read"),
+    ((200, '{"hello": 1}', None), "HTTP 200 from /SASLogon/oauth/token, without an access token mdb could read"),
+    ((404, "", f"{URL}/elsewhere#password"),
+     "HTTP 404 from /elsewhere, where /SASLogon/oauth/token sent the sign-in on (no error_description could be "
+     "read from the answer)"),
+    ((401, '{"error": "unauthorized", "error_description": "Full authentication is required"}',
+      f"{URL}/SASLogon/login#password"),
+     'HTTP 401 from /SASLogon/login, where /SASLogon/oauth/token sent the sign-in on with error "unauthorized" '
+     'and error_description "Full authentication is required"'),
+])
+def test_an_answer_of_the_token_address_without_a_token_is_one_line(env, monkeypatch, answer, said):
+    """gate-21a, sign-in against a stand-in: a redirect whose target answers
+    an error, a 200 whose body is no JSON and a 200 without access_token
+    ended with a traceback and exit code 1. The real sasctl, with the
+    transport of requests replaced; skipped where sasctl is not installed."""
+    import sys
+    pytest.importorskip("sasctl")
+    import requests
+    status, body, landed = answer
+    posted = []
+
+    def post(self, url, **kwargs):
+        posted.append(url)
+        response = requests.Response()
+        response.status_code, response.url = status, landed or url
+        response._content = body.encode("utf-8")
+        if landed:
+            earlier = requests.Response()
+            earlier.status_code, earlier.url = 302, url
+            response.history = [earlier]
+        return response
+
+    monkeypatch.setattr(requests.Session, "post", post)
+    monkeypatch.setitem(sys.modules, "sasctl", pytest.importorskip("sasctl"))
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    env.setenv(s.URL_ENV, URL)
+    env.setenv(s.USER_ENV, "u")
+    env.setenv(s.PASSWORD_ENV, "s3cret-p")
+    env.setenv("SAS_VIYA_VERIFY_SSL", "false")
+    with pytest.raises(s.ViyaSignInError) as caught:
+        s.create_session()
+    assert posted == [TOKEN_URL]
+    assert str(caught.value) == (
+        f"SAS Viya at {URL} did not answer the sign-in of u with SAS_VIYA_USER + SAS_VIYA_PASSWORD (1 sign-in "
+        f"made) with a token: {said}. mdb reads only HTTP 401 as a refusal of the credentials, and asks no other "
+        "answer again: run the command again, and where the answer stays the same, look at SAS Logon.")
+    assert "s3cret-p" not in str(caught.value)
+
+
 def test_the_requests_of_apply_name_the_identity_whole(mdb):
     mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: 'Sales#EMEA'}\n"
                         "  - {type: group, id: '../x', state: absent}\n", encoding="utf-8")
