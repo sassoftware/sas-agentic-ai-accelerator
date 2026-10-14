@@ -3759,7 +3759,7 @@ def _credential_scaffold(target: Path, env_file: str, domain: str) -> tuple[str,
         raise typer.Exit(2)
     if not entries:
         console.print(
-            f"[yellow]{_plain(source)} carries no recognised entries — expected provider "
+            f"[yellow]{_plain(source)} carries no recognised entries - expected provider "
             "keys (OPENAI_API_KEY, …), <BACKEND>_RAG_USER/_PW pairs and/or "
             "<BACKEND>_HOST/_PORT/_DB/_SSLMODE settings. Writing the manifest "
             "anyway.[/yellow]")
@@ -3778,7 +3778,7 @@ def _write_new_manifest(target: Path, text: str) -> None:
 def credentials_init(
     manifest: str = typer.Option(
         "credentials.yaml", "--manifest", "-m", "--file", "-f",
-        help="Where to write the manifest — anywhere you keep deployment records. "
+        help="Where to write the manifest - anywhere you keep deployment records. "
              "--file / -f is the earlier name of this option and is still read"),
     env_file: str = typer.Option(
         ".env", "--env-file", help="The .env whose entries it should point at"),
@@ -3809,9 +3809,9 @@ def credentials_init(
     text, count = _credential_scaffold(target, env_file, domain)
     _write_new_manifest(target, text)
     console.print(f"[green]Wrote {_plain(target)} listing {_plain(count)} available "
-                  "entries (names only — no values).[/green]")
-    console.print("Name the groups and users to equip — by hand, or with "
-                  f"[bold]mdb credentials-add group <id> --manifest {_plain(_shell_word(target))}[/bold] — "
+                  "entries (names only - no values).[/green]")
+    console.print("Name the groups and users to equip - by hand, or with "
+                  f"[bold]mdb credentials-add group <id> --manifest {_plain(_shell_word(target))}[/bold] - "
                   f"then run [bold]mdb credentials-apply --manifest {_plain(_shell_word(target))} "
                   "--dry-run[/bold].")
 
@@ -3934,7 +3934,7 @@ def credentials_add(
     who = f"{identity_type} {identity}"
     if created:
         console.print(f"[green]Wrote {_plain(path)} with {_plain(who)} as its identity, listing "
-                      f"{_plain(count)} available entries (names only — no values).[/green]")
+                      f"{_plain(count)} available entries (names only - no values).[/green]")
     elif edit.outcome == "added":
         console.print(f"[green]Added {_plain(who)} to {_plain(path)}.[/green]")
     elif edit.outcome == "placeholder":
@@ -3948,7 +3948,7 @@ def credentials_add(
             console.print(f"{_plain(who)} was marked for removal and is set back to "
                           "present: the next apply writes its credential.")
     else:
-        console.print(f"{_plain(who)} is already in {_plain(path)} — nothing was changed.")
+        console.print(f"{_plain(who)} is already in {_plain(path)} - nothing was changed.")
     if edit.outcome in ("added", "placeholder"):
         if edit.identity.only:
             console.print("  only: " + _plain(", ".join(edit.identity.only)))
@@ -4010,7 +4010,7 @@ def credentials_remove(
 
     who = f"{identity_type} {identity}"
     if edit.outcome == "unchanged":
-        console.print(f"{_plain(who)} is already marked `state: absent` in {_plain(path)} — "
+        console.print(f"{_plain(who)} is already marked `state: absent` in {_plain(path)} - "
                       "nothing was changed.")
     elif edit.outcome == "updated":
         console.print(f"[green]Marked {_plain(who)} as `state: absent` in {_plain(path)}.[/green]")
@@ -4125,7 +4125,7 @@ def credentials_apply(
                 # Planned from `state: absent`. What is there now decides
                 # only what the line says, never whether the step runs.
                 held = (f"written by {step.existing_by} {step.existing_at[:10]}"
-                        if step.found else "no credential — already gone")
+                        if step.found else "no credential - already gone")
                 table.add_row(_plain(step.identity.id), _plain(step.identity.type),
                               "[yellow]remove[/yellow]", "-", _plain(held))
                 continue
@@ -4151,7 +4151,7 @@ def credentials_apply(
         if dry_run:
             if any(step.identity.type == "group" for step in writes):
                 console.print(_plain(GROUP_REACH))
-            console.print("[yellow]Dry run — nothing was written and nothing "
+            console.print("[yellow]Dry run - nothing was written and nothing "
                           "was removed. The current contents of an existing "
                           "credential cannot be read back, so a replace is "
                           "reported without a diff.[/yellow]")
@@ -4177,13 +4177,14 @@ def credentials_apply(
                     if delete_credential(session, plan.domain, step.identity):
                         console.print(f"[green]{_plain(who)}: credential removed.[/green]")
                     else:
-                        console.print(f"{_plain(who)}: no credential to remove — it "
+                        console.print(f"{_plain(who)}: no credential to remove - it "
                                       "is already gone.")
                     continue
                 put_credential(session, plan.domain, step.identity,
                                entries_for(plan, step.identity))
                 console.print(
-                    f"[green]{_plain(who)}: {len(step.entry_names)} entries stored.[/green]")
+                    f"[green]{_plain(who)}: {len(step.entry_names)} "
+                    f"{'entry' if len(step.entry_names) == 1 else 'entries'} stored.[/green]")
                 group_written = group_written or step.identity.type == "group"
             except CredentialError as exc:
                 failed += 1

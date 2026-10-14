@@ -607,7 +607,7 @@ def test_an_apply_deletes_what_is_marked_absent_and_reports_what_was_already_gon
     assert mdb.site.made("DELETE") == [f"{DOMAIN}/groups/FormerTeam", f"{DOMAIN}/users/ada"]
     assert mdb.site.made("PUT") == [DOMAIN, f"{DOMAIN}/groups/LLMConsumers"]
     assert "group FormerTeam: credential removed." in said
-    assert "user ada: no credential to remove — it is already gone." in said
+    assert "user ada: no credential to remove - it is already gone." in said
     assert f"group LLMConsumers: {len(ENTRIES)} entries stored." in said
     assert list(mdb.site.held) == [f"{DOMAIN}/groups/LLMConsumers"]
     # the entries line describes what is written, not the removals

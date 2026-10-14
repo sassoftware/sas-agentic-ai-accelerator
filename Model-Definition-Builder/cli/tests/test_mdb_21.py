@@ -1051,7 +1051,7 @@ def test_an_only_list_with_a_comment_between_its_entries_is_not_rewritten(mdb, t
     assert code == 2 and mdb.path.read_text(encoding="utf-8") == text
     assert " ".join(said.split()) == (
         "credentials.yaml: the `only:` list of group 'RAGEngineers' holds a comment, which a rewrite of the list "
-        "would drop or leave beside another entry — nothing was written; edit the list by hand")
+        "would drop or leave beside another entry - nothing was written; edit the list by hand")
     # what is not about the list is still done, and leaves the list alone
     code, said = mdb("credentials-remove", "group", "RAGEngineers")
     assert code == 0 and mdb.path.read_text(encoding="utf-8") == text + "    state: absent\n"

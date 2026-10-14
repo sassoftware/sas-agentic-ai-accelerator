@@ -211,6 +211,33 @@ def test_a_refused_write_of_a_credential_names_the_reason_of_the_service(mdb):
         assert echoed not in said
 
 
+def test_the_credentials_commands_write_their_dashes_as_the_other_commands_do(mdb):
+    """live-21a: the credentials commands printed an em dash (`names only —
+    no values`, `Dry run — nothing was written`), content-deploy and
+    package-export ` - `. And `user zz_u: 1 entries stored.` (gate-21a C3)."""
+    runs = [("credentials-init", "--manifest", "c.yaml"), ("credentials-init", "--manifest", "c.yaml"),
+            ("credentials-add", "group", "LLMConsumers", "-m", "c.yaml"),
+            ("credentials-add", "group", "LLMConsumers", "-m", "c.yaml"),
+            ("credentials-add", "user", "ada", "-m", "c.yaml", "--only", "OpenAI"),
+            ("credentials-add", "user", "bob", "-m", "c.yaml", "--only", "Nope"),
+            ("credentials-apply", "-m", "c.yaml", "--dry-run"), ("credentials-apply", "-m", "c.yaml"),
+            ("credentials-report", "-m", "c.yaml"), ("credentials-remove", "user", "ada", "-m", "c.yaml"),
+            ("credentials-remove", "user", "ada", "-m", "c.yaml"), ("credentials-apply", "-m", "c.yaml"),
+            ("credentials-remove", "group", "Gone", "-m", "c.yaml"), ("credentials-apply", "-m", "c.yaml"),
+            ("credentials-report", "-m", "c.yaml"), ("credentials-add", "group", "X", "-m", "nothere/x.yaml",
+                                                     "--env-file", "nothere.env")]
+    for args in runs:
+        mdb(*args)
+    said = "".join(mdb.printed)
+    assert "—" not in said
+    assert "user ada: 1 entry stored." in said and "group LLMConsumers: 4 entries stored." in said
+    assert "Dry run - nothing was written" in said and "(names only - no values)" in said
+    assert "group Gone: no credential to remove - it is already gone." in said
+    (mdb.path.parent / "bad.yaml").write_text("identities: [{type: group, id: A}]\n", encoding="utf-8")
+    code, said = mdb("credentials-add", "group", "B", "-m", "bad.yaml")
+    assert code == 2 and "cannot be edited in place - edit the file by hand" in said
+
+
 def test_the_requests_of_apply_name_the_identity_whole(mdb):
     mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: 'Sales#EMEA'}\n"
                         "  - {type: group, id: '../x', state: absent}\n", encoding="utf-8")

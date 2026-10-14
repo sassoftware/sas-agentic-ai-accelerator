@@ -333,7 +333,7 @@ class Manifest:
             listed = []
         elif not isinstance(listed, list) or not listed:
             raise CredentialError(
-                f"{path}: 'identities' must be a non-empty list — a manifest "
+                f"{path}: 'identities' must be a non-empty list - a manifest "
                 "that equips nobody is almost certainly a mistake")
 
         identities = []
@@ -551,7 +551,7 @@ def _identities_node(text: str, path: Path):
                 name, listed = key, value
     if listed is None:
         raise CredentialError(
-            f"{path}: there is no 'identities' list to add to — write a "
+            f"{path}: there is no 'identities' list to add to - write a "
             "manifest with `mdb credentials-init`")
     empty = (isinstance(listed, yaml.ScalarNode)
              and listed.start_mark.index == listed.end_mark.index)
@@ -561,7 +561,7 @@ def _identities_node(text: str, path: Path):
     if not (empty or block):
         raise CredentialError(
             f"{path}: 'identities' is not a block list (one `- ` line per "
-            "identity), so it cannot be edited in place — edit the file by hand")
+            "identity), so it cannot be edited in place - edit the file by hand")
     return name, listed
 
 
@@ -744,7 +744,7 @@ def edit_identity(text: str, path: Path, type: str, id: str,
             if (who.type, who.id) == (type, id)]
     if len(same) > 1:
         raise CredentialError(
-            f"{path}: {type} '{id}' is listed {len(same)} times — make it one "
+            f"{path}: {type} '{id}' is listed {len(same)} times - make it one "
             "entry by hand first")
     placeholders = [index for index, who in enumerate(before.identities)
                     if who.id == PLACEHOLDER_ID]
@@ -794,7 +794,7 @@ def edit_identity(text: str, path: Path, type: str, id: str,
         except _CommentInList as held:
             raise CredentialError(
                 f"{path}: the `{held.args[0]}:` list of {type} '{id}' holds a comment, which a rewrite of the "
-                "list would drop or leave beside another entry — nothing was written; edit the list by "
+                "list would drop or leave beside another entry - nothing was written; edit the list by "
                 "hand") from None
         if outcome == "placeholder":
             # the comment the scaffold wrote about its placeholder leaves with it
@@ -822,7 +822,7 @@ def edit_identity(text: str, path: Path, type: str, id: str,
     if not proven:
         raise CredentialError(
             f"{path}: the manifest is laid out in a way this edit cannot be "
-            "made in safely — nothing was written; edit the file by hand")
+            "made in safely - nothing was written; edit the file by hand")
     # A new identity has no "before" to tell a change against.
     return ManifestEdit(edited, after, wanted, outcome,
                         tuple(changes) if outcome == "updated" else ())
@@ -876,11 +876,11 @@ def planned_entries(manifest: Manifest, identity: Identity) -> tuple:
         if missing:
             return tuple(sorted(entries)), (
                 "the source does not carry " + ", ".join(sorted(missing))
-                + " — 'only' names entries as the DOMAIN spells them "
+                + " - 'only' names entries as the DOMAIN spells them "
                   "(OpenAI, PGVECTOR_RAG_PW), not as the .env does")
     if not entries:
         return (), (
-            f"no recognised entries in {source} — expected provider keys "
+            f"no recognised entries in {source} - expected provider keys "
             "(OPENAI_API_KEY, …), <BACKEND>_RAG_USER/_PW pairs and/or "
             "<BACKEND>_HOST/_PORT/_DB/_SSLMODE settings")
     return tuple(sorted(entries)), ""
@@ -991,7 +991,7 @@ def ensure_domain(session, domain: str) -> None:
     if response.status_code >= 300:
         raise CredentialError(
             f"creating or updating the domain '{domain}' failed: HTTP "
-            f"{response.status_code} — creating a domain requires SAS "
+            f"{response.status_code} - creating a domain requires SAS "
             "administrator rights")
 
 
@@ -1015,7 +1015,7 @@ def put_credential(session, domain: str, identity: Identity, entries: dict) -> N
     if response.status_code >= 300:
         said = f"HTTP {response.status_code}"
         if response.status_code in (401, 403):
-            said += (" — writing a GROUP credential requires SAS "
+            said += (" - writing a GROUP credential requires SAS "
                      "administrator rights; a user may write their own")
         elif response.status_code == 404:
             # the answer names why - errorCode 12310, "... the group identity ... does not exist" (measured on
