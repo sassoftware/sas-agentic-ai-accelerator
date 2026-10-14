@@ -192,6 +192,17 @@ def _named(members: list, name: str, kind: str) -> list:
     return [m for m in members if m.get("name") == name and str(m.get("uri") or "").startswith(prefix)]
 
 
+def _called(member: dict, kind: Optional[str]) -> str:
+    """What a line calls the object a member of a folder is - for a
+    reference: the object it names. The word of its kind (_WORD), as every
+    other line has it; for an object of no kind of the manifest the content
+    type the Folders service gives it, and where it gives none its address."""
+    if kind:
+        return _WORD[kind]
+    uri = str(member.get("uri") or "")
+    return str(member.get("contentType") or "") or (f"object at {uri}" if uri else "object")
+
+
 def _members_named(members: list, name: str, kind: str) -> list:
     """The objects of a folder with this name and kind: its children. A
     reference is not one - what it names lives in another folder."""
@@ -642,12 +653,12 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
             if is_reference(member) and key in referenced:
                 continue                                       # named on the line of its entry, which FAILED for it
             if is_reference(member) or key not in listed_entries:
-                what = kind or member.get("contentType") or uri.strip("/").split("/")[0] or "object"
+                what = _called(member, kind)
                 if is_reference(member):
                     # at a listed path the reference is what is not listed, not the path - whatever kind
                     # of object it names
-                    listed_as = sorted(k for folder, name, k in listed_entries if (folder, name) == key[:2])
-                    what = f"reference to a {what}" + (
+                    listed_as = sorted(_WORD[k] for folder, name, k in listed_entries if (folder, name) == key[:2])
+                    what = f"reference to {'an' if what[:1].lower() in 'aeiou' else 'a'} {what}" + (
                         f" - not the {' or '.join(listed_as)} that is listed under this name" if listed_as else "")
                 name = str(member.get("name"))
                 result.unlisted.append(f"{folder_path}/{name} ({what})" if folder_path else f"{name} ({what})")

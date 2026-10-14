@@ -267,7 +267,7 @@ def test_a_reference_of_another_kind_is_listed_as_what_it_is_and_fails_nothing(c
     assert f"  equal        file          {CORE}  (id " in text
     assert "\nNot in the manifest and left alone (4) - " in text
     assert f"  {CORE} (reference to a report - not the file that is listed under this name)\n" in text
-    assert f"  {STEP_PATH} (reference to a file - not the step that is listed under this name)\n" in text
+    assert f"  {STEP_PATH} (reference to a file - not the registered step that is listed under this name)\n" in text
     assert "  RAG (reference to a file - not the folder that is listed under this name)\n" in text
     assert "  RAG/not listed (reference to a file)\n" in text
     # the sentence of the help is the one the code keeps

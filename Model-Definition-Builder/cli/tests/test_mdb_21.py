@@ -630,3 +630,40 @@ def test_no_hint_names_a_command_for_release_json(shipped):
     assert code == 1 and "`" not in line and line.endswith(
         "none was changed, because nothing says which one is meant - remove the other: release.json is written only "
         "by a run that covers every entry of the manifest)"), line
+
+
+# ---- what is left alone: called by the word the other lines use -----------------------------
+def test_what_is_left_alone_is_called_by_the_word_of_its_kind(shipped):
+    """gate-20b: `reference to a jobDefinition`, `reference to a
+    casManagement`, `not the jobDefinition that is listed under this name` -
+    the word of the manifest and a part of an address in a line for people,
+    where the FAILED lines say `job definition` and `registered step`."""
+    viya = shipped.viya
+    assert shipped()[0] == 0
+    table = "/casManagement/servers/cas-shared-default/caslibs/Public/tables/SOME_TABLE"
+    step, job = "RAG/steps/RAG - List Documents.step", "Data/Load-Accelerator-Tables"
+    viya.put_reference(f"{ROOT}/RAG/rag_core/tokens.py", "/jobDefinitions/definitions/elsewhere")
+    viya.put_reference(f"{ROOT}/{step}", "/files/files/elsewhere")
+    viya.put_reference(f"{ROOT}/{job}", "/dataFlows/steps/elsewhere")
+    viya.put_reference(f"{ROOT}/RAG/rag_core/env.py", table)
+    viya.put_reference(f"{ROOT}/RAG/of the site", table)
+    viya.members[viya.folder_id(f"{ROOT}/RAG")].append({"name": "a picture", "uri": "/images/images/1",
+                                                         "type": "reference", "contentType": "image"})
+    viya.put_member(f"{ROOT}/RAG/a step of the site.step", "/dataFlows/steps/", {"name": "a step of the site.step"})
+    viya.put_member(f"{ROOT}/RAG/a job of the site", "/jobDefinitions/definitions/", {"code": "x"})
+    viya.put_member(f"{ROOT}/RAG/a table of the site", "/casManagement/servers/x/caslibs/y/tables/", None)
+    code, text = shipped()
+    assert code == 0 and "FAILED" not in text, text
+    left = text.split("Not in the manifest and left alone (9) - ")[1].splitlines()[1:10]
+    assert sorted(left) == sorted([
+        f"  {job} (reference to a registered step - not the job definition that is listed under this name)",
+        "  RAG/a job of the site (job definition)",
+        "  RAG/a picture (reference to an image)",
+        "  RAG/a step of the site.step (registered step)",
+        f"  RAG/a table of the site (object at {viya.at(ROOT + '/RAG/a table of the site')[0]})",
+        f"  RAG/of the site (reference to an object at {table})",
+        f"  RAG/rag_core/env.py (reference to an object at {table} - not the file that is listed under this name)",
+        "  RAG/rag_core/tokens.py (reference to a job definition - not the file that is listed under this name)",
+        f"  {step} (reference to a file - not the registered step that is listed under this name)"])
+    for raw in ("jobDefinition", "casManagement", "dataFlows"):
+        assert all(raw not in line.split(" (", 1)[1].split(" at ")[0] for line in left), raw
