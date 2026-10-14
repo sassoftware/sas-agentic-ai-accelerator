@@ -67,7 +67,8 @@
  *
  * An ingestion goes on in SAS Viya as well: the setup it was launched for
  * shows the run again when it is opened again - still running, or ended
- * meanwhile - and not a second time once the run was seen to end.
+ * meanwhile - and not a second time once the run was seen to end; a setup
+ * that is deleted takes its run along.
  *
  * The suite goes on after a comparison that failed, so one run lists the
  * fields of every road; a line "[http 4xx/5xx]" names a request the mock
@@ -1456,6 +1457,42 @@ function same(got, wanted, label, fieldsOnly = false) {
     step(
       !away.shown && found.shown && found.state === 'completed' && /Run finished/.test(found.text) && !/took |running for/.test(found.text) && found.ledger && found.launch,
       `an ingestion that ends while another setup is open -> its own setup again: the card says that the run has finished, without a time nobody measured, the ledger is shown and Launch can be used (on the other setup - run card shown: ${away.shown}; back on its own - ${said(found)})`
+    );
+
+    // A setup that is deleted takes its run along. The mock gives the id of
+    // a deleted setup to the next one that is created, so a run that stayed
+    // in the page's list would be shown on that one.
+    await createRagSetup(page);
+    const deleted = await page.inputValue(rgb('setup'));
+    await goStep(page, 'RGB', 'documents');
+    await page.fill(rgb('source-path'), '/mnt/data/issue47');
+    await page.selectOption(rgb('embed-model'), { index: 1 });
+    await goStep(page, 'RGB', 'store');
+    await page.selectOption(rgb('backend'), 'pgvector');
+    await page.fill(rgb('collection'), 'issue47_collection');
+    await page.fill(rgb('tables-prefix'), 'ISSUE47');
+    await page.selectOption(rgb('tables-caslib'), { index: 1 });
+    await page.click(rgb('manifest'));
+    await waitUntil(async () => /Setup manifested/.test((await page.textContent(rgb('save-result'))) || ''), 'the new setup is manifested', 60000);
+    await atRest();
+    await goStep(page, 'RGB', 'run');
+    await page.route('**/jobExecution/jobs/ragrun-*', keepRunning);
+    await page.click(rgb('launch'));
+    await waitUntil(async () => (await runCard(page)).state === 'running', 'the ingestion of the new setup runs', 30000);
+    await goStep(page, 'RGB', 'setup');
+    await page.click(rgb('delete-setup'));
+    await page.waitForSelector('.modal.show .btn-danger');
+    await page.click('.modal.show .btn-danger');
+    await waitUntil(async () => !(await ragState()).models.some((model) => model.id === deleted), 'the setup is deleted');
+    await atRest();
+    await createRagSetup(page);
+    const next = await page.inputValue(rgb('setup'));
+    await page.unroute('**/jobExecution/jobs/ragrun-*', keepRunning);
+    await goStep(page, 'RGB', 'run');
+    const afterDelete = await runCard(page);
+    step(
+      next === deleted && !afterDelete.shown && afterDelete.state === '',
+      `a setup that is deleted takes its run along: the setup created next, to which the mock gives the id of the deleted one, shows no run (ids: ${deleted} and ${next}; ${said(afterDelete)})`
     );
   });
 

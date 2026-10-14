@@ -21,16 +21,20 @@
  *      must not get there.
  *   4. Afterwards the requests are read: what was written, and to which item;
  *      the note of the write stands on the item it was made for; the controls
- *      can be used again, and the same attempt now opens the other item.
+ *      can be used again. For the two saves that lost or misplaced data and
+ *      for the four deletes the attempt is then made a second time, and
+ *      opens the other item.
  *
  * The write paths: Save Experiments (also one whose upload fails), Save
  * documentation, Manifest for a prompt template and for a decision template,
  * Delete prompt-test, Delete project, the delete of an optimization run,
  * Compare targets and Run optimization (which save first); in the RAG Builder
  * Save setup (also one that is refused), Save documentation, Manifest setup,
- * Delete setup and Delete project. A creation is not among them: its dialog
- * lies over the page and cannot be closed while the creation is out, which
- * verify.js and verify-rag.js check.
+ * Delete setup and Delete project. Two writes are not among them, because
+ * they take no lock: a creation, whose dialog lies over the page and cannot
+ * be closed while the creation is out (verify.js and verify-rag.js check
+ * that), and the one fixed value a prompt-test with the function name of an
+ * earlier release gets when it is opened.
  *
  * The suite goes on after a check that failed, and after a road that stopped,
  * so one run says what holds for every write path. The mock is found at
