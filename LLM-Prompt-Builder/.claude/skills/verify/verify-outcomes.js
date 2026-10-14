@@ -3,6 +3,11 @@
  * write or one dialog stays behind for the next. Run against a FRESH mock
  * instance.
  *
+ * Before the roads, a census reads the sources (source-census.js): every
+ * write of src/api reads back what is stored when it gets no usable answer
+ * (API_REQUESTS names the requests that do not, with why), and every call of
+ * a write in src/objects is named in WRITES with what it comes to then.
+ *
  * The roads, each on a page of its own:
  *
  *   - Writes SAS Model Manager refuses with a status are writes that failed:
@@ -13,12 +18,18 @@
  *     Manifest setup and its model version. Nothing is deleted to be
  *     written back: a refused upload loses no run. The delete of an
  *     optimization run whose tracker cannot be read writes nothing and says
- *     what failed; one whose upload was stored without an answer says the run
- *     may have been deleted.
- *   - A delete whose request gets no answer says so; a Delete prompt-test or
- *     Delete project opens no dialog when another item was opened while the
- *     usage was asked. A Delete project that stops part of the way shows
- *     what is left, in both builders, and says what was deleted.
+ *     what failed; one whose upload was stored without an answer reads the
+ *     tracker back and says the run was deleted, one whose upload was not
+ *     stored says the tracker was not changed.
+ *   - A write whose request gets no answer is read back: Delete prompt-test,
+ *     Delete project and Delete setup that were carried out end as after a
+ *     204, and ones that were not say so without a word of permissions; Save
+ *     Experiments and Save setup whose upload was stored are saves; a
+ *     prompt-test whose creation was stored is listed and open. A Delete
+ *     prompt-test or Delete project opens no dialog when another item was
+ *     opened while the usage was asked. A Delete project that stops part of
+ *     the way shows what is left, in both builders, and says what was
+ *     deleted.
  *   - Save setup, Manifest setup and Save documentation cannot be used while
  *     the stored setup is read.
  *   - While a write is out, a change of a picker sent by a script (as the
@@ -39,6 +50,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
+const { parse, walk, callsInSource, sourceFiles } = require('./source-census.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const results = [];
@@ -72,7 +84,150 @@ const lpb = (suffix) => `#app-obj-LPB-${suffix}`;
 const rgb = (suffix) => `#app-obj-RGB-${suffix}`;
 const MANIFEST_BOX = lpb('pet-save-result');
 
+// ============================================================================
+// The census: every write
+// ============================================================================
+// A write whose answer was lost was taken for one that failed: a Delete
+// prompt-test that SAS Model Manager carried out said "The deletion failed"
+// and kept the deleted prompt-test open. Every function of src/api that
+// sends a write reads back what is stored when its request gets no usable
+// answer (writeOrReadBack in src/api/http-client.ts): API_REQUESTS names the
+// requests that do not, with why. WRITES names every call of those functions
+// in src/objects, by the function it stands in, with what a write that got
+// no answer comes to there once it was read back.
+const WRITE_FUNCTIONS = [
+  'createModelProject', 'createModel', 'createModelContent', 'deleteModelContent', 'deleteModelVariable', 'updateModelTags', 'updateModelAttributes',
+  'deleteModel', 'deleteModelProject', 'createModelVersion', 'createJobDefinition', 'createTransientJobDefinition', 'updateJobDefinition',
+  'deleteJobDefinition', 'launchJob', 'ensureFolderPath', 'ensureChildFolder', 'registerFlow',
+];
+const SENDERS = ['viyaPost', 'viyaPut', 'viyaDelete', 'viyaPatch', 'viyaPostRaw'];
+const API_REQUESTS = {
+  'api/http-client.ts viyaPost': 'a sender: every call of it in src/api is in this census',
+  'api/http-client.ts viyaPostRaw': 'a sender: every call of it in src/api is in this census',
+  'api/http-client.ts viyaPut': 'a sender: every call of it in src/api is in this census',
+  'api/http-client.ts viyaDelete': 'a sender: every call of it in src/api is in this census',
+  'api/http-client.ts viyaPatch': 'a sender: every call of it in src/api is in this census',
+  'api/relationships-api.ts read': 'the relationships query: a read that is sent with POST',
+  'api/scr-api.ts scoreSCR': 'a call of a model container: it stores nothing, and a call without an answer is a call that failed',
+  'api/scr-api.ts callSCRDecision': 'a call of a model container: it stores nothing, and a call without an answer is a call that failed',
+  'api/scr-api.ts callSCRLLM': 'a call of a model container: it stores nothing, and a call without an answer is a call that failed',
+};
+const READ_BACK = 'read back (see writeOrReadBack)';
+const WRITES = {
+  'objects/prompt-builder.ts': {
+    'promptDocSaveButton.onclick -> updateModelAttributes': [1, `${READ_BACK}: the toast says that the request was not carried out, or that this is not known`],
+    'loadPromptDocumentation -> updateModelAttributes': [1, `${READ_BACK}: the one fixed value of an earlier function name, written again at the next opening; nothing is said`],
+    'promptBuilderCreateProject -> createModelProject': [1, `${READ_BACK} by its name: a project that is there is created and selected; otherwise the dialog says what the read back found`],
+    'promptBuilderCreatePrompt -> createModel': [1, `${READ_BACK} by its name: a prompt-test that is there is created and selected (road below); otherwise the dialog says what the read back found`],
+    'promptBuilderCreatePrompt -> updateModelTags': [1, `${READ_BACK}: the tags are best effort, the console says it`],
+    'promptBuilderDeletePrompt -> deleteModel': [1, `${READ_BACK}: a prompt-test that is gone leaves the page as after a 204; otherwise the toast says what the read back found, without a word of permissions (road below)`],
+    'promptBuilderDeleteProject -> deleteModel': [1, `${READ_BACK}: one that is gone counts as deleted; otherwise the delete stops and the page shows what is left of the project (road below)`],
+    'promptBuilderDeleteProject -> deleteModelProject': [1, `${READ_BACK}: a project that is gone is deleted (road below); otherwise as above`],
+    'storeManifestScoreCode -> createModelContent': [1, `${READ_BACK}: a score code that is stored lets the manifest go on; one that is not stops it with "the model does not hold"; one that cannot be read back stops it with "not known" (verify.js)`],
+    'promptBuilderSaveExperiments -> createModelVersion': [1, `${READ_BACK} by the versions listed before: the save stops before the upload, and its line says what the read back found`],
+    'promptBuilderSaveExperiments -> createModelContent': [1, `${READ_BACK}: a tracker that holds what was sent is saved (road below); otherwise the line beside the button says what the read back found (verify.js)`],
+    'promptBulderCreateBestPromptModel -> deleteModelVariable': [1, `${READ_BACK}: a variable that is gone lets the manifest go on; otherwise it stops with its line`],
+    'promptBulderCreateBestPromptModel -> createModelContent': [3, `${READ_BACK}: a file that holds what was sent lets the manifest go on; otherwise it stops with its line`],
+    'promptBulderCreateBestPromptModel -> updateModelTags': [1, `${READ_BACK}: tags that were not written are said in a line of their own, and the manifest goes on`],
+    'promptBulderCreateBestPromptModel -> deleteModelContent': [1, `${READ_BACK}: a file that is gone lets the manifest go on; otherwise it stops with its line`],
+    'promptBulderCreateBestPromptModel -> updateModelAttributes': [1, `${READ_BACK}: otherwise the manifest ends with the line that it was not completed`],
+    'promptBuilderCreateDecisionModel -> deleteModelVariable': [1, `${READ_BACK}: as in the manifest of a prompt template`],
+    'promptBuilderCreateDecisionModel -> createModelContent': [3, `${READ_BACK}: as in the manifest of a prompt template`],
+    'promptBuilderCreateDecisionModel -> updateModelTags': [1, `${READ_BACK}: as in the manifest of a prompt template`],
+    'promptBuilderCreateDecisionModel -> updateModelAttributes': [1, `${READ_BACK}: as in the manifest of a prompt template`],
+    'deleteOptimizationRun -> createModelVersion': [1, `${READ_BACK} by the versions listed before: the delete stops before the tracker is written and says that the tracker was not changed`],
+    'deleteOptimizationRun -> createModelContent': [1, `${READ_BACK}: a tracker that holds what was sent is the delete carried out; one that does not says that the tracker was not changed; one that cannot be read back says the run may have been deleted or not; the history is read again (roads above)`],
+    'deleteOptimizationRun -> deleteModelContent': [2, `${READ_BACK}: the delete of the tracker as its upload; a snapshot that may be left is said`],
+    'promptBuilderRunOptimization -> launchJob': [1, `${READ_BACK} from the jobs that are running: the job of this launch is followed; otherwise the result box and a toast say that it is not known whether it was launched`],
+    'promptBuilderRunComparison -> launchJob': [1, `${READ_BACK}: as the optimization`],
+  },
+  'objects/rag-builder.ts': {
+    'saveDocumentation -> createModelContent': [1, `${READ_BACK}: otherwise the banner says what the read back found`],
+    'saveDocumentation -> updateModelAttributes': [1, `${READ_BACK}: as the upload`],
+    'removeStaleDocumentation -> deleteModelContent': [1, `${READ_BACK}: an obsolete copy that stays is not said (console)`],
+    'createProjectFromModal -> createModelProject': [1, `${READ_BACK} by its name: a project that is there is created and selected; otherwise the dialog says what the read back found`],
+    'createSetupFromModal -> createModel': [1, `${READ_BACK} by its name: as the project`],
+    'saveSetup -> createModelContent': [2, `${READ_BACK}: a file that holds what was sent lets the save go on (road below); otherwise the banner and the line beside the button say what the read back found`],
+    'saveSetup -> updateModelAttributes': [1, `${READ_BACK}: as the upload`],
+    'saveSetup -> updateModelTags': [1, `${READ_BACK}: as the upload`],
+    'generateIngestionJob -> updateJobDefinition': [1, `${READ_BACK}: a definition that holds what was sent lets the manifest go on; otherwise it stops, and the banner says what the read back found`],
+    'generateIngestionJob -> ensureFolderPath': [1, `${READ_BACK}: a folder that is there lets the manifest go on; otherwise as above`],
+    'generateIngestionJob -> createJobDefinition': [1, `${READ_BACK}: as the update`],
+    'generateIngestionJob -> createModelContent': [1, `${READ_BACK}: as the update`],
+    'manifestSetup -> createModelVersion': [1, `${READ_BACK} by the versions listed before: the line says that everything else was done, and what the read back found`],
+    'launchIngestion -> launchJob': [1, `${READ_BACK} from the jobs that are running: the job of this launch is followed; otherwise no run is shown, and the banner says that it is not known whether it was launched`],
+    'generateStudioFlow -> ensureFolderPath': [1, `${READ_BACK}: as in the ingestion job`],
+    'generateStudioFlow -> registerFlow': [1, `${READ_BACK}: a flow of its name lets the manifest go on; otherwise it stops with what the read back found`],
+    'generateStudioFlow -> createModelContent': [1, `${READ_BACK}: as the flow`],
+    'registerRetrievalModel -> createModelContent': [1, `${READ_BACK}: a score code that is stored lets the stage go on; one that is not stops it with "the setup does not hold"; one that cannot be read back stops it with "not known" (verify-rag.js)`],
+    'registerRetrievalModel -> updateModelTags': [1, `${READ_BACK}: tags that were not written are said in the outcome line`],
+    'runRetrievalTest -> createTransientJobDefinition': [1, `${READ_BACK} among the definitions of its name: one that holds what was sent is used; otherwise the panel says what the read back found`],
+    'runRetrievalTest -> launchJob': [1, `${READ_BACK} from the running jobs of the definition; otherwise the panel says that it is not known whether it was launched, and the definition is deleted`],
+    'runRetrievalTest -> deleteJobDefinition': [1, `${READ_BACK}: a definition that may be left is said on the panel`],
+    'deleteSetupButton:click -> deleteModel': [1, `${READ_BACK}: a setup that is gone is deleted, as after a 204; otherwise the banner says what the read back found, without a word of permissions (road below)`],
+    'deleteProjectButton:click -> deleteModel': [1, `${READ_BACK}: otherwise the delete stops and the page shows what is left of the project (road below)`],
+    'deleteProjectButton:click -> deleteModelProject': [1, `${READ_BACK}: as the setups`],
+  },
+};
+function writesCensus() {
+  let files;
+  try {
+    files = sourceFiles();
+  } catch (error) {
+    step(false, `every write reads back what is stored (the sources could not be read: ${error.message}; set VERIFY_PROJECT, run npm ci)`);
+    return;
+  }
+  // The requests of src/api that write.
+  const found = {};
+  for (const [file, text] of Object.entries(files)) {
+    let parsed;
+    try {
+      parsed = parse(file, text);
+    } catch (error) {
+      step(false, `${file}: the sources are known to this suite (${error.message})`);
+      return;
+    }
+    walk(parsed.program, parsed.source, (node, name, parents) => {
+      if (node.type !== 'CallExpression') return;
+      if (node.callee.type !== 'Identifier') return;
+      let sends = SENDERS.includes(node.callee.name);
+      if (['viyaFetch', 'fetch', 'fetchWithin'].includes(node.callee.name)) {
+        const options = node.arguments[1];
+        const method = options && options.type === 'ObjectExpression' && options.properties.find((property) => property.key && property.key.name === 'method');
+        sends = Boolean(method) && /'(POST|PUT|DELETE|PATCH)'/.test(parsed.source(method.value));
+      }
+      if (!sends) return;
+      const where = `${file} ${name || '(module)'}`;
+      if (!file.startsWith('api/')) {
+        found[where] = 'sends a write outside src/api';
+        return;
+      }
+      const readBack = parents.some((parent, index) => parent.type === 'CallExpression' && parent.callee.type === 'Identifier' && parent.callee.name === 'writeOrReadBack' && parents[index + 1] === parent.arguments[0]);
+      if (!readBack) found[where] = found[where] || 'no read back';
+    });
+  }
+  const strangers = Object.keys(found).filter((where) => !API_REQUESTS[where]);
+  const gone = Object.keys(API_REQUESTS).filter((where) => !found[where]);
+  step(
+    strangers.length === 0 && gone.length === 0,
+    `every write of src/api reads back what is stored when it gets no usable answer, or is named here with why it does not (not named here: ${strangers.map((where) => `${where} (${found[where]})`).join('; ') || 'none'}; named but not found: ${gone.join('; ') || 'none'})`
+  );
+  for (const [file, known] of Object.entries(WRITES)) {
+    const counts = callsInSource(file, files[file] || '', WRITE_FUNCTIONS);
+    const unknown = Object.keys(counts).filter((key) => !known[key]);
+    const missing = Object.keys(known).filter((key) => !counts[key]);
+    const miscounted = Object.keys(known).filter((key) => counts[key] && counts[key] !== known[key][0]).map((key) => `${key}: ${counts[key]}, not ${known[key][0]}`);
+    step(
+      unknown.length === 0 && missing.length === 0 && miscounted.length === 0,
+      `${file}: every write is named here with what a write that got no answer comes to once it was read back (${Object.keys(counts).length} calls; not named here: ${unknown.join('; ') || 'none'}; named but not found: ${missing.join('; ') || 'none'}; counted otherwise: ${miscounted.join('; ') || 'none'})`
+    );
+  }
+  const otherFiles = Object.keys(files).filter((file) => !WRITES[file] && !file.startsWith('api/') && Object.keys(callsInSource(file, files[file], WRITE_FUNCTIONS)).length > 0);
+  step(otherFiles.length === 0, `no other file outside src/api writes (got: ${otherFiles.join(', ') || 'none'})`);
+}
+
 (async () => {
+  writesCensus();
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   let pageErrors = [];
   const newPage = async ({ clock = false } = {}) => {
@@ -451,7 +606,7 @@ const MANIFEST_BOX = lpb('pet-save-result');
     await goStep(page, 'LPB', 'optimize');
     const { said, after } = await deleteFirstRun(page);
     step(
-      said.some((text) => text.startsWith('The run was removed from the optimization history, but the delete of its dataset snapshot Prompt-Optimization-Dataset-1.json failed')) &&
+      said.some((text) => text.startsWith('The run was removed from the optimization history, but the delete of its dataset snapshot Prompt-Optimization-Dataset-1.json was refused or got no answer: the snapshot may still be stored')) &&
         !said.some((text) => text.startsWith('Optimization run deleted')) &&
         after === 1 && state.entries.length === 1 && state.entries[0].optimizationId === 2,
       `the delete of an optimization run whose snapshot is refused says that the run left the history and that its snapshot may still be stored, and the history lists the other run (toasts: ${JSON.stringify(said)}; entries shown: ${after}; stored: ${JSON.stringify(state.entries.map((entry) => entry.optimizationId))})`
@@ -484,8 +639,8 @@ const MANIFEST_BOX = lpb('pet-save-result');
     });
   }
 
-  // The upload of the other runs is stored, and its answer is lost: whether
-  // the run was deleted is not known to the page, and the toast says so.
+  // The upload of the other runs is stored, and its answer is lost: the page
+  // reads the tracker back, finds the run gone, and the delete goes on.
   await road('the delete of an optimization run whose upload is stored without an answer', async (page) => {
     await openPage(page);
     const state = await servedTracker(page, { storeThenNoAnswer: true });
@@ -493,10 +648,28 @@ const MANIFEST_BOX = lpb('pet-save-result');
     await goStep(page, 'LPB', 'optimize');
     const { said, after } = await deleteFirstRun(page);
     step(
-      said.some((text) => text.startsWith('The deletion of the run got no usable answer from SAS Model Manager: the run may have been deleted or not.')) &&
-        !said.some((text) => text.startsWith('The deletion failed') || text.startsWith('Optimization run deleted')) &&
+      said.some((text) => text.startsWith('Optimization run deleted')) &&
+        !said.some((text) => text.startsWith('The deletion failed') || text.includes('may have been deleted or not')) &&
         after === 1 && state.entries.length === 1 && state.entries[0].optimizationId === 2,
-      `the delete of an optimization run whose upload is stored without an answer says that the run may have been deleted, under a history that lists the other run (toasts: ${JSON.stringify(said)}; entries shown: ${after}; stored: ${JSON.stringify(state.entries.map((entry) => entry.optimizationId))})`
+      `the delete of an optimization run whose upload is stored without an answer reads the tracker back and says the run was deleted, under a history that lists the other run (toasts: ${JSON.stringify(said)}; entries shown: ${after}; stored: ${JSON.stringify(state.entries.map((entry) => entry.optimizationId))})`
+    );
+  });
+
+  // The upload gets no answer and was not stored: read back, the tracker
+  // still holds the run, and the toast says that nothing of it was changed.
+  await road('the delete of an optimization run whose upload gets no answer and is not stored', async (page) => {
+    await openPage(page);
+    const state = await servedTracker(page);
+    await page.route('**/modelRepository/models/model-used/contents?*', (route) =>
+      route.request().method() === 'POST' && (route.request().postData() || '').includes('filename="Prompt-Optimization-Tracker.json"') ? route.abort('failed') : route.fallback()
+    );
+    await openPromptTest(page, 'proj-1', 'model-used');
+    await goStep(page, 'LPB', 'optimize');
+    const { said, after } = await deleteFirstRun(page);
+    step(
+      said.some((text) => text.startsWith('The run was not deleted: a request to SAS Model Manager failed or got no answer, and the optimization tracker was not changed.')) &&
+        !said.some((text) => text.includes('permissions') || text.startsWith('Optimization run deleted')) && after === 2 && state.entries.length === 2,
+      `the delete of an optimization run whose upload gets no answer and is not stored reads the tracker back and says the run was not deleted, without a word of permissions, under a history that lists both runs (toasts: ${JSON.stringify(said)}; entries shown: ${after}; stored: ${state.entries.length})`
     );
   });
 
@@ -572,31 +745,69 @@ const MANIFEST_BOX = lpb('pet-save-result');
       listing.items.push({ id, name, createdBy: 'tester', modifiedBy: 'tester' });
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(listing) });
     });
+  // A delete whose request gets no answer is read back. Where SAS Model
+  // Manager still holds what was to be deleted, the toast says that the
+  // request was not carried out - not that permissions are missing - and the
+  // item stays. Where the delete was carried out and only its answer was
+  // lost, the page goes on as after a 204: the item leaves the list and is
+  // open no longer, and no toast says the deletion failed.
+  const NOT_CARRIED_OUT = 'A request to SAS Viya got no usable answer, and reading back what SAS Viya holds shows that it was not carried out.';
   for (const what of ['prompt-test', 'project']) {
-    await road(`Delete ${what} whose request gets no answer`, async (page) => {
-      await openPage(page);
-      let id;
-      if (what === 'project') {
-        id = (await createInDialog(page, 'LPB', '#LPB-project-dropdown', 'promptBuilderCreateProject', 'Outcome cut project')).id;
-        await listCreatedProject(page, id, 'Outcome cut project');
-      } else {
-        await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
-        id = (await createInDialog(page, 'LPB', '#LPB-prompt-dropdown', 'promptBuilderCreatePrompt', 'Outcome cut')).id;
-      }
-      await page.route(`**/modelRepository/${what === 'project' ? 'projects' : 'models'}/${id}`, (route) =>
-        route.request().method() === 'DELETE' ? route.abort('failed') : route.continue()
-      );
-      await page.click(what === 'project' ? '#LPB-delete-project-button' : '#LPB-delete-prompt-button');
-      await confirmDialog(page);
-      await waitUntil(async () => (await toasts(page)).length > 0, 'a toast', 15000).catch(() => {});
-      await atRest();
-      await page.waitForTimeout(500);
-      const said = await toasts(page);
-      step(
-        said.some((text) => text.startsWith('The deletion failed')) && pageErrors.length === 0,
-        `Delete ${what}: a delete whose request gets no answer says that the deletion failed, and no error is left uncaught (toasts: ${JSON.stringify(said)}; page errors: ${JSON.stringify(pageErrors)})`
-      );
-    });
+    for (const lost of ['not carried out', 'carried out']) {
+      await road(`Delete ${what} whose request gets no answer (${lost})`, async (page) => {
+        await openPage(page);
+        let id;
+        const picker = what === 'project' ? '#LPB-project-dropdown' : '#LPB-prompt-dropdown';
+        // SAS Model Manager holds the project until the delete reaches it; the
+        // mock holds no prompt project of its own, so the page is told so here.
+        let projectHeld = true;
+        if (what === 'project') {
+          id = (await createInDialog(page, 'LPB', '#LPB-project-dropdown', 'promptBuilderCreateProject', `Outcome cut project ${lost}`)).id;
+          await page.route('**/modelRepository/projects?*', async (route) => {
+            const filter = new URL(route.request().url()).searchParams.get('filter') || '';
+            if (route.request().method() !== 'GET' || !filter.includes('Prompt-Engineering')) return route.continue();
+            const listing = await (await route.fetch()).json();
+            if (projectHeld) listing.items.push({ id, name: `Outcome cut project ${lost}`, createdBy: 'tester', modifiedBy: 'tester' });
+            return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(listing) });
+          });
+        } else {
+          await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
+          id = (await createInDialog(page, 'LPB', '#LPB-prompt-dropdown', 'promptBuilderCreatePrompt', `Outcome cut ${lost}`)).id;
+        }
+        await page.route(`**/modelRepository/${what === 'project' ? 'projects' : 'models'}/${id}`, async (route) => {
+          const method = route.request().method();
+          if (what === 'project' && method === 'GET') {
+            return projectHeld ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id }) }) : route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
+          }
+          if (method !== 'DELETE') return route.continue();
+          if (lost === 'carried out') {
+            await route.fetch();
+            projectHeld = false;
+          }
+          return route.abort('failed');
+        });
+        await page.click(what === 'project' ? '#LPB-delete-project-button' : '#LPB-delete-prompt-button');
+        await confirmDialog(page);
+        if (lost === 'not carried out') await waitUntil(async () => (await toasts(page)).length > 0, 'a toast', 15000).catch(() => {});
+        await atRest();
+        await page.waitForTimeout(800);
+        const said = await toasts(page);
+        const listedNow = await page.$$eval(`${picker} option`, (options) => options.map((option) => option.value));
+        const open = await page.inputValue(picker);
+        const seen = `toasts: ${JSON.stringify(said)}; listed: ${listedNow.includes(id)}; open: ${open}; page errors: ${JSON.stringify(pageErrors)}`;
+        if (lost === 'not carried out') {
+          step(
+            said.some((text) => text.includes(NOT_CARRIED_OUT)) && !said.some((text) => text.includes('permissions')) && listedNow.includes(id) && open === id && pageErrors.length === 0,
+            `Delete ${what}: a delete whose request gets no answer and was not carried out is read back: the toast says so, without a word of permissions, and the ${what} stays listed and open (${seen})`
+          );
+        } else {
+          step(
+            !said.some((text) => text.startsWith('The deletion failed') || text.includes('got no usable answer')) && !listedNow.includes(id) && open !== id && pageErrors.length === 0,
+            `Delete ${what}: a delete that was carried out and whose answer was lost is read back: the ${what} leaves the list and is open no longer, and no toast says the deletion failed (${seen})`
+          );
+        }
+      });
+    }
   }
 
   // A Delete project that stops part of the way: the first prompt-test is
@@ -629,9 +840,13 @@ const MANIFEST_BOX = lpb('pet-save-result');
       const said = (await toasts(page)).join(' | ');
       const listedNow = await page.$$eval('#LPB-prompt-dropdown option', (options) => options.map((option) => option.value));
       const open = await page.inputValue('#LPB-prompt-dropdown');
+      // A refusal says the deletion failed; a delete without an answer that
+      // reading back shows not carried out says that, with no word of
+      // permissions.
+      const firstLine = how === 'refused' ? `The deletion failed: the project ${projectName} is still in SAS Model Manager.` : `Delete Project: ${NOT_CARRIED_OUT}`;
       step(
         !listedNow.includes(first) && listedNow.includes(second) && open !== first && (await page.inputValue('#LPB-project-dropdown')) === project &&
-          said.includes(`The deletion failed: the project ${projectName} is still in SAS Model Manager.`) &&
+          said.includes(firstLine) && (how === 'refused' || !said.includes('permissions')) &&
           new RegExp(`Deleted from it: [^|]*VP one ${how}`).test(said) && new RegExp(`Still in it: [^|]*VP two ${how}`).test(said) && !/Still in it: [^|]*VP one/.test(said),
         `Delete project whose second prompt-test is ${how}: the list drops the prompt-test that was deleted, which was open and is open no longer, and the toast names what was deleted and what is still in the project (listed: ${JSON.stringify(listedNow)}; open: ${open}; toasts: ${said.slice(0, 400)})`
       );
@@ -640,6 +855,63 @@ const MANIFEST_BOX = lpb('pet-save-result');
       await fetch(`${BASE}/modelRepository/models/${second}`, { method: 'DELETE' });
     });
   }
+
+  // A save whose upload SAS Model Manager stored and whose answer was lost:
+  // read back, the tracker holds what was sent, and the save is a save.
+  await road('Save Experiments whose upload is stored and its answer lost', async (page) => {
+    await openPage(page);
+    let stored = null;
+    await page.route('**/files/files/trk-1/content', (route) => (stored ? route.fulfill({ status: 200, contentType: 'application/json', body: stored }) : route.continue()));
+    await openPromptTest(page, 'proj-1', 'model-used');
+    await page.route('**/modelRepository/models/model-used/contents?*', async (route) => {
+      const body = route.request().postData() || '';
+      if (route.request().method() !== 'POST' || !body.includes('filename="Prompt-Experiment-Tracker.json"')) return route.continue();
+      await route.fetch();
+      stored = (body.match(/\r\n\r\n([\s\S]*?)\r\n--/) || [])[1] || null;
+      return route.abort('failed');
+    });
+    await goStep(page, 'LPB', 'build');
+    await page.click(lpb('pet-save-button'));
+    await waitUntil(async () => stored !== null, 'the upload was stored', 20000);
+    await waitUntil(async () => (await textOf(page, lpb('pet-save-button'))) === 'Save Experiments', 'the save has ended', 30000);
+    await atRest();
+    const said = await toasts(page);
+    const line = await textOf(page, lpb('pet-save-only-result'));
+    step(
+      said.some((text) => text.startsWith('Experiments saved')) && !(await page.$(`${lpb('pet-save-only-result')} .pet-save-failed`)) && pageErrors.length === 0,
+      `Save Experiments whose upload is stored and its answer lost reads the tracker back, finds what it sent, and says the experiments are saved (toasts: ${JSON.stringify(said)}; line: "${clip(line)}"; page errors: ${JSON.stringify(pageErrors)})`
+    );
+  });
+
+  // A creation SAS Model Manager carried out and whose answer was lost: read
+  // back, the prompt-test of that name is there, and it is listed and open.
+  await road('Create prompt-test whose creation is stored and its answer lost', async (page) => {
+    await openPage(page);
+    await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
+    const name = 'Outcome created without an answer';
+    await page.route('**/modelRepository/models', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      await route.fetch();
+      return route.abort('failed');
+    });
+    await goStep(page, 'LPB', 'setup');
+    await page.click('button[data-bs-target="#promptBuilderCreatePromptModal"]');
+    await page.waitForSelector('#promptBuilderCreatePromptModal.show');
+    await page.waitForTimeout(400);
+    await page.fill('#promptBuilderCreatePromptName', name);
+    await page.click('#promptBuilderCreatePromptModal .btn-primary');
+    await page.waitForSelector('.modal.show', { state: 'detached', timeout: 15000 }).catch(() => {});
+    await atRest();
+    const created = ((await (await fetch(`${BASE}/modelRepository/projects/proj-1/models`)).json()).items || []).find((model) => model.name === name);
+    const open = await page.inputValue('#LPB-prompt-dropdown');
+    const dialogOpen = (await page.$$('#promptBuilderCreatePromptModal.show')).length > 0;
+    const error = dialogOpen ? await textOf(page, '#promptBuilderCreatePromptError') : '';
+    step(
+      Boolean(created) && open === created.id && !dialogOpen,
+      `Create prompt-test whose creation is stored and its answer lost reads the project back, finds the prompt-test, closes the dialog and opens it (created: ${created ? created.id : 'none'}; open: ${open}; dialog open: ${dialogOpen}; "${clip(error)}")`
+    );
+    if (created) await fetch(`${BASE}/modelRepository/models/${created.id}`, { method: 'DELETE' });
+  });
 
   await road('a change of the prompt-test list sent by a script while Save Experiments is out', async (page) => {
     await openPage(page);
@@ -928,14 +1200,18 @@ const MANIFEST_BOX = lpb('pet-save-result');
       await page.route(`**/modelRepository/models/${second}`, (route) => (route.request().method() === 'DELETE' ? fail(route) : route.continue()));
       await page.click(rgb('delete-project'));
       await confirmDialog(page);
-      await waitUntil(async () => /Deleting failed/.test(await textOf(page, rgb('status'))), 'the banner', 20000);
+      await waitUntil(async () => /Deleting failed|got no usable answer/.test(await textOf(page, rgb('status'))), 'the banner', 20000);
       await atRest();
       const banner = await textOf(page, rgb('status'));
       const listedNow = await page.$$eval(`${rgb('setup')} option`, (options) => options.map((option) => option.value));
       const open = await page.inputValue(rgb('setup'));
+      // A refusal says the deletion failed; a delete without an answer that
+      // reading back shows not carried out says that, with no word of
+      // permissions.
+      const said = how === 'refused' ? banner.includes(`The project ${projectName} is still there.`) : banner.includes(`Delete project: ${NOT_CARRIED_OUT}`) && !banner.includes('permissions');
       step(
         !listedNow.includes(first) && listedNow.includes(second) && open !== first && (await page.inputValue(rgb('project'))) === project &&
-          banner.includes(`The project ${projectName} is still there.`) && banner.includes(`Deleted from it: RS one ${how}.`) && banner.includes(`Still in it: RS two ${how}.`),
+          said && banner.includes(`Deleted from it: RS one ${how}.`) && banner.includes(`Still in it: RS two ${how}.`),
         `RAG Builder, Delete project whose second setup is ${how}: the list drops the setup that was deleted, which was open and is open no longer, and the banner names what was deleted and what is still in the project (listed: ${JSON.stringify(listedNow)}; open: ${open}; banner: "${banner.slice(0, 400)}")`
       );
       // The mock gives the id of a deleted model to the next one it creates:
@@ -943,6 +1219,67 @@ const MANIFEST_BOX = lpb('pet-save-result');
       await fetch(`${BASE}/modelRepository/models/${second}`, { method: 'DELETE' });
     });
   }
+
+  // Delete setup whose request gets no answer: read back as Delete
+  // prompt-test is.
+  for (const lost of ['not carried out', 'carried out']) {
+    await road(`Delete setup whose request gets no answer (${lost})`, async (page) => {
+      await openPage(page, 'rag');
+      await choose(page, 'RGB', rgb('project'), 'rag-proj');
+      const id = (await createInDialog(page, 'RGB', rgb('setup'), 'app-obj-RGB-create-setup', `RS cut ${lost}`)).id;
+      await page.route(`**/modelRepository/models/${id}`, async (route) => {
+        if (route.request().method() !== 'DELETE') return route.continue();
+        if (lost === 'carried out') await route.fetch();
+        return route.abort('failed');
+      });
+      await page.click(rgb('delete-setup'));
+      await confirmDialog(page);
+      // A delete that went through is said in a toast, one that did not in the banner.
+      await waitUntil(async () => (await textOf(page, rgb('status'))) !== '' || (await toasts(page)).length > 0, 'the banner or a toast', 20000).catch(() => {});
+      await atRest();
+      const banner = await textOf(page, rgb('status'));
+      const said = await toasts(page);
+      const listedNow = await page.$$eval(`${rgb('setup')} option`, (options) => options.map((option) => option.value));
+      const open = await page.inputValue(rgb('setup'));
+      const seen = `banner: "${clip(banner)}"; toasts: ${JSON.stringify(said)}; listed: ${listedNow.includes(id)}; open: ${open}; page errors: ${JSON.stringify(pageErrors)}`;
+      if (lost === 'not carried out') {
+        step(
+          banner.includes(`Delete setup: ${NOT_CARRIED_OUT}`) && !banner.includes('permissions') && listedNow.includes(id) && open === id,
+          `Delete setup whose request gets no answer and was not carried out is read back: the banner says so, without a word of permissions, and the setup stays listed and open (${seen})`
+        );
+        await fetch(`${BASE}/modelRepository/models/${id}`, { method: 'DELETE' });
+      } else {
+        step(
+          said.some((text) => text.startsWith('RAG setup deleted')) && banner === '' && !listedNow.includes(id) && open !== id && pageErrors.length === 0,
+          `Delete setup that was carried out and whose answer was lost is read back: the setup leaves the list and is open no longer, and a toast says it was deleted (${seen})`
+        );
+      }
+    });
+  }
+
+  // Save setup whose upload SAS Model Manager stored and whose answer was
+  // lost: read back, the setup is saved.
+  await road('Save setup whose upload of rag-setup.json is stored and its answer lost', async (page) => {
+    await openPage(page, 'rag');
+    await openSetup(page, 'rag-setup-1');
+    let lostOnce = false;
+    await page.route('**/modelRepository/models/rag-setup-1/contents?*', async (route) => {
+      const body = route.request().postData() || '';
+      if (lostOnce || route.request().method() !== 'POST' || !body.includes('filename="rag-setup.json"')) return route.continue();
+      lostOnce = true;
+      await route.fetch();
+      return route.abort('failed');
+    });
+    await goStep(page, 'RGB', 'store');
+    await page.click(rgb('save'));
+    await waitUntil(async () => Boolean(await page.$(`${rgb('save-result')} .alert`)), 'the save has ended', 30000);
+    await atRest();
+    const result = await textOf(page, rgb('save-result'));
+    step(
+      lostOnce && result.startsWith('RAG setup saved') && (await textOf(page, rgb('status'))) === '',
+      `Save setup whose upload of rag-setup.json is stored and its answer lost reads it back, finds what it sent, and says the setup is saved (lost: ${lostOnce}; result: "${clip(result)}")`
+    );
+  });
 
   await road('a running ingestion on a page loaded after its launch', async (page) => {
     await openPage(page, 'rag');

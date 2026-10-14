@@ -940,6 +940,9 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   const MANIFEST_BUTTON = '#app-obj-LPB-pet-create-model-button';
   const MANIFEST_BOX = '#app-obj-LPB-pet-save-result';
   const SAVE_BUTTON = '#app-obj-LPB-pet-save-button';
+  // What a write without a usable answer says once it was read back and SAS
+  // Model Manager does not hold what it wrote.
+  const NOT_CARRIED_OUT = 'A request to SAS Viya got no usable answer, and reading back what SAS Viya holds shows that it was not carried out.';
   // What an ingress answers in place of the service: no JSON, so the page throws.
   const errorPage = { status: 502, contentType: 'text/html', body: '<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center></body></html>' };
   const faultyManifest = async (url, fault, label) => {
@@ -957,8 +960,20 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     await target.check('#app-obj-LPB-pet-manifest-integrated');
     let scoreCodeSeen = false;
     let injected = 0;
+    // After the upload of the score code, nothing of the model can be read.
+    let readsFail = false;
+    // The mock keeps no file of a fixture model: the score code the service
+    // took is listed and served here, as SAS Model Manager would.
+    let storedScore = null;
+    await target.route('**/files/files/score-taken/content', (route) => route.fulfill({ status: 200, contentType: 'text/x-python', body: storedScore ? storedScore.text : '' }));
     await target.route('**/modelRepository/models/model-used/contents?*', async (route) => {
       const request = route.request();
+      if (readsFail && request.method() === 'GET') return route.abort('failed');
+      if (storedScore && request.method() === 'GET') {
+        const listing = await (await route.fetch()).json();
+        listing.items = [...(listing.items || []).filter((item) => item.name !== storedScore.name), { id: 'c-score-taken', name: storedScore.name, fileUri: '/files/files/score-taken' }];
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(listing) });
+      }
       if (request.method() === 'POST' && (request.postData() || '').includes('def scoreModel(')) {
         scoreCodeSeen = true;
         if (fault === 'score code') {
@@ -967,14 +982,18 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
         }
         // The upload of the score code THROWS in the page: an error page in
         // place of an answer, or - the service took the upload and stored it,
-        // and the answer never reached the page.
+        // and the answer never reached the page; the page reads it back -
+        // or cannot, when nothing of the model can be read after it.
         if (fault === 'score code, error page') {
           injected += 1;
           return route.fulfill(errorPage);
         }
-        if (fault === 'score code, answer lost') {
+        if (fault === 'score code, answer lost' || fault === 'score code, answer lost, nothing read back') {
           await route.fetch();
           injected += 1;
+          const body = request.postData() || '';
+          storedScore = { name: (/filename="([^"]+)"/.exec(body) || [])[1], text: (/\r\n\r\n([\s\S]*?)\r\n--/.exec(body) || [])[1] };
+          if (fault === 'score code, answer lost, nothing read back') readsFail = true;
           return route.abort('failed');
         }
       }
@@ -1114,26 +1133,35 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
 
   // ---- the upload of the score code gets no usable answer ------------------------
   // A refusal comes back as a status and is certain: the model keeps the score
-  // code it had. An upload that THROWS is not - the service may have stored
-  // the code before the answer was lost. The page cannot know and reads
-  // nothing back, so it says exactly that, where it used to say "Not
-  // manifested ... The model keeps the score code and the tags it had".
+  // code it had. An upload that THROWS is read back: the model holds this
+  // score code (the manifest goes on), or it does not (the model keeps the one
+  // it had). Only where nothing can be read back is it not known, and the box
+  // says exactly that.
   assert(
     notStored.unknown === 0 && notStored.notManifested[0].includes('The model keeps the score code and the tags it had'),
     `a score code SAS Model Manager refused with an answer keeps the certain wording: the model keeps the score code and the tags it had (box: ${notStored.notManifested.join(' | ') || 'nothing'})`
   );
-  const assertScoreCodeUnknown = (outcome, what, storedInFact) => {
-    assert(
-      outcome.notManifested.length === 1 && outcome.unknown === 1 && outcome.notManifested[0].startsWith('The manifest was not completed, and it is not known whether the score code of this run is stored') && outcome.notManifested[0].includes('Manifest again') && !outcome.notManifested[0].includes('keeps the score code'),
-      `${what}: the box says that it is not known whether the score code was stored, and to manifest again - not that the model keeps the score code it had (${describe(outcome)})`
-    );
-    assert(
-      outcome.scoreCodesStored === storedInFact && outcome.modelWrites === 0 && outcome.manifestedToasts === 0 && outcome.tagLines.length === 0 && outcome.errors.length === 0,
-      `${what}: the manifest stops there - no tag is written, no toast says "manifested", no error is left uncaught - and the service ${storedInFact ? 'did store the score code, which the page could not see' : 'stored nothing'} (score codes stored: ${outcome.scoreCodesStored}; writes of the model: ${outcome.modelWrites}; ${describe(outcome)})`
-    );
-  };
-  assertScoreCodeUnknown(await faultyManifest(APP_URL, 'score code, error page', 'the score code answered by an error page'), 'the score code answered by an error page', 0);
-  assertScoreCodeUnknown(await faultyManifest(`${APP_URL}&sslVerify=false`, 'score code, answer lost', 'the score code stored, its answer lost'), 'the score code stored and its answer lost', 1);
+  const errorPageScore = await faultyManifest(APP_URL, 'score code, error page', 'the score code answered by an error page');
+  assert(
+    errorPageScore.notManifested.length === 1 && errorPageScore.unknown === 0 &&
+      errorPageScore.notManifested[0].startsWith('Not manifested: the upload of the score code got no usable answer from SAS Model Manager, and reading it back shows that the model does not hold the score code of this run') &&
+      errorPageScore.scoreCodesStored === 0 && errorPageScore.modelWrites === 0 && errorPageScore.manifestedToasts === 0 && errorPageScore.tagLines.length === 0 && errorPageScore.errors.length === 0,
+    `the score code answered by an error page, which stored nothing: the page reads the score code back, and the box says that the model does not hold it - no tag is written, no toast says "manifested" (score codes stored: ${errorPageScore.scoreCodesStored}; writes of the model: ${errorPageScore.modelWrites}; ${describe(errorPageScore)})`
+  );
+  const lostScore = await faultyManifest(`${APP_URL}&sslVerify=false`, 'score code, answer lost', 'the score code stored, its answer lost');
+  assert(
+    lostScore.scoreCodesStored === 1 && lostScore.notManifested.length === 0 && lostScore.manifestedToasts === 1 && lostScore.tags !== null && lostScore.tags.includes(TLS_TAG) && lostScore.errors.length === 0,
+    `the score code stored and its answer lost: the page reads it back, finds it stored, and the manifest goes on - the tags say what the stored code does, and the toast says "manifested" (score codes stored: ${lostScore.scoreCodesStored}; ${describe(lostScore)})`
+  );
+  const unknownScore = await faultyManifest(`${APP_URL}&sslVerify=false`, 'score code, answer lost, nothing read back', 'the score code stored, its answer lost, nothing read back');
+  assert(
+    unknownScore.notManifested.length === 1 && unknownScore.unknown === 1 && unknownScore.notManifested[0].startsWith('The manifest was not completed, and it is not known whether the score code of this run is stored') && unknownScore.notManifested[0].includes('Manifest again') && !unknownScore.notManifested[0].includes('keeps the score code'),
+    `the score code stored, its answer lost and nothing read back: the box says that it is not known whether the score code was stored, and to manifest again - not that the model keeps the score code it had (${describe(unknownScore)})`
+  );
+  assert(
+    unknownScore.scoreCodesStored === 1 && unknownScore.modelWrites === 0 && unknownScore.manifestedToasts === 0 && unknownScore.tagLines.length === 0 && unknownScore.errors.length === 0,
+    `and the manifest stops there - no tag is written, no toast says "manifested", no error is left uncaught - while the service did store the score code (score codes stored: ${unknownScore.scoreCodesStored}; writes of the model: ${unknownScore.modelWrites}; ${describe(unknownScore)})`
+  );
 
   // ---- the save of the experiments fails outright ---------------------------------
   // A click on Manifest saves the experiments first, and the save had no
@@ -1149,9 +1177,10 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   ]) {
     const outcome = await faultyManifest(APP_URL, fault, what);
     assert(outcome.saveButton === 'Save Experiments', `${what}: Save Experiments is usable again (${describeSave(outcome)})`);
+    // The upload was read back, and SAS Model Manager does not hold it.
     assert(
-      outcome.saveLines.length === 1 && outcome.saveLines[0].startsWith('Saving the experiments did not finish') && outcome.notManifested.length === 1 && outcome.notManifested[0].startsWith('Not manifested: a manifest saves the experiments first'),
-      `${what}: the box beside the Manifest button says that the save did not finish, and that nothing was manifested (${describeSave(outcome)})`
+      outcome.saveLines.length === 1 && outcome.saveLines[0].startsWith(`Save Experiments: ${NOT_CARRIED_OUT}`) && outcome.notManifested.length === 1 && outcome.notManifested[0].startsWith('Not manifested: a manifest saves the experiments first'),
+      `${what}: the box beside the Manifest button says that the save was read back and not carried out, and that nothing was manifested (${describeSave(outcome)})`
     );
     assert(
       outcome.savedToasts === 0 && outcome.manifestedToasts === 0 && outcome.errors.length === 0,
@@ -1209,9 +1238,10 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     const savedToasts = (await target.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).filter((text) => text.includes('Experiments saved')).length;
     const seen = `button: ${saveButton}; beside it: ${saveLines.join(' | ') || 'nothing'}; "saved" toasts: ${savedToasts}; errors: ${errors.join(' | ') || 'none'}`;
     assert(saveButton === 'Save Experiments', `${what}: the button is usable again (${seen})`);
+    // The upload was read back, and SAS Model Manager does not hold it.
     assert(
-      saveLines.length === 1 && saveLines[0].startsWith('Saving the experiments did not finish') && saveLines[0].includes('Save again') && (await target.isVisible(`${SAVE_BOX} .pet-save-failed`)),
-      `${what}: a line beside the button says that the save did not finish, and to save again (${seen})`
+      saveLines.length === 1 && saveLines[0].startsWith(`Save Experiments: ${NOT_CARRIED_OUT}`) && (await target.isVisible(`${SAVE_BOX} .pet-save-failed`)),
+      `${what}: a line beside the button says that the upload was read back and not carried out (${seen})`
     );
     assert(savedToasts === 0 && errors.length === 0, `${what}: no toast says "saved", and no error is left uncaught (${seen})`);
     await target.close();

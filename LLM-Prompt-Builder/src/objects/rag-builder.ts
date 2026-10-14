@@ -46,6 +46,7 @@ import {
   updateModelTags,
 } from '../api/models-api';
 import { getFileContent } from '../api/files-api';
+import { UnansweredWrite, ViyaRefused } from '../api/http-client';
 import { getModelDependentDecisions } from '../api/relationships-api';
 import type { DependentDecision } from '../types/relationships';
 import { resolveDomainSecrets } from '../api/credentials-api';
@@ -2398,7 +2399,19 @@ export async function buildRagBuilder(
    * attribute or a tag that was not written.
    */
   const written = (status: number, what: string): void => {
-    if (status >= 300) throw new Error(`${what} was refused with HTTP ${status}`);
+    if (status >= 300) throw new ViyaRefused(what, status, `${what} was refused with HTTP ${status}`);
+  };
+
+  /**
+   * What a write that got no answer comes to once what SAS Viya holds was
+   * read back (see writeOrReadBack): it was not carried out, or that is not
+   * known. '' for any other failure - a refusal, which is an answer.
+   */
+  const noAnswerText = (error: unknown): string => {
+    if (!(error instanceof UnansweredWrite)) return '';
+    return error.done === false
+      ? str('ragBuilderNoAnswerNotDone', 'A request to SAS Viya got no usable answer, and reading back what SAS Viya holds shows that it was not carried out.')
+      : str('ragBuilderNoAnswerUnknown', 'A request to SAS Viya got no usable answer, and what SAS Viya holds could not be read back: whether it was carried out is not known.');
   };
 
   /**
@@ -2441,12 +2454,15 @@ export async function buildRagBuilder(
       showStatus('success', str('ragBuilderDocSaved', 'Documentation saved to the Model Manager model.'));
     } catch (error) {
       console.error('Saving the RAG documentation failed.', error);
-      // A stored setup that is no setup is named; the rest is a refusal.
+      // A write that got no answer was read back; a stored setup that is no
+      // setup is named; the rest is a refusal.
       showStatus(
         'danger',
-        error instanceof SetupUnusable
-          ? str('ragBuilderDocSaveSetupUnusable', 'Saving the documentation failed: SAS Model Manager answered with a rag-setup.json that is no setup this page can read, so nothing was written. Repair or remove the file in SAS Model Manager, then choose another entry in the list and then this setup again.')
-          : str('ragBuilderDocSaveFailed', 'Saving the documentation failed - check your Model Manager permissions.')
+        noAnswerText(error)
+          ? `${str('ragBuilderSaveDocumentationButton', 'Save documentation')}: ${noAnswerText(error)}`
+          : error instanceof SetupUnusable
+            ? str('ragBuilderDocSaveSetupUnusable', 'Saving the documentation failed: SAS Model Manager answered with a rag-setup.json that is no setup this page can read, so nothing was written. Repair or remove the file in SAS Model Manager, then choose another entry in the list and then this setup again.')
+            : str('ragBuilderDocSaveFailed', 'Saving the documentation failed - check your Model Manager permissions.')
       );
     } finally {
       docSaveButton.textContent = previous;
@@ -2805,7 +2821,8 @@ export async function buildRagBuilder(
       if (!project?.id) throw new Error('the service answered without a project id');
     } catch (error) {
       console.error('Creating the RAG project failed.', error);
-      dialog.showError(str('ragBuilderProjectCreateFailed', 'Creating the RAG project failed - check your Model Manager permissions.'));
+      // A creation without an answer was read back (see createModelProject).
+      dialog.showError(noAnswerText(error) || str('ragBuilderProjectCreateFailed', 'Creating the RAG project failed - check your Model Manager permissions.'));
       return;
     }
     // From here on the project exists. A listing that fails now is a list
@@ -2889,7 +2906,8 @@ export async function buildRagBuilder(
       if (!createdID) throw new Error('the service answered without a model id');
     } catch (error) {
       console.error('Creating the RAG setup failed.', error);
-      dialog.showError(str('ragBuilderSetupCreateFailed', 'Creating the RAG setup failed - check your Model Manager permissions.'));
+      // A creation without an answer was read back (see createModel).
+      dialog.showError(noAnswerText(error) || str('ragBuilderSetupCreateFailed', 'Creating the RAG setup failed - check your Model Manager permissions.'));
       return;
     }
     // From here on the setup exists. A listing or a reading that fails now is
@@ -2980,7 +2998,8 @@ export async function buildRagBuilder(
     projectID: string,
     projectName: string,
     setups: DropdownOption[],
-    deletedIDs: string[]
+    deletedIDs: string[],
+    failure: unknown
   ): Promise<boolean> {
     let left: DropdownOption[] | null = null;
     try {
@@ -3009,9 +3028,12 @@ export async function buildRagBuilder(
       'danger',
       [
         // Whether the project is still there is known only where it was read.
-        left === null
-          ? str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.')
-          : str('ragBuilderDeleteProjectStopped', 'Deleting failed - check your Model Manager permissions. The project {project} is still there.').replace('{project}', () => projectName),
+        // A delete that got no answer was read back: no word of permissions.
+        noAnswerText(failure)
+          ? `${str('ragBuilderDeleteProjectButton', 'Delete project')}: ${noAnswerText(failure)}`
+          : left === null
+            ? str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.')
+            : str('ragBuilderDeleteProjectStopped', 'Deleting failed - check your Model Manager permissions. The project {project} is still there.').replace('{project}', () => projectName),
         ...(deleted.length ? [str('ragBuilderDeleteProjectDeletedPart', 'Deleted from it: {names}.').replace('{names}', () => names(deleted))] : []),
         ...(left === null
           ? [str('ragBuilderDeleteProjectNotRead', 'What is left in it could not be read from SAS Model Manager, so the list may still name a setup that was deleted.')]
@@ -3274,7 +3296,10 @@ export async function buildRagBuilder(
       return true;
     } catch (error) {
       console.error('Saving the RAG setup failed.', error);
-      const message = str('ragBuilderSaveError', 'Saving the RAG setup failed - check the browser console and your Model Manager permissions.');
+      // A write that got no answer was read back (see writeOrReadBack).
+      const message = noAnswerText(error)
+        ? `${str('ragBuilderSaveButton', 'Save setup')}: ${noAnswerText(error)}`
+        : str('ragBuilderSaveError', 'Saving the RAG setup failed - check the browser console and your Model Manager permissions.');
       showStatus('danger', message);
       // Beside the button as well: the banner is at the top of the page, and
       // what the result box said before this save is gone.
@@ -3433,7 +3458,13 @@ export async function buildRagBuilder(
       return true;
     } catch (error) {
       console.error('Generating the ingestion job failed.', error);
-      showStatus('danger', str('ragBuilderJobGenerateError', 'Generating the ingestion job failed - check the browser console, your permissions on the content root and your Model Manager permissions on this setup.'));
+      // A write that got no answer was read back (see writeOrReadBack); the
+      // manifest names the stage beside it.
+      showStatus(
+        'danger',
+        noAnswerText(error) ||
+          str('ragBuilderJobGenerateError', 'Generating the ingestion job failed - check the browser console, your permissions on the content root and your Model Manager permissions on this setup.')
+      );
       return false;
     }
   }
@@ -3478,7 +3509,7 @@ export async function buildRagBuilder(
           // A stage reports its own failures; one that throws all the same
           // must not leave the result of the stage before it standing.
           console.error(`Manifesting stopped while ${label}.`, error);
-          lastFailure = [error instanceof Error ? error.message : String(error)];
+          lastFailure = [noAnswerText(error) || (error instanceof Error ? error.message : String(error))];
         }
         if (!passed) {
           // The outcome of a manifest belongs where its button is. The
@@ -3515,7 +3546,10 @@ export async function buildRagBuilder(
         // The artifacts are written and correct; only the version marker is
         // missing. Say so rather than reporting the manifest as failed.
         console.error('Creating the model version failed.', error);
-        const message = str('ragBuilderVersionFailed', 'Everything was generated and registered, but recording a new model version failed - check your permissions on the setup model.');
+        // A request that got no answer was read back (see createModelVersion).
+        const message = noAnswerText(error)
+          ? str('ragBuilderVersionNoAnswer', 'Everything was generated and registered. The new model version: {reason}').replace('{reason}', () => noAnswerText(error))
+          : str('ragBuilderVersionFailed', 'Everything was generated and registered, but recording a new model version failed - check your permissions on the setup model.');
         showStatus('info', message);
         showSaveSuccess([message, ...tlsOutcomeNotes()].join(' '), 'warning');
         return;
@@ -3580,9 +3614,22 @@ export async function buildRagBuilder(
       if (!shown()) return;
       stopRunClock();
       runClock.textContent = '';
-      setRunBadge('failed', true);
+      // A launch that got no answer was read back (see launchJob): one that
+      // is running did not get here, and no run of it is shown - the read
+      // back found none running.
+      if (noAnswerText(error)) {
+        runCard.style.display = 'none';
+        runStateText.textContent = '';
+      } else {
+        setRunBadge('failed', true);
+      }
       updateLaunchState();
-      showStatus('danger', str('ragBuilderRunLaunchError', 'Launching the ingestion job failed - check the browser console.'));
+      showStatus(
+        'danger',
+        noAnswerText(error)
+          ? `${str('ragBuilderLaunchButton', 'Launch ingestion')}: ${noAnswerText(error)}`
+          : str('ragBuilderRunLaunchError', 'Launching the ingestion job failed - check the browser console.')
+      );
     }
   }
 
@@ -3801,7 +3848,8 @@ export async function buildRagBuilder(
       showSaveErrors([
         str('ragBuilderFlowFailed', 'Generating the Studio flow failed: {reason}').replace(
           '{reason}',
-          error instanceof Error ? error.message : String(error)
+          // A write that got no answer was read back (see writeOrReadBack).
+          noAnswerText(error) || (error instanceof Error ? error.message : String(error))
         ),
       ]);
       return false;
@@ -3862,16 +3910,23 @@ export async function buildRagBuilder(
       // report the setup as manifested.
       //
       // A refusal with an answer is certain: the setup keeps the score code
-      // it had. An upload that THROWS - the connection dropped, or an ingress
-      // answered with its error page in place of the service - is not: the
-      // service may have stored the code before the answer was lost, and the
-      // page cannot know. The stage stops there too, and says exactly that;
-      // nothing is read back.
+      // it had. An upload that gets no usable answer - the connection dropped,
+      // or an ingress answered with its error page in place of the service -
+      // is read back (see createModelContent): the setup holds this score
+      // code, and the stage goes on, or it does not, and the stage stops.
+      // When the read back fails too, the service may have stored the code,
+      // and the page cannot know: the stage stops, and says exactly that.
       let stored: Awaited<ReturnType<typeof createModelContent>>;
       try {
         stored = await createModelContent(selectedSetupID, code, 'retrieve_context.py', 'score', 'text/x-python');
       } catch (error) {
-        console.error('The upload of retrieve_context.py got no usable answer; it is not known whether it was stored.', error);
+        console.error('The upload of retrieve_context.py got no usable answer.', error);
+        if (error instanceof UnansweredWrite && error.done === false) {
+          showSaveErrors([
+            str('ragBuilderScoreCodeNoAnswer', 'The upload of retrieve_context.py got no usable answer from SAS Model Manager, and reading it back shows that the setup does not hold this score code. The setup keeps the score code and the tags it had.'),
+          ]);
+          return false;
+        }
         showSaveErrors([
           str('ragBuilderScoreCodeUnknown', 'It is not known whether SAS Model Manager stored retrieve_context.py: the upload failed or got no usable answer ({reason}), and the service may have stored the file all the same. The tag TLS-Verification-Off of the setup was not updated and may not say what the stored score code does. Manifest the setup again.').replace(
             '{reason}',
@@ -3918,7 +3973,8 @@ export async function buildRagBuilder(
       showSaveErrors([
         str('ragBuilderRegisterFailed', 'Registering the retrieval model failed: {reason}').replace(
           '{reason}',
-          error instanceof Error ? error.message : String(error)
+          // A write that got no answer was read back (see writeOrReadBack).
+          noAnswerText(error) || (error instanceof Error ? error.message : String(error))
         ),
       ]);
       return false;
@@ -4250,7 +4306,10 @@ export async function buildRagBuilder(
     } catch (error) {
       console.error('The retrieval test failed.', error);
       if (shown()) {
-        testStatus.textContent = str('ragBuilderTestFailed', 'The retrieval test could not be run - check the browser console and your permissions on the compute context.');
+        // A write that got no answer was read back (see writeOrReadBack).
+        testStatus.textContent = noAnswerText(error)
+          ? `${str('ragBuilderTestRunButton', 'Run test')}: ${noAnswerText(error)}`
+          : str('ragBuilderTestFailed', 'The retrieval test could not be run - check the browser console and your permissions on the compute context.');
       }
     } finally {
       // Unconditional: a failed, timed-out or abandoned test has to clean up
@@ -4258,13 +4317,29 @@ export async function buildRagBuilder(
       // only on the happy path. The finished job's own record and log survive
       // this, so nothing already read is lost by deleting now.
       if (definitionUri) {
+        // A definition that is left is said on the panel: the test promises
+        // to leave nothing behind. A delete that got no answer was read back
+        // (see deleteJobDefinition).
+        let left = '';
         try {
           const status = await deleteJobDefinition(definitionUri);
           if (status !== 204 && status !== 404) {
             console.warn(`RAG Builder: the transient test job definition was not deleted (HTTP ${status}).`);
+            left = `HTTP ${status}`;
           }
         } catch (error) {
           console.warn('RAG Builder: deleting the transient test job definition failed.', error);
+          left = noAnswerText(error) || (error instanceof Error ? error.message : String(error));
+        }
+        if (left && shown()) {
+          testStatus.textContent = [
+            testStatus.textContent,
+            str('ragBuilderTestDefinitionLeft', 'The job definition this test created ({uri}) may be left in SAS Viya, in no folder: {reason}')
+              .replace('{uri}', () => definitionUri)
+              .replace('{reason}', () => left),
+          ]
+            .filter(Boolean)
+            .join(' ');
         }
       }
       retrievalTestOut = false;
@@ -4340,18 +4415,55 @@ export async function buildRagBuilder(
       deleteSetupButton.disabled = true;
       // Locked from the confirmation until the page shows what is left.
       await selectionLock.during(async () => {
+        // A delete that gets no answer is read back (see deleteModel): a setup
+        // SAS Model Manager no longer holds was deleted, as after a 204.
+        let status = 0;
+        let failure: unknown = null;
         try {
-          const status = await deleteModel(setupID);
-          if (status !== 204) throw new Error(`HTTP ${status}`);
+          status = await deleteModel(setupID);
+        } catch (error) {
+          console.error('Deleting the RAG setup failed.', error);
+          failure = error;
+        }
+        try {
+          if (status !== 204) {
+            showStatus(
+              'danger',
+              noAnswerText(failure)
+                ? `${str('ragBuilderDeleteSetupButton', 'Delete setup')}: ${noAnswerText(failure)}`
+                : str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.')
+            );
+            return;
+          }
           ingestionRuns.delete(setupID);
           selectedSetupID = '';
           selectedSetupName = '';
-          await refreshSetups();
+          // The setup is deleted from here on: a list that cannot be read now
+          // is a list that was not refreshed, not a delete that failed.
+          let listed = true;
+          try {
+            await refreshSetups();
+          } catch (error) {
+            console.error('Listing the RAG setups after a delete failed.', error);
+            listed = false;
+            allSetups = allSetups.filter((setup) => setup.value !== setupID);
+            setupFilter.setUsers(allSetups);
+            renderSetupOptions();
+          }
           await loadSetup();
-          showStatus('success', str('ragBuilderSetupDeleted', 'RAG setup deleted.'));
-        } catch (error) {
-          console.error('Deleting the RAG setup failed.', error);
-          showStatus('danger', str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.'));
+          if (listed) {
+            showStatus('success', str('ragBuilderSetupDeleted', 'RAG setup deleted.'));
+          } else {
+            showStatus(
+              'warning',
+              str('ragBuilderSetupDeletedListFailed', 'The RAG setup was deleted, but the setup list could not be refreshed from SAS Model Manager.'),
+              {
+                id: idOf('retry-projects'),
+                label: str('ragBuilderProjectsRetry', 'Try again'),
+                run: () => void loadSelectionLists(),
+              }
+            );
+          }
         } finally {
           updateSelectionActions();
         }
@@ -4460,9 +4572,11 @@ export async function buildRagBuilder(
       deleteProjectButton.disabled = true;
       // Locked from the confirmation until the page shows what is left.
       await selectionLock.during(async () => {
-        // The setups whose delete SAS Model Manager answered with 204.
+        // The setups whose delete SAS Model Manager answered with 204 (or which
+        // it no longer held when a delete without an answer was read back).
         const deletedIDs: string[] = [];
         let projectGone = false;
+        let failure: unknown = null;
         try {
           for (const setup of setups) {
             const status = await deleteModel(setup.value);
@@ -4475,19 +4589,46 @@ export async function buildRagBuilder(
           projectGone = true;
         } catch (error) {
           console.error('Deleting the RAG project failed.', error);
+          failure = error;
         }
         try {
           // Stopped part of the way: the page shows what SAS Model Manager
           // holds now, and says what was deleted and what was not.
-          if (!projectGone) projectGone = await showWhatIsLeftOfProject(projectID, projectName, setups, deletedIDs);
+          if (!projectGone) projectGone = await showWhatIsLeftOfProject(projectID, projectName, setups, deletedIDs, failure);
           if (!projectGone) return;
           selectedProjectID = '';
           selectedSetupID = '';
           selectedSetupName = '';
-          await refreshProjects();
-          await refreshSetups();
+          // The project is deleted from here on: a list that cannot be read
+          // now is a list that was not refreshed, not a delete that failed.
+          let listed = true;
+          try {
+            await refreshProjects();
+            await refreshSetups();
+          } catch (error) {
+            console.error('Listing the RAG projects after a delete failed.', error);
+            listed = false;
+            allProjects = allProjects.filter((project) => project.value !== projectID);
+            projectFilter.setUsers(allProjects);
+            renderProjectOptions();
+            allSetups = [];
+            setupFilter.setUsers(allSetups);
+            renderSetupOptions();
+          }
           await loadSetup();
-          showStatus('success', str('ragBuilderProjectDeleted', 'RAG project deleted.'));
+          if (listed) {
+            showStatus('success', str('ragBuilderProjectDeleted', 'RAG project deleted.'));
+          } else {
+            showStatus(
+              'warning',
+              str('ragBuilderProjectDeletedListFailed', 'The RAG project was deleted, but the project list could not be refreshed from SAS Model Manager.'),
+              {
+                id: idOf('retry-projects'),
+                label: str('ragBuilderProjectsRetry', 'Try again'),
+                run: () => void loadSelectionLists(),
+              }
+            );
+          }
         } catch (error) {
           console.error('Deleting the RAG project failed.', error);
           showStatus('danger', str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.'));

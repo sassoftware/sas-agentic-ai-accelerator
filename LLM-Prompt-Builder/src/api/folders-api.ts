@@ -6,7 +6,7 @@
  * path, list its members, and ensure a child folder exists.
  */
 
-import { viyaFetch, viyaGetAll, viyaPost } from './http-client';
+import { viyaFetch, viyaGetAll, viyaPost, ViyaRefused, writeOrReadBack } from './http-client';
 
 export interface FolderInfo {
   id: string;
@@ -40,7 +40,9 @@ export async function getFolderMembers(folderId: string): Promise<FolderMember[]
 
 /**
  * Ensure `parentPath/name` exists and return its folder info. The parent must
- * already exist (for the RAG Builder that is the deployed content root).
+ * already exist (for the RAG Builder that is the deployed content root). When
+ * the creation gets no answer, the folder is looked for (see
+ * writeOrReadBack).
  */
 export async function ensureChildFolder(
   parentPath: string,
@@ -50,9 +52,15 @@ export async function ensureChildFolder(
   if (existing) return existing;
   const parent = await getFolderByPath(parentPath);
   if (!parent) return null;
-  return viyaPost<FolderInfo>(
-    `/folders/folders?parentFolderUri=/folders/folders/${parent.id}`,
-    { name }
+  return writeOrReadBack(
+    () => viyaPost<FolderInfo>(`/folders/folders?parentFolderUri=/folders/folders/${parent.id}`, { name }),
+    async () => {
+      const path = `/folders/folders/@item?path=${encodeURIComponent(`${parentPath}/${name}`)}`;
+      const response = await viyaFetch(path);
+      if (response.status === 404) return undefined;
+      if (!response.ok) throw new ViyaRefused(path, response.status);
+      return (await response.json()) as FolderInfo;
+    }
   );
 }
 

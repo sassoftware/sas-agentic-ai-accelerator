@@ -62,6 +62,10 @@ const usageFor = {};
 // Models created through POST /modelRepository/models, kept so the listing of
 // their project, their own GET and their contents answer for them afterwards.
 const createdModels = [];
+// The models deleted through the mock: a GET of one answers 404, as SAS Model
+// Manager does - what a delete without an answer reads back. An id that is
+// given out again to a new model leaves the set.
+const deletedModels = new Set();
 // The created models of a project a listing filter lets through. Only the two
 // filters the real service was seen to honour on these fields are applied:
 // contains(tags,'X') and eq(algorithm,'X').
@@ -805,6 +809,9 @@ http
           ],
         });
       }
+      // A project is there until it is deleted: what a delete without an
+      // answer reads back.
+      if (ragProject && !ragProjectRoute[2] && req.method === 'GET') return json(res, 200, ragProject);
       if (ragProject && !ragProjectRoute[2] && req.method === 'DELETE') {
         ragProjects.splice(ragProjects.indexOf(ragProject), 1);
         res.writeHead(204);
@@ -873,6 +880,7 @@ http
           }
           if (req.method === 'DELETE') {
             delete ragModels[modelId];
+            deletedModels.add(modelId);
             res.writeHead(204);
             return res.end();
           }
@@ -1103,6 +1111,7 @@ http
           if (body[field] !== undefined) model[field] = body[field];
         });
         createdModels.push(model);
+        deletedModels.delete(model.id);
         return json(res, 201, { items: [model] });
       }
       const createdRoute = /^\/modelRepository\/models\/([^/]+)(\/contents)?$/.exec(p);
@@ -1120,6 +1129,7 @@ http
         }
         if (req.method === 'DELETE') {
           createdModels.splice(createdModels.indexOf(createdModel), 1);
+          deletedModels.add(createdModel.id);
           // Its files go with it. The id is given out again to the next model
           // that is created, which must not open with the rag-setup.json - and
           // the generated job - of a setup that was deleted.
@@ -1665,6 +1675,7 @@ http
       if (/^\/modelRepository\/models\/[^/]+$/.test(p) && req.method === 'GET') {
         // Tags include leftovers from an "earlier manifest" to prove cleanup
         const modelId = p.split('/').pop();
+        if (deletedModels.has(modelId)) return json(res, 404, { message: 'no such model' });
         res.writeHead(200, { 'Content-Type': 'application/json', ETag: '"abc123"' });
         if (modelId === 'model-dec') {
           // TLS-Verification-Off: left by an earlier manifest with the option

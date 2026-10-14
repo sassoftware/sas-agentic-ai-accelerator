@@ -10,6 +10,7 @@ import type { DropdownOption } from '../types/models';
 import type { DependentDecision } from '../types/relationships';
 import { getAppState } from '../state/app-state';
 import { getFileContent } from '../api/files-api';
+import { UnansweredWrite, ViyaRefused } from '../api/http-client';
 import {
   getModelProjects,
   getModelProjectModels,
@@ -951,17 +952,21 @@ export async function buildPromptBuilder(
       promptDocSaveButton.disabled = true;
       promptDocSaveButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>`;
       let status = 500;
+      let failure: unknown = null;
       try {
         status = await selectionLock.during(() => updateModelAttributes(currentDocPromptId, attrs));
       } catch (error) {
         console.error('Failed to save prompt documentation.', error);
+        failure = error;
       }
       promptDocSaveButton.innerText = previousLabel;
       promptDocSaveButton.disabled = false;
       showToast(
         status < 300
           ? (promptBuilderInterfaceText?.promptBuilderDocSaved as string)
-          : (promptBuilderInterfaceText?.promptBuilderDocSaveFailed as string)
+          : noAnswerText(failure)
+            ? `${promptBuilderInterfaceText?.promptBuilderSaveDocumentationButton}: ${noAnswerText(failure)}`
+            : (promptBuilderInterfaceText?.promptBuilderDocSaveFailed as string)
       );
     };
     promptDocSection.appendChild(promptDocSaveButton);
@@ -1355,8 +1360,10 @@ export async function buildPromptBuilder(
         }
       } catch (error) {
         console.error('Creating the project failed.', error);
-        showToast(`${promptBuilderInterfaceText?.promptBuilderCreateProjectFailed}`);
-        dialog.showError(`${promptBuilderInterfaceText?.promptBuilderCreateProjectFailed}`);
+        // A creation without an answer was read back (see createModelProject).
+        const said = noAnswerText(error) || `${promptBuilderInterfaceText?.promptBuilderCreateProjectFailed}`;
+        showToast(said);
+        dialog.showError(said);
         return;
       }
       if (promptMode === 'decision') promptBuilderDecisionProjectIds.add(`${promptBuilderNewProjectObject?.id}`);
@@ -1409,8 +1416,10 @@ export async function buildPromptBuilder(
         }
       } catch (error) {
         console.error('Creating the prompt-test failed.', error);
-        showToast(`${promptBuilderInterfaceText?.promptBuilderCreatePromptFailed}`);
-        dialog.showError(`${promptBuilderInterfaceText?.promptBuilderCreatePromptFailed}`);
+        // A creation without an answer was read back (see createModel).
+        const said = noAnswerText(error) || `${promptBuilderInterfaceText?.promptBuilderCreatePromptFailed}`;
+        showToast(said);
+        dialog.showError(said);
         return;
       }
       const newPromptID = `${newPrompt.id}`;
@@ -1592,13 +1601,17 @@ export async function buildPromptBuilder(
           cancelText: `${promptBuilderInterfaceText?.promptBuilderDeleteCancelButton}`,
         });
         if (!confirmed) return;
-        // A request that gets no usable answer is a deletion that failed, as
-        // a refusal is: said, not left as an error nobody sees.
+        // A delete that gets no answer is read back (see writeOrReadBack):
+        // a prompt-test SAS Model Manager no longer holds was deleted, and
+        // leaves the page as after a 204. Otherwise the toast says what the
+        // read back found; a refusal is a deletion that failed.
         let deleteStatus = 0;
+        let failure: unknown = null;
         try {
           deleteStatus = await selectionLock.during(() => deleteModel(promptModelID));
         } catch (error) {
           console.error('Deleting the prompt-test failed.', error);
+          failure = error;
         }
         if (deleteStatus === 204) {
           promptBuilderProjectPrompts = promptBuilderProjectPrompts.filter((item) => item.value !== promptModelID);
@@ -1607,6 +1620,8 @@ export async function buildPromptBuilder(
           renderPromptOptions();
           resetExperimentTrackerState();
           dropPromptSelection();
+        } else if (noAnswerText(failure)) {
+          showToast(`${promptBuilderInterfaceText?.promptBuilderDeletePromptButton}: ${noAnswerText(failure)}`);
         } else {
           showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
         }
@@ -1631,7 +1646,8 @@ export async function buildPromptBuilder(
       projectID: string,
       projectName: string,
       asked: DropdownOption[],
-      deletedIds: string[]
+      deletedIds: string[],
+      failure: unknown
     ): Promise<boolean> {
       let left: DropdownOption[] | null = null;
       try {
@@ -1660,9 +1676,12 @@ export async function buildPromptBuilder(
       showToast(
         [
           // Whether the project is still there is known only where it was read.
-          left === null
-            ? `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`
-            : `${promptBuilderInterfaceText?.promptBuilderDeleteProjectStopped}`.replace('{project}', () => projectName),
+          // A delete that got no answer was read back: no word of permissions.
+          noAnswerText(failure)
+            ? `${promptBuilderInterfaceText?.promptBuilderDeleteProjectButton}: ${noAnswerText(failure)}`
+            : left === null
+              ? `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`
+              : `${promptBuilderInterfaceText?.promptBuilderDeleteProjectStopped}`.replace('{project}', () => projectName),
           ...(deleted.length ? [`${promptBuilderInterfaceText?.promptBuilderDeleteProjectDeletedPart}`.replace('{names}', () => names(deleted))] : []),
           ...(left === null
             ? [`${promptBuilderInterfaceText?.promptBuilderDeleteProjectNotRead}`]
@@ -1729,8 +1748,11 @@ export async function buildPromptBuilder(
         let projectGone = false;
         try {
           projectGone = await selectionLock.during(async () => {
-            // The prompt-tests whose delete SAS Model Manager answered with 204.
+            // The prompt-tests whose delete SAS Model Manager answered with 204
+            // (or which it no longer held when a delete without an answer was
+            // read back).
             const deletedIds: string[] = [];
+            let failure: unknown = null;
             try {
               for (const projectPrompt of projectPrompts) {
                 if ((await deleteModel(projectPrompt.value)) !== 204) throw new Error(`prompt-test ${projectPrompt.value} was not deleted`);
@@ -1739,8 +1761,9 @@ export async function buildPromptBuilder(
               if ((await deleteModelProject(projectID)) === 204) return true;
             } catch (error) {
               console.error('Deleting the project failed.', error);
+              failure = error;
             }
-            return showWhatIsLeftOfProject(projectID, projectName, projectPrompts, deletedIds);
+            return showWhatIsLeftOfProject(projectID, projectName, projectPrompts, deletedIds, failure);
           });
         } catch (error) {
           console.error('Showing what is left of the project failed.', error);
@@ -4655,16 +4678,18 @@ export async function buildPromptBuilder(
      * "manifested". A manifest whose score code was not stored has failed:
      * the box says so, and the caller stops before the tags and the toast.
      *
-     * Two things are told apart. A refusal SAS Model Manager answered with
+     * Three things are told apart. A refusal SAS Model Manager answered with
      * (a status of 300 or more, with its JSON body) is certain: the model
-     * keeps the score code it had. An upload that THROWS - the connection
-     * dropped, or an ingress answered with its error page in place of the
-     * service - is not: the service may have stored the code before the
-     * answer was lost, and the page cannot know. The line then says exactly
-     * that, and that the tags were not updated; nothing is read back.
+     * keeps the score code it had. An upload that gets no usable answer - the
+     * connection dropped, or an ingress answered with its error page in place
+     * of the service - is read back (see createModelContent): the score code
+     * the model holds then is this one, and the manifest goes on, or it is
+     * not, and the model keeps the one it had. When the read back fails too,
+     * the service may have stored the code, and the page cannot know: the
+     * line says exactly that, and that the tags were not updated.
      */
     async function storeManifestScoreCode(modelID: string, scoreCode: Blob, fileName: string): Promise<boolean> {
-      let refused = true;
+      let outcome: 'refused' | 'not-stored' | 'unknown' = 'refused';
       try {
         const stored = await createModelContent(modelID, scoreCode, fileName, 'score', 'text/x-python');
         if (stored.status_code < 300) {
@@ -4673,15 +4698,19 @@ export async function buildPromptBuilder(
         }
         console.error(`The score code of the manifest was not stored (status ${stored.status_code}).`, stored.response);
       } catch (error) {
-        refused = false;
-        console.error('The upload of the score code got no usable answer; it is not known whether it was stored.', error);
+        outcome = error instanceof UnansweredWrite && error.done === false ? 'not-stored' : 'unknown';
+        console.error('The upload of the score code got no usable answer.', error);
       }
       const line = document.createElement('p');
       line.classList.add('text-danger', 'pet-manifest-failed');
-      if (!refused) line.classList.add('pet-manifest-unknown');
-      line.innerText = refused
-        ? `${promptBuilderInterfaceText?.promptBuilderManifestScoreCodeFailed}`
-        : `${promptBuilderInterfaceText?.promptBuilderManifestScoreCodeUnknown}`;
+      if (outcome === 'unknown') line.classList.add('pet-manifest-unknown');
+      if (outcome === 'not-stored') line.classList.add('pet-manifest-stopped');
+      line.innerText =
+        outcome === 'refused'
+          ? `${promptBuilderInterfaceText?.promptBuilderManifestScoreCodeFailed}`
+          : outcome === 'not-stored'
+            ? `${promptBuilderInterfaceText?.promptBuilderManifestScoreCodeNoAnswer}`
+            : `${promptBuilderInterfaceText?.promptBuilderManifestScoreCodeUnknown}`;
       promptExperimentResultContainer.appendChild(line);
       return false;
     }
@@ -5010,7 +5039,17 @@ export async function buildPromptBuilder(
      * the way it takes when a request throws.
      */
     function written(status: number, what: string): void {
-      if (status >= 300) throw new Error(`${what} was refused with HTTP ${status}`);
+      if (status >= 300) throw new ViyaRefused(what, status, `${what} was refused with HTTP ${status}`);
+    }
+
+    /**
+     * What a write that got no answer comes to once what SAS Viya holds was
+     * read back (see writeOrReadBack): it was not carried out, or that is not
+     * known. '' for any other failure - a refusal, which is an answer.
+     */
+    function noAnswerText(error: unknown): string {
+      if (!(error instanceof UnansweredWrite)) return '';
+      return `${error.done === false ? promptBuilderInterfaceText?.promptBuilderNoAnswerNotDone : promptBuilderInterfaceText?.promptBuilderNoAnswerUnknown}`;
     }
 
     // Save the experiments to the SAS Model Manager. The success/failure
@@ -5086,13 +5125,17 @@ export async function buildPromptBuilder(
         resultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveFailureResponse}</p>`;
         return false;
       } catch (error) {
-        // Which request it was is not known here, and neither is what the
-        // service did with it: the prompt holds the experiments it held
-        // before, or these. The line says that, and no toast says "saved".
+        // A write that got no answer was read back (see writeOrReadBack): one
+        // that was carried out did not get here, and the line says what the
+        // read back found. For any other request that failed, what the
+        // service did with it is not known: the prompt holds the experiments
+        // it held before, or these. No toast says "saved".
         console.error('Saving the experiments stopped at a request that failed.', error);
         const line = document.createElement('p');
         line.classList.add('text-danger', 'pet-save-failed');
-        line.innerText = `${promptBuilderInterfaceText?.promptExperimentSaveStopped}`;
+        line.innerText = noAnswerText(error)
+          ? `${promptBuilderInterfaceText?.promptBuilderSaveExperimentsButton}: ${noAnswerText(error)}`
+          : `${promptBuilderInterfaceText?.promptExperimentSaveStopped}`;
         resultContainer.replaceChildren(line);
         return false;
       } finally {
@@ -6796,11 +6839,12 @@ ${scoreCodeReturn}`;
       });
       if (!confirmed) return;
       await selectionLock.during(async () => {
-        // Each write is read (see written), and one that is refused or throws
-        // ends the delete with the toast of a deletion that failed - or, for
-        // an upload or delete of the tracker that got no answer, with the
-        // toast that the run may have been deleted or not; the history is
-        // read again either way.
+        // Each write is read (see written). A write SAS Model Manager refuses
+        // ends the delete with the toast of a deletion that failed; one that
+        // gets no answer is read back (see writeOrReadBack) and ends it with
+        // what the read back found; a tracker that cannot be read ends it
+        // before anything is written, with what failed. The history is read
+        // again either way, and shows what is stored.
         // The entries of the other runs are never deleted to be written back:
         // the tracker is replaced in one upload (onConflict=update), and
         // deleted only when no run is left in it. Whichever write fails, the
@@ -6808,7 +6852,7 @@ ${scoreCodeReturn}`;
         // read is not written at all: its other runs are not known.
         let entryRemoved = false;
         // The upload or the delete of the tracker is out: when it gets no
-        // answer, the run may have been deleted or not.
+        // answer and cannot be read back, the run may have been deleted or not.
         let trackerWriteOut = false;
         // The tracker could not be read, or was read and is no list of runs.
         let trackerUnread: 'unread' | 'unusable' | '' = '';
@@ -6849,6 +6893,11 @@ ${scoreCodeReturn}`;
         } catch (error) {
           console.error('Deleting the optimization run failed.', error);
           // Once the entry is out of the tracker, only the snapshot is left.
+          // A request SAS Model Manager refused (ViyaRefused, which `written`
+          // throws for a status as well) is a deletion that failed; anything
+          // else before the tracker was written - a request without an
+          // answer, a tracker that cannot be read - changed nothing of it.
+          const refused = error instanceof ViyaRefused;
           showToast(
             entryRemoved
               ? `${promptBuilderInterfaceText?.promptBuilderOptimizeHistorySnapshotLeft}`.replace('{file}', () => String(entry.datasetSnapshot))
@@ -6856,9 +6905,11 @@ ${scoreCodeReturn}`;
                 ? `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteUnread}`
                 : trackerUnread === 'unusable'
                   ? `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteUnusable}`
-                  : trackerWriteOut
+                  : trackerWriteOut && error instanceof UnansweredWrite && error.done === null
                     ? `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteUnknown}`
-                    : `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`
+                    : refused
+                      ? `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`
+                      : `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteStopped}`
           );
         }
         // The history that is read again is the one of this prompt-test.
@@ -7117,10 +7168,15 @@ ${scoreCodeReturn}`;
         startOptimizeJobMonitor(job);
       } catch (error) {
         stopOptimizePolling();
+        // A launch that got no answer was read back (see launchJob): one
+        // that is running did not get here.
+        const noAnswer = noAnswerText(error);
         showOptimizeOutcome(
-          `${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed} ${String((error as Error)?.message ?? error)}`
+          noAnswer
+            ? `${promptBuilderInterfaceText?.promptBuilderOptimizeRunButton}: ${noAnswer}`
+            : `${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed} ${String((error as Error)?.message ?? error)}`
         );
-        showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed}`);
+        showToast(noAnswer ? `${promptBuilderInterfaceText?.promptBuilderOptimizeRunButton}: ${noAnswer}` : `${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed}`);
         resetOptimizeRunButton();
       }
     }
@@ -7382,10 +7438,15 @@ ${scoreCodeReturn}`;
         startOptimizeJobMonitor(job);
       } catch (error) {
         stopOptimizePolling();
+        // A launch that got no answer was read back (see launchJob): one
+        // that is running did not get here.
+        const noAnswer = noAnswerText(error);
         showOptimizeOutcome(
-          `${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed} ${String((error as Error)?.message ?? error)}`
+          noAnswer
+            ? `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareButton}: ${noAnswer}`
+            : `${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed} ${String((error as Error)?.message ?? error)}`
         );
-        showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed}`);
+        showToast(noAnswer ? `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareButton}: ${noAnswer}` : `${promptBuilderInterfaceText?.promptBuilderOptimizeLaunchFailed}`);
         resetOptimizeRunButton();
       }
     }

@@ -159,6 +159,73 @@ export class ViyaRefused extends Error {
 }
 
 /**
+ * A write that got no usable answer - no answer at all, or one that could not
+ * be read - after what SAS Viya holds was read back. `done` is false when the
+ * read back shows that the write was not carried out, and null when it could
+ * not be read back either: then it may have been carried out or not.
+ */
+export class UnansweredWrite extends Error {
+  constructor(
+    readonly done: false | null,
+    readonly lost: unknown
+  ) {
+    super(
+      done === false
+        ? 'A write got no answer, and reading back shows it was not carried out.'
+        : 'A write got no answer, and what is stored could not be read back.'
+    );
+  }
+}
+
+/**
+ * The statuses a gateway answers in place of a service that gave none (bad
+ * gateway, unavailable, timed out): what was sent may have been carried out
+ * all the same.
+ */
+const NO_ANSWER_STATUSES = [502, 503, 504];
+
+/**
+ * The status of the answer to a write, where it is one of the service; one a
+ * gateway answered in its place throws, so that writeOrReadBack reads back.
+ */
+export function statusOf(response: Response, path: string): number {
+  if (NO_ANSWER_STATUSES.includes(response.status)) throw new ViyaRefused(path, response.status);
+  return response.status;
+}
+
+/**
+ * Send a write, and when it gets no usable answer, read back what is stored.
+ *
+ * A write whose answer was lost may have been carried out: SAS Viya stored
+ * the file, deleted the model, created the project, and the page said that
+ * it had failed and went on showing what was there before. `readBack` reads
+ * what the write was to change and answers what the write answers when it
+ * was carried out, or undefined when it was not; a read back that fails
+ * leaves it unknown. A request without an answer, an answer that cannot be
+ * read and a status a gateway answers with in place of the service
+ * (NO_ANSWER_STATUSES) are read back; a refusal of the service (ViyaRefused
+ * with any other status) is an answer and is not.
+ */
+export async function writeOrReadBack<T>(
+  write: () => Promise<T>,
+  readBack: () => Promise<T | undefined>
+): Promise<T> {
+  try {
+    return await write();
+  } catch (lost) {
+    if (lost instanceof ViyaRefused && !NO_ANSWER_STATUSES.includes(lost.status)) throw lost;
+    let found: T | undefined;
+    try {
+      found = await readBack();
+    } catch {
+      throw new UnansweredWrite(null, lost);
+    }
+    if (found === undefined) throw new UnansweredWrite(false, lost);
+    return found;
+  }
+}
+
+/**
  * Parse a JSON response, throwing on a non-OK status so callers never read
  * fields off an error body (which previously surfaced as `undefined` ids that
  * poisoned later requests / persisted state).

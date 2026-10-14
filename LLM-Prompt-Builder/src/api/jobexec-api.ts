@@ -18,7 +18,7 @@
  * server-side from the credential domain under the launching user's identity.
  */
 
-import { viyaGet, viyaGetAll, viyaFetch, viyaPost, ViyaRefused, type CollectionPage } from './http-client';
+import { viyaGet, viyaGetAll, viyaFetch, viyaPost, ViyaRefused, writeOrReadBack, type CollectionPage } from './http-client';
 
 /** Job Execution job states (subset we care about). */
 export type JobState =
@@ -118,6 +118,12 @@ async function primeJobExecutionSession(): Promise<void> {
  * Launch a job definition asynchronously with the given arguments (all values
  * are sent as strings, mirroring how Job Execution passes request parameters
  * to the SAS program as macro variables).
+ *
+ * When the launch gets no answer, the jobs that have not ended are read
+ * back: a job of this definition, of this name and - where the listing names
+ * them - with these arguments is the one it launched. None found leaves the
+ * launch unknown (an UnansweredWrite with `done` null), not refused: the job
+ * may have been launched and have ended already.
  */
 export async function launchJob(
   jobDefinitionUri: string,
@@ -125,10 +131,25 @@ export async function launchJob(
   args: Record<string, string>
 ): Promise<JobExecutionJob> {
   await primeJobExecutionSession();
-  return viyaPost<JobExecutionJob>(
-    '/jobExecution/jobs',
-    { name: jobName, jobDefinitionUri, arguments: args },
-    'application/vnd.sas.job.execution.job.request+json'
+  return writeOrReadBack(
+    () =>
+      viyaPost<JobExecutionJob>(
+        '/jobExecution/jobs',
+        { name: jobName, jobDefinitionUri, arguments: args },
+        'application/vnd.sas.job.execution.job.request+json'
+      ),
+    async () => {
+      const launched = (await runningJobs()).find((job) => {
+        const request = (job.jobRequest ?? {}) as { jobDefinitionUri?: string; arguments?: Record<string, unknown> };
+        return (
+          request.jobDefinitionUri === jobDefinitionUri &&
+          job.name === jobName &&
+          (!request.arguments || Object.entries(args).every(([key, value]) => String(request.arguments?.[key] ?? '') === value))
+        );
+      });
+      if (!launched) throw new Error('no job of this launch is running');
+      return launched;
+    }
   );
 }
 

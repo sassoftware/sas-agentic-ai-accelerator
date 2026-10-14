@@ -1880,8 +1880,11 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       let injected = 0;
       const uploads = `**/modelRepository/models/${setupId}/contents?*`;
       const model = `**/modelRepository/models/${setupId}`;
+      // After the upload of the score code, the contents cannot be read.
+      let readsFail = false;
       await page.route(uploads, (route) => {
         const request = route.request();
+        if (readsFail && request.method() === 'GET') return route.abort('failed');
         if (request.method() === 'POST' && (request.postData() || '').includes('filename="retrieve_context.py"')) {
           scoreCodeSeen = true;
           if (fault === 'score code') {
@@ -1890,14 +1893,18 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
           }
           // The upload THROWS in the page: an error page in place of an
           // answer, or - the service took the upload and stored it, and the
-          // answer never reached the page.
+          // answer never reached the page. The page reads it back - or
+          // cannot, when the contents cannot be read after it.
           if (fault === 'score code, error page') {
             injected += 1;
             return route.fulfill({ status: 502, contentType: 'text/html', body: '<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center></body></html>' });
           }
-          if (fault === 'score code, answer lost') {
+          if (fault === 'score code, answer lost' || fault === 'score code, answer lost, nothing read back') {
             injected += 1;
-            return route.fetch().then(() => route.abort('failed'));
+            return route.fetch().then(() => {
+              if (fault === 'score code, answer lost, nothing read back') readsFail = true;
+              return route.abort('failed');
+            });
           }
         }
         return route.continue();
@@ -1950,29 +1957,28 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       `a refusal with an answer keeps the certain wording: the setup is not manifested, and keeps the score code and the tags it had (got: ${outcome})`
     );
     // The same upload without a usable answer. A refusal is certain; an
-    // upload that THROWS is not - the service may have stored the file before
-    // the answer was lost. The page cannot know and reads nothing back, so
-    // the stage says exactly that, where it used to give the error of the
-    // browser as the reason and nothing else.
+    // upload that THROWS is read back: the setup holds this score code, or
+    // it does not. Only where the contents cannot be read back is it not
+    // known whether the file was stored, and the stage says exactly that.
     const errorPageUpload = await faultyManifest('score code, error page');
     outcome = await resultText();
     assert(
-      Boolean(await saveResult(page, 'danger')) && !(await saveResult(page, 'success')) && outcome.includes('The manifest stopped while registering the retrieval model. It was not completed.') && outcome.includes('It is not known whether SAS Model Manager stored retrieve_context.py') && outcome.includes('Manifest the setup again') && !outcome.includes('keeps the score code') && !outcome.includes('The setup is not manifested'),
-      `retrieve_context.py answered by an error page: the manifest stops there and says that it was not completed, that it is not known whether the file was stored, and to manifest again - not that the setup is not manifested (got: ${outcome})`
+      Boolean(await saveResult(page, 'danger')) && !(await saveResult(page, 'success')) && outcome.includes('The manifest stopped while registering the retrieval model. The setup is not manifested.') && outcome.includes('The upload of retrieve_context.py got no usable answer from SAS Model Manager, and reading it back shows that the setup does not hold this score code') && outcome.includes('The setup keeps the score code and the tags it had') && !outcome.includes('It is not known'),
+      `retrieve_context.py answered by an error page, which stored nothing: the page reads it back, and the manifest stops there and says that the setup does not hold the new score code and keeps what it had (got: ${outcome})`
     );
     assert(
       (await storedTlsLine()) === 'SSL_VERIFY = False' && (await tagsOfSetup()).includes(TLS_TAG) && !errorPageUpload.log.some((e) => e.url === `/modelRepository/models/${setupId}/modelVersions`),
       `and the setup is as it was: the score code it had, its tag, no model version (stored: ${await storedTlsLine()}; tags: ${(await tagsOfSetup()).join(', ')})`
     );
-    const answerLost = await faultyManifest('score code, answer lost');
+    const answerLost = await faultyManifest('score code, answer lost, nothing read back');
     outcome = await resultText();
     assert(
-      Boolean(await saveResult(page, 'danger')) && outcome.includes('It is not known whether SAS Model Manager stored retrieve_context.py') && outcome.includes(`The tag ${TLS_TAG} of the setup was not updated and may not say what the stored score code does`) && !outcome.includes('The setup is not manifested'),
-      `retrieve_context.py stored and its answer lost: the page says that it is not known whether the file was stored, and that the tag may not say what the stored score code does (got: ${outcome})`
+      Boolean(await saveResult(page, 'danger')) && outcome.includes('The manifest stopped while registering the retrieval model. It was not completed.') && outcome.includes('It is not known whether SAS Model Manager stored retrieve_context.py') && outcome.includes(`The tag ${TLS_TAG} of the setup was not updated and may not say what the stored score code does`) && outcome.includes('Manifest the setup again') && !outcome.includes('The setup is not manifested'),
+      `retrieve_context.py stored, its answer lost and the contents not readable after it: the page says that it is not known whether the file was stored, and that the tag may not say what the stored score code does (got: ${outcome})`
     );
     assert(
       (await storedTlsLine()) === 'SSL_VERIFY = True' && (await tagsOfSetup()).includes(TLS_TAG) && !answerLost.log.some((e) => e.url === `/modelRepository/models/${setupId}/modelVersions`),
-      `which is the case here: the service did store the score code that verifies, the page could not see it, and the setup still carries ${TLS_TAG} (stored: ${await storedTlsLine()}; tags: ${(await tagsOfSetup()).join(', ')})`
+      `which is the case here: the service did store the score code that verifies, the page could not read it back, and the setup still carries ${TLS_TAG} (stored: ${await storedTlsLine()}; tags: ${(await tagsOfSetup()).join(', ')})`
     );
     // Ticked, the score code is stored, the tag cannot be taken away: the
     // model verifies and is still listed as one that does not.
@@ -1990,6 +1996,15 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     assert(
       JSON.stringify(tlsLines(reticked.code)) === '["SSL_VERIFY = True"]' && !reticked.tags.includes(TLS_TAG) && Boolean(await saveResult(page, 'success')),
       `manifested with the option ticked again, the model verifies and loses the tag (line: ${JSON.stringify(tlsLines(reticked.code))}, tags: ${reticked.tags.join(', ')})`
+    );
+    // The score code stored and its answer lost, read back: the setup holds
+    // it, and the manifest goes on to its end.
+    const readBack = await faultyManifest('score code, answer lost');
+    outcome = await resultText();
+    assert(
+      Boolean(await saveResult(page, 'success')) && outcome.includes('Setup manifested') && (await storedTlsLine()) === 'SSL_VERIFY = True' && !(await tagsOfSetup()).includes(TLS_TAG) &&
+        readBack.log.some((e) => e.method === 'POST' && e.url === `/modelRepository/models/${setupId}/modelVersions`),
+      `retrieve_context.py stored and its answer lost: the page reads it back, finds it stored, and the manifest goes on - a model version is recorded and the setup is manifested (got: ${outcome})`
     );
 
     // -- one embedding endpoint, also where the SCR endpoint option is blank ---------

@@ -155,20 +155,24 @@ is a default written at manifest time:
   manifested (no answer, or the error page of an ingress instead of an answer
   from SAS Model Manager), and a write SAS Model Manager refuses with a
   status, leave the button usable again, and where they stop the manifest, a
-  line beside the button says so and no toast says "manifested":
+  line beside the button says so and no toast says "manifested". A write
+  that gets no usable answer is read back first: what SAS Model Manager holds
+  afterwards decides whether it was carried out, and one that was goes on as
+  if it had been answered. Where the manifest stops:
   - in the save of the experiments, which a click on the button does first:
-    the save did not finish, and *Not manifested* - the manifest is not
-    started, also when the save is refused with an answer;
+    the line says that the save was not carried out (or, where nothing could
+    be read back, that this is not known), and *Not manifested* - the
+    manifest is not started, also when the save is refused with an answer;
   - before the score code: *Not manifested*, the model keeps the score code
     and the tags it had;
-  - in the upload of the score code itself, when it fails outright: *The
-    manifest was not completed, and it is not known whether the score code of
-    this run is stored*. The
-    service may have stored the code before the answer was lost; the page
-    reads nothing back, so until the next manifest that completes, the tag may
-    not match the score code the model holds. `retrieve_context.py` of a RAG
-    setup is reported the same way (*It is not known whether SAS Model Manager
-    stored retrieve_context.py*);
+  - in the upload of the score code itself, when it fails outright and the
+    model does not hold the score code afterwards: *Not manifested*, the
+    model keeps the score code and the tags it had. Where the score code
+    cannot be read back either: *The manifest was not completed, and it is
+    not known whether the score code of this run is stored*; until the next
+    manifest that completes, the tag may not match the score code the model
+    holds. `retrieve_context.py` of a RAG setup is reported the same way
+    (*It is not known whether SAS Model Manager stored retrieve_context.py*);
   - in the step for `requirements.json` (written, or removed again for the
     *Call LLM* node variant), after the score code and the tags, and in the
     last step, which copies the attributes of the LLM or of the decision model

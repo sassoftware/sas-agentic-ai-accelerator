@@ -10,7 +10,7 @@
  * through this API is what makes it a flow rather than a document that looks
  * like one. (Same trap as the .step files.)
  */
-import { viyaFetch } from './http-client';
+import { statusOf, viyaFetch, ViyaRefused, writeOrReadBack } from './http-client';
 import { getFolderByPath, getFolderMembers } from './folders-api';
 
 const FLOW_MEDIA = 'application/vnd.sas.data.flow+json';
@@ -102,30 +102,50 @@ export async function registerFlow(
 ): Promise<string> {
   const folder = await getFolderByPath(folderPath);
   if (!folder) throw new Error(`the folder ${folderPath} could not be reached`);
-  for (const member of await getFolderMembers(folder.id)) {
-    if (member.name === flow.name && String(member.uri ?? '').includes('/dataFlows/')) {
-      // A refused delete would leave the old flow beside the new one.
-      const removed = await viyaFetch(String(member.uri), { method: 'DELETE' });
-      if (!removed.ok && removed.status !== 404) {
-        throw new Error(`the flow of the same name could not be replaced (HTTP ${removed.status} on its delete)`);
+  // The flows of that name in the folder: the old one before the delete, the
+  // new one when the registration got no answer (see writeOrReadBack).
+  const flowsNamed = async (): Promise<string[]> =>
+    (await getFolderMembers(folder.id))
+      .filter((member) => member.name === flow.name && String(member.uri ?? '').includes('/dataFlows/'))
+      .map((member) => String(member.uri));
+  for (const uri of await flowsNamed()) {
+    // A refused delete would leave the old flow beside the new one.
+    const status = await writeOrReadBack(
+      async () => statusOf(await viyaFetch(uri, { method: 'DELETE' }), uri),
+      async () => {
+        const response = await viyaFetch(uri, { accept: FLOW_MEDIA });
+        if (response.status === 404) return 204;
+        if (response.ok) return undefined;
+        throw new ViyaRefused(uri, response.status);
       }
+    );
+    if (status >= 300 && status !== 404) {
+      throw new Error(`the flow of the same name could not be replaced (HTTP ${status} on its delete)`);
     }
   }
   // The service mints the id; sending ours is at best ignored and at worst a
   // collision with a flow someone else already registered.
   const body = { ...flow };
   delete body.id;
-  const response = await viyaFetch(
-    `/dataFlows/dataFlows?parentFolderUri=/folders/folders/${folder.id}`,
-    {
-      method: 'POST',
-      accept: FLOW_MEDIA,
-      contentType: FLOW_MEDIA,
-      body: JSON.stringify(body),
+  return writeOrReadBack(
+    async () => {
+      const response = await viyaFetch(
+        `/dataFlows/dataFlows?parentFolderUri=/folders/folders/${folder.id}`,
+        {
+          method: 'POST',
+          accept: FLOW_MEDIA,
+          contentType: FLOW_MEDIA,
+          body: JSON.stringify(body),
+        }
+      );
+      if (!response.ok) {
+        throw new ViyaRefused('/dataFlows/dataFlows', response.status, `registering the flow failed (HTTP ${response.status})`);
+      }
+      return String(((await response.json()) as { id?: string }).id ?? '');
+    },
+    async () => {
+      const uri = (await flowsNamed())[0];
+      return uri ? uri.split('/').pop() : undefined;
     }
   );
-  if (!response.ok) {
-    throw new Error(`registering the flow failed (HTTP ${response.status})`);
-  }
-  return String(((await response.json()) as { id?: string }).id ?? '');
 }
