@@ -311,7 +311,9 @@ class Manifest:
         live): paths inside it resolve against that file's directory.
 
         `allow_empty` is for the editor alone, which may be handed a manifest
-        whose author deleted the placeholder and left `identities:` empty.
+        whose author deleted the placeholder and left `identities:` empty, or
+        wrote `identities: []` - the editor says itself what it can do with
+        that.
         """
         import yaml
 
@@ -325,7 +327,7 @@ class Manifest:
         base = path.parent
         default_source = raw.get("source")
         listed = raw.get("identities")
-        if allow_empty and listed is None:
+        if allow_empty and listed in (None, []):
             listed = []
         elif not isinstance(listed, list) or not listed:
             raise CredentialError(

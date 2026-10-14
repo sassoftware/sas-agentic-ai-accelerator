@@ -117,3 +117,21 @@ def test_a_key_added_where_the_last_line_is_cut_leaves_no_empty_line(mdb, eol, f
     code, said = mdb("credentials-add", "group", "A", "--only", "OpenAI")
     assert code == 0, said
     assert mdb.path.read_bytes() == (head + "    only: [OpenAI]" + (eol if final else "")).encode("utf-8")
+
+
+# ---- `identities: []` is refused in the words of the editor --------------------------------
+def test_an_empty_list_in_brackets_is_refused_as_a_list_the_editor_cannot_edit(mdb):
+    """gate-21a C2: `identities: []` ended `credentials-add` with the loader's
+    sentence that a manifest that equips nobody is almost certainly a
+    mistake - said to a command that would add one."""
+    text = "source: .env\nidentities: []\n"
+    for args in (("credentials-add", "group", "New"), ("credentials-remove", "group", "New")):
+        mdb.path.write_text(text, encoding="utf-8")
+        code, said = mdb(*args)
+        assert code == 2 and mdb.path.read_text(encoding="utf-8") == text
+        assert ("credentials.yaml: 'identities' is not a block list (one `- ` line per identity), so it cannot be "
+                "edited in place") in said
+        assert "equips nobody" not in said
+    # apply and report still refuse a manifest that equips nobody, in the loader's words
+    code, said = mdb("credentials-report")
+    assert code == 2 and "'identities' must be a non-empty list" in said
