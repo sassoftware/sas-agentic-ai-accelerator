@@ -177,15 +177,18 @@ mdb credentials-apply --identity-type group --identity LLMConsumers --dry-run
 mdb credentials-report --identity <user id> --identity-type user
 ```
 
-`--domain` and `--identity-type` belong to that mode. With a manifest the run
-goes to the domain the manifest names. A `--domain` that names another domain
-is refused before the sign-in, because an apply also removes what the
-manifest marks absent. Two entries for one identity are refused by
+`--domain`, `--identity-type`, `--env-file` and `--keys-file` belong to that
+mode. With a manifest the run goes to the domain the manifest names and takes
+the type and the key file of each identity from it. A `--domain` that names
+another domain is refused before the sign-in, because an apply also removes
+what the manifest marks absent; so is any `--identity-type`, `--env-file` or
+`--keys-file`. Two entries for one identity are refused by
 `credentials-apply` and `credentials-report` as they are by
-`credentials-add`. An empty `--manifest`, `--env-file`, `--source` or
-`--keys-file` (what a variable of the shell that is not set gives) ends the
-command with exit code 2 before anything is read or written, as an empty
-`--domain` does.
+`credentials-add`, and so is an identity named twice with `--identity`. An
+empty value of any option (what a variable of the shell that is not set
+gives) ends the command with exit code 2 before anything is read or written,
+as does a `--manifest` that names a folder. An identity id with a line break
+is refused.
 
 ### Adding an identity: `mdb credentials-add`
 
@@ -289,9 +292,10 @@ mdb credentials-report                  # shows it as absent
 - `credentials-report` shows such an identity as
   `absent (as the manifest says)` once its credential is gone, and as
   `STILL THERE (manifest: absent)` while it exists. A credential that cannot
-  be read is shown as `unreadable` with the answer of the service, and the two
-  lines below the table count it neither way: they end
-  `... hold none; 1 could not be read.`
+  be read is shown as `unreadable` with the answer of the service, and the
+  lines below the table count it neither way: the line of the identities the
+  manifest names ends `... hold a credential; <n> could not be read.`, and the
+  line of those it marks absent `... hold none; <n> could not be read.`
 - `state: present` is the default and may be written. Any other value is
   refused when the manifest is read, with exit code 2, before anything is
   written or removed.
@@ -308,7 +312,13 @@ until the report shows the credential as absent.
 A refused read, removal or write of a credential names the answer of the
 service. A write shows the reason only for a 404 - for a group that does not
 exist, errorCode 12310, measured on 2026-10-14 - and not where the answer
-holds a value the write carried. The id of an identity is percent-encoded as
+holds a value the write carried. The values are compared as the line prints
+the answer, every run of blanks, tabs and line breaks as one blank, and with
+the whole answer, also past the 300 characters a line shows of an answer
+that is no JSON. A request that gets no answer - a connection reset, a
+timeout - ends with one line, `... failed: no answer (<kind of exception>)`,
+that names nothing of the request. No traceback of `mdb` shows the locals of
+a frame. The id of an identity is percent-encoded as
 one segment of the address, so an id with `#`, `?` or `/` names that identity
 and no other; `.` and `..` alone are refused. How SAS Viya answers for an id
 with such characters was not measured.
