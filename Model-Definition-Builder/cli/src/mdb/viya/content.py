@@ -558,7 +558,8 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
             if references:
                 # one name, one object: nothing is created beside a reference of the name
                 referenced.add((entry.folder, entry.name, entry.kind))
-                raise DeployError(_referenced(entry, found, references))
+                raise DeployError(_referenced(entry, found, references, manifest.listed_path(entry.path),
+                                              _root_readers(manifest, source, entry)))
             if len(found) > 1:
                 raise DeployError(f"{len(found)} folders of that name are in the folder (ids "
                                   f"{', '.join(_id(m['uri']) for m in found)}): nothing was written into any of "
@@ -618,10 +619,10 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
             references = _references_named(listed, entry.name, entry.kind)
             if references:
                 referenced.add((entry.folder, entry.name, entry.kind))
-                done(entry, FAILED, _referenced(entry, existing, references))
+                done(entry, FAILED, _referenced(entry, existing, references, manifest.listed_path(entry.path)))
                 continue
             if len(existing) > 1:
-                done(entry, FAILED, _several(entry, existing))
+                done(entry, FAILED, _several(entry, existing, manifest.listed_path(entry.path)))
                 continue
             status, note = _DEPLOYERS[entry.kind](session, source, entry, folder_id, existing, dry_run,
                                                   settings, new_values)
@@ -653,38 +654,74 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
     return result
 
 
-def _to_hint(entry, target: str) -> str:
+def _to_hint(listed: str, target: str) -> str:
     """How one object of a site is updated where an entry FAILED over two
     things of its name. The command writes the content of a checkout - which
-    the hint says, because `mdb builders-import` prints the line too."""
-    return f"from a checkout with `mdb content-deploy --only \"{entry.path}\" --to {target}`"
+    the hint says, because `mdb builders-import` prints the line too.
+    `listed` is the path of the entry in the whole manifest, which is what
+    `--only` takes: a run of a part (`--only RAG --to ...`) names its entries
+    below that part."""
+    return f"from a checkout with `mdb content-deploy --only \"{listed}\" --to {target}`"
 
 
-def _several(entry, existing: list) -> str:
+#: Why the line of release.json names no command to update one object: `--only release.json` is refused.
+_RECORD_BY_A_WHOLE_RUN = "release.json is written only by a run that covers every entry of the manifest"
+
+
+def _several(entry, existing: list, listed: str) -> str:
     ids = ", ".join(_id(m["uri"]) for m in existing)
+    way_out = (f"remove the other: {_RECORD_BY_A_WHOLE_RUN}" if is_release_record(entry) else
+               f"update one {_to_hint(listed, '<id>')}, or remove the other")
     return (f"{len(existing)} {_WORD[entry.kind]}s of that name are in the folder (ids {ids}): none was changed, "
-            f"because nothing says which one is meant - update one {_to_hint(entry, '<id>')}, or remove the other")
+            f"because nothing says which one is meant - {way_out}")
 
 
-def _referenced(entry, existing: list, references: list) -> str:
+def _root_readers(manifest, source, folder) -> list:
+    """The job definitions below a folder of the manifest that have the
+    parameter contentRoot in what the source holds for them, by their path
+    in the whole manifest. A folder with one goes somewhere else only as
+    that folder of a content root (`root_of_part`)."""
+    readers = []
+    for entry in manifest.objects():
+        if entry.kind != "jobDefinition" or not entry.path.startswith(folder.path + "/"):
+            continue
+        try:
+            parameters = source.job_body(entry).get("parameters") or []
+        except (OSError, ValueError):
+            continue
+        if any(isinstance(p, dict) and p.get("name") == _content.CONTENT_ROOT_PARAMETER for p in parameters):
+            readers.append(manifest.listed_path(entry.path))
+    return readers
+
+
+def _referenced(entry, existing: list, references: list, listed: str, readers=()) -> str:
     """Why an entry is not written while a reference of its name and kind is
     in its folder: alone, or beside the object - or objects - of that name.
-    Every object and every reference of the name is named."""
+    Every object and every reference of the name is named. `listed` is the
+    path of the entry in the whole manifest, `readers` what `_root_readers`
+    found below a folder entry."""
     names = ", ".join(str(m.get("uri")) for m in references)
     one = len(references) == 1
     if not existing:
-        if entry.kind == "folder":
-            # the folder form of --to takes the SAS Content path of a folder, whatever its name
-            hint = _to_hint(entry, "<the SAS Content path of that folder>")
+        update = f", or update {'the object it names' if one else 'an object they name'} "
+        if is_release_record(entry):
+            # no command updates one release.json: a run of a part that names it is refused
+            hint = f": {_RECORD_BY_A_WHOLE_RUN}"
+        elif entry.kind == "folder":
+            # the folder form of --to takes the SAS Content path of a folder, whatever its name - unless a job
+            # definition below it reads the content root it sits in: then the command takes that folder of a
+            # content root only, and says so before it signs in
+            hint = update + _to_hint(listed, "<the SAS Content path of that folder>")
+            if readers:
+                hint += (f" - a path that ends with /{listed}, with the content root in front of it, because the "
+                         f"job definition {readers[0]} reads the content root it sits in")
         else:
             # an object named by its URI is written only under the name of the entry, or with --force
-            hint = f"{_to_hint(entry, '<its URI>')} (with --force where that object has another name)"
+            hint = update + _to_hint(listed, "<its URI>") + " (with --force where that object has another name)"
         return (f"a reference of that name is in the folder and names {names}, an object that lives elsewhere: it "
-                "is not followed, and nothing was written - remove the reference, or update the object it names "
-                f"{hint}" if one else
+                f"is not followed, and nothing was written - remove the reference{hint}" if one else
                 f"{len(references)} references of that name are in the folder and name {names}, objects that live "
-                "elsewhere: none is followed, and nothing was written - remove them, or update an object they "
-                f"name {hint}")
+                f"elsewhere: none is followed, and nothing was written - remove them{hint}")
     ids = ", ".join(_id(m["uri"]) for m in existing)
     held = (f"the {_WORD[entry.kind]} of that name (id {ids})" if len(existing) == 1 else
             f"{len(existing)} {_WORD[entry.kind]}s of that name (ids {ids})")

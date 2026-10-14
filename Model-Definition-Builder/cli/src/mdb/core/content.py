@@ -208,10 +208,17 @@ class ContentManifest:
     #: Repository path of the one transfer package, with forward slashes.
     package: str
     entries: list = field(default_factory=list)
+    #: The folder of the whole manifest these entries are the part of (`part_of`); "" for the manifest itself.
+    part: str = ""
 
     @property
     def package_path(self) -> Path:
         return self.repo_root.joinpath(*PurePosixPath(self.package).parts)
+
+    def listed_path(self, path: str) -> str:
+        """The path an entry of this manifest has in the whole manifest - what
+        `--only` takes: with the folder in front where this is a part of it."""
+        return f"{self.part}/{path}" if self.part else path
 
     def folders(self) -> list:
         """Every folder below the content root, listed or implied, parents first."""
@@ -743,7 +750,7 @@ def part_of(manifest: ContentManifest, folder: str, content_root: str) -> Conten
     entries = [replace(entry, path=entry.path[len(prefix):]) for entry in manifest.entries
                if entry.path.startswith(prefix)]
     return ContentManifest(repo_root=manifest.repo_root, content_root=content_root.rstrip("/"),
-                           package=manifest.package, entries=entries)
+                           package=manifest.package, entries=entries, part=folder.strip("/"))
 
 
 def root_of_part(target: str, folder: str) -> str:

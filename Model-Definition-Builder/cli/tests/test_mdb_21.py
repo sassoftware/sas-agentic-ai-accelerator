@@ -9,8 +9,8 @@ import ast
 import io
 import itertools
 import re
+import shlex
 from pathlib import Path
-
 from types import SimpleNamespace
 
 import pytest
@@ -18,8 +18,9 @@ from rich.console import Console
 from rich.text import Text
 from typer.testing import CliRunner
 
-from content_fakes import package_of
+from content_fakes import Viya, package_of
 from mdb import cli
+from mdb.core import content
 from mdb.viya import transfer
 from test_content_deploy import command, manifest, repo  # noqa: F401
 from test_credentials_commands import mdb  # noqa: F401
@@ -450,3 +451,182 @@ def test_the_row_of_a_credential_that_cannot_be_read_shows_the_http_status(mdb):
     for who in ("group 'LLMConsumers'", "user 'ada [x]'"):
         assert sum(f"reading the credential for {who} failed: HTTP 503 " in line for line in said.splitlines()) == 1
     assert "0 of 2 named identities hold a credential." in said
+
+
+# ---- every hint of a FAILED line, run as it is printed -----------------------------------
+ROOT = "/SAS Agentic AI Accelerator"
+PREFIX = {"file": "/files/files/", "step": "/dataFlows/steps/", "jobDefinition": "/jobDefinitions/definitions/"}
+
+
+@pytest.fixture
+def shipped(monkeypatch):
+    """`mdb content-deploy` on the manifest of the repository, against SAS
+    Viya in memory. `shipped.viya` is the site, `shipped.manifest` the list."""
+    monkeypatch.setattr(content, "checkout_commit", lambda root: ("c" * 40, "2026-10-12T09:31:55+02:00"))
+    monkeypatch.setattr(content, "commit_standing", lambda root, commit: content.ANCESTOR)
+    out, viya = io.StringIO(), Viya()
+    monkeypatch.setattr(cli, "console", Console(file=out, width=1000, force_terminal=False, emoji=False))
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=REPOSITORY))
+    monkeypatch.setattr(cli, "_viya_session", lambda: viya)
+
+    def run(*args):
+        out.seek(0)
+        out.truncate()
+        result = CliRunner().invoke(cli.app, ["content-deploy", *args])
+        assert _ended_by_itself(result), result.exception
+        return result.exit_code, out.getvalue()
+
+    run.viya, run.manifest = viya, content.load_manifest(REPOSITORY)
+    return run
+
+
+def _failed_line(text: str, path: str) -> str:
+    line, = [line for line in text.splitlines() if line.lstrip().startswith("FAILED") and f" {path}  (" in line]
+    return line
+
+
+def _as_printed(line: str, **filled) -> list:
+    """The arguments of the one command a FAILED line names, with what it
+    leaves open (`<its URI>`, `<id>`, the path of a folder) filled in."""
+    command, = re.findall(r"`(mdb content-deploy [^`]*)`", line)
+    for placeholder, value in filled.items():
+        assert command.count(placeholder) == 1, (placeholder, command)
+        command = command.replace(placeholder, value)
+    assert "<" not in command, command
+    words = shlex.split(command)
+    assert words[:2] == ["mdb", "content-deploy"]
+    return words[2:]
+
+
+def _taken_out(viya, path: str, kind: str):
+    """Take the object of an entry out of its folder; returns (the member, a function that puts everything
+    of that folder back as it was)."""
+    above, _, name = path.rpartition("/")
+    folder = viya.folder_id(above)
+    before = list(viya.members[folder])
+    member, = [m for m in before if m["name"] == name and m["uri"].startswith(_URI[kind])]
+    viya.members[folder] = [m for m in before if m is not member]
+    return member, lambda: viya.members.__setitem__(folder, list(before))
+
+
+_URI = {**PREFIX, "folder": "/folders/folders/"}
+
+
+def _a_copy_elsewhere(viya, member, kind: str, path: str) -> str:
+    """An object of the same kind and content under another path; returns its URI."""
+    held = {"file": lambda: viya.files[member["uri"]], "step": lambda: dict(viya.steps[member["uri"]]),
+            "jobDefinition": lambda: dict(viya.jobs[member["uri"]][0])}[kind]()
+    if kind != "file":
+        held["name"] = path.rsplit("/", 1)[-1]
+    return viya.put_member(path, PREFIX[kind], held)
+
+
+def _objects_to_try(manifest, part: str) -> list:
+    """Of the manifest, or of one folder of it: every job definition, the first and the last custom step,
+    the first file with a source and the file mdb generates beside release.json - the kinds of the manifest
+    that a hint names a command for."""
+    below = [e for e in manifest.objects() if e.path.startswith(part + "/" if part else "")]
+    listed = {kind: [e for e in below if e.kind == kind] for kind in PREFIX}
+    files = [e for e in listed["file"] if e.source][:1] + [e for e in listed["file"] if e.generated == "release-table"]
+    return listed["jobDefinition"] + listed["step"][:1] + listed["step"][1:][-1:] + files
+
+
+@pytest.mark.parametrize("part", ["", "RAG", "Data", "Logging and Monitoring"])
+def test_the_hint_for_a_reference_and_for_two_objects_runs_as_printed_for_every_kind(shipped, part):
+    """gate-20b ran the hints as printed. In a run of the whole manifest
+    they worked; in a run of a part that goes somewhere else - `--only RAG
+    --to <folder>`, what the deploy-rag-content scripts run - the line named
+    the entry by its path below that part, which `--only` does not take:
+    `--only "rag_core/tokens.py"` ended with exit code 2."""
+    viya, root = shipped.viya, "/Team/A Site/Part" + ("/" + part if part else "")
+    entries = _objects_to_try(shipped.manifest, part)
+    assert {e.kind for e in entries} == {"": {"jobDefinition", "step", "file"}, "RAG": {"step", "file"},
+                                         "Data": {"jobDefinition", "file"},
+                                         "Logging and Monitoring": {"step", "file"}}[part]
+    first = ("--only", part, "--to", root, "--create") if part else ("--content-root", root, "--create")
+    assert shipped(*first)[0] == 0
+    for number, entry in enumerate(entries):
+        # the run that meets the entry: the part again, or - in the content root - the entry alone
+        again = ("--only", part, "--to", root) if part else ("--content-root", root, "--only", entry.path)
+        shown = entry.path[len(part) + 1:] if part else entry.path          # the path as the lines of this run show it
+        # a reference of the name, alone: to an object of another name elsewhere
+        member, put_back = _taken_out(viya, f"{root}/{shown}", entry.kind)
+        theirs = _a_copy_elsewhere(viya, member, entry.kind, f"/Team/Own {number}/of the site {entry.name}")
+        viya.put_reference(f"{root}/{shown}", theirs)
+        code, text = shipped(*again)
+        line = _failed_line(text, shown)
+        assert code == 1 and f"--only \"{entry.path}\" --to <its URI>`" in line, line
+        printed = _as_printed(line, **{"<its URI>": theirs})
+        code, text = shipped(*printed)
+        assert code == 1 and "pass --force to update it all the same" in text, text    # as the hint says: another name
+        code, text = shipped(*printed, "--force")
+        assert code == 0 and re.search(r"^  (equal|updated) ", text, re.M), text
+        put_back()
+        # two objects of the name: one of them is updated by its id
+        second = _a_copy_elsewhere(viya, member, entry.kind, f"{root}/{shown}")
+        code, text = shipped(*again)
+        line = _failed_line(text, shown)
+        assert code == 1 and f"--only \"{entry.path}\" --to <id>`" in line, line
+        code, text = shipped(*_as_printed(line, **{"<id>": second.rsplit("/", 1)[-1]}))
+        assert code == 0 and re.search(r"^  (equal|updated) ", text, re.M), text
+        put_back()
+        assert shipped(*again)[0] == 0
+
+
+def test_the_hint_for_a_reference_in_the_place_of_a_folder_runs_as_printed_for_every_folder(shipped):
+    """gate-20b: for the entry Data the hint `--only "Data" --to <the SAS
+    Content path of that folder>` ended with exit code 2 where the folder
+    the reference names is not called Data: a job definition below Data
+    reads the content root it sits in, and the command takes that folder of
+    a content root only. The hint says so where it is so."""
+    viya = shipped.viya
+    assert shipped()[0] == 0
+    folders = shipped.manifest.folders()
+    reading = {f.path for f in folders for e in shipped.manifest.objects()
+               if e.path.startswith(f.path + "/") and content.reads_content_root(e)}
+    assert reading == {"Data"} and len(folders) > 8
+    for number, folder in enumerate(folders):
+        member, put_back = _taken_out(viya, f"{ROOT}/{folder.path}", "folder")
+        other = f"/Team/Own {number}/Another name"
+        fitting = f"/Team/Own {number}/A root/{folder.path}"
+        for target in (other, fitting):
+            viya.make_folder(target)
+        viya.put_reference(f"{ROOT}/{folder.path}", f"/folders/folders/{viya.folder_id(other)}")
+        code, text = shipped("--only", folder.path)
+        line = _failed_line(text, folder.path)
+        assert code == 1 and "--force" not in line
+        says_where = (f" - a path that ends with /{folder.path}, with the content root in front of it, because the "
+                      "job definition Data/Load-Accelerator-Tables reads the content root it sits in)")
+        assert line.endswith(says_where) == (folder.path in reading), line
+        placeholder = "<the SAS Content path of that folder>"
+        # as printed, with a path of the kind the line asks for
+        code, text = shipped(*_as_printed(line, **{placeholder: f'"{fitting}"'}))
+        assert code == 0 and "FAILED" not in text and viya.tree(fitting), text
+        # ... and with the folder of another name: every folder but the one the line says it of
+        code, text = shipped(*_as_printed(line, **{placeholder: f'"{other}"'}))
+        assert (code, bool(viya.tree(other))) == ((2, False) if folder.path in reading else (0, True)), text
+        put_back()
+    assert shipped()[0] == 0
+
+
+def test_no_hint_names_a_command_for_release_json(shipped):
+    """The record of the folder is written by a run of the whole manifest
+    alone: `--only release.json --to ...` is refused, so the line for a
+    reference of its name, or for two files of its name, names no command."""
+    viya = shipped.viya
+    assert shipped()[0] == 0
+    member, put_back = _taken_out(viya, f"{ROOT}/release.json", "file")
+    theirs = _a_copy_elsewhere(viya, member, "file", "/Team/Own/another release.json")
+    viya.put_reference(f"{ROOT}/release.json", theirs)
+    code, text = shipped()
+    line = _failed_line(text, "release.json")
+    assert code == 1 and "`" not in line and line.endswith(
+        "it is not followed, and nothing was written - remove the reference: release.json is written only by a run "
+        "that covers every entry of the manifest)"), line
+    put_back()
+    _a_copy_elsewhere(viya, member, "file", f"{ROOT}/release.json")
+    code, text = shipped()
+    line = _failed_line(text, "release.json")
+    assert code == 1 and "`" not in line and line.endswith(
+        "none was changed, because nothing says which one is meant - remove the other: release.json is written only "
+        "by a run that covers every entry of the manifest)"), line
