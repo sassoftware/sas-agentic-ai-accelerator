@@ -256,6 +256,16 @@ const MANIFEST_BOX = lpb('pet-save-result');
         outcome.manifested === 0 && outcome.lines.length === 1 && outcome.lines[0].includes(kind),
         `Manifest, ${what} answered HTTP 500: no toast says "manifested", and the box says ${kind === 'pet-manifest-stopped' ? 'that nothing was manifested' : 'that the manifest was not completed'} (toasts "manifested": ${outcome.manifested}; box: ${outcome.lines.join(' | ') || 'nothing'})`
       );
+      // The variables are deleted one by one before the two uploads: a stop
+      // in between leaves the earlier ones, a part of them, none, or a part
+      // of those of this run. The line names every one of those states.
+      if (kind === 'pet-manifest-stopped') {
+        const said = await page.$eval(`${MANIFEST_BOX} .pet-manifest-stopped`, (line) => line.textContent).catch(() => '');
+        step(
+          said.includes('may be the earlier ones, those of this run, a part of either, or none'),
+          `Manifest, ${what} answered HTTP 500: the line says that the variables of the model may be the earlier ones, those of this run, a part of either or none (line: "${clip(said)}")`
+        );
+      }
     });
   }
   await post('/__manifested', { on: false });
