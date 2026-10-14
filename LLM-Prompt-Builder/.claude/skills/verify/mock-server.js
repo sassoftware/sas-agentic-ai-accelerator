@@ -463,6 +463,25 @@ const ragContentView = (item) => ({ id: item.id, name: item.name, role: item.rol
 putRagContent('rag-setup-1', 'rag-setup.json', JSON.stringify(RAG_SETUP), 'documentation', 'application/json');
 putRagContent('rag-setup-1', 'pipeline.yaml', 'version: 1\n', 'documentation', 'text/plain');
 putRagContent('rag-setup-ss', 'rag-setup.json', JSON.stringify(RAG_SETUP_SINGLESTORE), 'documentation', 'application/json');
+// POST /__ragenrich { on } stores rag-setup-1 as a setup that enriches its
+// chunks with a chain of TWO prompts (both steps call the one fixture prompt,
+// model-parse; the second pins its version 1.0 and stores a column). The
+// Builder reads the prompts of a stored chain back one after the other, so a
+// second step is what there is to draw after the first one was read. `on:
+// false` stores the plain fixture again; both replace what a suite has saved
+// on rag-setup-1 meanwhile.
+const RAG_ENRICH_CHAIN = [
+  {
+    promptProjectId: 'proj-1', promptModelId: 'model-parse', promptModelName: 'Summarise Chunk',
+    promptVersionId: '', promptVersionLabel: '',
+    mapping: { chunk: 'chunk', document: 'document' }, headerOutput: 'context_header', columnOutputs: [], workers: 4,
+  },
+  {
+    promptProjectId: 'proj-1', promptModelId: 'model-parse', promptModelName: 'Summarise Chunk',
+    promptVersionId: 'ver-1', promptVersionLabel: '1.0 — 2026-08-01',
+    mapping: { chunk: 'chunk', document: 'neighbours' }, headerOutput: '', columnOutputs: ['topic'], workers: 2,
+  },
+];
 // One uploaded file out of a multipart body, cut at the boundary so a file
 // that itself holds a line starting with two dashes stays whole.
 function multipartFile(rawBody) {
@@ -706,6 +725,17 @@ http
         try { body = JSON.parse(raw); } catch {}
         ragTemplateHasTls = body.tls !== false;
         return json(res, 200, { tls: ragTemplateHasTls });
+      }
+      if (p === '/__ragenrich') {
+        let body = {};
+        try { body = JSON.parse(raw); } catch {}
+        const enriched = body.on !== false;
+        putRagContent(
+          'rag-setup-1', 'rag-setup.json',
+          JSON.stringify(enriched ? { ...RAG_SETUP, enrich: RAG_ENRICH_CHAIN } : RAG_SETUP),
+          'documentation', 'application/json'
+        );
+        return json(res, 200, { enriched });
       }
       if (p === '/__ragfail') {
         let body = {};

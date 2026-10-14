@@ -17,8 +17,9 @@
  *              opened, the kind is changed, a new item is created
  *   in flight  something of the item that is left is still running: an
  *              evaluation over a CAS table, an optimization job, a retrieval
- *              test, an ingestion, the reading of the item itself. Its
- *              answer arrives after the next item is on the page
+ *              test, an ingestion, the reading of the item itself, the
+ *              reading of the prompts of its enrichment. Its answer arrives
+ *              after the next item is on the page
  *
  * After each road the page is read as a whole and compared with the
  * reference; every field that differs is printed with both values. Read are,
@@ -27,8 +28,11 @@
  * text a person can read in the step (which holds the runs of the tracker,
  * results and notes), every text the step holds in what is hidden (a result
  * that waits in a closed panel is shown by the next click), which elements
- * are hidden, disabled or folded open, and the row of steps. Left out are the
- * two pickers and the fields of the create dialogs, which name the item.
+ * are hidden, disabled or folded open - inside a part that is hidden itself
+ * as well -, what every element carries beside its text (its classes, the
+ * styles set on it apart from its display, its other attributes), and the
+ * row of steps. Left out are the two pickers and the fields of the create
+ * dialogs, which name the item.
  *
  * The page with no item open is compared the same way, with a fresh page on
  * which a project is chosen and nothing else: after another project or kind
@@ -40,7 +44,9 @@
  * fill an item by hand are checked themselves: every field of the later
  * steps has to be changed by one of them (the list of the fields that none
  * changes is part of a check), or a field that is added to a step and not
- * put back for a new item would pass.
+ * put back for a new item would pass. One LLM of the fixtures cannot be
+ * selected on the page of these roads - the credential domain holds no key
+ * for it - so a road of its own ticks it on a page whose domain does.
  *
  * The other direction is checked as well, so that a reset cannot pass by
  * emptying too much: an existing item that is opened again shows exactly what
@@ -114,8 +120,11 @@ const named = (text) => text.replace(/issue47[ _-]?[a-z0-9]+/gi, '<item>');
  * held      "<step>" -> every text the pane holds, also in what is hidden: a
  *           result that waits in a closed panel is shown by the next click
  * state     "<step> <path>" -> hidden / disabled / is-invalid / readonly /
- *           open (a details element), for the elements that are one of them
- *           (not for what a hidden element holds)
+ *           open (a details element), for the elements that are one of them,
+ *           also inside an element that is hidden itself
+ * marks     "<step> <path>" -> what an element carries beside its text and
+ *           its value: its classes, the styles set on it apart from its
+ *           display, its further attributes
  * steps     the visible steps and the current one
  */
 function readBuilder(prefix) {
@@ -161,6 +170,7 @@ function readBuilder(prefix) {
   const text = {};
   const held = {};
   const state = {};
+  const marks = {};
   root.querySelectorAll(`[id^="${panePrefix}"]`).forEach((pane) => {
     const key = pane.id.slice(panePrefix.length);
     // The Setup step names the item in its pickers, its buttons and its
@@ -200,8 +210,22 @@ function readBuilder(prefix) {
       if (element.readOnly) flags.push('readonly');
       if (element.tagName === 'DETAILS' && element.open) flags.push('open');
       if (flags.length) state[`${key} ${path}${element.id ? `#${placed(element.id)}` : ''}`] = flags.join(' ');
-      // What a hidden element holds is hidden with it.
-      if (flags.includes('hidden')) return;
+      // What the element carries beside its text and its value: its classes
+      // (a badge is coloured by one), the styles set on it apart from its
+      // display (read above), and every further attribute - a title, a role,
+      // a data attribute. Left out are the attributes that name another
+      // element or the item: ids go on counting, a link holds the item's id.
+      const carried = [...element.attributes]
+        .filter((attribute) => !/^(id|class|style|value|for|name|href|aria-describedby|aria-labelledby|aria-controls|data-bs-target|data-bs-parent)$/.test(attribute.name))
+        .map((attribute) => `${attribute.name}="${attribute.value}"`);
+      if (element.classList.length) carried.push(`class="${[...element.classList].sort().join(' ')}"`);
+      const styles = [...element.style]
+        .filter((property) => property !== 'display')
+        .map((property) => `${property}: ${element.style.getPropertyValue(property)}`);
+      if (styles.length) carried.push(`style="${styles.join('; ')}"`);
+      if (carried.length) marks[`${key} ${path}${element.id ? `#${placed(element.id)}` : ''}`] = carried.sort().join(' ');
+      // What a hidden element holds is read like everything else: it is on
+      // the page again as soon as the element is shown.
       [...element.children].forEach((child, index) => walk(child, `${path}/${child.tagName.toLowerCase()}[${index}]`));
     };
     [...pane.children].forEach((child, index) => walk(child, `${child.tagName.toLowerCase()}[${index}]`));
@@ -213,7 +237,7 @@ function readBuilder(prefix) {
       return `${button.id.replace(`app-obj-${prefix}-step-`, '')}${item.classList.contains('is-current') ? '*' : ''}`;
     })
     .join(',');
-  return { controls, lists, text, held, state, steps };
+  return { controls, lists, text, held, state, marks, steps };
 }
 
 const clip = (value) => (value.length > 110 ? `${value.slice(0, 110)}...` : value);
@@ -264,6 +288,11 @@ function differences(got, wanted) {
     const a = got.state[key] || 'shown';
     const b = wanted.state[key] || 'shown';
     if (a !== b) lines.push(`state ${key}: ${a} (expected ${b})`);
+  }
+  for (const key of new Set([...Object.keys(got.marks), ...Object.keys(wanted.marks)])) {
+    const a = named(got.marks[key] || '');
+    const b = named(wanted.marks[key] || '');
+    if (a !== b) lines.push(`marks ${key}: ${clip(a) || 'none'} (expected ${clip(b) || 'none'})`);
   }
   return lines;
 }
@@ -590,6 +619,8 @@ function same(got, wanted, label, fieldsOnly = false) {
   // another one has to change, or a field that is added to a later step and
   // is not put back for a new item would pass every comparison below.
   const leftAloneBy = { prompt: [], decision: [], ragNew: [], ragExisting: [] };
+  // The fields the road on the page with every key changes (see below).
+  let changedWithEveryKey = [];
 
   await road('prompt template: a new prompt-test right after a new one', async (page) => {
     await openPromptBuilder(page, 'llm');
@@ -609,6 +640,33 @@ function same(got, wanted, label, fieldsOnly = false) {
     same(await read(page, 'LPB'), typed, 'a second walk through the steps and a create dialog that is closed without creating lose nothing of it');
     await createPromptTest(page);
     same(await read(page, 'LPB'), promptReference, 'new -> new: the second new prompt-test starts as on a fresh page');
+  });
+
+  // The third LLM of the fixtures needs a key of a provider the default
+  // credential domain of the mock holds none for: on the pages above its tick
+  // box is disabled, and no road can change it or its option. The domain
+  // all-keys holds that key. There the LLM is a field like the others - with
+  // a reference of its own, because a tick box that can be used reads
+  // differently from one that cannot.
+  await road('prompt template: the LLM that needs a key the default credential domain does not hold', async (page) => {
+    await page.goto(`${APP_URL}&credentialDomain=all-keys`);
+    await page.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+    await atRest();
+    await choosePromptProject(page, 'proj-1');
+    await createPromptTest(page);
+    const reference = await read(page, 'LPB');
+    await goStep(page, 'LPB', 'build');
+    await page.check('#model2');
+    await page.fill('#temperature2', '0.9');
+    const typed = await read(page, 'LPB');
+    assert(
+      promptReference.controls['build #model2'] === 'false [disabled]' && reference.controls['build #model2'] === 'false' && typed.controls['build #model2'] === 'true' && typed.controls['build #temperature2'] === '0.9',
+      `with a key for its provider in the credential domain the third LLM can be ticked and its option changed (default domain: ${promptReference.controls['build #model2']}; all-keys, new prompt-test: ${reference.controls['build #model2']}; after the tick: ${typed.controls['build #model2']} at ${typed.controls['build #temperature2']})`
+    );
+    const untouched = leftAlone(typed, reference);
+    changedWithEveryKey = Object.keys(reference.controls).filter((key) => !key.startsWith('setup ') && !untouched.includes(key));
+    await createPromptTest(page);
+    same(await read(page, 'LPB'), reference, 'new, with the third LLM ticked -> new: the second new prompt-test starts as on a fresh page of that credential domain');
   });
 
   await road('prompt template: a new prompt-test in another project than the one that was open', async (page) => {
@@ -843,11 +901,13 @@ function same(got, wanted, label, fieldsOnly = false) {
     assert(typedDecisionIsShown(typed), 'what was typed into the new decision template is on the page after a walk through every step: state template, variable, question, decision model, the evaluation settings and the outputs');
     leftAloneBy.decision = leftAlone(typed, decisionReference);
     // The LLM that cannot be selected here - no credential for it in the
-    // domain of this page - has a tick box and an option nobody can change.
-    const never = leftAloneBy.prompt.filter((key) => leftAloneBy.decision.includes(key));
+    // domain of this page - has a tick box and an option nobody can change
+    // on this page; the road on the page with every key changes those two.
+    const neither = leftAloneBy.prompt.filter((key) => leftAloneBy.decision.includes(key));
+    const never = neither.filter((key) => !changedWithEveryKey.includes(key));
     step(
-      never.join(' ; ') === 'build #model2 ; build #temperature2',
-      `every field of the steps after Setup is changed by one of the two roads that fill a prompt-test by hand, so each of them is compared with its value on a fresh page afterwards - all but the LLM that cannot be selected (not changed by either: ${never.join(' ; ') || 'none'})`
+      never.length === 0 && neither.join(' ; ') === 'build #model2 ; build #temperature2',
+      `every field of the steps after Setup is changed by one of the roads that fill a prompt-test by hand, so each of them is compared with its value on a fresh page afterwards: by one of the two roads on this page, or - the LLM that cannot be selected here - by the road on the page whose credential domain holds its key (not changed by the two roads of this page: ${neither.join(' ; ') || 'none'}; not changed by any road: ${never.join(' ; ') || 'none'})`
     );
     await cancelCreate(page, '#promptBuilderCreatePromptModal', '#promptBuilderCreatePromptName');
     same(await read(page, 'LPB'), typed, 'a second walk through the steps and a create dialog that is closed without creating lose nothing of it');
@@ -1246,6 +1306,59 @@ function same(got, wanted, label, fieldsOnly = false) {
     await atRest();
     await page.unroute('**/modelRepository/models/rag-setup-1/contents**');
     same(await read(page, 'RGB'), emptySetupReference, 'a saved setup that answers late -> a setup that was never saved: the one that is open shows what it shows on a fresh page, not the stored configuration of the other');
+  });
+
+  // The prompts of a stored enrichment are read back one after the other,
+  // and each one takes a round trip. A setup that is left meanwhile must not
+  // put the rest of its chain into the form of the setup that is open by
+  // then - which a later Save setup would store there.
+  const enrichmentChain = (page) =>
+    page.$$eval(`${rgb('enrich-list')} select[id$="-prompt"]`, (prompts) => prompts.map((prompt) => prompt.value || 'none'));
+  await road('RAG setup: a stored enrichment is still being read back when another setup is chosen', async (page) => {
+    await fetch(BASE + '/__ragenrich', { method: 'POST', body: JSON.stringify({ on: true }) });
+    try {
+      await openRagBuilder(page);
+      await chooseRagProject(page, 'rag-proj');
+      await openRagSetup(page, 'rag-setup-1');
+      const chain = await enrichmentChain(page);
+      const second = {
+        version: await page.$eval(`${rgb('enrich-list')} > div:nth-child(2) select[id$="-version"]`, (list) => list.value),
+        workers: await page.$eval(`${rgb('enrich-list')} > div:nth-child(2) input[id$="-workers"]`, (field) => field.value),
+        columns: await page.$$eval(`${rgb('enrich-list')} > div:nth-child(2) input[type="checkbox"]:checked`, (boxes) => boxes.map((box) => box.value).join(',')),
+      };
+      assert(
+        chain.join(',') === 'model-parse,model-parse' && second.version === 'ver-1' && second.workers === '2' && second.columns === 'topic',
+        `a setup that stores an enrichment of two prompts opens with both of them (prompts: ${chain.join(', ')}; the second one - version: ${second.version}, parallel calls: ${second.workers}, columns: ${second.columns})`
+      );
+      await openRagSetup(page, 'rag-setup-2');
+      same(await read(page, 'RGB'), emptySetupReference, 'a setup with an enrichment -> a setup that was never saved: it shows what it shows on a fresh page, without a prompt of the other');
+
+      // The versions of the first prompt answer after two and a half seconds:
+      // the other setup is chosen while that answer is out.
+      await goStep(page, 'RGB', 'setup');
+      let asked = 0;
+      await page.route('**/modelRepository/models/model-parse/modelVersions**', async (route) => {
+        asked += 1;
+        await sleep(2500);
+        // (A request that is still held when the road ends has no page left.)
+        await route.continue().catch(() => {});
+      });
+      await page.selectOption(rgb('setup'), 'rag-setup-1');
+      await waitUntil(async () => asked >= 1, 'the first prompt of the stored chain is being read back');
+      await page.selectOption(rgb('setup'), 'rag-setup-2');
+      // Long enough for a second prompt to be asked for and drawn, if it is.
+      await sleep(6500);
+      await atRest();
+      await page.unroute('**/modelRepository/models/model-parse/modelVersions**');
+      const left = await enrichmentChain(page);
+      step(
+        asked === 1 && left.join(',') === 'none',
+        `an enrichment that is read back late -> a setup that was never saved: the form of the open setup holds its one empty prompt, and the second prompt of the other setup is neither asked for nor drawn (prompts in the form: ${left.join(', ')}; versions asked for: ${asked})`
+      );
+      same(await read(page, 'RGB'), emptySetupReference, 'and that setup shows what it shows on a fresh page');
+    } finally {
+      await fetch(BASE + '/__ragenrich', { method: 'POST', body: JSON.stringify({ on: false }) });
+    }
   });
 
   // ============================================================================
