@@ -153,7 +153,8 @@ written, reported as held, and leaves them with the note *No … key available
 in the … credential domain* (see
 [Who resolves what](#the-model-one-domain-named-entries-per-identity-credentials)).
 After a run that plans or writes a group credential, `credentials-apply`
-prints one line to that effect: *A group credential reaches only the members
+prints one line to that effect, and `credentials-report` prints it where a
+group holds a credential: *A group credential reaches only the members
 of that group, and a user's own credential replaces it for that user.* Its
 last line names the report of the same manifest -
 `mdb credentials-report --manifest <file>` - or, for a run with `--identity`,
@@ -175,6 +176,16 @@ quietly dropped. A single identity needs no manifest at all:
 mdb credentials-apply --identity-type group --identity LLMConsumers --dry-run
 mdb credentials-report --identity <user id> --identity-type user
 ```
+
+`--domain` and `--identity-type` belong to that mode. With a manifest the run
+goes to the domain the manifest names. A `--domain` that names another domain
+is refused before the sign-in, because an apply also removes what the
+manifest marks absent. Two entries for one identity are refused by
+`credentials-apply` and `credentials-report` as they are by
+`credentials-add`. An empty `--manifest`, `--env-file`, `--source` or
+`--keys-file` (what a variable of the shell that is not set gives) ends the
+command with exit code 2 before anything is read or written, as an empty
+`--domain` does.
 
 ### Adding an identity: `mdb credentials-add`
 
@@ -226,11 +237,23 @@ What it does with the file:
 The edit is made in the text of the file, because the YAML library `mdb` uses
 would drop every comment on a rewrite. Before the file is written, the result
 is read back and has to be the manifest that was there plus the one change.
-Three layouts are refused with a message, and the file is left alone: an
-`identities` list that is not written one `- ` line per identity (for example
-`identities: [{…}, {…}]`), an identity that is listed more than once, and an
-`only:` list that is to be rewritten and holds a comment between its entries -
-nothing says which entry of the new list such a comment belongs to.
+These layouts are refused with a message, and the file is left alone:
+
+- an `identities` list that is not written one `- ` line per identity, for
+  example `identities: [{…}, {…}]`, `identities: []` or `identities: null`;
+- an identity that is listed more than once;
+- an `only:` list that is to be rewritten and holds a comment between its
+  entries, because nothing says which entry of the new list such a comment
+  belongs to;
+- any other layout whose result does not read back as the manifest plus the
+  one change, for example an `only:` that is an alias or an identity that
+  takes a key through a merge (`<<: *o`). It ends with *the manifest is laid
+  out in a way this edit cannot be made in safely - nothing was written; edit
+  the file by hand*.
+
+A file YAML cannot read is refused with the line and the column where the
+reader stopped, and nothing of its text is shown: a key file handed as the
+manifest would otherwise be printed with a value.
 
 ### Removing a credential: `state: absent`
 
@@ -265,18 +288,30 @@ mdb credentials-report                  # shows it as absent
   removes does not create or update the domain.
 - `credentials-report` shows such an identity as
   `absent (as the manifest says)` once its credential is gone, and as
-  `STILL THERE (manifest: absent)` while it exists.
+  `STILL THERE (manifest: absent)` while it exists. A credential that cannot
+  be read is shown as `unreadable` with the answer of the service, and the two
+  lines below the table count it neither way: they end
+  `... hold none; 1 could not be read.`
 - `state: present` is the default and may be written. Any other value is
   refused when the manifest is read, with exit code 2, before anything is
   written or removed.
 - `mdb credentials-add` on an identity that is marked absent sets it back to
-  present and says so: the `state` line is taken out again, or rewritten to
-  `state: present` where it is the first line of a block entry.
+  present and says so. The `state` line is taken out again, or rewritten to
+  `state: present` where it is the first line of a block entry or where a
+  comment stands on it. The comment stays as it is.
 
 **Nothing is removed because a line is missing from the manifest.** The
 service cannot list who holds a credential, so `mdb` cannot know what a
 deleted line once said. Leave the entry in the file with `state: absent`
 until the report shows the credential as absent.
+
+A refused read, removal or write of a credential names the answer of the
+service. A write shows the reason only for a 404 - for a group that does not
+exist, errorCode 12310, measured on 2026-10-14 - and not where the answer
+holds a value the write carried. The id of an identity is percent-encoded as
+one segment of the address, so an id with `#`, `?` or `/` names that identity
+and no other; `.` and `..` alone are refused. How SAS Viya answers for an id
+with such characters was not measured.
 
 `credentials-add` and `credentials-remove` were run on files. The removal by
 `state: absent` and the plan and the report that show it were run against a
