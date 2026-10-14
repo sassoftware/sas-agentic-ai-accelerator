@@ -214,7 +214,7 @@ def resolve_auth(now: datetime | None = None) -> Auth:
     problem = _address_problem(url)
     if problem:
         raise ViyaConfigError(
-            f"{named_by} is {url!r}, which mdb cannot use: {problem}. Give the address of SAS Viya as "
+            f"{named_by} is '{url}', which mdb cannot use: {problem}. Give the address of SAS Viya as "
             "https://<host>, or https://<host>:<port> where it listens on a port of its own. Nothing was asked "
             "of SAS Viya."
         )

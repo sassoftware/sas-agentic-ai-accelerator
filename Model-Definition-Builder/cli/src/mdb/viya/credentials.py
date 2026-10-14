@@ -260,14 +260,14 @@ class Identity:
     def __post_init__(self) -> None:
         if self.type not in IDENTITY_TYPES:
             raise CredentialError(
-                f"identity {self.id!r}: type must be one of "
-                f"{', '.join(IDENTITY_TYPES)}, not {self.type!r}")
+                f"identity '{self.id}': type must be one of "
+                f"{', '.join(IDENTITY_TYPES)}, not '{self.type}'")
         if not str(self.id).strip():
             raise CredentialError("an identity with no id cannot be equipped")
         if self.state not in STATES:
             raise CredentialError(
-                f"identity {self.id!r}: state must be one of "
-                f"{', '.join(STATES)}, not {self.state!r}")
+                f"identity '{self.id}': state must be one of "
+                f"{', '.join(STATES)}, not '{self.state}'")
 
     @property
     def path_segment(self) -> str:
@@ -716,7 +716,7 @@ def edit_identity(text: str, path: Path, type: str, id: str,
             if (who.type, who.id) == (type, id)]
     if len(same) > 1:
         raise CredentialError(
-            f"{path}: {type} {id!r} is listed {len(same)} times — make it one "
+            f"{path}: {type} '{id}' is listed {len(same)} times — make it one "
             "entry by hand first")
     placeholders = [index for index, who in enumerate(before.identities)
                     if who.id == PLACEHOLDER_ID]
@@ -765,7 +765,7 @@ def edit_identity(text: str, path: Path, type: str, id: str,
             splices = _item_splices(text, listed.value[index], sets, drop, eol)
         except _CommentInList as held:
             raise CredentialError(
-                f"{path}: the `{held.args[0]}:` list of {type} {id!r} holds a comment, which a rewrite of the "
+                f"{path}: the `{held.args[0]}:` list of {type} '{id}' holds a comment, which a rewrite of the "
                 "list would drop or leave beside another entry — nothing was written; edit the list by "
                 "hand") from None
         if outcome == "placeholder":
@@ -920,7 +920,7 @@ def fetch_credential(session, domain: str, identity: Identity) -> Optional[dict]
         return None
     if response.status_code >= 300:
         raise CredentialError(
-            f"reading the credential for {identity.type} {identity.id!r} failed: "
+            f"reading the credential for {identity.type} '{identity.id}' failed: "
             f"HTTP {response.status_code}")
     try:
         return response.json()
@@ -945,7 +945,7 @@ def ensure_domain(session, domain: str) -> None:
     )
     if response.status_code >= 300:
         raise CredentialError(
-            f"creating or updating the domain {domain!r} failed: HTTP "
+            f"creating or updating the domain '{domain}' failed: HTTP "
             f"{response.status_code} — creating a domain requires SAS "
             "administrator rights")
 
@@ -973,7 +973,7 @@ def put_credential(session, domain: str, identity: Identity, entries: dict) -> N
             detail = (" — writing a GROUP credential requires SAS "
                       "administrator rights; a user may write their own")
         raise CredentialError(
-            f"storing the credential for {identity.type} {identity.id!r} failed: "
+            f"storing the credential for {identity.type} '{identity.id}' failed: "
             f"HTTP {response.status_code}{detail}")
 
 
@@ -984,6 +984,6 @@ def delete_credential(session, domain: str, identity: Identity) -> bool:
         return False
     if response.status_code >= 300:
         raise CredentialError(
-            f"removing the credential for {identity.type} {identity.id!r} failed: "
+            f"removing the credential for {identity.type} '{identity.id}' failed: "
             f"HTTP {response.status_code}")
     return True
