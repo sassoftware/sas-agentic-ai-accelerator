@@ -1237,14 +1237,18 @@ def test_the_about_tab_names_the_five_tables():
     for words in ("Prompt experiments", "Prompt optimizations", "RAG setups", "RAG runs", "Model catalog",
                   "modelID, runID, model", "modelID, optimizationId", "modelID, run_id"):
         assert words in about
-    # fix-content-22: version 2.5, a setup where CAS refused a question about its tables
-    assert by_id["textChangelog"]["text"].startswith("* Version: 2.5 (14OCT2026)\n      - A setup where CAS refused to say whether its CAS "
-                                                    "library, its run table or its ledger is there is left out with the NOTE of a CAS "
-                                                    "library that is not available, which names the refusal as well\n")
+    # fix-content-22: version 2.5, a setup where CAS refused a question about its tables; content-23: 2.6, a step that halted
+    assert by_id["textChangelog"]["text"].startswith("* Version: 2.6 (15OCT2026)\n      - A setup whose PROC CAS step halted before it set "
+                                                    "what it found")
+    assert ("\n* Version: 2.5 (14OCT2026)\n      - A setup where CAS refused the question for its run table, the question for its ledger "
+            "where the run table is not in memory or - for a CAS library other than CASUSER - the listing of the CAS libraries is left out "
+            "with the NOTE of a CAS library that is not available, which names the refusal as well\n") in by_id["textChangelog"]["text"]
     assert ("\n* Version: 2.4 (13OCT2026)\n      - The column names of a run table and of a ledger are handed to the INDEXW function "
             "through %SUPERQ, as one text\n") in by_id["textChangelog"]["text"]
-    assert ("A setup with neither table in memory is left out with a NOTE, and so is a setup where CAS refused to say whether its CAS "
-            "library, its run table or its ledger is there;") in about
+    assert ("A setup with neither table in memory is left out with a NOTE, and so is a setup whose CAS library is not available in the "
+            "session, a setup where CAS refused the question for its run table, the question for its ledger where the run table is not "
+            "in memory or - for a CAS library other than CASUSER - the listing of the CAS libraries, and a setup whose PROC CAS step "
+            "halted before it set what it found;") in about
     assert "\n* Version: 2.3 (12OCT2026)" in by_id["textChangelog"]["text"]
     assert "\n* Version: 2.2 (12OCT2026)" in by_id["textChangelog"]["text"]
     assert "\n* Version: 2.1 (12OCT2026)" in by_id["textChangelog"]["text"] and "* Version: 2.0 (11OCT2026)" in by_id["textChangelog"]["text"]

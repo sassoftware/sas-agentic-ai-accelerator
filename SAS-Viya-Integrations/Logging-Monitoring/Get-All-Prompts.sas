@@ -1558,7 +1558,7 @@ run; quit;
   The ingestion job of a setup of the Prompt Builder keeps its runs in the vector store. It
   published the ledger only before it was given the publication of the run history, and it
   publishes the ledger only while that history is switched off. The run table is read where
-  it is in memory and the ledger is not asked then, so a run that both name is one row.
+  it is in memory and the ledger is not read then, so a run that both name is one row.
   A row of the ledger names the run that listed its document last
   (run_id) and when the row was written (updated_at), and the id of a run holds the second the
   run started in - run-<seconds since 1970>-<digits>, which is where rag_core takes the start
@@ -1665,9 +1665,9 @@ run; quit;
             call symputx('_gap_rs_embed', embedding_model, 'L');
         run;
 
-        * -1 the caslib is not known to this session or CAS refused to say whether it, the table or its ledger table is there, 0 the table is not in memory, 1 or 2 it is;
-        %let _gap_runs_exists = 0;
-        %let _gap_ledger_exists = 0;
+        * -1 the caslib is not known to this session or CAS did not say whether it, the table or its ledger table is there, 0 the table is not in memory, 1 or 2 it is. The two start at -1: a PROC CAS step that halts - its session ended, say - sets neither of them, and a setup it did not answer for is no setup whose tables are not in memory;
+        %let _gap_runs_exists = -1;
+        %let _gap_ledger_exists = -1;
         proc cas;
             runsExist = -1;
             ledgerExists = 0;
@@ -1699,7 +1699,7 @@ run; quit;
         quit;
 
         %if &_gap_runs_exists. LT 0 %then %do;
-            %put NOTE: The CAS library &_gap_rs_caslib. of the run table &_gap_rs_table. is not available in this session, or CAS refused to say whether it, the table or its ledger table is there, so its runs are not in &_gap_out_rag_runs..;
+            %put NOTE: The CAS library &_gap_rs_caslib. of the run table &_gap_rs_table. is not available in this session, or CAS did not say whether it, the table or its ledger table is there, so its runs are not in &_gap_out_rag_runs..;
         %end;
         %else %if &_gap_runs_exists. EQ 0 %then %do;
             %if &_gap_ledger_exists. GT 0 %then %do;
