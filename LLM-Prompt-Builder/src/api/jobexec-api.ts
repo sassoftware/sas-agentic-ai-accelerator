@@ -132,6 +132,31 @@ export async function launchJob(
   );
 }
 
+/**
+ * The newest job of a job definition that has not ended, or null.
+ *
+ * Asks for the jobs that are pending or running, newest first, and takes the
+ * first one whose request names the definition. Filtered on the state only:
+ * the state is a member of the job itself, the definition is a member of its
+ * request. A job that is not among the 100 newest of those is not found, and
+ * neither is one when the service refuses the question - the answer is then
+ * null, as for a definition with no job running.
+ */
+export async function getRunningJobOf(jobDefinitionUri: string): Promise<JobExecutionJob | null> {
+  await primeJobExecutionSession();
+  const filter = encodeURIComponent("or(eq(state,'pending'),eq(state,'running'))");
+  const response = await viyaFetch(`/jobExecution/jobs?filter=${filter}&sortBy=creationTimeStamp:descending&limit=100`);
+  if (!response.ok) return null;
+  const page = (await response.json()) as { items?: JobExecutionJob[] };
+  return (
+    (page.items ?? []).find(
+      (job) =>
+        (job.jobRequest as { jobDefinitionUri?: string } | undefined)?.jobDefinitionUri === jobDefinitionUri &&
+        !isTerminalJobState(job.state)
+    ) ?? null
+  );
+}
+
 /** Fetch a job's current state. */
 export async function getJob(jobId: string): Promise<JobExecutionJob> {
   return viyaGet<JobExecutionJob>(`/jobExecution/jobs/${jobId}`);

@@ -65,6 +65,7 @@ import {
 import {
   getJob,
   getJobProgressMessages,
+  getRunningJobOf,
   isTerminalJobState,
   launchJob,
 } from '../api/jobexec-api';
@@ -448,13 +449,14 @@ export async function buildRagBuilder(
   let runStartedAt = 0;
   let runActive = false;
   /**
-   * The ingestion runs this page has launched and not yet seen end, by
-   * setup: the id of the job and the time of its launch. A job goes on in
-   * SAS Viya when its setup is left, and the setup shows its run again when
-   * it is opened again (see followIngestion). Before this, a setup that was
-   * opened again showed no run and offered Launch, with the first run still
-   * writing its collection. The page keeps this for as long as it is loaded:
-   * the id of a job is not stored with the setup.
+   * The ingestion runs this page follows and has not yet seen end, by setup:
+   * the id of the job and the time of its launch. A job goes on in SAS Viya
+   * when its setup is left, and the setup shows its run again when it is
+   * opened again (see followIngestion). Before this, a setup that was opened
+   * again showed no run and offered Launch, with the first run still writing
+   * its collection. The id of a job is not stored with the setup: a run this
+   * page did not launch - after a reload, or one started elsewhere - is asked
+   * of SAS Job Execution when its setup is opened (see loadSetup).
    */
   const ingestionRuns = new Map<string, { jobId: string; startedAt: number }>();
 
@@ -3037,7 +3039,29 @@ export async function buildRagBuilder(
     }
     // The setup is drawn. An ingestion that was launched for it from this
     // page and has not been seen to end is shown again, and followed.
-    if (shown()) followIngestion(setupID, false);
+    if (!shown()) return;
+    // One this page does not know of - the page was loaded again after the
+    // launch, or the job was started elsewhere - is asked of SAS Job
+    // Execution: the newest job of the setup's job definition that has not
+    // ended. A second launch beside it would write the same collection.
+    if (!ingestionRuns.has(setupID) && currentJobUri) {
+      const definitionUri = currentJobUri;
+      // Launch waits for the answer.
+      launchButton.disabled = true;
+      let running: Awaited<ReturnType<typeof getRunningJobOf>> = null;
+      try {
+        running = await getRunningJobOf(definitionUri);
+      } catch (error) {
+        console.debug('RAG Builder: asking for a running ingestion failed', error);
+      }
+      if (!shown()) return;
+      if (running && !ingestionRuns.has(setupID)) {
+        const created = Date.parse(String(running.creationTimeStamp ?? ''));
+        ingestionRuns.set(setupID, { jobId: String(running.id), startedAt: Number.isNaN(created) ? Date.now() : created });
+      }
+      updateLaunchState();
+    }
+    followIngestion(setupID, false);
   }
 
   async function saveSetup(): Promise<boolean> {
@@ -3415,13 +3439,13 @@ export async function buildRagBuilder(
   /**
    * Show the ingestion run of a setup and follow it until it has ended: the
    * state of the job, its milestones, the time it has been running, and the
-   * ledger once it is written. Does nothing for a setup without a run this
-   * page launched and has not seen end.
+   * ledger once it is written. Does nothing for a setup without a run in
+   * ingestionRuns.
    *
    * `launched` says that the job was launched just now. Otherwise the run is
-   * picked up again for a setup that was left and is opened again: the clock
-   * goes on from the launch, and a job that ended meanwhile is shown as
-   * ended, without a time - how long it took was not seen from here.
+   * picked up for a setup that is opened: the clock goes on from the launch,
+   * and a job that ended meanwhile is shown as ended, without a time - how
+   * long it took was not seen from here.
    */
   function followIngestion(setupID: string, launched: boolean): void {
     const run = ingestionRuns.get(setupID);
