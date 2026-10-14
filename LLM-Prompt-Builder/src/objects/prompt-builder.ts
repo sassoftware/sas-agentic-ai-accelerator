@@ -4938,24 +4938,22 @@ export async function buildPromptBuilder(
           alert(promptBuilderInterfaceText.promptExperimentSaveModelsPromptAlert);
           return false;
         }
-        // Get the ID of a previously created Prompt Experiment Tracker and delete it
+        // A tracker that is stored already is kept in a new model version, and
+        // then replaced in one upload (onConflict=update). It used to be
+        // deleted first: an upload that failed after that left the prompt
+        // without any tracker.
         const promptBuilderAvailablePTE = await getModelContents(promptExperimentRunModel);
-        for (const promptBuilderAvailablepte in promptBuilderAvailablePTE) {
-          if (promptBuilderAvailablePTE[promptBuilderAvailablepte]?.name === 'Prompt-Experiment-Tracker.json') {
-            await createModelVersion(promptExperimentRunModel);
-            written(
-              await deleteModelContent(promptExperimentRunModel, promptBuilderAvailablePTE[promptBuilderAvailablepte]?.id ?? ''),
-              'The delete of the stored tracker'
-            );
-          }
+        if (promptBuilderAvailablePTE.some((content) => content?.name === 'Prompt-Experiment-Tracker.json')) {
+          await createModelVersion(promptExperimentRunModel);
         }
-        // Create the new Prompt Experiment Tracker
         const promptExperimentPromptResponseObject = await createModelContent(
           promptExperimentRunModel,
           petRows,
           'Prompt-Experiment-Tracker.json'
         );
-        if (promptExperimentPromptResponseObject.status_code === 201) {
+        // A status below 300 is a write that went through, as for every other
+        // write of this page (see written).
+        if (promptExperimentPromptResponseObject.status_code < 300) {
           experimentsModified = false;
           showToast(`${promptBuilderInterfaceText?.promptBuilderSaveToast}`);
           resultContainer.innerHTML = `<p>${promptBuilderInterfaceText.promptExperimentSaveSucessResponse} <a target="_blank" rel="noopener noreferrer" href="${VIYA}/SASModelManager/models/${promptExperimentRunModel}">${VIYA}/SASModelManager/models/${promptExperimentRunModel}</a></p>`;
@@ -4971,9 +4969,8 @@ export async function buildPromptBuilder(
         return false;
       } catch (error) {
         // Which request it was is not known here, and neither is what the
-        // service did with it: the stored tracker is deleted before the new
-        // one is written, so the prompt may hold the old experiments, the new
-        // ones or none. The line says that, and no toast says "saved".
+        // service did with it: the prompt holds the experiments it held
+        // before, or these. The line says that, and no toast says "saved".
         console.error('Saving the experiments stopped at a request that failed.', error);
         const line = document.createElement('p');
         line.classList.add('text-danger', 'pet-save-failed');
@@ -6662,6 +6659,11 @@ ${scoreCodeReturn}`;
         // Each write is read (see written), and one that is refused or throws
         // ends the delete with the toast of a deletion that failed; the
         // history is read again either way and shows what is stored.
+        // The entries of the other runs are never deleted to be written back:
+        // the tracker is replaced in one upload (onConflict=update), and
+        // deleted only when no run is left in it. Whichever write fails, the
+        // tracker is the earlier one or the new one.
+        let entryRemoved = false;
         try {
           const trackerEntries = (await readOptimizationEntries(modelId)) ?? [];
           const remaining = trackerEntries.filter(
@@ -6672,10 +6674,12 @@ ${scoreCodeReturn}`;
           const trackerContent = contents.find(
             (modelContent) => modelContent.name === 'Prompt-Optimization-Tracker.json'
           );
-          if (trackerContent?.id) written(await deleteModelContent(modelId, trackerContent.id), 'The delete of the optimization tracker');
           if (remaining.length > 0) {
             written((await createModelContent(modelId, remaining, 'Prompt-Optimization-Tracker.json')).status_code, 'Prompt-Optimization-Tracker.json');
+          } else if (trackerContent?.id) {
+            written(await deleteModelContent(modelId, trackerContent.id), 'The delete of the optimization tracker');
           }
+          entryRemoved = true;
           // Drop the run's dataset snapshot alongside its entry.
           if (entry.datasetSnapshot) {
             const snapshotContent = contents.find(
@@ -6686,7 +6690,12 @@ ${scoreCodeReturn}`;
           showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeletedToast}`);
         } catch (error) {
           console.error('Deleting the optimization run failed.', error);
-          showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
+          // Once the entry is out of the tracker, only the snapshot is left.
+          showToast(
+            entryRemoved
+              ? `${promptBuilderInterfaceText?.promptBuilderOptimizeHistorySnapshotLeft}`.replace('{file}', () => String(entry.datasetSnapshot))
+              : `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`
+          );
         }
         // The history that is read again is the one of this prompt-test.
         await refreshOptimizationHistory(true);

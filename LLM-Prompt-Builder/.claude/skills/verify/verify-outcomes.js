@@ -292,23 +292,43 @@ const MANIFEST_BOX = lpb('pet-save-result');
     step(manifested === 0 && stopped === 1, `Manifest of a decision template, outputVar.json answered HTTP 500: no toast says "manifested", the box says that nothing was manifested (toasts: ${manifested}; lines: ${stopped})`);
   });
 
-  for (const [what, refuseIt] of [
-    ['the new model version', (request) => request.method() === 'POST' && request.url().includes('/modelVersions')],
-    ['the delete of the stored tracker', (request) => request.method() === 'DELETE' && request.url().includes('/contents/c-trk')],
-  ]) {
-    await road(`Save Experiments, ${what} refused`, async (page) => {
-      await openPage(page);
-      await openPromptTest(page, 'proj-1', 'model-used');
-      await goStep(page, 'LPB', 'build');
-      await page.route('**/modelRepository/models/model-used/**', (route) => (refuseIt(route.request()) ? refuse(route) : route.continue()));
-      await page.click(lpb('pet-save-button'));
-      await waitUntil(async () => (await textOf(page, lpb('pet-save-only-result'))) !== '', 'the save has ended', 20000);
-      await atRest();
-      const saved = (await toasts(page)).filter((text) => /saved/i.test(text)).length;
-      const failed = (await page.$$(`${lpb('pet-save-only-result')} .pet-save-failed`)).length;
-      step(saved === 0 && failed === 1, `Save Experiments, ${what} answered HTTP 500: no toast says "saved", the line beside the button says that the save did not finish (toasts: ${saved}; line: ${failed}; note: "${clip(await textOf(page, lpb('pet-save-only-result')))}")`);
+  await road('Save Experiments, the new model version refused', async (page) => {
+    await openPage(page);
+    await openPromptTest(page, 'proj-1', 'model-used');
+    await goStep(page, 'LPB', 'build');
+    await page.route('**/modelRepository/models/model-used/**', (route) =>
+      route.request().method() === 'POST' && route.request().url().includes('/modelVersions') ? refuse(route) : route.continue()
+    );
+    await page.click(lpb('pet-save-button'));
+    await waitUntil(async () => (await textOf(page, lpb('pet-save-only-result'))) !== '', 'the save has ended', 20000);
+    await atRest();
+    const saved = (await toasts(page)).filter((text) => /saved/i.test(text)).length;
+    const failed = (await page.$$(`${lpb('pet-save-only-result')} .pet-save-failed`)).length;
+    step(saved === 0 && failed === 1, `Save Experiments, the new model version answered HTTP 500: no toast says "saved", the line beside the button says that the save did not finish (toasts: ${saved}; line: ${failed}; note: "${clip(await textOf(page, lpb('pet-save-only-result')))}")`);
+  });
+
+  // The stored tracker is replaced in one upload, never deleted first: a
+  // refused upload leaves the runs that were stored.
+  await road('Save Experiments, the upload of the tracker refused', async (page) => {
+    await openPage(page);
+    await openPromptTest(page, 'proj-1', 'model-used');
+    await goStep(page, 'LPB', 'build');
+    await page.route('**/modelRepository/models/model-used/**', (route) => {
+      const request = route.request();
+      return request.method() === 'POST' && (request.postData() || '').includes('filename="Prompt-Experiment-Tracker.json"') ? refuse(route) : route.continue();
     });
-  }
+    await resetLog();
+    await page.click(lpb('pet-save-button'));
+    await waitUntil(async () => (await textOf(page, lpb('pet-save-only-result'))) !== '', 'the save has ended', 20000);
+    await atRest();
+    const saved = (await toasts(page)).filter((text) => /^Experiments saved/.test(text)).length;
+    const note = await textOf(page, lpb('pet-save-only-result'));
+    const deletes = (await getLog()).filter((entry) => entry.method === 'DELETE').map((entry) => entry.url);
+    step(
+      saved === 0 && /couldn't be saved/.test(note) && deletes.length === 0,
+      `Save Experiments, the upload of the tracker answered HTTP 500: nothing of the prompt-test was deleted before it, no toast says "saved", and the line says that the experiment could not be saved (deletes: ${JSON.stringify(deletes)}; toasts "saved": ${saved}; note: "${clip(note)}")`
+    );
+  });
 
   await road('the delete of an optimization run, refused', async (page) => {
     await openPage(page);
@@ -331,6 +351,98 @@ const MANIFEST_BOX = lpb('pet-save-result');
     step(
       said.some((text) => text.startsWith('The deletion failed')) && !said.some((text) => text.includes('Optimization run deleted')) && after === before && pageErrors.length === 0,
       `the delete of an optimization run whose model version and deletes are refused says that the deletion failed, and the history still lists the run (toasts: ${JSON.stringify(said)}; entries before ${before}, after ${after}; page errors: ${pageErrors.length})`
+    );
+  });
+
+  // The tracker of model-used as this suite serves it: the run of the mock
+  // and a second one, and - where asked - the dataset snapshot of the first
+  // in the contents. Writes to it are answered here, not by the mock.
+  const servedTracker = async (page, { snapshot = false, refuseUpload = false, refuseSnapshot = false } = {}) => {
+    const first = (await (await fetch(BASE + '/files/files/opttrk-1/content')).json())[0];
+    const state = { entries: [first, { ...first, optimizationId: 2, jobId: 'job-second', datasetSnapshot: null }], writes: [] };
+    await page.route('**/files/files/opttrk-1/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(state.entries) }));
+    await page.route('**/modelRepository/models/model-used/**', async (route) => {
+      const request = route.request();
+      const url = request.url();
+      const body = request.postData() || '';
+      if (request.method() === 'GET' && /\/contents(\?|$)/.test(url)) {
+        const listing = await (await route.fetch()).json();
+        if (snapshot) listing.items.push({ id: 'c-snap', name: first.datasetSnapshot, fileUri: '/files/files/snap-1' });
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(listing) });
+      }
+      if (request.method() === 'GET') return route.continue();
+      state.writes.push(`${request.method()} ${new URL(url).pathname}${body.includes('filename="Prompt-Optimization-Tracker.json"') ? ' (tracker)' : ''}`);
+      if (request.method() === 'POST' && body.includes('filename="Prompt-Optimization-Tracker.json"')) {
+        if (refuseUpload) return refuse(route);
+        const m = body.match(/\r\n\r\n([\s\S]*?)\r\n--/);
+        state.entries = m ? JSON.parse(m[1]) : state.entries;
+        return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ id: 'c-opttrk' }) });
+      }
+      if (request.method() === 'DELETE' && url.endsWith('/contents/c-opttrk')) {
+        state.entries = [];
+        return route.fulfill({ status: 204, body: '' });
+      }
+      if (request.method() === 'DELETE' && url.endsWith('/contents/c-snap')) {
+        return refuseSnapshot ? refuse(route) : route.fulfill({ status: 204, body: '' });
+      }
+      return route.continue();
+    });
+    return state;
+  };
+  const deleteFirstRun = async (page) => {
+    const entries = `${lpb('pane-optimize')} .pb-optimize-history-entry`;
+    await page.waitForSelector(entries, { timeout: 15000 });
+    await waitUntil(async () => (await page.$$eval(entries, (e) => e.length)) === 2, 'the history lists two runs');
+    await page.click(`${lpb('pane-optimize')} .pb-optimize-history-delete[aria-label$="#1"]`);
+    await confirmDialog(page);
+    await waitUntil(async () => (await toasts(page)).length > 0, 'a toast', 15000);
+    await atRest();
+    await page.waitForTimeout(500);
+    return { said: await toasts(page), after: await page.$$eval(entries, (e) => e.length) };
+  };
+
+  await road('the delete of an optimization run whose upload of the other runs is refused', async (page) => {
+    await openPage(page);
+    const state = await servedTracker(page, { refuseUpload: true });
+    await openPromptTest(page, 'proj-1', 'model-used');
+    await goStep(page, 'LPB', 'optimize');
+    const { said, after } = await deleteFirstRun(page);
+    step(
+      said.some((text) => text.startsWith('The deletion failed')) && after === 2 && state.entries.length === 2 && !state.writes.some((write) => write.startsWith('DELETE')),
+      `the delete of an optimization run whose upload of the other runs is refused deletes nothing: the tracker still holds both runs and the history lists them (toasts: ${JSON.stringify(said)}; entries shown: ${after}; stored: ${state.entries.length}; writes: ${JSON.stringify(state.writes)})`
+    );
+  });
+
+  await road('the delete of an optimization run whose dataset snapshot cannot be deleted', async (page) => {
+    await openPage(page);
+    const state = await servedTracker(page, { snapshot: true, refuseSnapshot: true });
+    await openPromptTest(page, 'proj-1', 'model-used');
+    await goStep(page, 'LPB', 'optimize');
+    const { said, after } = await deleteFirstRun(page);
+    step(
+      said.some((text) => text.startsWith('The run was removed from the optimization history, but the delete of its dataset snapshot Prompt-Optimization-Dataset-1.json failed')) &&
+        !said.some((text) => text.startsWith('Optimization run deleted')) &&
+        after === 1 && state.entries.length === 1 && state.entries[0].optimizationId === 2,
+      `the delete of an optimization run whose snapshot is refused says that the run left the history and that its snapshot may still be stored, and the history lists the other run (toasts: ${JSON.stringify(said)}; entries shown: ${after}; stored: ${JSON.stringify(state.entries.map((entry) => entry.optimizationId))})`
+    );
+  });
+
+  await road('the delete of the last optimization run', async (page) => {
+    await openPage(page);
+    const state = await servedTracker(page);
+    state.entries = state.entries.slice(0, 1);
+    await openPromptTest(page, 'proj-1', 'model-used');
+    await goStep(page, 'LPB', 'optimize');
+    const entries = `${lpb('pane-optimize')} .pb-optimize-history-entry`;
+    await page.waitForSelector(entries, { timeout: 15000 });
+    await page.click(`${lpb('pane-optimize')} .pb-optimize-history-delete[aria-label$="#1"]`);
+    await confirmDialog(page);
+    await waitUntil(async () => (await toasts(page)).length > 0, 'a toast', 15000);
+    await atRest();
+    const said = await toasts(page);
+    step(
+      said.some((text) => text.startsWith('Optimization run deleted')) && JSON.stringify(state.writes.filter((write) => !write.includes('/modelVersions'))) === JSON.stringify(['DELETE /modelRepository/models/model-used/contents/c-opttrk']),
+      `the delete of the last optimization run deletes the tracker and writes nothing else (toasts: ${JSON.stringify(said)}; writes: ${JSON.stringify(state.writes)})`
     );
   });
 

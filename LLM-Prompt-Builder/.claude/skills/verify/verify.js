@@ -1623,10 +1623,12 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   );
   let log = await getLog();
   const saveSeq = log.map((e) => `${e.method} ${e.url.split('?')[0]}`);
+  // The stored tracker is replaced by the upload; deleting it first lost it
+  // when the upload failed.
   assert(
     saveSeq.includes('POST /modelRepository/models/model-used/modelVersions') &&
-      saveSeq.includes('DELETE /modelRepository/models/model-used/contents/c-trk'),
-    'save created a model version and deleted the old tracker first'
+      !saveSeq.some((request) => request.startsWith('DELETE ')),
+    'save created a model version and deleted nothing (the upload replaces the stored tracker)'
   );
   const savedRows = multipartJson(log.find((e) => e.method === 'POST' && /contents\?/.test(e.url)).body);
   assert(
