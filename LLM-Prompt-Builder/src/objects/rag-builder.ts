@@ -2925,7 +2925,8 @@ export async function buildRagBuilder(
    * the setup before had left it (issue #47): the question that was asked of
    * its collection, the number of chunks, the chunks that came back and the
    * open test panel, the state and the milestones of its ingestion run, its
-   * ledger, and the note of its last save or manifest.
+   * ledger, the note of its last save or manifest, and the line under the
+   * SAS Content folder that names the job or flow its manifest generated.
    */
   const startLaterStepsAfresh = (): void => {
     // What is still on its way for the setup before is not drawn any more.
@@ -2957,6 +2958,7 @@ export async function buildRagBuilder(
     testStatus.textContent = '';
     testResults.replaceChildren();
     clearSaveResult();
+    artifactsNote.textContent = '';
   };
 
   /**
