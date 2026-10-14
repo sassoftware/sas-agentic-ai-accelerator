@@ -376,6 +376,31 @@ def test_an_empty_file_or_folder_of_the_other_commands_is_refused(monkeypatch, t
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize("root", ["/", "//", "Teams/x"])
+@pytest.mark.parametrize("command", ["content-deploy", "builders-import"])
+def test_a_content_root_that_is_no_folder_is_named_so(monkeypatch, tmp_path, command, root):
+    """gate-21a N5: `--content-root /` was refused with 'must be a SAS
+    Content path, starting with a slash' - it starts with one."""
+    from types import SimpleNamespace
+    from pathlib import Path
+    import io
+    from rich.console import Console
+    from typer.testing import CliRunner
+    from mdb import cli
+    repository = Path(__file__).resolve().parents[3]
+    out = io.StringIO()
+    package = tmp_path / "p.json"
+    package.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(cli, "console", Console(file=out, width=1000, force_terminal=False, emoji=False))
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=repository))
+    monkeypatch.setattr(cli, "_viya_session", lambda: pytest.fail("signed in"))
+    args = [command, "--content-root", root] + ([str(package)] if command == "builders-import" else [])
+    result = CliRunner().invoke(cli.app, args)
+    assert result.exit_code == 2, (result.exception, out.getvalue())
+    assert out.getvalue() == ("--content-root must name a SAS Content folder, starting with a slash - and not / "
+                              "itself, the root of SAS Content.\n")
+
+
 def test_the_requests_of_apply_name_the_identity_whole(mdb):
     mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: 'Sales#EMEA'}\n"
                         "  - {type: group, id: '../x', state: absent}\n", encoding="utf-8")

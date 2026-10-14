@@ -786,7 +786,7 @@ def test_the_command_deploys_to_the_root_it_is_given(command):
     # once it is there, it is a root like any other
     assert command("--content-root", root)[0].exit_code == 0
     result, text, _ = command("--content-root", "relative/root")
-    assert result.exit_code == 2 and "must be a SAS Content path" in text
+    assert result.exit_code == 2 and "must name a SAS Content folder" in text
 
 
 def test_the_content_root_the_manifest_names_is_created_on_a_first_install(command):

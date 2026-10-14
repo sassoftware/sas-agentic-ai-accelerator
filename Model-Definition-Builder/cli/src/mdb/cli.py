@@ -1627,6 +1627,12 @@ def _emit_outcome(outcome, indent: str = "  ") -> None:
                   markup=False, highlight=False, soft_wrap=True)
 
 
+#: What content-deploy and builders-import say of a content root that is no folder below the root of SAS
+#: Content: a text without a slash in front, or `/` - which ends as an empty path once its slash is taken off.
+_ROOT_NOT_A_FOLDER = ("--content-root must name a SAS Content folder, starting with a slash - and not / itself, "
+                      "the root of SAS Content.")
+
+
 def _given_root(content_root: Optional[str]) -> Optional[str]:
     """--content-root as it was given, for the five commands that take it. An
     empty value is refused: read as not given it is the content root of the
@@ -1763,7 +1769,7 @@ def content_deploy(
     content_root = _given_root(content_root)
     root = (content_root or manifest.content_root).rstrip("/")
     if not root.startswith("/"):
-        console.print("[red]--content-root must be a SAS Content path, starting with a slash.[/red]")
+        console.print(_ROOT_NOT_A_FOLDER, style="red", markup=False, highlight=False)
         raise typer.Exit(2)
     for path in only or []:
         if not path.strip("/"):
@@ -2531,7 +2537,7 @@ def builders_import(
             raise typer.Exit(2)
     root = (content_root or manifest.content_root).rstrip("/")
     if not root.startswith("/"):
-        console.print("[red]--content-root must be a SAS Content path, starting with a slash.[/red]")
+        console.print(_ROOT_NOT_A_FOLDER, style="red", markup=False, highlight=False)
         raise typer.Exit(2)
     saved = None
     if options is not None:
