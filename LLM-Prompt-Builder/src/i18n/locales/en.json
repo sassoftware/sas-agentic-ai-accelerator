@@ -561,7 +561,7 @@
     "ragBuilderJobSourceMissing": "Ingest-Documents.sas was not found under the content root - run the deploy-rag-content script first.",
     "ragBuilderJobFolderError": "The folder {folder} could not be created or reached - check the path and your permissions on it. The first level of the path has to exist already.",
     "ragBuilderJobGenerated": "Ingestion job generated in {folder} and linked to this setup.",
-    "ragBuilderJobGenerateError": "Generating the ingestion job failed - check the browser console and your permissions on the content root.",
+    "ragBuilderJobGenerateError": "Generating the ingestion job failed - check the browser console, your permissions on the content root and your Model Manager permissions on this setup.",
     "ragBuilderLedgerHeading": "Ingestion ledger",
     "ragBuilderLedgerEmpty": "The ledger has no rows yet - run an ingestion first.",
     "ragBuilderLedgerMissing": "No loaded ledger table was found for this setup - it appears after the first ingestion run (a saved ledger is loaded by the run itself).",

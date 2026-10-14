@@ -561,7 +561,7 @@
     "ragBuilderJobSourceMissing": "Ingest-Documents.sas wurde unter dem Content-Root nicht gefunden - führen Sie zuerst das deploy-rag-content-Skript aus.",
     "ragBuilderJobFolderError": "Der Ordner {folder} konnte nicht angelegt oder erreicht werden - prüfen Sie den Pfad und Ihre Berechtigungen. Die erste Ebene des Pfads muss bereits existieren.",
     "ragBuilderJobGenerated": "Ingestion-Job in {folder} generiert und mit diesem Setup verknüpft.",
-    "ragBuilderJobGenerateError": "Das Generieren des Ingestion-Jobs ist fehlgeschlagen - prüfen Sie die Browser-Konsole und Ihre Berechtigungen auf dem Content-Root.",
+    "ragBuilderJobGenerateError": "Das Generieren des Ingestion-Jobs ist fehlgeschlagen - prüfen Sie die Browser-Konsole, Ihre Berechtigungen auf dem Content-Root und Ihre Model-Manager-Berechtigungen auf diesem Setup.",
     "ragBuilderLedgerHeading": "Ingestion-Ledger",
     "ragBuilderLedgerEmpty": "Der Ledger enthält noch keine Zeilen - führen Sie zuerst eine Ingestion aus.",
     "ragBuilderLedgerMissing": "Für dieses Setup wurde keine geladene Ledger-Tabelle gefunden - sie erscheint nach dem ersten Ingestion-Lauf (ein gespeicherter Ledger wird vom Lauf selbst geladen).",

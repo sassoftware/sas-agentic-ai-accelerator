@@ -104,7 +104,11 @@ export async function registerFlow(
   if (!folder) throw new Error(`the folder ${folderPath} could not be reached`);
   for (const member of await getFolderMembers(folder.id)) {
     if (member.name === flow.name && String(member.uri ?? '').includes('/dataFlows/')) {
-      await viyaFetch(String(member.uri), { method: 'DELETE' });
+      // A refused delete would leave the old flow beside the new one.
+      const removed = await viyaFetch(String(member.uri), { method: 'DELETE' });
+      if (!removed.ok && removed.status !== 404) {
+        throw new Error(`the flow of the same name could not be replaced (HTTP ${removed.status} on its delete)`);
+      }
     }
   }
   // The service mints the id; sending ours is at best ignored and at worst a

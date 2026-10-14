@@ -3237,8 +3237,10 @@ export async function buildRagBuilder(
 
       currentJobUri = definitionUri;
       updateLaunchState();
-      // persist the job reference with the setup
-      await createModelContent(selectedSetupID, collectSetup(), SETUP_FILE, 'documentation');
+      // persist the job reference with the setup; a refusal is a stage that
+      // failed (see written): the setup would not know its job when it is
+      // opened again
+      written((await createModelContent(selectedSetupID, collectSetup(), SETUP_FILE, 'documentation')).status_code, SETUP_FILE);
       // Naming the destination matters more than it looks: this job is the
       // artifact a schedule points at, and "somewhere under the content root"
       // is not something a person can act on a month later.
@@ -3255,7 +3257,7 @@ export async function buildRagBuilder(
       return true;
     } catch (error) {
       console.error('Generating the ingestion job failed.', error);
-      showStatus('danger', str('ragBuilderJobGenerateError', 'Generating the ingestion job failed - check the browser console and your permissions on the content root.'));
+      showStatus('danger', str('ragBuilderJobGenerateError', 'Generating the ingestion job failed - check the browser console, your permissions on the content root and your Model Manager permissions on this setup.'));
       return false;
     }
   }
@@ -3586,9 +3588,12 @@ export async function buildRagBuilder(
       // …and onto the model itself, so the setup carries the pipeline it
       // generated. The registered flow is what SAS Studio opens; this copy is
       // the ASSET - it travels with the model through versions, export and
-      // promotion, which the Content folder's copy does not.
-      await createModelContent(selectedSetupID, flow, `${flowName}.flw`,
-                               'documentation', 'application/json');
+      // promotion, which the Content folder's copy does not. A refusal is a
+      // stage that failed (see written).
+      written(
+        (await createModelContent(selectedSetupID, flow, `${flowName}.flw`, 'documentation', 'application/json')).status_code,
+        `${flowName}.flw`
+      );
       artifactsNote.textContent = str('ragBuilderFlowGeneratedAt', 'Studio flow: {name} in {folder}')
         .replace('{name}', flowName)
         .replace('{folder}', destination);
