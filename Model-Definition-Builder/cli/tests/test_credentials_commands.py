@@ -150,6 +150,14 @@ def _ids(path: Path) -> list:
     return [(who.type, who.id, who.only, who.state) for who in Manifest.load(path).identities]
 
 
+def _without_its_comment(data: bytes) -> bytes:
+    """A scaffold without the two comment lines above its placeholder: they
+    are about the placeholder and leave the file with it."""
+    comment = _lines(_eol(data), *("  " + line for line in credentials.PLACEHOLDER_COMMENT))
+    assert data.count(comment) == 1
+    return data.replace(comment, b"")
+
+
 # ---- a manifest `credentials-init` wrote ----------------------------------
 def test_the_first_add_takes_the_place_of_the_placeholder_and_changes_nothing_else(mdb):
     assert mdb("credentials-init")[0] == 0
@@ -159,7 +167,7 @@ def test_the_first_add_takes_the_place_of_the_placeholder_and_changes_nothing_el
     code, said = mdb("credentials-add", "group", "LLMConsumers")
 
     assert code == 0
-    assert mdb.path.read_bytes() == before.replace(
+    assert mdb.path.read_bytes() == _without_its_comment(before).replace(
         b"id: " + PLACEHOLDER_ID.encode(), b"id: LLMConsumers")
     assert f"in place of the placeholder {PLACEHOLDER_ID}" in said
     assert "mdb credentials-apply --manifest credentials.yaml --dry-run" in said
@@ -173,7 +181,7 @@ def test_a_user_in_place_of_the_placeholder_changes_its_type_line_too(mdb):
 
     assert mdb("credentials-add", "user", "sas-be-sa")[0] == 0
 
-    assert mdb.path.read_bytes() == before.replace(
+    assert mdb.path.read_bytes() == _without_its_comment(before).replace(
         _lines(eol, "  - type: group", f"    id: {PLACEHOLDER_ID}"),
         _lines(eol, "  - type: user", "    id: sas-be-sa"))
     assert _ids(mdb.path) == [("user", "sas-be-sa", (), "present")]
@@ -305,7 +313,7 @@ def test_without_a_manifest_the_add_writes_what_init_writes_with_the_identity_in
     # the same file `credentials-init` writes, but for the identity
     mdb.path.unlink()
     mdb("credentials-init")
-    assert created == mdb.path.read_bytes().replace(
+    assert created == _without_its_comment(mdb.path.read_bytes()).replace(
         b"id: " + PLACEHOLDER_ID.encode(), b"id: LLMConsumers")
 
 
@@ -522,7 +530,7 @@ def test_remove_on_a_fresh_scaffold_takes_the_place_of_the_placeholder(mdb):
     code, said = mdb("credentials-remove", "group", "FormerTeam")
 
     assert code == 0
-    assert mdb.path.read_bytes() == before.replace(
+    assert mdb.path.read_bytes() == _without_its_comment(before).replace(
         _lines(eol, f"    id: {PLACEHOLDER_ID}"),
         _lines(eol, "    id: FormerTeam", "    state: absent"))
     assert f"in place of the placeholder {PLACEHOLDER_ID}" in said

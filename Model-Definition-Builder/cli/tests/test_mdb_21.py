@@ -22,6 +22,7 @@ from typer.testing import CliRunner
 from content_fakes import Viya, package_of
 from mdb import cli
 from mdb.core import content
+from mdb.viya import credentials
 from mdb.viya import session as s
 from mdb.viya import transfer
 from test_content_deploy import command, manifest, repo  # noqa: F401
@@ -437,7 +438,7 @@ def test_the_two_credentials_commands_name_what_was_typed_as_it_was_typed(mdb):
     assert code == 0 and "Updated user a[/b] in credentials.yaml:" in said and "  state: absent -> present" in said
     code, said = mdb("credentials-add", "group", "RAG [team]", "--only", "OpenAI", "--manifest", "sub [1]/c.yaml")
     assert code == 0 and "  only: OpenAI\n" in said
-    assert "Next: mdb credentials-apply --manifest sub [1]" in said
+    assert 'Next: mdb credentials-apply --manifest "sub [1]/c.yaml" --dry-run\n' in said
 
 
 # ---- credentials-report: the row of a credential that cannot be read --------------------
@@ -906,3 +907,149 @@ def test_a_refusal_that_can_change_is_asked_as_often_as_before(token_address, mo
     with pytest.raises(s.ViyaSignInError, match=rf"\({posted} sign-ins? made\): HTTP 401 from "):
         s.create_session()
     assert len(token_address.posted) == posted
+
+
+# ---- the credentials commands: what the side stream of 2026-10-13 left open -----------------
+CREDENTIAL_COMMANDS = ("credentials-init", "credentials-add", "credentials-remove", "credentials-apply",
+                       "credentials-report")
+COMMENT = tuple("  " + line for line in credentials.PLACEHOLDER_COMMENT)
+
+
+def test_the_five_credentials_commands_name_the_manifest_with_one_option(mdb, tmp_path):
+    """`credentials-init` took its file as --file / -f, the four other
+    commands as --manifest / -m. All five take --manifest / -m; --file / -f
+    is still read by `credentials-init`, where it was the name."""
+    for command in CREDENTIAL_COMMANDS:
+        result = CliRunner().invoke(cli.app, [command, "--help"])
+        shown = " ".join(result.output.replace("│", " ").split())           # without the frame of the help
+        assert result.exit_code == 0 and "--manifest" in shown and re.search(r"(?<![\w-])-m\b", shown), command
+        assert ("--file" in shown) == (command == "credentials-init"), command
+        assert ("--file / -f is the earlier name of this option and is still read" in shown) \
+            == (command == "credentials-init")
+    for number, option in enumerate(("--manifest", "-m", "--file", "-f")):
+        target = tmp_path / f"records {number}" / "c.yaml"
+        code, said = mdb("credentials-init", option, str(target))
+        assert code == 0 and target.is_file(), said
+        # the two commands the line names take the file as it is printed: in quotes, for its blank
+        named = cli._shell_word(target)
+        assert named.startswith('"') and f"mdb credentials-add group <id> --manifest {named} " in said
+        assert f"mdb credentials-apply --manifest {named} --dry-run" in said
+    assert not mdb.path.exists()
+
+
+def test_a_command_the_credentials_commands_print_runs_as_printed_for_a_path_with_a_blank(mdb, tmp_path):
+    """`Next: mdb credentials-apply --manifest my records/c.yaml --dry-run`
+    is two arguments where one was meant. The file is named as a shell
+    takes it - by the function that spells every other printed command."""
+    target = tmp_path / "my records" / "team creds.yaml"
+    code, said = mdb("credentials-add", "group", "LLMConsumers", "--manifest", str(target))
+    assert code == 0
+    printed, = re.findall(r"^Next: (mdb credentials-apply .*)$", said, re.M)
+    assert shlex.split(printed) == ["mdb", "credentials-apply", "--manifest", target.as_posix(), "--dry-run"]
+    code, said = mdb(*shlex.split(printed)[1:])
+    assert code == 0 and "Dry run" in said
+    code, said = mdb("credentials-remove", "group", "LLMConsumers", "--manifest", str(target))
+    assert code == 0
+    for printed in re.findall(r"(mdb credentials-apply --manifest .*?)(?: --dry-run|;)", said):
+        assert shlex.split(printed)[-1] == target.as_posix(), printed
+    # the head of the manifest names the file the same way
+    head = target.read_text(encoding="utf-8").split("domain:")[0]
+    assert head.count('--manifest "team creds.yaml"') == 5 and "--manifest team creds.yaml" not in head
+    # and a name without a blank stands as it stood
+    mdb("credentials-init")
+    assert mdb.path.read_text(encoding="utf-8").count("--manifest credentials.yaml") == 5
+
+
+@pytest.mark.parametrize("eol", ["\n", "\r\n"])
+def test_the_comment_about_the_placeholder_leaves_with_the_placeholder(mdb, eol):
+    """After the first `credentials-add` on a manifest of `credentials-init`
+    the line `The first mdb credentials-add replaces this placeholder.` stood
+    above a real identity. It leaves with the placeholder - and only it."""
+    assert mdb("credentials-init")[0] == 0
+    before = mdb.path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", eol.encode())
+    mdb.path.write_bytes(before)
+    comment = "".join(line + eol for line in COMMENT).encode()
+    assert before.count(comment) == 1
+    assert mdb("credentials-add", "group", "LLMConsumers", "--only", "OpenAI")[0] == 0
+    after = mdb.path.read_bytes()
+    assert after == before.replace(comment, b"").replace(
+        f"    id: {credentials.PLACEHOLDER_ID}{eol}".encode(),
+        f"    id: LLMConsumers{eol}    only: [OpenAI]{eol}".encode())
+    assert b"placeholder" not in after and after.count(b"# Narrow an identity to some of the entries:") == 1
+
+
+@pytest.mark.parametrize("above", [
+    ("  # Replace with the groups and users this deployment should equip.",),      # one of the two lines
+    ("  # Our own note about who is equipped here.", COMMENT[1]),                   # a line its author changed
+    (COMMENT[0], COMMENT[1], ""),                                                   # not right above the identity
+    (),
+])
+def test_a_comment_that_is_not_the_scaffolds_own_stays_where_it_is(tmp_path, above):
+    text = "\n".join(["domain: d", "source: .env", "identities:", *above, "  - type: group",
+                      f"    id: {credentials.PLACEHOLDER_ID}", ""])
+    edit = credentials.edit_identity(text, tmp_path / "c.yaml", "group", "LLMConsumers")
+    assert edit.outcome == "placeholder"
+    assert edit.text == text.replace(credentials.PLACEHOLDER_ID, "LLMConsumers")
+
+
+ONE_PER_LINE = ("domain: d\nsource: .env\nidentities:\n  - type: group\n    id: RAGEngineers\n    only:\n"
+                "      # the stores\n      - PGVECTOR_RAG_USER{}\n      - PGVECTOR_RAG_PW{}\n")
+IN_BRACKETS = ("domain: d\nsource: .env\nidentities:\n  - type: group\n    id: RAGEngineers\n"
+               "    only: [PGVECTOR_RAG_USER,{}\n           PGVECTOR_RAG_PW]{}\n")
+
+
+@pytest.mark.parametrize("text", [
+    ONE_PER_LINE.format("  # the user of the store", ""), ONE_PER_LINE.format("\n      # and its password", ""),
+    ONE_PER_LINE.format("", "  # rotated in March"), IN_BRACKETS.format("  # the user of the store", ""),
+])
+def test_an_only_list_with_a_comment_between_its_entries_is_not_rewritten(mdb, text):
+    """A list written one entry per line was rewritten whole, and a comment
+    between its entries was gone without a word. Nothing says which entry
+    of the new list such a comment belongs to, so the edit is refused, like
+    the other layouts it does not handle - and the file is as it was."""
+    mdb.path.write_text(text, encoding="utf-8")
+    code, said = mdb("credentials-add", "group", "RAGEngineers", "--only", "PGVECTOR_RAG_PW,OpenAI")
+    assert code == 2 and mdb.path.read_text(encoding="utf-8") == text
+    assert " ".join(said.split()) == (
+        "credentials.yaml: the `only:` list of group 'RAGEngineers' holds a comment, which a rewrite of the list "
+        "would drop or leave beside another entry — nothing was written; edit the list by hand")
+    # what is not about the list is still done, and leaves the list alone
+    code, said = mdb("credentials-remove", "group", "RAGEngineers")
+    assert code == 0 and mdb.path.read_text(encoding="utf-8") == text + "    state: absent\n"
+
+
+@pytest.mark.parametrize("text, rewritten", [
+    # a comment in front of the first entry, and one behind a list in brackets, are about the list: they stay
+    (ONE_PER_LINE.format("", ""),
+     ONE_PER_LINE.format("", "").replace("      - PGVECTOR_RAG_USER\n      - PGVECTOR_RAG_PW\n",
+                                         "      - PGVECTOR_RAG_PW\n      - OpenAI\n")),
+    (IN_BRACKETS.format("", "  # the store"),
+     IN_BRACKETS.format("", "  # the store").replace("[PGVECTOR_RAG_USER,\n           PGVECTOR_RAG_PW]",
+                                                     "[PGVECTOR_RAG_PW, OpenAI]")),
+    ("domain: d\nsource: .env\nidentities:\n  - {type: group, id: RAGEngineers, only: ['a#b', \"c # d\"]}\n",
+     "domain: d\nsource: .env\nidentities:\n  - {type: group, id: RAGEngineers, only: [PGVECTOR_RAG_PW, OpenAI]}\n"),
+])
+def test_an_only_list_without_such_a_comment_is_rewritten_as_before(mdb, text, rewritten):
+    mdb.path.write_text(text, encoding="utf-8")
+    code, said = mdb("credentials-add", "group", "RAGEngineers", "--only", "PGVECTOR_RAG_PW,OpenAI")
+    assert code == 0 and mdb.path.read_text(encoding="utf-8") == rewritten, said
+
+
+def test_a_new_manifest_of_credentials_add_takes_the_domain_it_is_given(mdb, tmp_path):
+    """`credentials-init` has --domain; a `credentials-add` that writes the
+    manifest wrote it for agentic-ai-keys and took no other."""
+    code, said = mdb("credentials-add", "group", "ZZ_GROUP", "--domain", "zz_made_up_keys")
+    assert code == 0 and credentials.Manifest.load(mdb.path).domain == "zz_made_up_keys"
+    code, said = mdb("credentials-apply", "--dry-run")
+    assert code == 0 and "Credential domain 'zz_made_up_keys'" in said
+    # an existing manifest names its own domain: said, and the file keeps it
+    before = mdb.path.read_bytes()
+    code, said = mdb("credentials-add", "user", "ada", "--domain", "another")
+    assert code == 0 and "--domain is read only when the manifest is created; credentials.yaml exists and names " \
+                         "its own domain." in " ".join(said.split())
+    assert credentials.Manifest.load(mdb.path).domain == "zz_made_up_keys"
+    assert mdb.path.read_bytes().startswith(before.split(b"identities:")[0])
+    # without the option: the domain of the accelerator, as before
+    other = tmp_path / "other.yaml"
+    assert mdb("credentials-add", "group", "G", "--manifest", str(other))[0] == 0
+    assert credentials.Manifest.load(other).domain == "agentic-ai-keys"

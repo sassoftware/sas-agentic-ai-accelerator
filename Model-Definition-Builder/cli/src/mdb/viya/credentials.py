@@ -136,6 +136,13 @@ STATES = ("present", "absent")
 #: The identity the scaffold writes for its author to replace.
 PLACEHOLDER_ID = "CHANGE-ME-to-a-real-group"
 
+#: The comment the scaffold writes above that identity, line by line. It is
+#: about the placeholder, so it leaves the file with it (`edit_identity`).
+PLACEHOLDER_COMMENT = (
+    "# Replace with the groups and users this deployment should equip. The first",
+    "# `mdb credentials-add` replaces this placeholder.",
+)
+
 #: Said once per apply that writes a group credential. A credential written
 #: for a group the users are not members of looks like a finished rollout and
 #: leaves every one of them without a key.
@@ -366,30 +373,36 @@ def relative_source(source: Path, manifest: Path) -> str:
 
 
 def scaffold(source: Path, manifest: Path, domain: str = DEFAULT_DOMAIN,
-             entry_names: tuple = ()) -> str:
+             entry_names: tuple = (), as_argument: Optional[str] = None) -> str:
     """A starter manifest, listing what the source actually carries.
 
     The entry names are written as a COMMENT rather than as configuration:
     they are what an author needs in front of them to write an `only:` list,
     and putting them in the document itself would make the manifest go stale
     the moment a key is added to the `.env`. No value is ever written.
+
+    `as_argument` is the name of the manifest as a shell takes it in the
+    commands the head of the file shows - in quotes where it holds a blank.
+    The command line gives it; without it the name stands as it is.
     """
     listed = "\n".join(f"#   {name}" for name in entry_names) or "#   (none found)"
+    named = as_argument or manifest.name
+    about_the_placeholder = "\n".join("  " + line for line in PLACEHOLDER_COMMENT)
     return f"""# Credentials manifest for `mdb credentials-apply --manifest`.
 #
 # It says WHO gets keys and WHERE THOSE KEYS COME FROM. It never contains a
 # key, so unlike the .env it is meant to be committed and reviewed in a diff:
 # who may call which provider is a decision worth having a history of.
 #
-#   mdb credentials-apply  --manifest {manifest.name} --dry-run
-#   mdb credentials-apply  --manifest {manifest.name}
-#   mdb credentials-report --manifest {manifest.name}
+#   mdb credentials-apply  --manifest {named} --dry-run
+#   mdb credentials-apply  --manifest {named}
+#   mdb credentials-report --manifest {named}
 #
 # Identities are added and marked for removal with a command as well as by
 # hand; both edit this file and leave its comments alone:
 #
-#   mdb credentials-add    group LLMConsumers --manifest {manifest.name}
-#   mdb credentials-remove group FormerTeam   --manifest {manifest.name}
+#   mdb credentials-add    group LLMConsumers --manifest {named}
+#   mdb credentials-remove group FormerTeam   --manifest {named}
 #
 # A GROUP credential reaches only the members of that group: equip a group
 # the people who open the Prompt Builder are members of. A USER credential
@@ -412,8 +425,7 @@ source: {relative_source(source, manifest)}
 {listed}
 
 identities:
-  # Replace with the groups and users this deployment should equip. The first
-  # `mdb credentials-add` replaces this placeholder.
+{about_the_placeholder}
   - type: group
     id: {PLACEHOLDER_ID}
 
@@ -553,10 +565,41 @@ def _cut(text: str, node, position: int) -> Optional[tuple]:
     return start, _line_after(text, end)
 
 
+class _CommentInList(Exception):
+    """A list that is to be rewritten holds a comment a rewrite would drop,
+    or would leave beside another entry. Carries the key of the list."""
+
+
+def _comment_in_list(text: str, listed) -> bool:
+    """Whether a list holds a comment: between its entries, inside the
+    brackets of a list written `[…]`, or - in a list written one entry per
+    line - behind its last entry, on that entry's line. Outside its entries
+    a `#` in the text of a list is a comment and nothing else."""
+    edges = [listed.start_mark.index]
+    for item in listed.value:
+        edges += [item.start_mark.index, _content_end(item)]
+    end = _content_end(listed)
+    edges.append(end if listed.flow_style else _line_after(text, end))
+    return any("#" in text[start:stop] for start, stop in zip(edges[0::2], edges[1::2]))
+
+
+def _placeholder_comment(text: str, item) -> Optional[tuple]:
+    """(start, end) of the lines right above an identity where they are the
+    comment the scaffold writes above its placeholder, word for word; None
+    where they are anything else - a comment its author changed stays."""
+    end = _line_start(text, item.start_mark.index)
+    above = text[:end].splitlines(keepends=True)[-len(PLACEHOLDER_COMMENT):]
+    if [line.strip() for line in above] != list(PLACEHOLDER_COMMENT):
+        return None
+    return end - sum(len(line) for line in above), end
+
+
 def _item_splices(text: str, node, sets: dict, drop: tuple, eol: str) -> list:
     """(start, end, replacement) for one existing identity: `sets` are keys
     to write — replaced where they are, appended where they are not — and
-    `drop` are keys to take out. An identity written `{…}` stays that way."""
+    `drop` are keys to take out. An identity written `{…}` stays that way.
+    Raises _CommentInList where a list that is to be rewritten holds a
+    comment."""
     import yaml
 
     pairs = {key.value: (position, value)
@@ -580,6 +623,8 @@ def _item_splices(text: str, node, sets: dict, drop: tuple, eol: str) -> list:
             continue
         value = pairs[name][1]
         start, end = value.start_mark.index, _content_end(value)
+        if isinstance(value, yaml.SequenceNode) and _comment_in_list(text, value):
+            raise _CommentInList(name)
         if (isinstance(value, yaml.SequenceNode) and not value.flow_style
                 and isinstance(new, (list, tuple))):
             # A list written one name per line stays one name per line.
@@ -652,6 +697,13 @@ def edit_identity(text: str, path: Path, type: str, id: str,
     YAML parser reports and not a dump of the parsed document. What comes out
     is read back with the loader and compared with what was intended; a
     layout the splice does not handle is refused rather than guessed at.
+
+    One comment goes: the one the scaffold wrote above its placeholder
+    (PLACEHOLDER_COMMENT), with the placeholder it is about, where it still
+    stands there word for word. And one comment is a reason to refuse: an
+    `only:` list that is to be rewritten and holds a comment between its
+    entries is left as it is, with a CredentialError, because nothing says
+    which entry of the new list such a comment belongs to.
     """
     from dataclasses import replace
 
@@ -708,7 +760,18 @@ def edit_identity(text: str, path: Path, type: str, id: str,
         if wanted.absent and not current.absent:
             sets["state"] = "absent"
         drop = ("state",) if current.absent and not wanted.absent else ()
-        splices = _item_splices(text, listed.value[index], sets, drop, eol)
+        try:
+            splices = _item_splices(text, listed.value[index], sets, drop, eol)
+        except _CommentInList as held:
+            raise CredentialError(
+                f"{path}: the `{held.args[0]}:` list of {type} {id!r} holds a comment, which a rewrite of the "
+                "list would drop or leave beside another entry — nothing was written; edit the list by "
+                "hand") from None
+        if outcome == "placeholder":
+            # the comment the scaffold wrote about its placeholder leaves with it
+            comment = _placeholder_comment(text, listed.value[index])
+            if comment:
+                splices.append((comment[0], comment[1], ""))
 
     edited = text
     for start, end, new in sorted(splices, reverse=True):

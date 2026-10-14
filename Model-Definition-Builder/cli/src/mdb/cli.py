@@ -3723,7 +3723,8 @@ def _credential_scaffold(target: Path, env_file: str, domain: str) -> tuple[str,
             "keys (OPENAI_API_KEY, …), <BACKEND>_RAG_USER/_PW pairs and/or "
             "<BACKEND>_HOST/_PORT/_DB/_SSLMODE settings. Writing the manifest "
             "anyway.[/yellow]")
-    return (scaffold(source.resolve(), target.resolve(), domain, tuple(sorted(entries))),
+    return (scaffold(source.resolve(), target.resolve(), domain, tuple(sorted(entries)),
+                     as_argument=_shell_word(target.name)),
             len(entries))
 
 
@@ -3735,9 +3736,10 @@ def _write_new_manifest(target: Path, text: str) -> None:
 
 @app.command("credentials-init")
 def credentials_init(
-    file: str = typer.Option(
-        "credentials.yaml", "--file", "-f",
-        help="Where to write the manifest — anywhere you keep deployment records"),
+    manifest: str = typer.Option(
+        "credentials.yaml", "--manifest", "-m", "--file", "-f",
+        help="Where to write the manifest — anywhere you keep deployment records. "
+             "--file / -f is the earlier name of this option and is still read"),
     env_file: str = typer.Option(
         ".env", "--env-file", help="The .env whose entries it should point at"),
     domain: str = typer.Option(
@@ -3759,7 +3761,7 @@ def credentials_init(
     or with `mdb credentials-add group <id>`, which also writes this manifest
     when there is none yet.
     """
-    target = Path(file)
+    target = Path(manifest)
     if target.exists() and not force:
         console.print(f"[red]{_plain(target)} already exists.[/red] Pass --force to overwrite it.")
         raise typer.Exit(2)
@@ -3768,8 +3770,9 @@ def credentials_init(
     console.print(f"[green]Wrote {_plain(target)} listing {_plain(count)} available "
                   "entries (names only — no values).[/green]")
     console.print("Name the groups and users to equip — by hand, or with "
-                  f"[bold]mdb credentials-add group <id> --manifest {_plain(target)}[/bold] — "
-                  f"then run [bold]mdb credentials-apply --manifest {_plain(target)} --dry-run[/bold].")
+                  f"[bold]mdb credentials-add group <id> --manifest {_plain(_shell_word(target))}[/bold] — "
+                  f"then run [bold]mdb credentials-apply --manifest {_plain(_shell_word(target))} "
+                  "--dry-run[/bold].")
 
 
 def _only_names(only: Optional[list[str]]) -> Optional[tuple]:
@@ -3804,6 +3807,10 @@ def credentials_add(
         None, "--env-file",
         help="The .env a NEW manifest points at (default: ./.env); not read "
              "when the manifest exists"),
+    domain: Optional[str] = typer.Option(
+        None, "--domain",
+        help="The credential domain a NEW manifest targets (default: "
+             "agentic-ai-keys); not read when the manifest exists"),
 ):
     """Add a group or a user to the credentials manifest.
 
@@ -3813,12 +3820,16 @@ def credentials_add(
     identities stay as they are in the file.
 
     * No manifest yet: it is written the way `mdb credentials-init` writes
-      it, from the .env named with --env-file, with this identity in it.
+      it, from the .env named with --env-file and for the domain named with
+      --domain, with this identity in it.
     * The manifest still names the placeholder of `credentials-init`: the
-      identity takes the placeholder's place.
+      identity takes the placeholder's place, and the comment
+      `credentials-init` wrote above the placeholder leaves with it.
     * The identity is already listed: nothing is added a second time. With
       --only or --source its entry is updated and the change is printed; an
-      identity marked `state: absent` is set back to present.
+      identity marked `state: absent` is set back to present. An `only:`
+      list that holds a comment between its entries is not rewritten: the
+      command says so and writes nothing.
 
     An --only name the source does not carry is refused, in the words
     `mdb credentials-apply` uses, and nothing is written.
@@ -3848,10 +3859,14 @@ def credentials_add(
     created = not path.exists()
     starter, count = "", 0
     if created:
-        starter, count = _credential_scaffold(path, env_file or ".env", DEFAULT_DOMAIN)
-    elif env_file:
-        console.print(f"[yellow]--env-file is read only when the manifest is "
-                      f"created; {_plain(path)} exists and names its own source.[/yellow]")
+        starter, count = _credential_scaffold(path, env_file or ".env", domain or DEFAULT_DOMAIN)
+    else:
+        if env_file:
+            console.print(f"[yellow]--env-file is read only when the manifest is "
+                          f"created; {_plain(path)} exists and names its own source.[/yellow]")
+        if domain:
+            console.print(f"[yellow]--domain is read only when the manifest is "
+                          f"created; {_plain(path)} exists and names its own domain.[/yellow]")
     spelled = relative_source(Path(source).resolve(), path.resolve()) if source else None
     try:
         text = starter if created else read_manifest_text(path)
@@ -3897,7 +3912,8 @@ def credentials_add(
             console.print("  only: " + _plain(", ".join(edit.identity.only)))
         if spelled:
             console.print(f"  source: {_plain(spelled)}")
-    console.print(f"Next: [bold]mdb credentials-apply --manifest {_plain(path)} --dry-run[/bold]")
+    console.print(f"Next: [bold]mdb credentials-apply --manifest {_plain(_shell_word(path))} "
+                  "--dry-run[/bold]")
 
 
 @app.command("credentials-remove")
@@ -3958,11 +3974,12 @@ def credentials_remove(
     else:
         console.print(f"[green]Added {_plain(who)} to {_plain(path)} with `state: absent`.[/green]")
     console.print("The credential is deleted on the server by the next "
-                  f"[bold]mdb credentials-apply --manifest {_plain(path)}[/bold]; this "
+                  f"[bold]mdb credentials-apply --manifest {_plain(_shell_word(path))}[/bold]; this "
                   "command did not contact the server.")
     console.print("Keep the entry in the manifest: a line that is deleted from "
                   "the file removes nothing.")
-    console.print(f"Next: [bold]mdb credentials-apply --manifest {_plain(path)} --dry-run[/bold]")
+    console.print(f"Next: [bold]mdb credentials-apply --manifest {_plain(_shell_word(path))} "
+                  "--dry-run[/bold]")
 
 
 @app.command("credentials-apply")
