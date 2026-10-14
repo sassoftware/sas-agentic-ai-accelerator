@@ -48,8 +48,9 @@ class ViyaConfigError(RuntimeError):
 
 
 class ViyaSignInError(ViyaConfigError):
-    """SAS Viya refused the credentials. A command ends with its sentence,
-    as it does for credentials that are missing."""
+    """The sign-in gave no session: SAS Viya refused the credentials, or the
+    token address answered with another error. A command ends with its
+    sentence, as it does for credentials that are missing."""
 
 
 @dataclass(frozen=True)
@@ -278,15 +279,23 @@ def create_session():
         else:
             session = Session(auth.url, token=auth.token, verify_ssl=verify, **where)
     except Exception as exc:
-        if not _refused_sign_in(exc):
+        status = _token_address_status(exc)
+        if not _refused_sign_in(exc) and status is None:
             raise
-        # A refusal is an answer, not a defect of mdb: one sentence, no traceback.
+        # An answer of the token address is an answer, not a defect of mdb: one sentence, no traceback.
         if auth.method == "password":
             made = getattr(exc, SIGN_INS_MADE, 1)
             how = (f"the sign-in of {auth.user} with {USER_ENV} + {PASSWORD_ENV} "
                    f"({made} sign-in{'' if made == 1 else 's'} made)")
         else:
             how = f"the access token ({TOKEN_ENV if auth.method == 'token' else 'the SAS Viya CLI login'})"
+        if not _refused_sign_in(exc):
+            # any other status of the token address: no word about the credentials, and not asked again
+            raise ViyaSignInError(
+                f"SAS Viya at {auth.url} did not answer {how} with a token: {_said(exc, status)}. That is no "
+                "refusal of the credentials (a refusal is HTTP 401), and the sign-in was not repeated: run the "
+                "command again, and where the answer stays the same, SAS Logon is where to look."
+            ) from exc
         raise ViyaSignInError(
             f"SAS Viya at {auth.url} refused {how}: {_refusal(exc, auth.method == 'password')}. Check the "
             f"credentials - or use another way in: {THE_THREE_WAYS}."
@@ -307,6 +316,12 @@ LOGIN_ATTEMPTS_ENV = "MDB_LOGIN_ATTEMPTS"
 #: grant with a wrong password got 401 with the JSON body
 #: {"error":"invalid_client","error_description":"Bad credentials"}.
 BAD_CREDENTIALS = "bad credentials"
+
+#: What `error_description` says where the client may not use the password
+#: grant: `Unauthorized grant type: password`. sasctl (1.11.8 was read) takes
+#: it for final as well. Not seen from SAS Logon in any pass; a test answers
+#: it from a stand-in.
+UNAUTHORIZED_GRANT = "unauthorized grant type"
 
 #: The attribute `_sign_in` gives the refusal it passes on: how many sign-ins
 #: were made.
@@ -341,6 +356,23 @@ def _refused_sign_in(exc: Exception) -> bool:
     if status is None and str(exc).startswith("401 "):
         status = 401
     return status == 401 and TOKEN_PATH in (url or str(exc))
+
+
+def _token_address_status(exc: Exception):
+    """The HTTP status the token address answered with, where an exception
+    is the HTTPError of requests for an answer of that address that is no
+    401 - a 500, a 503, a 400, a 403, a 429 - and None for anything else.
+    Such an answer is no refused sign-in: it says nothing about the
+    credentials, and no repeat is known to change it. It ends a command
+    with one line all the same."""
+    if type(exc).__name__ != "HTTPError":
+        return None
+    response = getattr(exc, "response", None)
+    url = str(getattr(response, "url", "") or getattr(getattr(exc, "request", None), "url", "") or "")
+    status = getattr(response, "status_code", None)
+    if not isinstance(status, int) or isinstance(status, bool) or status == 401 or TOKEN_PATH not in url:
+        return None
+    return status
 
 
 def _held_answer(exc: Exception):
@@ -398,6 +430,13 @@ def _bad_credentials(exc: Exception) -> bool:
     return type(exc).__name__ == "AuthenticationError" or BAD_CREDENTIALS in _answer(exc)[1].lower()
 
 
+def _final(exc: Exception) -> bool:
+    """Whether a refused sign-in is one no repeat changes: the answer to a
+    wrong password (`_bad_credentials`), or an `error_description` that says
+    UNAUTHORIZED_GRANT - the client may not use the password grant at all."""
+    return _bad_credentials(exc) or UNAUTHORIZED_GRANT in _answer(exc)[1].lower()
+
+
 def _refusal(exc: Exception, grant: bool = False) -> str:
     """What a refused sign-in says, without the address of the token
     endpoint spelled out twice and without anything that was sent: the
@@ -407,14 +446,20 @@ def _refusal(exc: Exception, grant: bool = False) -> str:
     cannot read itself (`_bad_credentials`). Every other refused sign-in is
     a 401 of the token address (`_refused_sign_in`) and is said as one."""
     if type(exc).__name__ != "AuthenticationError":
-        error, description = _answer(exc)
-        said = [f'{name} "{value}"' for name, value in (("error", error), ("error_description", description)) if value]
-        return f"HTTP 401 from {TOKEN_PATH}" + (
-            f" with {' and '.join(said)}" if said else " (no error_description could be read from the answer)")
+        return _said(exc)
     text = str(exc).strip().rstrip(".") or type(exc).__name__
     if grant:
         return f'{text} - sasctl says so for an answer whose error_description says "Bad credentials"'
     return text
+
+
+def _said(exc: Exception, status: int = 401) -> str:
+    """The status of an answer of the token address, with the `error` and the
+    `error_description` of its body where it carries them."""
+    error, description = _answer(exc)
+    said = [f'{name} "{value}"' for name, value in (("error", error), ("error_description", description)) if value]
+    return f"HTTP {status} from {TOKEN_PATH}" + (
+        f" with {' and '.join(said)}" if said else " (no error_description could be read from the answer)")
 
 
 def _attempts() -> int:
@@ -434,14 +479,16 @@ def _sign_in(make, attempts: int | None = None, sleep=None):
     refusal is passed on; MDB_LOGIN_ATTEMPTS=1 switches the repeat off. A
     grant that is answered "Bad credentials" (`_bad_credentials`), which is
     what a wrong password got on 2026-10-13, is not asked again: a wrong
-    password costs one failed sign-in. That refusal is not the one seen
-    while sign-ins overlapped: the traceback saved on 2026-10-12 ends at the
-    last `response.raise_for_status()` of sasctl's token request
-    (core.py:1405 of sasctl 1.11.8), which a 401 reaches only with a JSON
-    body whose `error_description` does not say "Bad credentials".
+    password costs one failed sign-in. Neither is one answered "Unauthorized
+    grant type" (`_final`): the client may not use the grant, whenever it is
+    asked. Neither refusal is the one seen while sign-ins overlapped: the
+    traceback saved on 2026-10-12 ends at the last
+    `response.raise_for_status()` of sasctl's token request (core.py:1405 of
+    sasctl 1.11.8), which a 401 reaches only with a JSON body whose
+    `error_description` says neither.
     Anything that is not a refused sign-in (the server not reachable, a
-    certificate) is passed on at once. The refusal that is passed on carries
-    the number of sign-ins made as SIGN_INS_MADE.
+    certificate, another status of the token address) is passed on at once.
+    What is passed on carries the number of sign-ins made as SIGN_INS_MADE.
     """
     import time
 
@@ -453,9 +500,10 @@ def _sign_in(make, attempts: int | None = None, sleep=None):
         try:
             return make()
         except Exception as exc:
-            if not _refused_sign_in(exc):
-                raise
-            if attempt >= attempts or _bad_credentials(exc):
-                setattr(exc, SIGN_INS_MADE, attempt)
+            if not _refused_sign_in(exc) or attempt >= attempts or _final(exc):
+                try:
+                    setattr(exc, SIGN_INS_MADE, attempt)
+                except Exception:       # an exception that takes no attribute: the count is then not known
+                    pass
                 raise
             sleep(LOGIN_WAIT[min(attempt - 1, len(LOGIN_WAIT) - 1)])

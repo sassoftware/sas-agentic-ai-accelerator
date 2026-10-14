@@ -811,3 +811,98 @@ def test_the_address_of_a_cli_profile_is_judged_the_same_way(env, tmp_path):
         s.resolve_auth()
     assert str(caught.value) == ("The sas-endpoint of the SAS Viya CLI profile Site is 'viya.example.com:8443', "
                                  + ADDRESS.format(NO_SCHEME))
+
+
+@pytest.fixture
+def token_address(env, monkeypatch):
+    """The installed sasctl with the transport of requests replaced: each
+    POST is answered with the next of `answers` - (status, body) -, the last
+    one again and again. Skipped where sasctl is not installed."""
+    sasctl = pytest.importorskip("sasctl")
+    import requests
+
+    state = SimpleNamespace(answers=[(401, "")], posted=[], waited=[])
+
+    def post(self, url, **kwargs):
+        status, body = state.answers[min(len(state.posted), len(state.answers) - 1)]
+        state.posted.append(url)
+        response = requests.Response()
+        response.status_code, response.url = status, url
+        response._content = body.encode("utf-8")
+        response.headers["Content-Type"] = "application/json"
+        return response
+
+    monkeypatch.setattr(requests.Session, "post", post)
+    monkeypatch.setitem(sys.modules, "sasctl", sasctl)
+    monkeypatch.setattr("time.sleep", state.waited.append)
+    env.setenv(s.URL_ENV, "https://viya.example.com")
+    env.setenv(s.USER_ENV, "u")
+    env.setenv(s.PASSWORD_ENV, "s3cret-p")
+    env.setenv("SAS_VIYA_VERIFY_SSL", "false")
+    return state
+
+
+@pytest.mark.parametrize("status, body, said", [
+    (500, '{"error":"server_error","error_description":"Something [/red]\\nbroke"}',
+     'with error "server_error" and error_description "Something [/red] broke"'),
+    (500, "<html>Internal Server Error</html>", "(no error_description could be read from the answer)"),
+    (503, "", "(no error_description could be read from the answer)"),
+    (400, '{"error":"invalid_request"}', 'with error "invalid_request"'),
+    (403, '["no"]', "(no error_description could be read from the answer)"),
+    (429, '{"error_description":"Too many requests"}', 'with error_description "Too many requests"'),
+])
+def test_another_status_of_the_token_address_ends_with_one_line(token_address, monkeypatch, status, body, said):
+    """gate-20b and review-20b: a 500 of the token address - and a 400, 403,
+    429 or 503 - ended the command with a traceback and exit code 1. It is
+    one line and exit code 2 now; the sign-in is not repeated."""
+    token_address.answers = [(status, body)]
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=out, width=80, force_terminal=False, emoji=False))
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=REPOSITORY))
+    result = CliRunner().invoke(cli.app, ["content-deploy", "--dry-run"])
+    assert result.exit_code == 2 and _ended_by_itself(result), result.exception
+    assert len(token_address.posted) == 1 and token_address.waited == []
+    assert out.getvalue() == (
+        "SAS Viya at https://viya.example.com did not answer the sign-in of u with SAS_VIYA_USER + "
+        f"SAS_VIYA_PASSWORD (1 sign-in made) with a token: HTTP {status} from /SASLogon/oauth/token {said}. That is "
+        "no refusal of the credentials (a refusal is HTTP 401), and the sign-in was not repeated: run the command "
+        "again, and where the answer stays the same, SAS Logon is where to look.\n")
+    assert "s3cret-p" not in out.getvalue()
+
+
+def test_a_500_behind_a_refusal_counts_both_sign_ins(token_address):
+    token_address.answers = [(401, '{"error":"unauthorized","error_description":"Full authentication is required"}'),
+                             (500, "")]
+    with pytest.raises(s.ViyaSignInError, match=r"\(2 sign-ins made\) with a token: HTTP 500 from "):
+        s.create_session()
+    assert len(token_address.posted) == 2 and token_address.waited == [2]
+
+
+@pytest.mark.parametrize("attempts", [None, "1", "7"])
+def test_a_grant_the_client_may_not_use_is_asked_once(token_address, monkeypatch, attempts):
+    """gate-20b and review-20b: `Unauthorized grant type: password` was asked
+    three times, 7 seconds of waiting in all, although no repeat changes
+    what a client may do. MDB_LOGIN_ATTEMPTS is as it was: it sets how often
+    a refusal that can change is asked."""
+    if attempts is None:
+        monkeypatch.delenv(s.LOGIN_ATTEMPTS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(s.LOGIN_ATTEMPTS_ENV, attempts)
+    token_address.answers = [(401, '{"error":"invalid_client","error_description":"Unauthorized grant type: password"}')]
+    with pytest.raises(s.ViyaSignInError) as caught:
+        s.create_session()
+    assert len(token_address.posted) == 1 and token_address.waited == []
+    assert "(1 sign-in made): HTTP 401 from /SASLogon/oauth/token with error \"invalid_client\" and " \
+           "error_description \"Unauthorized grant type: password\". Check the credentials" in str(caught.value)
+
+
+@pytest.mark.parametrize("attempts, posted", [(None, 3), ("1", 1), ("5", 5), ("0", 1), ("many", 3)])
+def test_a_refusal_that_can_change_is_asked_as_often_as_before(token_address, monkeypatch, attempts, posted):
+    if attempts is None:
+        monkeypatch.delenv(s.LOGIN_ATTEMPTS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(s.LOGIN_ATTEMPTS_ENV, attempts)
+    token_address.answers = [(401, '{"error":"unauthorized","error_description":"Full authentication is required"}')]
+    with pytest.raises(s.ViyaSignInError, match=rf"\({posted} sign-ins? made\): HTTP 401 from "):
+        s.create_session()
+    assert len(token_address.posted) == posted

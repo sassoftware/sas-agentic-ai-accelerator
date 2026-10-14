@@ -141,16 +141,18 @@ def logon(env, monkeypatch):
     return state
 
 
-@pytest.mark.parametrize("body, raised, said", [
-    ('["Bad credentials"]', "AttributeError", "(no error_description could be read from the answer)"),
+@pytest.mark.parametrize("body, raised, said, made", [
+    ('["Bad credentials"]', "AttributeError", "(no error_description could be read from the answer)",
+     "3 sign-ins made"),
     ('{"error":null,"error_description":null}', "AttributeError",
-     "(no error_description could be read from the answer)"),
+     "(no error_description could be read from the answer)", "3 sign-ins made"),
     ('{"error":"unauthorized","error_description":5}', "AttributeError",
-     'with error "unauthorized" and error_description "5"'),
+     'with error "unauthorized" and error_description "5"', "3 sign-ins made"),
+    # asked once since the round after: no repeat changes what a client may do
     ('{"error":"invalid_client","error_description":"Unauthorized grant type: password"}', "RuntimeError",
-     'with error "invalid_client" and error_description "Unauthorized grant type: password"'),
+     'with error "invalid_client" and error_description "Unauthorized grant type: password"', "1 sign-in made"),
 ])
-def test_a_401_that_sasctl_raises_as_something_else_is_a_refused_sign_in(logon, body, raised, said):
+def test_a_401_that_sasctl_raises_as_something_else_is_a_refused_sign_in(logon, body, raised, said, made):
     """review-20: a 401 of the token address whose body is no object, whose
     error_description is no text, or says 'Unauthorized grant type', leaves
     sasctl as AttributeError or RuntimeError - and the command ended with a
@@ -158,9 +160,9 @@ def test_a_401_that_sasctl_raises_as_something_else_is_a_refused_sign_in(logon, 
     logon.body = body
     with pytest.raises(s.ViyaSignInError) as caught:
         s.create_session()
-    assert type(caught.value.__cause__).__name__ == raised and len(logon.posted) == 3
+    assert type(caught.value.__cause__).__name__ == raised and len(logon.posted) == int(made[0])
     assert str(caught.value).startswith(
-        f"SAS Viya at {URL} refused the sign-in of u with SAS_VIYA_USER + SAS_VIYA_PASSWORD (3 sign-ins made): "
+        f"SAS Viya at {URL} refused the sign-in of u with SAS_VIYA_USER + SAS_VIYA_PASSWORD ({made}): "
         f"HTTP 401 from /SASLogon/oauth/token {said}. Check the credentials")
     assert "s3cret-p" not in str(caught.value)
 
