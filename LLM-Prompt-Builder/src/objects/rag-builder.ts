@@ -2934,6 +2934,63 @@ export async function buildRagBuilder(
   }
 
   /**
+   * After a Delete project that stopped part of the way: the lists show what
+   * SAS Model Manager holds now, the setup that is open leaves the page when
+   * it was deleted, and the banner says what was deleted and what was not.
+   * Answers true when the project is gone after all (a request that got no
+   * answer may still have been carried out); the caller then ends the delete
+   * as one that went through. Where nothing can be read back, the setups
+   * whose delete was answered with 204 leave the lists, and the banner says
+   * that the rest could not be read.
+   */
+  async function showWhatIsLeftOfProject(
+    projectID: string,
+    projectName: string,
+    setups: DropdownOption[],
+    deletedIDs: string[]
+  ): Promise<boolean> {
+    let left: DropdownOption[] | null = null;
+    try {
+      await refreshProjects();
+      if (!allProjects.some((project) => project.value === projectID)) return true;
+      left = await getModelProjectModels(projectID);
+    } catch (error) {
+      console.error('Reading the RAG project back after a delete failed.', error);
+    }
+    const there = left ?? allSetups.filter((setup) => !deletedIDs.includes(setup.value));
+    const deleted = setups.filter((setup) => !there.some((kept) => kept.value === setup.value));
+    deleted.forEach((setup) => ingestionRuns.delete(setup.value));
+    allSetups = there;
+    setupFilter.setUsers(allSetups);
+    if (selectedSetupID && !there.some((setup) => setup.value === selectedSetupID)) {
+      selectedSetupID = '';
+      selectedSetupName = '';
+      renderSetupOptions();
+      await loadSetup();
+    } else {
+      renderSetupOptions();
+      if (selectedSetupID) setupSelect.value = selectedSetupID;
+    }
+    const names = (list: DropdownOption[]): string => list.map((setup) => String(setup.innerHTML ?? setup.value)).join(', ');
+    showStatus(
+      'danger',
+      [
+        // Whether the project is still there is known only where it was read.
+        left === null
+          ? str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.')
+          : str('ragBuilderDeleteProjectStopped', 'Deleting failed - check your Model Manager permissions. The project {project} is still there.').replace('{project}', () => projectName),
+        ...(deleted.length ? [str('ragBuilderDeleteProjectDeletedPart', 'Deleted from it: {names}.').replace('{names}', () => names(deleted))] : []),
+        ...(left === null
+          ? [str('ragBuilderDeleteProjectNotRead', 'What is left in it could not be read from SAS Model Manager, so the list may still name a setup that was deleted.')]
+          : there.length
+            ? [str('ragBuilderDeleteProjectLeftPart', 'Still in it: {names}.').replace('{names}', () => names(there))]
+            : []),
+      ].join(' ')
+    );
+    return false;
+  }
+
+  /**
    * The steps after Setup as the page showed them when it was loaded, before
    * the setup that was chosen is drawn into them.
    *
@@ -4329,14 +4386,27 @@ export async function buildRagBuilder(
       deleteProjectButton.disabled = true;
       // Locked from the confirmation until the page shows what is left.
       await selectionLock.during(async () => {
+        // The setups whose delete SAS Model Manager answered with 204.
+        const deletedIDs: string[] = [];
+        let projectGone = false;
         try {
           for (const setup of setups) {
             const status = await deleteModel(setup.value);
             if (status !== 204) throw new Error(`setup ${setup.innerHTML}: HTTP ${status}`);
+            deletedIDs.push(setup.value);
             ingestionRuns.delete(setup.value);
           }
           const status = await deleteModelProject(projectID);
           if (status !== 204) throw new Error(`project: HTTP ${status}`);
+          projectGone = true;
+        } catch (error) {
+          console.error('Deleting the RAG project failed.', error);
+        }
+        try {
+          // Stopped part of the way: the page shows what SAS Model Manager
+          // holds now, and says what was deleted and what was not.
+          if (!projectGone) projectGone = await showWhatIsLeftOfProject(projectID, projectName, setups, deletedIDs);
+          if (!projectGone) return;
           selectedProjectID = '';
           selectedSetupID = '';
           selectedSetupName = '';

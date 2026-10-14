@@ -1580,6 +1580,63 @@ export async function buildPromptBuilder(
       }
     }
 
+    /**
+     * After a Delete Project that stopped part of the way: the prompt-test
+     * list shows what SAS Model Manager holds now, the prompt-test that is
+     * open leaves the page when it was deleted, and a toast says what was
+     * deleted and what was not. Answers true when the project is gone after
+     * all (a request that got no answer may still have been carried out); the
+     * caller then ends the delete as one that went through. Where nothing can
+     * be read back, the prompt-tests whose delete was answered with 204 leave
+     * the list, and the toast says that the rest could not be read.
+     */
+    async function showWhatIsLeftOfProject(
+      projectID: string,
+      projectName: string,
+      asked: DropdownOption[],
+      deletedIds: string[]
+    ): Promise<boolean> {
+      let left: DropdownOption[] | null = null;
+      try {
+        const projects = await getModelProjects(`contains(tags,'Prompt-Engineering')`);
+        if (!projects.some((project) => project.value === projectID)) return true;
+        // Listed as for the dialogs of the delete: every model of the project.
+        left = await getModelProjectModels(projectID);
+      } catch (error) {
+        console.error('Reading the project back after a delete failed.', error);
+      }
+      const isThere = (prompt: DropdownOption): boolean =>
+        left ? left.some((kept) => kept.value === prompt.value) : !deletedIds.includes(prompt.value);
+      const deleted = asked.filter((prompt) => !isThere(prompt));
+      promptBuilderProjectPrompts = promptBuilderProjectPrompts.filter(isThere);
+      promptFilter.setUsers(promptBuilderProjectPrompts);
+      const open = promptBuilderPromptSelectorDropdown.value;
+      if (open !== `${promptBuilderInterfaceText?.promptSelect}` && !promptBuilderProjectPrompts.some((prompt) => prompt.value === open)) {
+        promptBuilderPromptSelectorDropdown.value = `${promptBuilderInterfaceText?.promptSelect}`;
+        renderPromptOptions();
+        resetExperimentTrackerState();
+        dropPromptSelection();
+      } else {
+        renderPromptOptions();
+      }
+      const names = (list: DropdownOption[]): string => list.map((prompt) => String(prompt.innerHTML ?? prompt.value)).join(', ');
+      showToast(
+        [
+          // Whether the project is still there is known only where it was read.
+          left === null
+            ? `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`
+            : `${promptBuilderInterfaceText?.promptBuilderDeleteProjectStopped}`.replace('{project}', () => projectName),
+          ...(deleted.length ? [`${promptBuilderInterfaceText?.promptBuilderDeleteProjectDeletedPart}`.replace('{names}', () => names(deleted))] : []),
+          ...(left === null
+            ? [`${promptBuilderInterfaceText?.promptBuilderDeleteProjectNotRead}`]
+            : left.length
+              ? [`${promptBuilderInterfaceText?.promptBuilderDeleteProjectLeftPart}`.replace('{names}', () => names(left as DropdownOption[]))]
+              : []),
+        ].join(' ')
+      );
+      return false;
+    }
+
     // Function to call when deleting the selected project
     async function promptBuilderDeleteProject(): Promise<void> {
       const projectSelectedIndex = promptBuilderProjectSelectorDropdown.selectedIndex;
@@ -1628,22 +1685,31 @@ export async function buildPromptBuilder(
         // Delete the confirmed prompts explicitly before the project itself —
         // whether a project DELETE cascades to its models varies by SAS Viya
         // release, deleting them one by one is deterministic.
-        // One write, from the first prompt-test to the project (null: a
-        // prompt-test could not be deleted, and the project was not asked).
-        // A request that gets no usable answer is a deletion that failed, as a
-        // refusal is.
-        let projectDeleteStatus: number | null = null;
+        // One write, from the first prompt-test to the project. A request that
+        // gets no usable answer is a deletion that failed, as a refusal is;
+        // one that stops part of the way shows what is left (see
+        // showWhatIsLeftOfProject), which may be nothing.
+        let projectGone = false;
         try {
-          projectDeleteStatus = await selectionLock.during(async () => {
-            for (const projectPrompt of projectPrompts) {
-              if ((await deleteModel(projectPrompt.value)) !== 204) return null;
+          projectGone = await selectionLock.during(async () => {
+            // The prompt-tests whose delete SAS Model Manager answered with 204.
+            const deletedIds: string[] = [];
+            try {
+              for (const projectPrompt of projectPrompts) {
+                if ((await deleteModel(projectPrompt.value)) !== 204) throw new Error(`prompt-test ${projectPrompt.value} was not deleted`);
+                deletedIds.push(projectPrompt.value);
+              }
+              if ((await deleteModelProject(projectID)) === 204) return true;
+            } catch (error) {
+              console.error('Deleting the project failed.', error);
             }
-            return deleteModelProject(projectID);
+            return showWhatIsLeftOfProject(projectID, projectName, projectPrompts, deletedIds);
           });
         } catch (error) {
-          console.error('Deleting the project failed.', error);
+          console.error('Showing what is left of the project failed.', error);
+          showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
         }
-        if (projectDeleteStatus === 204) {
+        if (projectGone) {
           promptBuilderAllProjects = promptBuilderAllProjects.filter((item) => item.value !== projectID);
           projectFilter.setUsers(promptBuilderAllProjects);
           promptBuilderProjectSelectorDropdown.value = `${promptBuilderInterfaceText?.projectSelect}`;
@@ -1656,8 +1722,6 @@ export async function buildPromptBuilder(
           resetExperimentTrackerState();
           projectLoadToken += 1;
           dropPromptSelection();
-        } else {
-          showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
         }
       } finally {
         deleteProjectButton.innerText = `${promptBuilderInterfaceText?.promptBuilderDeleteProjectButton}`;

@@ -489,12 +489,23 @@ const MANIFEST_BOX = lpb('pet-save-result');
     );
   });
 
+  // The mock lists no prompt project it created, SAS Model Manager does: a
+  // delete that stops reads the projects back and finds it there.
+  const listCreatedProject = (page, id, name) =>
+    page.route('**/modelRepository/projects?*', async (route) => {
+      const filter = new URL(route.request().url()).searchParams.get('filter') || '';
+      if (route.request().method() !== 'GET' || !filter.includes('Prompt-Engineering')) return route.continue();
+      const listing = await (await route.fetch()).json();
+      listing.items.push({ id, name, createdBy: 'tester', modifiedBy: 'tester' });
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(listing) });
+    });
   for (const what of ['prompt-test', 'project']) {
     await road(`Delete ${what} whose request gets no answer`, async (page) => {
       await openPage(page);
       let id;
       if (what === 'project') {
         id = (await createInDialog(page, 'LPB', '#LPB-project-dropdown', 'promptBuilderCreateProject', 'Outcome cut project')).id;
+        await listCreatedProject(page, id, 'Outcome cut project');
       } else {
         await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
         id = (await createInDialog(page, 'LPB', '#LPB-prompt-dropdown', 'promptBuilderCreatePrompt', 'Outcome cut')).id;
@@ -512,6 +523,48 @@ const MANIFEST_BOX = lpb('pet-save-result');
         said.some((text) => text.startsWith('The deletion failed')) && pageErrors.length === 0,
         `Delete ${what}: a delete whose request gets no answer says that the deletion failed, and no error is left uncaught (toasts: ${JSON.stringify(said)}; page errors: ${JSON.stringify(pageErrors)})`
       );
+    });
+  }
+
+  // A Delete project that stops part of the way: the first prompt-test is
+  // deleted, the second one is refused or gets no answer. The page reads back
+  // what SAS Model Manager holds and says what was deleted and what was not.
+  const notDeleted = [
+    ['refused', (route) => route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ httpStatusCode: 403, message: 'refused by the suite' }) })],
+    ['without an answer', (route) => route.abort('failed')],
+  ];
+  for (const [how, fail] of notDeleted) {
+    await road(`Delete project whose second prompt-test is not deleted (${how})`, async (page) => {
+      await openPage(page);
+      const projectName = `Outcome partial ${how}`;
+      const project = (await createInDialog(page, 'LPB', '#LPB-project-dropdown', 'promptBuilderCreateProject', projectName)).id;
+      await listCreatedProject(page, project, projectName);
+      const first = (await createInDialog(page, 'LPB', '#LPB-prompt-dropdown', 'promptBuilderCreatePrompt', `VP one ${how}`)).id;
+      const second = (await createInDialog(page, 'LPB', '#LPB-prompt-dropdown', 'promptBuilderCreatePrompt', `VP two ${how}`)).id;
+      // The prompt-test that is open is the one that gets deleted.
+      await choose(page, 'LPB', '#LPB-prompt-dropdown', first);
+      await page.route(`**/modelRepository/models/${second}`, (route) => (route.request().method() === 'DELETE' ? fail(route) : route.continue()));
+      await page.click('#LPB-delete-project-button');
+      // One dialog per prompt-test of the project.
+      const asked = (await (await fetch(`${BASE}/modelRepository/projects/${project}/models`)).json()).items.length;
+      for (let dialog = 0; dialog < asked; dialog++) {
+        await confirmDialog(page);
+        await page.waitForSelector('.modal.show', { state: 'detached', timeout: 15000 });
+      }
+      await waitUntil(async () => (await toasts(page)).length > 0, 'a toast', 20000);
+      await atRest();
+      const said = (await toasts(page)).join(' | ');
+      const listedNow = await page.$$eval('#LPB-prompt-dropdown option', (options) => options.map((option) => option.value));
+      const open = await page.inputValue('#LPB-prompt-dropdown');
+      step(
+        !listedNow.includes(first) && listedNow.includes(second) && open !== first && (await page.inputValue('#LPB-project-dropdown')) === project &&
+          said.includes(`The deletion failed: the project ${projectName} is still in SAS Model Manager.`) &&
+          new RegExp(`Deleted from it: [^|]*VP one ${how}`).test(said) && new RegExp(`Still in it: [^|]*VP two ${how}`).test(said) && !/Still in it: [^|]*VP one/.test(said),
+        `Delete project whose second prompt-test is ${how}: the list drops the prompt-test that was deleted, which was open and is open no longer, and the toast names what was deleted and what is still in the project (listed: ${JSON.stringify(listedNow)}; open: ${open}; toasts: ${said.slice(0, 400)})`
+      );
+      // The mock gives the id of a deleted model to the next one it creates:
+      // the one that is left goes, or the next road would get its id twice.
+      await fetch(`${BASE}/modelRepository/models/${second}`, { method: 'DELETE' });
     });
   }
 
@@ -785,6 +838,34 @@ const MANIFEST_BOX = lpb('pet-save-result');
       `Save setup: a change of the setup list sent by a script while the save is out is undone, and every write goes to the setup of the click (list right after the change: ${during}; written to: ${writtenTo.join(', ')})`
     );
   });
+
+  for (const [how, fail] of notDeleted) {
+    await road(`Delete project of the RAG Builder whose second setup is not deleted (${how})`, async (page) => {
+      await openPage(page, 'rag');
+      const projectName = `RAG partial ${how}`;
+      const project = (await createInDialog(page, 'RGB', rgb('project'), 'app-obj-RGB-create-project', projectName)).id;
+      const first = (await createInDialog(page, 'RGB', rgb('setup'), 'app-obj-RGB-create-setup', `RS one ${how}`)).id;
+      const second = (await createInDialog(page, 'RGB', rgb('setup'), 'app-obj-RGB-create-setup', `RS two ${how}`)).id;
+      // The setup that is open is the one that gets deleted.
+      await choose(page, 'RGB', rgb('setup'), first);
+      await page.route(`**/modelRepository/models/${second}`, (route) => (route.request().method() === 'DELETE' ? fail(route) : route.continue()));
+      await page.click(rgb('delete-project'));
+      await confirmDialog(page);
+      await waitUntil(async () => /Deleting failed/.test(await textOf(page, rgb('status'))), 'the banner', 20000);
+      await atRest();
+      const banner = await textOf(page, rgb('status'));
+      const listedNow = await page.$$eval(`${rgb('setup')} option`, (options) => options.map((option) => option.value));
+      const open = await page.inputValue(rgb('setup'));
+      step(
+        !listedNow.includes(first) && listedNow.includes(second) && open !== first && (await page.inputValue(rgb('project'))) === project &&
+          banner.includes(`The project ${projectName} is still there.`) && banner.includes(`Deleted from it: RS one ${how}.`) && banner.includes(`Still in it: RS two ${how}.`),
+        `RAG Builder, Delete project whose second setup is ${how}: the list drops the setup that was deleted, which was open and is open no longer, and the banner names what was deleted and what is still in the project (listed: ${JSON.stringify(listedNow)}; open: ${open}; banner: "${banner.slice(0, 400)}")`
+      );
+      // The mock gives the id of a deleted model to the next one it creates:
+      // the one that is left goes, or the next road would get its id twice.
+      await fetch(`${BASE}/modelRepository/models/${second}`, { method: 'DELETE' });
+    });
+  }
 
   await road('a running ingestion on a page loaded after its launch', async (page) => {
     await openPage(page, 'rag');
