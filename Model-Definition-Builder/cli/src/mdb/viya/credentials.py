@@ -87,7 +87,6 @@ from __future__ import annotations
 
 import base64
 import re
-import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -157,6 +156,21 @@ GROUP_REACH = (
 
 class CredentialError(RuntimeError):
     """A manifest or source file this module refuses to act on."""
+
+
+def check_name(what: str, name: str) -> None:
+    """Refuse a name - an identity id, a credential domain - that a line
+    could show as another name. Every line names it as it is and unquoted,
+    and only printable ASCII (U+0020 to U+007E), with no blank at either
+    end, shows as itself and as no other name: `LLM<U+00A0>Consumers` was
+    written as a second identity beside `LLM Consumers`, and every line
+    showed the two alike; U+034F and U+2800 show as nothing, a Cyrillic
+    U+0430 as a Latin a."""
+    if name != name.strip(" ") or any(not " " <= character <= "~" for character in name):
+        raise CredentialError(f"{what} cannot hold a character outside printable ASCII (U+0020 to U+007E), nor a "
+                              "blank at either end: every line names it as it is, and such a character can show as "
+                              "another one or as none - U+00A0 as a blank, U+034F as nothing, the Cyrillic U+0430 "
+                              "as a Latin a")
 
 
 # ---------------------------------------------------------------------------
@@ -284,13 +298,7 @@ class Identity:
             # a line that named it would end there, and YAML reads such a character as the end of a line too
             raise CredentialError("an identity id cannot hold a line break (a line feed, a carriage return, U+0085, "
                                   "U+2028 or another one)")
-        if any(unicodedata.category(c) in ("Cc", "Cf") for c in str(self.id)) or str(self.id) != str(self.id).strip():
-            # every line names an id as it is and unquoted, and a terminal shows neither a control character, nor
-            # a character of format (U+200B), nor a blank at an end: ' G1' was a second identity beside G1, and
-            # every line called it G1
-            raise CredentialError("an identity id cannot hold a control character (ESC, NUL, a tab or another "
-                                  "one) or an invisible character of format (U+200B or another one), nor a blank "
-                                  "at either end")
+        check_name("an identity id", str(self.id))
         if self.state not in STATES:
             raise CredentialError(
                 f"identity '{self.id}': state must be one of "
@@ -314,6 +322,10 @@ class Manifest:
     domain: str = DEFAULT_DOMAIN
     source: Optional[Path] = None
     identities: list = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # a domain of another name is a second domain beside the one the Builder reads
+        check_name("a credential domain", str(self.domain))
 
     @classmethod
     def load(cls, path: Path) -> "Manifest":

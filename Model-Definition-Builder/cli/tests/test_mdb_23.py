@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """What the gate and the review of round 22 found in mdb at 5290563, each as
 a class: the test takes every member from the code - every print of every
-Python file of Model-Definition-Builder. Nothing signs in anywhere: the
-transport of requests is replaced, and answers nothing."""
+Python file of Model-Definition-Builder, every code point. Nothing signs in
+anywhere: the transport of requests is replaced, and answers nothing."""
 import ast
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -17,8 +18,11 @@ import pytest
 import requests
 
 from mdb import cli
+from mdb.core.manifest import ModelManifest
 from mdb.core.printable import CONTROL
+from mdb.viya import credentials
 from mdb.viya import session as s
+from test_credentials_commands import mdb  # noqa: F401
 
 MDB_ROOT = Path(__file__).resolve().parents[2]
 AUDIT_SCRIPT = MDB_ROOT / ".claude" / "skills" / "model-audit" / "audit-models.py"
@@ -168,3 +172,101 @@ def test_the_audit_script_prints_what_sas_model_manager_answered_without_its_con
     else:
         assert "  - mzz[31muser (llm): endPoint; duplicated variables" in out, out
         assert "mzz[31muser" in out.splitlines()[2] and "fzz[31muse" in out.splitlines()[2], out
+
+
+# ---- M2: a name that every line shows as another name - every code point ----------------------
+_SHOWN_AS_ITSELF = range(0x20, 0x7F)
+
+
+def _refused(make) -> bool:
+    try:
+        make()
+    except (credentials.CredentialError, ValueError):
+        return True
+    return False
+
+
+def test_an_identity_id_is_taken_for_every_code_point_that_shows_as_itself_and_for_no_other():
+    """gate-22b, review-22b: `LLM<U+00A0>Consumers` was added beside `LLM
+    Consumers` as a second identity, and so were `G1<U+2800>`, `G1<U+3164>`,
+    `G1<U+034F>`, `G1<U+FE0F>`, `G1<U+115F>` and `G<U+00A0>1` beside G1 -
+    every line showed them as the visible id. One rule over every code point:
+    inside an id only printable ASCII is taken, at an end the same without
+    the blank."""
+    inside = [c for c in range(0x110000) if not _refused(lambda: credentials.Identity("group", f"G{chr(c)}1"))]
+    assert inside == list(_SHOWN_AS_ITSELF)
+    at_the_end = [c for c in range(0x110000) if not _refused(lambda: credentials.Identity("user", f"G1{chr(c)}"))]
+    assert at_the_end == list(range(0x21, 0x7F))
+    assert _refused(lambda: credentials.Identity("group", " G1"))
+
+
+def test_a_credential_domain_is_taken_for_every_code_point_that_shows_as_itself_and_for_no_other():
+    """The domain is the other name the credentials commands write from what
+    they are given: `agentic-ai-keys<U+00A0>` was a second domain beside the
+    one the Prompt Builder reads, shown alike. The same rule, in a manifest
+    and for --domain (below)."""
+    taken = [c for c in range(0x110000) if not _refused(lambda: credentials.Manifest(domain=f"k{chr(c)}k"))]
+    assert taken == list(_SHOWN_AS_ITSELF)
+    assert _refused(lambda: credentials.Manifest(domain="k ")) and _refused(lambda: credentials.Manifest(domain=" k"))
+
+
+def test_a_model_id_is_taken_for_every_code_point_of_snake_case_and_for_no_other():
+    """A model id is the name of its folder: `MODEL_ID_PATTERN.match` let a
+    line feed at its end through (`$` matches in front of it), so `abc\\n`
+    was a second definition beside abc on a file system that takes it."""
+    taken = [c for c in range(0x110000) if not _refused(lambda: ModelManifest._valid_model_id(f"a{chr(c)}"))]
+    assert taken == [ord(c) for c in "0123456789_abcdefghijklmnopqrstuvwxyz"]
+    assert _refused(lambda: ModelManifest._valid_model_id("abc\n"))
+
+
+def test_every_id_that_is_taken_is_printed_as_it_is():
+    """The other half of the rule: an id of printable ASCII is printed as
+    it is - every character, brackets and backslashes included - so two
+    different ids never print the same."""
+    out = io.StringIO()
+    shown = cli._Console(file=out, width=1000, force_terminal=False, emoji=False)
+    every = "".join(chr(c) for c in _SHOWN_AS_ITSELF).strip()
+    for who in (every, "a\\[b]\\", "G 1", "G  1"):
+        assert credentials.Identity("group", who).id == who
+        out.seek(0)
+        out.truncate()
+        shown.print(f"Added group {cli._plain(who)} to m.yaml.")
+        assert out.getvalue() == f"Added group {who} to m.yaml.\n", (who, out.getvalue())
+
+
+@pytest.mark.parametrize("who", ["LLM Consumers", "LLM Consumers", "LLM　Consumers", "G͏2",
+                                 "G1⠀", "G1ㅤ", "G1͏", "G1️", "G1ᅟ", "G 1", "G1᠎",
+                                 "Jörg", "аda"])
+def test_the_ids_the_findings_named_are_refused_by_every_command(mdb, who):  # noqa: F811
+    """The inputs of gate-22b and review-22b, through the four commands
+    that take an id and through a manifest written by hand."""
+    assert mdb("credentials-add", "group", "LLM Consumers")[0] == 0
+    assert mdb("credentials-add", "group", "G1")[0] == 0
+    before = mdb.path.read_bytes()
+    for args in (("credentials-add", "group", who), ("credentials-remove", "group", who),
+                 ("credentials-apply", "--identity", who), ("credentials-report", "--identity", who)):
+        code, said = mdb(*args)
+        assert code == 2 and said.startswith("an identity id cannot hold a character outside printable ASCII"), \
+            (args, said)
+        assert said.count("\n") == 1, (args, said)
+    assert mdb.path.read_bytes() == before and mdb.site.calls == []
+    mdb.path.write_text(f"source: .env\nidentities:\n  - type: group\n    id: {json.dumps(who)}\n", encoding="utf-8")
+    code, said = mdb("credentials-report")
+    assert code == 2 and said.startswith("an identity id cannot hold") and mdb.site.calls == []
+
+
+@pytest.mark.parametrize("command", ["credentials-init", "credentials-add", "credentials-apply", "credentials-report"])
+def test_a_domain_a_line_shows_as_another_is_refused_by_every_command(mdb, command):  # noqa: F811
+    """--domain of the four commands that take it, before anything is read,
+    written or asked."""
+    args = {"credentials-init": (), "credentials-add": ("group", "G1"), "credentials-apply": ("--identity", "G1"),
+            "credentials-report": ("--identity", "G1")}[command]
+    for domain in ("agentic-ai-keys ", "agentic‑ai-keys", "agentic-ai-keys\x1b"):
+        code, said = mdb(command, *args, "--domain", domain)
+        assert code == 2 and said.startswith("a credential domain cannot hold a character outside printable "
+                                             "ASCII"), (command, domain, said)
+        assert said.count("\n") == 1 and not mdb.path.exists() and mdb.site.calls == []
+    mdb.path.write_text("domain: \"k\\u00a0\"\nsource: .env\nidentities:\n  - type: group\n    id: G1\n",
+                        encoding="utf-8")
+    code, said = mdb("credentials-report")
+    assert code == 2 and said.startswith("a credential domain cannot hold") and mdb.site.calls == []

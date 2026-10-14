@@ -168,7 +168,7 @@ class ModelManifest(BaseModel):
     @field_validator("model_id")
     @classmethod
     def _valid_model_id(cls, v: str) -> str:
-        if not MODEL_ID_PATTERN.match(v):
+        if not MODEL_ID_PATTERN.fullmatch(v):      # `match` let a line feed at the end through (`$`)
             raise ValueError(
                 f"model_id '{v}' must be snake_case ([a-z0-9_], starting with a letter or digit) - "
                 "it becomes the folder name, SAS Model Manager model name, fact-sheet key, "

@@ -93,16 +93,17 @@ def test_an_id_with_a_control_character_or_a_blank_at_an_end_is_refused(mdb, who
     for args in (("credentials-add", "group", who), ("credentials-remove", "group", who),
                  ("credentials-apply", "--identity", who), ("credentials-report", "--identity", who)):
         code, said = mdb(*args)
-        assert code == 2 and "an identity id cannot hold a control character" in said, (args, said)
+        assert code == 2 and "an identity id cannot hold a character outside printable ASCII" in said, (args, said)
         assert said.count("\n") == 1, (args, said)
     assert mdb.path.read_bytes() == before and mdb.site.calls == []
     # and in a manifest written by hand
     mdb.path.write_text(f"source: .env\nidentities:\n  - type: group\n    id: {json.dumps(who)}\n", encoding="utf-8")
     code, said = mdb("credentials-report")
-    assert code == 2 and "an identity id cannot hold a control character" in said and mdb.site.calls == []
+    assert code == 2 and "an identity id cannot hold a character outside printable ASCII" in said \
+        and mdb.site.calls == []
 
 
-@pytest.mark.parametrize("who", ["G1", "LLM Consumers", "ada.lovelace@example.com", "Jörg", "a-b_c"])
+@pytest.mark.parametrize("who", ["G1", "LLM Consumers", "ada.lovelace@example.com", "a-b_c", "a:b+c~!"])
 def test_an_id_a_line_shows_as_it_is_is_taken(who):
     assert credentials.Identity(type="group", id=who).id == who
 

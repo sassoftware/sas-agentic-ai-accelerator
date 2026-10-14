@@ -144,7 +144,7 @@ def test_an_empty_list_in_brackets_is_refused_as_a_list_the_editor_cannot_edit(m
     ("Sales#EMEA", "Sales%23EMEA"), ("A?b=1", "A%3Fb=1"),
     ("x/../../other/groups/F", "x%2F..%2F..%2Fother%2Fgroups%2FF"), ("...", "..."),
     ("A B", "A%20B"), ("100%", "100%25"), ("ada@example.com", "ada@example.com"), ("sas-be-sa", "sas-be-sa"),
-    ("a:b+c", "a:b+c"), ("Grüne", "Gr%C3%BCne"),
+    ("a:b+c", "a:b+c"),
 ])
 def test_the_id_is_one_segment_of_the_address_of_its_credential(who, segment):
     """review-21a case 8: an id with `#` or `?` was cut there by the HTTP

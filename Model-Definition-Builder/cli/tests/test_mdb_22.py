@@ -478,13 +478,15 @@ def test_an_identity_named_twice_is_refused(mdb, command):
     assert mdb.site.calls == []
 
 
-def test_a_domain_with_blanks_around_it_is_shown_with_them(mdb):
+def test_a_domain_with_blanks_around_it_is_refused(mdb):
     """gate-21b B3: `--domain ' zz_k '` was refused with a sentence that
-    showed both domains as zz_k."""
+    showed both domains as zz_k. Since round 23 such a domain is refused
+    for its blanks, before anything else (`check_name`)."""
     mdb("credentials-add", "group", "G", "--domain", "zz_k")
     code, said = mdb("credentials-apply", "--domain", " zz_k ", "--dry-run")
-    assert code == 2 and said.startswith("--domain \" zz_k \" is read only with --identity: credentials.yaml names "
-                                         "the credential domain zz_k."), said
+    assert code == 2 and said.startswith("a credential domain cannot hold a character outside printable ASCII "
+                                         "(U+0020 to U+007E), nor a blank at either end"), said
+    assert mdb.site.calls == []
 
 
 @pytest.mark.parametrize("who", ["A\nB", "A\rB", "A\x85B", "A B", "A\x0bB", "A\n"])

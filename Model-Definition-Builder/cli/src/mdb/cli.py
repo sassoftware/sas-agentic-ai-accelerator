@@ -3934,8 +3934,16 @@ def _given_domain(domain: Optional[str]) -> Optional[str]:
     it. An empty value is refused: a manifest written with it names no domain
     and is read as one for agentic-ai-keys, so a command typed for another
     domain with a variable that is not set would end in the domain a site
-    works with."""
-    return _not_empty("--domain", domain, "credential domain")
+    works with. A domain a line could show as another name is refused as in
+    a manifest (`check_name`)."""
+    from .viya.credentials import CredentialError, check_name
+    if _not_empty("--domain", domain, "credential domain") is not None:
+        try:
+            check_name("a credential domain", domain)
+        except CredentialError as exc:
+            console.print(f"[red]{_plain(exc)}[/red]")
+            raise typer.Exit(2)
+    return domain
 
 
 def _credential_scaffold(target: Path, env_file: str, domain: str) -> tuple[str, int]:
