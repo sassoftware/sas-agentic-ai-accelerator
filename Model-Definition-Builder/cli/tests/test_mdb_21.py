@@ -25,6 +25,7 @@ from mdb.core import content
 from mdb.viya import credentials
 from mdb.viya import session as s
 from mdb.viya import transfer
+from test_builder_commands import TUNED, Site, discovery, importing, no_discovery, out, site  # noqa: F401
 from test_content_deploy import command, manifest, repo  # noqa: F401
 from test_credentials_commands import mdb  # noqa: F401
 from test_package_guards import exporting  # noqa: F401
@@ -1218,3 +1219,111 @@ def test_an_import_without_reports_does_not_ask_the_transfer_service(exporting, 
                                           "--no-files"])
     assert result.exit_code == 0 and _ended_by_itself(result), (result.exception, out.getvalue())
     assert other.wrote() and not [path for _method, path, _params in other.calls if "/transfer" in path]
+
+
+# ---- a command a line names: with the file, the folder and the domain of the run ---------------
+def _named_command(text: str, command: str) -> list:
+    """The words of the one `mdb <command> ...` a text names between backticks."""
+    printed, = re.findall(rf"`(mdb {command}[^`]*)`", " ".join(text.split()))
+    return shlex.split(printed)
+
+
+def test_the_restore_that_options_save_names_reads_the_file_and_the_root_of_the_save(importing, no_discovery, site,
+                                                                                    out, tmp_path):
+    """Found in the review of this round: the line of `mdb options-save
+    --file <file> --content-root <root>` named `mdb options-restore`, which
+    reads builder-options.json and the content root of the release - another
+    file, and the report of another folder."""
+    no_discovery()
+    fake = site(Site(**{"Prompt Builder": TUNED}))
+    kept, root = tmp_path / "my records" / "options of the site.json", "/Team/A root"
+    result = CliRunner().invoke(cli.app, ["options-save", "--reports-only", "--file", str(kept), "--content-root",
+                                          root])
+    assert result.exit_code == 0 and kept.is_file(), out.getvalue()
+    words = _named_command(out.getvalue(), "options-restore")
+    assert words == ["mdb", "options-restore", "--file", kept.as_posix(), "--content-root", root]
+    del fake.looked_in[:]
+    result = CliRunner().invoke(cli.app, [*words[1:], "--dry-run"])
+    assert result.exit_code == 0 and f"{root}/Prompt Builder/Prompt Builder" in fake.looked_in, out.getvalue()
+    # without the two options the command stands alone, as it did
+    out.seek(0)
+    out.truncate()
+    assert CliRunner().invoke(cli.app, ["options-save", "--reports-only"]).exit_code == 0
+    assert _named_command(out.getvalue(), "options-restore") == ["mdb", "options-restore"]
+    # and a file that is not there is to be saved under its name, for its root
+    (tmp_path / "a package.json").write_text("{}", encoding="utf-8")
+    for command in (["options-restore", "--file", "not there.json", "--content-root", root],
+                    ["builders-import", "a package.json", "--options", "not there.json", "--content-root", root]):
+        out.seek(0)
+        out.truncate()
+        assert CliRunner().invoke(cli.app, command).exit_code in (1, 2)
+        assert _named_command(out.getvalue(), "options-save") == ["mdb", "options-save", "--file", "not there.json",
+                                                                  "--content-root", root]
+
+
+def test_the_deploy_that_package_export_names_goes_to_the_folder_that_was_exported(exporting, manifest, repo,
+                                                                                  monkeypatch):
+    """The same for an export that differs from the checkout: `Run mdb
+    content-deploy to bring the folder to the checkout` named a command that
+    deploys into the content root of the release, whatever folder was
+    exported."""
+    from test_package_guards import REPORT
+    root = "/Users/me/My Folder/ZZ_VERIFY_R21/root"
+    built = package_of(manifest, change={REPORT: None}, root="root")
+    result, text, _, _ = exporting(built, "--content-root", root, "--out", str(repo / "scratch" / "r21.json"))
+    assert result.exit_code == 1, text
+    words = _named_command(text, "content-deploy")
+    assert words == ["mdb", "content-deploy", "--content-root", root]
+    # the content root of the release needs no option
+    result, text, _, _ = exporting(package_of(manifest, change={REPORT: None}))
+    assert result.exit_code == 1 and _named_command(text, "content-deploy") == ["mdb", "content-deploy"]
+    # as printed, for the folder that was exported
+    viya, out = Viya(), io.StringIO()
+    viya.make_folder(root)
+    monkeypatch.setattr(cli, "_viya_session", lambda: viya)
+    monkeypatch.setattr(cli, "console", Console(file=out, width=1000, force_terminal=False, emoji=False))
+    result = CliRunner().invoke(cli.app, words[1:])
+    assert result.exit_code == 0 and viya.tree(root) and viya.folder_id(ROOT) is None, out.getvalue()
+
+
+def test_the_commands_the_credentials_commands_name_take_the_manifest_of_the_run(mdb, tmp_path):
+    """And for the credentials: after `mdb credentials-apply --manifest
+    <file>` the line said `Check it with mdb credentials-report`, which
+    reads ./credentials.yaml - another manifest, or none."""
+    target = tmp_path / "my records" / "c.yaml"
+    assert mdb("credentials-add", "group", "LLMConsumers", "--manifest", str(target))[0] == 0
+    code, said = mdb("credentials-apply", "--manifest", str(target))
+    assert code == 0
+    words = _named_command(said, "credentials-report")
+    assert words == ["mdb", "credentials-report", "--manifest", target.as_posix()]
+    code, said = mdb(*words[1:])
+    assert code == 0 and "1 of 1 named identities hold a credential." in said
+    # a credential the manifest marks absent and that is still there: the apply of that manifest
+    assert mdb("credentials-remove", "group", "LLMConsumers", "--manifest", str(target))[0] == 0
+    code, said = mdb("credentials-report", "--manifest", str(target))
+    assert f'Run mdb credentials-apply --manifest "{target.as_posix()}" to remove them.' in " ".join(said.split())
+    # the identities of a run without a manifest, in their domain
+    code, said = mdb("credentials-apply", "--identity", "ada", "--identity", "bo b", "--identity-type", "user",
+                     "--domain", "zz_made_up_keys")
+    assert code == 0, said
+    words = _named_command(said, "credentials-report")
+    assert words == ["mdb", "credentials-report", "--identity", "ada", "--identity", "bo b", "--identity-type",
+                     "user", "--domain", "zz_made_up_keys"]
+    code, said = mdb(*words[1:])
+    assert code == 0 and "Credential domain 'zz_made_up_keys'" in said and "2 of 2 named identities" in said
+    # the default manifest needs no option
+    assert mdb("credentials-add", "group", "LLMConsumers")[0] == 0
+    code, said = mdb("credentials-apply")
+    assert code == 0 and _named_command(said, "credentials-report") == ["mdb", "credentials-report"]
+    # no manifest where one was named: the two commands that write one write it there
+    missing = tmp_path / "not there" / "c.yaml"
+    code, said = mdb("credentials-apply", "--manifest", str(missing))
+    flat = " ".join(said.split())
+    assert code == 2 and f'mdb credentials-init --manifest "{missing.as_posix()}" or' in flat
+    assert f'mdb credentials-add <type> <id> --manifest "{missing.as_posix()}", or' in flat
+    code, said = mdb("credentials-remove", "group", "G", "--manifest", str(missing))
+    assert code == 2 and f'mdb credentials-init --manifest "{missing.as_posix()}" first.' in " ".join(said.split())
+    code, said = mdb("credentials-remove", "group", "G", "--manifest", "credentials.yaml")
+    mdb.path.unlink()
+    code, said = mdb("credentials-remove", "group", "G")
+    assert code == 2 and "write one with mdb credentials-init first." in " ".join(said.split())

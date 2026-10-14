@@ -1206,9 +1206,13 @@ def setup(
     console.print("Review sas-viya-cli-commands.txt before running it - it creates access groups and rules.")
 
 
+#: The file `mdb options-save` writes and `mdb options-restore` reads unless --file names another.
+OPTIONS_FILE = "builder-options.json"
+
+
 @app.command("options-save")
 def options_save(
-    file: str = typer.Option("builder-options.json", "--file", "-f",
+    file: str = typer.Option(OPTIONS_FILE, "--file", "-f",
                              help="Where to write the options file"),
     reports_only: bool = typer.Option(
         False, "--reports-only",
@@ -1262,8 +1266,9 @@ def options_save(
         out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(_json.dumps(options_file(deployment, captured), indent=2) + "\n",
                    encoding="utf-8")
+    restore = "mdb options-restore" + _given_file("--file", file, OPTIONS_FILE) + _given("--content-root", content_root)
     console.print(f"[green]Wrote {_plain(file)}. Keep it with your deployment records and run "
-                  "`mdb options-restore` after importing a report package.[/green]")
+                  f"`{_plain(restore)}` after importing a report package.[/green]")
 
 
 class _ReportUnreadable(RuntimeError):
@@ -1352,7 +1357,7 @@ def _capture_options(session, seeds: dict, strict: bool = False, content_root: s
 
 @app.command("options-restore")
 def options_restore(
-    file: str = typer.Option("builder-options.json", "--file", "-f",
+    file: str = typer.Option(OPTIONS_FILE, "--file", "-f",
                              help="The options file written by `mdb options-save`"),
     dry_run: bool = typer.Option(False, "--dry-run",
                                  help="Report what would change without writing"),
@@ -1382,7 +1387,8 @@ def options_restore(
     content_root = _given_root(content_root)
     path = Path(file)
     if not path.exists():
-        console.print(f"[red]{_plain(file)} not found - run `mdb options-save` first.[/red]")
+        save = "mdb options-save" + _given_file("--file", file, OPTIONS_FILE) + _given("--content-root", content_root)
+        console.print(f"[red]{_plain(file)} not found - run `{_plain(save)}` first.[/red]")
         raise typer.Exit(1)
     document = _json.loads(path.read_text(encoding="utf-8"))
     saved = document.get("reports", {})
@@ -2045,8 +2051,9 @@ def package_export(
         console.print(f"[yellow]{len(differences)} difference(s) to the checkout - written all the same "
                       "(--allow-differences): this is not a package of the release.[/yellow]")
     elif differences:
+        deploy_it = "mdb content-deploy" + _given("--content-root", root, manifest.content_root)
         console.print(f"[red]{len(differences)} difference(s) between the export and the checkout.[/red] Run "
-                      "`mdb content-deploy` to bring the folder to the checkout, and for a report open it in "
+                      f"`{_plain(deploy_it)}` to bring the folder to the checkout, and for a report open it in "
                       "SAS Visual Analytics with the current UI and save it; then export again.")
         unfit = True
     if unfit:
@@ -2143,6 +2150,22 @@ def _shell_word(value, windows: bool = os.name == "nt") -> str:
     if not _NOT_KEPT_IN_DOUBLE_QUOTES.intersection(text):
         return f'"{text}"'
     return "'" + text.replace("'", "''" if windows else "'\\''") + "'"
+
+
+def _given(option: str, value, default=None) -> str:
+    """` <option> <value>` for a command a line names, the value as a shell
+    takes it - where the run was given one that is not the default; ""
+    otherwise. Named without it, the command reads another file or folder
+    than the run did: the default one."""
+    if value is None or not str(value) or str(value) == str(default):
+        return ""
+    return f" {option} {_shell_word(value)}"
+
+
+def _given_file(option: str, value, default: str) -> str:
+    """`_given` for a file a run was given as a text: spelled as a path, with
+    forward slashes, which PowerShell and bash both read."""
+    return _given(option, Path(value) if value else None, default)
 
 
 def _import_command(packages, options, caslib, table, server, no_releases: bool, timeout: int,
@@ -2503,7 +2526,9 @@ def builders_import(
     saved = None
     if options is not None:
         if not options.is_file():
-            console.print(f"[red]{_plain(options)} not found - run `mdb options-save` first.[/red]")
+            save = "mdb options-save" + _given("--file", options, OPTIONS_FILE) \
+                + _given("--content-root", content_root)
+            console.print(f"[red]{_plain(options)} not found - run `{_plain(save)}` first.[/red]")
             raise typer.Exit(2)
         saved = json.loads(options.read_text(encoding="utf-8")).get("reports") or {}
 
@@ -3670,9 +3695,10 @@ def _credential_manifest(manifest: Optional[str], domain: str,
         path = Path(manifest or DEFAULT_MANIFEST)
         if not path.is_file():
             console.print(f"[red]No credentials manifest at {_plain(path)}.[/red]")
+            named = _given_file("--manifest", manifest, DEFAULT_MANIFEST)
             console.print(
-                "Write one with [bold]mdb credentials-init[/bold] or "
-                "[bold]mdb credentials-add[/bold], or equip a single identity "
+                f"Write one with [bold]mdb credentials-init{_plain(named)}[/bold] or "
+                f"[bold]mdb credentials-add <type> <id>{_plain(named)}[/bold], or equip a single identity "
                 "with [bold]--identity[/bold].")
             raise typer.Exit(2)
         try:
@@ -3969,8 +3995,9 @@ def credentials_remove(
     path = Path(manifest or DEFAULT_MANIFEST)
     if not path.is_file():
         console.print(f"[red]No credentials manifest at {_plain(path)}.[/red]")
+        named = _given_file("--manifest", manifest, DEFAULT_MANIFEST)
         console.print("A removal is recorded in a manifest: write one with "
-                      "[bold]mdb credentials-init[/bold] first.")
+                      f"[bold]mdb credentials-init{_plain(named)}[/bold] first.")
         raise typer.Exit(2)
     try:
         edit = edit_identity(read_manifest_text(path), path, identity_type,
@@ -4061,7 +4088,7 @@ def credentials_apply(
     command — only entry names and counts.
     """
     from .viya.credentials import (
-        GROUP_REACH, CredentialError, build_steps, delete_credential,
+        DEFAULT_DOMAIN, DEFAULT_MANIFEST, GROUP_REACH, CredentialError, build_steps, delete_credential,
         ensure_domain, entries_for, fetch_credential, put_credential,
     )
 
@@ -4165,7 +4192,12 @@ def credentials_apply(
             console.print(_plain(GROUP_REACH))
         if failed:
             raise typer.Exit(1)
-        console.print("[green]Done. Check it with `mdb credentials-report`.[/green]")
+        # the report of what this run was given: the same manifest, or the same identities of the same domain
+        report = "mdb credentials-report" + (
+            "".join(_given("--identity", who) for who in identity)
+            + _given("--identity-type", identity_type, "group") + _given("--domain", domain, DEFAULT_DOMAIN)
+            if identity else _given_file("--manifest", manifest, DEFAULT_MANIFEST))
+        console.print(f"[green]Done. Check it with `{_plain(report)}`.[/green]")
 
 
 @app.command("credentials-report")
@@ -4194,7 +4226,7 @@ def credentials_report(
     `STILL THERE` while the credential exists — until the next
     `mdb credentials-apply` removes it.
     """
-    from .viya.credentials import CredentialError, fetch_credential
+    from .viya.credentials import DEFAULT_MANIFEST, CredentialError, fetch_credential
 
     domain = _given_domain(domain)
     plan = _credential_manifest(manifest, domain, identity_type, identity,
@@ -4241,7 +4273,7 @@ def credentials_report(
     if lingering:
         console.print(f"[red]{_plain(lingering)} credential(s) the manifest marks absent "
                       "are still there.[/red] Run [bold]mdb credentials-apply"
-                      "[/bold] to remove them.")
+                      f"{_plain(_given_file('--manifest', manifest, DEFAULT_MANIFEST))}[/bold] to remove them.")
     console.print("[dim]Contents are never shown: a credential read returns "
                   "metadata only, so no identity can see another's keys.[/dim]")
 
