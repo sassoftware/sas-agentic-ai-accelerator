@@ -1545,6 +1545,9 @@ export async function buildPromptBuilder(
       deletePromptButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText?.promptBuilderDeletePromptButton}`;
       try {
         const decisions = await checkModelDecisionUsage(promptModelID);
+        // Another prompt-test was opened while the usage was asked: no dialog
+        // about one that is no longer on the page (as in the RAG Builder).
+        if (promptBuilderPromptSelectorDropdown.value !== promptModelID) return;
         const confirmed = await showConfirmModal({
           title: `${promptBuilderInterfaceText?.promptBuilderDeletePromptTitle} ${promptModelName}`,
           body: buildUsageBody(decisions),
@@ -1587,6 +1590,11 @@ export async function buildPromptBuilder(
           showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
           return;
         }
+        // Another project was chosen while its prompt-tests or their usage
+        // were asked: no dialog about one that is no longer on the page (as in
+        // the RAG Builder). Asked after every wait before a dialog.
+        const projectLeft = (): boolean => promptBuilderProjectSelectorDropdown.value !== projectID;
+        if (projectLeft()) return;
         // Confirm every contained prompt (with its decision usage) one by one
         // BEFORE deleting anything, so a single cancel aborts the whole
         // operation without leaving a partially deleted project behind.
@@ -1601,6 +1609,7 @@ export async function buildPromptBuilder(
         }
         for (let i = 0; i < projectPrompts.length; i++) {
           const decisions = await checkModelDecisionUsage(projectPrompts[i].value);
+          if (projectLeft()) return;
           const confirmed = await showConfirmModal({
             title: `${promptBuilderInterfaceText?.promptBuilderDeleteProjectTitle} ${projectPrompts[i].innerHTML} (${i + 1}/${projectPrompts.length})`,
             body: buildUsageBody(decisions),
