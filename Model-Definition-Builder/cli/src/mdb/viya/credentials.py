@@ -563,19 +563,25 @@ def _identities_node(text: str, path: Path):
 
 def _cut(text: str, node, position: int) -> Optional[tuple]:
     """The span to delete so that one key of an identity is gone, or None
-    when it cannot be taken out without touching its neighbours."""
+    when it cannot be taken out without touching its neighbours or a
+    comment - a note on the line of the key stays where it is."""
     key, value = node.value[position]
     end = _content_end(value)
     if node.flow_style:
         if position > 0:
-            return _content_end(node.value[position - 1][1]), end
-        if len(node.value) > 1:
-            return key.start_mark.index, node.value[1][0].start_mark.index
-        return None
-    start = _line_start(text, key.start_mark.index)
-    if text[start:key.start_mark.index].strip():
-        return None             # the key shares its line with the dash
-    return start, _line_after(text, end)
+            span = _content_end(node.value[position - 1][1]), end
+        elif len(node.value) > 1:
+            span = key.start_mark.index, node.value[1][0].start_mark.index
+        else:
+            return None
+    else:
+        start = _line_start(text, key.start_mark.index)
+        if text[start:key.start_mark.index].strip():
+            return None             # the key shares its line with the dash
+        span = start, _line_after(text, end)
+    around = (text[span[0]:key.start_mark.index] + text[key.end_mark.index:value.start_mark.index]
+              + text[end:span[1]])
+    return None if "#" in around else span
 
 
 class _CommentInList(Exception):

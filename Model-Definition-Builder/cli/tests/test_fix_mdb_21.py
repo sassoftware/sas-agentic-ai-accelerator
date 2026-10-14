@@ -4,6 +4,8 @@
 with the input that showed it. The service is a fake in memory and the token
 address a stand-in for the transport of requests: no test signs in anywhere,
 and every key is made up."""
+import pytest
+
 from mdb.viya import credentials
 from mdb.viya import session as s
 from test_credentials_commands import _Response, mdb  # noqa: F401
@@ -67,3 +69,37 @@ def test_a_key_file_handed_as_the_manifest_is_refused_without_its_text(mdb):
         code, said = mdb(*args, "--manifest", "alias.yaml")
         assert code == 2 and "alias.yaml is not valid YAML (the reader stopped at line 1" in said, said
         assert "made-up" not in said
+
+
+# ---- credentials-add on an identity marked absent keeps a comment on the state line -----------
+ABSENT_WITH_NOTE = ("source: .env\nidentities:\n  - type: group\n    id: Former\n"
+                    "    state: absent   # ticket 4711: left the company\n    only: [OpenAI]\n"
+                    "  - {type: group,  # a note inside the braces\n     id: Flow, state: absent}\n"
+                    "  - {type: group, id: Gone,  # a note in front of the state\n     state: absent}\n")
+
+
+@pytest.mark.parametrize("eol", ["\n", "\r\n"])
+@pytest.mark.parametrize("final", [True, False])
+def test_a_note_on_the_state_line_stays_when_the_identity_is_added_back(mdb, eol, final):
+    """gate-21a C1/C2 and review-21a case 3: `credentials-add` took the whole
+    `state:` line out, with the note behind it, and said nothing. The line
+    is rewritten to `state: present` now, and the note stays byte for byte -
+    as where the key shares its line with the dash."""
+    text = ABSENT_WITH_NOTE.replace("\n", eol)
+    if not final:
+        text = text[:-len(eol)]
+    mdb.path.write_bytes(text.encode("utf-8"))
+    code, said = mdb("credentials-add", "group", "Former")
+    assert code == 0 and "  state: absent -> present" in said
+    assert mdb.path.read_bytes() == text.replace("state: absent   # ticket", "state: present   # ticket").encode("utf-8")
+    # in braces: the state goes where no note stands in what is cut, and is rewritten where one does
+    assert mdb("credentials-add", "group", "Flow")[0] == 0
+    assert mdb("credentials-add", "group", "Gone")[0] == 0
+    assert mdb.path.read_bytes() == text.replace("state: absent   # ticket", "state: present   # ticket").replace(
+        "id: Flow, state: absent}", "id: Flow}").replace(
+        f"state{eol}     state: absent}}", f"state{eol}     state: present}}").encode("utf-8")
+    # without a note the line still goes, as before
+    plain = text.replace("   # ticket 4711: left the company", "")
+    mdb.path.write_bytes(plain.encode("utf-8"))
+    assert mdb("credentials-add", "group", "Former")[0] == 0
+    assert mdb.path.read_bytes() == plain.replace(f"    state: absent{eol}", "").encode("utf-8")
