@@ -1347,3 +1347,11 @@ def test_the_commands_the_credentials_commands_name_take_the_manifest_of_the_run
     mdb.path.unlink()
     code, said = mdb("credentials-remove", "group", "G")
     assert code == 2 and "write one with mdb credentials-init first." in " ".join(said.split())
+
+
+def test_no_path_of_the_manifest_holds_a_character_double_quotes_do_not_keep():
+    """The hints of a FAILED line spell the path of an entry in double quotes - `--only "<path>"` -, which
+    PowerShell and bash read as it stands unless the path holds a character double quotes do not keep. `--only`
+    takes a path of this manifest and nothing else, so the hints are right while no path of it holds one."""
+    paths = [entry.path for entry in content.load_manifest(REPOSITORY).all_entries()]
+    assert len(paths) == 72 and not [path for path in paths if cli._NOT_KEPT_IN_DOUBLE_QUOTES.intersection(path)]
