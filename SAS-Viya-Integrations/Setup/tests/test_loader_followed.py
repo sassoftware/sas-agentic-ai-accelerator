@@ -409,7 +409,7 @@ def test_the_warning_of_a_taken_name_alone_does_not_fail_the_job(sheets):
         assert looked == ["NOTE: Load-Accelerator-Tables: ACCELERATOR_RELEASES, LLM_FACT_SHEET, EMBEDDING_FACT_SHEET and DECISION_FACT_SHEET are "
                           "in the CAS library Public."]
     else:
-        assert looked == ["ERROR: Load-Accelerator-Tables: not in the CAS library Public at the end of the run, or CAS refused to say whether "
+        assert looked == ["ERROR: Load-Accelerator-Tables: not in the CAS library Public at the end of the run, or CAS did not say whether "
                           "they are: LLM_FACT_SHEET "
                           "EMBEDDING_FACT_SHEET DECISION_FACT_SHEET. The lines above say why."]
     assert end["_lat_failed"] == ("0" if sheets else "1") and end["_lat_ready"] == "1"

@@ -101,8 +101,8 @@ def test_a_sheet_is_read_and_tried_in_cas_before_its_table_is_touched():
     in_order(macro, "proc import dataFile=_lfs_fs", "%let _lfs_rows = %sysfunc(attrn(&_lfs_dsid., nlobs));", "%if &_lfs_rows. LE 0 %then %do;",
              'load data=work.&_lfs_work. casOut="&_lfs_table._NEW" replace;')
     # CAS is asked for a table of the name the sheet is loaded under, and the sheet is loaded only where it says 0
-    assert macro.index("%if &_lfs_rows. LE 0 %then %do;") < macro.index("%let _lfs_taken = unknown;")
-    in_order(macro[macro.index("%let _lfs_taken = unknown;"):], "%let _lfs_taken = unknown;",
+    assert macro.index("%if &_lfs_rows. LE 0 %then %do;") < macro.index("%let _lfs_taken = refused;")
+    in_order(macro[macro.index("%let _lfs_taken = refused;"):], "%let _lfs_taken = refused;",
              'table.tableExists result = taken status = takenAsked / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";',
              'call symputx("_lfs_taken", taken.exists, "L");', "%if &_lfs_taken. EQ refused %then %do;", "%return;",
              "%if &_lfs_taken. NE 0 %then %do;", 'load data=work.&_lfs_work. casOut="&_lfs_table._NEW" replace;')
@@ -147,11 +147,13 @@ def test_the_counted_upload_takes_the_place_of_the_table_and_nothing_loads_the_s
     assert "load data=" not in swap and "work." not in swap and swap.count("proc cas;") == 1
     # every outcome but a saved table is a WARNING that says what the table holds; none is an ERROR or ends the program
     warnings = re.findall(r"%put (WARNING: [^;]*);", swap)
-    assert len(warnings) == 4 and "ERROR" not in swap.upper()
+    # content-23: and the one of a step that halted before it said what became of the sheet
+    assert len(warnings) == 5 and "ERROR" not in swap.upper()
     for warning in warnings:
         assert "&_lfs_caslib..&_lfs_table." in warning and not set(warning) & set("%'\"")
     # one test for a sheet that was not read, and one for each WARNING
-    assert swap.count("%if") == swap.count("%put") + 1 and swap.count("%else %if") == 3
+    # content-23: and the line of a step that halted before it said what became of the sheet
+    assert swap.count("%if") == swap.count("%put") + 1 and swap.count("%else %if") == 4
 
 
 def test_an_error_for_one_sheet_does_not_put_a_batch_session_into_syntax_check_mode():
@@ -292,7 +294,7 @@ def test_a_session_without_an_answer_loads_nothing_either():
     and that is no 0."""
     read = read_macro()
 
-    in_order(read, "%let _lfs_taken = unknown;", "proc cas;", 'call symputx("_lfs_taken", taken.exists, "L");', "%if &_lfs_taken. NE 0 %then %do;")
+    in_order(read, "%let _lfs_taken = refused;", "proc cas;", 'call symputx("_lfs_taken", taken.exists, "L");', "%if &_lfs_taken. NE 0 %then %do;")
     assert "_lfs_taken" in read[read.index("%local "):read.index(";", read.index("%local "))]
     # an upload that does not hold every row is dropped behind the question, so it is the upload of this run
     in_order(read[read.index("%if &_lfs_taken. NE 0 %then %do;"):], "%if &_lfs_taken. NE 0 %then %do;", "%return;", "proc casUtil",

@@ -280,7 +280,7 @@ def test_a_file_that_is_not_there_or_holds_other_columns_leaves_the_table():
     assert release.count("%return;") == 12
     assert release.index('outcome = "upload";') > release.split("%if &_lat_outcome. EQ foreign")[0].rindex("%return;")
     # the last of them in front of the upload: CAS is asked for a table of the name the file is uploaded under
-    in_order(release[release.index("%let _lat_taken = unknown;"):], "%let _lat_taken = unknown;",
+    in_order(release[release.index("%let _lat_taken = refused;"):], "%let _lat_taken = refused;",
              'table.tableExists result = taken status = takenAsked / caslib = "&caslib." name = "&releaseTable._NEW";',
              'call symputx("_lat_taken", taken.exists, "L");', "%if &_lat_taken. EQ refused %then %do;", "%return;",
              "%if &_lat_taken. NE 0 %then %do;", "upload path =")
@@ -306,7 +306,8 @@ def test_the_fact_sheets_are_loaded_by_the_program_of_the_logging_folder():
     # nothing of the three sheets is written into the job: no file name, no table that is dropped, loaded or promoted
     for name in ("llm_fact_sheet.csv", "embedding_fact_sheet.csv", "decision_fact_sheet.csv", "proc import", "proc casutil"):
         assert name not in text.lower(), name
-    assert text.count("LLM_FACT_SHEET") == text.count("DECISION_FACT_SHEET") == 2      # in the look at the end, and in its NOTE
+    # in the look at the end, in the value the look starts at (content-23), and in its NOTE
+    assert text.count("LLM_FACT_SHEET") == text.count("DECISION_FACT_SHEET") == 3
 
 
 def test_the_include_stands_in_open_code():

@@ -251,15 +251,17 @@ run;
     /* The file is uploaded as <table>_NEW, a table of this session, which the step below drops again or promotes.
        A table of that name that is there before the upload is no table of this run - a table of the site can have
        the name -, so CAS is asked first. Only where it answers that there is none is the file uploaded under the
-       name, and only then is a table of the name dropped or promoted: the one this run loaded */
-    %let _lat_taken = unknown;
+       name, and only then is a table of the name dropped or promoted: the one this run loaded. A macro variable that
+       a PROC CAS step sets starts at the value of a question CAS did not answer: a step that halts - its session
+       ended, say - sets none */
+    %let _lat_taken = refused;
     proc cas;
         table.tableExists result = taken status = takenAsked / caslib = "&caslib." name = "&releaseTable._NEW";
         if takenAsked.severity != 0 then call symputx("_lat_taken", "refused", "L");
         else call symputx("_lat_taken", taken.exists, "L");
     quit;
     %if &_lat_taken. EQ refused %then %do;
-        %put ERROR: Load-Accelerator-Tables: CAS refused to say whether there is a table &caslib..&releaseTable._NEW, the name the file is uploaded under first. Nothing was uploaded, the table &caslib..&releaseTable. was left as it is.;
+        %put ERROR: Load-Accelerator-Tables: CAS did not say whether there is a table &caslib..&releaseTable._NEW, the name the file is uploaded under first. Nothing was uploaded, the table &caslib..&releaseTable. was left as it is.;
         %let _lat_failed = 1;
         %return;
     %end;
@@ -482,6 +484,8 @@ filename _latlfs clear;
    library now - whatever this run loaded, left as it was or could not load. */
 %macro _lat_look;
     %if &_lat_ready. NE 1 %then %return;
+    /* every table, until the step below answered for each: a step that halts sets nothing */
+    %let _lat_missing = &releaseTable. LLM_FACT_SHEET EMBEDDING_FACT_SHEET DECISION_FACT_SHEET;
     proc cas;
         missing = "";
         do name over {"&releaseTable.", "LLM_FACT_SHEET", "EMBEDDING_FACT_SHEET", "DECISION_FACT_SHEET"};
@@ -492,7 +496,7 @@ filename _latlfs clear;
         call symputx("_lat_missing", missing);
     quit;
     %if %length(&_lat_missing.) GT 0 %then %do;
-        %put ERROR: Load-Accelerator-Tables: not in the CAS library &caslib. at the end of the run, or CAS refused to say whether they are: &_lat_missing.. The lines above say why.;
+        %put ERROR: Load-Accelerator-Tables: not in the CAS library &caslib. at the end of the run, or CAS did not say whether they are: &_lat_missing.. The lines above say why.;
         %let _lat_failed = 1;
     %end;
     %else %put NOTE: Load-Accelerator-Tables: &releaseTable., LLM_FACT_SHEET, EMBEDDING_FACT_SHEET and DECISION_FACT_SHEET are in the CAS library &caslib..;

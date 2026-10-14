@@ -142,15 +142,17 @@ options nosyntaxcheck;
     /* The sheet is loaded as <table>_NEW, a table of this session, which the step below drops again or _lfs_swap
        promotes. A table of that name that is there before the load is no table of this run - a table of the site
        can have the name -, so CAS is asked first. Only where it answers that there is none is the sheet loaded
-       under the name, and only then is a table of the name dropped or promoted: the one this run loaded */
-    %let _lfs_taken = unknown;
+       under the name, and only then is a table of the name dropped or promoted: the one this run loaded. A macro
+       variable that a PROC CAS step sets starts at the value of a question CAS did not answer: a step that halts -
+       its session ended, say - sets none */
+    %let _lfs_taken = refused;
     proc cas;
         table.tableExists result = taken status = takenAsked / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";
         if takenAsked.severity != 0 then call symputx("_lfs_taken", "refused", "L");
         else call symputx("_lfs_taken", taken.exists, "L");
     run; quit;
     %if &_lfs_taken. EQ refused %then %do;
-        %put WARNING: CAS refused to say whether there is a table &_lfs_caslib..&_lfs_table._NEW, the name the sheet is loaded under first. The file &_lfs_file. was not loaded into CAS, the table &_lfs_caslib..&_lfs_table. was left as it is.;
+        %put WARNING: CAS did not say whether there is a table &_lfs_caslib..&_lfs_table._NEW, the name the sheet is loaded under first. The file &_lfs_file. was not loaded into CAS, the table &_lfs_caslib..&_lfs_table. was left as it is.;
         %return;
     %end;
     %if &_lfs_taken. NE 0 %then %do;
@@ -206,6 +208,8 @@ options nosyntaxcheck;
 %macro _lfs_swap(_lfs_table);
     %local _lfs_outcome;
     %if &_lfs_ok. NE 1 %then %return;
+    /* unknown until the step below says what became of the sheet: a step that halts sets nothing */
+    %let _lfs_outcome = unknown;
     proc cas;
         outcome = "replace";
         table.dropTable status = dropped / caslib = "&_lfs_caslib." name = "&_lfs_table." quiet = true;
@@ -240,6 +244,8 @@ options nosyntaxcheck;
         %put WARNING: The sheet could not take the place of the table &_lfs_caslib..&_lfs_table. - messages above - and the table was not loaded again from the file it was saved to before: load that file, or run this program again.;
     %else %if &_lfs_outcome. EQ save %then
         %put WARNING: The table &_lfs_caslib..&_lfs_table. holds the sheet and is promoted, but it could not be saved - messages above. Its saved file is the one of before.;
+    %else %if &_lfs_outcome. NE loaded %then
+        %put WARNING: Nothing said what became of the sheet - messages above -, the table &_lfs_caslib..&_lfs_table. may not hold it.;
 %mend _lfs_swap;
 
 * Load the LLM Fact Sheet - Load/Promote/Save to CAS;

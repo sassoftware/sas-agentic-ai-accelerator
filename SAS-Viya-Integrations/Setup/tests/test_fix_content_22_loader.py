@@ -32,7 +32,7 @@ import casl_harness  # noqa: E402
 from test_fix_content_22 import RefusingCAS  # noqa: E402
 from test_loader_followed import LOADED, RELEASES, SHEET_COLUMNS, columns, loaded, program, release, saved, symbols  # noqa: E402
 
-TAKEN_REFUSED = (f"ERROR: Load-Accelerator-Tables: CAS refused to say whether there is a table Public.{RELEASES}_NEW, the name the file "
+TAKEN_REFUSED = (f"ERROR: Load-Accelerator-Tables: CAS did not say whether there is a table Public.{RELEASES}_NEW, the name the file "
                  f"is uploaded under first. Nothing was uploaded, the table Public.{RELEASES} was left as it is.")
 REFUSED = (f"ERROR: Load-Accelerator-Tables: CAS refused an action the job goes by to decide whether the upload takes the place of the "
            f"table Public.{RELEASES} - the ERROR lines above. The upload of ACCELERATOR_RELEASES.csv was dropped again and no table "
@@ -116,7 +116,7 @@ def test_the_end_names_a_table_cas_did_not_say_is_there(refused):
     generated, log, macros = casl_harness.follow(program(), "_lat_look", symbols(_lat_missing=""), cas)
 
     if refused:
-        assert log == [f"ERROR: Load-Accelerator-Tables: not in the CAS library Public at the end of the run, or CAS refused to say whether "
+        assert log == [f"ERROR: Load-Accelerator-Tables: not in the CAS library Public at the end of the run, or CAS did not say whether "
                        f"they are: {' '.join(refused)}. The lines above say why."]
         assert macros["_lat_failed"] == "1"
     else:
@@ -131,7 +131,7 @@ def test_the_end_names_a_table_that_is_not_there():
         cas.table("Public", name, SHEET_COLUMNS, rows=3)
     generated, log, macros = casl_harness.follow(program(), "_lat_look", symbols(_lat_missing=""), cas)
 
-    assert log == ["ERROR: Load-Accelerator-Tables: not in the CAS library Public at the end of the run, or CAS refused to say whether "
+    assert log == ["ERROR: Load-Accelerator-Tables: not in the CAS library Public at the end of the run, or CAS did not say whether "
                    "they are: EMBEDDING_FACT_SHEET DECISION_FACT_SHEET. The lines above say why."]
 
 
@@ -141,5 +141,5 @@ def test_the_readme_says_it():
     assert ("The other actions of CAS the job goes by there - the question whether a table is there, the count of the rows of the "
             "upload and the listing of the columns of a table - are no answer either where CAS refuses one: the upload is dropped again "
             "and no table is loaded, with one more ERROR line, and where CAS refuses the question whether `<table>_NEW` is there, "
-            "nothing is uploaded, with an ERROR line of that question.") in readme
-    assert "when one of the four tables is not in the CAS library at its end or CAS refuses to say whether it is," in readme
+            "or the PROC CAS step that asks it halts, nothing is uploaded, with an ERROR line of that question.") in readme
+    assert "when one of the four tables is not in the CAS library at its end or CAS does not say whether it is," in readme
