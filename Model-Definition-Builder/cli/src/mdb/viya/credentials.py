@@ -399,7 +399,8 @@ def scaffold(source: Path, manifest: Path, domain: str = DEFAULT_DOMAIN,
 #   mdb credentials-report --manifest {named}
 #
 # Identities are added and marked for removal with a command as well as by
-# hand; both edit this file and leave its comments alone:
+# hand; both edit this file and leave its comments alone, but for the one
+# about the placeholder, which leaves with the placeholder:
 #
 #   mdb credentials-add    group LLMConsumers --manifest {named}
 #   mdb credentials-remove group FormerTeam   --manifest {named}

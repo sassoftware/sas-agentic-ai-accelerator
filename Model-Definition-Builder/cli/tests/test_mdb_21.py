@@ -994,7 +994,11 @@ def test_the_comment_about_the_placeholder_leaves_with_the_placeholder(mdb, eol)
     assert after == before.replace(comment, b"").replace(
         f"    id: {credentials.PLACEHOLDER_ID}{eol}".encode(),
         f"    id: LLMConsumers{eol}    only: [OpenAI]{eol}".encode())
-    assert b"placeholder" not in after and after.count(b"# Narrow an identity to some of the entries:") == 1
+    assert b"replaces this placeholder" not in after and credentials.PLACEHOLDER_ID.encode() not in after
+    assert after.count(b"# Narrow an identity to some of the entries:") == 1
+    # the head of the file says so, where it says that the two commands leave the comments alone
+    assert b"leave its comments alone, but for the one" + eol.encode() + \
+        b"# about the placeholder, which leaves with the placeholder:" in after
 
 
 @pytest.mark.parametrize("above", [
