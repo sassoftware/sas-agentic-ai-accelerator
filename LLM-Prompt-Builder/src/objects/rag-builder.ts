@@ -447,6 +447,16 @@ export async function buildRagBuilder(
   let runTicker: number | null = null;
   let runStartedAt = 0;
   let runActive = false;
+  /**
+   * The ingestion runs this page has launched and not yet seen end, by
+   * setup: the id of the job and the time of its launch. A job goes on in
+   * SAS Viya when its setup is left, and the setup shows its run again when
+   * it is opened again (see followIngestion). Before this, a setup that was
+   * opened again showed no run and offered Launch, with the first run still
+   * writing its collection. The page keeps this for as long as it is loaded:
+   * the id of a job is not stored with the setup.
+   */
+  const ingestionRuns = new Map<string, { jobId: string; startedAt: number }>();
 
   // The root carries the id every other id here starts with, as the Prompt
   // Builder's root does, so a stylesheet or a test can address this builder
@@ -2247,7 +2257,9 @@ export async function buildRagBuilder(
   };
 
   const updateLaunchState = (): void => {
-    launchButton.disabled = !currentJobUri;
+    // Not while a run of this setup is followed here: a second launch would
+    // write the same collection beside it.
+    launchButton.disabled = !currentJobUri || runActive;
     launchButton.title = currentJobUri
       ? ''
       : str('ragBuilderLaunchNeedsJob', 'Generate the ingestion job first.');
@@ -2286,9 +2298,9 @@ export async function buildRagBuilder(
     );
   };
 
-  const startRunClock = (): void => {
+  const startRunClock = (startedAt = Date.now()): void => {
     stopRunClock();
-    runStartedAt = Date.now();
+    runStartedAt = startedAt;
     runActive = true;
     paintClock();
     // One second, because this is the only moving thing on the page while a
@@ -3017,6 +3029,9 @@ export async function buildRagBuilder(
         console.debug('RAG Builder: reading documentation attributes failed', error);
       }
     }
+    // The setup is drawn. An ingestion that was launched for it from this
+    // page and has not been seen to end is shown again, and followed.
+    if (shown()) followIngestion(setupID, false);
   }
 
   async function saveSetup(): Promise<boolean> {
@@ -3340,7 +3355,7 @@ export async function buildRagBuilder(
     }
   }
 
-  /** Launch the generated job and poll its state + milestones until done. */
+  /** Launch the generated job, and follow it until it has ended. */
   async function launchIngestion(): Promise<void> {
     if (!currentJobUri) return;
     clearStatus();
@@ -3355,8 +3370,10 @@ export async function buildRagBuilder(
     // The run belongs to the setup it was launched for. When another one is
     // opened the job goes on in SAS Viya, and nothing of it - a state, a
     // milestone, the ledger it writes, the word that it ended - is drawn on
-    // the setup that is on the page by then.
+    // the setup that is on the page by then. Its own setup shows it again
+    // when it is opened again (see ingestionRuns).
     const shown = whileSetupShown();
+    const setupID = selectedSetupID;
     const setup = collectSetup();
     const args: Record<string, string> = { ...jobArguments(setup) };
     if (config.computeContext) args._contextName = String(config.computeContext);
@@ -3368,90 +3385,13 @@ export async function buildRagBuilder(
     runClock.textContent = '';
     runMilestones.replaceChildren();
     startRunClock();
+    const startedAt = runStartedAt;
     try {
       const job = await launchJob(currentJobUri, `RAG Ingest - ${selectedSetupName}`, args);
-      if (!shown()) return;
-      const jobId = String(job.id ?? '');
-      const renderMilestones = (messages: string[]): void => {
-        runMilestones.replaceChildren();
-        for (const message of messages) {
-          const item = document.createElement('li');
-          item.textContent = message.replace(/^RAGINGEST\s+/, '');
-          runMilestones.appendChild(item);
-        }
-      };
-      const poll = async (): Promise<void> => {
-        try {
-          const current = await getJob(jobId);
-          if (!shown()) return;
-          const state = String(current.state ?? 'running');
-          setRunBadge(state);
-          runStateText.textContent = `${str('ragBuilderRunStateLabel', 'State:')} ${state}`;
-          const progress = await getJobProgressMessages(current);
-          if (!shown()) return;
-          if (progress.messages.length > 0) {
-            renderMilestones(progress.messages);
-            // The last milestone is the answer to "what is it doing right
-            // now", so it belongs where the eye already is.
-            runNote.textContent = str('ragBuilderRunLatest', 'Latest: {message}').replace(
-              '{message}',
-              progress.messages[progress.messages.length - 1].replace(/^RAGINGEST\s+/, '')
-            );
-          } else if (!isTerminalJobState(state as never)) {
-            runNote.textContent =
-              progress.liveStatus === 'no-milestones' || progress.liveStatus === 'no-session-refs'
-                ? str('ragBuilderRunLogWaiting', 'The job has started but has not reported a milestone yet. Embedding runs one call per chunk, so a large corpus can take several minutes before the first line appears.')
-                : str('ragBuilderRunLogPending', 'Live log streaming is unavailable here ({status}) - the full log appears when the run finishes.').replace(
-                    '{status}',
-                    String(progress.liveStatus)
-                  );
-          }
-          if (isTerminalJobState(state as never)) {
-            stopPolling();
-            stopRunClock();
-            launchButton.disabled = false;
-            const { failed, failedDocuments } = ingestionOutcome(state, progress.messages);
-            const ok = !failed;
-            setRunBadge(state, failed, failedDocuments > 0);
-            runClock.textContent = str('ragBuilderRunTook', 'took {time}').replace(
-              '{time}',
-              formatElapsed(Date.now() - runStartedAt)
-            );
-            if (ok) {
-              // The ledger is written by the run's last step, so the moment
-              // it becomes readable is exactly now. Showing it unprompted
-              // spares the round trip that started this whole confusion.
-              runNote.textContent =
-                failedDocuments > 0
-                  ? str(
-                      'ragBuilderRunDoneWithFailuresNote',
-                      'Run finished; {count} document(s) failed. The ingestion ledger below names each of them with its error.'
-                    ).replace('{count}', String(failedDocuments))
-                  : str('ragBuilderRunDoneNote', 'Run finished. The ingestion ledger is below.');
-              void browseLedger();
-            }
-            if (!ok) {
-              showStatus('danger', str('ragBuilderRunFailed', 'The ingestion run did not succeed - see the milestones/log for the reason.'));
-            } else if (failedDocuments > 0) {
-              // Completed, with a warning that stays on the page: the corpus
-              // is usable, and it lacks the documents the count names.
-              showStatus(
-                'warning',
-                str(
-                  'ragBuilderRunDoneWithFailures',
-                  'Ingestion run completed, but {count} document(s) failed and are not in the collection - the ledger names each of them with its error.'
-                ).replace('{count}', String(failedDocuments))
-              );
-            } else {
-              showStatus('success', str('ragBuilderRunDone', 'Ingestion run completed - see the milestones and browse the ledger.'));
-            }
-          }
-        } catch (error) {
-          console.debug('RAG Builder: ingestion poll failed', error);
-        }
-      };
-      pollTimer = window.setInterval(() => void poll(), 5000);
-      void poll();
+      ingestionRuns.set(setupID, { jobId: String(job.id ?? ''), startedAt });
+      // Followed where its setup is on the page - also when that setup was
+      // left and opened again while the job was being launched.
+      if (selectedSetupID === setupID) followIngestion(setupID, true);
     } catch (error) {
       console.error('Launching the ingestion job failed.', error);
       if (!shown()) return;
@@ -3461,6 +3401,111 @@ export async function buildRagBuilder(
       launchButton.disabled = false;
       showStatus('danger', str('ragBuilderRunLaunchError', 'Launching the ingestion job failed - check the browser console.'));
     }
+  }
+
+  /**
+   * Show the ingestion run of a setup and follow it until it has ended: the
+   * state of the job, its milestones, the time it has been running, and the
+   * ledger once it is written. Does nothing for a setup without a run this
+   * page launched and has not seen end.
+   *
+   * `launched` says that the job was launched just now. Otherwise the run is
+   * picked up again for a setup that was left and is opened again: the clock
+   * goes on from the launch, and a job that ended meanwhile is shown as
+   * ended, without a time - how long it took was not seen from here.
+   */
+  function followIngestion(setupID: string, launched: boolean): void {
+    const run = ingestionRuns.get(setupID);
+    if (!run) return;
+    stopPolling();
+    const shown = whileSetupShown();
+    const { jobId } = run;
+    // Whether the job was seen running since it was launched.
+    let watched = launched;
+    runCard.style.display = '';
+    startRunClock(run.startedAt);
+    updateLaunchState();
+    const renderMilestones = (messages: string[]): void => {
+      runMilestones.replaceChildren();
+      for (const message of messages) {
+        const item = document.createElement('li');
+        item.textContent = message.replace(/^RAGINGEST\s+/, '');
+        runMilestones.appendChild(item);
+      }
+    };
+    const poll = async (): Promise<void> => {
+      try {
+        const current = await getJob(jobId);
+        if (!shown()) return;
+        const state = String(current.state ?? 'running');
+        setRunBadge(state);
+        runStateText.textContent = `${str('ragBuilderRunStateLabel', 'State:')} ${state}`;
+        const progress = await getJobProgressMessages(current);
+        if (!shown()) return;
+        if (progress.messages.length > 0) {
+          renderMilestones(progress.messages);
+          // The last milestone is the answer to "what is it doing right
+          // now", so it belongs where the eye already is.
+          runNote.textContent = str('ragBuilderRunLatest', 'Latest: {message}').replace(
+            '{message}',
+            progress.messages[progress.messages.length - 1].replace(/^RAGINGEST\s+/, '')
+          );
+        } else if (!isTerminalJobState(state as never)) {
+          runNote.textContent =
+            progress.liveStatus === 'no-milestones' || progress.liveStatus === 'no-session-refs'
+              ? str('ragBuilderRunLogWaiting', 'The job has started but has not reported a milestone yet. Embedding runs one call per chunk, so a large corpus can take several minutes before the first line appears.')
+              : str('ragBuilderRunLogPending', 'Live log streaming is unavailable here ({status}) - the full log appears when the run finishes.').replace(
+                  '{status}',
+                  String(progress.liveStatus)
+                );
+        }
+        if (!isTerminalJobState(state as never)) watched = true;
+        if (isTerminalJobState(state as never)) {
+          stopPolling();
+          stopRunClock();
+          if (ingestionRuns.get(setupID) === run) ingestionRuns.delete(setupID);
+          updateLaunchState();
+          const { failed, failedDocuments } = ingestionOutcome(state, progress.messages);
+          const ok = !failed;
+          setRunBadge(state, failed, failedDocuments > 0);
+          runClock.textContent = watched
+            ? str('ragBuilderRunTook', 'took {time}').replace('{time}', formatElapsed(Date.now() - runStartedAt))
+            : '';
+          if (ok) {
+            // The ledger is written by the run's last step, so the moment
+            // it becomes readable is exactly now. Showing it unprompted
+            // spares the round trip that started this whole confusion.
+            runNote.textContent =
+              failedDocuments > 0
+                ? str(
+                    'ragBuilderRunDoneWithFailuresNote',
+                    'Run finished; {count} document(s) failed. The ingestion ledger below names each of them with its error.'
+                  ).replace('{count}', String(failedDocuments))
+                : str('ragBuilderRunDoneNote', 'Run finished. The ingestion ledger is below.');
+            void browseLedger();
+          }
+          if (!ok) {
+            showStatus('danger', str('ragBuilderRunFailed', 'The ingestion run did not succeed - see the milestones/log for the reason.'));
+          } else if (failedDocuments > 0) {
+            // Completed, with a warning that stays on the page: the corpus
+            // is usable, and it lacks the documents the count names.
+            showStatus(
+              'warning',
+              str(
+                'ragBuilderRunDoneWithFailures',
+                'Ingestion run completed, but {count} document(s) failed and are not in the collection - the ledger names each of them with its error.'
+              ).replace('{count}', String(failedDocuments))
+            );
+          } else {
+            showStatus('success', str('ragBuilderRunDone', 'Ingestion run completed - see the milestones and browse the ledger.'));
+          }
+        }
+      } catch (error) {
+        console.debug('RAG Builder: ingestion poll failed', error);
+      }
+    };
+    pollTimer = window.setInterval(() => void poll(), 5000);
+    void poll();
   }
 
   /**
@@ -4096,6 +4141,7 @@ export async function buildRagBuilder(
         try {
           const status = await deleteModel(setupID);
           if (status !== 204) throw new Error(`HTTP ${status}`);
+          ingestionRuns.delete(setupID);
           selectedSetupID = '';
           selectedSetupName = '';
           await refreshSetups();
@@ -4216,6 +4262,7 @@ export async function buildRagBuilder(
           for (const setup of setups) {
             const status = await deleteModel(setup.value);
             if (status !== 204) throw new Error(`setup ${setup.innerHTML}: HTTP ${status}`);
+            ingestionRuns.delete(setup.value);
           }
           const status = await deleteModelProject(projectID);
           if (status !== 204) throw new Error(`project: HTTP ${status}`);

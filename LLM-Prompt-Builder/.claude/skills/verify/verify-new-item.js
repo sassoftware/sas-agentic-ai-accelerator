@@ -65,6 +65,10 @@
  * one is running, and the prompt-test the job runs for shows its state and
  * its log again when it is opened again.
  *
+ * An ingestion goes on in SAS Viya as well: the setup it was launched for
+ * shows the run again when it is opened again - still running, or ended
+ * meanwhile - and not a second time once the run was seen to end.
+ *
  * The suite goes on after a comparison that failed, so one run lists the
  * fields of every road; a line "[http 4xx/5xx]" names a request the mock
  * refused (the model that is switched off for one run, a ledger that does not
@@ -1359,6 +1363,100 @@ function same(got, wanted, label, fieldsOnly = false) {
     } finally {
       await fetch(BASE + '/__ragenrich', { method: 'POST', body: JSON.stringify({ on: false }) });
     }
+  });
+
+  // An ingestion goes on in SAS Viya when its setup is left. The setup shows
+  // the run again when it is opened again - running, or ended meanwhile -
+  // and does not offer a second launch beside a run that is still writing.
+  const runCard = async (page) => ({
+    shown: await page.isVisible(rgb('ingestion-run')),
+    state: ((await page.textContent(rgb('run-state'))) || '').trim(),
+    text: ((await page.textContent(rgb('ingestion-run'))) || '').replace(/\s+/g, ' ').trim(),
+    launch: !(await page.isDisabled(rgb('launch'))),
+    ledger: await page.isVisible(rgb('ledger-panel')),
+  });
+  const said = (card) => `run card shown: ${card.shown}, state: "${card.state}", Launch usable: ${card.launch}, ledger shown: ${card.ledger}, card: "${clip(card.text)}"`;
+  await road('RAG setup: the setup an ingestion was launched for is opened again', async (page) => {
+    await openRagBuilder(page);
+    await chooseRagProject(page, 'rag-proj');
+    await openRagSetup(page, 'rag-setup-1');
+    await goStep(page, 'RGB', 'run');
+    // The job says "running" for as long as the suite answers for it, in
+    // the words of the mock (which would find it completed on its second poll).
+    const keepRunning = async (route) => {
+      const id = route.request().url().split('/').pop();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ id, state: 'running', results: { COMPUTE_SESSION: `rag-cs-${id} (rag-ctx)`, COMPUTE_JOB: `rag-cj-${id}` } }),
+      });
+    };
+    await page.route('**/jobExecution/jobs/ragrun-*', keepRunning);
+    await page.click(rgb('launch'));
+    await waitUntil(async () => (await runCard(page)).state === 'running', 'the ingestion runs', 30000);
+    await atRest();
+    const launched = await runCard(page);
+    await openRagSetup(page, 'rag-setup-2');
+    await goStep(page, 'RGB', 'run');
+    const elsewhere = await runCard(page);
+    await openRagSetup(page, 'rag-setup-1');
+    await goStep(page, 'RGB', 'run');
+    try {
+      await waitUntil(async () => (await runCard(page)).state === 'running', 'the run is shown again', 8000);
+    } catch {
+      /* said by the check below */
+    }
+    await atRest();
+    const back = await runCard(page);
+    step(
+      launched.shown && !launched.launch && !elsewhere.shown && back.shown && back.state === 'running' && /running for/.test(back.text) && /connected: pgvector/.test(back.text) && !back.launch,
+      `an ingestion in flight -> another setup -> its own setup again: the run card is back with the state of the job, its milestones and the time it has been running, and Launch stays off (on the other setup - run card shown: ${elsewhere.shown}; back on its own - ${said(back)})`
+    );
+    // The job ends while its setup is on the page.
+    await page.unroute('**/jobExecution/jobs/ragrun-*', keepRunning);
+    try {
+      await waitUntil(async () => (await runCard(page)).state === 'completed' && (await runCard(page)).ledger, 'the run has ended', 40000);
+    } catch {
+      /* said by the check below */
+    }
+    await atRest();
+    const ended = await runCard(page);
+    step(
+      ended.state === 'completed' && /took /.test(ended.text) && ended.ledger && ended.launch,
+      `and when the job ends there, the card says so, the ledger is shown and Launch can be used again (${said(ended)})`
+    );
+    // A run that was seen to end is over: the setup opens without it.
+    await openRagSetup(page, 'rag-setup-2');
+    await openRagSetup(page, 'rag-setup-1');
+    await goStep(page, 'RGB', 'run');
+    const over = await runCard(page);
+    step(!over.shown && over.state === '' && over.launch && !over.ledger, `a run that has ended is not shown a second time when its setup is opened again (${said(over)})`);
+
+    // A job that ends while another setup is open.
+    await page.route('**/jobExecution/jobs/ragrun-*', keepRunning);
+    await page.click(rgb('launch'));
+    await waitUntil(async () => (await runCard(page)).state === 'running', 'the second ingestion runs', 30000);
+    await atRest();
+    await openRagSetup(page, 'rag-setup-2');
+    await page.unroute('**/jobExecution/jobs/ragrun-*', keepRunning);
+    // Asked twice from here, the mock finds the job completed from now on.
+    const job = (await ragState()).jobs.filter((entry) => entry.kind === 'ingestion').pop().id;
+    await fetch(`${BASE}/jobExecution/jobs/${job}`);
+    await fetch(`${BASE}/jobExecution/jobs/${job}`);
+    const away = await runCard(page);
+    await openRagSetup(page, 'rag-setup-1');
+    await goStep(page, 'RGB', 'run');
+    try {
+      await waitUntil(async () => (await runCard(page)).state === 'completed' && (await runCard(page)).ledger, 'the run that ended meanwhile is shown', 15000);
+    } catch {
+      /* said by the check below */
+    }
+    await atRest();
+    const found = await runCard(page);
+    step(
+      !away.shown && found.shown && found.state === 'completed' && /Run finished/.test(found.text) && !/took |running for/.test(found.text) && found.ledger && found.launch,
+      `an ingestion that ends while another setup is open -> its own setup again: the card says that the run has finished, without a time nobody measured, the ledger is shown and Launch can be used (on the other setup - run card shown: ${away.shown}; back on its own - ${said(found)})`
+    );
   });
 
   // ============================================================================
