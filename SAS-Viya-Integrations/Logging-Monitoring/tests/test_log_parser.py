@@ -694,7 +694,7 @@ def test_a_run_without_the_setting_stops_at_a_table_that_holds_rows_in_front_of_
         "the table with them.;",
         "%let _log_ready = 0;", "%end;",
         "%if &_log_table_mode. EQ START and &_log_target_rows. EQ -3 %then %do;",
-        "%put ERROR: CAS refused an action that the count of the rows of the table &_log_target_table_lib..&_log_target_table_name. "
+        "%put ERROR: CAS refused or did not run an action that the count of the rows of the table &_log_target_table_lib..&_log_target_table_name. "
         "needs and _log_append_table is not set, so nothing was read and nothing was written - not the table and not its saved file.;",
         "%let _log_ready = 0;", "%end;"]
     # in front of the Python, behind the session and the caslib of the table
@@ -767,10 +767,10 @@ def test_a_run_that_appends_leaves_out_the_requests_the_table_holds_already(prog
     step = _append_step(program)
     statements = [line.strip() for line in step.split("\n") if line.strip()]
 
-    start = statements.index("%if &_log_target_has_id. %then %do;")
+    start = statements.index("%if &_log_target_has_id. and &_log_cas_refused. EQ 0 %then %do;")
     compared = statements.index("%let _log_compare_syserr = %sysfunc(max(&_log_compare_syserr., &syserr.));")
     assert statements[start:compared + 1] == [
-        "%if &_log_target_has_id. %then %do;",
+        "%if &_log_target_has_id. and &_log_cas_refused. EQ 0 %then %do;",
         "data _llmsrc._TEMP_LLM_LOGS_SEEN(keep=transaction_id model timestamp _log_seen_whole);",
         "length transaction_id varchar(*) model varchar(*);",
         "%if &_log_target_has_failed. %then %do;",
@@ -1140,9 +1140,9 @@ def test_about_tab_names_every_column_and_what_the_program_does_with_it(monkeypa
 def test_about_tab_is_about_the_program_and_the_changelog_starts_with_this_version():
     texts = _about_tab()
 
-    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.10 (")
+    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.11 (")
     changelog = texts["textChangelog"]
-    assert (changelog.index("Version: 2.10") < changelog.index("Version: 2.9") < changelog.index("Version: 2.8") < changelog.index("Version: 2.7") < changelog.index("Version: 2.6") < changelog.index("Version: 2.5") < changelog.index("Version: 2.4") < changelog.index("Version: 2.3") < changelog.index("Version: 2.2")
+    assert (changelog.index("Version: 2.11") < changelog.index("Version: 2.10") < changelog.index("Version: 2.9") < changelog.index("Version: 2.8") < changelog.index("Version: 2.7") < changelog.index("Version: 2.6") < changelog.index("Version: 2.5") < changelog.index("Version: 2.4") < changelog.index("Version: 2.3") < changelog.index("Version: 2.2")
             < changelog.index("Version: 2.1 (") < changelog.index("Version: 2.0"))
     # What a release has not run yet is said in the changelog of the release, not in the step
     for name, text in texts.items():
@@ -1219,7 +1219,7 @@ def test_readme_says_of_the_line_of_the_script_what_the_parser_does():
     assert "so is what stands in front of the first line of the script in a file that is appended to" in readme
     assert "so a NOTE counts the request lines that were read that way" in readme
     assert "Every request whose `failed` is missing is counted once" in readme
-    assert "versions 2.10 and 2.4 of the two steps" in readme and _about_tab()["textChangelog"].startswith("* Version: 2.10 (")
+    assert "versions 2.11 and 2.6 of the two steps" in readme and _about_tab()["textChangelog"].startswith("* Version: 2.11 (")
     assert "not run in sas" not in readme.lower()
 
 

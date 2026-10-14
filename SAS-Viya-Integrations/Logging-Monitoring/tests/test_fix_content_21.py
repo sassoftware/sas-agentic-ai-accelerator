@@ -185,8 +185,9 @@ def test_the_drop_is_written_for_the_table_of_the_run_and_only_behind_the_error_
     refused = macro[macro.index("%else %if &_log_cas_refused. %then %do;"):macro.index("%else %if &_log_append_nothing. %then %do;")]
     cleanup = macro[macro.rindex("%if &_log_cas_refused. %then %do;"):]
     assert macro.count("&_log_target_loaded.") == 2 and cleanup.count("&_log_target_loaded.") == 1
-    assert "print (error) \"CAS refused an action" in refused and macro.index(refused) < macro.index(cleanup)
-    assert macro.count("&_log_cas_refused.") == 2
+    assert "print (error) \"CAS refused or did not run an action" in refused and macro.index(refused) < macro.index(cleanup)
+    # content-23: and the comparison with the rows of the table, which runs only where no action was refused in front of it
+    assert macro.count("&_log_cas_refused.") == 3 and macro.count("%if &_log_target_has_id. and &_log_cas_refused. EQ 0 %then %do;") == 1
     # set where the run loaded the file, and only to a table of the session: a promoted table of that name is not the run's.
     # content-22: also where CAS refused the question behind a load that went through, so that the run drops what the load left
     assert ("if (savedFile NE '' and targetExists EQ 1) or (fileLoaded EQ 1 and targetExists LT 0) then do;\n"

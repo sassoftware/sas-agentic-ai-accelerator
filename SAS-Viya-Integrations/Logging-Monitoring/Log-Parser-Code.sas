@@ -30,7 +30,7 @@ libname casuser cas caslib='casuser';
 * Check if the file is located on the SAS Server, if so extract the path;
 * 1 until one of the two checks below refuses the run. A refusal writes its one ERROR line and sets this to 0: no log is read and nothing is written behind it. An ABORT statement put SAS into syntax check mode instead, where the program went on and wrote a further ERROR line about a log it had not read;
 %let _log_ready = 1;
-* 1 once the program has written an ERROR line for a table it did not write: the saved table that could not be loaded, an action that CAS refused, the new table that could not be created. The last statement of the program reads it;
+* 1 once the program has written an ERROR line for a table it did not write: the saved table that could not be loaded, an action that CAS refused, the new table that could not be created - and while the PROC CAS step that writes the table runs, so that a step that halts leaves it at 1. The last statement of the program reads it;
 %let _log_failed = 0;
 data _null_;
    locationType = scan("&_log_path.", 1, ':');
@@ -82,14 +82,17 @@ quit;
     %let _log_clean_cas_session = 0;
 %end;
 
+* A macro variable that a PROC CAS step sets starts at the value of a question CAS did not answer: a step that halts - its session ended, say - sets none, and its value is then no answer;
+%let _casSessionUUID = ;
 proc cas;
     session.sessionId result = sessresults;
     call symputx('_casSessionUUID', sessresults[1]);
 quit;
 
-* The rows the output table holds before this run: 0 where there is no table, -1 where its saved file could not be loaded, -2 where the table is in memory and the listing of its rows names no table, -3 where CAS refused the question whether the table is there or the listing of the saved files. The macro below counts them - the table in memory, or the saved file of a table that is not in memory, which is loaded into CASUSER for the count and dropped again. It runs in front of the log for a run without a value of _log_append_table and in front of the swap for a run that replaces. At -1 and at -3 neither of the two writes anything, and at -2 a run without a value of _log_append_table writes nothing. A run that appends does not ask it;
+* The rows the output table holds before this run: 0 where there is no table, -1 where its saved file could not be loaded, -2 where the table is in memory and the listing of its rows names no table, -3 where CAS refused the question whether the table is there or the listing of the saved files, or where the step that asks them halted. The macro below counts them - the table in memory, or the saved file of a table that is not in memory, which is loaded into CASUSER for the count and dropped again. It runs in front of the log for a run without a value of _log_append_table and in front of the swap for a run that replaces. At -1 and at -3 neither of the two writes anything, and at -2 a run without a value of _log_append_table writes nothing. A run that appends does not ask it;
 %let _log_target_rows = 0;
 %macro _log_count_target;
+    %let _log_target_rows = -3;
     proc cas;
         targetRows = 0;
         table.tableExists result=found status=foundAsked /
@@ -158,7 +161,7 @@ quit;
     %let _log_ready = 0;
 %end;
 %if &_log_table_mode. EQ START and &_log_target_rows. EQ -3 %then %do;
-    %put ERROR: CAS refused an action that the count of the rows of the table &_log_target_table_lib..&_log_target_table_name. needs and _log_append_table is not set, so nothing was read and nothing was written - not the table and not its saved file.;
+    %put ERROR: CAS refused or did not run an action that the count of the rows of the table &_log_target_table_lib..&_log_target_table_name. needs and _log_append_table is not set, so nothing was read and nothing was written - not the table and not its saved file.;
     %let _log_ready = 0;
 %end;
 
@@ -171,7 +174,7 @@ quit;
 %let _log_target_scope = 0;
 %let _log_target_unloaded = 0;
 %let _log_target_loaded = 0;
-* 1 where CAS refused an action that a run which appends or replaces goes by - the question whether the output table is there, the listing of the saved files, of the columns of the table or of the tables of CASUSER -, which the output macro sets. The run then writes neither the table nor its saved file;
+* 1 where CAS refused an action that a run which appends or replaces goes by - the question whether the output table is there, the listing of the saved files, of the columns of the table or of the tables of CASUSER -, or where the PROC CAS step that asks it halted, which the output macro sets. The run then writes neither the table nor its saved file;
 %let _log_cas_refused = 0;
 * What the DATA step of append mode is given for the text columns that the existing table holds as CHAR. The output macro sets the three, and they stay empty where there is no such column;
 %let _log_fixed_rename = ;
@@ -1657,8 +1660,15 @@ run; quit;
             %end;
         %end;
         %if &_log_table_mode. EQ APPEND %then %do;
+            /* 1 until the step below answered: a step that halts sets nothing. Only a run that replaces sets it in front of
+               this place. The three others start at the values under which nothing is done with the table: with the flag
+               at 1 the run writes nothing */
+            %let _log_cas_refused = 1;
+            %let _log_target_scope = 0;
+            %let _log_target_unloaded = 0;
+            %let _log_target_loaded = 0;
             proc cas;
-                /* What tableExists answered, and -1 where CAS refused the question */
+                /* What tableExists answered, and -1 where CAS refused the question or the listing of the saved files */
                 targetExists = -1;
                 table.tableExists result=re status=reAsked /
                     casLib = "&_log_target_table_lib.",
@@ -1677,7 +1687,7 @@ run; quit;
                        exact name is taken when there is one, otherwise the same name in another case */
                     table.fileInfo result=listing status=listed /
                         casLib = "&_log_target_table_lib.";
-                    if listed.severity NE 0 then call symputx('_log_cas_refused', '1');
+                    if listed.severity NE 0 then targetExists = -1;
                     if listed.severity EQ 0 then do;
                         if exists(listing, 'FileInfo') then do;
                             do savedEntry over listing.FileInfo;
@@ -1699,8 +1709,17 @@ run; quit;
                         if reAsked.severity EQ 0 then targetExists = re.exists;
                     end;
                 end;
+
+                /* The table of an earlier run that did not get to its end must not pass for the one of this run. In front
+                   of the statements that set the macro variables: they are the last ones of the step */
+                table.dropTable /
+                    casLib = "&_log_target_table_lib.",
+                    name = '_TEMP_LLM_LOGS_ALL',
+                    quiet = True;
+
                 /* Where CAS did not say whether the table is there, the run does not know what it appends to */
                 if targetExists LT 0 then call symputx('_log_cas_refused', '1');
+                else call symputx('_log_cas_refused', '0');
 
                 /* What the statements below go by: the table the rows are appended to (0 there is none,
                    1 a table of this session, 2 a promoted table), a saved table that could not be loaded, and a
@@ -1717,12 +1736,6 @@ run; quit;
                 if (savedFile NE '' and targetExists EQ 1) or (fileLoaded EQ 1 and targetExists LT 0) then do;
                     call symputx('_log_target_loaded', '1');
                 end;
-
-                /* The table of an earlier run that did not get to its end must not pass for the one of this run */
-                table.dropTable /
-                    casLib = "&_log_target_table_lib.",
-                    name = '_TEMP_LLM_LOGS_ALL',
-                    quiet = True;
             run; quit;
 
             %if &_log_target_scope. GE 1 %then %do;
@@ -1734,11 +1747,14 @@ run; quit;
                     proc delete data=work._log_target_columns;
                     run;
                 %end;
+                /* 1 until the step below answered. _log_target_scope is 1 or 2 only where the step in front answered, and that step set the flag to 0 */
+                %let _log_cas_refused = 1;
                 proc cas;
                     table.columnInfo result=targetColumns status=columnsListed /
                         table = {casLib = "&_log_target_table_lib.", name = "&_log_target_table_name."};
                     /* Without the columns the run would know neither the columns a request is known by nor the CHAR ones */
                     if columnsListed.severity NE 0 then call symputx('_log_cas_refused', '1');
+                    else call symputx('_log_cas_refused', '0');
                     saveresult targetColumns dataout=work._log_target_columns;
                 quit;
                 %if %sysfunc(exist(work._log_target_columns)) %then %do;
@@ -1794,7 +1810,7 @@ run; quit;
                    written to a table of its own, and behind the step that appends the rows of the table that it
                    takes the place of are taken out. The table of the rows of the table says of each whether failed
                    is missing, and of a table without a numeric column failed no row is taken out */
-                %if &_log_target_has_id. %then %do;
+                %if &_log_target_has_id. and &_log_cas_refused. EQ 0 %then %do;
                     data _llmsrc._TEMP_LLM_LOGS_SEEN(keep=transaction_id model timestamp _log_seen_whole);
                         length transaction_id varchar(*) model varchar(*);
                         %if &_log_target_has_failed. %then %do;
@@ -1823,13 +1839,18 @@ run; quit;
                         end;
                     run;
                     %let _log_compare_syserr = %sysfunc(max(&_log_compare_syserr., &syserr.));
-                    /* What is left of the rows of the log, and how many of them take the place of a row */
+                    /* What is left of the rows of the log, and how many of them take the place of a row. The three start
+                       at the values of a listing CAS did not answer; the step runs only where the flag was 0 */
+                    %let _log_cas_refused = 1;
+                    %let _log_kept_rows = -1;
+                    %let _log_took_rows = -1;
                     proc cas;
                         keptRows = -1;
                         tookRows = -1;
                         table.tableInfo result=comparedTables status=comparedListed /
                             casLib = 'CASUSER';
                         if comparedListed.severity NE 0 then call symputx('_log_cas_refused', '1');
+                        else call symputx('_log_cas_refused', '0');
                         if exists(comparedTables, 'TableInfo') then do;
                             do listedTable over comparedTables.TableInfo;
                                 if upcase(listedTable.Name) EQ '_TEMP_LLM_LOGS' then keptRows = listedTable.Rows;
@@ -1879,7 +1900,10 @@ run; quit;
             %end;
         %end;
 
+        /* 1 until the step below reached its end: a step that halts sets nothing, and a run whose table was not written is a failed run */
+        %let _log_failed = 1;
         proc cas;
+            runFailed = 0;
             %if &_log_target_unloaded. %then %do;
                 /* Starting a new table here would end in a save over the file that could not be loaded: a run that
                    appends would lose the rows of every run before, and a run that replaces would end with the ERROR
@@ -1891,20 +1915,20 @@ run; quit;
                     print (error) "The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded, nothing was replaced and the saved file was left as it is.";
                 %end;
                 tableWritten = False;
-                call symputx('_log_failed', '1');
+                runFailed = 1;
             %end;
             %else %if &_log_cas_refused. %then %do;
-                /* CAS refused an action the run goes by, behind its own ERROR lines: what the table and its saved file
+                /* CAS refused or did not run an action the run goes by, behind its own ERROR lines: what the table and its saved file
                    hold is not known, so neither is written. What the run built for an append, and a table it loaded
                    from its saved file for it, are dropped at the end of the macro */
                 %if &_log_table_mode. EQ APPEND %then %do;
-                    print (error) "CAS refused an action that the run needs for the table &_log_target_table_lib..&_log_target_table_name., nothing was appended and neither the table nor its saved file was written.";
+                    print (error) "CAS refused or did not run an action that the run needs for the table &_log_target_table_lib..&_log_target_table_name., nothing was appended and neither the table nor its saved file was written.";
                 %end;
                 %else %do;
-                    print (error) "CAS refused an action that the run needs for the table &_log_target_table_lib..&_log_target_table_name., nothing was replaced and neither the table nor its saved file was written.";
+                    print (error) "CAS refused or did not run an action that the run needs for the table &_log_target_table_lib..&_log_target_table_name., nothing was replaced and neither the table nor its saved file was written.";
                 %end;
                 tableWritten = False;
-                call symputx('_log_failed', '1');
+                runFailed = 1;
             %end;
             %else %if &_log_append_nothing. %then %do;
                 /* The table holds every request of the log already. It is not built again and not saved again. A
@@ -2015,7 +2039,7 @@ run; quit;
                 else do;
                     %if &_log_target_scope. GE 1 %then %do;
                         print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is. The DATA step that appends ended with the return code &_log_append_syserr. and wrote " || (string) stagedRows || " rows, the table held " || (string) existingRows || " and the log " || (string) uploadedRows || ", and " || (string) removedRows || " rows of the table were taken out for &_log_took_rows. rows of the log (-1 stands for a table that was not found). " || "The DATA steps that leave out the requests the table holds already ended with the return code &_log_compare_syserr..";
-                        call symputx('_log_failed', '1');
+                        runFailed = 1;
                         /* What the DATA step left behind is no table of anybody */
                         table.dropTable /
                             casLib = "&_log_target_table_lib.",
@@ -2031,7 +2055,7 @@ run; quit;
                     %end;
                     %else %do;
                         print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is.";
-                        call symputx('_log_failed', '1');
+                        runFailed = 1;
                     %end;
                     tableWritten = False;
                 end;
@@ -2078,6 +2102,7 @@ run; quit;
                     %end;
                 end;
             %end;
+            call symputx('_log_failed', runFailed);
         run; quit;
     %end;
     %else %if &_log_row_count. EQ 0 %then %do;
