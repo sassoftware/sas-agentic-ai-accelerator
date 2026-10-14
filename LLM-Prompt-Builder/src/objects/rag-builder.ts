@@ -2987,6 +2987,10 @@ export async function buildRagBuilder(
   async function loadSetup(): Promise<void> {
     stopPolling();
     startLaterStepsAfresh();
+    // The banner says something about the setup or the project that was on
+    // the page - a run that failed, a delete that was refused - and goes with
+    // it. What this change of selection has to say is said after this line.
+    clearStatus();
     // Whether this setup is still the one on the page: asked after every
     // wait, before anything of it is drawn.
     const shown = whileSetupShown();
