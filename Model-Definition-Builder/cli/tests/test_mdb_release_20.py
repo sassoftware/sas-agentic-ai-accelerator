@@ -209,7 +209,8 @@ def test_an_export_in_the_real_shape_is_written_and_names_no_one(exporting, mani
     assert "Nothing was written" not in text and "--keep-user-ids" not in text and "names the user id" not in text
     assert (f"  Replaced the user id(s) fab.creator, fab.exporter in createdBy / modifiedBy / userName with "
             f"'sas-agentic-ai-accelerator' ({named} place(s)); contentSourceLocation, the path of the folder each "
-            f"object was exported from, is left as it is ({CONTENT_ROOT}).\n") in text
+            f"object was exported from, is left as it is ({CONTENT_ROOT}), and so is the contentRoot of the job "
+            "definitions.\n") in text
     written = json.loads(target.read_text(encoding="utf-8"))
     assert "fab." not in target.read_text(encoding="utf-8") and places(written, "fab.") == {}
     assert named_users(written) == {NEUTRAL_USER: named}
@@ -264,7 +265,8 @@ def test_an_export_of_a_folder_below_a_user_says_where_the_id_stays(exporting, m
         in text
     replaced = re.search(r"  Replaced the user id\(s\) fab\.exporter in createdBy / modifiedBy / userName with "
                          r"'sas-agentic-ai-accelerator' \((\d+) place\(s\)\); contentSourceLocation, the path of the "
-                         r"folder each object was exported from, is left as it is \(" + re.escape(root) + r"\)\.\n",
+                         r"folder each object was exported from, is left as it is \(" + re.escape(root) + r"\), and so is the "
+                         r"contentRoot of the job definitions\.\n",
                          text)
     assert replaced, text
     written = json.loads(elsewhere.read_text(encoding="utf-8"))
@@ -283,7 +285,8 @@ def test_an_export_of_a_folder_below_a_user_says_where_the_id_stays(exporting, m
     assert "Replaced the user id" not in text
     assert re.search(r"  The file names the user id\(s\) fab\.exporter in createdBy / modifiedBy / userName \(\d+ "
                      r"place\(s\): the package, its objects and their bodies\) - left as the export wrote them "
-                     r"\(--keep-user-ids\) - and the exported folder in contentSourceLocation\.\n", text), text
+                     r"\(--keep-user-ids\) - and the exported folder in contentSourceLocation; the contentRoot of the "
+                     r"job definitions is left as it is too\.\n", text), text
 
     # the release file is written from the content root of the release only, wherever --out points
     result, text, target, exported = exporting(dressed(), "--content-root", root, "--out", str(target))

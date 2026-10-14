@@ -2206,13 +2206,15 @@ def package_export(
     if keep_user_ids and users:
         console.print(f"  The file names the user id(s) {', '.join(sorted(users))} in {USER_FIELDS_TEXT} "
                       f"({sum(users.values())} place(s): the package, its objects and their bodies) - left as the "
-                      "export wrote them (--keep-user-ids) - and the exported folder in contentSourceLocation.",
+                      "export wrote them (--keep-user-ids) - and the exported folder in contentSourceLocation; the "
+                      "contentRoot of the job definitions is left as it is too.",
                       markup=False, highlight=False, soft_wrap=True)
     elif neutralised:
         others = {user for user in exporters if user != NEUTRAL_USER}
         console.print(f"  Replaced the user id(s) {', '.join(sorted(others))} in {USER_FIELDS_TEXT} with "
                       f"'{NEUTRAL_USER}' ({neutralised} place(s)); contentSourceLocation, the path of the folder "
-                      f"each object was exported from, is left as it is ({root}).",
+                      f"each object was exported from, is left as it is ({root}), and so is the contentRoot of the job "
+                      "definitions.",
                       markup=False, highlight=False, soft_wrap=True)
     # What to do with the file depends on what it is: only the release file,
     # written without a difference, is something to commit.

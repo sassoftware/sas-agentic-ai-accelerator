@@ -1261,7 +1261,8 @@ def test_an_export_replaces_the_user_ids_it_names(exporting, manifest, repo):
     assert result.exit_code == 0, text
     assert ("  Replaced the user id(s) a.colleague, the.exporter in createdBy / modifiedBy / userName with "
             f"'sas-agentic-ai-accelerator' (30 place(s)); contentSourceLocation, the path of the folder each object "
-            f"was exported from, is left as it is ({CONTENT_ROOT}).\n") in text
+            f"was exported from, is left as it is ({CONTENT_ROOT}), and so is the contentRoot of the job "
+            "definitions.\n") in text
     written = target.read_text(encoding="utf-8")
     assert "the.exporter" not in written and "a.colleague" not in written
     assert named_users(json.loads(written)) == {"sas-agentic-ai-accelerator": 30}

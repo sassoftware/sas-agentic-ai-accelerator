@@ -135,3 +135,26 @@ def test_the_advice_of_an_export_of_a_test_folder_says_what_content_deploy_leave
     # the content root of the release: content-deploy writes the root the manifest names, and a report is imported
     result, text, _, _ = exporting(package_of(manifest, change={REPORT: None}))
     assert result.exit_code == 1 and "In a folder other than" not in text, text
+
+
+# ---- live-22a defect 2: the summary of an export names every path it leaves --------------------
+def test_the_summary_of_an_export_names_the_content_root_of_the_job_definitions(exporting, manifest):
+    """live-22a: a package of a folder below /Users/<id> held that id in the
+    contentRoot of two job definitions, and the summary named only
+    contentSourceLocation as left as it is."""
+    root = "/Users/fab.exporter/My Folder/ZZ_VERIFY_R22/root"
+    from mdb.core import content
+    entry, = [e for e in manifest.all_entries() if e.path == "Prompt Builder/Optimize"]
+    deployed = content.job_definition_body(manifest, entry)
+    deployed["parameters"] = [{**p, "defaultValue": root} if p["name"] == "contentRoot" else p
+                              for p in deployed["parameters"]]
+    built = package_of(manifest, change={"Prompt Builder/Optimize": deployed, REPORT: None}, root="root")
+    for detail in built.details:
+        detail["transferObject"]["summary"]["createdBy"] = "fab.exporter"
+    out = str(manifest.repo_root / "scratch" / "r22.json")
+    result, text, _, _ = exporting(built, "--content-root", root, "--out", out, "--allow-differences")
+    assert result.exit_code == 0, text
+    assert "and so is the contentRoot of the job definitions." in text, text
+    result, text, _, _ = exporting(built, "--content-root", root, "--out", out, "--allow-differences",
+                                   "--keep-user-ids")
+    assert result.exit_code == 0 and "the contentRoot of the job definitions is left as it is too." in text, text
