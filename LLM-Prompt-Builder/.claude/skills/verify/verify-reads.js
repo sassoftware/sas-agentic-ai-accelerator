@@ -1,21 +1,29 @@
 /**
- * A read that failed is not taken for what is stored. Run against a FRESH
- * mock instance.
+ * A read that failed, or read only a part, is not taken for what is stored.
+ * Run against a FRESH mock instance.
  *
  * A prompt-test whose tracker could not be read was drawn as one without
  * runs, and Save Experiments then replaced the stored runs with the new one;
  * a RAG setup whose contents could not be listed was drawn with the
  * defaults, and Save documentation wrote them over it; the delete of one
  * optimization run deleted every run when the tracker could not be read; a
- * job source answered with an error became the code of a job definition.
+ * job source answered with an error became the code of a job definition; a
+ * prompt-test whose tracker was the 101st of its contents opened as one
+ * without runs, because the first page of 100 was taken for the listing.
  *
- * The mechanism: getFileContent throws for a file it could not read (no
+ * The mechanisms: getFileContent throws for a file it could not read (no
  * answer, or no success), and every caller of a read of stored content says
- * what a failure does. The census below enumerates those calls from the
- * sources - every call of getModelContents, getFileContent, getModelDetails,
- * readOptimizationEntries and readStoredSetup in src/objects, by the function
- * it stands in - and names, for each, what a failed read leads to. A call
- * that is added, moved or gone fails the census until it is named here.
+ * what a failure does; and every listing reads every page (viyaGetAll in
+ * src/api/http-client.ts). Two censuses read the sources:
+ *   - CENSUS: every call of getModelContents, getFileContent, getModelDetails,
+ *     readOptimizationEntries and readStoredSetup in src/objects, by the
+ *     function it stands in, with what a failed read - and a file that is
+ *     read and holds nothing this page can read - leads to;
+ *   - PAGES: every text in a .ts file under src that holds `limit=` is the
+ *     path of a viyaGetAll call, or is named in PAGES with why it is not;
+ *     `start=` is written by viyaGetAll alone, and no other function of
+ *     src/api reads the `items` of a page.
+ * A call that is added, moved or gone fails a census until it is named.
  * (verify-outcomes.js has the roads of the delete of an optimization run.)
  *
  * The roads, each on a page of its own, make one read fail - refused, or
@@ -23,9 +31,17 @@
  *   - a prompt-test whose saved runs cannot be read says so, and Save
  *     Experiments uploads nothing over them; opened again, its runs are back;
  *   - the same for a decision template;
+ *   - a tracker that is read and is no list of runs (an HTML page, an object)
+ *     says that, and that opening it again does not help; nothing is written;
+ *   - a prompt-test whose tracker and optimization tracker are on the second
+ *     page of its contents shows its runs and its optimization history;
+ *   - an optimization history that cannot be read, or holds no list of runs,
+ *     says so where the history stands;
+ *   - the documentation of a prompt-test that cannot be read says so;
  *   - a RAG setup whose contents, rag-setup.json or (never saved) attributes
  *     cannot be read says so and keeps Save setup, Manifest setup and Save
- *     documentation off; opened again, they can be used;
+ *     documentation off; opened again, they can be used; a rag-setup.json
+ *     that is read and is no setup says that;
  *   - Save documentation whose read of the stored setup fails writes nothing;
  *   - a manifest whose ingestion job source cannot be read stops before it
  *     writes the job definition.
@@ -39,10 +55,9 @@ const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
 const fs = require('fs');
 const path = require('path');
-const { createRequire } = require('module');
+const { PROJECT, parse, walk, callsInSource, sourceFiles } = require('./source-census.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
-const PROJECT = process.env.VERIFY_PROJECT || path.resolve(__dirname, '..', '..', '..');
 const results = [];
 
 function step(ok, label) {
@@ -76,31 +91,31 @@ const rgb = (suffix) => `#app-obj-RGB-${suffix}`;
 const READS = ['getModelContents', 'getFileContent', 'getModelDetails', 'readOptimizationEntries', 'readStoredSetup'];
 const CENSUS = {
   'prompt-builder.ts': {
-    'loadPromptDocumentation -> getModelDetails': [1, 'null or a throw: the documentation section stays empty, and its Save documentation off'],
+    'loadPromptDocumentation -> getModelDetails': [1, 'null or a throw: the documentation section stays empty, says that it could not be read, and its Save documentation stays off (road below)'],
     'promptBuilderPromptSelectorDropdown.onchange -> getModelContents': [1, 'the runs of the prompt-test are not read: the page says so, and Save Experiments (with what saves first) writes nothing (road below)'],
-    'promptBuilderPromptSelectorDropdown.onchange -> getFileContent': [1, 'as the listing (road below)'],
+    'promptBuilderPromptSelectorDropdown.onchange -> getFileContent': [1, 'as the listing; a tracker that is read and holds no runs this page can read says that, and that opening it again does not help (road below)'],
     'buildPromptBuilder -> getModelContents': [2, 'an LLM or a decision model is offered without its options; nothing stored is written from them'],
     'buildPromptBuilder -> getFileContent': [2, 'as the listing'],
     'buildPromptBuilder -> getModelDetails': [1, 'a decision model card without the attributes of its registration; nothing is written from them'],
     'ensureLLMCostAttributes -> getModelDetails': [1, 'the LLM has no cost attributes: a manifest copies none, and writes no attribute empty'],
     'promptBuilderSaveExperiments -> getModelContents': [1, 'throws: the save stops with its line, before the upload'],
     'promptBulderCreateBestPromptModel -> getModelContents': [1, 'throws: the manifest stops with its line'],
-    'readOptimizationEntries -> getModelContents': [1, 'null - never an empty list, which is a model without a tracker'],
-    'readOptimizationEntries -> getFileContent': [1, 'as the listing'],
-    'readOptimizationEntry -> readOptimizationEntries': [1, 'null: no entry of the job is drawn; nothing is written'],
-    'refreshOptimizationHistory -> readOptimizationEntries': [1, 'null: the history lists no run; nothing is written from it'],
-    'deleteOptimizationRun -> readOptimizationEntries': [1, 'null: the delete writes nothing and says it failed (verify-outcomes.js)'],
+    'readOptimizationEntries -> getModelContents': [1, "'unread' - never an empty list, which is a model without a tracker"],
+    'readOptimizationEntries -> getFileContent': [1, "'unread'; a tracker that is read and holds no list of runs is 'unusable'"],
+    'readOptimizationEntry -> readOptimizationEntries': [1, "'unread' or 'unusable': no entry of the job is drawn, and a job that completed says that its result could not be read; nothing is written"],
+    'refreshOptimizationHistory -> readOptimizationEntries': [1, "'unread' or 'unusable': where the history stands, the page says that it could not be read, or holds no runs this page can read (road below); nothing is written from it"],
+    'deleteOptimizationRun -> readOptimizationEntries': [1, "'unread' or 'unusable': the delete writes nothing and says what failed (verify-outcomes.js)"],
     'deleteOptimizationRun -> getModelContents': [1, 'throws: the delete stops before the tracker is written'],
   },
   'rag-builder.ts': {
     'loadPromptContract -> getModelContents': [1, 'the prompt has no contract: the enrichment says so, and the validation refuses a save that uses it'],
     'loadPromptContract -> getFileContent': [1, 'as the listing'],
-    'saveDocumentation -> readStoredSetup': [1, 'throws: nothing is written, and the banner says the save failed (road below)'],
+    'saveDocumentation -> readStoredSetup': [1, 'throws: nothing is written, and the banner says the save failed - and, for a rag-setup.json that is read and is no setup, says that (road below)'],
     'removeStaleDocumentation -> getModelContents': [1, 'throws: the obsolete documentation.md is not deleted; nothing else'],
     'readStoredSetup -> getModelContents': [1, 'throws to its caller'],
-    'readStoredSetup -> getFileContent': [1, 'throws to its caller'],
+    'readStoredSetup -> getFileContent': [1, 'throws to its caller; a file that is read and is no setup throws SetupUnusable'],
     'loadSetup -> getModelContents': [1, 'the setup is not read: the page says so, and Save setup, Manifest setup and Save documentation stay off (road below)'],
-    'loadSetup -> getFileContent': [1, 'as the listing (road below)'],
+    'loadSetup -> getFileContent': [1, 'as the listing; a rag-setup.json that is read and is no setup says that (road below)'],
     'loadSetup -> getModelDetails': [1, 'as the listing, for a setup never saved (road below)'],
     'generateIngestionJob -> getFileContent': [1, 'throws: the manifest stops before the job definition is written (road below)'],
     'registerRetrievalModel -> getFileContent': [1, 'throws: the manifest stops before the score code is written'],
@@ -108,52 +123,84 @@ const CENSUS = {
   },
 };
 
-/** The calls of READS in a source, as "<function> -> <read>" with a count. */
-function readsInSource(file, text) {
-  const projectRequire = createRequire(path.join(PROJECT, 'package.json'));
-  const { parseSync } = projectRequire('rolldown/utils');
-  const { program, errors } = parseSync(file, text, { lang: 'ts' });
-  if (errors.length) throw new Error(`${file} does not parse: ${errors[0].message}`);
-  const source = (node) => text.slice(node.start, node.end);
-  const isFunction = (node) => node && /^(FunctionExpression|ArrowFunctionExpression)$/.test(node.type);
-  // The name a node gives the code inside it, if it is a named function.
-  const nameOf = (node) => {
-    if (node.type === 'FunctionDeclaration' && node.id) return node.id.name;
-    if (node.type === 'VariableDeclarator' && isFunction(node.init) && node.id.type === 'Identifier') return node.id.name;
-    if (node.type === 'AssignmentExpression' && isFunction(node.right)) return source(node.left);
-    if ((node.type === 'Property' || node.type === 'MethodDefinition') && isFunction(node.value) && node.key.type === 'Identifier') return node.key.name;
-    if (
-      node.type === 'CallExpression' && node.callee.type === 'MemberExpression' && node.callee.property.name === 'addEventListener' &&
-      node.arguments[0] && node.arguments[0].type === 'Literal' && isFunction(node.arguments[1])
-    ) {
-      return `${source(node.callee.object)}:${node.arguments[0].value}`;
+/**
+ * Every text in the sources that names a page size (`limit=`) and is not the
+ * path of a viyaGetAll call, by "<file> <function>", with the count and why
+ * it reads no more than one page.
+ */
+const PAGES = {
+  'api/jobexec-api.ts primeJobExecutionSession': [1, 'the GET that gives the browser its session with Job Execution: its answer is not read'],
+  'api/jobexec-api.ts primeComputeService': [1, 'the GET that gives the browser its session with the compute service: its answer is not read'],
+  'api/jobexec-api.ts getJobProgressMessages': [2, 'the two logs of a job: the first page is read here, and withLaterPages reads every page after it through viyaGetAll'],
+};
+// The functions of src/api that read the `items` of an answer themselves.
+const ITEM_READERS = {
+  'api/http-client.ts viyaGetAll': 'the one reader of the pages of a collection',
+  'api/jobexec-api.ts withLaterPages': 'the pages of a log, through viyaGetAll',
+  'api/jobexec-api.ts readLogLines': 'the lines of a log that was read whole',
+  'api/dataflows-api.ts walk': 'the items of the form of a custom step, which is no collection',
+};
+
+function pagesCensus() {
+  let files;
+  try {
+    files = sourceFiles();
+  } catch (error) {
+    step(false, `every listing reads every page (the sources could not be read: ${error.message})`);
+    return;
+  }
+  const outside = {};
+  const starts = [];
+  const itemReads = {};
+  for (const [file, text] of Object.entries(files)) {
+    let parsed;
+    try {
+      parsed = parse(file, text);
+    } catch (error) {
+      step(false, `${file}: the sources are known to this suite (${error.message}; set VERIFY_PROJECT, run npm ci)`);
+      continue;
     }
-    return null;
-  };
-  const counts = {};
-  const walk = (node, name) => {
-    if (!node || typeof node.type !== 'string') return;
-    const here = nameOf(node) || name;
-    if (node.type === 'CallExpression' && node.callee.type === 'Identifier' && READS.includes(node.callee.name)) {
-      const key = `${here || '(module)'} -> ${node.callee.name}`;
-      counts[key] = (counts[key] || 0) + 1;
-    }
-    for (const [key, value] of Object.entries(node)) {
-      if (key === 'parent') continue;
-      if (Array.isArray(value)) value.forEach((child) => walk(child, here));
-      else if (value && typeof value === 'object') walk(value, here);
-    }
-  };
-  walk(program, null);
-  return counts;
+    walk(parsed.program, parsed.source, (node, name, parents) => {
+      const where = `${file} ${name || '(module)'}`;
+      if (node.type === 'MemberExpression' && !node.computed && node.property.name === 'items' && file.startsWith('api/')) {
+        itemReads[where] = (itemReads[where] || 0) + 1;
+      }
+      const textOf =
+        node.type === 'Literal' && typeof node.value === 'string'
+          ? node.value
+          : node.type === 'TemplateLiteral'
+            ? node.quasis.map((quasi) => quasi.value.cooked).join('${}')
+            : null;
+      if (textOf === null) return;
+      if (/(^|[?&}])start=/.test(textOf) && where !== 'api/http-client.ts viyaGetAll') starts.push(where);
+      if (!/[?&]limit=/.test(textOf)) return;
+      const call = [...parents].reverse().find((parent) => parent.type === 'CallExpression');
+      const first = call && call.arguments[0];
+      const inGetAll = call && call.callee.type === 'Identifier' && call.callee.name === 'viyaGetAll' && first && node.start >= first.start && node.end <= first.end;
+      if (!inGetAll) outside[where] = (outside[where] || 0) + 1;
+    });
+  }
+  const unknown = Object.keys(outside).filter((where) => !PAGES[where]);
+  const gone = Object.keys(PAGES).filter((where) => !outside[where]);
+  const miscounted = Object.keys(PAGES).filter((where) => outside[where] && outside[where] !== PAGES[where][0]).map((where) => `${where}: ${outside[where]}, not ${PAGES[where][0]}`);
+  step(
+    unknown.length === 0 && gone.length === 0 && miscounted.length === 0,
+    `every listing of the page reads every page: each text of the ${Object.keys(files).length} source files that names a page size is the path of a viyaGetAll call, or named here with why it reads one page (not named here: ${unknown.join('; ') || 'none'}; named but not found: ${gone.join('; ') || 'none'}; counted otherwise: ${miscounted.join('; ') || 'none'})`
+  );
+  const strangers = Object.keys(itemReads).filter((where) => !ITEM_READERS[where]);
+  step(
+    starts.length === 0 && strangers.length === 0,
+    `the pages of a collection are read by viyaGetAll alone: no other text asks for a page by its start, and no other function of src/api reads the items of an answer (start= elsewhere: ${starts.join('; ') || 'none'}; items read in: ${strangers.join('; ') || 'none'})`
+  );
 }
 
 function census() {
+  pagesCensus();
   for (const [file, known] of Object.entries(CENSUS)) {
     let counts = null;
     let problem = '';
     try {
-      counts = readsInSource(file, fs.readFileSync(path.join(PROJECT, 'src', 'objects', file), 'utf8'));
+      counts = callsInSource(file, fs.readFileSync(path.join(PROJECT, 'src', 'objects', file), 'utf8'), READS);
     } catch (error) {
       problem = error.message;
     }
@@ -338,6 +385,133 @@ function census() {
   });
 
   // ==========================================================================
+  // The Prompt Builder: a tracker that is read and is no list of runs
+  // ==========================================================================
+  // SAS Model Manager answers 200, with a body that is no tracker: what the
+  // page says is that, and that opening it again does not help - the line of
+  // a read that failed sent the reader to open it again, for good.
+  const UNUSABLE_RUNS = 'The saved runs of this prompt-test cannot be used';
+  const notATracker = [
+    ['an HTML page', 'text/html', '<html><body>Signed out</body></html>'],
+    ['an object', 'application/json', '{"rows":[]}'],
+  ];
+  for (const [what, type, body] of notATracker) {
+    await road(`a tracker that is answered with ${what}`, async (page) => {
+      await openPage(page);
+      await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
+      await page.route('**/files/files/trk-1/content', (route) => route.fulfill({ status: 200, contentType: type, body }));
+      await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-used');
+      await waitUntil(async () => (await toasts(page)).length > 0, 'a toast', 15000).catch(() => {});
+      const line = await textOf(page, lpb('pet-save-only-result'));
+      const said = await toasts(page);
+      step(
+        line.startsWith(UNUSABLE_RUNS) && line.includes('Repair or remove the file') && said.some((text) => text.startsWith(UNUSABLE_RUNS)) && (await savedRuns(page)) === 0,
+        `a tracker answered with ${what} says that it holds no runs this page can read and what helps, beside Save Experiments and in a toast (line: "${clip(line)}"; toasts: ${JSON.stringify(said).slice(0, 300)}; runs shown: ${await savedRuns(page)})`
+      );
+      await goStep(page, 'LPB', 'build');
+      await page.fill(lpb('user-prompt'), 'A question typed over a tracker that is no tracker');
+      await page.check('#model0');
+      await page.click(lpb('run-experiment'));
+      await waitUntil(async () => (await page.$$(`${lpb('pet')} .accordion-item`)).length > 0, 'the run is drawn', 30000);
+      await waitUntil(async () => (await textOf(page, lpb('run-experiment'))) === 'Run Experiments', 'the run has ended', 30000);
+      await atRest();
+      await resetLog();
+      await page.click(lpb('pet-save-button'));
+      await waitUntil(async () => (await textOf(page, lpb('pet-save-button'))) === 'Save Experiments', 'the save has ended', 30000);
+      await atRest();
+      const writes = (await getLog()).filter((entry) => entry.method !== 'GET').map((entry) => `${entry.method} ${entry.url}`);
+      step(writes.length === 0, `Save Experiments over a tracker answered with ${what} writes nothing (writes: ${JSON.stringify(writes)})`);
+      step(pageErrors.length === 0, `a tracker answered with ${what}: no uncaught page errors (got: ${pageErrors.join(' | ') || 'none'})`);
+    });
+  }
+
+  // ==========================================================================
+  // Every page of the contents of a prompt-test
+  // ==========================================================================
+  // SAS Model Manager lists the contents of a model a page at a time, and a
+  // prompt-test holds a dataset snapshot per optimization run: with 100 of
+  // them the tracker and the optimization tracker are on the second page.
+  await road('a prompt-test whose trackers are on the second page of its contents', async (page) => {
+    await openPage(page);
+    await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
+    const pages = [];
+    await page.route('**/modelRepository/models/model-used/contents?*', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue();
+      const url = new URL(route.request().url());
+      const start = Number(url.searchParams.get('start') || 0);
+      const limit = Number(url.searchParams.get('limit') || 100);
+      pages.push(`start=${start}`);
+      const own = (await (await route.fetch()).json()).items || [];
+      const snapshots = Array.from({ length: 100 }, (_, index) => ({ id: `c-snap-${index}`, name: `Prompt-Optimization-Dataset-${index}.json`, fileUri: `/files/files/snap-${index}` }));
+      const all = [...snapshots, ...own];
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ start, limit, count: all.length, items: all.slice(start, start + limit) }) });
+    });
+    await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-used');
+    await waitUntil(async () => (await savedRuns(page)) > 0, 'the runs are drawn', 15000).catch(() => {});
+    const line = await textOf(page, lpb('pet-save-only-result'));
+    step(
+      (await savedRuns(page)) > 0 && line === '',
+      `a prompt-test whose tracker is on the second page of its contents shows its saved runs (runs: ${await savedRuns(page)}; line: "${clip(line)}"; pages asked for: ${pages.join(', ')})`
+    );
+    await goStep(page, 'LPB', 'optimize');
+    const entries = `${lpb('pane-optimize')} .pb-optimize-history-entry`;
+    await waitUntil(async () => (await page.$$(entries)).length > 0, 'the history is drawn', 15000).catch(() => {});
+    step(
+      (await page.$$(entries)).length > 0,
+      `and its optimization history, whose tracker is on the second page as well (entries: ${(await page.$$(entries)).length})`
+    );
+  });
+
+  // ==========================================================================
+  // An optimization history that cannot be read
+  // ==========================================================================
+  const HISTORY_UNREAD = 'The optimization history of this prompt-test could not be read from SAS Model Manager';
+  const HISTORY_UNUSABLE = 'The optimization history of this prompt-test cannot be shown';
+  for (const [how, answer, said] of [
+    ['refused', (route) => route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"refused by the suite"}' }), HISTORY_UNREAD],
+    ['without an answer', (route) => route.abort('failed'), HISTORY_UNREAD],
+    ['answered with an HTML page', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<html><body>Signed out</body></html>' }), HISTORY_UNUSABLE],
+  ]) {
+    await road(`an optimization history whose tracker is ${how}`, async (page) => {
+      await openPage(page);
+      await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
+      await page.route('**/files/files/opttrk-1/content', answer);
+      await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-used');
+      await goStep(page, 'LPB', 'optimize');
+      const place = `${lpb('pane-optimize')} .pb-optimize-history-unread`;
+      await waitUntil(async () => (await page.$$(place)).length > 0, 'the line of the history', 15000).catch(() => {});
+      const line = (await page.$(place)) ? await textOf(page, place) : '';
+      const history = await textOf(page, lpb('pane-optimize'));
+      step(
+        line.startsWith(said) && (await page.$$(`${lpb('pane-optimize')} .pb-optimize-history-entry`)).length === 0,
+        `an optimization history whose tracker is ${how} says so where the history stands, and lists no run (line: "${clip(line)}"; the step reads: "${clip(history.slice(-200))}")`
+      );
+    });
+  }
+
+  // ==========================================================================
+  // The documentation of a prompt-test that cannot be read
+  // ==========================================================================
+  await road('the documentation of a prompt-test that cannot be read', async (page) => {
+    await openPage(page);
+    await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
+    await failOnce(page, (url) => url.pathname === '/modelRepository/models/model-used', 'refused');
+    await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-used');
+    const section = `${lpb('pane-setup')} .pb-doc-section`;
+    const unread = `${section} .pb-doc-unread`;
+    const shown = (await page.$(unread)) ? await page.$eval(unread, (element) => !element.hidden) : false;
+    const line = shown ? await textOf(page, unread) : '';
+    step(
+      shown && line.startsWith('The documentation of this prompt-test could not be read from SAS Model Manager') && (await page.isDisabled(`${section} > button`)),
+      `the documentation of a prompt-test that cannot be read says so in its section, and Save documentation stays off (line shown: ${shown}; "${clip(line)}")`
+    );
+    await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-free');
+    await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-used');
+    const again = (await page.$(unread)) ? await page.$eval(unread, (element) => !element.hidden) : false;
+    step(!again && !(await page.isDisabled(`${section} > button`)), `opened again, the documentation is read: no line, and Save documentation can be used (line shown: ${again})`);
+  });
+
+  // ==========================================================================
   // The RAG Builder: a setup that cannot be read
   // ==========================================================================
   const SETUP_WRITES = [['Save setup', rgb('save')], ['Manifest setup', rgb('manifest')], ['Save documentation', rgb('save-documentation')]];
@@ -381,6 +555,26 @@ function census() {
         );
       });
     }
+  }
+
+  // A rag-setup.json that is read and is no setup: the banner says that, and
+  // what helps - opening it again reads the same file.
+  for (const [what, type, body] of [['no JSON', 'application/json', 'not json at all'], ['a list', 'application/json', '[]']]) {
+    await road(`a rag-setup.json that is ${what}`, async (page) => {
+      await openPage(page, 'rag');
+      await choose(page, 'RGB', rgb('project'), 'rag-proj');
+      const file = await ragSetupFile('rag-setup-1');
+      await page.route(`**${file}/content`, (route) => route.fulfill({ status: 200, contentType: type, body }));
+      await choose(page, 'RGB', rgb('setup'), 'rag-setup-1');
+      await waitUntil(async () => (await banner(page)) !== '', 'the banner', 15000).catch(() => {});
+      await page.waitForTimeout(1500);
+      const usable = await usableWrites(page);
+      const said = await banner(page);
+      step(
+        usable.length === 0 && said.startsWith('The stored setup cannot be used') && said.includes('Repair or remove the file') && pageErrors.length === 0,
+        `a rag-setup.json that is ${what} says that it is no setup this page can read and what helps, and keeps the buttons that write it off (usable: ${usable.join(', ') || 'none'}; banner: "${clip(said)}"; page errors: ${pageErrors.join(' | ') || 'none'})`
+      );
+    });
   }
 
   await road('Save documentation whose read of the stored setup fails', async (page) => {

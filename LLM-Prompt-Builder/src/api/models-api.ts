@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { viyaFetch, viyaGet, viyaPost } from './http-client';
+import { viyaFetch, viyaGet, viyaGetAll, viyaPost } from './http-client';
 import type {
   ModelProject,
   Model,
@@ -11,39 +11,21 @@ import type {
   ModelVariable,
   ModelRepository,
   ModelVersion,
-  SasApiCollection,
   DropdownOption,
 } from '../types/models';
 
 /**
- * Get model projects with optional filter and pagination, shaped for dropdown options.
+ * Get model projects with optional filter, shaped for dropdown options. Every
+ * page of the listing is read (see viyaGetAll).
  */
-export async function getModelProjects(
-  query: string = '',
-  start: number = 0,
-  limit: number = 50
-): Promise<DropdownOption[]> {
-  const data = await viyaGet<SasApiCollection<ModelProject>>(
-    `/modelRepository/projects?start=${start}&limit=${limit}&filter=${query}`
-  );
-
-  let options: DropdownOption[] = [];
-  if (data?.items) {
-    for (const item of data.items) {
-      options.push({ value: item.id, innerHTML: item.name, createdBy: item.createdBy, modifiedBy: item.modifiedBy });
-    }
-  }
-
-  if (data?.items && data.items.length === limit) {
-    const more = await getModelProjects(query, start + limit, limit);
-    options = options.concat(more);
-  }
-
-  return options;
+export async function getModelProjects(query: string = ''): Promise<DropdownOption[]> {
+  const items = await viyaGetAll<ModelProject>(`/modelRepository/projects?limit=50&filter=${query}`);
+  return items.map((item) => ({ value: item.id, innerHTML: item.name, createdBy: item.createdBy, modifiedBy: item.modifiedBy }));
 }
 
 /**
- * Get models within a project, shaped for dropdown options.
+ * Get models within a project, shaped for dropdown options. Every page of the
+ * listing is read (see viyaGetAll).
  *
  * Each option also carries the model's `algorithm` and `tags` as the listing
  * returns them. That is what lets a caller tell kinds of model apart from
@@ -52,42 +34,17 @@ export async function getModelProjects(
  * that combines the two (`or(contains(tags,…),eq(algorithm,…))`) is not an
  * alternative: the service answers it with an empty list.
  */
-export async function getModelProjectModels(
-  projectID: string,
-  query: string = '',
-  start: number = 0,
-  limit: number = 50
-): Promise<DropdownOption[]> {
-  const data = await viyaGet<SasApiCollection<Model>>(
-    `/modelRepository/projects/${projectID}/models?start=${start}&limit=${limit}&filter=${query}`
-  );
-
-  let options: DropdownOption[] = [];
-  if (data?.items) {
-    for (const item of data.items) {
-      options.push({
-        value: item.id,
-        innerHTML: item.name,
-        createdBy: item.createdBy,
-        modifiedBy: item.modifiedBy,
-        algorithm: typeof item.algorithm === 'string' ? item.algorithm : undefined,
-        // A model without tags is listed with `tags: null`.
-        tags: Array.isArray(item.tags) ? item.tags.map(String) : [],
-      });
-    }
-  }
-
-  if (data?.items && data.items.length === limit) {
-    const more = await getModelProjectModels(
-      projectID,
-      query,
-      start + limit,
-      limit
-    );
-    options = options.concat(more);
-  }
-
-  return options;
+export async function getModelProjectModels(projectID: string, query: string = ''): Promise<DropdownOption[]> {
+  const items = await viyaGetAll<Model>(`/modelRepository/projects/${projectID}/models?limit=50&filter=${query}`);
+  return items.map((item) => ({
+    value: item.id,
+    innerHTML: item.name,
+    createdBy: item.createdBy,
+    modifiedBy: item.modifiedBy,
+    algorithm: typeof item.algorithm === 'string' ? item.algorithm : undefined,
+    // A model without tags is listed with `tags: null`.
+    tags: Array.isArray(item.tags) ? item.tags.map(String) : [],
+  }));
 }
 
 /**
@@ -114,40 +71,12 @@ export async function getModelRepositoryInformation(
 }
 
 /**
- * Get all model repositories, shaped for dropdown options.
+ * Get all model repositories, shaped for dropdown options, the placeholder
+ * first. Every page of the listing is read (see viyaGetAll).
  */
-export async function getAllModelRepositories(
-  placeholderText: string,
-  start: number = 0,
-  limit: number = 20,
-  first: boolean = true
-): Promise<DropdownOption[]> {
-  const data = await viyaGet<SasApiCollection<ModelRepository>>(
-    `/modelRepository/repositories?start=${start}&limit=${limit}`
-  );
-
-  let options: DropdownOption[] = [];
-  if (first) {
-    options.push({ value: '', innerHTML: placeholderText });
-  }
-
-  if (data?.items) {
-    for (const item of data.items) {
-      options.push({ value: item.id, innerHTML: item.name });
-    }
-  }
-
-  if (data?.items && data.items.length === limit) {
-    const more = await getAllModelRepositories(
-      placeholderText,
-      start + limit,
-      limit,
-      false
-    );
-    options = options.concat(more);
-  }
-
-  return options;
+export async function getAllModelRepositories(placeholderText: string): Promise<DropdownOption[]> {
+  const items = await viyaGetAll<ModelRepository>('/modelRepository/repositories?limit=20');
+  return [{ value: '', innerHTML: placeholderText }, ...items.map((item) => ({ value: item.id, innerHTML: item.name }))];
 }
 
 /**
@@ -172,17 +101,12 @@ export async function createModel(
 }
 
 /**
- * Get contents of a model.
+ * Get contents of a model. Every page of the listing is read (see
+ * viyaGetAll): a prompt-test holds a content per optimization run beside its
+ * tracker.
  */
-export async function getModelContents(
-  modelID: string,
-  start: number = 0,
-  limit: number = 100
-): Promise<ModelContent[]> {
-  const data = await viyaGet<SasApiCollection<ModelContent>>(
-    `/modelRepository/models/${modelID}/contents?start=${start}&limit=${limit}`
-  );
-  return data?.items ?? [];
+export async function getModelContents(modelID: string): Promise<ModelContent[]> {
+  return viyaGetAll<ModelContent>(`/modelRepository/models/${modelID}/contents?limit=100`);
 }
 
 /**
@@ -253,17 +177,10 @@ export async function deleteModelContent(
 }
 
 /**
- * Get model variables.
+ * Get model variables. Every page of the listing is read (see viyaGetAll).
  */
-export async function getModelVariables(
-  modelID: string,
-  start: number = 0,
-  limit: number = 1000
-): Promise<ModelVariable[]> {
-  const data = await viyaGet<SasApiCollection<ModelVariable>>(
-    `/modelRepository/models/${modelID}/variables?start=${start}&limit=${limit}`
-  );
-  return data?.items ?? [];
+export async function getModelVariables(modelID: string): Promise<ModelVariable[]> {
+  return viyaGetAll<ModelVariable>(`/modelRepository/models/${modelID}/variables?limit=1000`);
 }
 
 /**
@@ -391,10 +308,8 @@ export async function deleteModelProject(projectID: string): Promise<number> {
 export async function getModelVersions(
   modelID: string
 ): Promise<Array<{ id: string; label: string; created: string }>> {
-  const data = await viyaGet<SasApiCollection<Record<string, unknown>>>(
-    `/modelRepository/models/${modelID}/modelVersions?limit=100`
-  );
-  return (data?.items ?? [])
+  const items = await viyaGetAll<Record<string, unknown>>(`/modelRepository/models/${modelID}/modelVersions?limit=100`);
+  return items
     .map((item) => ({
       id: String(item.id ?? ''),
       label: String(item.modelVersionName ?? ''),
@@ -423,30 +338,19 @@ export interface TaggedModel {
  * server about each project in turn.
  *
  * A tag nothing carries answers 200 with `count: 0` rather than an error, so
- * an empty result means exactly that and is not a failure to report.
+ * an empty result means exactly that and is not a failure to report. Every
+ * page of the listing is read (see viyaGetAll).
  */
-export async function getTaggedModels(
-  tag: string,
-  start: number = 0,
-  limit: number = 100
-): Promise<TaggedModel[]> {
-  const data = await viyaGet<SasApiCollection<Model>>(
-    `/modelRepository/models?start=${start}&limit=${limit}` +
-      `&filter=${encodeURIComponent(`contains(tags,'${tag}')`)}`
+export async function getTaggedModels(tag: string): Promise<TaggedModel[]> {
+  const items = await viyaGetAll<Model>(
+    `/modelRepository/models?limit=100&filter=${encodeURIComponent(`contains(tags,'${tag}')`)}`
   );
-
-  let models: TaggedModel[] = (data?.items ?? []).map((item) => ({
+  return items.map((item) => ({
     id: String(item.id ?? ''),
     name: String(item.name ?? ''),
     projectId: String(item.projectId ?? ''),
     projectName: String(item.projectName ?? ''),
   }));
-
-  if (data?.items && data.items.length === limit) {
-    models = models.concat(await getTaggedModels(tag, start + limit, limit));
-  }
-
-  return models;
 }
 
 /**

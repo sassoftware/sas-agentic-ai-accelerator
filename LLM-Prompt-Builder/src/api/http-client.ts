@@ -145,6 +145,20 @@ export async function viyaFetch(
 }
 
 /**
+ * A request SAS Viya answered with a status that is no success: a refusal,
+ * which is an answer - unlike a request that got none.
+ */
+export class ViyaRefused extends Error {
+  constructor(
+    path: string,
+    readonly status: number,
+    message = `Viya request to ${path} failed with HTTP ${status}`
+  ) {
+    super(message);
+  }
+}
+
+/**
  * Parse a JSON response, throwing on a non-OK status so callers never read
  * fields off an error body (which previously surfaced as `undefined` ids that
  * poisoned later requests / persisted state).
@@ -153,12 +167,54 @@ async function parseJsonResponse<T>(
   response: Response,
   path: string
 ): Promise<T> {
-  if (!response.ok) {
-    throw new Error(
-      `Viya request to ${path} failed with HTTP ${response.status}`
-    );
-  }
+  if (!response.ok) throw new ViyaRefused(path, response.status);
   return response.json() as Promise<T>;
+}
+
+/** One page of a collection of SAS Viya, as the services answer it. */
+export interface CollectionPage<T> {
+  items?: T[];
+  count?: number;
+  limit?: number;
+  links?: Array<{ rel?: string }>;
+}
+
+/**
+ * Every item of a collection: the page `path` asks for and every page after
+ * it.
+ *
+ * The services answer a listing a page at a time - SAS Model Manager lists
+ * the contents of a model 100 at a time for limit=100 and says in `count`
+ * how many there are - and a caller that took the first page for the whole
+ * listing took a prompt-test whose tracker is its 101st content for one
+ * without a tracker. The next page is asked for while the page that came
+ * says there is one: a link `next`, a `count` beyond the items read, or -
+ * with neither - a page as full as its limit. A page that cannot be read
+ * fails the whole listing, so a part is never taken for the whole.
+ *
+ * `path` carries its page size as `limit=` and no `start=`. `upTo` ends the
+ * reading once that many items are in. `read` reads one page; a query sent
+ * with POST brings its own.
+ */
+export async function viyaGetAll<T>(
+  path: string,
+  options: { upTo?: number; read?: (pagePath: string) => Promise<CollectionPage<T>> } = {}
+): Promise<T[]> {
+  const read = options.read ?? ((pagePath: string) => viyaGet<CollectionPage<T>>(pagePath));
+  const upTo = options.upTo ?? Infinity;
+  const asked = Number(/[?&]limit=(\d+)/.exec(path)?.[1]);
+  const items: T[] = [];
+  for (;;) {
+    const page = await read(`${path}${path.includes('?') ? '&' : '?'}start=${items.length}`);
+    const got = Array.isArray(page?.items) ? page.items : [];
+    items.push(...got);
+    if (got.length === 0 || items.length >= upTo) break;
+    const next = Array.isArray(page.links) && page.links.some((link) => link?.rel === 'next');
+    const count = typeof page.count === 'number' && page.count >= 0 ? page.count : null;
+    const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : asked;
+    if (!(next || (count !== null ? items.length < count : got.length >= limit))) break;
+  }
+  return items.slice(0, upTo);
 }
 
 /**

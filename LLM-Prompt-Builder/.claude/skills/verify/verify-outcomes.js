@@ -12,8 +12,9 @@
  *     in the RAG Builder the job reference and the Studio flow copy of
  *     Manifest setup and its model version. Nothing is deleted to be
  *     written back: a refused upload loses no run. The delete of an
- *     optimization run whose tracker cannot be read writes nothing; one whose
- *     upload was stored without an answer says the run may have been deleted.
+ *     optimization run whose tracker cannot be read writes nothing and says
+ *     what failed; one whose upload was stored without an answer says the run
+ *     may have been deleted.
  *   - A delete whose request gets no answer says so; a Delete prompt-test or
  *     Delete project opens no dialog when another item was opened while the
  *     usage was asked. A Delete project that stops part of the way shows
@@ -459,8 +460,14 @@ const MANIFEST_BOX = lpb('pet-save-result');
 
   // The tracker cannot be read at the delete: its other runs are not known,
   // and nothing is written - before, an empty list stood in for them and the
-  // tracker was deleted with every run.
-  for (const failure of ['refused', 'abort', 'html']) {
+  // tracker was deleted with every run. The toast says what failed: the read
+  // (refused or without an answer), or a tracker that is no list of runs -
+  // not that permissions are missing.
+  for (const [failure, said] of [
+    ['refused', 'The run was not deleted: the optimization tracker of this prompt-test could not be read from SAS Model Manager'],
+    ['abort', 'The run was not deleted: the optimization tracker of this prompt-test could not be read from SAS Model Manager'],
+    ['html', 'The run was not deleted: SAS Model Manager answered with a Prompt-Optimization-Tracker.json that holds no runs this page can read'],
+  ]) {
     await road(`the delete of an optimization run whose tracker cannot be read (${failure})`, async (page) => {
       await openPage(page);
       const state = await servedTracker(page);
@@ -468,11 +475,11 @@ const MANIFEST_BOX = lpb('pet-save-result');
       await goStep(page, 'LPB', 'optimize');
       await page.waitForSelector(`${lpb('pane-optimize')} .pb-optimize-history-entry`, { timeout: 15000 });
       state.failNextRead = failure;
-      const { said, after } = await deleteFirstRun(page);
+      const { said: toastsSaid, after } = await deleteFirstRun(page);
       step(
-        said.some((text) => text.startsWith('The deletion failed')) && !said.some((text) => text.startsWith('Optimization run deleted')) &&
-          after === 2 && state.entries.length === 2 && state.writes.filter((write) => !write.includes('/modelVersions')).length === 0,
-        `the delete of an optimization run whose tracker cannot be read (${failure}) writes nothing and says the deletion failed: both runs are stored and listed (toasts: ${JSON.stringify(said)}; entries shown: ${after}; stored: ${state.entries.length}; writes: ${JSON.stringify(state.writes)})`
+        toastsSaid.some((text) => text.startsWith(said)) && !toastsSaid.some((text) => text.includes('permissions') || text.startsWith('Optimization run deleted')) &&
+          after === 2 && state.entries.length === 2 && state.writes.length === 0,
+        `the delete of an optimization run whose tracker cannot be read (${failure}) writes nothing and says what failed, without a word of permissions: both runs are stored and listed (toasts: ${JSON.stringify(toastsSaid)}; entries shown: ${after}; stored: ${state.entries.length}; writes: ${JSON.stringify(state.writes)})`
       );
     });
   }

@@ -11,37 +11,35 @@
  * LOADED tables — exactly the ones the job's compute session can read.
  */
 
-import { viyaGet } from './http-client';
-
-interface CasCollection<T> {
-  items?: T[];
-}
+import { viyaGet, viyaGetAll } from './http-client';
 
 interface NamedItem {
   name?: string;
 }
 
+// Every listing below reads every page of its collection (see viyaGetAll).
+
 /** List the CAS servers of the deployment (usually just cas-shared-default). */
 export async function getCasServers(): Promise<string[]> {
-  const data = await viyaGet<CasCollection<NamedItem>>('/casManagement/servers?limit=100');
-  return (data.items ?? []).map((item) => String(item.name ?? '')).filter(Boolean);
+  const items = await viyaGetAll<NamedItem>('/casManagement/servers?limit=100');
+  return items.map((item) => String(item.name ?? '')).filter(Boolean);
 }
 
 /** List the caslibs of a CAS server. */
 export async function getCaslibs(server: string): Promise<string[]> {
-  const data = await viyaGet<CasCollection<NamedItem>>(
+  const items = await viyaGetAll<NamedItem>(
     `/casManagement/servers/${encodeURIComponent(server)}/caslibs?limit=500&excludeItemLinks=true`
   );
-  return (data.items ?? []).map((item) => String(item.name ?? '')).filter(Boolean);
+  return items.map((item) => String(item.name ?? '')).filter(Boolean);
 }
 
 /** List the loaded (in-memory) tables of a caslib. */
 export async function getCasTables(server: string, caslib: string): Promise<string[]> {
-  const data = await viyaGet<CasCollection<NamedItem>>(
+  const items = await viyaGetAll<NamedItem>(
     `/casManagement/servers/${encodeURIComponent(server)}/caslibs/${encodeURIComponent(caslib)}` +
       '/tables?limit=1000&excludeItemLinks=true'
   );
-  return (data.items ?? []).map((item) => String(item.name ?? '')).filter(Boolean);
+  return items.map((item) => String(item.name ?? '')).filter(Boolean);
 }
 
 /** What the optimize panel needs to validate a CAS dataset table up front. */
@@ -65,14 +63,14 @@ export async function getCasTableInfo(
     `/casManagement/servers/${encodeURIComponent(server)}` +
     `/caslibs/${encodeURIComponent(caslib)}/tables/${encodeURIComponent(table)}`;
   const info = await viyaGet<{ rowCount?: number }>(base);
-  const columns = await viyaGet<{ items?: { name?: string }[] }>(`${base}/columns?limit=1000`);
+  const columns = await viyaGetAll<NamedItem>(`${base}/columns?limit=1000`);
   return {
-    columns: (columns.items ?? []).map((column) => String(column.name ?? '')).filter(Boolean),
+    columns: columns.map((column) => String(column.name ?? '')).filter(Boolean),
     rowCount: Number(info.rowCount ?? 0),
   };
 }
 
-/** One page of a loaded CAS table, as column names + row value arrays. */
+/** The first rows of a loaded CAS table, as column names + row value arrays. */
 export interface CasTableRows {
   columns: string[];
   rows: unknown[][];
@@ -98,14 +96,11 @@ export async function getCasTableRows(
   const path =
     `/servers/${encodeURIComponent(server)}` +
     `/caslibs/${encodeURIComponent(caslib)}/tables/${encodeURIComponent(table)}`;
-  const columns = await viyaGet<{ items?: { name?: string }[] }>(
-    `/casManagement${path}/columns?limit=1000`
-  );
-  const rows = await viyaGet<{ items?: { cells?: unknown[] }[] }>(
-    `/casRowSets${path}/rows?limit=${limit}`
-  );
+  const columns = await viyaGetAll<NamedItem>(`/casManagement${path}/columns?limit=1000`);
+  // Up to `limit` rows, page after page.
+  const rows = await viyaGetAll<{ cells?: unknown[] }>(`/casRowSets${path}/rows?limit=${limit}`, { upTo: limit });
   return {
-    columns: (columns.items ?? []).map((column) => String(column.name ?? '')).filter(Boolean),
-    rows: (rows.items ?? []).map((row) => row.cells ?? []),
+    columns: columns.map((column) => String(column.name ?? '')).filter(Boolean),
+    rows: rows.map((row) => row.cells ?? []),
   };
 }

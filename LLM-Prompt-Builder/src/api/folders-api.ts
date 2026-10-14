@@ -6,7 +6,7 @@
  * path, list its members, and ensure a child folder exists.
  */
 
-import { viyaFetch, viyaGet, viyaPost } from './http-client';
+import { viyaFetch, viyaGetAll, viyaPost } from './http-client';
 
 export interface FolderInfo {
   id: string;
@@ -30,15 +30,12 @@ export async function getFolderByPath(path: string): Promise<FolderInfo | null> 
   return (await response.json()) as FolderInfo;
 }
 
-/** List a folder's members (files, subfolders, job definitions, ...). */
-export async function getFolderMembers(
-  folderId: string,
-  limit = 200
-): Promise<FolderMember[]> {
-  const data = await viyaGet<{ items?: FolderMember[] }>(
-    `/folders/folders/${folderId}/members?limit=${limit}`
-  );
-  return data?.items ?? [];
+/**
+ * List a folder's members (files, subfolders, job definitions, ...). Every
+ * page of the listing is read (see viyaGetAll).
+ */
+export async function getFolderMembers(folderId: string): Promise<FolderMember[]> {
+  return viyaGetAll<FolderMember>(`/folders/folders/${folderId}/members?limit=200`);
 }
 
 /**

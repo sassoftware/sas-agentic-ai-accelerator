@@ -116,6 +116,13 @@ const PIPELINE_FILE = 'pipeline.yaml';
  *  in the model's attributes). Kept only so the stale copy can be found. */
 const DOCUMENTATION_FILE = 'documentation.md';
 
+/** A rag-setup.json that was read and is no setup: reading it again does not change it. */
+class SetupUnusable extends Error {
+  constructor() {
+    super(`${SETUP_FILE} holds no setup`);
+  }
+}
+
 /**
  * A pipeline table prefix: a SAS name, capped at 20 characters.
  *
@@ -2434,7 +2441,13 @@ export async function buildRagBuilder(
       showStatus('success', str('ragBuilderDocSaved', 'Documentation saved to the Model Manager model.'));
     } catch (error) {
       console.error('Saving the RAG documentation failed.', error);
-      showStatus('danger', str('ragBuilderDocSaveFailed', 'Saving the documentation failed - check your Model Manager permissions.'));
+      // A stored setup that is no setup is named; the rest is a refusal.
+      showStatus(
+        'danger',
+        error instanceof SetupUnusable
+          ? str('ragBuilderDocSaveSetupUnusable', 'Saving the documentation failed: SAS Model Manager answered with a rag-setup.json that is no setup this page can read, so nothing was written. Repair or remove the file in SAS Model Manager, then choose another entry in the list and then this setup again.')
+          : str('ragBuilderDocSaveFailed', 'Saving the documentation failed - check your Model Manager permissions.')
+      );
     } finally {
       docSaveButton.textContent = previous;
     }
@@ -2459,13 +2472,24 @@ export async function buildRagBuilder(
     }
   }
 
-  /** The setup as it is stored on the model, or null when never saved. */
+  /**
+   * The setup as it is stored on the model, or null when never saved. Throws
+   * when it cannot be read, and SetupUnusable when it was read and is no
+   * setup.
+   */
   async function readStoredSetup(): Promise<RagSetup | null> {
     const contents = await getModelContents(selectedSetupID);
     const setupItem = contents.find((item) => item.name === SETUP_FILE);
     if (!setupItem?.fileUri) return null;
-    const response = await getFileContent(setupItem.fileUri);
-    return { ...defaultSetup(config), ...(await response.json()) } as RagSetup;
+    const text = await (await getFileContent(setupItem.fileUri)).text();
+    let stored: unknown;
+    try {
+      stored = JSON.parse(text);
+    } catch {
+      throw new SetupUnusable();
+    }
+    if (stored === null || typeof stored !== 'object' || Array.isArray(stored)) throw new SetupUnusable();
+    return { ...defaultSetup(config), ...stored } as RagSetup;
   }
 
   const collectSetup = (): RagSetup => ({
@@ -3101,21 +3125,29 @@ export async function buildRagBuilder(
     // rag-setup.json or the attributes that hold its documentation. Its
     // buttons then stay off: they would write the fields shown over it.
     let unread = false;
+    // Of those: rag-setup.json was read, and is no setup this page can read -
+    // opened again it is the same file.
+    let unusable = false;
     try {
       applySetup(defaultSetup(config));
       const contents = await getModelContents(setupID);
       if (!shown()) return true;
       const setupItem = contents.find((item) => item.name === SETUP_FILE);
       if (setupItem?.fileUri) {
+        let fileRead = false;
         try {
           const response = await getFileContent(setupItem.fileUri);
           if (!shown()) return true;
-          const stored = await response.json();
+          const text = await response.text();
           if (!shown()) return true;
+          fileRead = true;
+          const stored = JSON.parse(text) as unknown;
+          if (stored === null || typeof stored !== 'object' || Array.isArray(stored)) throw new SetupUnusable();
           applySetup({ ...defaultSetup(config), ...stored } as RagSetup);
         } catch (error) {
           console.error('RAG Builder: reading the stored setup failed', error);
           unread = true;
+          unusable = fileRead;
         }
       } else {
         // No stored setup yet, but documentation may already have been saved on
@@ -3149,10 +3181,15 @@ export async function buildRagBuilder(
     if (unread) {
       showStatus(
         'danger',
-        str(
-          'ragBuilderLoadSetupError',
-          'The stored setup could not be read from SAS Model Manager, so Save setup, Manifest setup and Save documentation stay off: they would write the fields shown here over it. Choose another entry in the list and then this setup again to read it.'
-        )
+        unusable
+          ? str(
+              'ragBuilderLoadSetupUnusable',
+              'The stored setup cannot be used: SAS Model Manager answered with a rag-setup.json that is no setup this page can read. Save setup, Manifest setup and Save documentation stay off: they would write the fields shown here over that file. Repair or remove the file in SAS Model Manager, then choose another entry in the list and then this setup again.'
+            )
+          : str(
+              'ragBuilderLoadSetupError',
+              'The stored setup could not be read from SAS Model Manager, so Save setup, Manifest setup and Save documentation stay off: they would write the fields shown here over it. Choose another entry in the list and then this setup again to read it.'
+            )
       );
     }
     // One this page does not know of - the page was loaded again after the

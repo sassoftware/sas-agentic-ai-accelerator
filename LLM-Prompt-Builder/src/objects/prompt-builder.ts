@@ -660,6 +660,9 @@ export async function buildPromptBuilder(
     // read when it was opened (its contents or its tracker): the page shows
     // none of them, and a save would replace them with what the page holds.
     let storedRunsUnread = false;
+    // Of those: the tracker was read, and is no list of runs this page can
+    // read - opened again it is the same file.
+    let storedRunsUnusable = false;
 
     const promptBuilderContainer = document.createElement('div');
     promptBuilderContainer.setAttribute('id', `${paneID}-obj-${promptBuilderObject?.id}`);
@@ -962,28 +965,38 @@ export async function buildPromptBuilder(
       );
     };
     promptDocSection.appendChild(promptDocSaveButton);
+    // Said in the section when the documentation could not be read: the
+    // fields are empty then, and Save documentation is off.
+    const promptDocUnread = document.createElement('p');
+    promptDocUnread.classList.add('text-danger', 'small', 'mt-2', 'mb-0', 'pb-doc-unread');
+    promptDocUnread.innerText = `${promptBuilderInterfaceText?.promptBuilderDocUnread}`;
+    promptDocUnread.hidden = true;
+    promptDocSection.appendChild(promptDocUnread);
 
     // Load the selected prompt's documentation into the fields (and migrate a
-    // legacy `function` value to the current one, for the user). Best-effort:
-    // a fetch failure just leaves the section empty and disabled.
+    // legacy `function` value to the current one, for the user). A read that
+    // fails leaves the section empty, Save documentation off, and says so.
     async function loadPromptDocumentation(promptId: string): Promise<Record<string, unknown> | null> {
       const loadToken = ++promptDocLoadToken;
       currentDocPromptId = '';
       promptDoc.clear();
       promptDocSaveButton.disabled = true;
+      promptDocUnread.hidden = true;
       if (!promptId || promptId === `${promptBuilderInterfaceText?.promptSelect}`) return null;
       let details: Record<string, unknown> | null = null;
       try {
         details = await getModelDetails(promptId);
       } catch (error) {
         console.error('Failed to load prompt documentation.', error);
-        return null;
       }
       // A later call has emptied the section, or is filling it for another
       // prompt-test: this answer must not arm Save documentation for the one
       // that was left.
       if (loadToken !== promptDocLoadToken) return null;
-      if (!details) return null;
+      if (!details) {
+        promptDocUnread.hidden = false;
+        return null;
+      }
       promptDoc.setValues(details);
       currentDocPromptId = promptId;
       promptDocSaveButton.disabled = false;
@@ -1060,13 +1073,20 @@ export async function buildPromptBuilder(
         if (promptBuilderAvailablePTE[promptBuilderAvailablepte]?.name === 'Prompt-Experiment-Tracker.json') {
           // A tracker that cannot be parsed must not abort the handler — the
           // Model Manager link and delete buttons below still have to work.
+          // Whether the file was read: what fails after that is a file that
+          // holds no runs this page can read, which opening it again does
+          // not change.
+          let trackerRead = false;
           try {
             // Reset the prompt tracker to nothing
             promptExperimentTrackerRunID = 0;
             const promptBuilderCurrentPTE = await getFileContent(promptBuilderAvailablePTE[promptBuilderAvailablepte].fileUri!);
             if (superseded()) return;
-            const promptBuilderCurrentPTEContent: PETRow[] = await promptBuilderCurrentPTE.json();
+            const trackerText = await promptBuilderCurrentPTE.text();
             if (superseded()) return;
+            trackerRead = true;
+            const promptBuilderCurrentPTEContent = JSON.parse(trackerText) as PETRow[];
+            if (!Array.isArray(promptBuilderCurrentPTEContent)) throw new Error('Prompt-Experiment-Tracker.json holds no list of runs');
             const promptBuilderPreviousExperiment: ExperimentTrackerEntry[] = [];
             let promptBuilderPreviousRunID = 0;
             promptBuilderCurrentPTEContent.forEach((value) => {
@@ -1188,13 +1208,16 @@ export async function buildPromptBuilder(
             loadMostRecentBestRun(!startedAfresh);
           } catch (error) {
             console.error('Failed to load the Prompt-Experiment-Tracker for the selected prompt.', error);
-            if (!superseded()) storedRunsUnread = true;
+            if (!superseded()) {
+              storedRunsUnread = true;
+              storedRunsUnusable = trackerRead;
+            }
           }
         }
       }
       if (storedRunsUnread && !superseded()) {
         showStoredRunsUnread(promptExperimentSaveResultContainer);
-        showToast(`${promptBuilderInterfaceText?.promptBuilderStoredRunsUnread}`);
+        showToast(storedRunsText());
       }
       // The prompt-test is on the page: from here on the later steps show it
       // - also a new one, which brought nothing and is filled by hand - and
@@ -1487,6 +1510,7 @@ export async function buildPromptBuilder(
       promptExperimentTrackerRunID = 0;
       petRows = [];
       storedRunsUnread = false;
+      storedRunsUnusable = false;
       experimentsModified = false;
       promptExperimentResultContainer.innerHTML = '';
       promptExperimentSaveResultContainer.innerHTML = '';
@@ -4966,11 +4990,15 @@ export async function buildPromptBuilder(
     // Result message for a plain Save (shown next to the Save button).
     const promptExperimentSaveResultContainer = document.createElement('div');
     promptExperimentSaveResultContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-save-only-result`;
-    // The line that the stored runs of the open prompt-test were not read.
+    // The line that the stored runs of the open prompt-test were not read - or
+    // were read, and are no runs this page can read.
+    function storedRunsText(): string {
+      return `${storedRunsUnusable ? promptBuilderInterfaceText?.promptBuilderStoredRunsUnusable : promptBuilderInterfaceText?.promptBuilderStoredRunsUnread}`;
+    }
     function showStoredRunsUnread(container: HTMLElement): void {
       const line = document.createElement('p');
       line.classList.add('text-danger', 'pet-runs-unread');
-      line.innerText = `${promptBuilderInterfaceText?.promptBuilderStoredRunsUnread}`;
+      line.innerText = storedRunsText();
       container.replaceChildren(line);
     }
 
@@ -6215,7 +6243,8 @@ ${scoreCodeReturn}`;
         // can leave the state 'running' indefinitely (seen live). When this
         // job's entry exists, finish from it instead of polling forever.
         const earlyEntry = await readOptimizationEntry(true);
-        if (!earlyEntry) return;
+        // Not found, or the tracker could not be read: the next poll asks again.
+        if (!earlyEntry || typeof earlyEntry === 'string') return;
         stopOptimizePolling();
         // Clear the (possibly stale) state line — the run is over; the result
         // box and the run log carry the outcome from here.
@@ -6243,7 +6272,8 @@ ${scoreCodeReturn}`;
         // The job records its failure reason in the optimization tracker
         // (e.g. "the compute context lacks the dspy package") — prefer that
         // over Job Execution's generic error message.
-        const failedEntry = await readOptimizationEntry();
+        const read = await readOptimizationEntry();
+        const failedEntry = typeof read === 'string' ? null : read;
         const failureDetail = failedEntry?.error
           ? ` ${failedEntry.error}`
           : job.error?.message
@@ -6258,22 +6288,30 @@ ${scoreCodeReturn}`;
 
     /**
      * Read a model's job-written optimization tracker. An empty list when the
-     * model holds no tracker; null when the contents or the tracker could not
-     * be read.
+     * model holds no tracker; 'unread' when the contents or the tracker could
+     * not be read, 'unusable' when the tracker was read and is no list of
+     * runs - which reading it again does not change.
      */
-    async function readOptimizationEntries(modelId: string): Promise<OptimizationTrackerEntry[] | null> {
+    async function readOptimizationEntries(modelId: string): Promise<OptimizationTrackerEntry[] | 'unread' | 'unusable'> {
+      let text: string;
       try {
         const sourceContents = await getModelContents(modelId);
         const trackerContent = sourceContents.find(
           (modelContent) => modelContent.name === 'Prompt-Optimization-Tracker.json'
         );
         if (!trackerContent) return [];
-        if (!trackerContent.fileUri) return null;
-        const response = await getFileContent(String(trackerContent.fileUri));
-        const trackerEntries = (await response.json()) as OptimizationTrackerEntry[];
-        return Array.isArray(trackerEntries) ? trackerEntries : null;
+        if (!trackerContent.fileUri) return 'unread';
+        text = await (await getFileContent(String(trackerContent.fileUri))).text();
       } catch {
-        return null;
+        return 'unread';
+      }
+      try {
+        const trackerEntries = JSON.parse(text) as OptimizationTrackerEntry[];
+        return Array.isArray(trackerEntries) && trackerEntries.every((entry) => entry !== null && typeof entry === 'object')
+          ? trackerEntries
+          : 'unusable';
+      } catch {
+        return 'unusable';
       }
     }
 
@@ -6281,11 +6319,12 @@ ${scoreCodeReturn}`;
      * The launched job's entry from the source prompt's optimization tracker,
      * matched by job id. With `requireJobIdMatch` only an exact match counts
      * (used while the job still reports running); otherwise the newest entry
-     * is the fallback.
+     * is the fallback. 'unread' or 'unusable' when the tracker could not be
+     * read (see readOptimizationEntries).
      */
-    async function readOptimizationEntry(requireJobIdMatch = false): Promise<OptimizationTrackerEntry | null> {
+    async function readOptimizationEntry(requireJobIdMatch = false): Promise<OptimizationTrackerEntry | null | 'unread' | 'unusable'> {
       const trackerEntries = await readOptimizationEntries(optimizeSourceModelId);
-      if (!trackerEntries) return null;
+      if (!Array.isArray(trackerEntries)) return trackerEntries;
       const matched = trackerEntries.find((candidate) => candidate.jobId === optimizeJobId) ?? null;
       if (requireJobIdMatch) return matched;
       return matched ?? trackerEntries[trackerEntries.length - 1] ?? null;
@@ -6314,10 +6353,19 @@ ${scoreCodeReturn}`;
       const trackerEntries = await readOptimizationEntries(modelId);
       // The selection may have moved on while the tracker was being fetched.
       if (promptBuilderPromptSelectorDropdown.value !== modelId) return;
+      // A tracker that could not be read is no history without runs: the
+      // place of the history says so.
+      if (!Array.isArray(trackerEntries)) {
+        const line = document.createElement('p');
+        line.classList.add('text-danger', 'mt-3', 'pb-optimize-history-unread');
+        line.innerText = `${trackerEntries === 'unusable' ? promptBuilderInterfaceText?.promptBuilderOptimizeHistoryUnusable : promptBuilderInterfaceText?.promptBuilderOptimizeHistoryUnread}`;
+        optimizeUI.historyContainer.replaceChildren(line);
+        return;
+      }
       // Cost estimates in the rows need the price attributes of the models
       // the runs used (fetched lazily) — best effort before rendering.
       const usedModels = new Set<string>();
-      (trackerEntries ?? []).forEach((entry) => {
+      trackerEntries.forEach((entry) => {
         if (entry.targetModel && entry.type !== 'comparison') usedModels.add(entry.targetModel);
         if (entry.judgeModel) usedModels.add(entry.judgeModel);
         (entry.targets ?? []).forEach((targetRow) => {
@@ -6330,7 +6378,7 @@ ${scoreCodeReturn}`;
         /* rows render without cost estimates */
       }
       if (promptBuilderPromptSelectorDropdown.value !== modelId) return;
-      renderOptimizationHistory(trackerEntries ?? []);
+      renderOptimizationHistory(trackerEntries);
     }
 
     /** Format a metric value for the history display. */
@@ -6762,9 +6810,14 @@ ${scoreCodeReturn}`;
         // The upload or the delete of the tracker is out: when it gets no
         // answer, the run may have been deleted or not.
         let trackerWriteOut = false;
+        // The tracker could not be read, or was read and is no list of runs.
+        let trackerUnread: 'unread' | 'unusable' | '' = '';
         try {
           const trackerEntries = await readOptimizationEntries(modelId);
-          if (!trackerEntries) throw new Error('The optimization tracker could not be read');
+          if (!Array.isArray(trackerEntries)) {
+            trackerUnread = trackerEntries;
+            throw new Error('The optimization tracker could not be read');
+          }
           const remaining = trackerEntries.filter(
             (candidate) => candidate.optimizationId !== entry.optimizationId
           );
@@ -6799,9 +6852,13 @@ ${scoreCodeReturn}`;
           showToast(
             entryRemoved
               ? `${promptBuilderInterfaceText?.promptBuilderOptimizeHistorySnapshotLeft}`.replace('{file}', () => String(entry.datasetSnapshot))
-              : trackerWriteOut
-                ? `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteUnknown}`
-                : `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`
+              : trackerUnread === 'unread'
+                ? `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteUnread}`
+                : trackerUnread === 'unusable'
+                  ? `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteUnusable}`
+                  : trackerWriteOut
+                    ? `${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeleteUnknown}`
+                    : `${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`
           );
         }
         // The history that is read again is the one of this prompt-test.
@@ -6857,6 +6914,13 @@ ${scoreCodeReturn}`;
       // another one open the outcome is a toast, and the run is in the
       // history of its own prompt-test the next time that one is opened.
       const shown = optimizeJobIsShown();
+      // A tracker that could not be read says nothing about the job: it has
+      // ended, and its outcome is not known to the page.
+      if (typeof entry === 'string') {
+        showOptimizeOutcome(`${promptBuilderInterfaceText?.promptBuilderOptimizeResultUnread}`);
+        void refreshOptimizationHistory(true);
+        return;
+      }
       if (!entry || entry.status !== 'succeeded') {
         // The job completed but its tracker entry is missing/failed — surface
         // whatever error the entry carries.

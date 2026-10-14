@@ -18,7 +18,7 @@
  * server-side from the credential domain under the launching user's identity.
  */
 
-import { viyaGet, viyaFetch, viyaPost } from './http-client';
+import { viyaGet, viyaGetAll, viyaFetch, viyaPost, ViyaRefused, type CollectionPage } from './http-client';
 
 /** Job Execution job states (subset we care about). */
 export type JobState =
@@ -84,10 +84,10 @@ export async function resolveJobDefinitionUri(programPath: string): Promise<stri
   if (!folderId) {
     throw new Error(`The folder ${folderPath} was not found.`);
   }
-  const members = await viyaGet<{ items?: FolderMember[] }>(
+  const members = await viyaGetAll<FolderMember>(
     `/folders/folders/${folderId}/members?filter=${encodeURIComponent(`eq(name,'${name}')`)}&limit=20`
   );
-  const member = (members.items ?? []).find(
+  const member = members.find(
     (candidate) =>
       candidate.contentType === 'jobDefinition' &&
       String(candidate.uri ?? '').startsWith('/jobDefinitions/definitions/')
@@ -132,29 +132,32 @@ export async function launchJob(
   );
 }
 
+/** The jobs that are pending or running, newest first, every page of them. */
+async function runningJobs(): Promise<JobExecutionJob[]> {
+  const filter = encodeURIComponent("or(eq(state,'pending'),eq(state,'running'))");
+  const jobs = await viyaGetAll<JobExecutionJob>(`/jobExecution/jobs?filter=${filter}&sortBy=creationTimeStamp:descending&limit=100`);
+  return jobs.filter((job) => !isTerminalJobState(job.state));
+}
+
 /**
  * The newest job of a job definition that has not ended, or null.
  *
  * Asks for the jobs that are pending or running, newest first, and takes the
  * first one whose request names the definition. Filtered on the state only:
  * the state is a member of the job itself, the definition is a member of its
- * request. A job that is not among the 100 newest of those is not found, and
- * neither is one when the service refuses the question - the answer is then
- * null, as for a definition with no job running.
+ * request. Every page of them is read; when the service refuses the question
+ * the answer is null, as for a definition with no job running.
  */
 export async function getRunningJobOf(jobDefinitionUri: string): Promise<JobExecutionJob | null> {
   await primeJobExecutionSession();
-  const filter = encodeURIComponent("or(eq(state,'pending'),eq(state,'running'))");
-  const response = await viyaFetch(`/jobExecution/jobs?filter=${filter}&sortBy=creationTimeStamp:descending&limit=100`);
-  if (!response.ok) return null;
-  const page = (await response.json()) as { items?: JobExecutionJob[] };
-  return (
-    (page.items ?? []).find(
-      (job) =>
-        (job.jobRequest as { jobDefinitionUri?: string } | undefined)?.jobDefinitionUri === jobDefinitionUri &&
-        !isTerminalJobState(job.state)
-    ) ?? null
-  );
+  let jobs: JobExecutionJob[];
+  try {
+    jobs = await runningJobs();
+  } catch (error) {
+    if (error instanceof ViyaRefused) return null;
+    throw error;
+  }
+  return jobs.find((job) => (job.jobRequest as { jobDefinitionUri?: string } | undefined)?.jobDefinitionUri === jobDefinitionUri) ?? null;
 }
 
 /** Fetch a job's current state. */
@@ -210,14 +213,13 @@ export async function getJobProgressMessages(job: JobExecutionJob): Promise<JobP
   if (computeJob && computeSession) {
     try {
       await primeComputeService();
-      const response = await viyaFetch(
-        `/compute/sessions/${computeSession}/jobs/${computeJob}/log/content?limit=100000`,
-        // Prefer the log-line collection; a live server may also answer with
-        // plain text — extractProgressMessages handles both shapes.
-        { accept: 'application/vnd.sas.compute.log.line.collection+json, application/json;q=0.9, text/plain;q=0.8' }
-      );
+      const logPath = `/compute/sessions/${computeSession}/jobs/${computeJob}/log/content?limit=100000`;
+      // Prefer the log-line collection; a live server may also answer with
+      // plain text — extractProgressMessages handles both shapes.
+      const logAccept = 'application/vnd.sas.compute.log.line.collection+json, application/json;q=0.9, text/plain;q=0.8';
+      const response = await viyaFetch(logPath, { accept: logAccept });
       if (response.ok) {
-        const logText = await response.text();
+        const logText = await withLaterPages(await response.text(), logPath, logAccept);
         if (logText.trimStart().startsWith('<')) {
           // An HTML body on a 200 means the request was answered by an SSO
           // redirect (SASLogon page), not the compute service — the service
@@ -243,12 +245,41 @@ export async function getJobProgressMessages(job: JobExecutionJob): Promise<JobP
   const logLocation = String(job.logLocation ?? '');
   if (!logLocation) return { messages: [], liveStatus };
   try {
-    const response = await viyaFetch(`${logLocation}/content?limit=100000`, { accept: 'text/plain' });
+    const logPath = `${logLocation}/content?limit=100000`;
+    const response = await viyaFetch(logPath, { accept: 'text/plain' });
     if (!response.ok) return { messages: [], liveStatus };
-    return { messages: extractProgressMessages(await response.text()), liveStatus };
+    return { messages: extractProgressMessages(await withLaterPages(await response.text(), logPath, 'text/plain')), liveStatus };
   } catch {
     return { messages: [], liveStatus };
   }
+}
+
+/**
+ * A log that came as the first page of a collection of lines, with every
+ * later page of it (see viyaGetAll) - a log of more lines than the page
+ * holds lost its last milestones. A log that came as plain text, or as a
+ * collection that says it holds no more, is returned as it came.
+ */
+async function withLaterPages(firstPage: string, path: string, accept: string): Promise<string> {
+  let page: CollectionPage<unknown>;
+  try {
+    page = JSON.parse(firstPage) as CollectionPage<unknown>;
+  } catch {
+    return firstPage;
+  }
+  if (!page || !Array.isArray(page.items)) return firstPage;
+  const firstItems = page.items;
+  let first = true;
+  const items = await viyaGetAll<unknown>(path, {
+    read: async (pagePath) => {
+      if (first) {
+        first = false;
+        return page;
+      }
+      return viyaGet<CollectionPage<unknown>>(pagePath, accept);
+    },
+  });
+  return items.length === firstItems.length ? firstPage : JSON.stringify({ items });
 }
 
 const PROGRESS_PREFIX = /NOTE: Python-Subprocess\s*-\s?(.*)$/;
