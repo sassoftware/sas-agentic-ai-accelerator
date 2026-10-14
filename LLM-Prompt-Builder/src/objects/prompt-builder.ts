@@ -87,6 +87,7 @@ import { showToast } from '../ui/toast';
 import { escapeHtml } from '../ui/dom-helpers';
 import { renderMarkdown } from '../ui/markdown';
 import { createStepper } from '../ui/stepper';
+import { createSelectionLock } from '../ui/selection-lock';
 import { createInstructionCard } from '../ui/instruction-card';
 import { createKindSelector, type KindSelector, type PromptKind } from '../ui/kind-selector';
 import { isValidDS2VariableName, validateAndCorrectPackageName } from '../util/validation';
@@ -659,6 +660,12 @@ export async function buildPromptBuilder(
     const promptBuilderContainer = document.createElement('div');
     promptBuilderContainer.setAttribute('id', `${paneID}-obj-${promptBuilderObject?.id}`);
 
+    // While a write to SAS Model Manager is out - the experiments, the
+    // documentation, a manifest, a delete - nothing that changes which
+    // prompt-test is open can be used (see createSelectionLock). Its block
+    // holds the controls of the Setup card.
+    const selectionLock = createSelectionLock(`${promptBuilderObject?.id}-selection`);
+
     // The page is a flow of steps; every section below lands in one of these
     // panes (see the assembly at the end). Created first so the functions that
     // move the user between steps can reach it. Setup is visited once, Build &
@@ -938,7 +945,7 @@ export async function buildPromptBuilder(
       promptDocSaveButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>`;
       let status = 500;
       try {
-        status = await updateModelAttributes(currentDocPromptId, attrs);
+        status = await selectionLock.during(() => updateModelAttributes(currentDocPromptId, attrs));
       } catch (error) {
         console.error('Failed to save prompt documentation.', error);
       }
@@ -977,6 +984,8 @@ export async function buildPromptBuilder(
       currentDocPromptId = promptId;
       promptDocSaveButton.disabled = false;
       if (details.function === LEGACY_PROMPT_FUNCTION) {
+        // Not behind the selection lock: it sets one fixed value on the id
+        // this call was made for, and reads nothing of the page afterwards.
         try {
           await updateModelAttributes(promptId, { function: PROMPT_FUNCTION });
         } catch {
@@ -1543,7 +1552,7 @@ export async function buildPromptBuilder(
           cancelText: `${promptBuilderInterfaceText?.promptBuilderDeleteCancelButton}`,
         });
         if (!confirmed) return;
-        const deleteStatus = await deleteModel(promptModelID);
+        const deleteStatus = await selectionLock.during(() => deleteModel(promptModelID));
         if (deleteStatus === 204) {
           promptBuilderProjectPrompts = promptBuilderProjectPrompts.filter((item) => item.value !== promptModelID);
           promptFilter.setUsers(promptBuilderProjectPrompts);
@@ -1603,14 +1612,14 @@ export async function buildPromptBuilder(
         // Delete the confirmed prompts explicitly before the project itself —
         // whether a project DELETE cascades to its models varies by SAS Viya
         // release, deleting them one by one is deterministic.
-        for (const projectPrompt of projectPrompts) {
-          const modelDeleteStatus = await deleteModel(projectPrompt.value);
-          if (modelDeleteStatus !== 204) {
-            showToast(`${promptBuilderInterfaceText?.promptBuilderDeleteFailedResponse}`);
-            return;
+        // One write, from the first prompt-test to the project (null: a
+        // prompt-test could not be deleted, and the project was not asked).
+        const projectDeleteStatus = await selectionLock.during(async () => {
+          for (const projectPrompt of projectPrompts) {
+            if ((await deleteModel(projectPrompt.value)) !== 204) return null;
           }
-        }
-        const projectDeleteStatus = await deleteModelProject(projectID);
+          return deleteModelProject(projectID);
+        });
         if (projectDeleteStatus === 204) {
           promptBuilderAllProjects = promptBuilderAllProjects.filter((item) => item.value !== projectID);
           projectFilter.setUsers(promptBuilderAllProjects);
@@ -4364,7 +4373,7 @@ export async function buildPromptBuilder(
     promptExperimentSaveButton.setAttribute('type', 'button');
     promptExperimentSaveButton.setAttribute('class', 'btn btn-outline-secondary');
     promptExperimentSaveButton.onclick = async function () {
-      await promptBuilderSaveExperiments();
+      await selectionLock.during(() => promptBuilderSaveExperiments());
     };
 
     // Save the prompt run and turn the best prompt into a model
@@ -4379,7 +4388,8 @@ export async function buildPromptBuilder(
     // describe the other. The click itself now takes the button, and gives it
     // back when the run has ended - saved or not, manifested or not.
     let manifestClickRunning = false;
-    promptExperimentCreateModelButton.onclick = async function () {
+    // The save and the manifest are one write: locked from the click to the end.
+    promptExperimentCreateModelButton.onclick = () => selectionLock.during(async () => {
       if (manifestClickRunning) return;
       manifestClickRunning = true;
       promptExperimentCreateModelButton.disabled = true;
@@ -4402,11 +4412,10 @@ export async function buildPromptBuilder(
       } finally {
         manifestClickRunning = false;
         promptExperimentCreateModelButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
-        // Usable again where there is a best response to manifest - which is
-        // every case but a prompt-test that was left while the run was out.
+        // Usable again where there is a best response to manifest.
         updateManifestButtonState();
       }
-    };
+    });
     // Wrapped so the "select a best response first" hint shows on hover even
     // while the button is disabled (a disabled button fires no hover events).
     const promptExperimentCreateModelButtonWrapper = wrapForHint(promptExperimentCreateModelButton);
@@ -6582,28 +6591,31 @@ ${scoreCodeReturn}`;
         cancelText: `${promptBuilderInterfaceText?.promptBuilderDeleteCancelButton}`,
       });
       if (!confirmed) return;
-      const trackerEntries = (await readOptimizationEntries(modelId)) ?? [];
-      const remaining = trackerEntries.filter(
-        (candidate) => candidate.optimizationId !== entry.optimizationId
-      );
-      await createModelVersion(modelId);
-      const contents = await getModelContents(modelId);
-      const trackerContent = contents.find(
-        (modelContent) => modelContent.name === 'Prompt-Optimization-Tracker.json'
-      );
-      if (trackerContent?.id) await deleteModelContent(modelId, trackerContent.id);
-      if (remaining.length > 0) {
-        await createModelContent(modelId, remaining, 'Prompt-Optimization-Tracker.json');
-      }
-      // Drop the run's dataset snapshot alongside its entry.
-      if (entry.datasetSnapshot) {
-        const snapshotContent = contents.find(
-          (modelContent) => modelContent.name === entry.datasetSnapshot
+      await selectionLock.during(async () => {
+        const trackerEntries = (await readOptimizationEntries(modelId)) ?? [];
+        const remaining = trackerEntries.filter(
+          (candidate) => candidate.optimizationId !== entry.optimizationId
         );
-        if (snapshotContent?.id) await deleteModelContent(modelId, snapshotContent.id);
-      }
-      showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeletedToast}`);
-      await refreshOptimizationHistory(true);
+        await createModelVersion(modelId);
+        const contents = await getModelContents(modelId);
+        const trackerContent = contents.find(
+          (modelContent) => modelContent.name === 'Prompt-Optimization-Tracker.json'
+        );
+        if (trackerContent?.id) await deleteModelContent(modelId, trackerContent.id);
+        if (remaining.length > 0) {
+          await createModelContent(modelId, remaining, 'Prompt-Optimization-Tracker.json');
+        }
+        // Drop the run's dataset snapshot alongside its entry.
+        if (entry.datasetSnapshot) {
+          const snapshotContent = contents.find(
+            (modelContent) => modelContent.name === entry.datasetSnapshot
+          );
+          if (snapshotContent?.id) await deleteModelContent(modelId, snapshotContent.id);
+        }
+        showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeHistoryDeletedToast}`);
+        // The history that is read again is the one of this prompt-test.
+        await refreshOptimizationHistory(true);
+      });
     }
 
     /**
@@ -7037,7 +7049,7 @@ ${scoreCodeReturn}`;
         );
         return;
       }
-      await promptBuilderRunComparison(selectedNames, currentMetric(), sweepMode);
+      await selectionLock.during(() => promptBuilderRunComparison(selectedNames, currentMetric(), sweepMode));
     }
 
     /** Save the prompt, launch the job in compare/sweep mode and start polling. */
@@ -7435,7 +7447,8 @@ ${scoreCodeReturn}`;
       optimizeRunButton.classList.add('btn', 'btn-primary');
       optimizeRunButton.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeRunButton}`;
       optimizeRunButton.onclick = () => {
-        void promptBuilderRunOptimization();
+        // It saves the experiments first: locked from the click to the launch.
+        void selectionLock.during(promptBuilderRunOptimization);
       };
       const optimizeRunWrapper = wrapForHint(optimizeRunButton);
       const optimizeStatusLine = document.createElement('p');
@@ -7604,17 +7617,20 @@ ${scoreCodeReturn}`;
       promptBuilderDescription,
       instructionText(promptBuilderInterfaceText?.promptBuilderProjectInstructions),
     ]);
-    projectCard.controls.appendChild(promptKindSelectorElement);
-    projectCard.controls.appendChild(promptBuilderProjectSelectorHeader);
-    projectCard.controls.appendChild(projectFilter.filterRow);
-    projectCard.controls.appendChild(promptBuilderProjectSelectorDropdown);
+    // Everything of the card stands in the block of the selection lock.
+    const selectionBlock = selectionLock.block;
+    projectCard.controls.appendChild(selectionBlock);
+    selectionBlock.appendChild(promptKindSelectorElement);
+    selectionBlock.appendChild(promptBuilderProjectSelectorHeader);
+    selectionBlock.appendChild(projectFilter.filterRow);
+    selectionBlock.appendChild(promptBuilderProjectSelectorDropdown);
     promptBuilderPromptHeader.classList.add('mt-3');
-    projectCard.controls.appendChild(promptBuilderPromptHeader);
-    projectCard.controls.appendChild(promptFilter.filterRow);
-    projectCard.controls.appendChild(promptBuilderPromptSelectorDropdown);
-    projectCard.controls.appendChild(promptDocSection);
+    selectionBlock.appendChild(promptBuilderPromptHeader);
+    selectionBlock.appendChild(promptFilter.filterRow);
+    selectionBlock.appendChild(promptBuilderPromptSelectorDropdown);
+    selectionBlock.appendChild(promptDocSection);
     promptBuilderModalButtonContainer.classList.add('mt-3');
-    projectCard.controls.appendChild(promptBuilderModalButtonContainer);
+    selectionBlock.appendChild(promptBuilderModalButtonContainer);
     setupPane.appendChild(projectCard.element);
     // Merge searching into the dropdowns themselves: typing in the picker
     // filters the open list live (the separate name/user filter row above

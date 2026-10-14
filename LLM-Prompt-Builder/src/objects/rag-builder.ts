@@ -96,6 +96,7 @@ import { readStepSpec, registerFlow, resolveStepIds } from '../api/dataflows-api
 import { createCreateModal, type CreateModalDialog, type CreateModalEntry } from '../ui/create-modal';
 import { openExternalLink } from '../ui/external-link';
 import { createStepper } from '../ui/stepper';
+import { createSelectionLock } from '../ui/selection-lock';
 import { createInstructionCard } from '../ui/instruction-card';
 import { showConfirmModal } from '../ui/confirm-modal';
 import type { InterfaceText } from '../types';
@@ -666,7 +667,12 @@ export async function buildRagBuilder(
     'A RAG project groups related setups in SAS Model Manager; a setup is one document corpus wired to one vector-store collection.'
   );
   const selectionCard = createInstructionCard(selectionHeading, instructionsTitle, [subtitle, selectionHint]);
-  const selectionSection = selectionCard.controls;
+  // While a write to SAS Model Manager is out - a save, the documentation, a
+  // manifest, a delete - nothing that changes which setup is open can be used
+  // (see createSelectionLock): the controls of this card stand in its block.
+  const selectionLock = createSelectionLock(idOf('selection'));
+  const selectionSection = selectionLock.block;
+  selectionCard.controls.appendChild(selectionSection);
   // What is being built is chosen before which project it goes into, so the
   // kind selector of the hosting page opens the controls column - the place
   // it has on the Prompt Builder's Setup card. Its behaviour stays with the
@@ -4067,20 +4073,23 @@ export async function buildRagBuilder(
       if (!confirmed) return;
       clearStatus();
       deleteSetupButton.disabled = true;
-      try {
-        const status = await deleteModel(setupID);
-        if (status !== 204) throw new Error(`HTTP ${status}`);
-        selectedSetupID = '';
-        selectedSetupName = '';
-        await refreshSetups();
-        await loadSetup();
-        showStatus('success', str('ragBuilderSetupDeleted', 'RAG setup deleted.'));
-      } catch (error) {
-        console.error('Deleting the RAG setup failed.', error);
-        showStatus('danger', str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.'));
-      } finally {
-        updateSelectionActions();
-      }
+      // Locked from the confirmation until the page shows what is left.
+      await selectionLock.during(async () => {
+        try {
+          const status = await deleteModel(setupID);
+          if (status !== 204) throw new Error(`HTTP ${status}`);
+          selectedSetupID = '';
+          selectedSetupName = '';
+          await refreshSetups();
+          await loadSetup();
+          showStatus('success', str('ragBuilderSetupDeleted', 'RAG setup deleted.'));
+        } catch (error) {
+          console.error('Deleting the RAG setup failed.', error);
+          showStatus('danger', str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.'));
+        } finally {
+          updateSelectionActions();
+        }
+      });
     })();
   });
 
@@ -4183,32 +4192,36 @@ export async function buildRagBuilder(
       if (!confirmed) return;
       clearStatus();
       deleteProjectButton.disabled = true;
-      try {
-        for (const setup of setups) {
-          const status = await deleteModel(setup.value);
-          if (status !== 204) throw new Error(`setup ${setup.innerHTML}: HTTP ${status}`);
+      // Locked from the confirmation until the page shows what is left.
+      await selectionLock.during(async () => {
+        try {
+          for (const setup of setups) {
+            const status = await deleteModel(setup.value);
+            if (status !== 204) throw new Error(`setup ${setup.innerHTML}: HTTP ${status}`);
+          }
+          const status = await deleteModelProject(projectID);
+          if (status !== 204) throw new Error(`project: HTTP ${status}`);
+          selectedProjectID = '';
+          selectedSetupID = '';
+          selectedSetupName = '';
+          await refreshProjects();
+          await refreshSetups();
+          await loadSetup();
+          showStatus('success', str('ragBuilderProjectDeleted', 'RAG project deleted.'));
+        } catch (error) {
+          console.error('Deleting the RAG project failed.', error);
+          showStatus('danger', str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.'));
+        } finally {
+          updateSelectionActions();
         }
-        const status = await deleteModelProject(projectID);
-        if (status !== 204) throw new Error(`project: HTTP ${status}`);
-        selectedProjectID = '';
-        selectedSetupID = '';
-        selectedSetupName = '';
-        await refreshProjects();
-        await refreshSetups();
-        await loadSetup();
-        showStatus('success', str('ragBuilderProjectDeleted', 'RAG project deleted.'));
-      } catch (error) {
-        console.error('Deleting the RAG project failed.', error);
-        showStatus('danger', str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.'));
-      } finally {
-        updateSelectionActions();
-      }
+      });
     })();
   });
 
-  docSaveButton.addEventListener('click', () => void saveDocumentation());
-  saveButton.addEventListener('click', () => void saveSetup());
-  manifestButton.addEventListener('click', () => void manifestSetup());
+  // The three writes of a setup, each locked from its click to its end.
+  docSaveButton.addEventListener('click', () => void selectionLock.during(saveDocumentation));
+  saveButton.addEventListener('click', () => void selectionLock.during(saveSetup));
+  manifestButton.addEventListener('click', () => void selectionLock.during(manifestSetup));
   launchButton.addEventListener('click', () => void launchIngestion());
   ledgerButton.addEventListener('click', () => void browseLedger());
   // The toolbar button opens the panel and puts the cursor in the question;
