@@ -135,3 +135,44 @@ def test_an_empty_list_in_brackets_is_refused_as_a_list_the_editor_cannot_edit(m
     # apply and report still refuse a manifest that equips nobody, in the loader's words
     code, said = mdb("credentials-report")
     assert code == 2 and "'identities' must be a non-empty list" in said
+
+
+# ---- the id of an identity is one segment of the address ---------------------------------
+@pytest.mark.parametrize("who, segment", [
+    ("Sales#EMEA", "Sales%23EMEA"), ("A?b=1", "A%3Fb=1"),
+    ("x/../../other/groups/F", "x%2F..%2F..%2Fother%2Fgroups%2FF"), ("...", "..."),
+    ("A B", "A%20B"), ("100%", "100%25"), ("ada@example.com", "ada@example.com"), ("sas-be-sa", "sas-be-sa"),
+    ("a:b+c", "a:b+c"), ("Grüne", "Gr%C3%BCne"),
+])
+def test_the_id_is_one_segment_of_the_address_of_its_credential(who, segment):
+    """review-21a case 8: an id with `#` or `?` was cut there by the HTTP
+    client, so the request - the DELETE as well - was about another
+    identity; an id with `/../` reached another path. The address requests
+    sends is the one mdb builds."""
+    requests = pytest.importorskip("requests")
+    for kind in ("group", "user"):
+        path = credentials.credential_path("my keys/x", credentials.Identity(type=kind, id=who))
+        assert path == f"/credentials/domains/my%20keys%2Fx/{kind}s/{segment}"
+        assert requests.Request("DELETE", "https://viya.example.com" + path).prepare().path_url == path
+
+
+def test_an_id_that_is_a_step_of_the_path_is_refused(mdb):
+    """`..` alone is read as a step of the path by the HTTP client, encoded
+    or not: no request names it."""
+    for who in (".", ".."):
+        with pytest.raises(credentials.CredentialError, match="is read as a step of the path"):
+            credentials.credential_path("d", credentials.Identity(type="group", id=who))
+    mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: '..', state: absent}\n", encoding="utf-8")
+    code, said = mdb("credentials-apply")
+    assert code == 2 and "'..' cannot be named in the address of a credential" in said and mdb.site.calls == []
+
+
+def test_the_requests_of_apply_name_the_identity_whole(mdb):
+    mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: 'Sales#EMEA'}\n"
+                        "  - {type: group, id: '../x', state: absent}\n", encoding="utf-8")
+    assert mdb("credentials-apply")[0] == 0
+    assert mdb.site.calls == [("GET", "/credentials/domains/agentic-ai-keys/groups/Sales%23EMEA"),
+                              ("GET", "/credentials/domains/agentic-ai-keys/groups/..%2Fx"),
+                              ("PUT", "/credentials/domains/agentic-ai-keys"),
+                              ("PUT", "/credentials/domains/agentic-ai-keys/groups/Sales%23EMEA"),
+                              ("DELETE", "/credentials/domains/agentic-ai-keys/groups/..%2Fx")]

@@ -931,8 +931,26 @@ def entries_for(manifest: Manifest, identity: Identity) -> dict:
 # ---------------------------------------------------------------------------
 # Talking to the service
 # ---------------------------------------------------------------------------
+def _segment(value: str) -> str:
+    """A value as one segment of an address: what would end the segment or
+    the path (`/`, `?`, `#`), a `%`, a blank and what else an address does
+    not carry as it is, percent-encoded. Every other character a segment may
+    hold (`@`, `:`, `+`, ...) stays as it is. `.` and `..` alone are refused:
+    the HTTP client reads them as a step of the path, encoded or not."""
+    from urllib.parse import quote
+
+    if value in (".", ".."):
+        raise CredentialError(f"'{value}' cannot be named in the address of a credential: it is read as a step "
+                              "of the path")
+    return quote(value, safe="!$&'()*+,;=:@")
+
+
 def credential_path(domain: str, identity: Identity) -> str:
-    return f"/credentials/domains/{domain}/{identity.path_segment}/{identity.id}"
+    """The address of one credential. The domain and the id are one segment
+    each (`_segment`): an id with `#` or `?` was cut there by the HTTP client,
+    and one with `/../` reached another path - a GET, a PUT or a DELETE of
+    another identity."""
+    return f"/credentials/domains/{_segment(domain)}/{identity.path_segment}/{_segment(identity.id)}"
 
 
 def fetch_credential(session, domain: str, identity: Identity) -> Optional[dict]:
@@ -964,7 +982,7 @@ def ensure_domain(session, domain: str) -> None:
     import json
 
     response = session.put(
-        f"/credentials/domains/{domain}",
+        f"/credentials/domains/{_segment(domain)}",
         data=json.dumps({"id": domain, "type": DOMAIN_TYPE,
                          "description": DOMAIN_DESCRIPTION}),
         headers={"Content-Type": "application/json", "Accept": "application/json"},
