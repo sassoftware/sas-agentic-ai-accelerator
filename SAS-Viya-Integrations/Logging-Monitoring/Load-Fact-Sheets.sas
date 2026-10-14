@@ -145,9 +145,14 @@ options nosyntaxcheck;
        under the name, and only then is a table of the name dropped or promoted: the one this run loaded */
     %let _lfs_taken = unknown;
     proc cas;
-        table.tableExists result = taken / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";
-        call symputx("_lfs_taken", taken.exists, "L");
+        table.tableExists result = taken status = takenAsked / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";
+        if takenAsked.severity != 0 then call symputx("_lfs_taken", "refused", "L");
+        else call symputx("_lfs_taken", taken.exists, "L");
     run; quit;
+    %if &_lfs_taken. EQ refused %then %do;
+        %put WARNING: CAS refused to say whether there is a table &_lfs_caslib..&_lfs_table._NEW, the name the sheet is loaded under first. The file &_lfs_file. was not loaded into CAS, the table &_lfs_caslib..&_lfs_table. was left as it is.;
+        %return;
+    %end;
     %if &_lfs_taken. NE 0 %then %do;
         %put WARNING: CAS did not answer that there is no table &_lfs_caslib..&_lfs_table._NEW - tableExists said &_lfs_taken., and 0 is no table. The sheet is loaded under that name first, as a table of this session, and this program drops and replaces no table it did not load: where a table of that name is there, rename or drop it and run this program again. The file &_lfs_file. was not loaded into CAS, the table &_lfs_caslib..&_lfs_table. was left as it is.;
         %return;
@@ -159,10 +164,12 @@ options nosyntaxcheck;
 
     proc cas;
         staged = -1;
-        table.tableExists result = found / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";
-        if found.exists != 0 then do;
+        table.tableExists result = found status = foundAsked / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";
+        if foundAsked.severity != 0 then staged = -1;
+        else if found.exists != 0 then do;
             staged = 0;
-            table.tableInfo result = listing / caslib = "&_lfs_caslib.";
+            table.tableInfo result = listing status = counted / caslib = "&_lfs_caslib.";
+            if counted.severity != 0 then staged = -1;
             if exists(listing, "TableInfo") then do;
                 do entry over listing.TableInfo;
                     if upcase(entry.Name) == upcase("&_lfs_table._NEW") then staged = entry.Rows;
@@ -181,7 +188,7 @@ options nosyntaxcheck;
         %let _lfs_ok = 1;
     %end;
     %else %do;
-        %put WARNING: The &_lfs_rows. rows of the file &_lfs_file. could not be loaded into the CAS library &_lfs_caslib. - CAS held &_lfs_staged. of them, -1 stands for a table that was not found. The table &_lfs_caslib..&_lfs_table. was left as it is.;
+        %put WARNING: The &_lfs_rows. rows of the file &_lfs_file. could not be loaded into the CAS library &_lfs_caslib. - CAS held &_lfs_staged. of them, -1 stands for a table that CAS did not say is there or did not count. The table &_lfs_caslib..&_lfs_table. was left as it is.;
     %end;
 %mend _lfs_read;
 
@@ -212,9 +219,11 @@ options nosyntaxcheck;
         end;
         else do;
             table.dropTable / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW" quiet = true;
-            /* a table of that name that is in memory now was not dropped: it is left, and nothing is loaded */
-            table.tableExists result = still / caslib = "&_lfs_caslib." name = "&_lfs_table.";
-            if still.exists != 0 then outcome = "kept";
+            /* a table of that name that is in memory now was not dropped: it is left, and nothing is loaded. Where CAS
+               refused the question, nothing is loaded either and the outcome stays "replace" */
+            table.tableExists result = still status = stillAsked / caslib = "&_lfs_caslib." name = "&_lfs_table.";
+            if stillAsked.severity != 0 then outcome = "replace";
+            else if still.exists != 0 then outcome = "kept";
             else do;
                 table.loadTable status = restored / caslib = "&_lfs_caslib." path = "&_lfs_table..sashdat"
                     casOut = {caslib = "&_lfs_caslib.", name = "&_lfs_table.", promote = true};
@@ -228,7 +237,7 @@ options nosyntaxcheck;
     %else %if &_lfs_outcome. EQ restored %then
         %put WARNING: The sheet could not take the place of the table &_lfs_caslib..&_lfs_table. - messages above. The table was loaded again from the file it was saved to before.;
     %else %if &_lfs_outcome. EQ replace %then
-        %put WARNING: The sheet could not take the place of the table &_lfs_caslib..&_lfs_table. - messages above - and the table could not be loaded again from the file it was saved to before: load that file, or run this program again.;
+        %put WARNING: The sheet could not take the place of the table &_lfs_caslib..&_lfs_table. - messages above - and the table was not loaded again from the file it was saved to before: load that file, or run this program again.;
     %else %if &_lfs_outcome. EQ save %then
         %put WARNING: The table &_lfs_caslib..&_lfs_table. holds the sheet and is promoted, but it could not be saved - messages above. Its saved file is the one of before.;
 %mend _lfs_swap;

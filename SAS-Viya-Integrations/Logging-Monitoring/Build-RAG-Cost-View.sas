@@ -366,13 +366,15 @@ run;
         run; quit;
 
         /* the rows CAS holds under the name of the output table now: -1 for a
-           table that is not there */
+           table that CAS did not say is there or did not count */
         proc cas;
             built = -1;
-            table.tableExists result = found / caslib = "&_rcv_out_caslib." name = "&_rcv_out_table.";
-            if found.exists != 0 then do;
+            table.tableExists result = found status = foundAsked / caslib = "&_rcv_out_caslib." name = "&_rcv_out_table.";
+            if foundAsked.severity != 0 then built = -1;
+            else if found.exists != 0 then do;
                 built = 0;
-                table.tableInfo result = listing / caslib = "&_rcv_out_caslib.";
+                table.tableInfo result = listing status = counted / caslib = "&_rcv_out_caslib.";
+                if counted.severity != 0 then built = -1;
                 if exists(listing, "TableInfo") then do;
                     do entry over listing.TableInfo;
                         if upcase(entry.Name) == upcase("&_rcv_out_table.") then built = entry.Rows;
@@ -408,7 +410,7 @@ run;
         %end;
     %end;
     %else %if &_rcv_vars. GT 0 %then %do;
-        %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built in &_rcv_out_caslib.: this run has &_rcv_rows. rows for it and the CAS library holds &_rcv_built., -1 stands for a table that is not there. The lines above say why.;
+        %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built in &_rcv_out_caslib.: this run has &_rcv_rows. rows for it and the CAS library holds &_rcv_built., -1 stands for a table that CAS did not say is there or did not count. The lines above say why.;
         %let _rcv_failed = 1;
     %end;
     %else %do;

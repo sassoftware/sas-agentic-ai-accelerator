@@ -78,14 +78,15 @@ def test_the_three_sheets_are_read_one_after_the_other_and_none_stops_the_others
     macro = read_macro()
     # a sheet that is not loaded is a WARNING that names the file or the rows and the table that stays
     warnings = re.findall(r"%put (WARNING: [^;]*);", macro)
-    assert len(warnings) == 4 and "ERROR" not in macro.upper().replace("NOWARN", "")
+    # fix-content-22: one more, for a question CAS refused before the sheet is loaded
+    assert len(warnings) == 5 and "ERROR" not in macro.upper().replace("NOWARN", "")
     for warning in warnings:
         assert warning.endswith("the table &_lfs_caslib..&_lfs_table. was left as it is.") or \
             warning.endswith("The table &_lfs_caslib..&_lfs_table. was left as it is.")
         assert not set(warning) & set("%'\"") and warning.count("(") == warning.count(")")
     # no ABORT and no statement that ends the program: the next sheet is read whatever became of this one
     assert not re.search(r"\babort\b|%abort|endsas", code, flags=re.IGNORECASE)
-    assert macro.count("%return;") == 3
+    assert macro.count("%return;") == 4
 
 
 def test_a_sheet_is_read_and_tried_in_cas_before_its_table_is_touched():
@@ -102,12 +103,12 @@ def test_a_sheet_is_read_and_tried_in_cas_before_its_table_is_touched():
     # CAS is asked for a table of the name the sheet is loaded under, and the sheet is loaded only where it says 0
     assert macro.index("%if &_lfs_rows. LE 0 %then %do;") < macro.index("%let _lfs_taken = unknown;")
     in_order(macro[macro.index("%let _lfs_taken = unknown;"):], "%let _lfs_taken = unknown;",
-             'table.tableExists result = taken / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";',
-             'call symputx("_lfs_taken", taken.exists, "L");', "%if &_lfs_taken. NE 0 %then %do;", "%return;",
-             'load data=work.&_lfs_work. casOut="&_lfs_table._NEW" replace;')
+             'table.tableExists result = taken status = takenAsked / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";',
+             'call symputx("_lfs_taken", taken.exists, "L");', "%if &_lfs_taken. EQ refused %then %do;", "%return;",
+             "%if &_lfs_taken. NE 0 %then %do;", 'load data=work.&_lfs_work. casOut="&_lfs_table._NEW" replace;')
     # it is loaded beside the table, under another name, counted there and dropped again
     in_order(macro, 'load data=work.&_lfs_work. casOut="&_lfs_table._NEW" replace;',
-             'table.tableExists result = found / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";',
+             'table.tableExists result = found status = foundAsked / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";',
              'if upcase(entry.Name) == upcase("&_lfs_table._NEW") then staged = entry.Rows;',
              'table.dropTable / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW" quiet = true;',
              'call symputx("_lfs_staged", staged, "L");',
@@ -248,9 +249,9 @@ def test_a_sheet_that_is_there_is_read_and_counted_as_before():
 
     assert log == [] and macros["_lfs_ok"] == "1" and cas.errors == []
     in_order("\n".join(generated), "filename _lfs_fs filesrvc folderPath=", "proc import dataFile=_lfs_fs", "filename _lfs_fs clear;",
-             'table.tableExists result = taken / caslib = "Public" name = "LLM_FACT_SHEET_NEW";',
+             'table.tableExists result = taken status = takenAsked / caslib = "Public" name = "LLM_FACT_SHEET_NEW";',
              'load data=work._lfs_llm_fact_sheet casOut="LLM_FACT_SHEET_NEW" replace;',
-             'table.tableExists result = found / caslib = "Public" name = "LLM_FACT_SHEET_NEW";')
+             'table.tableExists result = found status = foundAsked / caslib = "Public" name = "LLM_FACT_SHEET_NEW";')
     assert cas.exists("Public", "LLM_FACT_SHEET_NEW") == 1
     # CAS was asked for a table of that name before the sheet was loaded under it
     assert cas.calls[0] == ("table.tableExists", {"caslib": "Public", "name": "LLM_FACT_SHEET_NEW"})
@@ -307,7 +308,7 @@ BEFORE = {"columns": COLUMNS, "rows": 28, "of": "the table of before"}
 COULD_NOT = "WARNING: The sheet could not take the place of the table Public.LLM_FACT_SHEET - messages above"
 KEPT = COULD_NOT + ". The table of that name that is in memory was left as it is."
 RESTORED = COULD_NOT + ". The table was loaded again from the file it was saved to before."
-GONE = (COULD_NOT + " - and the table could not be loaded again from the file it was saved to before: load that file, or run this "
+GONE = (COULD_NOT + " - and the table was not loaded again from the file it was saved to before: load that file, or run this "
         "program again.")
 NOT_SAVED = ("WARNING: The table Public.LLM_FACT_SHEET holds the sheet and is promoted, but it could not be saved - messages above. "
              "Its saved file is the one of before.")
@@ -388,7 +389,7 @@ def test_each_outcome_has_one_sentence_and_the_sentences_differ():
     swap = swap_macro()
     assert re.findall(r"%if &_lfs_outcome\. EQ (\w+) %then", swap) == ["kept", "restored", "replace", "save"]
     in_order(swap, 'table.dropTable / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW" quiet = true;',
-             'table.tableExists result = still / caslib = "&_lfs_caslib." name = "&_lfs_table.";',
+             'table.tableExists result = still status = stillAsked / caslib = "&_lfs_caslib." name = "&_lfs_table.";',
              'if still.exists != 0 then outcome = "kept";', "table.loadTable status = restored /")
 
 
@@ -412,7 +413,7 @@ def test_the_readme_says_of_the_program_what_it_does():
     assert ("A table that has the name `<table>_NEW` before a sheet is loaded is no table of the program: CAS is asked first "
             "(`table.tableExists`), and where it does not answer that there is none, the sheet is not loaded and neither table is "
             "touched, with a WARNING that says to rename or drop that table.") in readme
-    assert code.count('table.tableExists result = taken / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";') == 1
+    assert code.count('table.tableExists result = taken status = takenAsked / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW";') == 1
     # what has not run in SAS is said in the changelog and in the guide, not here
     paragraph = readme[readme.index("*Load-Fact-Sheets.sas* reads the three fact sheet files"):readme.index("*Build-RAG-Cost-View.sas* stacks")]
     assert not re.search(r"not (been )?run|untested|not measured", paragraph, flags=re.IGNORECASE)

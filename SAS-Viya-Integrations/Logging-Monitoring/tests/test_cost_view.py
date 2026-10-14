@@ -291,7 +291,7 @@ def test_a_table_that_cas_does_not_hold_with_the_rows_of_this_run_is_an_error(in
 
     assert generated[:6] == PUBLISH
     assert log == [f"ERROR: Build-RAG-Cost-View: ZZ_VERIFY_COST was not built in casuser: this run has 15 rows for it and the CAS library "
-                   f"holds {in_cas}, -1 stands for a table that is not there. The lines above say why."]
+                   f"holds {in_cas}, -1 stands for a table that CAS did not say is there or did not count. The lines above say why."]
     assert macros["_rcv_failed"] == "1"
 
 
@@ -318,7 +318,7 @@ def test_the_closing_note_of_the_cost_view_names_the_table_it_wrote():
     positions = [publishing.index(marker) for marker in (
         "%if &_rcv_vars. GT 0 %then %do;", 'droptable casdata="&_rcv_out_table." quiet;', 'load data=work._rcv_cost casout="&_rcv_out_table.";',
         'save casdata="&_rcv_out_table." casout="&_rcv_out_table." replace;',
-        'table.tableExists result = found / caslib = "&_rcv_out_caslib." name = "&_rcv_out_table.";',
+        'table.tableExists result = found status = foundAsked / caslib = "&_rcv_out_caslib." name = "&_rcv_out_table.";',
         'if upcase(entry.Name) == upcase("&_rcv_out_table.") then built = entry.Rows;', 'call symputx("_rcv_built", built, "L");',
         "%if &_rcv_vars. GT 0 and &_rcv_built. EQ &_rcv_rows. %then %do;", "%put NOTE: &_rcv_out_table. built in &_rcv_out_caslib..;",
         "%else %if &_rcv_vars. GT 0 %then %do;", "%else %do;")]
