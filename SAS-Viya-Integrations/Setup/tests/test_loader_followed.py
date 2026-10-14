@@ -409,7 +409,8 @@ def test_the_warning_of_a_taken_name_alone_does_not_fail_the_job(sheets):
         assert looked == ["NOTE: Load-Accelerator-Tables: ACCELERATOR_RELEASES, LLM_FACT_SHEET, EMBEDDING_FACT_SHEET and DECISION_FACT_SHEET are "
                           "in the CAS library Public."]
     else:
-        assert looked == ["ERROR: Load-Accelerator-Tables: not in the CAS library Public at the end of the run: LLM_FACT_SHEET "
+        assert looked == ["ERROR: Load-Accelerator-Tables: not in the CAS library Public at the end of the run, or CAS refused to say whether "
+                          "they are: LLM_FACT_SHEET "
                           "EMBEDDING_FACT_SHEET DECISION_FACT_SHEET. The lines above say why."]
     assert end["_lat_failed"] == ("0" if sheets else "1") and end["_lat_ready"] == "1"
     # the one statement that sets the condition code reads these two, and nothing else of the program sets it
@@ -424,7 +425,7 @@ def test_the_two_causes_of_a_saved_file_that_is_not_replaced_have_a_line_each():
     code = re.sub(r"/\*.*?\*/", "", program(), flags=re.DOTALL)
     errors = re.findall(r"%if &_lat_outcome\. EQ (\w+) %then %do;\s*%put (ERROR: [^;]*);\s*%let _lat_failed = 1;\s*%return;", code)
 
-    assert [outcome for outcome, _ in errors] == ["foreign", "foreignfile", "unlisted", "savedtaken"]
+    assert [outcome for outcome, _ in errors] == ["foreign", "foreignfile", "unlisted", "refused", "savedtaken"]
     assert code.count('outcome = "savedtaken";') == 1 and code.count('lacking = "foreignfile";') == 1
     # the outcome of a name that is taken is set where CAS did not answer 0, with what it answered
     assert ('                    else do;\n'
@@ -520,8 +521,9 @@ def test_the_statements_that_look_at_the_saved_file():
                          ('else if saved == "" and upcase(savedEntry.Name) == upcase("&releaseTable..sashdat") then saved = savedEntry.Name;',
                           'else if saved == "" and upcase(entry.Name) == upcase("&table..sashdat") then')):
         assert ours in code and theirs in job
-    assert ('table.tableExists result = helper / caslib = "&caslib." name = "_LAT_SAVED";\n'
-            '                    if helper.exists == 0 then do;\n'
+    assert ('table.tableExists result = helper status = helperAsked / caslib = "&caslib." name = "_LAT_SAVED";\n'
+            '                    if helperAsked.severity != 0 then outcome = "refused";\n'
+            '                    else if helper.exists == 0 then do;\n'
             '                        table.loadTable result = ignored status = opened / caslib = "&caslib." path = saved\n'
             '                            casOut = {caslib = "&caslib.", name = "_LAT_SAVED", replace = true};') in code
     # the name: asked for, loaded, looked at, dropped - and named in the ERROR line of a file that could not be loaded or

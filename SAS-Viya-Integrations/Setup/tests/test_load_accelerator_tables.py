@@ -239,7 +239,7 @@ def test_the_table_is_dropped_only_behind_an_upload_that_holds_every_row():
 
     in_order(release,
              'casOut = {caslib = "&caslib.", name = "&releaseTable._NEW", replace = true}',
-             'table.tableExists result = found / caslib = "&caslib." name = "&releaseTable._NEW";',
+             'table.tableExists result = found status = foundAsked / caslib = "&caslib." name = "&releaseTable._NEW";',
              'if upcase(entry.Name) == upcase("&releaseTable._NEW") then staged = entry.Rows;',
              "if staged == &_lat_rows. then do;",
              'table.dropTable status = dropped / caslib = "&caslib." name = "&releaseTable." quiet = true;',
@@ -256,9 +256,10 @@ def test_the_table_is_dropped_only_behind_an_upload_that_holds_every_row():
     assert release.count('name = "&releaseTable." quiet = true') == 1 and release.count("table.promote") == 1 and release.count("table.save") == 1
     # every way the upload can end is one line of the log, and only the one that loaded is a NOTE
     outcomes = re.findall(r"%if &_lat_outcome\. EQ (\w+) %then", release)
-    assert outcomes == ["foreign", "foreignfile", "unlisted", "savedtaken", "loaded", "upload", "rows", "replace", "save"]
+    assert outcomes == ["foreign", "foreignfile", "unlisted", "refused", "savedtaken", "loaded", "upload", "rows", "replace", "save"]
     said = re.findall(r"%put (\w+): Load-Accelerator-Tables: ([^;]*);", release)
-    assert [kind for kind, _ in said] == ["WARNING"] * 5 + ["ERROR", "ERROR", "ERROR", "ERROR", "NOTE"] + ["WARNING"] * 5
+    # fix-content-22: the ERROR line of a question CAS refused in front of the upload, and the one of an action it refused behind it
+    assert [kind for kind, _ in said] == ["WARNING"] * 4 + ["ERROR", "WARNING"] + ["ERROR"] * 5 + ["NOTE"] + ["WARNING"] * 5
     for kind, text in said:
         assert not set(text) & set("%'\"") and text.count("(") == text.count(")"), text
         assert set(re.findall(r"&(\w+)", text)) <= {"contentRoot", "caslib", "releaseTable", "_lat_rows", "_lat_staged", "_lat_taken",
@@ -276,12 +277,13 @@ def test_a_file_that_is_not_there_or_holds_other_columns_leaves_the_table():
     assert missing.count("%if &_lat_there. NE 1 %then %do;") == 2
     # one sentence for a file that is not there, whether its folder is there or not
     assert release.count("was not found in the folder &contentRoot./Data") == 1
-    assert release.count("%return;") == 10
+    assert release.count("%return;") == 12
     assert release.index('outcome = "upload";') > release.split("%if &_lat_outcome. EQ foreign")[0].rindex("%return;")
     # the last of them in front of the upload: CAS is asked for a table of the name the file is uploaded under
     in_order(release[release.index("%let _lat_taken = unknown;"):], "%let _lat_taken = unknown;",
-             'table.tableExists result = taken / caslib = "&caslib." name = "&releaseTable._NEW";',
-             'call symputx("_lat_taken", taken.exists, "L");', "%if &_lat_taken. NE 0 %then %do;", "%return;", "upload path =")
+             'table.tableExists result = taken status = takenAsked / caslib = "&caslib." name = "&releaseTable._NEW";',
+             'call symputx("_lat_taken", taken.exists, "L");', "%if &_lat_taken. EQ refused %then %do;", "%return;",
+             "%if &_lat_taken. NE 0 %then %do;", "upload path =")
     assert "_lat_taken" in release[release.index("%local "):release.index(";", release.index("%local "))]
     assert "The file and this job definition are of different releases." in release
 
@@ -409,7 +411,7 @@ def test_the_job_fails_for_a_refusal_and_for_a_table_that_is_not_there_at_the_en
     look = macro("_lat_look")
 
     assert 'do name over {"&releaseTable.", "LLM_FACT_SHEET", "EMBEDDING_FACT_SHEET", "DECISION_FACT_SHEET"};' in look
-    in_order(look, 'table.tableExists result = found / caslib = "&caslib." name = name;', 'if found.exists == 0 then missing = missing || " " || name;',
+    in_order(look, 'table.tableExists result = found status = asked / caslib = "&caslib." name = name;', 'if found.exists == 0 then missing = missing || " " || name;',
              'call symputx("_lat_missing", missing);', "%if %length(&_lat_missing.) GT 0 %then %do;", "%put ERROR: Load-Accelerator-Tables:",
              "%let _lat_failed = 1;")
     # the statement that sets the condition code is the last one, behind the session and the option
@@ -422,8 +424,8 @@ def test_the_job_fails_for_a_refusal_and_for_a_table_that_is_not_there_at_the_en
     assert comment.startswith("* A run that wrote an ERROR line ends with the condition code of a failed job") and comment.endswith(";")
     assert not re.search(r"[%&'\";]", comment[:-1])
     # nothing but an ERROR line sets what the statement reads
-    assert re.findall(r"%let _lat_failed\s*=\s*(\d);", text) == ["0", "1", "1", "1", "1", "1"]
-    assert len(re.findall(r"%put ERROR: [^;]*;\s*%let _lat_failed = 1;", text)) == 5
+    assert re.findall(r"%let _lat_failed\s*=\s*(\d);", text) == ["0"] + ["1"] * 7
+    assert len(re.findall(r"%put ERROR: [^;]*;\s*%let _lat_failed = 1;", text)) == 7
     assert not re.search(r"\babort\b|%abort|endsas", text, flags=re.IGNORECASE)
     # the two settings of the included program are deleted where it did not run and delete them itself
     assert text.rstrip().endswith("%symdel _lfs_path _lfs_caslib / nowarn;")
@@ -440,9 +442,9 @@ def test_a_table_of_that_name_that_is_no_release_table_is_left_as_it_is():
     in_order(release,
              "if staged == &_lat_rows. then do;",
              'lacking = "foreign";',
-             'table.tableExists result = present / caslib = "&caslib." name = "&releaseTable.";',
+             'table.tableExists result = present status = presentAsked / caslib = "&caslib." name = "&releaseTable.";',
              'if present.exists != 0 then look = "&releaseTable.";',
-             'table.columnInfo result = described / table = {caslib = "&caslib.", name = look};',
+             'table.columnInfo result = described status = columnsListed / table = {caslib = "&caslib.", name = look};',
              "have = have || upcase(column.Column) || \" \";",
              '%let _lat_v = %upcase(%scan(%scan(&_lat_vars., &_lat_i., %str( )), 1, %str(:)));',
              '%if &_lat_v. NE BUILDER_PART %then %do;',
@@ -468,5 +470,6 @@ def test_a_table_of_that_name_that_is_no_release_table_is_left_as_it_is():
     for group, cause in ((in_file, "could not be loaded or lacks columns of a release table"), (not_looked_at, "was not looked at")):
         in_order(group, "%put ERROR: Load-Accelerator-Tables: no table &caslib..&releaseTable. is in memory, and the file a table of that name "
                  "was saved to in the CAS library &caslib. " + cause, "%let _lat_failed = 1;", "%return;", "%end;")
-    # the four refusals are the only ERROR lines of the macro
-    assert release.count("%put ERROR:") == 4 and refused.count("%let _lat_failed = 1;") == 4
+    # the four refusals and - fix-content-22 - the line of an action CAS refused, behind the upload and in front of it, are the
+    # only ERROR lines of the macro
+    assert release.count("%put ERROR:") == 6 and refused.count("%let _lat_failed = 1;") == 5

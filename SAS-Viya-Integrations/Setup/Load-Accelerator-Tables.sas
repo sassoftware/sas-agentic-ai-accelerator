@@ -254,9 +254,15 @@ run;
        name, and only then is a table of the name dropped or promoted: the one this run loaded */
     %let _lat_taken = unknown;
     proc cas;
-        table.tableExists result = taken / caslib = "&caslib." name = "&releaseTable._NEW";
-        call symputx("_lat_taken", taken.exists, "L");
+        table.tableExists result = taken status = takenAsked / caslib = "&caslib." name = "&releaseTable._NEW";
+        if takenAsked.severity != 0 then call symputx("_lat_taken", "refused", "L");
+        else call symputx("_lat_taken", taken.exists, "L");
     quit;
+    %if &_lat_taken. EQ refused %then %do;
+        %put ERROR: Load-Accelerator-Tables: CAS refused to say whether there is a table &caslib..&releaseTable._NEW, the name the file is uploaded under first. Nothing was uploaded, the table &caslib..&releaseTable. was left as it is.;
+        %let _lat_failed = 1;
+        %return;
+    %end;
     %if &_lat_taken. NE 0 %then %do;
         %put WARNING: Load-Accelerator-Tables: CAS did not answer that there is no table &caslib..&releaseTable._NEW - tableExists said &_lat_taken., and 0 is no table. The file is uploaded under that name first, as a table of this session, and the job drops and replaces no table it did not load: where a table of that name is there, rename or drop it and run the job again. Nothing was uploaded, the table &caslib..&releaseTable. was left as it is.;
         %return;
@@ -279,17 +285,20 @@ run;
                     {name = "%scan(&_lat_v., 1, %str(:))", type = "%scan(&_lat_v., 2, %str(:))"}
                 %end;
             }};
-        /* the rows the upload holds, against the lines of the file */
-        table.tableExists result = found / caslib = "&caslib." name = "&releaseTable._NEW";
-        if found.exists != 0 then do;
+        /* the rows the upload holds, against the lines of the file. An action of CAS the job goes by that CAS
+           refused - here and below - is no answer: the outcome is the refusal, and the upload takes the place of no table */
+        table.tableExists result = found status = foundAsked / caslib = "&caslib." name = "&releaseTable._NEW";
+        if foundAsked.severity != 0 then outcome = "refused";
+        else if found.exists != 0 then do;
             staged = 0;
-            table.tableInfo result = listing / caslib = "&caslib.";
+            outcome = "rows";
+            table.tableInfo result = listing status = counted / caslib = "&caslib.";
+            if counted.severity != 0 then outcome = "refused";
             if exists(listing, "TableInfo") then do;
                 do entry over listing.TableInfo;
                     if upcase(entry.Name) == upcase("&releaseTable._NEW") then staged = entry.Rows;
                 end;
             end;
-            outcome = "rows";
         end;
         /* A table of that name that exists is replaced only where it is a release table, with the columns of one:
            the parameter releaseTable can name any table of the CAS library, and another table of the site - a fact
@@ -309,8 +318,9 @@ run;
             look = "";
             lacking = "foreign";
             fromFile = 0;
-            table.tableExists result = present / caslib = "&caslib." name = "&releaseTable.";
-            if present.exists != 0 then look = "&releaseTable.";
+            table.tableExists result = present status = presentAsked / caslib = "&caslib." name = "&releaseTable.";
+            if presentAsked.severity != 0 then outcome = "refused";
+            else if present.exists != 0 then look = "&releaseTable.";
             else do;
                 saved = "";
                 table.fileInfo result = files status = listed / caslib = "&caslib.";
@@ -327,8 +337,9 @@ run;
                     /* a saved file that can not be loaded is no release table either: nothing writes over it */
                     lacking = "foreignfile";
                     outcome = lacking;
-                    table.tableExists result = helper / caslib = "&caslib." name = "_LAT_SAVED";
-                    if helper.exists == 0 then do;
+                    table.tableExists result = helper status = helperAsked / caslib = "&caslib." name = "_LAT_SAVED";
+                    if helperAsked.severity != 0 then outcome = "refused";
+                    else if helper.exists == 0 then do;
                         table.loadTable result = ignored status = opened / caslib = "&caslib." path = saved
                             casOut = {caslib = "&caslib.", name = "_LAT_SAVED", replace = true};
                         if opened.severity == 0 then do;
@@ -346,7 +357,9 @@ run;
                 end;
             end;
             if look != "" then do;
-                table.columnInfo result = described / table = {caslib = "&caslib.", name = look};
+                /* a listing of the columns that CAS refused names none, so every column below is lacking: the outcome is the refusal */
+                table.columnInfo result = described status = columnsListed / table = {caslib = "&caslib.", name = look};
+                if columnsListed.severity != 0 then lacking = "refused";
                 have = " ";
                 if exists(described, "ColumnInfo") then do;
                     do column over described.ColumnInfo;
@@ -398,6 +411,11 @@ run;
     %end;
     %if &_lat_outcome. EQ unlisted %then %do;
         %put ERROR: Load-Accelerator-Tables: no table &caslib..&releaseTable. is in memory, and CAS refused to list the files of the CAS library &caslib. (the ERROR lines above), so it is not known whether a file a table of that name was saved to is there. The upload of ACCELERATOR_RELEASES.csv was dropped again and no table &caslib..&releaseTable. was loaded.;
+        %let _lat_failed = 1;
+        %return;
+    %end;
+    %if &_lat_outcome. EQ refused %then %do;
+        %put ERROR: Load-Accelerator-Tables: CAS refused an action the job goes by to decide whether the upload takes the place of the table &caslib..&releaseTable. - the ERROR lines above. The upload of ACCELERATOR_RELEASES.csv was dropped again and no table &caslib..&releaseTable. was loaded.;
         %let _lat_failed = 1;
         %return;
     %end;
@@ -467,13 +485,14 @@ filename _latlfs clear;
     proc cas;
         missing = "";
         do name over {"&releaseTable.", "LLM_FACT_SHEET", "EMBEDDING_FACT_SHEET", "DECISION_FACT_SHEET"};
-            table.tableExists result = found / caslib = "&caslib." name = name;
-            if found.exists == 0 then missing = missing || " " || name;
+            table.tableExists result = found status = asked / caslib = "&caslib." name = name;
+            if asked.severity != 0 then missing = missing || " " || name;
+            else if found.exists == 0 then missing = missing || " " || name;
         end;
         call symputx("_lat_missing", missing);
     quit;
     %if %length(&_lat_missing.) GT 0 %then %do;
-        %put ERROR: Load-Accelerator-Tables: not in the CAS library &caslib. at the end of the run: &_lat_missing.. The lines above say why.;
+        %put ERROR: Load-Accelerator-Tables: not in the CAS library &caslib. at the end of the run, or CAS refused to say whether they are: &_lat_missing.. The lines above say why.;
         %let _lat_failed = 1;
     %end;
     %else %put NOTE: Load-Accelerator-Tables: &releaseTable., LLM_FACT_SHEET, EMBEDDING_FACT_SHEET and DECISION_FACT_SHEET are in the CAS library &caslib..;
