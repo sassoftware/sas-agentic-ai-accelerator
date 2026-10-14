@@ -489,7 +489,7 @@ def test_the_row_of_a_credential_that_cannot_be_read_shows_the_http_status(mdb):
     assert code == 0
     for who in ("group 'LLMConsumers'", "user 'ada [x]'"):
         assert sum(f"reading the credential for {who} failed: HTTP 503 " in line for line in said.splitlines()) == 1
-    assert "0 of 2 named identities hold a credential." in said
+    assert "0 of 2 named identities hold a credential; 2 could not be read." in said
 
 
 # ---- every hint of a FAILED line, run as it is printed -----------------------------------

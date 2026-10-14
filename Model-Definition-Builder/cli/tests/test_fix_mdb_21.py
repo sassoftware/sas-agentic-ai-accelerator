@@ -238,6 +238,27 @@ def test_the_credentials_commands_write_their_dashes_as_the_other_commands_do(md
     assert code == 2 and "cannot be edited in place - edit the file by hand" in said
 
 
+def test_the_report_counts_a_credential_that_could_not_be_read_neither_way(mdb):
+    """gate-21a C6: the row said `unreadable` and the line below the table
+    `1 of 1 identities marked state: absent hold none` - every marked
+    identity that was not found was counted as gone, also one mdb could not
+    look at."""
+    mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: Gone, state: absent}\n"
+                        "  - {type: group, id: Left, state: absent}\n  - {type: group, id: Kept}\n"
+                        "  - {type: user, id: ada}\n", encoding="utf-8")
+    mdb.site.holds("groups", "Kept")
+    get = mdb.site.get
+    mdb.site.get = lambda path, **kw: _Response(403) if path.endswith(("/Gone", "/ada")) else get(path, **kw)
+    code, said = mdb("credentials-report")
+    assert code == 0
+    assert "1 of 2 named identities hold a credential; 1 could not be read.\n" in said
+    assert "1 of 2 identities marked `state: absent` hold none; 1 could not be read.\n" in said
+    mdb.site.get = get
+    code, said = mdb("credentials-report")
+    assert "1 of 2 named identities hold a credential.\n" in said
+    assert "2 of 2 identities marked `state: absent` hold none.\n" in said
+
+
 def test_the_requests_of_apply_name_the_identity_whole(mdb):
     mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: 'Sales#EMEA'}\n"
                         "  - {type: group, id: '../x', state: absent}\n", encoding="utf-8")

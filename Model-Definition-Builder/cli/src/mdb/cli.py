@@ -4240,6 +4240,7 @@ def credentials_report(
     table.add_column("When")
     held = 0
     lingering = 0
+    unread = []
     with _viya_session() as session:
         for who in plan.identities:
             try:
@@ -4247,6 +4248,7 @@ def credentials_report(
             except CredentialError as exc:
                 # the sentence whole: the HTTP status is its last word
                 table.add_row(_plain(who.id), _plain(who.type), "[red]unreadable[/red]", _plain(exc), "")
+                unread.append(who)
                 continue
             if body is None:
                 table.add_row(_plain(who.id), _plain(who.type),
@@ -4266,11 +4268,16 @@ def credentials_report(
             table.add_row(_plain(who.id), _plain(who.type), "[green]yes[/green]", _plain(written[0]), _plain(written[1]))
     console.print(table)
     expected = [who for who in plan.identities if not who.absent]
-    console.print(f"{_plain(held)} of {len(expected)} named identities hold a credential.")
+    # an identity whose credential could not be read is counted neither way
+    unread_present = len([who for who in unread if not who.absent])
+    unread_absent = len(unread) - unread_present
+    console.print(f"{_plain(held)} of {len(expected)} named identities hold a credential"
+                  + (f"; {_plain(unread_present)} could not be read." if unread_present else "."))
     marked = len(plan.identities) - len(expected)
     if marked:
-        console.print(f"{_plain(marked - lingering)} of {_plain(marked)} identities marked "
-                      "`state: absent` hold none.")
+        console.print(f"{_plain(marked - lingering - unread_absent)} of {_plain(marked)} identities marked "
+                      "`state: absent` hold none"
+                      + (f"; {_plain(unread_absent)} could not be read." if unread_absent else "."))
     if lingering:
         console.print(f"[red]{_plain(lingering)} credential(s) the manifest marks absent "
                       "are still there.[/red] Run [bold]mdb credentials-apply"
