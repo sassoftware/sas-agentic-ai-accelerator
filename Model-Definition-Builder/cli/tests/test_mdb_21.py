@@ -713,3 +713,33 @@ def test_an_empty_content_root_is_refused_by_every_command_that_takes_one(monkey
                                   "Nothing was done. Without --content-root the command takes the content root "
                                   "the manifest names.\n")
     assert sorted(str(path) for path in tmp_path.rglob("*")) == before
+
+
+# ---- the command package-export prints for a test folder --------------------------------
+@pytest.mark.parametrize("folder, there", [("/Team/A test [1]/root", False), ("/Team/Is there/root", True)])
+def test_the_command_for_a_test_folder_runs_as_printed_for_a_folder_that_is_not_there(
+        exporting, manifest, repo, monkeypatch, folder, there):
+    """gate-20b: the line carried no --create. Run as printed for a test
+    folder that is not there - the usual case - it ended with exit code 1
+    and the sentence that says to pass --create."""
+    from test_package_guards import REPORT
+    elsewhere = repo / "scratch" / "r21.json"
+    result, text, _, _ = exporting(package_of(manifest, change={REPORT: None}, root="root"), "--content-root",
+                                   "/Users/me/My Folder/ZZ_VERIFY_R21/root", "--out", str(elsewhere),
+                                   "--allow-differences")
+    assert result.exit_code == 0, text
+    printed, = re.findall(r"`(mdb builders-import [^`]*)`", text.rstrip().splitlines()[-1])
+    assert printed.endswith(' --content-root "<folder>" --no-releases --no-reports --create --no-files')
+    viya, out = Viya(), io.StringIO()
+    if there:
+        viya.make_folder(folder)
+    monkeypatch.setattr(cli, "_viya_session", lambda: viya)
+    monkeypatch.setattr(cli, "console", Console(file=out, width=1000, force_terminal=False, emoji=False))
+    monkeypatch.setenv("SAS_VIYA_URL", "https://site.example")
+    words = shlex.split(printed.replace("<folder>", folder))
+    result = CliRunner().invoke(cli.app, words[1:])
+    assert result.exit_code == 0 and _ended_by_itself(result), (result.exception, out.getvalue())
+    assert "Release table: not reloaded (--no-releases)" in out.getvalue()
+    assert ("created      folder" in out.getvalue()) and viya.tree(folder)
+    assert not [path for method, path in viya.wrote() if path.startswith("/transfer")]
+    assert not (repo / cli.CONTENT_RULES_FILE).exists()

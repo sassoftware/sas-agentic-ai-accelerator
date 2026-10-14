@@ -2098,12 +2098,13 @@ def package_export(
                       "is not.", markup=False, highlight=False, soft_wrap=True)
     elif differences:
         # for a test folder: nothing but the folder is written - as the command comes, it would load the
-        # release table of the site and write the commands file of the content folder as well
+        # release table of the site and write the commands file of the content folder as well. --create,
+        # because a test folder is commonly not there yet: without it the command ends at such a folder
         into_a_test_folder = _import_command([target], None, None, None, None, True, IMPORT_TIMEOUT,
-                                             content_root="<folder>", no_reports=True, no_files=True)
+                                             content_root="<folder>", no_reports=True, create=True, no_files=True)
         console.print(f"Keep this file out of the repository. `{into_a_test_folder}` brings what it holds into a "
-                      "test folder, and nothing else: no report, no release table, no commands file.",
-                      markup=False, highlight=False, soft_wrap=True)
+                      "test folder, which it creates where it is not there, and nothing else: no report, no release "
+                      "table, no commands file.", markup=False, highlight=False, soft_wrap=True)
     else:
         console.print(f"The file equals the checkout and is not the release file ({manifest.package}): there is "
                       "nothing to commit.", markup=False, highlight=False, soft_wrap=True)
