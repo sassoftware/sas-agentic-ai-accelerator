@@ -53,6 +53,7 @@ ERROR_LINES = {
         "%put ERROR: _log_append_table is %superq(_log_append_table), which is no value of this setting": "%let _log_ready = 0;",
         "%put ERROR: The table &_log_target_table_lib..&_log_target_table_name. holds &_log_target_rows. rows and _log_append_table is not set": "%let _log_ready = 0;",
         "%put ERROR: The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded and _log_append_table is not set": "%let _log_ready = 0;",
+        "%put ERROR: The rows of the table &_log_target_table_lib..&_log_target_table_name. could not be counted and _log_append_table is not set": "%let _log_ready = 0;",
         'print (error) "The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded': "call symputx('_log_failed', '1');",
         'print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is. The DATA step': "call symputx('_log_failed', '1');",
         'print (error) "The new table could not be created, the table &_log_target_table_lib..&_log_target_table_name. was left as it is.";': "call symputx('_log_failed', '1');",

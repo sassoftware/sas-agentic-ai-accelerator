@@ -679,9 +679,15 @@ def test_a_run_without_the_setting_stops_at_a_table_that_holds_rows_in_front_of_
         "%nrstr(%let _log_append_table = 1;) adds the requests of the log to the table, %nrstr(%let _log_append_table = 0;) replaces "
         "the table with them.;",
         "%let _log_ready = 0;", "%end;",
-        "%if &_log_table_mode. EQ START and &_log_target_rows. LT 0 %then %do;",
+        "%if &_log_table_mode. EQ START and &_log_target_rows. EQ -1 %then %do;",
         "%put ERROR: The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded and _log_append_table is not "
         "set, so nothing was read and nothing was written - the saved file was left as it is.;",
+        "%let _log_ready = 0;", "%end;",
+        "%if &_log_table_mode. EQ START and &_log_target_rows. EQ -2 %then %do;",
+        "%put ERROR: The rows of the table &_log_target_table_lib..&_log_target_table_name. could not be counted and _log_append_table is "
+        "not set, so nothing was read and nothing was written - not the table and not its saved file. Set it in front of the program: "
+        "%nrstr(%let _log_append_table = 1;) adds the requests of the log to the table, %nrstr(%let _log_append_table = 0;) replaces "
+        "the table with them.;",
         "%let _log_ready = 0;", "%end;"]
     # in front of the Python, behind the session and the caslib of the table
     assert program.index("* Get the caslib name of the libname;") < program.index("call symputx('_casSessionUUID', sessresults[1]);") \
@@ -727,7 +733,7 @@ def test_a_run_that_replaces_says_how_many_rows_it_replaced(program):
     macro, swap = _output_macro(program), " ".join(_swap(program).split())
 
     # counted while the rows are still there: in front of the swap, for a run that replaces only
-    counted = ("%if &_log_table_mode. EQ REPLACE %then %do;\n            %_log_count_target;\n            %if &_log_target_rows. LT 0 %then %do;\n"
+    counted = ("%if &_log_table_mode. EQ REPLACE %then %do;\n            %_log_count_target;\n            %if &_log_target_rows. EQ -1 %then %do;\n"
                "                %let _log_target_unloaded = 1;\n            %end;\n        %end;")
     assert macro.index("%if &_log_row_count. GT 0 %then %do;") < macro.index(counted) < macro.index("table.dropTable")
     assert program.count("%_log_count_target;") == 2

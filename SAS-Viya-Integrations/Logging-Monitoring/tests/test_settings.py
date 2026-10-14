@@ -133,7 +133,7 @@ def test_nothing_sets_a_setting_over_a_value_that_is_there(name):
     # the message of the parser for a run without a value of _log_append_table shows the two statements a site
     # can set in front of the program. They stand in %nrstr, which keeps the macro processor from running them
     shown = re.findall(r"%nrstr\((%let \w+ = \d;)\)", code)
-    assert shown == (["%let _log_append_table = 1;", "%let _log_append_table = 0;"] if name == "Log-Parser-Code.sas" else [])
+    assert shown == (["%let _log_append_table = 1;", "%let _log_append_table = 0;"] * 2 if name == "Log-Parser-Code.sas" else [])
     assigned = re.findall(r"%let\s+(\w+)\s*=", re.sub(r"%nrstr\([^()]*\)", "", code))
     assert [variable for variable in assigned if variable in defaults] == []
     rewritten = sorted(set(re.findall(r"call symputx\('(\w+)'", code) + re.findall(r"into\s+:(\w+)", code)) & set(defaults))

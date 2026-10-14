@@ -283,7 +283,7 @@ def test_a_run_that_replaces_counts_before_it_writes(program):
     """The order in the macro: the count, what it found, and only then the PROC CAS step that drops, renames and saves."""
     macro = program()[program().index("%macro _log_handle_output_table;"):program().index("%mend _log_handle_output_table;")]
 
-    counted = ("%if &_log_table_mode. EQ REPLACE %then %do;\n            %_log_count_target;\n            %if &_log_target_rows. LT 0 %then %do;\n"
+    counted = ("%if &_log_table_mode. EQ REPLACE %then %do;\n            %_log_count_target;\n            %if &_log_target_rows. EQ -1 %then %do;\n"
                "                %let _log_target_unloaded = 1;\n            %end;\n        %end;")
     assert macro.index(counted) < macro.index("table.dropTable") and macro.count("%let _log_target_unloaded = 1;") == 1
     refused = macro[macro.index("%if &_log_target_unloaded. %then %do;"):macro.index("%else %if &_log_append_nothing. %then %do;")]

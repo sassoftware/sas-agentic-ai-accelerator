@@ -87,7 +87,7 @@ proc cas;
     call symputx('_casSessionUUID', sessresults[1]);
 quit;
 
-* The rows the output table holds before this run: 0 where there is no table, -1 where its saved file could not be loaded. The macro below counts them - the table in memory, or the saved file of a table that is not in memory, which is loaded into CASUSER for the count and dropped again. It runs in front of the log for a run without a value of _log_append_table and in front of the swap for a run that replaces, and at -1 neither of the two writes anything. A run that appends does not ask it;
+* The rows the output table holds before this run: 0 where there is no table, -1 where its saved file could not be loaded, -2 where the table is in memory and the listing of its rows names no table. The macro below counts them - the table in memory, or the saved file of a table that is not in memory, which is loaded into CASUSER for the count and dropped again. It runs in front of the log for a run without a value of _log_append_table and in front of the swap for a run that replaces. At -1 neither of the two writes anything, and at -2 a run without a value of _log_append_table writes nothing. A run that appends does not ask it;
 %let _log_target_rows = 0;
 %macro _log_count_target;
     proc cas;
@@ -96,6 +96,8 @@ quit;
             casLib = "&_log_target_table_lib.",
             name = "&_log_target_table_name.";
         if found.exists GE 1 then do;
+            /* -2 until the table was counted, so a table that is there and is not listed is not taken for a table without rows */
+            targetRows = -2;
             table.tableInfo result=foundTables /
                 casLib = "&_log_target_table_lib.",
                 name = "&_log_target_table_name.",
@@ -144,8 +146,12 @@ quit;
     %put ERROR: The table &_log_target_table_lib..&_log_target_table_name. holds &_log_target_rows. rows and _log_append_table is not set, so nothing was read and nothing was written - not the table and not its saved file. Set it in front of the program: %nrstr(%let _log_append_table = 1;) adds the requests of the log to the table, %nrstr(%let _log_append_table = 0;) replaces the table with them.;
     %let _log_ready = 0;
 %end;
-%if &_log_table_mode. EQ START and &_log_target_rows. LT 0 %then %do;
+%if &_log_table_mode. EQ START and &_log_target_rows. EQ -1 %then %do;
     %put ERROR: The saved table &_log_target_table_lib..&_log_target_table_name. could not be loaded and _log_append_table is not set, so nothing was read and nothing was written - the saved file was left as it is.;
+    %let _log_ready = 0;
+%end;
+%if &_log_table_mode. EQ START and &_log_target_rows. EQ -2 %then %do;
+    %put ERROR: The rows of the table &_log_target_table_lib..&_log_target_table_name. could not be counted and _log_append_table is not set, so nothing was read and nothing was written - not the table and not its saved file. Set it in front of the program: %nrstr(%let _log_append_table = 1;) adds the requests of the log to the table, %nrstr(%let _log_append_table = 0;) replaces the table with them.;
     %let _log_ready = 0;
 %end;
 
@@ -1633,7 +1639,7 @@ run; quit;
            not be loaded, the run writes nothing - not a new table and not the file -, as a run that appends */
         %if &_log_table_mode. EQ REPLACE %then %do;
             %_log_count_target;
-            %if &_log_target_rows. LT 0 %then %do;
+            %if &_log_target_rows. EQ -1 %then %do;
                 %let _log_target_unloaded = 1;
             %end;
         %end;
