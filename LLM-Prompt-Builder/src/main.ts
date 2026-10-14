@@ -21,6 +21,11 @@ import 'bootstrap/js/dist/collapse';
 import './styles.css';
 
 import { mountBuilderShell } from './objects/builder-shell';
+import { refuseClicksOnDisabledControls } from './ui/disabled-guard';
+
+// Before any listener of the page: a click a script sends to a control that
+// is off reaches none of them.
+refuseClicksOnDisabledControls();
 
 const root = document.getElementById('app');
 // The shell reads the configuration, answers the Options pane, checks that

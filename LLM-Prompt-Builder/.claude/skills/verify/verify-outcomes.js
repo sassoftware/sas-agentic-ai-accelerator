@@ -3,10 +3,11 @@
  * write or one dialog stays behind for the next. Run against a FRESH mock
  * instance.
  *
- * Before the roads, a census reads the sources (source-census.js): every
+ * Before the roads, two censuses read the sources (source-census.js): every
  * write of src/api reads back what is stored when it gets no usable answer
- * (API_REQUESTS names the requests that do not, with why), and every call of
- * a write in src/objects is named in WRITES with what it comes to then.
+ * (API_REQUESTS names the requests that do not, with why), every call of a
+ * write in src/objects is named in WRITES with what it comes to then, and
+ * every listener of a key in src is named in KEYS with what it starts.
  *
  * The roads, each on a page of its own:
  *
@@ -30,6 +31,12 @@
  *     opened while the usage was asked. A Delete project that stops part of
  *     the way shows what is left, in both builders, and says what was
  *     deleted.
+ *   - A setup opened twice while its question about a running ingestion is
+ *     out keeps Launch off until the last question is answered; a setup
+ *     created and not read back says that its buttons stay off, and Try
+ *     again reads it; Enter in the question of a retrieval test that runs
+ *     starts no second test, and a click a script sends to a control that is
+ *     off reaches no listener (at two moments, every such control).
  *   - Save setup, Manifest setup and Save documentation cannot be used while
  *     the stored setup is read.
  *   - While a write is out, a change of a picker sent by a script (as the
@@ -85,7 +92,7 @@ const rgb = (suffix) => `#app-obj-RGB-${suffix}`;
 const MANIFEST_BOX = lpb('pet-save-result');
 
 // ============================================================================
-// The census: every write
+// The censuses: every write, and every way to an action that is not a click
 // ============================================================================
 // A write whose answer was lost was taken for one that failed: a Delete
 // prompt-test that SAS Model Manager carried out said "The deletion failed"
@@ -169,6 +176,18 @@ const WRITES = {
     'deleteProjectButton:click -> deleteModelProject': [1, `${READ_BACK}: as the setups`],
   },
 };
+// Every listener of a key in src, by "<file> <function> <object>:<event>":
+// what it starts. An action whose button is off while it runs is refused by
+// the same condition when a key starts it (and a click a script sends to a
+// button that is off reaches no listener: src/ui/disabled-guard.ts).
+const KEYS = {
+  'objects/prompt-builder.ts buildPromptBuilder document:keydown': 'Escape hides the menu of variables of a prompt field; it starts nothing',
+  'objects/rag-builder.ts buildRagBuilder testQuestionField:keydown': 'Enter runs the retrieval test: runRetrievalTest refuses it by testRunRefused, the condition Run test is off for (road below)',
+  'ui/combobox.ts attachCombobox input:keydown': 'arrows move in the menu; Enter picks an entry, which changes the list as a click does - while a write is out the selection lock undoes that (verify-outcomes.js); Escape closes the menu',
+  'ui/create-modal.ts wrapper:show.bs.modal document:keydown': 'Escape closes the dialog, which it does not while a creation is out (verify.js, verify-rag.js)',
+  'ui/kind-selector.ts createKindSelector radio:keydown': 'arrows move the focus to the neighbouring card and choose nothing',
+};
+
 function writesCensus() {
   let files;
   try {
@@ -179,6 +198,7 @@ function writesCensus() {
   }
   // The requests of src/api that write.
   const found = {};
+  const keys = {};
   for (const [file, text] of Object.entries(files)) {
     let parsed;
     try {
@@ -187,8 +207,12 @@ function writesCensus() {
       step(false, `${file}: the sources are known to this suite (${error.message})`);
       return;
     }
-    walk(parsed.program, parsed.source, (node, name, parents) => {
+    walk(parsed.program, parsed.source, (node, name, parents, outer) => {
       if (node.type !== 'CallExpression') return;
+      if (node.callee.type === 'MemberExpression' && node.callee.property.name === 'addEventListener' && node.arguments[0] && node.arguments[0].type === 'Literal' && /^key/.test(String(node.arguments[0].value))) {
+        const key = `${file} ${outer || '(module)'} ${parsed.source(node.callee.object)}:${node.arguments[0].value}`;
+        keys[key] = (keys[key] || 0) + 1;
+      }
       if (node.callee.type !== 'Identifier') return;
       let sends = SENDERS.includes(node.callee.name);
       if (['viyaFetch', 'fetch', 'fetchWithin'].includes(node.callee.name)) {
@@ -224,6 +248,16 @@ function writesCensus() {
   }
   const otherFiles = Object.keys(files).filter((file) => !WRITES[file] && !file.startsWith('api/') && Object.keys(callsInSource(file, files[file], WRITE_FUNCTIONS)).length > 0);
   step(otherFiles.length === 0, `no other file outside src/api writes (got: ${otherFiles.join(', ') || 'none'})`);
+  // Every listener of a key, and the one that starts an action.
+  const unknownKeys = Object.keys(keys).filter((key) => !KEYS[key]);
+  const goneKeys = Object.keys(KEYS).filter((key) => !keys[key]);
+  const rag = files['objects/rag-builder.ts'] || '';
+  const refusedAlike = rag.includes('if (testRunRefused()) return;') && (rag.match(/testRunButton\.disabled = testRunRefused\(\);/g) || []).length === 2 && !/testRunButton\.disabled = (?!testRunRefused\(\))/.test(rag.replace('testRunButton.disabled = true;', ''));
+  const guarded = (files['main.ts'] || '').indexOf('refuseClicksOnDisabledControls();') >= 0 && (files['main.ts'] || '').indexOf('refuseClicksOnDisabledControls();') < (files['main.ts'] || '').indexOf('mountBuilderShell(root)');
+  step(
+    unknownKeys.length === 0 && goneKeys.length === 0 && refusedAlike && guarded,
+    `every way to an action that is not a click is known: each listener of a key in src is named here with what it starts (not named here: ${unknownKeys.join('; ') || 'none'}; named but not found: ${goneKeys.join('; ') || 'none'}); the one that starts one, Enter in the question of the retrieval test, is refused by the condition its button is off for (${refusedAlike}); and a click a script sends to a control that is off is stopped before the builders are built (${guarded})`
+  );
 }
 
 (async () => {
@@ -1278,6 +1312,158 @@ function writesCensus() {
     step(
       lostOnce && result.startsWith('RAG setup saved') && (await textOf(page, rgb('status'))) === '',
       `Save setup whose upload of rag-setup.json is stored and its answer lost reads it back, finds what it sent, and says the setup is saved (lost: ${lostOnce}; result: "${clip(result)}")`
+    );
+  });
+
+  // Launch waits for the question whether an ingestion of the setup runs -
+  // for every one that is out. Opened, left and opened again while the first
+  // question was out, the setup has two out, and the answer to the first
+  // must not let Launch go while the second is still out.
+  await road('a setup opened twice while its question about a running ingestion is out', async (page) => {
+    await openPage(page, 'rag');
+    await choose(page, 'RGB', rgb('project'), 'rag-proj');
+    const asked = [];
+    const answered = [];
+    await page.route('**/jobExecution/jobs?*', async (route) => {
+      const url = route.request().url();
+      if (!/filter=/.test(url)) return route.continue();
+      const index = asked.length;
+      asked.push(Date.now());
+      await sleep(index === 0 ? 4000 : 12000);
+      await route.continue().catch(() => {});
+      answered.push(index);
+    });
+    await goStep(page, 'RGB', 'setup');
+    await page.selectOption(rgb('setup'), 'rag-setup-1');
+    await waitUntil(async () => asked.length === 1, 'the first question is out', 15000);
+    await page.selectOption(rgb('setup'), 'rag-setup-2');
+    await page.waitForTimeout(500);
+    await page.selectOption(rgb('setup'), 'rag-setup-1');
+    await waitUntil(async () => asked.length === 2, 'two questions are out', 15000);
+    await waitUntil(async () => answered.includes(0), 'the first question is answered', 15000);
+    // A change of the lock asks the Launch button again.
+    await waitUntil(async () => !(await page.isDisabled(rgb('save'))), 'Save setup can be used', 15000);
+    await goStep(page, 'RGB', 'store');
+    await page.click(rgb('save'));
+    await waitUntil(async () => Boolean(await page.$(`${rgb('save-result')} .alert`)), 'the save has ended', 30000);
+    const offWhileAsked = !answered.includes(1) && (await page.isDisabled(rgb('launch')));
+    const secondOut = !answered.includes(1);
+    await waitUntil(async () => answered.includes(1), 'the second question is answered', 20000);
+    await page.waitForTimeout(500);
+    const onAfter = !(await page.isDisabled(rgb('launch')));
+    step(
+      secondOut && offWhileAsked && onAfter,
+      `a setup opened twice: after the first question about a running ingestion is answered, and a save has ended, Launch is still off while the second question is out, and usable once it is answered (second still out at the look: ${secondOut}; off then: ${offWhileAsked}; usable after: ${onAfter})`
+    );
+  });
+
+  // A setup created and not read back: the warning says that its buttons
+  // stay off, and Try again reads the setup, which turns them on.
+  await road('a setup created whose reading after the creation fails, and Try again', async (page) => {
+    await openPage(page, 'rag');
+    await choose(page, 'RGB', rgb('project'), 'rag-proj');
+    let created = false;
+    let failed = false;
+    await page.route('**/modelRepository/models', (route) => {
+      if (route.request().method() === 'POST') created = true;
+      return route.continue();
+    });
+    await page.route('**/modelRepository/models/*/contents?*', (route) => {
+      if (!created || failed || route.request().method() !== 'GET') return route.continue();
+      failed = true;
+      return route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"refused by the suite"}' });
+    });
+    const { id } = await createInDialog(page, 'RGB', rgb('setup'), 'app-obj-RGB-create-setup', 'RS read late');
+    await page.waitForTimeout(1500);
+    const usable = async () => {
+      const names = [];
+      for (const [name, selector] of [['Save setup', rgb('save')], ['Manifest setup', rgb('manifest')], ['Save documentation', rgb('save-documentation')]]) {
+        if (!(await page.isDisabled(selector))) names.push(name);
+      }
+      return names;
+    };
+    const warning = await textOf(page, rgb('status'));
+    const before = await usable();
+    step(
+      failed && before.length === 0 && warning.includes('could not be read back') && warning.includes('Save setup, Manifest setup and Save documentation stay off until the setup is read: Try again reads it.'),
+      `a setup created whose reading fails: its three buttons are off, and the warning says so and that Try again reads it (usable: ${before.join(', ') || 'none'}; warning: "${clip(warning)}")`
+    );
+    await page.click(rgb('retry-projects'));
+    await waitUntil(async () => (await usable()).length === 3, 'the buttons are given back', 15000).catch(() => {});
+    await atRest();
+    const after = await usable();
+    step(
+      after.length === 3 && (await page.inputValue(rgb('setup'))) === id && !/could not be read/.test(await textOf(page, rgb('status'))),
+      `and Try again reads the setup: its buttons can be used, and nothing says it could not be read (usable: ${after.join(', ') || 'none'}; open: ${await page.inputValue(rgb('setup'))}; banner: "${clip(await textOf(page, rgb('status')))}")`
+    );
+    await fetch(`${BASE}/modelRepository/models/${id}`, { method: 'DELETE' });
+  });
+
+  // An action whose button is off while it runs starts once - whichever way
+  // it is asked for. Enter in the question started a second and a third
+  // retrieval test, each with its job definition and its job, while Run test
+  // was off; a click a script sends to a control that is off reached its
+  // listeners. Every control that is off at two moments - a test running, a
+  // save of the setup out - is sent such a click: none reaches a listener.
+  const scriptedClicks = (page) =>
+    page.evaluate(() => {
+      const controls = [...document.querySelectorAll('button, input, select, textarea')].filter((control) => control.matches(':disabled'));
+      const reached = [];
+      for (const control of controls) {
+        const mark = () => reached.push(control.id || control.textContent.trim().slice(0, 30) || control.tagName);
+        control.addEventListener('click', mark);
+        control.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        control.removeEventListener('click', mark);
+      }
+      return { off: controls.length, reached };
+    });
+  await road('a retrieval test asked for by Enter and by a script while one runs', async (page) => {
+    await openPage(page, 'rag');
+    await openSetup(page, 'rag-setup-1');
+    await goStep(page, 'RGB', 'run');
+    await page.click(rgb('test'));
+    await page.waitForSelector(rgb('test-question'), { state: 'visible' });
+    await page.fill(rgb('test-question'), 'What does the handbook say about travel?');
+    await page.route('**/jobExecution/jobs/ragtest-*', async (route) => {
+      await sleep(2500);
+      await route.continue().catch(() => {});
+    });
+    await resetLog();
+    await page.focus(rgb('test-question'));
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Enter');
+    await waitUntil(async () => page.isDisabled(rgb('test-run')), 'Run test is off', 5000);
+    const during = await scriptedClicks(page);
+    await page.keyboard.press('Enter');
+    await waitUntil(async () => (await getLog()).some((entry) => entry.method === 'DELETE' && entry.url.startsWith('/jobDefinitions/definitions/') && entry.status !== null), 'the test has ended', 60000);
+    await atRest();
+    const log = await getLog();
+    const definitions = log.filter((entry) => entry.method === 'POST' && entry.url.startsWith('/jobDefinitions/definitions')).length;
+    const jobs = log.filter((entry) => entry.method === 'POST' && entry.url.startsWith('/jobExecution/jobs')).length;
+    step(
+      definitions === 1 && jobs === 1,
+      `Enter in the question while a retrieval test runs starts no second test: one question, one job definition and one job (job definitions written: ${definitions}; jobs launched: ${jobs})`
+    );
+    step(
+      during.off > 0 && during.reached.length === 0,
+      `while the test runs, a click a script sends to any of the ${during.off} controls that are off reaches none of their listeners (reached: ${JSON.stringify(during.reached)})`
+    );
+    // While a save of the setup is out the selection and every button that
+    // writes are off.
+    await page.route('**/modelRepository/models/rag-setup-1/contents?*', async (route) => {
+      if (route.request().method() === 'POST') await sleep(2500);
+      await route.continue().catch(() => {});
+    });
+    await goStep(page, 'RGB', 'store');
+    await page.click(rgb('save'));
+    await waitUntil(async () => page.isDisabled(rgb('project')), 'the selection is locked', 5000);
+    const writing = await scriptedClicks(page);
+    await waitUntil(async () => Boolean(await page.$(`${rgb('save-result')} .alert`)), 'the save has ended', 30000);
+    await atRest();
+    step(
+      writing.off > 0 && writing.reached.length === 0,
+      `while a save is out, a click a script sends to any of the ${writing.off} controls that are off reaches none of their listeners (reached: ${JSON.stringify(writing.reached)})`
     );
   });
 

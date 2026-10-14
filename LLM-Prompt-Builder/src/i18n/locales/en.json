@@ -655,6 +655,7 @@
     "ragBuilderProjectDeleted": "RAG project deleted.",
     "ragBuilderProjectNameRequired": "A project name is required.",
     "ragBuilderSetupCreateFailed": "Creating the RAG setup failed - check your Model Manager permissions.",
+    "ragBuilderSetupCreatedWritesOff": "Save setup, Manifest setup and Save documentation stay off until the setup is read: Try again reads it.",
     "ragBuilderSetupCreatedReadFailed": "The RAG setup \"{name}\" was created, but it could not be read back from SAS Model Manager (the setup list, or the setup itself). The setup exists - do not create it again.",
     "ragBuilderCreateUnexpected": "The creation did not finish: an unexpected error occurred. Check in SAS Model Manager whether it was created before you try again.",
     "ragBuilderSetupCreated": "RAG setup created. Author it below and save.",

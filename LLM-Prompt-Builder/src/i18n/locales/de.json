@@ -652,6 +652,7 @@
     "ragBuilderProjectDeleted": "RAG-Projekt gelöscht.",
     "ragBuilderProjectNameRequired": "Ein Projektname ist erforderlich.",
     "ragBuilderSetupCreateFailed": "Das Anlegen der RAG-Konfiguration ist fehlgeschlagen — prüfen Sie Ihre Berechtigungen im Model Manager.",
+    "ragBuilderSetupCreatedWritesOff": "Setup speichern, Setup manifestieren und Dokumentation speichern bleiben gesperrt, bis das Setup gelesen ist: „Erneut versuchen“ liest es.",
     "ragBuilderSetupCreatedReadFailed": "Die RAG-Konfiguration „{name}“ wurde angelegt, konnte aber nicht aus SAS Model Manager zurückgelesen werden (die Liste der Konfigurationen oder die Konfiguration selbst). Die Konfiguration existiert - legen Sie sie nicht noch einmal an.",
     "ragBuilderCreateUnexpected": "Das Anlegen wurde nicht abgeschlossen: Es ist ein unerwarteter Fehler aufgetreten. Prüfen Sie im SAS Model Manager, ob es angelegt wurde, bevor Sie es erneut versuchen.",
     "ragBuilderSetupCreated": "RAG-Konfiguration angelegt. Bearbeiten Sie sie unten und speichern Sie.",

@@ -456,8 +456,11 @@ export async function buildRagBuilder(
   let runTicker: number | null = null;
   let runStartedAt = 0;
   let runActive = false;
-  // The setup for which SAS Job Execution is asked for a running ingestion.
-  let askingForRunOf = '';
+  // How many questions to SAS Job Execution for a running ingestion are out,
+  // by setup. A count, not the one setup last asked for: a setup opened twice
+  // has two questions out, and the answer to the first must not end the wait
+  // for the second.
+  const askingForRunOf = new Map<string, number>();
   /**
    * The ingestion runs this page follows and has not yet seen end, by setup:
    * the id of the job and the time of its launch. A job goes on in SAS Viya
@@ -2009,6 +2012,9 @@ export async function buildRagBuilder(
    * they stood: the defaults, which every new setup starts from.
    */
   let setupReading = false;
+  // The open setup was read and what is stored of it could not be read (see
+  // loadSetup): its three buttons stay off until it is read.
+  let setupUnread = false;
   const updateSetupWrites = (): void => {
     const off = !selectedSetupID || setupReading || selectionLock.busy;
     saveButton.disabled = off;
@@ -2289,7 +2295,7 @@ export async function buildRagBuilder(
     // launch would write the same collection beside it. Not while a write is
     // out either: a manifest rewrites the job definition the launch runs.
     launchButton.disabled =
-      !currentJobUri || runActive || (askingForRunOf !== '' && askingForRunOf === selectedSetupID) || selectionLock.busy;
+      !currentJobUri || runActive || (askingForRunOf.get(selectedSetupID) ?? 0) > 0 || selectionLock.busy;
     launchButton.title = currentJobUri
       ? ''
       : str('ragBuilderLaunchNeedsJob', 'Generate the ingestion job first.');
@@ -2306,11 +2312,14 @@ export async function buildRagBuilder(
       : str('ragBuilderTestNeedsManifest', 'Manifest the setup first.');
   };
   // Run test runs a job of the setup and writes a job definition to SAS
-  // Content: not while a test is out, nor while a write is.
+  // Content: not while a test is out, nor while a write is. The button and
+  // every other way to the test (Enter in the question field) ask this one
+  // condition.
   let retrievalTestOut = false;
+  const testRunRefused = (): boolean => retrievalTestOut || selectionLock.busy;
   selectionLock.onChange(() => {
     updateLaunchState();
-    testRunButton.disabled = retrievalTestOut || selectionLock.busy;
+    testRunButton.disabled = testRunRefused();
   });
 
   const stopPolling = (): void => {
@@ -2919,6 +2928,8 @@ export async function buildRagBuilder(
     selectedSetupID = createdID;
     selectedSetupName = name;
     let readBack = true;
+    // The setup itself could not be read: its three buttons stay off.
+    let setupNotRead = false;
     try {
       await refreshSetups();
     } catch (error) {
@@ -2938,23 +2949,30 @@ export async function buildRagBuilder(
     try {
       // Opens the editor on the new setup, with the defaults; what it then
       // asks SAS Model Manager for is what a new setup does not have yet.
-      if (!(await loadSetup())) readBack = false;
+      if (!(await loadSetup())) setupNotRead = true;
     } catch (error) {
       console.error('Reading the new RAG setup failed.', error);
-      readBack = false;
+      setupNotRead = true;
     }
     dialog.close();
-    if (readBack) {
+    if (readBack && !setupNotRead) {
       showStatus('success', str('ragBuilderSetupCreated', 'RAG setup created. Author it below and save.'));
       return;
     }
-    // A warning, not a failure: what was asked for has happened.
+    // A warning, not a failure: what was asked for has happened. Try again
+    // lists again and reads the setup again (see loadSelectionLists): its
+    // buttons follow what that read gets.
     showStatus(
       'warning',
-      str(
-        'ragBuilderSetupCreatedReadFailed',
-        'The RAG setup "{name}" was created, but it could not be read back from SAS Model Manager (the setup list, or the setup itself). The setup exists - do not create it again.'
-      ).replace('{name}', name),
+      [
+        str(
+          'ragBuilderSetupCreatedReadFailed',
+          'The RAG setup "{name}" was created, but it could not be read back from SAS Model Manager (the setup list, or the setup itself). The setup exists - do not create it again.'
+        ).replace('{name}', name),
+        ...(setupNotRead
+          ? [str('ragBuilderSetupCreatedWritesOff', 'Save setup, Manifest setup and Save documentation stay off until the setup is read: Try again reads it.')]
+          : []),
+      ].join(' '),
       {
         id: idOf('retry-projects'),
         label: str('ragBuilderProjectsRetry', 'Try again'),
@@ -3150,6 +3168,7 @@ export async function buildRagBuilder(
     // Of those: rag-setup.json was read, and is no setup this page can read -
     // opened again it is the same file.
     let unusable = false;
+    setupUnread = false;
     try {
       applySetup(defaultSetup(config));
       const contents = await getModelContents(setupID);
@@ -3200,6 +3219,7 @@ export async function buildRagBuilder(
     // The setup is drawn. An ingestion that was launched for it from this
     // page and has not been seen to end is shown again, and followed.
     if (!shown()) return true;
+    setupUnread = unread;
     if (unread) {
       showStatus(
         'danger',
@@ -3220,8 +3240,8 @@ export async function buildRagBuilder(
     // ended. A second launch beside it would write the same collection.
     if (!ingestionRuns.has(setupID) && currentJobUri) {
       const definitionUri = currentJobUri;
-      // Launch waits for the answer.
-      askingForRunOf = setupID;
+      // Launch waits for the answer - for every question out for this setup.
+      askingForRunOf.set(setupID, (askingForRunOf.get(setupID) ?? 0) + 1);
       updateLaunchState();
       let running: Awaited<ReturnType<typeof getRunningJobOf>> = null;
       try {
@@ -3229,8 +3249,13 @@ export async function buildRagBuilder(
       } catch (error) {
         console.debug('RAG Builder: asking for a running ingestion failed', error);
       }
-      if (askingForRunOf === setupID) askingForRunOf = '';
-      if (!shown()) return true;
+      const stillAsking = (askingForRunOf.get(setupID) ?? 1) - 1;
+      if (stillAsking > 0) askingForRunOf.set(setupID, stillAsking);
+      else askingForRunOf.delete(setupID);
+      if (!shown()) {
+        updateLaunchState();
+        return true;
+      }
       if (running && !ingestionRuns.has(setupID)) {
         const created = Date.parse(String(running.creationTimeStamp ?? ''));
         ingestionRuns.set(setupID, { jobId: String(running.id), startedAt: Number.isNaN(created) ? Date.now() : created });
@@ -4205,8 +4230,9 @@ export async function buildRagBuilder(
    * would itself be an artifact of a test that is supposed to have none.
    */
   async function runRetrievalTest(): Promise<void> {
-    // Enter in the question field comes here past the disabled button.
-    if (selectionLock.busy) return;
+    // Enter in the question field comes here past the disabled button: it is
+    // refused for what the button is off for.
+    if (testRunRefused()) return;
     const asked = macroSafeQuestion(testQuestionField.value);
     if (!asked.value) {
       testStatus.textContent = str('ragBuilderTestNeedsQuestion', 'Type a question first.');
@@ -4343,7 +4369,7 @@ export async function buildRagBuilder(
         }
       }
       retrievalTestOut = false;
-      testRunButton.disabled = selectionLock.busy;
+      testRunButton.disabled = testRunRefused();
     }
   }
 
@@ -4677,6 +4703,9 @@ export async function buildRagBuilder(
       await refreshProjects();
       await refreshSetups();
       clearStatus();
+      // An open setup whose stored state could not be read is read again:
+      // the Try again of a setup created and not read back stands for both.
+      if (selectedSetupID && setupUnread) await loadSetup();
     } catch (error) {
       console.error('Listing the RAG projects failed.', error);
       // The pickers still say what they are for: without their placeholders
