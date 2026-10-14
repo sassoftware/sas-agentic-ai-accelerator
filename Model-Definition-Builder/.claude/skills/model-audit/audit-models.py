@@ -104,7 +104,7 @@ def main() -> None:
     try:
         rows = audit()
     except ViyaConfigError as exc:
-        print(f"SAS Viya is not configured: {exc}", file=sys.stderr)
+        print(f"SAS Viya could not be used: {exc}", file=sys.stderr)
         sys.exit(2)
 
     if as_json:

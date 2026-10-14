@@ -176,3 +176,25 @@ def test_every_process_a_test_of_mdb_starts_has_the_one_limit():
     assert len(limits) == 5 and {name for name, _, _ in limits} == {"test_mdb_22.py", "test_deploy_scripts.py"}
     assert [limit for limit in limits if limit[2] != "PROCESS_TIMEOUT"] == []
     assert PROCESS_TIMEOUT >= 1800
+
+
+# ---- gate[1], the class: no handler of ViyaConfigError calls its reason "not configured" ------
+def test_no_handler_of_a_viya_config_error_says_not_configured():
+    """gate-22a: `mdb retire` printed 'SAS Viya is not configured' for a
+    sign-in that failed and for an address mdb refuses; the audit script of
+    the model-audit skill did the same. A ViyaSignInError is a
+    ViyaConfigError, so no handler of one says that SAS Viya is not
+    configured. Every handler is taken from the code: the source of mdb and
+    the scripts of the skills."""
+    mdb_root = Path(__file__).resolve().parents[2]
+    files = sorted((mdb_root / "cli" / "src").rglob("*.py")) + sorted((mdb_root / ".claude").rglob("*.py"))
+    handlers = []
+    for path in files:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ExceptHandler) and node.type is not None \
+                    and "ViyaConfigError" in ast.unparse(node.type):
+                said = [c.value for part in node.body for c in ast.walk(part)
+                        if isinstance(c, ast.Constant) and isinstance(c.value, str)]
+                handlers.append((path.relative_to(mdb_root).as_posix(), node.lineno, said))
+    assert {name for name, _, _ in handlers} >= {"cli/src/mdb/cli.py", ".claude/skills/model-audit/audit-models.py"}
+    assert [(name, line) for name, line, said in handlers if any("not configured" in t for t in said)] == []
