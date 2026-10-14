@@ -304,8 +304,8 @@ run;
                is no error, and the exact name before the same name in another case. The file is loaded as a table
                of this session, its columns are read, and it is dropped again - under the name _LAT_SAVED, and only
                where CAS answers that no table of that name is there: a table of the site can have it, and the
-               table this step drops is then the one it loaded. Where the files can not be listed, the run goes on
-               as it does where there is no such file */
+               table this step drops is then the one it loaded. A listing that CAS refused says nothing about such a
+               file, so the upload then takes the place of no table and nothing is saved over a file */
             look = "";
             lacking = "foreign";
             fromFile = 0;
@@ -314,6 +314,7 @@ run;
             else do;
                 saved = "";
                 table.fileInfo result = files status = listed / caslib = "&caslib.";
+                if listed.severity != 0 then outcome = "unlisted";
                 if listed.severity == 0 then do;
                     if exists(files, "FileInfo") then do;
                         do savedEntry over files.FileInfo;
@@ -392,6 +393,11 @@ run;
     %end;
     %if &_lat_outcome. EQ foreignfile %then %do;
         %put ERROR: Load-Accelerator-Tables: no table &caslib..&releaseTable. is in memory, and the file a table of that name was saved to in the CAS library &caslib. could not be loaded or lacks columns of a release table. The job loads that file as a table _LAT_SAVED of its session to read its columns, and only where no table of that name is in the CAS library. The file was left as it is, the upload of ACCELERATOR_RELEASES.csv was dropped again and no table &caslib..&releaseTable. was loaded: the parameter releaseTable names another table, or that file is to be removed first.;
+        %let _lat_failed = 1;
+        %return;
+    %end;
+    %if &_lat_outcome. EQ unlisted %then %do;
+        %put ERROR: Load-Accelerator-Tables: no table &caslib..&releaseTable. is in memory, and CAS refused to list the files of the CAS library &caslib. (the ERROR lines above), so it is not known whether a file a table of that name was saved to is there. The upload of ACCELERATOR_RELEASES.csv was dropped again and no table &caslib..&releaseTable. was loaded.;
         %let _lat_failed = 1;
         %return;
     %end;

@@ -424,7 +424,7 @@ def test_the_two_causes_of_a_saved_file_that_is_not_replaced_have_a_line_each():
     code = re.sub(r"/\*.*?\*/", "", program(), flags=re.DOTALL)
     errors = re.findall(r"%if &_lat_outcome\. EQ (\w+) %then %do;\s*%put (ERROR: [^;]*);\s*%let _lat_failed = 1;\s*%return;", code)
 
-    assert [outcome for outcome, _ in errors] == ["foreign", "foreignfile", "savedtaken"]
+    assert [outcome for outcome, _ in errors] == ["foreign", "foreignfile", "unlisted", "savedtaken"]
     assert code.count('outcome = "savedtaken";') == 1 and code.count('lacking = "foreignfile";') == 1
     # the outcome of a name that is taken is set where CAS did not answer 0, with what it answered
     assert ('                    else do;\n'
@@ -468,14 +468,32 @@ def test_a_release_table_that_is_only_its_saved_file_is_loaded_again(old):
     assert cas.session == {} and list(cas.files) == [("public", RELEASES + ".sashdat")]
 
 
-def test_a_library_whose_files_can_not_be_listed_goes_on_as_without_a_file():
-    """What is not known is not guessed: CAS has written its ERROR line for the listing, and the run goes on as
-    it does where the library has no such file - as it did before the files were asked for."""
+UNLISTED = "ERROR: Load-Accelerator-Tables: no table Public.{0} is in memory, and CAS refused to list the files of the CAS library " \
+           "Public (the ERROR lines above), so it is not known whether a file a table of that name was saved to is there. The upload " \
+           "of ACCELERATOR_RELEASES.csv was dropped again and no table Public.{0} was loaded."
+
+
+@pytest.mark.parametrize("file", [None, "the release table of before", "the fact sheet"])
+def test_a_library_whose_files_can_not_be_listed_loads_no_table_and_writes_over_no_file(file):
+    """content-22: a listing that CAS refused says nothing about the file the save would write over. Up to round 21
+    the run went on as it does where the library has no such file, and saved the upload over the file of another
+    table of that name - the one thing the look at the file is there to keep from happening. Now the run loads no
+    table, whatever the library holds."""
     cas = casl_harness.FakeCAS(upload_rows=755, refuse={"table.fileInfo"})
+    if file == "the fact sheet":
+        cas.file("Public", RELEASES + ".sashdat", SHEET_COLUMNS, rows=30, of=file)
+    elif file:
+        cas.file("Public", RELEASES + ".sashdat", columns(), rows=453, of=file)
     log, macros = release(cas)
 
-    assert log == [LOADED] and cas.errors == ["ERROR: table.fileInfo: the files of the CAS library could not be listed"]
-    assert loaded(cas)["of"] == "upload"
+    left_alone(cas, log, macros, RELEASES, UNLISTED.format(RELEASES))
+    assert cas.errors == ["ERROR: table.fileInfo: the files of the CAS library could not be listed"]
+    assert (saved(cas) or {}).get("of") == file
+    assert not [action for action, _ in cas.calls if action in ("table.loadTable", "table.columnInfo")]
+    assert [parameters["name"] for action, parameters in cas.calls if action == "table.dropTable"] == [RELEASES + "_NEW"]
+    readme = " ".join((SETUP / "README.md").read_text(encoding="utf-8").split())
+    assert ("Where CAS refuses to list the files of the CAS library, it is not known whether such a file is there: the upload is "
+            "dropped again and no table is loaded, with an ERROR line of its own.") in readme
 
 
 def test_an_upload_that_does_not_hold_every_row_asks_for_no_file_and_replaces_nothing():

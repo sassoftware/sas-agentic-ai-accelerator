@@ -256,9 +256,9 @@ def test_the_table_is_dropped_only_behind_an_upload_that_holds_every_row():
     assert release.count('name = "&releaseTable." quiet = true') == 1 and release.count("table.promote") == 1 and release.count("table.save") == 1
     # every way the upload can end is one line of the log, and only the one that loaded is a NOTE
     outcomes = re.findall(r"%if &_lat_outcome\. EQ (\w+) %then", release)
-    assert outcomes == ["foreign", "foreignfile", "savedtaken", "loaded", "upload", "rows", "replace", "save"]
+    assert outcomes == ["foreign", "foreignfile", "unlisted", "savedtaken", "loaded", "upload", "rows", "replace", "save"]
     said = re.findall(r"%put (\w+): Load-Accelerator-Tables: ([^;]*);", release)
-    assert [kind for kind, _ in said] == ["WARNING"] * 5 + ["ERROR", "ERROR", "ERROR", "NOTE"] + ["WARNING"] * 5
+    assert [kind for kind, _ in said] == ["WARNING"] * 5 + ["ERROR", "ERROR", "ERROR", "ERROR", "NOTE"] + ["WARNING"] * 5
     for kind, text in said:
         assert not set(text) & set("%'\"") and text.count("(") == text.count(")"), text
         assert set(re.findall(r"&(\w+)", text)) <= {"contentRoot", "caslib", "releaseTable", "_lat_rows", "_lat_staged", "_lat_taken",
@@ -276,7 +276,7 @@ def test_a_file_that_is_not_there_or_holds_other_columns_leaves_the_table():
     assert missing.count("%if &_lat_there. NE 1 %then %do;") == 2
     # one sentence for a file that is not there, whether its folder is there or not
     assert release.count("was not found in the folder &contentRoot./Data") == 1
-    assert release.count("%return;") == 9
+    assert release.count("%return;") == 10
     assert release.index('outcome = "upload";') > release.split("%if &_lat_outcome. EQ foreign")[0].rindex("%return;")
     # the last of them in front of the upload: CAS is asked for a table of the name the file is uploaded under
     in_order(release[release.index("%let _lat_taken = unknown;"):], "%let _lat_taken = unknown;",
@@ -422,8 +422,8 @@ def test_the_job_fails_for_a_refusal_and_for_a_table_that_is_not_there_at_the_en
     assert comment.startswith("* A run that wrote an ERROR line ends with the condition code of a failed job") and comment.endswith(";")
     assert not re.search(r"[%&'\";]", comment[:-1])
     # nothing but an ERROR line sets what the statement reads
-    assert re.findall(r"%let _lat_failed\s*=\s*(\d);", text) == ["0", "1", "1", "1", "1"]
-    assert len(re.findall(r"%put ERROR: [^;]*;\s*%let _lat_failed = 1;", text)) == 4
+    assert re.findall(r"%let _lat_failed\s*=\s*(\d);", text) == ["0", "1", "1", "1", "1", "1"]
+    assert len(re.findall(r"%put ERROR: [^;]*;\s*%let _lat_failed = 1;", text)) == 5
     assert not re.search(r"\babort\b|%abort|endsas", text, flags=re.IGNORECASE)
     # the two settings of the included program are deleted where it did not run and delete them itself
     assert text.rstrip().endswith("%symdel _lfs_path _lfs_caslib / nowarn;")
@@ -455,14 +455,18 @@ def test_a_table_of_that_name_that_is_no_release_table_is_left_as_it_is():
     assert len(names) == 11 and "BUILDER_PART" in names and "DETAIL" in names
     # the refusal is an ERROR line that makes the job fail, and nothing behind it says that the table was loaded:
     # one for a table in memory, one for a table that is only the file it was saved to, and one for such a file that
-    # was not looked at because a table has the name it is loaded under (test_loader_followed.py)
+    # was not looked at because a table has the name it is loaded under (test_loader_followed.py), and - content-22 - one
+    # for a CAS library whose files CAS refused to list
     refused = release[release.index("%if &_lat_outcome. EQ foreign %then %do;"):release.index("%if &_lat_outcome. EQ loaded %then")]
     in_memory, in_file = refused.split("%if &_lat_outcome. EQ foreignfile %then %do;")
     in_file, not_looked_at = in_file.split("%if &_lat_outcome. EQ savedtaken %then %do;")
+    in_file, unlisted = in_file.split("%if &_lat_outcome. EQ unlisted %then %do;")
+    in_order(unlisted, "%put ERROR: Load-Accelerator-Tables: no table &caslib..&releaseTable. is in memory, and CAS refused to list the "
+             "files of the CAS library &caslib.", "%let _lat_failed = 1;", "%return;", "%end;")
     in_order(in_memory, "%put ERROR: Load-Accelerator-Tables: the table &caslib..&releaseTable. is no release table", "%let _lat_failed = 1;",
              "%return;", "%end;")
     for group, cause in ((in_file, "could not be loaded or lacks columns of a release table"), (not_looked_at, "was not looked at")):
         in_order(group, "%put ERROR: Load-Accelerator-Tables: no table &caslib..&releaseTable. is in memory, and the file a table of that name "
                  "was saved to in the CAS library &caslib. " + cause, "%let _lat_failed = 1;", "%return;", "%end;")
-    # the three refusals are the only ERROR lines of the macro
-    assert release.count("%put ERROR:") == 3 and refused.count("%let _lat_failed = 1;") == 3
+    # the four refusals are the only ERROR lines of the macro
+    assert release.count("%put ERROR:") == 4 and refused.count("%let _lat_failed = 1;") == 4
