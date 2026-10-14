@@ -116,15 +116,30 @@ def _address_problem(url: str) -> str:
     * A scheme other than https or http: sasctl sends with requests, which
       connects for these two alone.
     * An IPv6 address in brackets: sasctl takes the host without its
-      brackets and builds an address from it that names no host."""
+      brackets and builds an address from it that names no host.
+    * A blank, a slash without a scheme (`https//host`, `//host`), a second
+      `//` behind the scheme (`http://http://host`): sasctl asked the host
+      `http` or `https`, or a host with a blank.
+    * A user and a password in front of the host (`user:password@host`):
+      mdb signs in with its own variables, and the address is printed in the
+      first line of a command."""
+    if any(character.isspace() for character in url):
+        return "it holds a blank"
     if "://" not in url:
-        return "it holds a colon, and no scheme (https://) stands in front of the host" if ":" in url else ""
+        if ":" in url:
+            return "it holds a colon, and no scheme (https://) stands in front of the host"
+        return "it holds a slash, and no scheme (https://) stands in front of the host" if "/" in url else ""
     try:
         parsed = urlparse(url)
     except ValueError:
         return "it cannot be read as an address"
     if parsed.scheme.lower() not in ("https", "http"):
         return "its scheme is neither https nor http"
+    if "//" in url.split("://", 1)[1]:
+        return "it holds a second // behind the scheme"
+    if "@" in parsed.netloc:
+        return (f"it holds a user or a password in front of the host - mdb signs in with {USER_ENV} + "
+                f"{PASSWORD_ENV}, {TOKEN_ENV} or a SAS Viya CLI login")
     try:
         port = parsed.port
     except ValueError:
@@ -136,6 +151,16 @@ def _address_problem(url: str) -> str:
     if ":" in parsed.hostname:
         return "its host is an IPv6 address, which sasctl - what mdb signs in with - does not ask"
     return ""
+
+
+def _shown(url: str) -> str:
+    """An address as a line may show it: without a user and a password in
+    front of the host."""
+    scheme, separator, rest = url.partition("://")
+    host, slash, path = rest.partition("/")
+    if separator and "@" in host:
+        return f"{scheme}://***@{host.rsplit('@', 1)[1]}{slash}{path}"
+    return url
 
 
 def _fmt(when: datetime | None) -> str:
@@ -214,7 +239,7 @@ def resolve_auth(now: datetime | None = None) -> Auth:
     problem = _address_problem(url)
     if problem:
         raise ViyaConfigError(
-            f"{named_by} is '{url}', which mdb cannot use: {problem}. Give the address of SAS Viya as "
+            f"{named_by} is '{_shown(url)}', which mdb cannot use: {problem}. Give the address of SAS Viya as "
             "https://<host>, or https://<host>:<port> where it listens on a port of its own. Nothing was asked "
             "of SAS Viya."
         )
@@ -236,7 +261,7 @@ def resolve_auth(now: datetime | None = None) -> Auth:
         if login.endpoint and _host(login.endpoint) != _host(url):
             raise ViyaConfigError(
                 f"No SAS Viya credentials for {url}: the SAS Viya CLI login (profile {login.profile}) is for "
-                f"{login.endpoint}. Log in there with `{CLI_LOGIN_HINT}` (or pick another profile via "
+                f"{_shown(login.endpoint)}. Log in there with `{CLI_LOGIN_HINT}` (or pick another profile via "
                 f"{CLI_PROFILE_ENV}), or provide {TOKEN_ENV} or {USER_ENV} + {PASSWORD_ENV}."
             )
         if login.expiry and login.expiry <= now:

@@ -439,6 +439,44 @@ def test_a_value_reaches_the_terminal_without_a_control_character():
     assert json.loads(shown.file.getvalue()) == [ESCAPES, "Grüne"]
 
 
+@pytest.mark.parametrize("url, shown, problem", [
+    ("http://http://127.0.0.1:4981", None, "it holds a second // behind the scheme"),
+    ("https://https://viya.example.com", None, "it holds a second // behind the scheme"),
+    ("https://https//viya.example.com", None, "it holds a second // behind the scheme"),
+    ("https:// viya.example.com", None, "it holds a blank"), ("https://viya example.com", None, "it holds a blank"),
+    ("https//viya.example.com", None, "it holds a slash, and no scheme (https://) stands in front of the host"),
+    ("//viya.example.com", None, "it holds a slash, and no scheme (https://) stands in front of the host"),
+    ("http://someone:secret@127.0.0.1:4981", "http://***@127.0.0.1:4981",
+     "it holds a user or a password in front of the host - mdb signs in with SAS_VIYA_USER + SAS_VIYA_PASSWORD, "
+     "SAS_VIYA_TOKEN or a SAS Viya CLI login"),
+    ("https://ada@viya.example.com/SASLogon", "https://***@viya.example.com/SASLogon",
+     "it holds a user or a password in front of the host - mdb signs in with SAS_VIYA_USER + SAS_VIYA_PASSWORD, "
+     "SAS_VIYA_TOKEN or a SAS Viya CLI login"),
+])
+def test_an_address_sasctl_would_read_another_way_is_refused(env, url, shown, problem):
+    """gate-21a N8 and the last case of its sign-in run: a doubled scheme
+    passed the check and sasctl asked the host `http` at port 80, which
+    ended with a ConnectionError traceback; a blank in the host,
+    `https//host` and `//host` passed as well. And an address with
+    user:password@ was printed whole in the first line of a command."""
+    from test_mdb_21 import ADDRESS
+    env.setenv(s.URL_ENV, url)
+    env.setenv(s.USER_ENV, "u")
+    env.setenv(s.PASSWORD_ENV, "p")
+    with pytest.raises(s.ViyaConfigError) as caught:
+        s.resolve_auth()
+    assert str(caught.value) == f"SAS_VIYA_URL is '{shown or url}', " + ADDRESS.format(problem)
+    assert "secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize("url", ["https://viya.example.com", "https://viya.example.com/", "http://127.0.0.1:4981",
+                                 "viya.example.com", "HTTPS://Viya.Example.com:8443/SASLogon?x=1"])
+def test_an_address_mdb_took_before_is_taken(env, url):
+    env.setenv(s.URL_ENV, url)
+    env.setenv(s.TOKEN_ENV, "not-a-jwt")
+    assert s.resolve_auth().url == url
+
+
 def test_the_requests_of_apply_name_the_identity_whole(mdb):
     mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: 'Sales#EMEA'}\n"
                         "  - {type: group, id: '../x', state: absent}\n", encoding="utf-8")
