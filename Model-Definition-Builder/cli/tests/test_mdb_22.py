@@ -185,3 +185,32 @@ def test_a_refused_read_or_removal_of_another_status_names_the_message_of_the_se
             call(session, "zz", who)
         assert str(caught.value) == (f"{verb} the credential for group 'G' failed: HTTP 403 Access denied for the "
                                      "domain zz. (errorCode 1234)")
+
+
+# ---- M3: the default of a prompt is cleaned like every other text ----------------------------
+def _asks(tree) -> list:
+    return [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "ask"]
+
+
+def test_every_prompt_of_mdb_asks_through_the_prompts_that_clean_what_they_show():
+    """gate-21b B2: the default of a Prompt.ask went to the terminal with an
+    ESC, an OSC, the C1 CSI byte, NUL and DEL in it."""
+    asks = [(path.name, node) for path in sorted(SOURCE.rglob("*.py"))
+            for node in _asks(ast.parse(path.read_text(encoding="utf-8")))]
+    assert len(asks) >= 17
+    assert {(name, ast.unparse(node.func.value)) for name, node in asks} == {("cli.py", "Prompt"), ("cli.py", "Confirm")}
+    assert issubclass(cli.Prompt, cli._EmojiOff) and issubclass(cli.Confirm, cli._EmojiOff)
+
+
+@pytest.mark.parametrize("control", ["\x1b[31m", "\x1b]0;owned\x07", "\x9b2J", "\x00", "\x7f", "\x0e", "\x85"])
+def test_the_default_a_prompt_shows_holds_no_control_character(control):
+    out = io.StringIO()
+    console = Console(file=out, width=200, force_terminal=False)
+    answer = cli.Prompt.ask("metadata.description", default=f"desc{control}end", console=console,
+                            stream=io.StringIO(""))
+    assert answer == f"desc{control}end"            # the value itself is what it was
+    shown = out.getvalue()
+    assert f"(desc{cli._printable(control)}end)" in shown, repr(shown)
+    assert not re.search(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", shown), repr(shown)
+    assert cli.Confirm.ask("Write these files?", default=True, console=console, stream=io.StringIO("")) is True

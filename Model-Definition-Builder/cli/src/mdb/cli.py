@@ -86,12 +86,18 @@ console = _Console(emoji=False)
 class _EmojiOff:
     """A prompt of rich reads the text it is handed with emoji on, whatever
     the console says. The two prompts of mdb read it with emoji off, as
-    its console does, and without control characters."""
+    its console does, and without control characters - the question and
+    the default it shows, which rich prints as a text of its own and not
+    through the console of mdb: a default can come from the catalog of a
+    provider."""
 
     def __init__(self, prompt="", **options) -> None:
         if isinstance(prompt, str):
             prompt = Text.from_markup(_printable(prompt), style="prompt", emoji=False)
         super().__init__(prompt, **options)
+
+    def render_default(self, default):
+        return super().render_default(_printable(default) if isinstance(default, str) else default)
 
 
 class Prompt(_EmojiOff, _RichPrompt):
