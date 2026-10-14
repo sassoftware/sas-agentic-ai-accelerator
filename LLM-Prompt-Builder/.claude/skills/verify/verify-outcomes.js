@@ -7,13 +7,17 @@
  *
  *   - Writes SAS Model Manager refuses with a status are writes that failed:
  *     the uploads, deletes and the last attribute update of both manifests of
- *     the Prompt Builder, the model version and the delete of the stored
- *     tracker of Save Experiments, the writes of the delete of an
- *     optimization run, and in the RAG Builder the job reference and the
- *     Studio flow copy of Manifest setup and its model version.
+ *     the Prompt Builder, the model version and the upload of the tracker of
+ *     Save Experiments, the writes of the delete of an optimization run, and
+ *     in the RAG Builder the job reference and the Studio flow copy of
+ *     Manifest setup and its model version. Nothing is deleted to be
+ *     written back: a refused upload loses no run.
  *   - A delete whose request gets no answer says so; a Delete prompt-test or
  *     Delete project opens no dialog when another item was opened while the
- *     usage was asked.
+ *     usage was asked. A Delete project that stops part of the way shows
+ *     what is left, in both builders, and says what was deleted.
+ *   - Save setup, Manifest setup and Save documentation cannot be used while
+ *     the stored setup is read.
  *   - While a write is out, a change of a picker sent by a script (as the
  *     search field of a list sends one) is undone and reaches no handler; a
  *     write that never gets an answer is given up after two minutes (the
