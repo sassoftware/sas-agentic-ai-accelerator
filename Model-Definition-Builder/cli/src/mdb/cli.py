@@ -3659,8 +3659,11 @@ def retire(
                 console.print(f"[green]{_plain(model_id)}: modelStatus=retired, approvalState=retired in SAS Model Manager.[/green]")
             else:
                 console.print(f"[dim]{_plain(model_id)}: not registered (or already retired) in SAS Model Manager.[/dim]")
-    except ViyaConfigError:
-        console.print("[yellow]SAS Viya is not configured - the registered model's status was not updated.[/yellow]")
+    except ViyaConfigError as exc:
+        # what kept mdb from SAS Viya, as the commands that need it print it: no configuration, an address
+        # mdb cannot use, a sign-in that was refused or got no answer
+        console.print(f"The registered model's status was not updated: {exc}", style="yellow", markup=False,
+                      highlight=False, soft_wrap=True)
     except Exception as exc:
         console.print(f"[yellow]Could not update the registered model's status: {_plain(exc)}[/yellow]")
 
