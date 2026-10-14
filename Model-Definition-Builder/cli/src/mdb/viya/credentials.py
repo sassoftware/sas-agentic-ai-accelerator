@@ -663,7 +663,13 @@ def _item_splices(text: str, node, sets: dict, drop: tuple, eol: str) -> list:
             at = _line_after(text, last)
             indent = " " * node.value[0][0].start_mark.column
             block = "".join(indent + pair + eol for pair in fresh)
-            splices.append((at, at, _appended(text, at, block, eol)))
+            gone = [start for start, end, new in splices if end == at and not new]
+            if gone and at == len(text) and not text.endswith("\n"):
+                # the last line of a file without a line end is cut: the new keys take its place, and the
+                # file still ends without one
+                splices.append((gone[0], gone[0], block[:-len(eol)]))
+            else:
+                splices.append((at, at, _appended(text, at, block, eol)))
     return splices
 
 

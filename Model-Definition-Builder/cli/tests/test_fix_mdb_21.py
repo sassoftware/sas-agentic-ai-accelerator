@@ -103,3 +103,17 @@ def test_a_note_on_the_state_line_stays_when_the_identity_is_added_back(mdb, eol
     mdb.path.write_bytes(plain.encode("utf-8"))
     assert mdb("credentials-add", "group", "Former")[0] == 0
     assert mdb.path.read_bytes() == plain.replace(f"    state: absent{eol}", "").encode("utf-8")
+
+
+@pytest.mark.parametrize("eol", ["\n", "\r\n"])
+@pytest.mark.parametrize("final", [True, False])
+def test_a_key_added_where_the_last_line_is_cut_leaves_no_empty_line(mdb, eol, final):
+    """gate-21a C2 'state absent last key no newline': with `state: absent`
+    as the last line of a file without a line end, `credentials-add <type>
+    <id> --only <name>` left an empty line inside the identity."""
+    head = "source: .env\nidentities:\n  - type: group\n    id: A\n".replace("\n", eol)
+    text = head + "    state: absent" + (eol if final else "")
+    mdb.path.write_bytes(text.encode("utf-8"))
+    code, said = mdb("credentials-add", "group", "A", "--only", "OpenAI")
+    assert code == 0, said
+    assert mdb.path.read_bytes() == (head + "    only: [OpenAI]" + (eol if final else "")).encode("utf-8")
