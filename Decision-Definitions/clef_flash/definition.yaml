@@ -40,7 +40,7 @@ metadata:
     the vendor publishes its own results on the same datasets, so training contamination cannot be ruled
     out. Measured 2026-10-05/06 on about 50 examples per dataset, three runs each: a shortlist, not a
     ranking.'
-modeler: gerdaw
+modeler: SAS Agentic AI Accelerator
 generation:
   overrides: []
   catalog_provenance: openrouter (static snapshot 2026-10-07)

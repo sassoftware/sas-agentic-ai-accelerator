@@ -35,7 +35,7 @@ metadata:
     JevBench tasks. Calibration error 0.06-0.09, median latency about 0.3 s, $0.006-0.027 per 1,000 calls.
     Caution: rate-limited under load (HTTP 429) - keep the evaluation concurrency low. Measured 2026-10-05/06
     on about 50 examples per dataset, three runs each: a shortlist, not a ranking.'
-modeler: gerdaw
+modeler: SAS Agentic AI Accelerator
 generation:
   overrides: []
   catalog_provenance: openrouter (static snapshot 2026-10-07)

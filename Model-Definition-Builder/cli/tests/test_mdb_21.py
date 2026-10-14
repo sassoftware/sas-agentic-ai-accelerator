@@ -1064,3 +1064,26 @@ def test_a_readme_that_names_the_credentials_commands_names_all_five(readme):
     for command in CREDENTIAL_COMMANDS:
         assert f"`mdb {command}`" in text, command
     assert "`state: absent`" in text
+
+
+# ---- the modeler of a definition that ships -------------------------------------------------
+def test_no_definition_of_the_repository_names_a_person_as_its_modeler():
+    """gate-20b: five decision definitions named the user id of the person
+    who ran `mdb add` as their modeler - `mdb add` takes the modeler from
+    SAS_RESPONSIBLE_PARTY and, where that is not set, from the user of the
+    machine. Every definition that ships names the accelerator, in its
+    definition.yaml and in the modelConfiguration.json generated from it.
+    The value is one of the model attributes mdb registers; the LLM and
+    embedding definitions have carried it since they were written."""
+    import json
+
+    import yaml
+    neutral, seen = "SAS Agentic AI Accelerator", {"definition.yaml": 0, "modelConfiguration.json": 0}
+    for kind in ("LLM-Definitions", "Embedding-Definitions", "Decision-Definitions"):
+        # every folder, the base definition a hand-written one starts from included
+        for folder in sorted(path for path in (REPOSITORY / kind).iterdir() if path.is_dir()):
+            for name, load in (("definition.yaml", yaml.safe_load), ("modelConfiguration.json", json.loads)):
+                if (folder / name).is_file():
+                    seen[name] += 1
+                    assert load((folder / name).read_text(encoding="utf-8"))["modeler"] == neutral, folder / name
+    assert seen["definition.yaml"] >= 51 and seen["modelConfiguration.json"] >= 53, seen

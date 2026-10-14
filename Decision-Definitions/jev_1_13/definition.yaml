@@ -39,7 +39,7 @@ metadata:
     and without an explicit `unknown` option it put 0.88 on an invented answer - give every choice question
     an escape option. Measured 2026-10-05/06 on about 50 examples per dataset, three runs each: a shortlist,
     not a ranking.'
-modeler: gerdaw
+modeler: SAS Agentic AI Accelerator
 generation:
   overrides: []
   catalog_provenance: openrouter (static snapshot 2026-09-24)
