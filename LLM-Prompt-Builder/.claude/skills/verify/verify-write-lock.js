@@ -10,7 +10,10 @@
  * project, the item, Create, Delete - cannot be used while a write is out,
  * and neither can any button that starts a write (WRITE_BUTTONS): a Save
  * setup clicked between two stages of a manifest wrote the setup without the
- * job the manifest had just written into it.
+ * job the manifest had just written into it. Nor, in the RAG Builder, can the
+ * two buttons that start a job of the setup (Launch ingestion, Run test): a
+ * launch between two stages of a manifest ran the job definition the
+ * manifest had not yet rewritten.
  *
  * Every write path of the page is driven the same way (`probe`):
  *
@@ -108,6 +111,10 @@ const RAG_CONTROLS = [
   ['Create setup', '[data-bs-target="#app-obj-RGB-create-setupModal"]'],
   ['Delete setup', '#app-obj-RGB-delete-setup'],
   ['Delete project', '#app-obj-RGB-delete-project'],
+  // The two buttons that start a job of the setup: the ingestion runs the job
+  // definition a manifest rewrites, and Run test writes one to SAS Content.
+  ['Launch ingestion', '#app-obj-RGB-launch'],
+  ['Run test', '#app-obj-RGB-test-run'],
 ];
 // What has to be usable again once a write has ended, whatever is open then.
 const ALWAYS_USABLE = ['the project list', 'the search field of the project list', 'Create project'];

@@ -448,6 +448,8 @@ export async function buildRagBuilder(
   let runTicker: number | null = null;
   let runStartedAt = 0;
   let runActive = false;
+  // The setup for which SAS Job Execution is asked for a running ingestion.
+  let askingForRunOf = '';
   /**
    * The ingestion runs this page follows and has not yet seen end, by setup:
    * the id of the job and the time of its launch. A job goes on in SAS Viya
@@ -2275,9 +2277,11 @@ export async function buildRagBuilder(
   };
 
   const updateLaunchState = (): void => {
-    // Not while a run of this setup is followed here: a second launch would
-    // write the same collection beside it.
-    launchButton.disabled = !currentJobUri || runActive;
+    // Not while a run of this setup is followed here, or asked for: a second
+    // launch would write the same collection beside it. Not while a write is
+    // out either: a manifest rewrites the job definition the launch runs.
+    launchButton.disabled =
+      !currentJobUri || runActive || (askingForRunOf !== '' && askingForRunOf === selectedSetupID) || selectionLock.busy;
     launchButton.title = currentJobUri
       ? ''
       : str('ragBuilderLaunchNeedsJob', 'Generate the ingestion job first.');
@@ -2293,6 +2297,13 @@ export async function buildRagBuilder(
         )
       : str('ragBuilderTestNeedsManifest', 'Manifest the setup first.');
   };
+  // Run test runs a job of the setup and writes a job definition to SAS
+  // Content: not while a test is out, nor while a write is.
+  let retrievalTestOut = false;
+  selectionLock.onChange(() => {
+    updateLaunchState();
+    testRunButton.disabled = retrievalTestOut || selectionLock.busy;
+  });
 
   const stopPolling = (): void => {
     if (pollTimer !== null) {
@@ -3146,13 +3157,15 @@ export async function buildRagBuilder(
     if (!ingestionRuns.has(setupID) && currentJobUri) {
       const definitionUri = currentJobUri;
       // Launch waits for the answer.
-      launchButton.disabled = true;
+      askingForRunOf = setupID;
+      updateLaunchState();
       let running: Awaited<ReturnType<typeof getRunningJobOf>> = null;
       try {
         running = await getRunningJobOf(definitionUri);
       } catch (error) {
         console.debug('RAG Builder: asking for a running ingestion failed', error);
       }
+      if (askingForRunOf === setupID) askingForRunOf = '';
       if (!shown()) return;
       if (running && !ingestionRuns.has(setupID)) {
         const created = Date.parse(String(running.creationTimeStamp ?? ''));
@@ -3525,7 +3538,7 @@ export async function buildRagBuilder(
       stopRunClock();
       runClock.textContent = '';
       setRunBadge('failed', true);
-      launchButton.disabled = false;
+      updateLaunchState();
       showStatus('danger', str('ragBuilderRunLaunchError', 'Launching the ingestion job failed - check the browser console.'));
     }
   }
@@ -4093,6 +4106,8 @@ export async function buildRagBuilder(
    * would itself be an artifact of a test that is supposed to have none.
    */
   async function runRetrievalTest(): Promise<void> {
+    // Enter in the question field comes here past the disabled button.
+    if (selectionLock.busy) return;
     const asked = macroSafeQuestion(testQuestionField.value);
     if (!asked.value) {
       testStatus.textContent = str('ragBuilderTestNeedsQuestion', 'Type a question first.');
@@ -4113,6 +4128,7 @@ export async function buildRagBuilder(
       return;
     }
     clearStatus();
+    retrievalTestOut = true;
     testRunButton.disabled = true;
     testResults.replaceChildren();
     testStatus.textContent = asked.changed
@@ -4208,7 +4224,8 @@ export async function buildRagBuilder(
           console.warn('RAG Builder: deleting the transient test job definition failed.', error);
         }
       }
-      testRunButton.disabled = false;
+      retrievalTestOut = false;
+      testRunButton.disabled = selectionLock.busy;
     }
   }
 
