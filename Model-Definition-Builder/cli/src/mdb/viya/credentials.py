@@ -279,6 +279,10 @@ class Identity:
                 f"{', '.join(IDENTITY_TYPES)}, not '{self.type}'")
         if not str(self.id).strip():
             raise CredentialError("an identity with no id cannot be equipped")
+        if len(f"{self.id}.".splitlines()) > 1:
+            # a line that named it would end there, and YAML reads such a character as the end of a line too
+            raise CredentialError("an identity id cannot hold a line break (a line feed, a carriage return, U+0085, "
+                                  "U+2028 or another one)")
         if self.state not in STATES:
             raise CredentialError(
                 f"identity '{self.id}': state must be one of "

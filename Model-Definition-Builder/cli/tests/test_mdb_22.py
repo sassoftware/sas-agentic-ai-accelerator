@@ -429,3 +429,77 @@ def test_builders_import_refuses_an_options_file_that_is_a_folder(monkeypatch, t
     monkeypatch.setattr(cli, "_viya_session", lambda: pytest.fail("signed in"))
     result = CliRunner().invoke(cli.app, ["builders-import", "package.json", "--options", "saved"])
     assert result.exit_code == 2 and out.getvalue() == "saved is a folder, not an options file.\n", out.getvalue()
+
+
+# ---- M5: what the options of the credentials commands name ------------------------------------
+@pytest.mark.parametrize("args", [("credentials-apply",), ("credentials-report",), ("credentials-remove", "group", "G"),
+                                  ("credentials-add", "group", "G"), ("credentials-init",),
+                                  ("credentials-init", "--force")])
+def test_a_manifest_that_is_a_folder_is_refused_as_a_folder(mdb, args):
+    """gate-21b B7: a --manifest that names a folder was 'No credentials
+    manifest at <folder>' with a hint that cannot succeed as printed, and
+    credentials-add printed '[Errno 13] Permission denied'."""
+    folder = mdb.path.parent / "a folder [x]"
+    folder.mkdir()
+    code, said = mdb(*args, "--manifest", str(folder))
+    option = "--manifest / --file" if args[0] == "credentials-init" else "--manifest"
+    assert code == 2 and said == f"{folder} is a folder; {option} names the credentials manifest, a file. Nothing " \
+                                 "was done.\n", said
+    assert mdb.site.calls == [] and list(folder.iterdir()) == []
+
+
+@pytest.mark.parametrize("option, value, named", [("--env-file", "other.env", "the key file"),
+                                                  ("--keys-file", "other.env", "the key file"),
+                                                  ("--identity-type", "user", "the type"),
+                                                  ("--identity-type", "group", "the type")])
+@pytest.mark.parametrize("command", ["credentials-apply", "credentials-report"])
+def test_an_option_of_the_identity_mode_is_refused_with_a_manifest(mdb, command, option, value, named):
+    """review-21b: `credentials-apply -m m.yaml --env-file prod.env` wrote
+    the values of the manifest's source and ended with 'Done.'; --keys-file
+    and --identity-type were ignored the same way."""
+    if command == "credentials-report" and option != "--identity-type":
+        pytest.skip("credentials-report reads no key file")
+    (mdb.path.parent / "other.env").write_text("OPENAI_API_KEY=sk-made-up-OTHER\n", encoding="utf-8")
+    mdb("credentials-add", "group", "G")
+    code, said = mdb(command, option, value)
+    assert code == 2 and said == (f"{option} is read only with --identity: credentials.yaml names {named} of each "
+                                  "identity. Nothing was asked of SAS Viya.\n"), said
+    assert mdb.site.calls == []
+
+
+@pytest.mark.parametrize("command", ["credentials-apply", "credentials-report"])
+def test_an_identity_named_twice_is_refused(mdb, command):
+    """review-21b: `--identity G --identity G` applied the credential twice,
+    and the report counted the one identity twice."""
+    code, said = mdb(command, "--identity", "G", "--identity", "G", "--identity", "u")
+    assert code == 2 and said == ("--identity: group 'G' is listed 2 times - name each identity once. Nothing was "
+                                  "asked of SAS Viya.\n"), said
+    assert mdb.site.calls == []
+
+
+def test_a_domain_with_blanks_around_it_is_shown_with_them(mdb):
+    """gate-21b B3: `--domain ' zz_k '` was refused with a sentence that
+    showed both domains as zz_k."""
+    mdb("credentials-add", "group", "G", "--domain", "zz_k")
+    code, said = mdb("credentials-apply", "--domain", " zz_k ", "--dry-run")
+    assert code == 2 and said.startswith("--domain \" zz_k \" is read only with --identity: credentials.yaml names "
+                                         "the credential domain zz_k."), said
+
+
+@pytest.mark.parametrize("who", ["A\nB", "A\rB", "A\x85B", "A B", "A\x0bB", "A\n"])
+def test_an_id_with_a_line_break_is_refused(mdb, who):
+    """gate-21b M1, B1: an id with a line break was printed over two lines
+    and cut its report row; one with U+0085 ended credentials-add on a new
+    manifest with 'the manifest is laid out in a way this edit cannot be
+    made in safely', for a file mdb writes itself."""
+    for args in (("credentials-add", "group", who), ("credentials-remove", "group", who),
+                 ("credentials-apply", "--identity", who), ("credentials-report", "--identity", who)):
+        if args[0] == "credentials-remove":
+            mdb("credentials-init", "--force")
+        code, said = mdb(*args)
+        assert code == 2 and "an identity id cannot hold a line break" in said, (args, said)
+        assert "laid out" not in said and said.count("\n") == 1, (args, said)
+    assert mdb.site.calls == []
+    mdb.path.write_text(f"source: .env\nidentities:\n  - type: group\n    id: {json.dumps(who)}\n", encoding="utf-8")
+    code, said = mdb("credentials-report")
+    assert code == 2 and "an identity id cannot hold a line break" in said and mdb.site.calls == []

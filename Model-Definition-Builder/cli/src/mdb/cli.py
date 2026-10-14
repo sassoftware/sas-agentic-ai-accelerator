@@ -3806,12 +3806,40 @@ def provider_check(adapter_id: str = typer.Argument(...)):
     console.print(f"[green]{_plain(adapter_id)}: conformance checks passed.[/green]")
 
 
+def _manifest_file(manifest: Optional[str], option: str = "--manifest") -> Path:
+    """The credentials manifest a command reads or writes: --manifest as it
+    was given, else credentials.yaml. An empty value is refused, and so is a
+    folder: it was reported as no manifest, with a command to write one that
+    does not run as printed, or ended in the error of the file system."""
+    from .viya.credentials import DEFAULT_MANIFEST
+
+    path = Path(_not_empty(option, manifest, "file") or DEFAULT_MANIFEST)
+    if path.is_dir():
+        console.print(f"{path} is a folder; {option} names the credentials manifest, a file. Nothing was done.",
+                      style="red", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(2)
+    return path
+
+
+def _listed_twice(identities) -> list[str]:
+    """`<type> '<id>' is listed <n> times` for every identity that is named
+    more than once: present and absent, it would be written and deleted in
+    one run, in that order; present twice, it would be written twice and
+    counted twice."""
+    listed: dict = {}
+    for who in identities:
+        listed[(who.type, who.id)] = listed.get((who.type, who.id), 0) + 1
+    return [f"{kind} '{who}' is listed {count} times" for (kind, who), count in listed.items() if count > 1]
+
+
 def _credential_manifest(manifest: Optional[str], domain: Optional[str],
-                         identity_type: str, identities: Optional[list[str]],
+                         identity_type: Optional[str], identities: Optional[list[str]],
                          env_file: Optional[str], keys_file: Optional[str]):
-    """A manifest from a file, or one assembled from the flags. `domain` is
-    --domain as given, None where it was not: a manifest names its own, and
-    a --domain that names another one is refused."""
+    """A manifest from a file, or one assembled from the flags. `domain`,
+    `identity_type`, `env_file` and `keys_file` are the options as given,
+    None where they were not: a manifest names its own domain, and the type
+    and the source of each identity, so each of them is refused with a
+    manifest - a --domain where it names another domain than the manifest."""
     from .viya.credentials import (
         DEFAULT_DOMAIN, DEFAULT_MANIFEST, CredentialError, Identity, Manifest,
     )
@@ -3822,7 +3850,7 @@ def _credential_manifest(manifest: Optional[str], domain: Optional[str],
     # wins; otherwise this is a manifest run, and an unnamed manifest means
     # the conventional file in the working directory.
     if not identities:
-        path = Path(manifest or DEFAULT_MANIFEST)
+        path = _manifest_file(manifest)
         if not path.is_file():
             console.print(f"[red]No credentials manifest at {_plain(path)}.[/red]")
             named = _given_file("--manifest", manifest, DEFAULT_MANIFEST)
@@ -3838,38 +3866,48 @@ def _credential_manifest(manifest: Optional[str], domain: Optional[str],
             # neither present nor absent - ends every command the same way.
             console.print(f"[red]{_plain(exc)}[/red]")
             raise typer.Exit(2)
-        # One identity listed twice - present and absent - would be written and deleted in one run, in file
-        # order; credentials-add and -remove refuse such a manifest too.
-        listed: dict = {}
-        for who in loaded.identities:
-            listed[(who.type, who.id)] = listed.get((who.type, who.id), 0) + 1
-        twice = [f"{kind} '{who}' is listed {count} times" for (kind, who), count in listed.items() if count > 1]
+        # credentials-add and -remove refuse a manifest that lists an identity twice too
+        twice = _listed_twice(loaded.identities)
         if twice:
             console.print(f"{path}: {'; '.join(twice)} - make each one entry by hand first. Nothing was asked of "
                           "SAS Viya.", style="red", markup=False, highlight=False, soft_wrap=True)
             raise typer.Exit(2)
         if domain is not None and domain != loaded.domain:
             # the run would go to the domain of the manifest - and remove there what it marks absent
-            console.print(f"--domain {domain} is read only with --identity: {path} names the credential domain "
-                          f"{loaded.domain}. Nothing was asked of SAS Viya.", style="red", markup=False,
-                          highlight=False, soft_wrap=True)
+            console.print(f"--domain {_shell_word(domain)} is read only with --identity: {path} names the "
+                          f"credential domain {loaded.domain}. Nothing was asked of SAS Viya.", style="red",
+                          markup=False, highlight=False, soft_wrap=True)
             raise typer.Exit(2)
+        for option, value, named in (("--env-file", env_file, "the key file"), ("--keys-file", keys_file, "the key file"),
+                                     ("--identity-type", identity_type, "the type")):
+            if value is not None:
+                # the run would write what the manifest names, not what the option does
+                console.print(f"{option} is read only with --identity: {path} names {named} of each identity. "
+                              "Nothing was asked of SAS Viya.", style="red", markup=False, highlight=False,
+                              soft_wrap=True)
+                raise typer.Exit(2)
         return loaded
     if manifest:
         console.print("[yellow]--identity was given, so --manifest is "
                       "ignored.[/yellow]")
     source = Path(keys_file or env_file or ".env").resolve()
     try:
-        return Manifest(
+        plan = Manifest(
             domain=domain or DEFAULT_DOMAIN,
             source=source,
-            identities=[Identity(type=identity_type, id=who,
+            identities=[Identity(type=identity_type or "group", id=who,
                                  verbatim=bool(keys_file))
                         for who in identities],
         )
     except CredentialError as exc:
         console.print(f"[red]{_plain(exc)}[/red]")
         raise typer.Exit(2)
+    twice = _listed_twice(plan.identities)
+    if twice:
+        console.print(f"--identity: {'; '.join(twice)} - name each identity once. Nothing was asked of SAS Viya.",
+                      style="red", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(2)
+    return plan
 
 
 def _not_empty(option: str, value: Optional[str], what: str) -> Optional[str]:
@@ -3956,9 +3994,8 @@ def credentials_init(
     when there is none yet.
     """
     domain = _given_domain(domain)
-    _not_empty("--manifest / --file", manifest, "file")
+    target = _manifest_file(manifest, "--manifest / --file")
     _not_empty("--env-file", env_file, "file")
-    target = Path(manifest)
     if target.exists() and not force:
         console.print(f"[red]{_plain(target)} already exists.[/red] Pass --force to overwrite it.")
         raise typer.Exit(2)
@@ -4040,7 +4077,7 @@ def credentials_add(
     entry names and paths.
     """
     from .viya.credentials import (
-        DEFAULT_DOMAIN, DEFAULT_MANIFEST, PLACEHOLDER_ID, CredentialError,
+        DEFAULT_DOMAIN, PLACEHOLDER_ID, CredentialError,
         edit_identity, planned_entries, read_manifest_text, relative_source,
         write_manifest_text,
     )
@@ -4055,7 +4092,7 @@ def credentials_add(
     if names == ():
         console.print("[red]--only was given without an entry name.[/red]")
         raise typer.Exit(2)
-    path = Path(manifest or DEFAULT_MANIFEST)
+    path = _manifest_file(manifest)
     created = not path.exists()
     starter, count = "", 0
     if created:
@@ -4150,7 +4187,7 @@ def credentials_remove(
     if identity_type not in ("user", "group"):
         console.print("[red]The type must be user or group.[/red]")
         raise typer.Exit(2)
-    path = Path(_not_empty("--manifest", manifest, "file") or DEFAULT_MANIFEST)
+    path = _manifest_file(manifest)
     if not path.is_file():
         console.print(f"[red]No credentials manifest at {_plain(path)}.[/red]")
         named = _given_file("--manifest", manifest, DEFAULT_MANIFEST)
@@ -4194,18 +4231,19 @@ def credentials_apply(
     identity: Optional[list[str]] = typer.Option(
         None, "--identity", "-i",
         help="Identity id to equip; repeat for several (without --manifest)"),
-    identity_type: str = typer.Option(
-        "group", "--identity-type",
-        help="user or group. A user credential overrides a group one"),
+    identity_type: Optional[str] = typer.Option(
+        None, "--identity-type",
+        help="user or group, with --identity (default: group); a manifest names its own. A user credential "
+             "overrides a group one"),
     domain: Optional[str] = typer.Option(
         None, "--domain",
         help="Credential domain to write into, with --identity (default: agentic-ai-keys); a manifest names its "
              "own"),
     env_file: Optional[str] = typer.Option(
-        None, "--env-file", help="Source .env (default: ./.env)"),
+        None, "--env-file", help="Source .env, with --identity (default: ./.env); a manifest names its own"),
     keys_file: Optional[str] = typer.Option(
         None, "--keys-file",
-        help="Raw NAME=VALUE file stored verbatim, no provider mapping"),
+        help="Raw NAME=VALUE file stored verbatim, no provider mapping, with --identity; a manifest names its own"),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Report what would change; write nothing"),
     skip_domain: bool = typer.Option(
@@ -4252,7 +4290,7 @@ def credentials_apply(
         ensure_domain, entries_for, fetch_credential, put_credential,
     )
 
-    if identity_type not in ("user", "group"):
+    if identity_type not in (None, "user", "group"):
         console.print("[red]--identity-type must be user or group.[/red]")
         raise typer.Exit(2)
     domain = _given_domain(domain)
@@ -4367,8 +4405,8 @@ def credentials_report(
         None, "--manifest", "-m", help="YAML naming the identities to ask about"),
     identity: Optional[list[str]] = typer.Option(
         None, "--identity", "-i", help="Identity id to ask about; repeat for several"),
-    identity_type: str = typer.Option(
-        "group", "--identity-type", help="user or group"),
+    identity_type: Optional[str] = typer.Option(
+        None, "--identity-type", help="user or group, with --identity (default: group); a manifest names its own"),
     domain: Optional[str] = typer.Option(
         None, "--domain",
         help="Credential domain to inspect, with --identity (default: agentic-ai-keys); a manifest names its own"),
