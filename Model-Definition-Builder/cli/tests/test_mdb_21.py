@@ -19,7 +19,7 @@ from rich.console import Console
 from rich.text import Text
 from typer.testing import CliRunner
 
-from content_fakes import Viya, package_of
+from content_fakes import Response, Viya, package_of
 from mdb import cli
 from mdb.core import content
 from mdb.viya import credentials
@@ -1087,3 +1087,96 @@ def test_no_definition_of_the_repository_names_a_person_as_its_modeler():
                     seen[name] += 1
                     assert load((folder / name).read_text(encoding="utf-8"))["modeler"] == neutral, folder / name
     assert seen["definition.yaml"] >= 51 and seen["modelConfiguration.json"] >= 53, seen
+
+
+# ---- what the second pass of 2026-10-13 could not run, and a test can ------------------------
+@pytest.mark.parametrize("width", [40, 80, 132])
+def test_the_line_of_a_refused_update_is_one_line_at_the_width_of_a_terminal(command, monkeypatch, width):
+    """The pass ran mdb at 2,000 columns, so it did not show what the line
+    of an HTTP 412 looks like in a terminal. And the answer of that pass
+    held no bracket and no line break; this one holds both."""
+    _, _, viya = command()
+    core, = viya.at(f"{ROOT}/RAG/rag_core/__init__.py")
+    viya.files[core] = b"CHANGED = 1\n"
+    said = ('The values for the request header field "If-Match" ("mv75s7d6") and the resource\'s entity tag '
+            '("mv75trhn") are not the same [/red] [see\nthe log].')
+    monkeypatch.setattr(viya, "put", lambda path, data=None, headers=None, **kw: Response(
+        412, {"message": said, "remediation": "Get the latest representation of the resource.", "errorCode": 0}))
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=out, width=width, force_terminal=False, emoji=False))
+    result = CliRunner().invoke(cli.app, ["content-deploy"])
+    assert result.exit_code == 1 and _ended_by_itself(result), result.exception
+    line, = [line for line in out.getvalue().splitlines() if line.lstrip().startswith("FAILED")]
+    assert len(line) > width and line == (
+        "  FAILED       file          RAG/rag_core/__init__.py  (the file was left as it is: the update of its "
+        "content was refused (HTTP 412 " + " ".join(said.split()) + " - Get the latest representation of the "
+        "resource. (errorCode 0)))")
+    assert viya.files[core] == b"CHANGED = 1\n"
+
+
+class _TransferService:
+    """A session that answers what `mdb package-export` asks, and keeps every request."""
+
+    def __init__(self, package: dict, root_id: str):
+        self.package, self.root_id, self.asked = package, root_id, []
+        self.job = {"id": "j1", "state": "completed", "packageUri": "/transfer/packages/p1",
+                    "links": [{"rel": "self", "href": "/transfer/exportJobs/j1"}]}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def get(self, path, params=None, headers=None, **kw):
+        self.asked.append(("GET", path))
+        return {"/folders/folders/@item": Response(200, {"id": self.root_id}),
+                "/transfer/exportJobs/j1": Response(200, self.job),
+                "/transfer/packages/p1": Response(200, self.package)}.get(path, Response(404, {"message": "no"}))
+
+    def post(self, path, data=None, headers=None, **kw):
+        self.asked.append(("POST", path))
+        return Response(201, self.job)
+
+    def delete(self, path, **kw):
+        self.asked.append(("DELETE", path))
+        return Response(204)
+
+
+def test_package_export_asks_the_transfer_service_for_an_export_and_nothing_else(monkeypatch, manifest, repo):
+    """The report of the pass said `no request to /transfer/importJobs in any
+    log`, which its checker could not confirm for the scripts around mdb.
+    What mdb itself sends for an export, request by request: no import job,
+    no upload of a package - and the package and the job record are deleted."""
+    built = package_of(manifest)
+    service = _TransferService(built.build(), built.root_uri.rsplit("/", 1)[-1])
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=out, width=1000, force_terminal=False, emoji=False))
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=repo))
+    monkeypatch.setattr(cli, "_viya_session", lambda: service)
+    result = CliRunner().invoke(cli.app, ["package-export"])
+    assert result.exit_code == 0 and _ended_by_itself(result), (result.exception, out.getvalue())
+    assert service.asked == [("GET", "/folders/folders/@item"), ("POST", "/transfer/exportJobs"),
+                             ("GET", "/transfer/exportJobs/j1"), ("GET", "/transfer/packages/p1"),
+                             ("DELETE", "/transfer/packages/p1"), ("DELETE", "/transfer/exportJobs/j1")]
+
+
+def test_content_deploy_does_not_ask_the_transfer_service(command):
+    _, _, viya = command()
+    assert viya.wrote() and not [path for _method, path, _params in viya.calls if "/transfer" in path]
+
+
+def test_an_import_without_reports_does_not_ask_the_transfer_service(exporting, manifest, repo, monkeypatch):
+    """`--no-reports`: "the transfer service is not called at all" - held
+    here for every request, the GET requests too."""
+    elsewhere = repo / "scratch" / "r21.json"
+    result, text, _, _ = exporting(package_of(manifest), "--out", str(elsewhere))
+    assert result.exit_code == 0, text
+    other, out = Viya(), io.StringIO()
+    monkeypatch.setattr(cli, "_viya_session", lambda: other)
+    monkeypatch.setattr(cli, "console", Console(file=out, width=1000, force_terminal=False, emoji=False))
+    monkeypatch.setenv("SAS_VIYA_URL", "https://site.example")
+    result = CliRunner().invoke(cli.app, ["builders-import", str(elsewhere), "--no-reports", "--no-releases",
+                                          "--no-files"])
+    assert result.exit_code == 0 and _ended_by_itself(result), (result.exception, out.getvalue())
+    assert other.wrote() and not [path for _method, path, _params in other.calls if "/transfer" in path]
