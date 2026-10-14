@@ -1153,6 +1153,7 @@ def setup(
         authorization_rules_text, builder_seed, ensure_repository_and_project,
     )
     ctx = Context()
+    _not_empty("--out", out, "folder")
     responsible_party = os.environ.get("SAS_RESPONSIBLE_PARTY", "")
     deployment_type = os.environ.get("SAS_DEPLOYMENT_TYPE", "k8s")
     scr_endpoint = _scr_endpoint()
@@ -1254,6 +1255,9 @@ def options_save(
 
     ctx = Context()
     content_root = _given_root(content_root)
+    if Path(_not_empty("--file", file, "file")).is_dir():
+        console.print(f"[red]{_plain(file)} is a folder; --file names the options file to write.[/red]")
+        raise typer.Exit(2)
     with _viya_session() as session:
         seeds = {} if reports_only else _discovered_seeds(session, ctx, "capturing the report only")
         captured = _capture_options(session, seeds, content_root=content_root or "")
@@ -1385,7 +1389,10 @@ def options_restore(
     import json as _json
 
     content_root = _given_root(content_root)
-    path = Path(file)
+    path = Path(_not_empty("--file", file, "file"))
+    if path.is_dir():
+        console.print(f"[red]{_plain(file)} is a folder, not an options file.[/red]")
+        raise typer.Exit(1)
     if not path.exists():
         save = "mdb options-save" + _given_file("--file", file, OPTIONS_FILE) + _given("--content-root", content_root)
         console.print(f"[red]{_plain(file)} not found - run `{_plain(save)}` first.[/red]")
@@ -1874,7 +1881,7 @@ def package_export(
         help="SAS Content folder to export (default: the content root the manifest names, "
              "/SAS Agentic AI Accelerator). Any other folder needs --out."),
     name: Optional[str] = typer.Option(None, "--name", help="Package name (default: the folder's name)."),
-    out: Optional[Path] = typer.Option(
+    out: Optional[str] = typer.Option(
         None, "--out", "-o",
         help="Where to write the package (default: the file the manifest names, "
              "SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json)."),
@@ -1947,6 +1954,8 @@ def package_export(
     ctx = Context()
     manifest = _content_manifest(ctx)
     content_root = _given_root(content_root)
+    # a text, so that an empty --out can be told from `.`; typer makes a path of both
+    out = Path(out) if _not_empty("--out", out, "file") is not None else None
     root = (content_root or manifest.content_root).rstrip("/")
     target = out or manifest.package_path
     if root != manifest.content_root and (out is None or target.resolve() == manifest.package_path.resolve()):
@@ -2510,6 +2519,7 @@ def builders_import(
     ctx = Context()
     manifest = _content_manifest(ctx, check_sources=False)
     content_root = _given_root(content_root)
+    _not_empty("--out", out, "folder")
     files = [Path(p) for p in packages] if packages else [manifest.package_path]
     for path in files:
         if not path.is_file():
@@ -3374,7 +3384,7 @@ def deploy(
         console.print("[red]No ingress host - pass --host or set SAS_SCR_ENDPOINT.[/red]")
         raise typer.Exit(2)
     template_dir = ctx.repo / "SCR-LLM-Deployment-YAML"
-    out_dir = Path(out)
+    out_dir = Path(_not_empty("--out", out, "folder"))
     out_dir.mkdir(parents=True, exist_ok=True)
     for folder in ctx.resolve_targets(ids or [], all_):
         if not (folder / MANIFEST_FILENAME).is_file():
@@ -3690,6 +3700,8 @@ def _credential_manifest(manifest: Optional[str], domain: Optional[str],
         DEFAULT_DOMAIN, DEFAULT_MANIFEST, CredentialError, Identity, Manifest,
     )
 
+    for option, value in (("--manifest", manifest), ("--env-file", env_file), ("--keys-file", keys_file)):
+        _not_empty(option, value, "file")
     # Naming identities on the command line is the single-identity mode and
     # wins; otherwise this is a manifest run, and an unnamed manifest means
     # the conventional file in the working directory.
@@ -3744,18 +3756,25 @@ def _credential_manifest(manifest: Optional[str], domain: Optional[str],
         raise typer.Exit(2)
 
 
+def _not_empty(option: str, value: Optional[str], what: str) -> Optional[str]:
+    """An option as it was given, where an empty value is refused: read as
+    not given it is the default - the file or the domain a site works with -
+    so a command typed for another one with a variable of the shell that is
+    not set would read or write that."""
+    if value is not None and not value.strip():
+        console.print(f"{option} is empty - what a variable of the shell that is not set gives - and names no "
+                      f"{what}. Nothing was done.", style="red", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(2)
+    return value
+
+
 def _given_domain(domain: Optional[str]) -> Optional[str]:
     """--domain as it was given, for the four credentials commands that take
     it. An empty value is refused: a manifest written with it names no domain
     and is read as one for agentic-ai-keys, so a command typed for another
     domain with a variable that is not set would end in the domain a site
     works with."""
-    if domain is not None and not domain.strip():
-        console.print("--domain is empty - what a variable of the shell that is not set gives - and names no "
-                      "credential domain. Nothing was done.", style="red", markup=False, highlight=False,
-                      soft_wrap=True)
-        raise typer.Exit(2)
-    return domain
+    return _not_empty("--domain", domain, "credential domain")
 
 
 def _credential_scaffold(target: Path, env_file: str, domain: str) -> tuple[str, int]:
@@ -3821,6 +3840,8 @@ def credentials_init(
     when there is none yet.
     """
     domain = _given_domain(domain)
+    _not_empty("--manifest / --file", manifest, "file")
+    _not_empty("--env-file", env_file, "file")
     target = Path(manifest)
     if target.exists() and not force:
         console.print(f"[red]{_plain(target)} already exists.[/red] Pass --force to overwrite it.")
@@ -3912,6 +3933,8 @@ def credentials_add(
         console.print("[red]The type must be user or group.[/red]")
         raise typer.Exit(2)
     domain = _given_domain(domain)
+    for option, value in (("--manifest", manifest), ("--env-file", env_file), ("--source", source)):
+        _not_empty(option, value, "file")
     names = _only_names(only)
     if names == ():
         console.print("[red]--only was given without an entry name.[/red]")
@@ -4011,7 +4034,7 @@ def credentials_remove(
     if identity_type not in ("user", "group"):
         console.print("[red]The type must be user or group.[/red]")
         raise typer.Exit(2)
-    path = Path(manifest or DEFAULT_MANIFEST)
+    path = Path(_not_empty("--manifest", manifest, "file") or DEFAULT_MANIFEST)
     if not path.is_file():
         console.print(f"[red]No credentials manifest at {_plain(path)}.[/red]")
         named = _given_file("--manifest", manifest, DEFAULT_MANIFEST)

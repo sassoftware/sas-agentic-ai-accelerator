@@ -321,6 +321,61 @@ def test_a_domain_the_manifest_does_not_name_is_refused(mdb):
     assert ("PUT", "/credentials/domains/agentic-ai-keys/groups/A") in mdb.site.calls
 
 
+EMPTY_FILE = [("credentials-init", "--manifest"), ("credentials-init", "--file"), ("credentials-init", "--env-file"),
+              ("credentials-add group G", "--manifest"), ("credentials-add group G", "--env-file"),
+              ("credentials-add group G", "--source"), ("credentials-remove group G", "--manifest"),
+              ("credentials-apply", "--manifest"), ("credentials-apply", "--env-file"),
+              ("credentials-apply", "--keys-file"), ("credentials-apply --identity G", "--manifest"),
+              ("credentials-report", "--manifest")]
+
+
+@pytest.mark.parametrize("value", ["", "  "])
+@pytest.mark.parametrize("command, option", EMPTY_FILE)
+def test_an_empty_file_of_the_credentials_commands_is_refused(mdb, command, option, value):
+    """gate-21a C5, review-21a: `--manifest ""` was read as not given -
+    credentials-add wrote ./credentials.yaml, apply and report read it (an
+    apply deletes too), credentials-init said `. already exists`; an empty
+    --env-file and --source were passed over. As for --only and --domain,
+    an empty value is refused before anything is read or written."""
+    listing = sorted(path.name for path in mdb.path.parent.iterdir())
+    code, said = mdb(*command.split(), option, value)
+    named = "--manifest / --file" if command == "credentials-init" and option != "--env-file" else option
+    assert code == 2 and (f"{named} is empty - what a variable of the shell that is not set gives - and names no "
+                          "file. Nothing was done.") in said, said
+    assert sorted(path.name for path in mdb.path.parent.iterdir()) == listing and mdb.site.calls == []
+
+
+@pytest.mark.parametrize("args, line", [
+    (["options-save", "--file", ""], "--file is empty"), (["options-restore", "--file", ""], "--file is empty"),
+    (["options-restore", "--file", "."], ". is a folder, not an options file."),
+    (["options-save", "--file", "."], ". is a folder; --file names the options file to write."),
+    (["package-export", "--out", ""], "--out is empty"), (["builders-import", "--out", ""], "--out is empty"),
+    (["setup", "--out", ""], "--out is empty"),
+    (["deploy", "--all", "--registry", "r.example.com", "--host", "h.example.com", "--out", ""], "--out is empty"),
+])
+def test_an_empty_file_or_folder_of_the_other_commands_is_refused(monkeypatch, tmp_path, args, line):
+    """gate-21a N5, review-21a: `package-export --out ""` went on to the
+    sign-in, `options-restore --file ""` and `--file .` ended with a
+    PermissionError traceback (also at b4dc710), `options-save --file ""`
+    reached the sign-in."""
+    from types import SimpleNamespace
+    from pathlib import Path
+    import io
+    from rich.console import Console
+    from typer.testing import CliRunner
+    from mdb import cli
+    repository = Path(__file__).resolve().parents[3]
+    out = io.StringIO()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "console", Console(file=out, width=1000, force_terminal=False, emoji=False))
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=repository))
+    monkeypatch.setattr(cli, "_viya_session", lambda: pytest.fail("signed in"))
+    result = CliRunner().invoke(cli.app, args)
+    assert result.exception is None or isinstance(result.exception, SystemExit), result.exception
+    assert result.exit_code in (1, 2) and line in out.getvalue(), out.getvalue()
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_the_requests_of_apply_name_the_identity_whole(mdb):
     mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: 'Sales#EMEA'}\n"
                         "  - {type: group, id: '../x', state: absent}\n", encoding="utf-8")
