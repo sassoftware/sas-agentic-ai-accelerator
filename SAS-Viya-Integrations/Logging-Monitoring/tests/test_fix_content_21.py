@@ -4,7 +4,9 @@ made-up CAS library of log_parser_table_harness:
 - a run without a value of _log_append_table counted a table that CAS says is there and does not list as a table
   without rows, and replaced it;
 - an append that could not build its table left the table it had loaded from its saved file for the append loaded,
-  as a table of the session of the run.
+  as a table of the session of the run;
+- the proof that a request without a transaction_id can not be told from another one was made with files without
+  the lines of the collection script. The last test makes it with those lines.
 
 Run with: python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests
 """
@@ -29,6 +31,11 @@ def request(number, **more):
 def without_id(number, **more):
     """A request whose lines name no transaction: the lines of its transaction and the Response Data line are gone."""
     return [line for line in request(number, **more) if " - transaction_" not in line and "Response Data:" not in line]
+
+
+def collection(pod, collected, *blocks):
+    """The lines of one container as the collection script of the guide writes them: its line, then the lines."""
+    return [f"#=# llm-log-collection pod={pod} container=scr collected={collected} #=#"] + [line for block in blocks for line in block]
 
 
 class World:
@@ -179,6 +186,38 @@ def test_the_drop_is_written_for_the_table_of_the_run_and_only_behind_the_error_
 
 
 # ---------------------------------------------------------------------------
+# A request without a transaction_id, in files with the lines of the collection script
+# ---------------------------------------------------------------------------
+
+def test_with_the_collection_lines_the_table_still_can_not_tell_a_request_without_an_id_from_another(world):
+    """review-21a: with the lines of the collection script, the file of one container read twice and the file of
+    another container differ in that line, so the proof without them does not cover such files.
+
+    The program is given the file and the table. Container A wrote a request without a transaction ID; container B
+    got the same request in the same second. A table that holds the row of A and a table that holds the row of B
+    are the same row for row: no column of the table holds the pod or the container. File F is the lines of A
+    collected again. Onto the table of A, F has to add nothing - it is the same request -, onto the table of B it
+    has to add a row. The program is given the same file and the same table in both cases, so no rule of the
+    program decides it; a table that kept the pod and the container of a row would."""
+    file_a = collection("scr-pod-a", "2026-03-01T11:00:00Z", without_id(1))
+    file_b = collection("scr-pod-b", "2026-03-01T11:00:00Z", without_id(1))
+    assert as_log(file_a) != as_log(file_b)
+
+    table_of_a, table_of_b = world(), world()
+    table_of_a.run("1", file_a)
+    table_of_b.run("1", file_b)
+    assert table_of_a.state() == table_of_b.state() and len(table_of_a.rows()) == 1
+    assert not [column for column, _ in table_of_a.state()["columns"] if column in ("pod", "container")]
+    assert not [value for value in table_of_a.rows()[0].values() if isinstance(value, str) and "scr-pod" in value]
+
+    again = collection("scr-pod-a", "2026-03-01T12:00:00Z", without_id(1))
+    first, second = table_of_a.run("1", again), table_of_b.run("1", again)
+
+    # the same answer for both, as the program can give no other: the row is appended
+    assert first.notes == second.notes and table_of_a.state() == table_of_b.state() and len(table_of_a.rows()) == 2
+
+
+# ---------------------------------------------------------------------------
 # What the README of the folder says of these cases
 # ---------------------------------------------------------------------------
 
@@ -191,3 +230,7 @@ def test_the_readme_says_what_the_program_does_in_these_cases():
     assert "a run with `0` replaces such a table and writes no NOTE of the rows it held" in readme
     assert "one that the run loaded from its saved file for the append is dropped again, so that only its saved file is left, as before the run" in readme
     assert "stays loaded, as a table of the session of the run" not in readme
+    # the proof of a request without a transaction_id names the files it holds for, and what the table lacks
+    assert "In a file without the lines of the collection script, such a request and another request with the same lines are the same file line for line" in readme
+    assert "the table does not keep the pod and the container of a row" in readme
+    assert "A file that holds such a request, and a file that holds another request with the same lines, are the same file line for line" not in readme
