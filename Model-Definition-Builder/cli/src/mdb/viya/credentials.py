@@ -87,6 +87,7 @@ from __future__ import annotations
 
 import base64
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -283,6 +284,13 @@ class Identity:
             # a line that named it would end there, and YAML reads such a character as the end of a line too
             raise CredentialError("an identity id cannot hold a line break (a line feed, a carriage return, U+0085, "
                                   "U+2028 or another one)")
+        if any(unicodedata.category(c) in ("Cc", "Cf") for c in str(self.id)) or str(self.id) != str(self.id).strip():
+            # every line names an id as it is and unquoted, and a terminal shows neither a control character, nor
+            # a character of format (U+200B), nor a blank at an end: ' G1' was a second identity beside G1, and
+            # every line called it G1
+            raise CredentialError("an identity id cannot hold a control character (ESC, NUL, a tab or another "
+                                  "one) or an invisible character of format (U+200B or another one), nor a blank "
+                                  "at either end")
         if self.state not in STATES:
             raise CredentialError(
                 f"identity '{self.id}': state must be one of "

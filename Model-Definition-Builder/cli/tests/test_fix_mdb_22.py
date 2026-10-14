@@ -77,3 +77,29 @@ def test_retire_says_what_kept_it_from_sas_viya(retiring, monkeypatch, setting, 
     assert "is not configured" not in text, text
     line, = [line for line in text.splitlines() if line.startswith("The registered model's status was not updated: ")]
     assert said in line, line
+
+
+# ---- review[7]: an identity id that no line would show as it is -------------------------------
+@pytest.mark.parametrize("who", ["a\x1bb", "a\x00b", "a\tb", "a\x7fb", "a\x9bb", "a\u200bb", "G1\ufeff", " G1", "G1 ",
+                                 "G1\t", "\u00a0G1"])
+def test_an_id_with_a_control_character_or_a_blank_at_an_end_is_refused(mdb, who):
+    """review-22a: credentials-add group 'a\\x1bb' wrote the id and said
+    'group ab'; ' G1' was added as a second identity beside G1 and printed
+    as 'Added group  G1'."""
+    assert mdb("credentials-add", "group", "G1")[0] == 0
+    before = mdb.path.read_bytes()
+    for args in (("credentials-add", "group", who), ("credentials-remove", "group", who),
+                 ("credentials-apply", "--identity", who), ("credentials-report", "--identity", who)):
+        code, said = mdb(*args)
+        assert code == 2 and "an identity id cannot hold a control character" in said, (args, said)
+        assert said.count("\n") == 1, (args, said)
+    assert mdb.path.read_bytes() == before and mdb.site.calls == []
+    # and in a manifest written by hand
+    mdb.path.write_text(f"source: .env\nidentities:\n  - type: group\n    id: {json.dumps(who)}\n", encoding="utf-8")
+    code, said = mdb("credentials-report")
+    assert code == 2 and "an identity id cannot hold a control character" in said and mdb.site.calls == []
+
+
+@pytest.mark.parametrize("who", ["G1", "LLM Consumers", "ada.lovelace@example.com", "Jörg", "a-b_c"])
+def test_an_id_a_line_shows_as_it_is_is_taken(who):
+    assert credentials.Identity(type="group", id=who).id == who
