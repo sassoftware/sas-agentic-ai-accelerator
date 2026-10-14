@@ -284,9 +284,10 @@ def test_a_run_that_replaces_counts_before_it_writes(program):
     macro = program()[program().index("%macro _log_handle_output_table;"):program().index("%mend _log_handle_output_table;")]
 
     counted = ("%if &_log_table_mode. EQ REPLACE %then %do;\n            %_log_count_target;\n            %if &_log_target_rows. EQ -1 %then %do;\n"
-               "                %let _log_target_unloaded = 1;\n            %end;\n        %end;")
+               "                %let _log_target_unloaded = 1;\n            %end;\n            %if &_log_target_rows. EQ -3 %then %do;\n"
+               "                %let _log_cas_refused = 1;\n            %end;\n        %end;")
     assert macro.index(counted) < macro.index("table.dropTable") and macro.count("%let _log_target_unloaded = 1;") == 1
-    refused = macro[macro.index("%if &_log_target_unloaded. %then %do;"):macro.index("%else %if &_log_append_nothing. %then %do;")]
+    refused = macro[macro.index("%if &_log_target_unloaded. %then %do;"):macro.index("%else %if &_log_cas_refused. %then %do;")]
     said = [line.strip() for line in refused.split("\n") if "print (error)" in line or line.strip().startswith("%")]
     table = "&_log_target_table_lib..&_log_target_table_name."
     assert said == ["%if &_log_target_unloaded. %then %do;", "%if &_log_table_mode. EQ APPEND %then %do;",
@@ -893,7 +894,7 @@ def test_the_step_says_what_its_program_does_with_a_request_it_holds_already():
 
     walk(json.loads(step_definition()["ui"])["pages"])
 
-    assert texts["textChangelog"].startswith("* Version: 2.9 (14OCT2026)\n     - A request is known by its transaction_id, its model and the time of its request line")
+    assert "\n* Version: 2.9 (14OCT2026)\n     - A request is known by its transaction_id, its model and the time of its request line" in texts["textChangelog"]
     for control, said in (
             ("_log_info", "Where that row holds neither a response nor an error and the log holds the request with one of the two, the row of the log takes its place."),
             ("_log_info", "Where nothing is left to add, the table and its saved table are not written"),

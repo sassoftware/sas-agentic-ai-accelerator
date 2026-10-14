@@ -295,10 +295,13 @@ def test_what_appending_found_is_handed_on_in_two_macro_variables(program):
     program = program()
     lookup = " ".join(_append_lookup(program).split())
 
-    # 2 a promoted table, 1 a table of the session, and a saved file only counts where no table was found
-    assert ("if re.exists GE 2 then do; call symputx('_log_target_scope', '2'); end; "
-            "else if re.exists EQ 1 then do; call symputx('_log_target_scope', '1'); end; "
-            "else if savedFile NE '' then do; call symputx('_log_target_unloaded', '1'); end;") in lookup
+    # 2 a promoted table, 1 a table of the session, and a saved file only counts where no table was found. content-22:
+    # what tableExists answered is kept as a number, -1 where CAS refused the question
+    assert ("if targetExists GE 2 then do; call symputx('_log_target_scope', '2'); end; "
+            "else if targetExists EQ 1 then do; call symputx('_log_target_scope', '1'); end; "
+            "else if savedFile NE '' and targetExists EQ 0 then do; call symputx('_log_target_unloaded', '1'); end;") in lookup
+    assert lookup.count("targetExists = -1; table.tableExists result=re status=reAsked /") == 2
+    assert lookup.count("if reAsked.severity EQ 0 then targetExists = re.exists;") == 2 and lookup.count("re.exists") == 2
     # Both start at 0 in every run - the step can run twice in one SAS session - and are deleted at the end
     before_the_macro = program[:program.index("%macro _log_handle_output_table;")]
     assert "%let _log_target_scope = 0;\n%let _log_target_unloaded = 0;\n" in before_the_macro
@@ -311,11 +314,11 @@ def test_what_appending_found_is_handed_on_in_two_macro_variables(program):
                  "_log_kept_rows", "_log_took_rows", "_log_append_nothing"):
         assert f" {name}" in deleted, name
     # Replace mode never asks: the lookup runs in append mode only, and the setting itself is read in one place.
-    # The mode is asked for three times: for the lookup, for the ERROR line of a saved table that could not be
-    # loaded, and for the NOTE of a run that appended
+    # The mode is asked for four times: for the lookup, for the ERROR line of a saved table that could not be
+    # loaded, for the one of an action CAS refused (content-22), and for the NOTE of a run that appended
     macro = _output_macro(program)
     assert macro.index("%if &_log_table_mode. EQ APPEND %then %do;") < macro.index("call symputx('_log_target_scope'")
-    assert macro.count("%if &_log_table_mode. EQ APPEND %then %do;") == 3
+    assert macro.count("%if &_log_table_mode. EQ APPEND %then %do;") == 4
     assert "_log_append_table. %then" not in program and "&_log_append_table." not in program
 
 
@@ -324,7 +327,7 @@ def test_saved_table_that_can_not_be_loaded_is_not_overwritten(program):
     program = program()
     swap = _swap(program)
 
-    refused = swap[swap.index("%if &_log_target_unloaded. %then %do;"):swap.index("%else %if &_log_append_nothing. %then %do;")]
+    refused = swap[swap.index("%if &_log_target_unloaded. %then %do;"):swap.index("%else %if &_log_cas_refused. %then %do;")]
     # one line for a run that appends and one for a run that replaces, which counts the rows of the table first
     assert refused.count("print (error)") == 2
     assert "could not be loaded, nothing was appended and the saved file was left as it is." in refused
@@ -383,7 +386,7 @@ def test_existing_rows_and_new_rows_become_one_table_beside_the_existing_one(pro
     assert ('%else %do; stagedTable = "&_log_target_table_name._NEW"; table.copyTable / table = {casLib = \'CASUSER\', name = \'_TEMP_LLM_LOGS\'}, '
             'casOut = {casLib = "&_log_target_table_lib.", name = stagedTable, replace = True}; %end;') in staged
     # The existing table is only dropped once its replacement exists
-    exists, drop, rename = (swap.index(text) for text in ("if staged.exists GE 1 and stagedComplete then do;", "table.dropTable", "table.alterTable"))
+    exists, drop, rename = (swap.index(text) for text in ("if stagedComplete then do;", "table.dropTable", "table.alterTable"))
     assert exists < drop < rename
     # The existing table is dropped twice, what a DATA step that did not finish left behind once, and a table the run
     # loaded from its saved file for an append that did not finish once (test_fix_content_21)
@@ -564,7 +567,7 @@ def test_appending_to_a_table_whose_column_has_the_other_type_stops(monkeypatch,
     with pytest.raises(ValueError, match="Variable temperature has been defined as both numeric and character"):
         _appended_columns(code_file_program(), existing, uploaded)
     swap = _swap(code_file_program())
-    assert swap.index("if staged.exists GE 1 and stagedComplete then do;") < swap.index("table.dropTable")
+    assert swap.index("if stagedComplete then do;") < swap.index("table.dropTable")
 
 
 def test_replacing_writes_every_column(monkeypatch, tmp_path):
@@ -689,6 +692,10 @@ def test_a_run_without_the_setting_stops_at_a_table_that_holds_rows_in_front_of_
         "not set, so nothing was read and nothing was written - not the table and not its saved file. Set it in front of the program: "
         "%nrstr(%let _log_append_table = 1;) adds the requests of the log to the table, %nrstr(%let _log_append_table = 0;) replaces "
         "the table with them.;",
+        "%let _log_ready = 0;", "%end;",
+        "%if &_log_table_mode. EQ START and &_log_target_rows. EQ -3 %then %do;",
+        "%put ERROR: CAS refused an action that the count of the rows of the table &_log_target_table_lib..&_log_target_table_name. "
+        "needs and _log_append_table is not set, so nothing was read and nothing was written - not the table and not its saved file.;",
         "%let _log_ready = 0;", "%end;"]
     # in front of the Python, behind the session and the caslib of the table
     assert program.index("* Get the caslib name of the libname;") < program.index("call symputx('_casSessionUUID', sessresults[1]);") \
@@ -706,8 +713,12 @@ def test_the_rows_of_the_table_are_counted_in_memory_or_from_its_saved_file(prog
     of a table that is not in memory is loaded into CASUSER under a name of the program, counted and dropped again."""
     macro = " ".join(_count_macro(program()).split())
 
-    assert macro.index('table.tableExists result=found / casLib = "&_log_target_table_lib.", name = "&_log_target_table_name.";') \
-        < macro.index("if found.exists GE 1 then do;") < macro.index("table.fileInfo result=countedListing") < macro.index("table.loadTable")
+    assert macro.index('table.tableExists result=found status=foundAsked / casLib = "&_log_target_table_lib.", name = "&_log_target_table_name.";') \
+        < macro.index("if foundAsked.severity NE 0 then targetRows = -3; else if found.exists GE 1 then do;") \
+        < macro.index("table.fileInfo result=countedListing") < macro.index("table.loadTable")
+    # content-22: a listing of the saved files that CAS refused is -3, not a caslib without the file
+    assert ('table.fileInfo result=countedListing status=countedListed / casLib = "&_log_target_table_lib."; '
+            "if countedListed.severity NE 0 then targetRows = -3; if countedListed.severity EQ 0 then do;") in macro
     assert ('table.tableInfo result=foundTables / casLib = "&_log_target_table_lib.", name = "&_log_target_table_name.", quiet = True; '
             "if exists(foundTables, 'TableInfo') then targetRows = foundTables.TableInfo[1].Rows;") in macro
     # the name of the file as append mode looks for it: the exact name, otherwise the same name in another case
@@ -735,7 +746,8 @@ def test_a_run_that_replaces_says_how_many_rows_it_replaced(program):
 
     # counted while the rows are still there: in front of the swap, for a run that replaces only
     counted = ("%if &_log_table_mode. EQ REPLACE %then %do;\n            %_log_count_target;\n            %if &_log_target_rows. EQ -1 %then %do;\n"
-               "                %let _log_target_unloaded = 1;\n            %end;\n        %end;")
+               "                %let _log_target_unloaded = 1;\n            %end;\n            %if &_log_target_rows. EQ -3 %then %do;\n"
+               "                %let _log_cas_refused = 1;\n            %end;\n        %end;")
     assert macro.index("%if &_log_row_count. GT 0 %then %do;") < macro.index(counted) < macro.index("table.dropTable")
     assert program.count("%_log_count_target;") == 2
     # said behind the save, for a table that was written and held rows
@@ -812,7 +824,7 @@ def test_a_run_that_appends_leaves_out_the_requests_the_table_holds_already(prog
     swap = " ".join(_swap(program).split())
     refused = "%if &_log_compare_syserr. NE 0 and &_log_compare_syserr. NE 4 %then %do; stagedComplete = False; %end;"
     assert swap.index("stagedRows + removedRows NE existingRows + uploadedRows then stagedComplete = False;") < swap.index(refused) \
-        < swap.index("if staged.exists GE 1 and stagedComplete then do;")
+        < swap.index("if stagedComplete then do;")
     # the table of the IDs is dropped with the rows of the log
     last = program[program.index("%else %if &_log_row_count. EQ 0 %then %do;"):program.index("%mend _log_handle_output_table;")]
     assert re.search(r"table\.dropTable /\s+casLib = 'CASUSER',\s+table = '_TEMP_LLM_LOGS_SEEN',\s+quiet = True;", last)
@@ -1128,10 +1140,10 @@ def test_about_tab_names_every_column_and_what_the_program_does_with_it(monkeypa
 def test_about_tab_is_about_the_program_and_the_changelog_starts_with_this_version():
     texts = _about_tab()
 
-    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.9 (")
+    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.10 (")
     changelog = texts["textChangelog"]
-    assert (changelog.index("Version: 2.9") < changelog.index("Version: 2.8") < changelog.index("Version: 2.7") < changelog.index("Version: 2.6") < changelog.index("Version: 2.5") < changelog.index("Version: 2.4") < changelog.index("Version: 2.3") < changelog.index("Version: 2.2")
-            < changelog.index("Version: 2.1") < changelog.index("Version: 2.0"))
+    assert (changelog.index("Version: 2.10") < changelog.index("Version: 2.9") < changelog.index("Version: 2.8") < changelog.index("Version: 2.7") < changelog.index("Version: 2.6") < changelog.index("Version: 2.5") < changelog.index("Version: 2.4") < changelog.index("Version: 2.3") < changelog.index("Version: 2.2")
+            < changelog.index("Version: 2.1 (") < changelog.index("Version: 2.0"))
     # What a release has not run yet is said in the changelog of the release, not in the step
     for name, text in texts.items():
         assert "not run in sas" not in text.lower(), name
@@ -1207,7 +1219,7 @@ def test_readme_says_of_the_line_of_the_script_what_the_parser_does():
     assert "so is what stands in front of the first line of the script in a file that is appended to" in readme
     assert "so a NOTE counts the request lines that were read that way" in readme
     assert "Every request whose `failed` is missing is counted once" in readme
-    assert "versions 2.9 and 2.4 of the two steps" in readme and _about_tab()["textChangelog"].startswith("* Version: 2.9 (")
+    assert "versions 2.10 and 2.4 of the two steps" in readme and _about_tab()["textChangelog"].startswith("* Version: 2.10 (")
     assert "not run in sas" not in readme.lower()
 
 
@@ -3966,7 +3978,12 @@ def test_append_asks_the_data_step_for_its_result_before_the_existing_table_is_d
     assert "existingRows = -1; uploadedRows = -1; stagedRows = -1; removedRows = 0;" in swap
     # Only in append mode: a table that is copied has no DATA step to ask
     assert swap.index("%if &_log_target_scope. GE 1 %then %do; stagedTable = '_TEMP_LLM_LOGS_ALL';") < swap.index(refused) < swap.index("%else %do; stagedTable =")
-    assert swap.index("stagedComplete = True;") < swap.index(refused) < swap.index("if staged.exists GE 1 and stagedComplete then do;") < swap.index("table.dropTable")
+    assert swap.index("stagedComplete = True;") < swap.index(refused) < swap.index("if stagedComplete then do;") < swap.index("table.dropTable")
+    # content-22: the new table takes the place of the existing one only where CAS said that it is there
+    assert ("table.tableExists result=staged status=stagedAsked / casLib = \"&_log_target_table_lib.\", name = stagedTable; "
+            "/* A new table that CAS did not say is there takes the place of nothing, also where it refused the question */ "
+            "if stagedAsked.severity NE 0 then stagedComplete = False; else if staged.exists LT 1 then stagedComplete = False; "
+            "if stagedComplete then do;") in swap
 
 
 @BOTH_PROGRAMS

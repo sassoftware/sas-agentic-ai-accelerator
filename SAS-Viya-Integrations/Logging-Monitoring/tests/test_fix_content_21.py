@@ -178,10 +178,20 @@ def test_the_drop_is_written_for_the_table_of_the_run_and_only_behind_the_error_
             '                                name = "&_log_target_table_name.",\n'
             '                                quiet = True;\n'
             '                        %end;')
-    assert macro.count(drop) == 1 and macro.count("&_log_target_loaded.") == 1
+    assert macro.count(drop) == 1
     assert macro.index("print (error) \"The new table could not be created") < macro.index(drop) < macro.index("tableWritten = False;\n                end;")
-    # set where the run loaded the file, and only to a table of the session: a promoted table of that name is not the run's
-    assert "if savedFile NE '' and re.exists EQ 1 then do;\n                    call symputx('_log_target_loaded', '1');" in macro
+    # content-22: a run that wrote nothing as CAS refused an action drops it as well, at the end of the macro and only
+    # behind its own ERROR line - and nothing else reads the flag
+    refused = macro[macro.index("%else %if &_log_cas_refused. %then %do;"):macro.index("%else %if &_log_append_nothing. %then %do;")]
+    cleanup = macro[macro.rindex("%if &_log_cas_refused. %then %do;"):]
+    assert macro.count("&_log_target_loaded.") == 2 and cleanup.count("&_log_target_loaded.") == 1
+    assert "print (error) \"CAS refused an action" in refused and macro.index(refused) < macro.index(cleanup)
+    assert macro.count("&_log_cas_refused.") == 2
+    # set where the run loaded the file, and only to a table of the session: a promoted table of that name is not the run's.
+    # content-22: also where CAS refused the question behind a load that went through, so that the run drops what the load left
+    assert ("if (savedFile NE '' and targetExists EQ 1) or (fileLoaded EQ 1 and targetExists LT 0) then do;\n"
+            "                    call symputx('_log_target_loaded', '1');") in macro
+    assert macro.count("fileLoaded = 1;") == 1 and "if fileLoad.severity LT 2 then fileLoaded = 1;" in macro
     assert "%let _log_target_loaded = 0;\n" in program and " _log_target_loaded " in program[program.rindex("%symdel _log_ready"):]
 
 
