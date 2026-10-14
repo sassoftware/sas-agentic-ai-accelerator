@@ -1665,35 +1665,41 @@ run; quit;
             call symputx('_gap_rs_embed', embedding_model, 'L');
         run;
 
-        * -1 the caslib is not known to this session, 0 the table is not in memory, 1 or 2 it is;
+        * -1 the caslib is not known to this session or CAS refused to say whether it, the table or its ledger table is there, 0 the table is not in memory, 1 or 2 it is;
         %let _gap_runs_exists = 0;
         %let _gap_ledger_exists = 0;
         proc cas;
             runsExist = -1;
             ledgerExists = 0;
             if upcase("&_gap_rs_caslib.") EQ 'CASUSER' then runsExist = 0;
-            table.caslibInfo result=casLibraries;
-            do casLibrary over casLibraries.CASLibInfo;
-                if upcase(casLibrary.Name) EQ upcase("&_gap_rs_caslib.") then runsExist = 0;
+            table.caslibInfo result=casLibraries status=librariesListed;
+            if librariesListed.severity EQ 0 then do;
+                do casLibrary over casLibraries.CASLibInfo;
+                    if upcase(casLibrary.Name) EQ upcase("&_gap_rs_caslib.") then runsExist = 0;
+                end;
             end;
             if runsExist EQ 0 then do;
-                table.tableExists result=runTable /
+                table.tableExists result=runTable status=runAsked /
                     casLib = "&_gap_rs_caslib.",
                     name = "&_gap_rs_table.";
-                runsExist = runTable.exists;
+                if runAsked.severity NE 0 then runsExist = -1;
+                else runsExist = runTable.exists;
                 %if %length(&_gap_rs_ledger.) GT 0 %then %do;
-                    table.tableExists result=ledgerTable /
+                    table.tableExists result=ledgerTable status=ledgerAsked /
                         casLib = "&_gap_rs_caslib.",
                         name = "&_gap_rs_ledger.";
-                    ledgerExists = ledgerTable.exists;
+                    if ledgerAsked.severity NE 0 then ledgerExists = -1;
+                    else ledgerExists = ledgerTable.exists;
                 %end;
             end;
+            /* a ledger table CAS refused the question for is no ledger table that is not there */
+            if runsExist EQ 0 and ledgerExists LT 0 then runsExist = -1;
             call symputx('_gap_runs_exists', runsExist);
             call symputx('_gap_ledger_exists', ledgerExists);
         quit;
 
         %if &_gap_runs_exists. LT 0 %then %do;
-            %put NOTE: The CAS library &_gap_rs_caslib. of the run table &_gap_rs_table. is not available in this session, its runs are not in &_gap_out_rag_runs..;
+            %put NOTE: The CAS library &_gap_rs_caslib. of the run table &_gap_rs_table. is not available in this session, or CAS refused to say whether it, the table or its ledger table is there, so its runs are not in &_gap_out_rag_runs..;
         %end;
         %else %if &_gap_runs_exists. EQ 0 %then %do;
             %if &_gap_ledger_exists. GT 0 %then %do;

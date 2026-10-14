@@ -1107,7 +1107,7 @@ def test_a_run_table_is_only_read_when_it_is_in_memory():
     code = sas_code(code_file_program())
     stack = code[code.index("%macro _gap_stack_rag_runs;"):code.index("%mend _gap_stack_rag_runs;")]
 
-    assert "table.tableExists result=runTable /" in stack
+    assert "table.tableExists result=runTable status=runAsked /" in stack
     assert "%else %if &_gap_runs_exists. EQ 0 %then %do;" in stack
     assert "is not in memory, its runs are not in &_gap_out_rag_runs..;" in stack
     # nothing loads, saves, drops or changes a table of a setup
@@ -1237,8 +1237,14 @@ def test_the_about_tab_names_the_five_tables():
     for words in ("Prompt experiments", "Prompt optimizations", "RAG setups", "RAG runs", "Model catalog",
                   "modelID, runID, model", "modelID, optimizationId", "modelID, run_id"):
         assert words in about
-    assert by_id["textChangelog"]["text"].startswith("* Version: 2.4 (13OCT2026)\n      - The column names of a run table and of a "
-                                                    "ledger are handed to the INDEXW function through %SUPERQ, as one text\n")
+    # fix-content-22: version 2.5, a setup where CAS refused a question about its tables
+    assert by_id["textChangelog"]["text"].startswith("* Version: 2.5 (14OCT2026)\n      - A setup where CAS refused to say whether its CAS "
+                                                    "library, its run table or its ledger is there is left out with the NOTE of a CAS "
+                                                    "library that is not available, which names the refusal as well\n")
+    assert ("\n* Version: 2.4 (13OCT2026)\n      - The column names of a run table and of a ledger are handed to the INDEXW function "
+            "through %SUPERQ, as one text\n") in by_id["textChangelog"]["text"]
+    assert ("A setup with neither table in memory is left out with a NOTE, and so is a setup where CAS refused to say whether its CAS "
+            "library, its run table or its ledger is there;") in about
     assert "\n* Version: 2.3 (12OCT2026)" in by_id["textChangelog"]["text"]
     assert "\n* Version: 2.2 (12OCT2026)" in by_id["textChangelog"]["text"]
     assert "\n* Version: 2.1 (12OCT2026)" in by_id["textChangelog"]["text"] and "* Version: 2.0 (11OCT2026)" in by_id["textChangelog"]["text"]
@@ -1779,8 +1785,8 @@ def test_a_setup_without_a_run_table_gives_the_runs_its_ledger_names(monkeypatch
     # both tables are looked for, the ledger only where the setup names one
     assert "call symputx('_gap_rs_ledger', ledger_table, 'L');" in stack and "call symputx('_gap_rs_embed', embedding_model, 'L');" in stack
     looked = " ".join(stack[stack.index("proc cas;"):stack.index("quit;", stack.index("proc cas;"))].split())
-    assert ('%if %length(&_gap_rs_ledger.) GT 0 %then %do; table.tableExists result=ledgerTable / casLib = "&_gap_rs_caslib.", '
-            'name = "&_gap_rs_ledger."; ledgerExists = ledgerTable.exists; %end;') in looked
+    assert ('%if %length(&_gap_rs_ledger.) GT 0 %then %do; table.tableExists result=ledgerTable status=ledgerAsked / casLib = "&_gap_rs_caslib.", '
+            'name = "&_gap_rs_ledger."; if ledgerAsked.severity NE 0 then ledgerExists = -1; else ledgerExists = ledgerTable.exists; %end;') in looked
     assert "call symputx('_gap_ledger_exists', ledgerExists);" in looked
     # the ledger is read only where the run table is not in memory
     branch = " ".join(stack[stack.index("%else %if &_gap_runs_exists. EQ 0 %then %do;"):stack.index("%else %do;\n            libname _gaprn")].split())
