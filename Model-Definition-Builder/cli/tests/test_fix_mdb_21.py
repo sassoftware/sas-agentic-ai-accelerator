@@ -277,6 +277,25 @@ def test_the_report_says_whom_a_group_credential_reaches(mdb):
     assert said.count(GROUP_REACH) == 1
 
 
+@pytest.mark.parametrize("order", [("", "state: absent, "), ("state: absent, ", "")])
+def test_apply_and_report_refuse_an_identity_listed_twice(mdb, order):
+    """review-21a case 1: one identity listed present and absent was
+    written and deleted (or the other way round) in one run that ended
+    `Done.`, and the report told the admin to run apply again, which never
+    converges. credentials-add and -remove refused such a manifest."""
+    first, second = order
+    mdb.path.write_text(f"source: .env\nidentities:\n  - {{{first}type: group, id: LLMConsumers}}\n"
+                        f"  - {{{second}type: group, id: LLMConsumers}}\n  - {{type: user, id: ada}}\n"
+                        "  - {type: user, id: ada}\n  - {type: user, id: bob}\n", encoding="utf-8")
+    for args in (("credentials-apply",), ("credentials-apply", "--dry-run"), ("credentials-report",)):
+        code, said = mdb(*args)
+        assert code == 2, args
+        assert ("credentials.yaml: group 'LLMConsumers' is listed 2 times; user 'ada' is listed 2 times - make "
+                "each one entry by hand first. Nothing was asked of SAS Viya.") in said
+    assert mdb.site.calls == []
+    assert mdb("credentials-add", "group", "LLMConsumers")[0] == 2
+
+
 def test_the_requests_of_apply_name_the_identity_whole(mdb):
     mdb.path.write_text("source: .env\nidentities:\n  - {type: group, id: 'Sales#EMEA'}\n"
                         "  - {type: group, id: '../x', state: absent}\n", encoding="utf-8")

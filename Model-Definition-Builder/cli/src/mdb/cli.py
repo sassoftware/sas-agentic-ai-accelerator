@@ -3702,12 +3702,23 @@ def _credential_manifest(manifest: Optional[str], domain: str,
                 "with [bold]--identity[/bold].")
             raise typer.Exit(2)
         try:
-            return Manifest.load(path)
+            loaded = Manifest.load(path)
         except CredentialError as exc:
             # A manifest the loader refuses - a wrong type, a `state` that is
             # neither present nor absent - ends every command the same way.
             console.print(f"[red]{_plain(exc)}[/red]")
             raise typer.Exit(2)
+        # One identity listed twice - present and absent - would be written and deleted in one run, in file
+        # order; credentials-add and -remove refuse such a manifest too.
+        listed: dict = {}
+        for who in loaded.identities:
+            listed[(who.type, who.id)] = listed.get((who.type, who.id), 0) + 1
+        twice = [f"{kind} '{who}' is listed {count} times" for (kind, who), count in listed.items() if count > 1]
+        if twice:
+            console.print(f"{path}: {'; '.join(twice)} - make each one entry by hand first. Nothing was asked of "
+                          "SAS Viya.", style="red", markup=False, highlight=False, soft_wrap=True)
+            raise typer.Exit(2)
+        return loaded
     if manifest:
         console.print("[yellow]--identity was given, so --manifest is "
                       "ignored.[/yellow]")
