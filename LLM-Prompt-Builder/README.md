@@ -413,6 +413,8 @@ src/
     cas-api.ts              CAS servers, caslibs and tables
   ui/                       stepper (the step row of both builders), kind
                             selector (the "What are you building?" cards),
+                            selection lock (what is open cannot be changed
+                            while a write to SAS Model Manager is out),
                             instruction card, accordion, combobox, modals, doc
                             sections, list filter, markdown (marked +
                             DOMPurify), option controls, toasts, HTML escaping,
@@ -442,7 +444,9 @@ and Playwright suites that drive the built bundle in the system Edge browser:
 the Prompt Builder (`verify.js`), decision templates (`verify-decision.js`), the
 RAG kind (`verify-rag.js`), a new item of each of the three kinds, which has to
 start as on a freshly loaded page whatever was open before or is still running
-for it (`verify-new-item.js`), the options group with its checkboxes
+for it (`verify-new-item.js`), the lock on what is open while a write to SAS
+Model Manager is out (`verify-write-lock.js`), the options group with its
+checkboxes
 (`verify-options.js`), the locale files (`verify-locales.js`) and the built
 page itself (`verify-tokens.js`: no text SAS Job Execution would substitute as
 a `$token$` - the build removes the one marker comment of the bundler that

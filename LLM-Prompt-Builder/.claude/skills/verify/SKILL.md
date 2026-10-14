@@ -37,7 +37,8 @@ The committed `dist/index.html` must equal a fresh build, or the
 | `verify.js` | The Prompt Builder with LLM prompts: steps, variables and the names they cannot have, runs, failing models, a run in flight while another prompt-test is opened, judging, optimization, manifest (both variants run in Python; saved runs the manifest refuses), the deletion flows with the decision usage note, a first request answered with 449, a prompt-test created, refused and found again; the page with decision templates off and with RAG on; TLS verification in the manifested model with the option ticked and unticked, and a manifest whose score code or tag update SAS Model Manager refuses, or one of whose requests throws (before the score code, after it, and the upload of the score code itself - also one the service stored); the save of the experiments that throws or is refused, at a click on Manifest, at Save Experiments itself and before an optimization (which is then not launched); a double click on Manifest; the Judge button after a run, a judgment that comes back during one (also one nobody answers) and two judgments out at once; the create dialogs, what they say inside, that they send nothing without a name or with a name that shows nothing (the braille pattern blank and control characters among them) while one visible character makes a name, that they create what stood in them at the click, with the fields locked meanwhile, a repository lookup that throws or is refused, an error nobody expected, and a creation started by keyboard (where the focus is, what Escape does, that the dialog cannot be closed while the creation is out); the links that leave the page where no tab can open, where one can, and with a real click - and what the opened tab is told (a Referer on SAS Viya, none on another site); the placeholder entries of the two pickers; an entry of a picker chosen while another is still loading | mock, Python |
 | `verify-decision.js` | Decision templates: designer, lint, model cards, runs, evaluation (and the kind change it blocks), manifest (saved runs it refuses; TLS verification with the option ticked and unticked; a score code or a tag update that is refused; a request that throws before or after the score code, or is the upload of the score code; a save that throws or is refused before the manifest; a double click), the kinds' own project lists, a decision project without a name or with one that shows nothing, one whose repository cannot be read, one created by keyboard and refused, and the name it is created under, both delete dialogs; the page with decision templates off | mock, Python |
 | `verify-rag.js` | The RAG kind: offered only when switched on, the two flows side by side (keyboard included), a setup created, saved (every variable of the retrieval model with its length), manifested (the lengths written again, onto a setup that held 99 for the two context outputs), ingested, asked a question and deleted; what the delete dialogs say about decisions; what a delete acts on; a withheld vector database; failures; the gates; a RAG-only page; what a manifest says beside its button (a stage that fails, TLS verification off, a retrieval template from before that option, a score code or a tag update that is refused, a score code whose upload gets no usable answer); what the create dialogs say inside, a name that is empty, blanks only or without a visible character, names that have one, a double click on Create, the fields that cannot be edited while a creation is out, a creation started by keyboard (focus, Escape, no closing while it is out), a repository lookup that is cut off, and a setup that was created although the listing or the reading after it failed; the one embedding endpoint of job, Studio flow and retrieval model, with and without the SCR endpoint option | mock, Python |
-| `verify-new-item.js` | A new item starts as a freshly loaded page starts one (issue #47), for all three kinds: a new prompt-test, decision template or RAG setup is created after an existing one with a saved configuration, right after another new one that was filled by hand in every later step, in another project, after an item of the other kind and after an optimization - and each time the whole page is compared with a new item on a fresh page. With no item open - another project, another kind, the placeholder entry of a picker (which the two RAG pickers must not send to SAS Model Manager as an id), a deleted prompt-test - the page is what a fresh page shows with a project chosen and nothing else. What is still running when an item is left draws nothing on the item opened next: an evaluation over a CAS table (which asks no further case), an optimization job (shown on the prompt-test it runs for, also on the way back to it; any other one says that an optimization is running), a retrieval test, an ingestion, a setup whose stored configuration answers late. The other way round: an existing item opened again shows what it showed the first time, a create dialog that is closed changes nothing, what was typed survives a walk through the steps, and what was typed with no prompt-test open is kept for the prompt-test created for it - also when two prompt-tests are chosen one right after the other. The roads that fill an item by hand have to change every field of the later steps between them | mock |
+| `verify-new-item.js` | A new item starts as a freshly loaded page starts one (issue #47), for all three kinds: a new prompt-test, decision template or RAG setup is created after an existing one with a saved configuration, right after another new one that was filled by hand in every later step, in another project, after an item of the other kind and after an optimization - and each time the whole page is compared with a new item on a fresh page. With no item open - another project, another kind, the placeholder entry of a picker (which the two RAG pickers must not send to SAS Model Manager as an id), a deleted prompt-test - the page is what a fresh page shows with a project chosen and nothing else. What is still running when an item is left draws nothing on the item opened next: an evaluation over a CAS table (which asks no further case), an optimization job (shown on the prompt-test it runs for, also on the way back to it; any other one says that an optimization is running), a retrieval test, an ingestion, a setup whose stored configuration answers late, a stored enrichment of two prompts whose first prompt is read back late. An ingestion is shown again on the setup it was launched for when that setup is opened again - still running, with Launch off, or ended meanwhile - and not a second time once it was seen to end. The other way round: an existing item opened again shows what it showed the first time, a create dialog that is closed changes nothing, what was typed survives a walk through the steps, and what was typed with no prompt-test open is kept for the prompt-test created for it - also when two prompt-tests are chosen one right after the other. The roads that fill an item by hand have to change every field of the later steps between them; the LLM whose key the default credential domain does not hold is ticked on a page with `credentialDomain=all-keys` | mock |
+| `verify-write-lock.js` | While a write to SAS Model Manager is out, what is open cannot be changed. Every write path is started with its requests answered late, and the page is looked at until the write has ended: the kind cards, the two lists with their search fields, Create and Delete cannot be used at any of those moments; a person who reaches for another item or another kind meanwhile does not get there; the requests go to the item that is open and to no other (a tracker with its runs, both files of a setup); the note of the write stands on that item; and afterwards the selection can be used again, and the same attempt opens the other item. The paths: Save Experiments (also with an upload that fails), Save documentation, Manifest for a prompt template and for a decision template, Delete prompt-test, Delete project, the delete of an optimization run, Compare targets and Run optimization (which save first); in the RAG Builder Save setup (also one SAS Model Manager refuses with a status, which must read as failed), Save documentation, Manifest setup, Delete setup and Delete project | mock |
 | `verify-options.js` | The Options contract: a stand-in for Visual Analytics embeds the app in an iframe, checks the one options group (the checkbox `sslVerify` included: posted, mirrored, read strictly, without effect on the page) and loads every combination of the three switches, asserting what is built and what is requested | mock |
 | `verify-locales.js` | `en.json` against `de.json` and both against the sources (keys, placeholders, unused keys, formal address in German) | nothing |
 | `verify-tokens.js` | The built `dist/index.html` (or `VERIFY_DIST`): every inline script is stored base64-encoded, and no text outside a comment has the shape `$name$`, which SAS Job Execution substitutes as a token before it serves the page | nothing |
@@ -46,27 +47,34 @@ The browser suites stop at their first failed check, so a run without the
 `===== SUMMARY =====` block did not run the checks after it. They repeat every
 line in that summary: count `OK` lines above it, or read the last line
 (`N checks passed, M failed`). `verify-options.js` goes on after a failure and
-writes a `NOTE` line when it skips the rest of a scenario. `verify-new-item.js`
+writes a `NOTE` line when it skips the rest of a scenario. `verify-write-lock.js`
+goes on after a check that failed and after a road that stopped (a `FAIL`
+line that ends in *the road stopped*). `verify-new-item.js`
 goes on after a comparison that failed and prints, indented under its `FAIL`
 line, every field that differs with both values (`field <step> #<id>: "got"
 (expected "...")`, `list ...` for the entries of a select, `text of step ...`,
-`hidden in step ...` for text in what is not shown, `state ...`): one run
-lists what each road leaves behind. It reads a builder as a whole - every
-input, text area and select of every step, shown or not, the entries of every
-list, the text a person can read in each later step, the text a step holds in
-what is hidden, what is hidden, disabled or folded open, and the row of
-steps - so a field that is added to a later step is compared without a line
-of its own in the suite. A comparison only sees a field that a road has
-changed, which is why one check lists the fields that neither of the two
+`hidden in step ...` for text in what is not shown, `state ...`, `marks ...`):
+one run lists what each road leaves behind. It reads a builder as a whole -
+every input, text area and select of every step, shown or not, the entries of
+every list, the text a person can read in each later step, the text a step
+holds in what is hidden, what is hidden, disabled or folded open (also inside
+a part that is hidden itself), what every element of a later step carries
+beside its text (its classes, the styles set on it apart from its display,
+its other attributes - not the ones that name another element or the item),
+and the row of steps - so a field that is added to a later step is compared
+without a line of its own in the suite. A comparison only sees a field that a
+road has changed, which is why one check lists the fields that none of the
 roads filling an item by hand changes: a new field has to be filled in
 `fillPromptTemplate`, `fillDecisionTemplate` or `fillRagSetup`, or that check
-names it.
+names it. (The LLM `contrarian_judge` is the exception the check knows: its
+tick box is disabled in the default credential domain, and the road on the
+page with `credentialDomain=all-keys` is the one that changes it.)
 `verify-tokens.js` writes a `NOTE` line for a `$name$` inside a comment. The built page holds no
 `$` at all: the one such comment, the marker `/*$vite$:1*/` the bundler leaves
 at the end of the stylesheet, is removed by `vite.config.ts`. A `NOTE` line
 therefore means that something new has brought a token into the page.
 
-The four browser suites that drive the page end with a look at
+The five browser suites that drive the page end with a look at
 `GET /__direct` of the mock: no request of the browser to a SAS Viya service
 may have gone around the app's HTTP client (`viyaFetch`), which is what
 handles HTTP 449 and the CSRF token. The calls to the model containers
@@ -153,6 +161,7 @@ Example for a second instance: `MOCK_PORT=4174 node mock-server.cjs <dist>` and
 | `POST /__norag`, `POST /__rag` | Hide the fixture project `rag-proj`; restore it and clear the RAG failures |
 | `POST /__ragfail` `{ projects, run, documents, retrieval, jobDefinition }` | `projects: <status>` makes the RAG project listing answer that status; `run: '<reason>'` makes the next ingestion log `Ingestion failed: <reason>`; `documents: <n>` makes the next ingestion do its work and count that many failed documents in its summary and its ledger; `retrieval: '<reason>'` makes the next probe log `FAILED <reason>`; `jobDefinition: <status>` makes the next request that writes a job definition (POST or PUT) answer that status, once - a manifest that stops half way; an empty body clears all |
 | `GET /__ragstate` | What the RAG side created: `projects, models, contents, folders, jobDefinitions, flows, jobs, ledgers` |
+| `POST /__ragenrich` `{ on }` | Stores `rag-setup-1` as a setup that enriches its chunks with a chain of two prompts (both call `model-parse`; the second pins version `ver-1`, runs two calls at a time and stores the column `topic`). The Builder reads the prompts of a stored chain back one after the other, so the second step is what there is to draw after the first one was read. `on: false` stores the plain fixture again; either replaces what a suite saved on `rag-setup-1` meanwhile |
 | `POST /__ragtemplate` `{ tls }` | Which `retrieve_context.py` the content root holds. By default the current one, whose MANIFEST block has `SSL_VERIFY = True` (the line is added when the file of the repository lacks it); `tls: false` serves the template of a content root deployed before the option for TLS verification existed, without that line; an empty body serves the current one again |
 | `GET /__direct` | The requests a browser made to a SAS Viya service without `X-Requested-With: XMLHttpRequest`, i.e. around the app's HTTP client. Not listed: the page itself, `/scr/...`, and the plain `GET /<service>/` that establishes a session. `POST /__reset` does not clear it |
 
@@ -247,7 +256,7 @@ Prompt side:
   (204), `POST .../contents?...` (201 JSON, multipart body)
 - Optimize flow: `GET /folders/folders/@item?path=...` → job-definition URI,
   `POST /jobExecution/jobs` + `GET /jobExecution/jobs/{id}` (the mock job
-  completes on the second poll), the job log at `/files/files/joblog-1/content`
+  completes on the fourth poll), the job log at `/files/files/joblog-1/content`
   with `NOTE: Python-Subprocess - ...` milestone lines, and — after completion —
   a `Prompt-Optimization-Tracker.json` entry on the source model
 - Decision models: the `Decision Model Project` lookup → `dec-proj` with
@@ -310,6 +319,22 @@ RAG side (stateful; the block sits before the generic routes):
   Builder is built for the first time `#app-area-prompt` is `inert` (and
   `aria-busy`), so a click there does nothing until the flow has changed or
   the build has failed.
+- While a write to SAS Model Manager is out, the fieldset that holds the
+  controls of a Setup card is disabled: `#LPB-selection` (kind cards, both
+  filters and lists, the documentation section, Create and Delete) and
+  `#app-obj-RGB-selection` (kind cards, both filters and lists, Create and
+  Delete; the documentation card of the RAG Builder is not in it). The
+  controls keep their own `disabled` property, so ask with
+  `element.matches(':disabled')` or `page.isDisabled`, not with
+  `element.disabled`. Playwright waits for a control to be enabled:
+  `page.selectOption` and `page.click` on one of them go through once the
+  write has ended, so a check that has to act DURING a write gives its
+  action a short timeout and expects it to run out (`pickAsAPerson` in
+  `verify-write-lock.js`). The lock starts at the click that starts the
+  write - for a delete, the delete of an optimization run and Compare
+  targets, when their dialog has closed - and ends with the write, also
+  when it failed. A creation does not take it: its dialog lies over the
+  page.
 - A delete dialog is about what was selected at the click. The RAG Builder
   lists the setups of a project again for Delete project, and opens no dialog
   when another setup or project was chosen while the usage was asked - a
@@ -471,15 +496,26 @@ RAG side (stateful; the block sits before the generic routes):
 - `verify.js` writes its screenshots (`shot-*.png`) into the working directory.
 - An item that is left takes with it what is still running for it. A check of
   that needs the answer to arrive AFTER the next item is on the page, so it
-  holds the answer back with a Playwright route (`await sleep(3000)` before
+  holds the answer back with a Playwright route (a `sleep` before
   `route.continue()`) and reads the page only once the request was answered:
   the calls of an evaluation (`**/scr/**`; `evaluate-run` is disabled until
   they are in), the polls of an ingestion (`**/jobExecution/jobs/ragrun-*`,
   the second one finds the job completed), the reading of a setup
-  (`**/modelRepository/models/<id>/contents**`). A retrieval test takes
+  (`**/modelRepository/models/<id>/contents**`), the versions of an
+  enrichment prompt (`**/modelRepository/models/model-parse/modelVersions**`,
+  after `POST /__ragenrich`). A retrieval test takes
   three seconds by itself (the page waits that long between two polls) and
   has ended when its job definition was deleted. A held request is not in
   the log of the mock yet, so `atRest` does not wait for it.
+- An ingestion that this page launched is shown again when its setup is
+  opened again, for as long as the page stays loaded (the page keeps the id
+  of the job; nothing is stored with the setup). The mock finds a job
+  completed on its second poll, so a check that needs it running across a
+  change of setup answers the polls itself (`keepRunning` in
+  `verify-new-item.js`: a route on `**/jobExecution/jobs/ragrun-*` that
+  fulfils with the mock's own "running" answer), and one that needs it
+  ended while another setup is open asks the mock for the job twice from
+  Node. A run that is picked up after it has ended shows no "took ...".
 - The first optimization job of a mock runs for four polls (twenty seconds).
   Its entry in the optimization tracker stands from then on, and every later
   job is found finished on its first poll, five seconds after its launch: a
