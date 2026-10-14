@@ -558,7 +558,7 @@ def test_the_program_tells_a_reference_by_the_type_of_the_member():
     type says reference - in any case of the letters."""
     block = harness.python_block()
 
-    assert ("kind = REFERENCE if text_of(item.get('type')).lower() == REFERENCE else "
+    assert ("kind = REFERENCE if str(item.get('type') or 'child').lower() == REFERENCE else "
             "str(item.get('contentType') or item.get('type') or '')") in block
     assert block.count("REFERENCE = 'reference'") == 1
     mdb = (REPOSITORY / "Model-Definition-Builder" / "cli" / "src" / "mdb" / "viya" / "content.py").read_text(encoding="utf-8")

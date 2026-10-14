@@ -227,9 +227,10 @@ def test_the_order_of_the_listing_changes_no_line(monkeypatch, tmp_path, kind, h
 
 @pytest.mark.parametrize("kind", WRITTEN + ("report",))
 def test_the_kind_of_a_member_is_the_one_its_uri_says_for_the_page_as_for_mdb(monkeypatch, tmp_path, mdb_content, kind):
-    """mdb tells the kind of a member by what its uri starts with and reads no contentType. A member whose
-    contentType names another kind than its uri - SAS Viya handed out none in any pass - is judged by its uri on the
-    page as well: the object of the entry with another contentType is the entry, and an object whose uri is of
+    """mdb tells the kind of a member by what its uri starts with and reads no contentType. The page told an object
+    by its contentType until this round, and in the passes of 2026-10-13 the two found the same entries in the same
+    folders. A member whose contentType names another kind than its uri is made up here: it is judged by its uri on
+    the page as well. The object of the entry with another contentType is the entry, and an object whose uri is of
     another kind is not, whatever its contentType says."""
     path = ENTRY[kind]
     site = Site()
@@ -244,6 +245,29 @@ def test_the_kind_of_a_member_is_the_one_its_uri_says_for_the_page_as_for_mdb(mo
     entry = page_lines(monkeypatch, tmp_path, other)[f"{path} ({kind})"]
     assert (status, note) in (("created", ""), ("not deployed", NOT_ON_THE_SITE)) and entry["state"] == MISSING
     assert entry["found"] in (f"the object of that name is a {OTHER_KIND[kind]}", "a file of that name is there, and no registered step")
+
+
+@pytest.mark.parametrize("written, reference", [("reference", True), ("REFERENCE", True), ("Reference", True), ("child", False), (None, False),
+                                                ("", False), (" reference ", False), ("referenced", False)],
+                         ids=lambda value: repr(value))
+def test_a_member_is_a_reference_for_the_page_where_it_is_one_for_mdb(monkeypatch, tmp_path, mdb_content, written, reference):
+    """mdb: a member is a child unless its type says reference, in any case of the letters - and as it is written,
+    blanks and all. The page reads the type with the same expression. A file beside a member of its name and kind
+    is failed by both where that member is a reference, and is one of two files where it is none."""
+    path, kind = ENTRY["file"], "file"
+    site = Site()
+    site.refer(path, kind)
+    member = [found for found in site.folders[site.folder_ids["RAG/rag_core/adapters"]] if found["name"] == "base.py"][1]
+    if written is None:
+        del member["type"]
+    else:
+        member["type"] = written
+    assert mdb_content.is_reference(member) is reference
+
+    status, note = mdb_outcomes(monkeypatch, mdb_content, site)[(path, kind)]
+    entry = page_lines(monkeypatch, tmp_path, site)[f"{path} ({kind})"]
+    assert status == "FAILED" and ("a reference of that name" in note) is reference and ("2 files of that name" in note) is not reference
+    assert (entry["state"], entry["found"]) == (MISSING, REFERENCE_BESIDE if reference else several(2))
 
 
 def test_an_entry_without_a_kind_mdb_knows_is_any_object_of_its_name(monkeypatch, tmp_path):

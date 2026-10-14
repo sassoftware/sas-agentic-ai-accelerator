@@ -442,7 +442,7 @@ def members_of(get, folder_uri):
     for item in items:
         name = item.get('name')
         if isinstance(name, str):
-            kind = REFERENCE if text_of(item.get('type')).lower() == REFERENCE else str(item.get('contentType') or item.get('type') or '')
+            kind = REFERENCE if str(item.get('type') or 'child').lower() == REFERENCE else str(item.get('contentType') or item.get('type') or '')
             found.setdefault(name, []).append((kind, str(item.get('uri') or '')))
     return status, found
 

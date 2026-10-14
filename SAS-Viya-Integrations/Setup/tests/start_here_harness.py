@@ -185,9 +185,9 @@ class Site:
 
     def twin(self, path, kind, first=False):
         """Puts one more object of that name and kind into the folder, beside what is there: a child with an id of
-        its own. A second folder has members of its own - one file - and is no folder of a path. Whether SAS Viya
-        lets a folder hold two such objects was not measured for every kind; mdb content-deploy has a line for it.
-        Returns its uri."""
+        its own. A second folder has members of its own - one file - and is no folder of a path. Two objects of
+        one name and kind in one folder were staged in no pass on SAS Viya; mdb content-deploy has a line for
+        them. Returns its uri."""
         folder, _, name = path.rpartition("/")
         identifier = self._id("tttttttt")
         if kind == "folder":
