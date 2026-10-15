@@ -9,7 +9,7 @@ import type { PromptBuilderConfig, InterfaceText, PromptBuilderText } from '../t
 import type { DropdownOption } from '../types/models';
 import type { DependentDecision } from '../types/relationships';
 import { getAppState } from '../state/app-state';
-import { readStoredJson, StoredFileUnusable, TRACKER_META_KEYS } from '../api/stored-json';
+import { isReservedModelName, readStoredJson, StoredFileUnusable, TRACKER_META_KEYS } from '../api/stored-json';
 import { UnansweredWrite, ViyaRefused } from '../api/http-client';
 import {
   getModelProjects,
@@ -2012,7 +2012,7 @@ export async function buildPromptBuilder(
           checkbox.disabled = true;
           label.classList.add('text-muted');
           const note = document.createElement('small');
-          note.classList.add('text-muted', 'd-block', model.optionsUnusable ? 'pb-options-note' : 'pb-credential-note');
+          note.classList.add('text-muted', 'd-block', llmNotUsableClass(model));
           note.innerText = notUsable;
           modelDiv.title = note.innerText;
           modelDiv.appendChild(note);
@@ -2085,12 +2085,14 @@ export async function buildPromptBuilder(
     }
     /**
      * Why a model cannot be used, or null: its options.json holds no options
-     * this page can read, or its provider has no key for this user (the note
-     * names the missing entry and the domain). Such a model is shown, and
-     * offered nowhere.
+     * this page can read, a run cannot keep its result under its name
+     * (isReservedModelName), or its provider has no key for this user (the
+     * note names the missing entry and the domain). Such a model is shown,
+     * and offered nowhere.
      */
     function llmNotUsableNote(llm: AvailableLLM): string | null {
       if (llm.optionsUnusable) return `${promptBuilderInterfaceText?.promptBuilderModelOptionsUnusable}`;
+      if (isReservedModelName(llm.name)) return `${promptBuilderInterfaceText?.promptBuilderModelNameReserved}`.replace('{name}', () => llm.name);
       const missingProvider = llmMissingCredentialDomain(llm);
       if (!missingProvider) return null;
       return String(
@@ -2099,6 +2101,10 @@ export async function buildPromptBuilder(
       )
         .replace('{provider}', missingProvider)
         .replace('{domain}', credentialDomain);
+    }
+    /** The class of the note llmNotUsableNote gives, by its reason. */
+    function llmNotUsableClass(llm: AvailableLLM): string {
+      return llm.optionsUnusable ? 'pb-options-note' : isReservedModelName(llm.name) ? 'pb-name-note' : 'pb-credential-note';
     }
     // Cost/governance attributes of a run's LLM (per-token / per-second prices,
     // provider, family, endpoint), resolved by model name. Fetched LAZILY — only
@@ -2251,7 +2257,7 @@ export async function buildPromptBuilder(
         checkbox.disabled = true;
         label.classList.add('text-muted');
         const note = document.createElement('small');
-        note.classList.add('text-muted', 'd-block', model.optionsUnusable ? 'pb-options-note' : 'pb-credential-note');
+        note.classList.add('text-muted', 'd-block', llmNotUsableClass(model));
         note.innerText = notUsable;
         card.appendChild(note);
       }
@@ -4124,7 +4130,9 @@ export async function buildPromptBuilder(
         .forEach((modelName) => {
           const modelData = trackerEntry[modelName] as ModelExperimentData;
           if (modelData) {
-            modelData.judge_rank = ranks[modelName] ?? null;
+            // Its own field only: a model the council did not rank (no
+            // answer) named like a field every object inherits has no rank.
+            modelData.judge_rank = Object.prototype.hasOwnProperty.call(ranks, modelName) ? ranks[modelName] : null;
             modelData.judge_best = best != null && modelName === best;
           }
         });

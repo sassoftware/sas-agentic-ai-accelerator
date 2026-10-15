@@ -292,12 +292,23 @@ export const STORED_SHAPES = { PET_ROW, OPTIMIZATION_ENTRY, RAG_SETUP } as const
 export const TRACKER_META_KEYS = ['systemPrompt', 'userPrompt', 'author', 'variables', 'manifest', 'judge', 'mode', 'expected'];
 
 /**
+ * Whether a run as the page holds it cannot keep the result of a model of
+ * this name: a field of the run has the name, or it is `__proto__`, which
+ * sets the prototype of the run instead of a field of its own. The page
+ * offers no such model, and the tracker check refuses a row of one. Every
+ * other name - also one of a field every object inherits, such as
+ * `constructor` - becomes a field of the run's own.
+ */
+export const isReservedModelName = (name: string): boolean => name === '__proto__' || TRACKER_META_KEYS.includes(name);
+
+/**
  * Prompt-Experiment-Tracker.json: the rows of the runs, as the page writes
  * them and reads them back - a run starts with a row of its own (a numeric
  * runId, no model, its two prompts as texts) and goes on with a row per
  * model (the same runId, the name of the model): at least one, each model
- * once, and none named like a field of a run or a field every object has.
- * Every field of a row is of the kind the page reads (PET_ROW).
+ * once, and none of a name a run cannot keep a result under
+ * (isReservedModelName). Every field of a row is of the kind the page reads
+ * (PET_ROW).
  */
 export function isExperimentTracker(value: unknown): boolean {
   if (!Array.isArray(value)) return false;
@@ -315,7 +326,7 @@ export function isExperimentTracker(value: unknown): boolean {
       models = [];
       return model === '' && typeof systemPrompt === 'string' && typeof userPrompt === 'string';
     }
-    if (run === null || model === '' || model in {} || TRACKER_META_KEYS.includes(model) || models.includes(model)) return false;
+    if (run === null || model === '' || isReservedModelName(model) || models.includes(model)) return false;
     models.push(model);
     return true;
   });

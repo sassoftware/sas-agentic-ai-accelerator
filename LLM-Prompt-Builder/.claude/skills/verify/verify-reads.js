@@ -505,9 +505,10 @@ function offersCensus() {
 // kinds -, then loads the checks of stored-json.ts and sends each of them, for
 // every field at every depth, a value of another kind (refused), null and no
 // value (taken, unless the field is required), and the files the rules of a
-// run name (a run of its header alone, a model named like a field of a run or
-// like a field every object has, a model twice in a run, two runs of one
-// optimizationId). The covered sources: every .ts file under src (the types),
+// run name (a run of its header alone, a model named like each field of a run
+// or __proto__ - refused - and like each other field every object has -
+// taken -, a model twice in a run, two runs of one optimizationId). The
+// covered sources: every .ts file under src (the types),
 // and src/api/stored-json.ts (the checks).
 // --------------------------------------------------------------------------
 let storedJson = null;
@@ -524,7 +525,7 @@ async function shapeCensus() {
   }
 }
 
-async function shapeChecks({ STORED_SHAPES, fits, isExperimentTracker, isOptimizationTracker, isRagSetup }) {
+async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimentTracker, isOptimizationTracker, isRagSetup }) {
   if (!STORED_SHAPES) throw new Error('it exports no STORED_SHAPES');
   // The interfaces and type aliases of the sources, by name.
   const types = {};
@@ -690,10 +691,15 @@ async function shapeChecks({ STORED_SHAPES, fits, isExperimentTracker, isOptimiz
   const rules = [
     ['a run of its header row alone', [header(1)], false],
     ['a run of its header row alone, before a run with a model', [header(1), header(2), modelRow(2, 'demo_llm')], false],
-    ['a run whose model is named like a field of a run', [header(1), modelRow(1, 'judge')], false],
-    ['a run whose model is named like a field every object has', JSON.parse('[{"runId":1,"model":"","systemPrompt":"s","userPrompt":"u"},{"runId":1,"model":"__proto__"}]'), false],
-    ['a run whose model is named constructor', [header(1), modelRow(1, 'constructor')], false],
+    // A run cannot keep a result under the name of a field of its own, nor
+    // under __proto__; under the name of a field every object inherits it can
+    // (isReservedModelName), and the page writes such a run (verify-round-trip.js).
+    ...(TRACKER_META_KEYS || ['judge']).map((name) => [`a run whose model is named ${name}, a field of a run`, [header(1), modelRow(1, name)], false]),
+    ...Object.getOwnPropertyNames(Object.prototype).map((name) => [
+      `a run whose model is named ${name}, a field every object has`, [header(1), modelRow(1, name)], name !== '__proto__',
+    ]),
     ['a run with one model twice', [header(1), modelRow(1, 'demo_llm'), modelRow(1, 'demo_llm')], false],
+    ['a run with one model twice, named constructor', [header(1), modelRow(1, 'constructor'), modelRow(1, 'constructor')], false],
     ['two runs of one model each', [header(1), modelRow(1, 'demo_llm'), header(2), modelRow(2, 'demo_llm')], true],
     ['a run of two models', [header(1), modelRow(1, 'demo_llm'), modelRow(1, 'second_llm')], true],
     ['a list of no runs', [], true],

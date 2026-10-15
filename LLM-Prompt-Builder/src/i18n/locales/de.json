@@ -377,6 +377,7 @@
     "promptBuilderJudgeSelectPlaceholder": "Wähle ein Bewertungsmodell",
     "promptBuilderCredentialMissing": "Kein {provider}-Schlüssel in der Anmeldedomäne {domain} verfügbar - bitte den Administrator um Zugriff.",
     "promptBuilderModelOptionsUnusable": "Die options.json dieses Modells enthält keine Optionen, die diese Seite lesen kann, daher kann das Modell hier nicht verwendet werden. Reparieren Sie die Datei im SAS Model Manager.",
+    "promptBuilderModelNameReserved": "Dieses Modell kann hier nicht verwendet werden: Ein Lauf hält das Ergebnis jedes Modells unter dem Namen des Modells, und der Name {name} ist durch ein Feld des Laufs selbst belegt. Registrieren Sie das Modell unter einem anderen Namen, um es hier zu verwenden.",
     "promptBuilderJudgeIncludeSelfLabel": "Eigene Antwort des Bewertungsmodells einbeziehen",
     "promptBuilderJudgeIncludeSelfInfo": "Standardmäßig bewertet das Modell seine eigene Antwort nicht mit, da Sprachmodelle dazu neigen, ihre eigene Ausgabe zu bevorzugen (Self-Preference-Bias). Aktiviere dies nur, wenn die eigene Antwort des Bewertungsmodells trotzdem in die Rangfolge aufgenommen werden soll — ihr Rang kann dann zu ihren Gunsten verzerrt sein.",
     "promptBuilderJudgeAutoLabel": "Automatisch bewerten, sobald das Experiment fertig ist",

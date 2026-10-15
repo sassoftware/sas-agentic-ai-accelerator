@@ -1572,7 +1572,10 @@ http
       if (p === '/decisions/flows/flow-B') return json(res, 200, { id: 'flow-B', name: 'Fraud Check Decision' });
       if (/^\/scr\//.test(p) && req.method === 'POST') {
         // A model a suite switched off through /__failmodel does not answer.
-        const failure = failingModels[p.split('/')[2]];
+        // Its own entry only: a model may be named like a field every object
+        // has (constructor, toString - verify-round-trip.js).
+        const container = p.split('/')[2];
+        const failure = Object.prototype.hasOwnProperty.call(failingModels, container) ? failingModels[container] : undefined;
         if (failure === 'drop') return req.socket.destroy();
         if (failure) return json(res, Number(failure), { message: 'no container answers for ' + p.split('/')[2] });
         // Detect the LLM-as-a-Judge call by its distinctive system prompt.
