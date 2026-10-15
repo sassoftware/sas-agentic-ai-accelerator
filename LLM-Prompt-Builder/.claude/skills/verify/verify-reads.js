@@ -394,6 +394,13 @@ function census() {
   const notATracker = [
     ['an HTML page', 'text/html', '<html><body>Signed out</body></html>'],
     ['an object', 'application/json', '{"rows":[]}'],
+    // A list whose entries are not rows of a run: every row the page writes
+    // is an object with a numeric runId.
+    ['a list of texts', 'application/json', '["a"]'],
+    ['a list of objects without a runId', 'application/json', '[{"foo":1}]'],
+    ['a list of lists', 'application/json', '[[]]'],
+    ['a list of numbers', 'application/json', '[1,2]'],
+    ['a list holding null', 'application/json', '[null]'],
   ];
   for (const [what, type, body] of notATracker) {
     await road(`a tracker that is answered with ${what}`, async (page) => {

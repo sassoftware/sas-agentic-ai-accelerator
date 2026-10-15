@@ -1091,7 +1091,14 @@ export async function buildPromptBuilder(
             if (superseded()) return;
             trackerRead = true;
             const promptBuilderCurrentPTEContent = JSON.parse(trackerText) as PETRow[];
-            if (!Array.isArray(promptBuilderCurrentPTEContent)) throw new Error('Prompt-Experiment-Tracker.json holds no list of runs');
+            // Every row of a run this page writes is an object with a numeric
+            // runId; a list of anything else holds no run it can read.
+            if (
+              !Array.isArray(promptBuilderCurrentPTEContent) ||
+              !promptBuilderCurrentPTEContent.every((row) => row !== null && typeof row === 'object' && typeof row.runId === 'number')
+            ) {
+              throw new Error('Prompt-Experiment-Tracker.json holds no list of runs');
+            }
             const promptBuilderPreviousExperiment: ExperimentTrackerEntry[] = [];
             let promptBuilderPreviousRunID = 0;
             promptBuilderCurrentPTEContent.forEach((value) => {
