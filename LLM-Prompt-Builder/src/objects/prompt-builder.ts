@@ -9,7 +9,7 @@ import type { PromptBuilderConfig, InterfaceText, PromptBuilderText } from '../t
 import type { DropdownOption } from '../types/models';
 import type { DependentDecision } from '../types/relationships';
 import { getAppState } from '../state/app-state';
-import { readStoredJson, StoredFileUnusable } from '../api/stored-json';
+import { readStoredJson, StoredFileUnusable, TRACKER_META_KEYS } from '../api/stored-json';
 import { UnansweredWrite, ViyaRefused } from '../api/http-client';
 import {
   getModelProjects,
@@ -235,9 +235,6 @@ interface ExperimentTrackerEntry {
   expected?: Record<string, string>;
   [modelName: string]: unknown;
 }
-
-/** Entry keys that are metadata rather than per-model experiment results. */
-const TRACKER_META_KEYS = ['systemPrompt', 'userPrompt', 'author', 'variables', 'manifest', 'judge', 'mode', 'expected'];
 
 // Path data of the experiment tracker's icons (Material Symbols, 0 -960 960 960
 // view box): the three per-run actions and the five per-response markers. Kept

@@ -24,34 +24,262 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
 /**
+ * What a field of a stored file holds, as the page reads it: a text, a
+ * number, a boolean, a flag (a box the page writes as true/false or 1/0), a
+ * list of one kind, a map of names to one kind, or an object with fields of
+ * its own. `of` names the type of the sources the object mirrors, field for
+ * field (the harness compares the two). A field that is absent or null is
+ * not there, which the page reads as such; any other value has to be of its
+ * kind, and the fields `required` names have to be there.
+ */
+export type Shape = 'string' | 'number' | 'boolean' | 'flag' | { list: Shape } | { map: Shape } | ObjectShape;
+export interface ObjectShape {
+  of: string;
+  fields: Record<string, Shape>;
+  required?: readonly string[];
+}
+
+/** Whether a value is of a shape (see Shape). */
+export function fits(value: unknown, shape: Shape): boolean {
+  if (shape === 'string' || shape === 'number' || shape === 'boolean') return typeof value === shape;
+  if (shape === 'flag') return typeof value === 'boolean' || typeof value === 'number';
+  if ('list' in shape) return Array.isArray(value) && value.every((item) => fits(item, shape.list));
+  if ('map' in shape) return isObject(value) && Object.values(value).every((item) => fits(item, shape.map));
+  if (!isObject(value)) return false;
+  return Object.entries(shape.fields).every(([name, field]) => {
+    const held = Object.prototype.hasOwnProperty.call(value, name) ? value[name] : undefined;
+    return held === undefined || held === null ? !(shape.required ?? []).includes(name) : fits(held, field);
+  });
+}
+
+const PROMPT_VARIABLE: ObjectShape = {
+  of: 'PromptVariable',
+  fields: { name: 'string', description: 'string', type: 'string', value: 'string' },
+};
+const OPTIMIZATION_USAGE: ObjectShape = {
+  of: 'OptimizationUsage',
+  fields: { calls: 'number', promptTokens: 'number', outputTokens: 'number', runTime: 'number' },
+};
+const OPTIMIZED_PROMPT: ObjectShape = {
+  of: 'OptimizationTrackerEntry.optimizedPrompt',
+  fields: { systemPrompt: 'string', userPrompt: 'string', variables: { list: PROMPT_VARIABLE }, demos: { list: { map: 'string' } } },
+};
+
+/** A row of Prompt-Experiment-Tracker.json: the header row of a run, or the row of a model. */
+const PET_ROW: ObjectShape = {
+  of: 'PETRow',
+  required: ['runId', 'model'],
+  fields: {
+    runId: 'number',
+    systemPrompt: 'string',
+    userPrompt: 'string',
+    variables: { list: PROMPT_VARIABLE },
+    manifest: {
+      of: 'ManifestConfig',
+      // Restoring a manifest configuration asks its outputs which to tick.
+      required: ['selectedOutputs'],
+      fields: {
+        integratedLLMCall: 'boolean',
+        selectedOutputs: { list: 'string' },
+        outputVariables: {
+          list: { of: 'PromptOutputVariable', fields: { name: 'string', description: 'string', type: 'string', defaultValue: 'string' } },
+        },
+      },
+    },
+    mode: 'string',
+    expected: { map: 'string' },
+    model: 'string',
+    options: 'string',
+    response: 'string',
+    run_time: 'number',
+    prompt_length: 'number',
+    output_length: 'number',
+    best_prompt: 'flag',
+    fastest_prompt: 'boolean',
+    fewest_tokens_prompt: 'boolean',
+    cheapest_prompt: 'boolean',
+    cost: 'number',
+    judge_rank: 'number',
+    judge_best: 'flag',
+    judge_model: 'string',
+    judge_confidence: 'string',
+    judge_reasoning: 'string',
+    judge_include_self: 'flag',
+    judge_auto: 'flag',
+    judge_mode: 'string',
+    judge_panel: 'string',
+    judge_agreement: 'string',
+    judge_cost: 'number',
+    judge_chairman_model: 'string',
+    judge_chairman_reasoning: 'string',
+    judge_ballots: {
+      list: {
+        of: 'JudgeBallot',
+        fields: {
+          judgeModel: 'string',
+          status: 'string',
+          ranking: { list: 'string' },
+          confidence: 'string',
+          reasoning: 'string',
+          excludedSelf: 'boolean',
+          error: 'string',
+          usage: { of: 'JudgeUsage', fields: { run_time: 'number', prompt_length: 'number', output_length: 'number' } },
+        },
+      },
+    },
+  },
+};
+
+/** An entry of Prompt-Optimization-Tracker.json: one run of the optimization job. */
+const OPTIMIZATION_ENTRY: ObjectShape = {
+  of: 'OptimizationTrackerEntry',
+  // The number the page draws and deletes the run by, and its status.
+  required: ['optimizationId', 'status'],
+  fields: {
+    optimizationId: 'number',
+    startedAt: 'string',
+    finishedAt: 'string',
+    status: 'string',
+    jobId: 'string',
+    targetModel: 'string',
+    datasetSource: 'string',
+    sampleCount: 'number',
+    optimizer: 'string',
+    metric: 'string',
+    judgeModel: 'string',
+    metricBefore: 'number',
+    metricAfter: 'number',
+    baselinePrompt: { of: 'OptimizationTrackerEntry.baselinePrompt', fields: { systemPrompt: 'string', userPrompt: 'string' } },
+    trainSize: 'number',
+    validationSize: 'number',
+    evaluations: {
+      list: {
+        of: 'OptimizationEvaluation',
+        fields: {
+          inputs: { map: 'string' },
+          expected: 'string',
+          baselineResponse: 'string',
+          baselineCorrect: 'boolean',
+          baselineScore: 'number',
+          optimizedResponse: 'string',
+          optimizedCorrect: 'boolean',
+          optimizedScore: 'number',
+        },
+      },
+    },
+    optimizedPrompt: OPTIMIZED_PROMPT,
+    skippedReason: 'string',
+    type: 'string',
+    targets: {
+      list: {
+        of: 'ComparisonTargetRow',
+        fields: {
+          model: 'string',
+          status: 'string',
+          quality: 'number',
+          avgLatency: 'number',
+          usage: OPTIMIZATION_USAGE,
+          metricBefore: 'number',
+          metricAfter: 'number',
+          skippedReason: 'string',
+          optimizedPrompt: OPTIMIZED_PROMPT,
+          evaluations: {
+            list: {
+              of: 'ComparisonTargetRow.evaluations',
+              fields: {
+                inputs: { map: 'string' },
+                expected: 'string',
+                response: 'string',
+                correct: 'boolean',
+                score: 'number',
+                baselineResponse: 'string',
+                baselineCorrect: 'boolean',
+                baselineScore: 'number',
+                optimizedResponse: 'string',
+                optimizedCorrect: 'boolean',
+                optimizedScore: 'number',
+              },
+            },
+          },
+          error: 'string',
+        },
+      },
+    },
+    usage: { of: 'OptimizationTrackerEntry.usage', fields: { target: OPTIMIZATION_USAGE, judge: OPTIMIZATION_USAGE } },
+    producedPromptModelId: 'string',
+    datasetSnapshot: 'string',
+    error: 'string',
+  },
+};
+
+/** A prompt of the enrichment chain of rag-setup.json; one without a prompt is dropped by Save setup. */
+const RAG_ENRICH_STEP: ObjectShape = {
+  of: 'RagEnrichStep',
+  required: ['promptModelId'],
+  fields: {
+    promptProjectId: 'string',
+    promptModelId: 'string',
+    promptModelName: 'string',
+    promptVersionId: 'string',
+    promptVersionLabel: 'string',
+    mapping: { map: 'string' },
+    headerOutput: 'string',
+    columnOutputs: { list: 'string' },
+    workers: 'number',
+  },
+};
+
+/** The shapes of the stored files, for the harness. */
+export const STORED_SHAPES = { PET_ROW, OPTIMIZATION_ENTRY, RAG_ENRICH_STEP } as const;
+
+/**
+ * The fields of a run of the experiment tracker as the page holds it: every
+ * other key of a run is the name of a model, so no model can be named so.
+ */
+export const TRACKER_META_KEYS = ['systemPrompt', 'userPrompt', 'author', 'variables', 'manifest', 'judge', 'mode', 'expected'];
+
+/**
  * Prompt-Experiment-Tracker.json: the rows of the runs, as the page writes
  * them and reads them back - a run starts with a row of its own (a numeric
  * runId, no model, its two prompts as texts) and goes on with a row per
- * model (the same runId, the name of the model).
+ * model (the same runId, the name of the model): at least one, each model
+ * once, and none named like a field of a run or a field every object has.
+ * Every field of a row is of the kind the page reads (PET_ROW).
  */
 export function isExperimentTracker(value: unknown): boolean {
   if (!Array.isArray(value)) return false;
   // As the reading of the page groups the rows: a row whose runId differs
   // from the row before starts a run.
-  let run = 0;
-  return value.every((row) => {
-    if (!isObject(row) || typeof row.runId !== 'number' || typeof row.model !== 'string') return false;
-    if (row.runId !== run) {
-      run = row.runId;
-      return row.model === '' && typeof row.systemPrompt === 'string' && typeof row.userPrompt === 'string';
+  let run: number | null = null;
+  let models: string[] = [];
+  const runHasModels = () => run === null || models.length > 0;
+  const rowsFit = value.every((row) => {
+    if (!fits(row, PET_ROW)) return false;
+    const { runId, model, systemPrompt, userPrompt } = row as { runId: number; model: string; systemPrompt: unknown; userPrompt: unknown };
+    if (runId !== run) {
+      if (!runHasModels()) return false;
+      run = runId;
+      models = [];
+      return model === '' && typeof systemPrompt === 'string' && typeof userPrompt === 'string';
     }
-    return run !== 0 && row.model !== '';
+    if (run === null || model === '' || model in {} || TRACKER_META_KEYS.includes(model) || models.includes(model)) return false;
+    models.push(model);
+    return true;
   });
+  return rowsFit && runHasModels();
 }
 
 /**
  * Prompt-Optimization-Tracker.json: the runs the optimization job wrote, each
- * with the number the page draws and deletes it by, and its status.
+ * with the number the page draws and deletes it by - which the job gives
+ * each run once - and its status. Every field of an entry is of the kind the
+ * page reads (OPTIMIZATION_ENTRY).
  */
 export function isOptimizationTracker(value: unknown): boolean {
   return (
     Array.isArray(value) &&
-    value.every((entry) => isObject(entry) && typeof entry.optimizationId === 'number' && typeof entry.status === 'string')
+    value.every((entry) => fits(entry, OPTIMIZATION_ENTRY)) &&
+    new Set(value.map((entry: { optimizationId: number }) => entry.optimizationId)).size === value.length
   );
 }
 
@@ -61,7 +289,8 @@ export function isOptimizationTracker(value: unknown): boolean {
  * existed lacks (artifactsFolder, documentation, policies, enrich, job) may
  * be absent - the defaults stand in for the first three, and no enrichment
  * and no job are what their absence means; where present, each is of its
- * kind.
+ * kind. The enrichment is a list of prompts (RAG_ENRICH_STEP), or the one
+ * prompt a setup saved before the chain held.
  */
 export function isRagSetup(value: unknown): boolean {
   if (!isObject(value) || value.version !== 1) return false;
@@ -77,7 +306,7 @@ export function isRagSetup(value: unknown): boolean {
     (value.artifactsFolder === undefined || typeof value.artifactsFolder === 'string') &&
     (value.documentation === undefined || isObject(value.documentation)) &&
     (value.policies === undefined || isObject(value.policies)) &&
-    (value.enrich === undefined || Array.isArray(value.enrich)) &&
+    (value.enrich == null || fits(value.enrich, { list: RAG_ENRICH_STEP }) || fits(value.enrich, RAG_ENRICH_STEP)) &&
     (value.job === undefined || (isObject(value.job) && typeof value.job.definitionUri === 'string'))
   );
 }

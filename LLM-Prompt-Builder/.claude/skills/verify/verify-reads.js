@@ -29,7 +29,10 @@
  *   - HTML_SOURCES: every text that goes into markup is a literal, goes
  *     through escapeHtml, or is a text of the page (htmlCensus);
  *   - OFFERS: every use of the lists of the models, with what it does with a
- *     model that cannot be used (offersCensus).
+ *     model that cannot be used (offersCensus);
+ *   - STORED_SHAPES: every field of a row or an entry of a stored file is of
+ *     the kind of the type of the sources it mirrors, and the checks refuse
+ *     each field of another kind (shapeCensus).
  * A call that is added, moved or gone fails a census until it is named.
  * (verify-outcomes.js has the roads of the delete of an optimization run.)
  *
@@ -42,6 +45,8 @@
  *     rows that are no rows of a run) says that, and that opening it again
  *     does not help; nothing is written;
  *   - the prompts and the model names of a stored run are drawn as text;
+ *   - a tracker and an optimization history whose every field holds a value,
+ *     or null, are drawn and loaded;
  *   - a prompt-test whose tracker and optimization tracker are on the second
  *     page of its contents shows its runs and its optimization history;
  *   - an optimization history that cannot be read, or holds no list of runs,
@@ -483,10 +488,241 @@ function offersCensus() {
   );
 }
 
+// --------------------------------------------------------------------------
+// The fields of a stored file (round 24): a tracker whose rows passed the
+// check of their runIds and prompts was drawn with a response that was an
+// object ("[object Object]"), threw while a manifest configuration that was
+// no configuration was put back, or threw while an optimization run whose
+// comparison or evaluations were no lists was drawn. src/api/stored-json.ts
+// checks every field of a stored row or entry against its shape (STORED_SHAPES:
+// PET_ROW, OPTIMIZATION_ENTRY, RAG_ENRICH_STEP). The census reads the types of
+// the sources each shape mirrors (`of`: an interface, or a field of one that
+// is an object of its own) and compares them field for field - names and
+// kinds -, then loads the checks of stored-json.ts and sends each of them, for
+// every field at every depth, a value of another kind (refused), null and no
+// value (taken, unless the field is required), and the files the rules of a
+// run name (a run of its header alone, a model named like a field of a run or
+// like a field every object has, a model twice in a run, two runs of one
+// optimizationId). The covered sources: every .ts file under src (the types),
+// and src/api/stored-json.ts (the checks).
+// --------------------------------------------------------------------------
+let storedJson = null;
+async function loadStoredJson() {
+  const os = require('os');
+  const { createRequire } = require('module');
+  const { pathToFileURL } = require('url');
+  const file = path.join(PROJECT, 'src', 'api', 'stored-json.ts');
+  const text = fs.readFileSync(file, 'utf8').replace(/^import \{ getFileContent \} from '\.\/files-api';$/m, 'const getFileContent = () => { throw new Error("not in the census"); };');
+  const { transformSync } = createRequire(path.join(PROJECT, 'package.json'))('rolldown/utils');
+  const { code, errors } = transformSync('stored-json.ts', text, { lang: 'ts' });
+  if (errors.length) throw new Error(`stored-json.ts does not compile: ${errors[0].message}`);
+  const target = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'stored-json-')), 'stored-json.mjs');
+  fs.writeFileSync(target, code);
+  return import(pathToFileURL(target).href);
+}
+
+const kindOfShape = (shape) =>
+  typeof shape === 'string' ? shape : shape.list ? `list(${kindOfShape(shape.list)})` : shape.map ? `map(${kindOfShape(shape.map)})` : `object(${shape.of})`;
+
+async function shapeCensus() {
+  try {
+    storedJson = await loadStoredJson();
+    await shapeChecks(storedJson);
+  } catch (error) {
+    step(false, `the shapes and checks of src/api/stored-json.ts can be read (${error.message}; run npm ci)`);
+  }
+}
+
+async function shapeChecks({ STORED_SHAPES, fits, isExperimentTracker, isOptimizationTracker, isRagSetup }) {
+  if (!STORED_SHAPES) throw new Error('it exports no STORED_SHAPES');
+  // The interfaces and type aliases of the sources, by name.
+  const types = {};
+  const twice = new Set();
+  for (const [file, text] of Object.entries(sourceFiles())) {
+    const { program } = parse(file, text);
+    walk(program, (node) => text.slice(node.start, node.end), (node) => {
+      if ((node.type === 'TSInterfaceDeclaration' || node.type === 'TSTypeAliasDeclaration') && node.id) {
+        if (types[node.id.name]) twice.add(node.id.name);
+        types[node.id.name] = node;
+      }
+    });
+  }
+  const membersOf = (node) => (node.type === 'TSInterfaceDeclaration' ? node.body.body : node.type === 'TSTypeLiteral' ? node.members : null);
+  const fieldsOf = (node) => {
+    const fields = {};
+    for (const member of membersOf(node) || []) {
+      if (member.type === 'TSPropertySignature' && member.key) fields[member.key.name ?? member.key.value] = member.typeAnnotation.typeAnnotation;
+    }
+    return fields;
+  };
+  // Without null and undefined, and the one type left of a union of one.
+  const bare = (type) => {
+    if (type.type !== 'TSUnionType') return type;
+    const kept = type.types.filter((member) => member.type !== 'TSNullKeyword' && member.type !== 'TSUndefinedKeyword');
+    return kept.length === 1 ? bare(kept[0]) : { ...type, types: kept };
+  };
+  // The object type a name stands for: 'Interface' or 'Interface.field'.
+  const resolveOf = (of) => {
+    const [name, ...path] = of.split('.');
+    let node = types[name];
+    for (const field of path) {
+      if (!node) return null;
+      let type = bare(fieldsOf(node)[field] || { type: 'none' });
+      while (type.type === 'TSArrayType' || (type.type === 'TSTypeReference' && type.typeName.name === 'Array')) {
+        type = bare(type.type === 'TSArrayType' ? type.elementType : type.typeArguments.params[0]);
+      }
+      node = type.type === 'TSTypeLiteral' ? type : type.type === 'TSTypeReference' ? types[type.typeName.name] : null;
+    }
+    return node && membersOf(node) ? node : null;
+  };
+  // The kind of a type of the sources, written as kindOfShape writes a shape.
+  const kindOfType = (type, at) => {
+    const node = bare(type);
+    if (node.type === 'TSStringKeyword' || (node.type === 'TSLiteralType' && typeof node.literal.value === 'string')) return 'string';
+    if (node.type === 'TSNumberKeyword') return 'number';
+    if (node.type === 'TSBooleanKeyword') return 'boolean';
+    if (node.type === 'TSUnionType') {
+      const kinds = [...new Set(node.types.map((member) => kindOfType(member, at)))].sort().join('|');
+      return kinds === 'boolean|number' ? 'flag' : kinds;
+    }
+    if (node.type === 'TSArrayType') return `list(${kindOfType(node.elementType, at)})`;
+    if (node.type === 'TSTypeLiteral') return `object(${at})`;
+    if (node.type === 'TSIndexedAccessType') return `object(${node.objectType.typeName.name}.${node.indexType.literal.value})`;
+    if (node.type === 'TSTypeReference') {
+      const name = node.typeName.name;
+      const params = (node.typeArguments && node.typeArguments.params) || [];
+      if (name === 'Array') return `list(${kindOfType(params[0], at)})`;
+      if (name === 'Record') return `map(${kindOfType(params[1], at)})`;
+      const declared = types[name];
+      if (declared && declared.type === 'TSTypeAliasDeclaration') return kindOfType(declared.typeAnnotation, at);
+      if (declared) return `object(${name})`;
+    }
+    return `unknown ${node.type}`;
+  };
+  // Every object shape below the three, each once.
+  const objects = new Map();
+  const collect = (shape) => {
+    if (typeof shape === 'string') return;
+    if (shape.list) return collect(shape.list);
+    if (shape.map) return collect(shape.map);
+    if (objects.has(shape.of)) return;
+    objects.set(shape.of, shape);
+    Object.values(shape.fields).forEach(collect);
+  };
+  Object.values(STORED_SHAPES).forEach(collect);
+  const differences = [];
+  for (const [of, shape] of objects) {
+    if (twice.has(of.split('.')[0])) differences.push(`${of}: declared more than once in the sources`);
+    const node = resolveOf(of);
+    if (!node) {
+      differences.push(`${of}: no such type in the sources`);
+      continue;
+    }
+    const declared = fieldsOf(node);
+    for (const name of Object.keys(declared)) if (!shape.fields[name]) differences.push(`${of}.${name}: not in the shape`);
+    for (const [name, field] of Object.entries(shape.fields)) {
+      if (!declared[name]) {
+        differences.push(`${of}.${name}: not in the type`);
+        continue;
+      }
+      const want = kindOfType(declared[name], `${of}.${name}`);
+      if (want !== kindOfShape(field)) differences.push(`${of}.${name}: ${kindOfShape(field)}, the type says ${want}`);
+    }
+  }
+  step(
+    objects.size > 0 && differences.length === 0,
+    `every shape of a stored file holds the fields of the type it mirrors, each of its kind (objects: ${[...objects.keys()].join(', ')}; differences: ${differences.join('; ') || 'none'})`
+  );
+
+  // A file of each kind that is taken, every field at every depth there.
+  const sample = (shape) =>
+    shape === 'string' ? 'x' : shape === 'number' ? 1 : shape === 'boolean' ? true : shape === 'flag' ? 1
+      : shape.list ? [sample(shape.list)] : shape.map ? { key: sample(shape.map) }
+        : Object.fromEntries(Object.entries(shape.fields).map(([name, field]) => [name, sample(field)]));
+  const setup = (enrich) => ({
+    version: 1, source: { path: 'p' }, extraction: { extractor: 'e' }, chunking: { chunker: 'c', inputTokenLimit: 1, overlapTokens: 0 },
+    embedding: { model: 'm', dims: 1 }, store: { backend: 'b', collection: 'c' }, tables: { prefix: 'p', caslib: 'c' }, enrich,
+  });
+  const files = {
+    PET_ROW: [
+      (row) => [{ ...sample(STORED_SHAPES.PET_ROW), runId: 1, model: '', systemPrompt: 's', userPrompt: 'u' }, { ...row }],
+      (value) => isExperimentTracker(value),
+      { ...sample(STORED_SHAPES.PET_ROW), runId: 1, model: 'demo_llm' },
+    ],
+    OPTIMIZATION_ENTRY: [(entry) => [entry], (value) => isOptimizationTracker(value), sample(STORED_SHAPES.OPTIMIZATION_ENTRY)],
+    RAG_ENRICH_STEP: [(step) => setup([step]), (value) => isRagSetup(value), sample(STORED_SHAPES.RAG_ENRICH_STEP)],
+  };
+  // Every field at every depth, by its path, with its shape and whether it is required.
+  const leaves = [];
+  const into = (shape, at, required) => {
+    leaves.push({ at, shape, required });
+    if (typeof shape === 'string') return;
+    if (shape.list) return into(shape.list, [...at, 0], true);
+    if (shape.map) return into(shape.map, [...at, 'key'], true);
+    for (const [name, field] of Object.entries(shape.fields)) into(field, [...at, name], (shape.required || []).includes(name));
+  };
+  const wrong = (shape) => (typeof shape === 'string' ? { not: 'of this kind' } : 'not of this kind');
+  const changed = (value, at, to) => {
+    const copy = JSON.parse(JSON.stringify(value));
+    let holder = copy;
+    at.slice(0, -1).forEach((key) => { holder = holder[key]; });
+    if (to === undefined) delete holder[at[at.length - 1]];
+    else holder[at[at.length - 1]] = to;
+    return copy;
+  };
+  const misjudged = [];
+  let probes = 0;
+  for (const [name, [wrap, check, valid]] of Object.entries(files)) {
+    if (!check(wrap(valid))) misjudged.push(`${name}: the file with every field is refused`);
+    leaves.length = 0;
+    for (const [field, shape] of Object.entries(STORED_SHAPES[name].fields)) into(shape, [field], (STORED_SHAPES[name].required || []).includes(field));
+    for (const { at, shape, required } of leaves) {
+      const where = `${name}.${at.join('.')}`;
+      probes += 3;
+      if (check(wrap(changed(valid, at, wrong(shape))))) misjudged.push(`${where} of another kind is taken`);
+      // A list item or a map value is no field: it is there, and null is no item.
+      const item = typeof at[at.length - 1] === 'number' || at[at.length - 1] === 'key';
+      if (item) {
+        if (check(wrap(changed(valid, at, null)))) misjudged.push(`${where} null is taken`);
+        continue;
+      }
+      if (check(wrap(changed(valid, at, null))) === required) misjudged.push(`${where} null is ${required ? 'taken' : 'refused'}`);
+      if (check(wrap(changed(valid, at, undefined))) === required) misjudged.push(`${where} left out is ${required ? 'taken' : 'refused'}`);
+    }
+  }
+  // The rules of the runs.
+  const header = (runId) => ({ runId, model: '', systemPrompt: 's', userPrompt: 'u' });
+  const modelRow = (runId, model) => ({ runId, model, response: 'r' });
+  const rules = [
+    ['a run of its header row alone', [header(1)], false],
+    ['a run of its header row alone, before a run with a model', [header(1), header(2), modelRow(2, 'demo_llm')], false],
+    ['a run whose model is named like a field of a run', [header(1), modelRow(1, 'judge')], false],
+    ['a run whose model is named like a field every object has', JSON.parse('[{"runId":1,"model":"","systemPrompt":"s","userPrompt":"u"},{"runId":1,"model":"__proto__"}]'), false],
+    ['a run whose model is named constructor', [header(1), modelRow(1, 'constructor')], false],
+    ['a run with one model twice', [header(1), modelRow(1, 'demo_llm'), modelRow(1, 'demo_llm')], false],
+    ['two runs of one model each', [header(1), modelRow(1, 'demo_llm'), header(2), modelRow(2, 'demo_llm')], true],
+    ['a run of two models', [header(1), modelRow(1, 'demo_llm'), modelRow(1, 'second_llm')], true],
+    ['a list of no runs', [], true],
+  ];
+  for (const [what, value, taken] of rules) if (isExperimentTracker(value) !== taken) misjudged.push(`tracker: ${what} is ${taken ? 'refused' : 'taken'}`);
+  const run = (optimizationId) => ({ optimizationId, status: 'failed' });
+  if (isOptimizationTracker([run(1), run(1), run(2)])) misjudged.push('optimization tracker: two runs of one optimizationId are taken');
+  if (!isOptimizationTracker([run(1), run(2)])) misjudged.push('optimization tracker: two runs of their own numbers are refused');
+  if (!isRagSetup(setup(sample(STORED_SHAPES.RAG_ENRICH_STEP)))) misjudged.push('rag-setup.json: the one prompt of a setup saved before the chain is refused');
+  if (!isRagSetup(setup(undefined))) misjudged.push('rag-setup.json: a setup without enrichment is refused');
+  if (isRagSetup(setup([{ foo: 1 }]))) misjudged.push('rag-setup.json: an enrichment of an entry that is no prompt is taken');
+  if (isRagSetup(setup('x'))) misjudged.push('rag-setup.json: an enrichment that is a text is taken');
+  step(
+    misjudged.length === 0 && typeof fits === 'function',
+    `the checks of the stored files take every field of its kind and refuse it of another, at every depth (${probes} probes of the fields of ${Object.keys(files).join(', ')}, and ${rules.length + 6} files the rules of a run name; wrong: ${misjudged.join('; ') || 'none'})`
+  );
+}
+
 (async () => {
   census();
   htmlCensus();
   offersCensus();
+  await shapeCensus();
 
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   let pageErrors = [];
@@ -666,6 +902,17 @@ function offersCensus() {
     ['rows with a runId and nothing else of a run', 'application/json', '[{"runId":1}]'],
     ['rows with a runId and a field of no run', 'application/json', '[{"runId":1,"foo":1}]'],
     ['a run that starts with the row of a model', 'application/json', '[{"runId":1,"systemPrompt":"","userPrompt":"","model":"demo_llm","response":"x"}]'],
+    // A run has a row per model - at least one, each model once, none named
+    // like a field of a run or like a field every object has - and every
+    // field of a row is of the kind the page reads (PET_ROW): the page writes
+    // nothing else, and Save Experiments dropped what it could not read back.
+    ['a run of its header row alone', 'application/json', '[{"runId":1,"model":"","systemPrompt":"Kept sys","userPrompt":"Kept user"}]'],
+    ['a run whose model is named like a field of a run', 'application/json', '[{"runId":1,"model":"","systemPrompt":"s","userPrompt":"u"},{"runId":1,"model":"demo_llm","response":"x"},{"runId":1,"model":"judge","response":"y"}]'],
+    ['a run whose model is named __proto__', 'application/json', '[{"runId":1,"model":"","systemPrompt":"s","userPrompt":"u"},{"runId":1,"model":"demo_llm","response":"x"},{"runId":1,"model":"__proto__","response":"y"}]'],
+    ['a run with one model twice', 'application/json', '[{"runId":1,"model":"","systemPrompt":"s","userPrompt":"u"},{"runId":1,"model":"demo_llm","response":"FIRST ANSWER"},{"runId":1,"model":"demo_llm","response":"SECOND ANSWER"}]'],
+    ['a row whose response is an object', 'application/json', '[{"runId":1,"model":"","systemPrompt":"s","userPrompt":"u"},{"runId":1,"model":"demo_llm","response":{"a":1}}]'],
+    ['a header whose manifest configuration holds no outputs', 'application/json', '[{"runId":1,"model":"","systemPrompt":"s","userPrompt":"u","manifest":{"x":1}},{"runId":1,"model":"demo_llm","response":"x","best_prompt":1}]'],
+    ['a header whose manifest configuration is a text', 'application/json', '[{"runId":1,"model":"","systemPrompt":"s","userPrompt":"u","manifest":"x"},{"runId":1,"model":"demo_llm","response":"x","best_prompt":1}]'],
   ];
   for (const [what, type, body] of notATracker) {
     storedRoadsRun.add('Prompt-Experiment-Tracker.json');
@@ -729,6 +976,71 @@ function offersCensus() {
   });
 
   // ==========================================================================
+  // Every field of a stored file, there and empty (round 24)
+  // ==========================================================================
+  // A file the checks take is one the page draws: built from the shapes of
+  // stored-json.ts (STORED_SHAPES), a tracker and an optimization tracker
+  // whose rows and entries hold every field at every depth - with a value of
+  // its kind; with null in every field of a text, a number or a box that is
+  // not required; with null in every field that is not required - are drawn without a page error, without "[object Object]" and without a
+  // line that they cannot be used; the run and the optimization run are then
+  // loaded into the workbench.
+  if (storedJson && storedJson.STORED_SHAPES) {
+    const { STORED_SHAPES } = storedJson;
+    // empty: '' fills every field, 'values' leaves a text, a number or a box
+    // that is not required null, 'all' every field that is not required.
+    const filled = (shape, empty) =>
+      typeof shape === 'string'
+        ? ({ string: 'x', number: 1, boolean: true, flag: 1 })[shape]
+        : shape.list ? [filled(shape.list, empty)] : shape.map ? { key: filled(shape.map, empty) }
+          : Object.fromEntries(Object.entries(shape.fields).map(([name, field]) => [
+            name,
+            (empty === 'all' || (empty === 'values' && typeof field === 'string')) && !(shape.required || []).includes(name) ? null : filled(field, empty),
+          ]));
+    for (const empty of ['', 'values', 'all']) {
+      const how = { '': 'a value in every field', values: 'null in every text, number and box that is not required', all: 'null in every field that is not required' }[empty];
+      await road(`a tracker whose rows hold ${how}`, async (page) => {
+        await openPage(page);
+        await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
+        const row = filled(STORED_SHAPES.PET_ROW, empty);
+        const rows = [{ ...row, runId: 1, model: '', systemPrompt: 'Every field', userPrompt: 'of a row' }, { ...row, runId: 1, model: 'demo_llm', best_prompt: 1 }];
+        await page.route('**/files/files/trk-1/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(rows) }));
+        await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-used');
+        await waitUntil(async () => (await savedRuns(page)) > 0, 'the run is drawn', 15000).catch(() => {});
+        await page.click(`${lpb('pet-0')} .pet-run-load`).catch(() => {});
+        await page.waitForTimeout(500);
+        const line = await textOf(page, lpb('pet-save-only-result'));
+        const text = await textOf(page, lpb('pet'));
+        step(
+          (await savedRuns(page)) === 1 && line === '' && !text.includes('[object Object]') && pageErrors.length === 0,
+          `a tracker whose rows hold ${how} is drawn and loaded (runs: ${await savedRuns(page)}; line: "${clip(line)}"; [object Object] drawn: ${text.includes('[object Object]')}; page errors: ${pageErrors.join(' | ') || 'none'})`
+        );
+      });
+      await road(`an optimization history whose entry holds ${how}`, async (page) => {
+        await openPage(page);
+        await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
+        const entry = { ...filled(STORED_SHAPES.OPTIMIZATION_ENTRY, empty), optimizationId: 1, status: 'succeeded' };
+        await page.route('**/files/files/opttrk-1/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([entry, { ...entry, optimizationId: 2, type: 'comparison' }]) }));
+        await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-used');
+        await goStep(page, 'LPB', 'optimize');
+        const entries = `${lpb('pane-optimize')} .pb-optimize-history-entry`;
+        await waitUntil(async () => (await page.$$(entries)).length > 0, 'the history is drawn', 15000).catch(() => {});
+        const drawn = (await page.$$(entries)).length;
+        const text = await textOf(page, lpb('pane-optimize'));
+        const unread = (await page.$$(`${lpb('pane-optimize')} .pb-optimize-history-unread`)).length;
+        await page.click(`${lpb('pane-optimize')} .pb-optimize-history-load`).catch(() => {});
+        await page.waitForTimeout(500);
+        step(
+          drawn === 2 && unread === 0 && !text.includes('[object Object]') && pageErrors.length === 0,
+          `an optimization history whose entry holds ${how} - as a run and as a comparison - is drawn and loaded (entries: ${drawn}; line that it cannot be shown: ${unread}; [object Object] drawn: ${text.includes('[object Object]')}; page errors: ${pageErrors.join(' | ') || 'none'})`
+        );
+      });
+    }
+  } else {
+    step(false, 'every field of a stored file, there and empty: the shapes of stored-json.ts could not be read');
+  }
+
+  // ==========================================================================
   // Every page of the contents of a prompt-test
   // ==========================================================================
   // SAS Model Manager lists the contents of a model a page at a time, and a
@@ -778,6 +1090,11 @@ function offersCensus() {
     // and its status (isOptimizationTracker).
     ['a list of entries that are no runs', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[{"foo":1}]' }), HISTORY_UNUSABLE],
     ['a list of entries without a status', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[{"optimizationId":1}]' }), HISTORY_UNUSABLE],
+    // The job gives each run a number of its own, and writes every field of
+    // an entry of the kind the page reads (OPTIMIZATION_ENTRY).
+    ['a list of two runs of one optimizationId', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[{"optimizationId":1,"status":"succeeded"},{"optimizationId":1,"status":"failed"},{"optimizationId":2,"status":"failed"}]' }), HISTORY_UNUSABLE],
+    ['an entry whose candidates are a text', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[{"optimizationId":2,"status":"succeeded","type":"comparison","targets":"x"}]' }), HISTORY_UNUSABLE],
+    ['an entry whose evaluations are a text', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[{"optimizationId":3,"status":"succeeded","evaluations":"x","optimizedPrompt":"y","usage":5}]' }), HISTORY_UNUSABLE],
   ]) {
     if (said === HISTORY_UNUSABLE) storedRoadsRun.add('Prompt-Optimization-Tracker.json');
     await road(`an optimization history whose tracker is ${how}`, async (page) => {
@@ -792,8 +1109,8 @@ function offersCensus() {
       const history = await textOf(page, lpb('pane-optimize'));
       const deletes = (await page.$$(`${lpb('pane-optimize')} .pb-optimize-history-delete`)).length;
       step(
-        line.startsWith(said) && (await page.$$(`${lpb('pane-optimize')} .pb-optimize-history-entry`)).length === 0 && deletes === 0,
-        `an optimization history whose tracker is ${how} says so where the history stands, and lists no run and no Delete (line: "${clip(line)}"; Delete buttons: ${deletes}; the step reads: "${clip(history.slice(-200))}")`
+        line.startsWith(said) && (await page.$$(`${lpb('pane-optimize')} .pb-optimize-history-entry`)).length === 0 && deletes === 0 && pageErrors.length === 0,
+        `an optimization history whose tracker is ${how} says so where the history stands, and lists no run and no Delete (line: "${clip(line)}"; Delete buttons: ${deletes}; the step reads: "${clip(history.slice(-200))}"; page errors: ${pageErrors.join(' | ') || 'none'})`
       );
     });
   }
@@ -875,13 +1192,17 @@ function offersCensus() {
     ['a list', 'application/json', '[]'],
     ['an object that is no setup', 'application/json', '{"foo":1}'],
     ['a setup without its sections', 'application/json', '{"version":1}'],
+    // Each prompt of the enrichment is a prompt (RAG_ENRICH_STEP): Save setup
+    // drops an entry without one.
+    ['a setup whose enrichment holds an entry that is no prompt', 'application/json', (stored) => JSON.stringify({ ...stored, enrich: [{ foo: 1 }] })],
   ]) {
     storedRoadsRun.add('rag-setup.json');
     await road(`a rag-setup.json that is ${what}`, async (page) => {
       await openPage(page, 'rag');
       await choose(page, 'RGB', rgb('project'), 'rag-proj');
       const file = await ragSetupFile('rag-setup-1');
-      await page.route(`**${file}/content`, (route) => route.fulfill({ status: 200, contentType: type, body }));
+      const served = typeof body === 'function' ? body(await (await fetch(`${BASE}${file}/content`)).json()) : body;
+      await page.route(`**${file}/content`, (route) => route.fulfill({ status: 200, contentType: type, body: served }));
       await choose(page, 'RGB', rgb('setup'), 'rag-setup-1');
       await waitUntil(async () => (await banner(page)) !== '', 'the banner', 15000).catch(() => {});
       await page.waitForTimeout(1500);
@@ -893,6 +1214,27 @@ function offersCensus() {
       );
     });
   }
+
+  // A setup saved before the enrichment could chain holds its one prompt as an
+  // object of its own, not as a list: it is a setup, and opens.
+  await road('a rag-setup.json whose enrichment is the one prompt of a setup saved before the chain', async (page) => {
+    await openPage(page, 'rag');
+    await choose(page, 'RGB', rgb('project'), 'rag-proj');
+    const file = await ragSetupFile('rag-setup-1');
+    const stored = await (await fetch(`${BASE}${file}/content`)).json();
+    const enrich = {
+      promptProjectId: 'proj-1', promptModelId: 'model-parse', promptModelName: 'Summarise Chunk',
+      mapping: { chunk: 'chunk' }, headerOutput: 'context_header', columnOutputs: [], workers: 2,
+    };
+    await page.route(`**${file}/content`, (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...stored, enrich }) }));
+    await choose(page, 'RGB', rgb('setup'), 'rag-setup-1');
+    await waitUntil(async () => (await usableWrites(page)).length === 3, 'the buttons are given back', 15000).catch(() => {});
+    const said = await banner(page);
+    step(
+      (await usableWrites(page)).length === 3 && !said.startsWith('The stored setup cannot be used') && pageErrors.length === 0,
+      `a rag-setup.json whose enrichment is one prompt, as before the chain, opens as a setup (usable: ${(await usableWrites(page)).join(', ') || 'none'}; banner: "${clip(said)}"; page errors: ${pageErrors.join(' | ') || 'none'})`
+    );
+  });
 
   await road('Save documentation whose read of the stored setup fails', async (page) => {
     await openPage(page, 'rag');
