@@ -57,9 +57,11 @@ export function isOptimizationTracker(value: unknown): boolean {
 
 /**
  * rag-setup.json: a setup of version 1 with the sections and the fields the
- * page shows - and writes back - from it. The sections a setup saved before
- * they existed lacks (documentation, policies, enrich, job) are taken from
- * the defaults; where they are present, they are of their kind.
+ * page shows - and writes back - from it. What a setup saved before it
+ * existed lacks (artifactsFolder, documentation, policies, enrich, job) may
+ * be absent - the defaults stand in for the first three, and no enrichment
+ * and no job are what their absence means; where present, each is of its
+ * kind.
  */
 export function isRagSetup(value: unknown): boolean {
   if (!isObject(value) || value.version !== 1) return false;
