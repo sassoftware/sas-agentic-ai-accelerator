@@ -25,7 +25,9 @@
  *     src/api reads the `items` of a page.
  *   - STORED_JSON_FILES: every JSON file the page reads is read by
  *     readStoredJson and checked by a function of its own (see
- *     storedJsonCensus below).
+ *     storedJsonCensus below);
+ *   - HTML_SOURCES: every text that goes into markup is a literal, goes
+ *     through escapeHtml, or is a text of the page (htmlCensus).
  * A call that is added, moved or gone fails a census until it is named.
  * (verify-outcomes.js has the roads of the delete of an optimization run.)
  *
@@ -37,6 +39,7 @@
  *   - a tracker that is read and is no list of runs (an HTML page, an object,
  *     rows that are no rows of a run) says that, and that opening it again
  *     does not help; nothing is written;
+ *   - the prompts and the model names of a stored run are drawn as text;
  *   - a prompt-test whose tracker and optimization tracker are on the second
  *     page of its contents shows its runs and its optimization history;
  *   - an optimization history that cannot be read, or holds no list of runs,
@@ -345,8 +348,82 @@ function storedJsonCensus() {
   );
 }
 
+// --------------------------------------------------------------------------
+// Texts that go into markup (round 24): the prompts of a stored run and the
+// names of its models were drawn with innerHTML, so a stored tracker ran
+// script in the page. The census reads, from every .ts file under src, every
+// value given to innerHTML or outerHTML (= and +=) and to insertAdjacentHTML:
+// each text put into it is a literal, goes through escapeHtml, or is named
+// in HTML_SOURCES with what it is - none of them read from SAS Viya or typed
+// by a person.
+// --------------------------------------------------------------------------
+const HTML_SOURCES = {
+  'objects/prompt-builder.ts promptBuilderInterfaceText': 'a text of the locale files of the page',
+  'objects/prompt-builder.ts TRACKER_ICON_PATHS': 'the path of an icon, a constant of the page',
+  'objects/prompt-builder.ts iconPath': 'the path of an icon of the legend, one of TRACKER_ICON_PATHS',
+  'objects/prompt-builder.ts VIYA': 'the address of SAS Viya the page is configured with',
+  'objects/prompt-builder.ts promptExperimentRunModel': 'the id of the open prompt-test, as SAS Model Manager gave it',
+  'objects/prompt-builder.ts decision': 'a choice between two texts of the locale files',
+  'objects/prompt-builder.ts runIsDecision': 'a choice between two texts of the locale files',
+  'objects/prompt-builder.ts confidenceBadge': 'markup of a text of the locale files and the confidence of a judge, escaped',
+  'objects/prompt-builder.ts JUDGE_BUTTON_SPINNER': 'the markup of a spinner, a constant of the page',
+  'objects/prompt-builder.ts guideHtml': 'a guide of the Optimize step, a text of the locale files (makeOptimizeGuide)',
+  'objects/prompt-decision.ts Math': 'a number the page computes',
+  'objects/prompt-decision.ts count': 'a number the page counts',
+  'objects/prompt-decision.ts percent': 'a number the page computes, as a percentage',
+  'ui/create-modal.ts text': 'a text of a create dialog, from the locale files',
+  'ui/external-link.ts label': 'the markup of the link itself, put back after the note that it was copied',
+  'ui/markdown.ts DOMPurify': 'the markdown of a response made markup, sanitized by DOMPurify',
+};
+function htmlCensus() {
+  const files = sourceFiles();
+  const unnamed = new Set();
+  let sinks = 0;
+  for (const [file, text] of Object.entries(files)) {
+    const { program, source } = parse(file, text);
+    const values = [];
+    walk(program, source, (node) => {
+      if (node.type === 'AssignmentExpression' && node.left.type === 'MemberExpression' && ['innerHTML', 'outerHTML'].includes(node.left.property.name)) values.push(node.right);
+      if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression' && node.callee.property.name === 'insertAdjacentHTML') values.push(node.arguments[1]);
+    });
+    sinks += values.length;
+    // The texts in a value: the expressions of a template, both sides of a
+    // choice or of a +, what String() is given, what each item of a list
+    // joined into one text is made of, and a value that is none of these.
+    const texts = (node) => {
+      if (!node || node.type === 'Literal') return [];
+      if (node.type === 'ParenthesizedExpression') return texts(node.expression);
+      if (node.type === 'TemplateLiteral') return node.expressions.flatMap(texts);
+      if (node.type === 'ConditionalExpression') return [...texts(node.consequent), ...texts(node.alternate)];
+      if (node.type === 'BinaryExpression' && node.operator === '+') return [...texts(node.left), ...texts(node.right)];
+      if (node.type === 'CallExpression' && node.callee.type === 'Identifier' && node.callee.name === 'escapeHtml') return [];
+      if (node.type === 'CallExpression' && node.callee.type === 'Identifier' && node.callee.name === 'String') return texts(node.arguments[0]);
+      const callee = node.type === 'CallExpression' && node.callee.type === 'MemberExpression' ? node.callee : null;
+      if (callee && callee.property.name === 'join' && callee.object.type === 'CallExpression' && callee.object.callee.type === 'MemberExpression' && callee.object.callee.property.name === 'map') {
+        const made = callee.object.arguments[0];
+        if (made && made.type === 'ArrowFunctionExpression' && made.body.type !== 'BlockStatement') return texts(made.body);
+      }
+      return [node];
+    };
+    for (const value of values) {
+      for (const node of texts(value)) {
+        let root = node;
+        while (['MemberExpression', 'ChainExpression', 'TSAsExpression', 'CallExpression', 'LogicalExpression'].includes(root.type)) {
+          root = root.type === 'CallExpression' ? root.callee : root.type === 'LogicalExpression' ? root.left : root.object || root.expression;
+        }
+        if (!(root.type === 'Identifier' && HTML_SOURCES[`${file} ${root.name}`])) unnamed.add(`${file}: ${source(node)}`);
+      }
+    }
+  }
+  step(
+    sinks > 0 && unnamed.size === 0,
+    `every text that goes into markup in the ${Object.keys(files).length} source files is a literal, goes through escapeHtml, or is a text of the page named here (values given to innerHTML, outerHTML and insertAdjacentHTML: ${sinks}; texts not named: ${[...unnamed].join('; ') || 'none'})`
+  );
+}
+
 (async () => {
   census();
+  htmlCensus();
 
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   let pageErrors = [];
@@ -557,6 +634,36 @@ function storedJsonCensus() {
       step(pageErrors.length === 0, `a tracker answered with ${what}: no uncaught page errors (got: ${pageErrors.join(' | ') || 'none'})`);
     });
   }
+
+  // ==========================================================================
+  // The texts of a stored run are text (round 24)
+  // ==========================================================================
+  // The prompts of a run and the names of its models were drawn as markup:
+  // a stored tracker ran script in the page, and a prompt that held "<" lost
+  // what followed it. htmlCensus names every text that goes into markup.
+  await road('a tracker whose prompts and model hold markup', async (page) => {
+    await openPage(page);
+    await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
+    const SYSTEM = 'Answer in <b>bold</b> <img src="x" onerror="window.__ran=1">';
+    const USER = 'Compare a<b and c>d';
+    const MODEL = 'm<i>x</i><img src=y onerror="window.__ran=2">';
+    const rows = [{ runId: 1, model: '', systemPrompt: SYSTEM, userPrompt: USER }, { runId: 1, model: MODEL, response: 'r', best_prompt: 0 }];
+    await page.route('**/files/files/trk-1/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(rows) }));
+    await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-used');
+    await waitUntil(async () => (await savedRuns(page)) > 0, 'the run is drawn', 15000).catch(() => {});
+    await page.waitForTimeout(500);
+    const seen = await page.evaluate(() => ({
+      ran: window.__ran ?? null,
+      system: (document.querySelector('#app-obj-LPB-pet-0-run-systenPrompt')?.textContent || '').trim(),
+      user: (document.querySelector('#app-obj-LPB-pet-0-run-userPrompt')?.textContent || '').trim(),
+      models: [...document.querySelectorAll('#app-obj-LPB-pet-0 .nested-accordion .accordion-button')].map((button) => button.textContent.trim()),
+      markup: document.querySelectorAll('#app-obj-LPB-pet-0 img, #app-obj-LPB-pet-0 .accordion-body b b, #app-obj-LPB-pet-0 .accordion-button i').length,
+    }));
+    step(
+      seen.ran === null && seen.system.endsWith(SYSTEM) && seen.user.endsWith(USER) && seen.models.some((text) => text.endsWith(MODEL)) && seen.markup === 0 && pageErrors.length === 0,
+      `the prompts and the name of a model of a stored run are drawn as the text they are, and run nothing (script ran: ${seen.ran}; system prompt: "${clip(seen.system)}"; user prompt: "${clip(seen.user)}"; models: ${JSON.stringify(seen.models)}; elements made of the texts: ${seen.markup}; page errors: ${pageErrors.join(' | ') || 'none'})`
+    );
+  });
 
   // ==========================================================================
   // Every page of the contents of a prompt-test

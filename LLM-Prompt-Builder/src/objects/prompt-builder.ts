@@ -3736,14 +3736,14 @@ export async function buildPromptBuilder(
               renderQuestionList(runQuestions, runExpected, promptBuilderInterfaceText)
             );
           } else {
-            promptExperimentRunContainerItemBodySystemPrompt.innerHTML = `<b>${promptBuilderInterfaceText.promptExperimentTrackerSystemPrompt}</b> ${systemPrompt}`;
+            promptExperimentRunContainerItemBodySystemPrompt.innerHTML = `<b>${promptBuilderInterfaceText.promptExperimentTrackerSystemPrompt}</b> ${escapeHtml(systemPrompt)}`;
           }
           // Add the User Prompt to the main run body
           const promptExperimentRunContainerItemBodyUserPrompt = document.createElement('p');
           promptExperimentRunContainerItemBodyUserPrompt.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-${index}-run-userPrompt`;
           promptExperimentRunContainerItemBodyUserPrompt.innerHTML = runIsDecision
             ? `<b>${promptBuilderInterfaceText.promptExperimentTrackerState}</b> ${escapeHtml(userPrompt)}`
-            : `<b>${promptBuilderInterfaceText.promptExperimentTrackerUserPrompt}</b> ${userPrompt}`;
+            : `<b>${promptBuilderInterfaceText.promptExperimentTrackerUserPrompt}</b> ${escapeHtml(userPrompt)}`;
           // Append to the container
           promptExperimentRunContainerItemBody.appendChild(promptExperimentRunContainerItemBodySystemPrompt);
           promptExperimentRunContainerItemBody.appendChild(promptExperimentRunContainerItemBodyUserPrompt);
@@ -3831,7 +3831,7 @@ export async function buildPromptBuilder(
               if (modelData?.judge_best) {
                 promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg class="judgeBest" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderJudgeBestPrompt}</title><path d="${TRACKER_ICON_PATHS.judgeBest}"/></svg> `;
               }
-              promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `${promptBuilderInterfaceText.promptExperimentModel} ${promptExperimentRunModelKey}`;
+              promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `${promptBuilderInterfaceText.promptExperimentModel} ${escapeHtml(promptExperimentRunModelKey)}`;
               // Create the accordion body container
               const promptExperimentContainerModelContainerAccordionItemBodyContainer = document.createElement('div');
               promptExperimentContainerModelContainerAccordionItemBodyContainer.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-${index}-run-nested-${promptExperimentRunModelKey}-body`;
