@@ -1311,13 +1311,15 @@ function writesCensus() {
         if (lost === 'carried out') await route.fetch();
         return route.abort('failed');
       });
+      // The toast of the creation is not one of the delete.
+      const before = (await toasts(page)).length;
       await page.click(rgb('delete-setup'));
       await confirmDialog(page);
       // A delete that went through is said in a toast, one that did not in the banner.
-      await waitUntil(async () => (await textOf(page, rgb('status'))) !== '' || (await toasts(page)).length > 0, 'the banner or a toast', 20000).catch(() => {});
+      await waitUntil(async () => (await textOf(page, rgb('status'))) !== '' || (await toasts(page)).length > before, 'the banner or a toast', 20000).catch(() => {});
       await atRest();
       const banner = await textOf(page, rgb('status'));
-      const said = await toasts(page);
+      const said = (await toasts(page)).slice(before);
       const listedNow = await page.$$eval(`${rgb('setup')} option`, (options) => options.map((option) => option.value));
       const open = await page.inputValue(rgb('setup'));
       const seen = `banner: "${clip(banner)}"; toasts: ${JSON.stringify(said)}; listed: ${listedNow.includes(id)}; open: ${open}; page errors: ${JSON.stringify(pageErrors)}`;
