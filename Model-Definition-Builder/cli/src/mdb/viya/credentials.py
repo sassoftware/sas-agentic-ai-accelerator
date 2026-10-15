@@ -186,7 +186,7 @@ def read_name_value_file(path: Path) -> dict:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        raise CredentialError(f"cannot read {path}: {exc}") from exc
+        raise CredentialError(f"cannot read {path}: {one_line(str(exc))}") from exc
     for line in lines:
         trimmed = line.strip()
         if not trimmed or trimmed.startswith("#") or "=" not in trimmed:
@@ -236,7 +236,7 @@ def read_manifest_text(path: Path) -> str:
     try:
         return path.read_bytes().decode("utf-8")
     except OSError as exc:
-        raise CredentialError(f"cannot read {path}: {exc}") from exc
+        raise CredentialError(f"cannot read {path}: {one_line(str(exc))}") from exc
     except UnicodeDecodeError as exc:
         raise CredentialError(f"{path} is not UTF-8 text: {exc}") from exc
 
@@ -246,7 +246,7 @@ def write_manifest_text(path: Path, text: str) -> None:
     try:
         path.write_bytes(text.encode("utf-8"))
     except OSError as exc:
-        raise CredentialError(f"cannot write {path}: {exc}") from exc
+        raise CredentialError(f"cannot write {path}: {one_line(str(exc))}") from exc
 
 
 def _not_yaml(path: Path, exc) -> CredentialError:

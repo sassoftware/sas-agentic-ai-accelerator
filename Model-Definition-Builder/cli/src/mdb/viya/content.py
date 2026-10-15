@@ -72,7 +72,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from ..core import content as _content
-from .answer import answer as _answer
+from .answer import answer as _answer, one_line
 
 STEP_MEDIA = "application/vnd.sas.data.flow.step+json"
 DEFINITION_MEDIA = "application/vnd.sas.job.definition+json"
@@ -112,7 +112,7 @@ def _read(what: str, call):
     except DeployError:
         raise
     except Exception as exc:                                   # a timeout, a dropped connection
-        raise DeployError(f"{what}: no answer ({type(exc).__name__}: {exc})") from exc
+        raise DeployError(f"{what}: no answer ({type(exc).__name__}: {one_line(str(exc))})") from exc
 
 
 def _write(what: str, call, unknown: str = ""):
@@ -121,7 +121,7 @@ def _write(what: str, call, unknown: str = ""):
     try:
         response = call()
     except Exception as exc:                                   # a timeout, a dropped connection
-        raise WriteFailed(f"{what}: no answer ({type(exc).__name__}: {exc})"
+        raise WriteFailed(f"{what}: no answer ({type(exc).__name__}: {one_line(str(exc))})"
                           + (f" - {unknown}" if unknown else "")) from exc
     if not response.ok:
         raise WriteFailed(f"{what}: {_answer(response)}")
@@ -271,7 +271,7 @@ def update_file(session, uri: str, name: str, data: bytes, etag: str = "", conte
     try:
         response = session.put(f"{uri}/content", data=data, headers=headers)
     except Exception as exc:                                   # a timeout, a dropped connection
-        raise WriteFailed(f"no answer to the update of the content of {name} ({type(exc).__name__}: {exc}) - the "
+        raise WriteFailed(f"no answer to the update of the content of {name} ({type(exc).__name__}: {one_line(str(exc))}) - the "
                           "file holds its old or its new content, and was not removed") from exc
     if not response.ok:
         raise WriteFailed("the file was left as it is: the update of its content was refused "
@@ -641,7 +641,7 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
         except WriteFailed as exc:
             result.stopped_at = done(entry, FAILED, str(exc))
         except (DeployError, OSError, ValueError) as exc:
-            done(entry, FAILED, str(exc))
+            done(entry, FAILED, one_line(str(exc)))
 
     # what else sits in the folders of the manifest: named, and left alone
     listed_entries = {(entry.folder, entry.name, entry.kind) for entry in manifest.all_entries()}
@@ -907,5 +907,5 @@ def deploy_to(session, manifest, entry, target: str, dry_run: bool = False, sour
                               "to update it all the same")
         status, note = _DEPLOYERS[entry.kind](session, source, entry, None, [found], dry_run, settings)
     except (DeployError, OSError, ValueError) as exc:
-        return Outcome(entry, FAILED, str(exc))
+        return Outcome(entry, FAILED, one_line(str(exc)))
     return Outcome(entry, status, f"{note} - {where}")

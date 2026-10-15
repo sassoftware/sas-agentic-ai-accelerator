@@ -519,7 +519,9 @@ def test_no_line_with_markup_on_prints_an_exception_as_markup():
     printed = list(_prints_with_markup_on())
     bare = [(line, text) for line, text in printed if text in ("exc", "result.detail")]
     assert bare == []
-    assert sum(1 for _, text in printed if text in ("_plain(exc)", "_plain(result.detail)")) >= 40
+    # _plain(one_line(str(exc))): the text of an exception that can be an answer, on one line (test_fix_mdb_24)
+    assert sum(1 for _, text in printed
+               if text in ("_plain(exc)", "_plain(one_line(str(exc)))", "_plain(result.detail)")) >= 40
     out = io.StringIO()
     text = "HTTP 403 not [/red] allowed for [/folders/folders/f1] - see [bold]the log[/bold] C:\\"
     Console(file=out, width=1000, force_terminal=False).print(f"[red]{cli._plain(RuntimeError(text))}[/red]")

@@ -39,6 +39,7 @@ from .core.paths import (
 )
 from .core.printable import CONTROL, printable, traceback_text
 from .core.validator import validate_all, validate_folder
+from .viya.answer import one_line
 from .providers import load_adapters
 from .providers.base import CatalogModel, ProviderAdapter, slugify
 
@@ -403,7 +404,7 @@ def _catalog_for(adapter: ProviderAdapter, ctx: Context, offline: bool, verify_s
         except NotImplementedError as exc:
             console.print(f"[dim]{_plain(exc)}[/dim]")
         except Exception as exc:
-            console.print(f"[yellow]Live catalog unavailable ({_plain(exc)}) - falling back to the bundled snapshot.[/yellow]")
+            console.print(f"[yellow]Live catalog unavailable ({_plain(one_line(str(exc)))}) - falling back to the bundled snapshot.[/yellow]")
     if static:
         console.print(f"[dim]Using bundled static catalog ({_plain(static[0].source)}) - confirm pricing before relying on cost monitoring.[/dim]")
     return static
@@ -779,7 +780,7 @@ def generate(
             manifest = load_manifest(folder)
             rendered = render_assets(manifest, ctx.core)
         except Exception as exc:
-            console.print(f"[red]{_plain(model_id)}: {_plain(exc)}[/red]")
+            console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
             failed = True
             continue
         classifications = drift.classify(folder, rendered)
@@ -1074,7 +1075,7 @@ def load_releases(
         try:
             _, summary = build_release_table(source, csv_out)
         except (OSError, ValueError) as exc:
-            console.print(f"[red]{_plain(exc)}[/red]")
+            console.print(f"[red]{_plain(one_line(str(exc)))}[/red]")
             raise typer.Exit(1)
         console.print(f"Wrote {_plain(summary['rows'])} rows for {_plain(summary['releases'])} releases to {_plain(csv_out)} "
                       f"({_plain(current_words(summary))}).")
@@ -1281,7 +1282,7 @@ def setup(
             try:
                 ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
             except Exception as exc:
-                console.print(f"[red]{_plain(kind)}: {_plain(exc)}[/red]")
+                console.print(f"[red]{_plain(kind)}: {_plain(one_line(str(exc)))}[/red]")
                 raise typer.Exit(1)
             for created in ensured.created:
                 console.print(f"[green]created {_plain(created)}.[/green]")
@@ -1432,7 +1433,7 @@ def _capture_options(session, seeds: dict, strict: bool = False, content_root: s
             try:
                 report = find_report_at(session, folder, report_name, strict=True)
             except Exception as exc:
-                raise _ReportUnreadable(report_name, f"whether it is in {folder} could not be asked ({exc})") \
+                raise _ReportUnreadable(report_name, f"whether it is in {folder} could not be asked ({one_line(str(exc))})") \
                     from exc
         else:
             report = find_report_at(session, folder, report_name)
@@ -1442,9 +1443,9 @@ def _capture_options(session, seeds: dict, strict: bool = False, content_root: s
             content, _ = get_content(session, report["id"])
         except Exception as exc:
             if strict:
-                raise _ReportUnreadable(report_name, f"it is in {folder} and its content cannot be read ({exc})") \
+                raise _ReportUnreadable(report_name, f"it is in {folder} and its content cannot be read ({one_line(str(exc))})") \
                     from exc
-            console.print(f"[yellow]{_plain(report_name)}: content unreadable ({_plain(exc)}).[/yellow]")
+            console.print(f"[yellow]{_plain(report_name)}: content unreadable ({_plain(one_line(str(exc)))}).[/yellow]")
             continue
         options = read_options(content)
         if not options:
@@ -1618,7 +1619,7 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
         try:
             content, etag = get_content(session, report["id"])
         except Exception as exc:
-            console.print(f"[red]{_plain(report_name)}: reading the report failed ({_plain(exc)}) - its options were not "
+            console.print(f"[red]{_plain(report_name)}: reading the report failed ({_plain(one_line(str(exc)))}) - its options were not "
                           "written.[/red]", highlight=False)
             failures += 1
             continue
@@ -1663,7 +1664,7 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
         try:
             put_content(session, report["id"], updated, etag)
         except Exception as exc:
-            console.print(f"[red]{_plain(report_name)}: writing the report failed ({_plain(exc)}).[/red]")
+            console.print(f"[red]{_plain(report_name)}: writing the report failed ({_plain(one_line(str(exc)))}).[/red]")
             failures += 1
             continue
         console.print(f"[green]{_plain(report_name)}: restored " + _plain("; ".join(what)) + "[/green]")
@@ -1697,7 +1698,7 @@ def _discovered_seeds(session, ctx: "Context", otherwise: str = "", kinds=None) 
             try:
                 ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
             except Exception as exc:
-                console.print(f"[yellow]{_plain(report_name)}: could not discover the {_plain(kind)} project ({_plain(exc)})"
+                console.print(f"[yellow]{_plain(report_name)}: could not discover the {_plain(kind)} project ({_plain(one_line(str(exc)))})"
                               + (f"; {_plain(otherwise)}" if otherwise else "") + ".[/yellow]")
                 continue
             repository_id = repository_id or ensured.repository_id
@@ -2387,7 +2388,7 @@ def _live_options(session, content_root: str = "") -> dict:
         try:
             on_site = bool(find_report_at(session, folder, name, strict=True)) or on_site
         except Exception as exc:
-            raise _ReportUnreadable(name, f"whether it is in {folder} could not be asked ({exc})") from exc
+            raise _ReportUnreadable(name, f"whether it is in {folder} could not be asked ({one_line(str(exc))})") from exc
     return _capture_options(session, {}, strict=True, content_root=content_root) if on_site else {}
 
 
@@ -3263,7 +3264,7 @@ def register(
                                   "(cost monitoring metadata will be incomplete).[/yellow]")
                 result = register_model(session, manifest, folder, row, scr, update=update)
             except Exception as exc:
-                console.print(f"[red]{_plain(folder.name)}: {_plain(exc)}[/red]")
+                console.print(f"[red]{_plain(folder.name)}: {_plain(one_line(str(exc)))}[/red]")
                 failed = True
                 continue
             color = {"created": "green", "updated": "green", "skipped": "yellow"}[result.action]
@@ -3294,7 +3295,7 @@ def unregister(
             try:
                 result = unregister_model(session, model_id)
             except Exception as exc:
-                console.print(f"[red]{_plain(model_id)}: {_plain(exc)}[/red]")
+                console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
                 failed = True
                 continue
             if result == "deleted":
@@ -3325,7 +3326,7 @@ def pull(
             try:
                 result = pull_model(session, model_id, ctx.defs_dir, force=force)
             except Exception as exc:
-                console.print(f"[red]{_plain(model_id)}: {_plain(exc)}[/red]")
+                console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
                 failed = True
                 continue
             defs_name = "LLM-Definitions" if result.kind == "llm" else "Embedding-Definitions"
@@ -3346,7 +3347,7 @@ def pull(
                                   f"'mdb import {_plain(model_id)} --apply'.[/green]")
                 except Exception as exc:
                     console.print(f"[yellow]{_plain(model_id)}: pulled, but could not reverse-engineer "
-                                  f"definition.yaml ({_plain(exc)}) - the folder stays hand-maintained.[/yellow]")
+                                  f"definition.yaml ({_plain(one_line(str(exc)))}) - the folder stays hand-maintained.[/yellow]")
             elif result.had_definition:
                 console.print(f"  Already mdb-managed (definition.yaml pulled). Regenerate with "
                               f"'mdb generate {_plain(model_id)}'.")
@@ -3415,7 +3416,7 @@ def publish(
             try:
                 state = publish_model(session, model_id, dest, wait=wait)
             except Exception as exc:
-                console.print(f"[red]{_plain(model_id)}: {_plain(exc)}[/red]")
+                console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
                 failed = True
                 continue
             if state in ("requested", "completed"):
@@ -3426,7 +3427,7 @@ def publish(
                     if ensure_model_lifecycle(session, model_id, "deployed", "approved"):
                         console.print(f"[dim]{_plain(model_id)}: modelStatus=deployed, approvalState=approved[/dim]")
                 except Exception as exc:
-                    console.print(f"[yellow]{_plain(model_id)}: could not update lifecycle attributes ({_plain(exc)}).[/yellow]")
+                    console.print(f"[yellow]{_plain(model_id)}: could not update lifecycle attributes ({_plain(one_line(str(exc)))}).[/yellow]")
             else:
                 console.print(f"[red]{_plain(model_id)}: publish {_plain(state)} on {_plain(dest)}[/red]")
                 failed = True
@@ -3691,7 +3692,7 @@ def retire(
         console.print(f"The registered model's status was not updated: {exc}", style="yellow", markup=False,
                       highlight=False, soft_wrap=True)
     except Exception as exc:
-        console.print(f"[yellow]Could not update the registered model's status: {_plain(exc)}[/yellow]")
+        console.print(f"[yellow]Could not update the registered model's status: {_plain(one_line(str(exc)))}[/yellow]")
 
     if not archive:
         console.print(f"Push the deprecated flag to the registered model with: mdb register {_plain(model_id)} --update")
@@ -3816,7 +3817,7 @@ def provider_check(adapter_id: str = typer.Argument(...)):
         static = adapter.static_catalog(ctx.core.core_dir)
         console.print(f"static catalog: {len(static)} models")
     except Exception as exc:
-        problems.append(f"static_catalog raised: {exc}")
+        problems.append(f"static_catalog raised: {one_line(str(exc))}")
         static = []
     dummy = static[0] if static else CatalogModel(ref="dummy-model", display_name="Dummy Model")
     try:
@@ -3827,7 +3828,7 @@ def provider_check(adapter_id: str = typer.Argument(...)):
         rendered = render_assets(manifest, ctx.core)
         console.print(f"manifest builds and renders {len(rendered)} assets")
     except Exception as exc:
-        problems.append(f"build/render failed: {exc}")
+        problems.append(f"build/render failed: {one_line(str(exc))}")
     if problems:
         for problem in problems:
             console.print(f"[red]FAIL: {_plain(problem)}[/red]")
