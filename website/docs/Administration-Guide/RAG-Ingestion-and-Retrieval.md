@@ -828,14 +828,16 @@ ticked writes `SSL_VERIFY = True` and removes the tag. The tag follows the
 score code the model holds: when SAS Model Manager refuses
 `retrieve_context.py`, the manifest stops at that stage with the HTTP status
 and leaves the score code and the tags as they were, and a tag that could
-not be written or removed is named in the outcome beside the button. One
-case the page cannot decide: when the upload of `retrieve_context.py` gets
-no answer at all — the connection drops, or an ingress answers with its
-error page — SAS Model Manager may have stored the file all the same. The
-manifest stops at that stage too, says that *it is not known whether SAS
-Model Manager stored retrieve_context.py*, and leaves the tag as it was;
-until **Manifest setup** has run through again, the tag may not match the
-`SSL_VERIFY` line the model holds.
+not be written or removed is named in the outcome beside the button. When the
+upload of `retrieve_context.py` gets no usable answer — the connection
+drops, or an ingress answers with its error page — the page reads the file
+back: when the setup holds it, the manifest goes on; when it does not, the
+manifest stops at that stage and says so. Only when it cannot be read back
+either does the manifest stop with *it is not known whether SAS Model
+Manager stored retrieve_context.py*, leaving the tag as it was; until
+**Manifest setup** has run through again, the tag may then not match the
+`SSL_VERIFY` line the model holds. This was driven against a stand-in for
+SAS Viya, not against SAS Viya.
 
 What the option does not touch:
 
