@@ -95,7 +95,7 @@ def _refuse_empty(command: str, name: str, option: str, value: str) -> None:
 
 
 #: The exception click shows as a usage error - `No such option: <what was typed>` - and that a command raises to
-#: end with a line: click's own (typer up to 0.2x) or the copy typer brings along (typer 0.27).
+#: end with a line: click's own (typer 0.12.0 runs with click 8.1.7) or the copy typer brings along (typer 0.27.0).
 _CLICK_ERROR = next(kind for kind in typer.BadParameter.__mro__ if kind.__name__ == "ClickException")
 
 
