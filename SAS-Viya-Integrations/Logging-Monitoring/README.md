@@ -17,7 +17,7 @@ Three programs of this folder work on one set of tables, in this order:
 3. *Get-All-Prompts.sas* (or the step *LLM - Get All Prompts*) - the experiments, the RAG setups and a catalog of models from SAS Model Manager
 4. *Link-Logs-To-Models.sas* - fills the columns of `LLM_LOGS` that name the model that answered and the prompt, decision template or RAG setup that sent the request
 
-Steps 2 to 4 ran as one chain on a SAS Viya system on 2026-10-11 and on 2026-10-12, each time with the programs as they were then: in the last run of 2026-10-12 with version 2.4 of the step *LLM - Log Parser* and version 2.2 of the step *LLM - Get All Prompts*. Each run led to changes. The programs of this folder are versions 2.11 and 2.6 of the two steps, with the code files and the link program that go with them; the changelog of the release says what they change. The guide says for a run what was measured, with which version of each program, and what was changed afterwards. The Python of the three programs runs in the tests of this folder.
+Steps 2 to 4 ran as one chain on a SAS Viya system on 2026-10-11 and on 2026-10-12, each time with the programs as they were then: in the last run of 2026-10-12 with version 2.4 of the step *LLM - Log Parser* and version 2.2 of the step *LLM - Get All Prompts*. Each run led to changes. The programs of this folder are versions 2.12 and 2.7 of the two steps, with the code files and the link program that go with them; the changelog of the release says what they change. The guide says for a run what was measured, with which version of each program, and what was changed afterwards. The Python of the three programs runs in the tests of this folder.
 
 The resulting table has the following columns, in this order:
 

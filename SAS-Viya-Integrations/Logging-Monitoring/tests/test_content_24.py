@@ -153,3 +153,35 @@ def test_the_five_test_files_are_the_ones_the_paragraph_names():
     assert named == {"tests/test_handed_to_sas.py", "tests/test_job_state.py", "tests/test_cas_sessions.py",
                      "tests/test_fix_content_23.py", "tests/test_settings.py"}
     assert all((FOLDER / name).is_file() for name in named)
+
+
+# Round 23 changed the programs of LLM - Log Parser 2.11 and LLM - Get All Prompts 2.6 (4cc86c1) after both had run in
+# the ninth pass (on 36124b8): the use of a connected session of the step's own name is versions 2.12 and 2.7.
+
+def _changelog(step):
+    definition = json.loads((STEPS / step).read_text(encoding="utf-8"))
+    stack = list(json.loads(definition["ui"])["pages"])
+    while stack:
+        node = stack.pop()
+        if node.get("id") == "textChangelog":
+            return node["text"]
+        stack.extend(node.get("children", []))
+    raise AssertionError(step)
+
+
+@pytest.mark.parametrize("step,new,old,session", [
+    ("LLM - Log Parser.step", "2.12", "2.11", "llmLogMySess"),
+    ("LLM - Get All Prompts.step", "2.7", "2.6", "gapMySess"),
+])
+def test_the_own_session_is_a_version_of_its_own(step, new, old, session):
+    changelog = _changelog(step)
+    entries = re.split(r"(?m)^\* Version: ", changelog)[1:]
+    assert entries[0].startswith(new + " (15OCT2026)\n") and entries[1].startswith(old + " (15OCT2026)\n")
+    bullet = "Where the session the option SESSREF names is not connected but %s is" % session
+    assert bullet in entries[0] and ("Version %s ran cas %s there" % (old, session)) in entries[0]
+    assert len(re.findall(r"(?m)^ +- ", entries[0])) == 1
+    assert session not in entries[1] and changelog.count(bullet) == 1
+
+
+def test_the_readme_names_the_versions_of_the_two_steps():
+    assert "The programs of this folder are versions 2.12 and 2.7 of the two steps" in text(LM)

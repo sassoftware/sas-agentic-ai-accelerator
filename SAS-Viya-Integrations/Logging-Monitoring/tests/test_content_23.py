@@ -328,7 +328,8 @@ def test_the_about_tab_of_the_step_says_which_setups_are_left_out_as_the_code_de
             "session, a setup where CAS refused the question for its run table, the question for its ledger where the run table is not "
             "in memory or - for a CAS library other than CASUSER - the listing of the CAS libraries, and a setup whose PROC CAS step "
             "halted before it set what it found; no table of a setup is loaded or changed.") in texts["textAbout"]
-    assert texts["textChangelog"].startswith("* Version: 2.6 (15OCT2026)\n      - A setup whose PROC CAS step halted before it set what it found")
+    # content-24: 2.7 stands in front of it
+    assert "\n* Version: 2.6 (15OCT2026)\n      - A setup whose PROC CAS step halted before it set what it found" in texts["textChangelog"]
     assert "\n* Version: 2.5 (14OCT2026)\n      - A setup where CAS refused the question for its run table, the question for its ledger where the run table is not in memory" in texts["textChangelog"]
     assert json.loads(json.loads(GAP_STEP.read_bytes().decode("utf-8"))["localUi"]) == ui
 
@@ -606,7 +607,8 @@ def test_the_step_of_the_parser_says_it_in_its_about_tab_and_its_changelog():
             walk(child.get("children", []))
     walk(ui["pages"])
 
-    assert texts["textChangelog"].startswith("* Version: 2.11 (15OCT2026)\n     - A PROC CAS step that halts")
+    # content-24: 2.12 stands in front of it
+    assert "\n* Version: 2.11 (15OCT2026)\n     - A PROC CAS step that halts" in texts["textChangelog"]
     assert ("an action that the step goes by and that CAS refused or did not run - the question whether the output table is there, the "
             "listing of the saved files, of the columns of the table or of the tables of CASUSER -, a new table that could not be created "
             "and a PROC CAS step that halted while it wrote the table.") in texts["textAbout"]

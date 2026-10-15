@@ -1238,8 +1238,9 @@ def test_the_about_tab_names_the_five_tables():
                   "modelID, runID, model", "modelID, optimizationId", "modelID, run_id"):
         assert words in about
     # fix-content-22: version 2.5, a setup where CAS refused a question about its tables; content-23: 2.6, a step that halted
-    assert by_id["textChangelog"]["text"].startswith("* Version: 2.6 (15OCT2026)\n      - A setup whose PROC CAS step halted before it set "
-                                                    "what it found")
+    # content-24: 2.7 stands in front of it
+    assert ("\n* Version: 2.6 (15OCT2026)\n      - A setup whose PROC CAS step halted before it set what it found"
+            in by_id["textChangelog"]["text"])
     assert ("\n* Version: 2.5 (14OCT2026)\n      - A setup where CAS refused the question for its run table, the question for its ledger "
             "where the run table is not in memory or - for a CAS library other than CASUSER - the listing of the CAS libraries is left out "
             "with the NOTE of a CAS library that is not available, which names the refusal as well\n") in by_id["textChangelog"]["text"]
