@@ -265,6 +265,19 @@ def test_generate_refuses_a_manifest_that_breaks_the_rule_and_writes_nothing(tmp
     assert _files(folder) == before
 
 
+def test_retire_refuses_a_manifest_that_breaks_the_rule_and_writes_nothing(tmp_path, monkeypatch, repo_root):
+    """retire saved the manifest with its new tag before it rendered, so a
+    refusal left a tagged manifest and files that were not regenerated."""
+    folder = _relocated(tmp_path, monkeypatch, repo_root)
+    _break_manifest(folder)
+    before = _files(folder)
+    result = CliRunner().invoke(cli.app, ["retire", folder.name])
+    assert result.exit_code == 1, result.output
+    assert (f"{folder.name}: Option 'mode' is an enum option whose values are null - an enum option needs a "
+            "non-empty list of texts as its values.") in _text(result.output)
+    assert _files(folder) == before
+
+
 @pytest.fixture
 def viya(monkeypatch):
     """No SAS Viya: the session, the repository/project setup and the

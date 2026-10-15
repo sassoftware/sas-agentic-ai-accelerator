@@ -3661,8 +3661,15 @@ def retire(
         console.print(f"{_plain(model_id)}: already deprecated - archiving.")
     else:
         manifest.tags.extra.append("deprecated")
+        # Rendered before the manifest is saved: a manifest that cannot be
+        # rendered (an option that breaks check_options_json) is refused with
+        # nothing written.
+        try:
+            rendered = render_assets(manifest, ctx.core)
+        except GenerationError as exc:
+            console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
+            raise typer.Exit(1)
         manifest.save(folder)
-        rendered = render_assets(manifest, ctx.core)
         blockers = [c for c in drift.classify(folder, rendered)
                     if c.status in (drift.FileStatus.HAND_EDITED, drift.FileStatus.UNTRACKED)]
         if blockers:
