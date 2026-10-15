@@ -45,8 +45,9 @@
  *     rows that are no rows of a run) says that, and that opening it again
  *     does not help; nothing is written;
  *   - the prompts and the model names of a stored run are drawn as text;
- *   - a tracker and an optimization history whose every field holds a value,
- *     or null, are drawn and loaded;
+ *   - a tracker and an optimization history whose fields hold a value at
+ *     every depth, null in every text, number and box, or null in every
+ *     field of a row or an entry, are drawn and loaded;
  *   - a prompt-test whose tracker and optimization tracker are on the second
  *     page of its contents shows its runs and its optimization history;
  *   - an optimization history that cannot be read, or holds no list of runs,
@@ -980,11 +981,12 @@ async function shapeChecks({ STORED_SHAPES, fits, isExperimentTracker, isOptimiz
   // ==========================================================================
   // A file the checks take is one the page draws: built from the shapes of
   // stored-json.ts (STORED_SHAPES), a tracker and an optimization tracker
-  // whose rows and entries hold every field at every depth - with a value of
-  // its kind; with null in every field of a text, a number or a box that is
-  // not required; with null in every field that is not required - are drawn without a page error, without "[object Object]" and without a
-  // line that they cannot be used; the run and the optimization run are then
-  // loaded into the workbench.
+  // whose rows and entries hold every field at every depth with a value of
+  // its kind, or null in every text, number and box at every depth that is
+  // not required, or null in every field of the row or the entry itself
+  // that is not required, are drawn without a page error, without
+  // "[object Object]" and without a line that they cannot be used; the run
+  // and the optimization run are then loaded into the workbench.
   if (storedJson && storedJson.STORED_SHAPES) {
     const { STORED_SHAPES } = storedJson;
     // empty: '' fills every field, 'values' leaves a text, a number or a box
