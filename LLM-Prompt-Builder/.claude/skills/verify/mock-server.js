@@ -148,7 +148,9 @@ const manifestedTrackerRows = [
       { judgeModel: 'demo_llm', status: 'ok', ranking: ['demo_llm', 'second_llm'], confidence: 'high', reasoning: 'demo_llm is the more precise answer.' },
       { judgeModel: 'second_llm', status: 'ok', ranking: ['demo_llm', 'second_llm'], confidence: 'high', reasoning: 'demo_llm answers the question that was asked.' },
     ],
-    judge_chairman_model: 'contrarian_judge',
+    // A chairman the page can use: contrarian_judge has no key in the default
+    // credential domain, and a model that cannot be used is chosen nowhere.
+    judge_chairman_model: 'demo_llm',
     judge_chairman_reasoning: 'No tie to break.',
     judge_confidence: 'high',
     judge_reasoning: 'Both judges put demo_llm first.',

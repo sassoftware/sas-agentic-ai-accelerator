@@ -514,7 +514,7 @@ function same(got, wanted, label, fieldsOnly = false) {
     shown.controls['build #temperature1'] === '0.2' &&
     shown.controls['build #app-obj-LPB-judge-council-toggle'] === 'true' &&
     shown.controls['build #app-obj-LPB-judge-panel-1'] === 'true' &&
-    shown.controls['build #app-obj-LPB-judge-chairman-model'] === 'contrarian_judge' &&
+    shown.controls['build #app-obj-LPB-judge-chairman-model'] === 'demo_llm' &&
     shown.controls['build #app-obj-LPB-judge-include-self'] === 'true' &&
     shown.controls['build #app-obj-LPB-judge-auto'] === 'true' &&
     shown.controls['finalize #app-obj-LPB-pet-manifest-integrated'] === 'true' &&

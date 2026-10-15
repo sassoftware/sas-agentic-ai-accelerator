@@ -2763,6 +2763,8 @@ export async function buildPromptBuilder(
     chairmanPlaceholder.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSelectPlaceholder}`;
     promptBuilderJudgeChairmanModel.appendChild(chairmanPlaceholder);
     promptBuilderAvailableLLMs.forEach((availableLLM) => {
+      // A model that cannot judge cannot break a tie either.
+      if (llmNotUsableNote(availableLLM)) return;
       const chairmanOption = document.createElement('option');
       chairmanOption.value = availableLLM.name;
       chairmanOption.innerText = availableLLM.name;
@@ -4356,7 +4358,7 @@ export async function buildPromptBuilder(
             ? [judgeConfig.judgeModel]
             : [];
         const availableRunPanel = runPanel.filter((name) =>
-          promptBuilderAvailableLLMs.some((llm) => llm.name === name)
+          promptBuilderAvailableLLMs.some((llm) => llm.name === name && !llmNotUsableNote(llm))
         );
         if (availableRunPanel.length > 0) {
           // Single judge → the dropdown; a panel → the council toggle + list.
@@ -4376,7 +4378,7 @@ export async function buildPromptBuilder(
         // Restore the chairman tiebreaker when the run recorded one.
         const chairmanModel = judgeConfig.chairman?.model ?? '';
         const chairmanAvailable = Boolean(
-          chairmanModel && promptBuilderAvailableLLMs.some((llm) => llm.name === chairmanModel)
+          chairmanModel && promptBuilderAvailableLLMs.some((llm) => llm.name === chairmanModel && !llmNotUsableNote(llm))
         );
         promptBuilderJudgeChairmanToggle.checked = chairmanAvailable;
         if (chairmanAvailable) promptBuilderJudgeChairmanModel.value = chairmanModel;
@@ -4386,7 +4388,8 @@ export async function buildPromptBuilder(
       const runModels = Object.keys(trackerEntry).filter((key) => !TRACKER_META_KEYS.includes(key));
       promptBuilderAvailableLLMs.forEach((availableLLM, llmIndex) => {
         const llmCheckbox = document.getElementById(`model${llmIndex}`) as HTMLInputElement | null;
-        if (!llmCheckbox) return;
+        // A model that cannot be used is not ticked for a run either.
+        if (!llmCheckbox || llmCheckbox.disabled) return;
         const selected = runModels.includes(availableLLM.name);
         if (llmCheckbox.checked !== selected) {
           llmCheckbox.checked = selected;
@@ -6975,7 +6978,8 @@ ${scoreCodeReturn}`;
       );
       if (targetIndex >= 0) {
         const targetCheckbox = document.getElementById(`model${targetIndex}`) as HTMLInputElement | null;
-        if (targetCheckbox && !targetCheckbox.checked) {
+        // A model that cannot be used is not ticked for the prompt either.
+        if (targetCheckbox && !targetCheckbox.disabled && !targetCheckbox.checked) {
           targetCheckbox.checked = true;
           targetCheckbox.dispatchEvent(new Event('change'));
         }

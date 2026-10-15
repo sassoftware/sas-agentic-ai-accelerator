@@ -27,7 +27,9 @@
  *     readStoredJson and checked by a function of its own (see
  *     storedJsonCensus below);
  *   - HTML_SOURCES: every text that goes into markup is a literal, goes
- *     through escapeHtml, or is a text of the page (htmlCensus).
+ *     through escapeHtml, or is a text of the page (htmlCensus);
+ *   - OFFERS: every use of the lists of the models, with what it does with a
+ *     model that cannot be used (offersCensus).
  * A call that is added, moved or gone fails a census until it is named.
  * (verify-outcomes.js has the roads of the delete of an optimization run.)
  *
@@ -45,7 +47,8 @@
  *   - an optimization history that cannot be read, or holds no list of runs,
  *     says so where the history stands, with no run and no Delete;
  *   - an LLM or a decision model whose options.json holds no options is shown
- *     as one that cannot be used, and offered nowhere;
+ *     as one that cannot be used, and offered nowhere; a stored run or an
+ *     optimization run that used it does not tick its box;
  *   - the documentation of a prompt-test that cannot be read says so;
  *   - a RAG setup whose contents, rag-setup.json or (never saved) attributes
  *     cannot be read says so and keeps Save setup, Manifest setup and Save
@@ -421,9 +424,69 @@ function htmlCensus() {
   );
 }
 
+// --------------------------------------------------------------------------
+// A model that cannot be used is offered nowhere (round 24): the chairman of
+// a council listed an LLM whose options.json held no options, and opening a
+// run that used it ticked its disabled box, which Run Experiments then
+// called. The census reads every use of the lists of the models of the page
+// in every .ts file under src, by the function it stands in, and OFFERS names
+// each with what it does with a model that cannot be used.
+// --------------------------------------------------------------------------
+const OFFERS = {
+  'promptBuilderAvailableLLMs buildPromptBuilder .map': [2, 'reads the options.json of each LLM, and the provider keys none of them holds'],
+  'promptBuilderAvailableLLMs buildPromptBuilder SpreadElement': [1, 'the attributes of every LLM by its name, for the costs of a run; offers nothing'],
+  'promptBuilderAvailableLLMs buildPromptBuilder CallExpression': [1, 'generateModelSelection: the box of an LLM that cannot be used is off, with its note'],
+  'promptBuilderAvailableLLMs buildPromptBuilder .forEach': [5, 'the judge list, the council members, the chairman list, the target and the judge lists of the optimization: each leaves out an LLM that cannot be used'],
+  'promptBuilderAvailableLLMs buildPromptBuilder .some': [2, 'the judge an Option names, set on a list that holds no LLM that cannot be used'],
+  'promptBuilderAvailableLLMs updateRunExperimentsButtonState .some': [1, 'whether a box is ticked; the box of an LLM that cannot be used is off and ticked by nothing'],
+  'promptBuilderAvailableLLMs judgeUseModelsButton.onclick .forEach': [1, 'ticks council members by the ticked boxes; no member can be an LLM that cannot be used'],
+  'promptBuilderAvailableLLMs promptBuilderJudgeCouncilToggle:change .forEach': [1, 'ticks the council member of the chosen judge; no member can be an LLM that cannot be used'],
+  'promptBuilderAvailableLLMs promptBuilderRunExperiment .forEach': [1, 'calls the LLMs whose box is ticked'],
+  'promptBuilderAvailableLLMs runOneJudge .find': [1, 'the options of a judge chosen from its list'],
+  'promptBuilderAvailableLLMs promptBuilderJudgeRun .find': [1, 'the options of the chairman chosen from its list'],
+  'promptBuilderAvailableLLMs loadExperimentRun .some': [3, 'the judges and the chairman of a run that are put back leave out an LLM that cannot be used; the models of a run no longer listed'],
+  'promptBuilderAvailableLLMs loadExperimentRun .forEach': [2, 'ticks the council members of a run (no LLM that cannot be used is one) and the boxes of its LLMs, but not a box that is off'],
+  'promptBuilderAvailableLLMs promptBulderCreateBestPromptModel .map': [1, 'the names of tags a manifest removes'],
+  'promptBuilderAvailableLLMs loadOptimizationAsExperiment .findIndex': [1, 'ticks the box of the LLM an optimization ran for, but not a box that is off'],
+  'promptBuilderAvailableLLMs promptBuilderRunOptimization .find': [1, 'the options of the target chosen from its list'],
+  'promptBuilderAvailableLLMs openCompareTargetsModal .forEach': [1, 'the candidates of Compare targets leave out an LLM that cannot be used'],
+  'promptBuilderAvailableDecisionModels buildPromptBuilder AssignmentExpression': [1, 'the decision models of the page'],
+  'promptBuilderAvailableDecisionModels buildPromptBuilder .map': [1, 'reads the options.json of each decision model'],
+  'promptBuilderAvailableDecisionModels buildPromptBuilder ForOfStatement': [1, 'the attributes by name, and the provider keys none of them holds'],
+  'promptBuilderAvailableDecisionModels buildPromptBuilder .length': [1, 'whether there is any'],
+  'promptBuilderAvailableDecisionModels buildPromptBuilder .forEach': [1, 'the cards: the box of a decision model that cannot be used is off, with its note'],
+  'promptBuilderAvailableDecisionModels selectedDecisionModels .filter': [1, 'the decision models whose box is ticked'],
+  'promptBuilderAvailableDecisionModels loadExperimentRun .forEach': [1, 'ticks the boxes of the decision models of a run, but not a box that is off'],
+  'promptBuilderAvailableDecisionModels loadExperimentRun .some': [1, 'the models of a run no longer listed'],
+  'promptBuilderAvailableDecisionModels promptBuilderCreateDecisionModel .map': [1, 'the names of tags a manifest removes'],
+};
+function offersCensus() {
+  const files = sourceFiles();
+  const uses = {};
+  for (const [file, text] of Object.entries(files)) {
+    const { program, source } = parse(file, text);
+    walk(program, source, (node, name, parents) => {
+      if (node.type !== 'Identifier' || !['promptBuilderAvailableLLMs', 'promptBuilderAvailableDecisionModels'].includes(node.name)) return;
+      const parent = parents[parents.length - 1];
+      if (parent.type === 'VariableDeclarator' && parent.id === node) return;
+      const use = parent.type === 'MemberExpression' && parent.object === node ? `.${source(parent.property)}` : parent.type;
+      const key = `${node.name} ${name || '(module)'} ${use}`;
+      uses[key] = (uses[key] || 0) + 1;
+    });
+  }
+  const unknown = Object.keys(uses).filter((key) => !OFFERS[key]);
+  const gone = Object.keys(OFFERS).filter((key) => !uses[key]);
+  const miscounted = Object.keys(OFFERS).filter((key) => uses[key] && uses[key] !== OFFERS[key][0]).map((key) => `${key}: ${uses[key]}, not ${OFFERS[key][0]}`);
+  step(
+    Object.keys(uses).length > 0 && unknown.length === 0 && gone.length === 0 && miscounted.length === 0,
+    `every use of the lists of the models in the ${Object.keys(files).length} source files is named with what it does with a model that cannot be used (uses: ${Object.values(uses).reduce((a, b) => a + b, 0)}; not named here: ${unknown.join('; ') || 'none'}; named but not found: ${gone.join('; ') || 'none'}; counted otherwise: ${miscounted.join('; ') || 'none'})`
+  );
+}
+
 (async () => {
   census();
   htmlCensus();
+  offersCensus();
 
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   let pageErrors = [];
@@ -882,7 +945,10 @@ function htmlCensus() {
   // Every option of a model is described by an object that holds its default
   // (isModelOptions). A model whose options.json is JSON and no such file is
   // shown as one that cannot be used - its box off, with a note - and offered
-  // nowhere else: not as a judge, not as a target of an optimization.
+  // nowhere else: not as a judge, a member or the chairman of a council, not
+  // as a target of an optimization; a stored run or an optimization run that
+  // used it, loaded, does not tick its box (offersCensus names every use of
+  // the lists of the models).
   const OPTIONS_UNUSABLE = 'The options.json of this model holds no options this page can read';
   for (const [what, body] of [['a list', '[1,2]'], ['an option without its description', '{"temperature":0.7}']]) {
     storedRoadsRun.add('options.json');
@@ -898,13 +964,28 @@ function htmlCensus() {
           note: (box?.closest('.form-check')?.querySelector('.pb-options-note')?.textContent || '').trim(),
           judge: [...document.querySelectorAll('#app-obj-LPB-judge-model option')].map((option) => option.value),
           panel: [...document.querySelectorAll('#app-obj-LPB-judge-panel input')].map((input) => input.value),
+          chairman: [...document.querySelectorAll('#app-obj-LPB-judge-chairman-model option')].map((option) => option.value),
           target: [...document.querySelectorAll('#app-obj-LPB-optimize-target option')].map((option) => option.value),
         };
       });
-      const offered = [...llm.judge, ...llm.panel, ...llm.target].filter((name) => name === 'demo_llm');
+      const offered = [...llm.judge, ...llm.panel, ...llm.chairman, ...llm.target].filter((name) => name === 'demo_llm');
       step(
-        llm.name === 'demo_llm' && llm.off && llm.note.startsWith(OPTIONS_UNUSABLE) && offered.length === 0 && pageErrors.length === 0,
-        `an LLM whose options.json is ${what} is shown as one that cannot be used - its box off, with a note - and offered nowhere else (box ${llm.name}: ${llm.off ? 'off' : 'on'}; note: "${clip(llm.note)}"; offered as judge, member or target: ${offered.length}; page errors: ${pageErrors.join(' | ') || 'none'})`
+        llm.name === 'demo_llm' && llm.off && llm.note.startsWith(OPTIONS_UNUSABLE) && offered.length === 0 && llm.chairman.length > 1 && pageErrors.length === 0,
+        `an LLM whose options.json is ${what} is shown as one that cannot be used - its box off, with a note - and offered nowhere else (box ${llm.name}: ${llm.off ? 'off' : 'on'}; note: "${clip(llm.note)}"; offered as judge, member, chairman or target: ${offered.length}; chairmen: ${JSON.stringify(llm.chairman)}; page errors: ${pageErrors.join(' | ') || 'none'})`
+      );
+      // The best run of Used Prompt and its optimization run used demo_llm.
+      await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
+      await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-used');
+      await waitUntil(async () => (await savedRuns(page)) > 0, 'the runs are drawn', 15000).catch(() => {});
+      const afterRun = await page.isChecked('#model0');
+      await goStep(page, 'LPB', 'optimize');
+      await waitUntil(async () => (await page.$$(`${lpb('pane-optimize')} .pb-optimize-history-load`)).length > 0, 'the history is drawn', 15000).catch(() => {});
+      await page.click(`${lpb('pane-optimize')} .pb-optimize-history-load`);
+      await page.waitForTimeout(500);
+      const afterOptimization = await page.isChecked('#model0');
+      step(
+        !afterRun && !afterOptimization && pageErrors.length === 0,
+        `a stored run and an optimization run that used an LLM whose options.json is ${what}, loaded, do not tick its box (ticked after the run: ${afterRun}; after the optimization run: ${afterOptimization}; page errors: ${pageErrors.join(' | ') || 'none'})`
       );
     });
   }
