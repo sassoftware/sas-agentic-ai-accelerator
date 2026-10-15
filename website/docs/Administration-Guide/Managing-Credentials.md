@@ -187,9 +187,15 @@ what the manifest marks absent; so is any `--identity-type`, `--env-file` or
 `credentials-add`, and so is an identity named twice with `--identity`. An
 empty value of any option (what a variable of the shell that is not set
 gives) ends the command with exit code 2 before anything is read or written,
-as does a `--manifest` that names a folder. An identity id with a line break,
-another control character, an invisible character of format (U+200B) or a
-blank at either end is refused: every line names an id as it is and unquoted.
+as does a `--manifest` that names a folder. An identity id and a credential
+domain hold printable ASCII alone (U+0020 to U+007E), with no blank at either
+end. Any other character - a line break, a control character, a blank such as
+U+00A0, an invisible one such as U+200B or U+034F, a letter outside ASCII such
+as ö - is refused with exit code 2 before anything is written or asked of SAS
+Viya, in a manifest, as an argument and as `--domain`; a manifest that lists
+such an id is refused by every credentials command. Every line names an id
+and a domain as they are and unquoted, and such a character can show as
+another one or as none.
 
 ### Adding an identity: `mdb credentials-add`
 
