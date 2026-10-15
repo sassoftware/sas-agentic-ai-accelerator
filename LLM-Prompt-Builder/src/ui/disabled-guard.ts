@@ -17,13 +17,16 @@
  * on the window in the capture phase, the first stop of every click: a
  * listener on the document in that phase - Bootstrap's for `data-bs-toggle`,
  * registered when its modules are imported - comes after it, whichever was
- * registered first.
+ * registered first. A click sent to a node inside a control - the text of a
+ * button, which is no element - is a click on that control as well.
  */
 export function refuseClicksOnDisabledControls(target: Window = window): void {
   target.addEventListener(
     'click',
     (event) => {
-      const control = event.target instanceof Element ? event.target.closest('button, input, select, textarea') : null;
+      const node = event.target instanceof Node ? event.target : null;
+      const element = node instanceof Element ? node : (node?.parentElement ?? null);
+      const control = element ? element.closest('button, input, select, textarea') : null;
       if (control?.matches(':disabled')) {
         event.stopImmediatePropagation();
         event.preventDefault();

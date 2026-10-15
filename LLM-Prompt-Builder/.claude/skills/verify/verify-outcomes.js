@@ -39,8 +39,9 @@
  *     created and not read back says that its buttons stay off, and Try
  *     again reads it; Enter in the question of a retrieval test that runs
  *     starts no second test, and a click a script sends to a control that is
- *     off reaches no listener of the page and opens no dialog (at three
- *     moments, every such control, every click listener of the page).
+ *     off, or to a node inside it (its text), reaches no listener of the page
+ *     and opens no dialog (at three moments, every such control and every
+ *     node inside it, every click listener of the page).
  *   - Save setup, Manifest setup and Save documentation cannot be used while
  *     the stored setup is read.
  *   - While a write is out, a change of a picker sent by a script (as the
@@ -1508,30 +1509,42 @@ function writesCensus() {
   // listeners, and Bootstrap's listener on the document opened the dialog of a
   // create button. Every control that is off at three moments - a test
   // running, a save of the setup out, Save Experiments out - is sent such a
-  // click, and CLICK_PROBE sees every click listener of the page: the one
-  // that runs is the guard, on the window in the capture phase, and it stops
-  // the click; no other listener runs, and no dialog opens.
+  // click, and so is every node inside it (the text of a button, which is no
+  // element, and the icon beside it); CLICK_PROBE sees every click listener
+  // of the page: the one that runs is the guard, on the window in the capture
+  // phase, and it stops the click; no other listener runs, and no dialog
+  // opens.
   const scriptedClicks = (page) =>
     page.evaluate(async () => {
       const controls = [...document.querySelectorAll('button, input, select, textarea')].filter((control) => control.matches(':disabled'));
       const reached = [];
       let stoppedFirst = 0;
+      let targets = 0;
+      let texts = 0;
       for (const control of controls) {
-        const event = new MouseEvent('click', { bubbles: true, cancelable: true });
-        event.__probe = [];
-        control.dispatchEvent(event);
-        const [first, ...others] = event.__probe;
-        if (first && first.where === 'window (capture)' && first.stopped) stoppedFirst += 1;
-        else if (first) others.unshift(first);
-        if (others.length) reached.push(`${control.id || control.textContent.trim().slice(0, 30) || control.tagName}: ${others.map((listener) => listener.where).join(', ')}`);
+        const inside = [];
+        const walker = document.createTreeWalker(control, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) inside.push(node);
+        for (const target of [control, ...inside]) {
+          targets += 1;
+          if (target.nodeType === Node.TEXT_NODE) texts += 1;
+          const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+          event.__probe = [];
+          target.dispatchEvent(event);
+          const [first, ...others] = event.__probe;
+          if (first && first.where === 'window (capture)' && first.stopped) stoppedFirst += 1;
+          else if (first) others.unshift(first);
+          const name = `${control.id || control.textContent.trim().slice(0, 30) || control.tagName}${target === control ? '' : ` (${target.nodeName})`}`;
+          if (others.length) reached.push(`${name}: ${others.map((listener) => listener.where).join(', ')}`);
+        }
       }
       await new Promise((resolve) => setTimeout(resolve, 600));
       const dialogs = [...document.querySelectorAll('.modal')].filter((modal) => modal.classList.contains('show') || modal.style.display === 'block').map((modal) => modal.id);
       if (document.body.classList.contains('modal-open') || document.querySelector('.modal-backdrop')) dialogs.push('a backdrop');
-      return { off: controls.length, stoppedFirst, reached, dialogs };
+      return { off: controls.length, targets, texts, stoppedFirst, reached, dialogs };
     });
-  const noneReached = (seen) => seen.off > 0 && seen.stoppedFirst === seen.off && seen.reached.length === 0 && seen.dialogs.length === 0;
-  const reachedText = (seen) => `stopped first by the guard: ${seen.stoppedFirst}; reached: ${JSON.stringify(seen.reached).slice(0, 400)}; dialogs: ${JSON.stringify(seen.dialogs)}`;
+  const noneReached = (seen) => seen.off > 0 && seen.texts > 0 && seen.stoppedFirst === seen.targets && seen.reached.length === 0 && seen.dialogs.length === 0;
+  const reachedText = (seen) => `clicks sent: ${seen.targets}, ${seen.texts} of them to a text inside a control; stopped first by the guard: ${seen.stoppedFirst}; reached: ${JSON.stringify(seen.reached).slice(0, 400)}; dialogs: ${JSON.stringify(seen.dialogs)}`;
   await road('a click a script sends to a control that is off while Save Experiments is out', async (page) => {
     await openPage(page);
     await openPromptTest(page, 'proj-1', 'model-used');
