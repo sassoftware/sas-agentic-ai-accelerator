@@ -213,7 +213,7 @@ class ContentManifest:
 
     @property
     def package_path(self) -> Path:
-        return self.repo_root.joinpath(*PurePosixPath(self.package).parts)
+        return repository_file(self.repo_root, self.package)
 
     def listed_path(self, path: str) -> str:
         """The path an entry of this manifest has in the whole manifest - what
@@ -245,7 +245,7 @@ class ContentManifest:
         return next((e for e in self.entries if e.path == path and e.kind == kind), None)
 
     def source_path(self, relative: str) -> Path:
-        return self.repo_root.joinpath(*PurePosixPath(relative).parts)
+        return repository_file(self.repo_root, relative)
 
     def sources(self) -> list:
         """Every repository path an entry is a copy of, with forward slashes."""
@@ -257,8 +257,15 @@ class ContentManifest:
         return found
 
 
+def repository_file(repo_root, relative: str) -> Path:
+    """The file of the checkout at `repo_root` that a path of the manifest
+    names (forward slashes, below the checkout): every file of the checkout
+    this module reads is found here."""
+    return Path(repo_root).joinpath(*PurePosixPath(relative).parts)
+
+
 def manifest_file(repo_root) -> Path:
-    return Path(repo_root).joinpath(*MANIFEST_PATH)
+    return repository_file(repo_root, "/".join(MANIFEST_PATH))
 
 
 def _repo_file_problem(repo_root: Path, value, what: str) -> Optional[str]:
@@ -267,7 +274,7 @@ def _repo_file_problem(repo_root: Path, value, what: str) -> Optional[str]:
     pure = PurePosixPath(value.replace("\\", "/"))
     if pure.is_absolute() or ".." in pure.parts or ":" in value:
         return f"{what} '{value}' must be a path inside the repository"
-    if not repo_root.joinpath(*pure.parts).is_file():
+    if not repository_file(repo_root, pure.as_posix()).is_file():
         return f"{what} '{value}' does not exist in the repository"
     return None
 
@@ -446,7 +453,7 @@ def parse_manifest(document, repo_root, where="package-manifest.yaml", check_sou
                 problems.append(f"{where_entry}: {bad}")
             elif check_sources:
                 try:
-                    step = json.loads(repo_root.joinpath(*PurePosixPath(raw["source"]).parts).read_text(encoding="utf-8"))
+                    step = json.loads(repository_file(repo_root, raw["source"]).read_text(encoding="utf-8"))
                 except (OSError, ValueError) as exc:
                     problems.append(f"{where_entry}: source '{raw['source']}' is not a readable .step file ({exc})")
                 else:
@@ -810,7 +817,7 @@ def release_table_bytes(manifest: ContentManifest) -> bytes:
     """ACCELERATOR_RELEASES as CSV, byte for byte what `mdb load-releases
     --csv` writes from the checkout's CHANGELOG.md."""
     from .releases import csv_bytes, parse_changelog, rows_from
-    changelog = manifest.repo_root / "CHANGELOG.md"
+    changelog = repository_file(manifest.repo_root, "CHANGELOG.md")
     releases = parse_changelog(changelog.read_text(encoding="utf-8"))
     if not releases:
         raise ValueError(f"{changelog} contains no '## [version] - date' release headings")

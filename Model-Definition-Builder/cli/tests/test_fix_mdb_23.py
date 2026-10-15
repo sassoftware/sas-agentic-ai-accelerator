@@ -1,26 +1,35 @@
 # Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""What the gate and the review of round 23 found in mdb at 36124b8, as a
-class: an exception that ends a program of Model-Definition-Builder printed
-its text as it is - the body of an answer of SAS Viya that sasctl raises as
-an HTTPError, what was typed in a usage error of click - ESC and all. The
-tests take every program (every `__main__` and console script below
-Model-Definition-Builder), every command that reaches SAS Viya, every way
-in, and every exception click shows. Nothing signs in anywhere: the
-transport of requests is replaced."""
+"""What the gate and the review of round 23 found in mdb at 36124b8, each as
+a class.
+
+- An exception that ends a program of Model-Definition-Builder printed its
+  text as it is - the body of an answer of SAS Viya that sasctl raises as an
+  HTTPError, what was typed in a usage error of click - ESC and all. The
+  tests take every program (every `__main__` and console script below
+  Model-Definition-Builder), every command that reaches SAS Viya, every way
+  in, and every exception click shows. Nothing signs in anywhere: the
+  transport of requests is replaced.
+- M4: a build of the checkout took away a file the package manifest names
+  while the suite read it. The tests take every place content.py makes a
+  path of the checkout, and every file the manifest names that a build of
+  the checkout writes."""
 import ast
 import io
 import json
 import re
 import sys
 import urllib.error
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
+import conftest
 import pytest
 import requests
 import typer
 
 from mdb import cli
+from mdb.core import content
 from mdb.core.printable import CONTROL
 from test_mdb_23 import (  # noqa: F401  (audit_script is a fixture)
     AUDIT_SCRIPT, MDB_ROOT, VIYA, _arguments, _python_files, _reaching_sas_viya, _sign_in_env, audit_script,
@@ -224,3 +233,74 @@ def test_what_was_typed_is_shown_without_control_characters(monkeypatch, capsys,
     code, text = _main(monkeypatch, capsys, *argv)
     assert code in (0, 2), (code, text)
     assert "\x1b[31mRED" not in text and "\x9b" not in text and "\r" not in text, repr(text)
+
+
+# ---- M4: a file a build of the checkout writes while the suite reads it ----------------------------------
+CONTENT_PY = MDB_ROOT / "cli" / "src" / "mdb" / "core" / "content.py"
+
+
+def test_every_file_of_the_checkout_the_content_module_reads_is_found_in_one_place():
+    """content.repository_file is the one place: no other function of
+    content.py makes a path of the checkout - a `joinpath`, a `/` or a
+    `Path(...)` of more than one part."""
+    tree = ast.parse(CONTENT_PY.read_text(encoding="utf-8"))
+    one, = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "repository_file"]
+    inside = {id(node) for node in ast.walk(one)}
+    made = [node for node in ast.walk(tree)
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath")
+            or (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div))
+            or (isinstance(node, ast.Call) and ast.unparse(node.func) in ("Path", "PurePath") and len(node.args) > 1)]
+    assert made and [f"{node.lineno}: {ast.unparse(node)}" for node in made if id(node) not in inside] == []
+
+
+def test_the_files_a_build_of_the_checkout_writes_that_the_manifest_names_are_held(built_files_held):
+    """The builds of the checkout are the node projects at its top (a
+    package.json): of what they write, the manifest names the Prompt
+    Builder's bundle alone - below vite's outDir -, and the session holds
+    every file it names there; nothing else of a node project is named."""
+    projects = sorted(path.parent.name for path in conftest.REPO_ROOT.glob("*/package.json"))
+    assert projects == ["LLM-Prompt-Builder", "website"], projects
+    vite = (conftest.REPO_ROOT / "LLM-Prompt-Builder" / "vite.config.ts").read_text(encoding="utf-8")
+    assert re.findall(r"outDir:\s*'([^']+)'", vite) == ["dist"] and conftest.BUILT == "LLM-Prompt-Builder/dist/"
+    manifest = content.load_manifest(conftest.REPO_ROOT)
+    named = [value for value in manifest.sources() if value.split("/", 1)[0] in projects]
+    assert named == conftest.built_files(conftest.REPO_ROOT) == ["LLM-Prompt-Builder/dist/index.html"]
+    assert sorted(built_files_held) == named
+    for relative, copy in built_files_held.items():
+        assert content.repository_file(conftest.REPO_ROOT, relative) == copy and conftest.REPO_ROOT not in copy.parents
+        elsewhere = conftest.REPO_ROOT / "elsewhere"            # another checkout: not held
+        assert content.repository_file(elsewhere, relative) == elsewhere.joinpath(*PurePosixPath(relative).parts)
+
+
+def test_the_manifest_of_the_checkout_loads_and_builds_while_a_build_has_taken_the_bundle_away(
+        built_files_held, monkeypatch):
+    """What the build does to the checkout - its bundle is not there -
+    stood in for in this process alone: the manifest of the checkout loads,
+    and the job definition of the Prompt Builder is built from the held
+    copy. As a control, the checkout read directly fails as the hint test
+    of test_mdb_21 failed."""
+    gone = {conftest.REPO_ROOT.joinpath(*PurePosixPath(relative).parts) for relative in built_files_held}
+    assert gone
+    def taken_away(name):
+        real = getattr(Path, name)
+
+        def instead(self, *args, **options):
+            if self in gone:
+                if name in ("is_file", "exists"):
+                    return False
+                raise FileNotFoundError(2, "taken away by a build", str(self))
+            return real(self, *args, **options)
+        monkeypatch.setattr(Path, name, instead)
+    for name in ("is_file", "exists", "open", "read_bytes", "read_text", "stat"):
+        taken_away(name)
+    assert not any(path.is_file() for path in gone)
+    manifest = content.load_manifest(conftest.REPO_ROOT)
+    ui, = [entry for entry in manifest.objects() if entry.form in built_files_held]
+    body = content.job_definition_body(manifest, ui)
+    assert body["properties"][0]["value"] == built_files_held[ui.form].read_text(encoding="utf-8")
+    assert content.entry_hash(manifest, ui)
+    # the control: the checkout as it is, without the held copy
+    monkeypatch.setattr(content, "repository_file",
+                        lambda repo_root, relative: Path(repo_root).joinpath(*PurePosixPath(relative).parts))
+    with pytest.raises(content.ManifestError, match="form 'LLM-Prompt-Builder/dist/index.html' does not exist"):
+        content.load_manifest(conftest.REPO_ROOT)
