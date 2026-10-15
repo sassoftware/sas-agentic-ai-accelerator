@@ -90,4 +90,22 @@ function sourceFiles() {
   return files;
 }
 
-module.exports = { PROJECT, parse, walk, callsInSource, sourceFiles };
+/**
+ * src/api/stored-json.ts as a module of its own - the shapes of the stored
+ * files and the check of each - compiled with the transformer of rolldown;
+ * its one import, which reads a file from SAS Viya, is left out.
+ */
+async function loadStoredJson() {
+  const os = require('os');
+  const { pathToFileURL } = require('url');
+  const file = path.join(PROJECT, 'src', 'api', 'stored-json.ts');
+  const text = fs.readFileSync(file, 'utf8').replace(/^import \{ getFileContent \} from '\.\/files-api';$/m, 'const getFileContent = () => { throw new Error("not in the census"); };');
+  const { transformSync } = createRequire(path.join(PROJECT, 'package.json'))('rolldown/utils');
+  const { code, errors } = transformSync('stored-json.ts', text, { lang: 'ts' });
+  if (errors.length) throw new Error(`stored-json.ts does not compile: ${errors[0].message}`);
+  const target = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'stored-json-')), 'stored-json.mjs');
+  fs.writeFileSync(target, code);
+  return import(pathToFileURL(target).href);
+}
+
+module.exports = { PROJECT, parse, walk, callsInSource, sourceFiles, loadStoredJson };

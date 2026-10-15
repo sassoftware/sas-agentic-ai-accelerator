@@ -74,7 +74,7 @@ const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
 const fs = require('fs');
 const path = require('path');
-const { PROJECT, parse, walk, callsInSource, sourceFiles } = require('./source-census.cjs');
+const { PROJECT, parse, walk, callsInSource, sourceFiles, loadStoredJson } = require('./source-census.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const results = [];
@@ -496,7 +496,10 @@ function offersCensus() {
 // no configuration was put back, or threw while an optimization run whose
 // comparison or evaluations were no lists was drawn. src/api/stored-json.ts
 // checks every field of a stored row or entry against its shape (STORED_SHAPES:
-// PET_ROW, OPTIMIZATION_ENTRY, RAG_ENRICH_STEP). The census reads the types of
+// PET_ROW, OPTIMIZATION_ENTRY, RAG_SETUP - round 25: a rag-setup.json whose
+// documentation held an object was drawn as "[object Object]" and written so
+// by Save setup, and a policy flag "no" went into pipeline.yaml as true). The
+// census probes the shape of every name of STORED_SHAPES. It reads the types of
 // the sources each shape mirrors (`of`: an interface, or a field of one that
 // is an object of its own) and compares them field for field - names and
 // kinds -, then loads the checks of stored-json.ts and sends each of them, for
@@ -508,19 +511,6 @@ function offersCensus() {
 // and src/api/stored-json.ts (the checks).
 // --------------------------------------------------------------------------
 let storedJson = null;
-async function loadStoredJson() {
-  const os = require('os');
-  const { createRequire } = require('module');
-  const { pathToFileURL } = require('url');
-  const file = path.join(PROJECT, 'src', 'api', 'stored-json.ts');
-  const text = fs.readFileSync(file, 'utf8').replace(/^import \{ getFileContent \} from '\.\/files-api';$/m, 'const getFileContent = () => { throw new Error("not in the census"); };');
-  const { transformSync } = createRequire(path.join(PROJECT, 'package.json'))('rolldown/utils');
-  const { code, errors } = transformSync('stored-json.ts', text, { lang: 'ts' });
-  if (errors.length) throw new Error(`stored-json.ts does not compile: ${errors[0].message}`);
-  const target = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'stored-json-')), 'stored-json.mjs');
-  fs.writeFileSync(target, code);
-  return import(pathToFileURL(target).href);
-}
 
 const kindOfShape = (shape) =>
   typeof shape === 'string' ? shape : shape.list ? `list(${kindOfShape(shape.list)})` : shape.map ? `map(${kindOfShape(shape.map)})` : `object(${shape.of})`;
@@ -580,7 +570,7 @@ async function shapeChecks({ STORED_SHAPES, fits, isExperimentTracker, isOptimiz
   const kindOfType = (type, at) => {
     const node = bare(type);
     if (node.type === 'TSStringKeyword' || (node.type === 'TSLiteralType' && typeof node.literal.value === 'string')) return 'string';
-    if (node.type === 'TSNumberKeyword') return 'number';
+    if (node.type === 'TSNumberKeyword' || (node.type === 'TSLiteralType' && typeof node.literal.value === 'number')) return 'number';
     if (node.type === 'TSBooleanKeyword') return 'boolean';
     if (node.type === 'TSUnionType') {
       const kinds = [...new Set(node.types.map((member) => kindOfType(member, at)))].sort().join('|');
@@ -600,7 +590,7 @@ async function shapeChecks({ STORED_SHAPES, fits, isExperimentTracker, isOptimiz
     }
     return `unknown ${node.type}`;
   };
-  // Every object shape below the three, each once.
+  // Every object shape below the shapes of STORED_SHAPES, each once.
   const objects = new Map();
   const collect = (shape) => {
     if (typeof shape === 'string') return;
@@ -640,10 +630,11 @@ async function shapeChecks({ STORED_SHAPES, fits, isExperimentTracker, isOptimiz
     shape === 'string' ? 'x' : shape === 'number' ? 1 : shape === 'boolean' ? true : shape === 'flag' ? 1
       : shape.list ? [sample(shape.list)] : shape.map ? { key: sample(shape.map) }
         : Object.fromEntries(Object.entries(shape.fields).map(([name, field]) => [name, sample(field)]));
-  const setup = (enrich) => ({
-    version: 1, source: { path: 'p' }, extraction: { extractor: 'e' }, chunking: { chunker: 'c', inputTokenLimit: 1, overlapTokens: 0 },
-    embedding: { model: 'm', dims: 1 }, store: { backend: 'b', collection: 'c' }, tables: { prefix: 'p', caslib: 'c' }, enrich,
-  });
+  // A setup with every field, version 1, and the enrichment given.
+  const setup = (enrich) => ({ ...sample(STORED_SHAPES.RAG_SETUP), version: 1, enrich });
+  const enrichStep = () => sample(STORED_SHAPES.RAG_SETUP.fields.enrich.list);
+  // The file of each shape: how a row or an entry becomes a file, its check,
+  // and a row, an entry or a setup that holds every field.
   const files = {
     PET_ROW: [
       (row) => [{ ...sample(STORED_SHAPES.PET_ROW), runId: 1, model: '', systemPrompt: 's', userPrompt: 'u' }, { ...row }],
@@ -651,8 +642,11 @@ async function shapeChecks({ STORED_SHAPES, fits, isExperimentTracker, isOptimiz
       { ...sample(STORED_SHAPES.PET_ROW), runId: 1, model: 'demo_llm' },
     ],
     OPTIMIZATION_ENTRY: [(entry) => [entry], (value) => isOptimizationTracker(value), sample(STORED_SHAPES.OPTIMIZATION_ENTRY)],
-    RAG_ENRICH_STEP: [(step) => setup([step]), (value) => isRagSetup(value), sample(STORED_SHAPES.RAG_ENRICH_STEP)],
+    RAG_SETUP: [(value) => value, (value) => isRagSetup(value), setup([enrichStep()])],
   };
+  const misjudged = [];
+  const unprobed = Object.keys(STORED_SHAPES).filter((name) => !files[name]);
+  if (unprobed.length) misjudged.push(`no file to probe the shapes ${unprobed.join(', ')} with`);
   // Every field at every depth, by its path, with its shape and whether it is required.
   const leaves = [];
   const into = (shape, at, required) => {
@@ -671,7 +665,6 @@ async function shapeChecks({ STORED_SHAPES, fits, isExperimentTracker, isOptimiz
     else holder[at[at.length - 1]] = to;
     return copy;
   };
-  const misjudged = [];
   let probes = 0;
   for (const [name, [wrap, check, valid]] of Object.entries(files)) {
     if (!check(wrap(valid))) misjudged.push(`${name}: the file with every field is refused`);
@@ -709,13 +702,15 @@ async function shapeChecks({ STORED_SHAPES, fits, isExperimentTracker, isOptimiz
   const run = (optimizationId) => ({ optimizationId, status: 'failed' });
   if (isOptimizationTracker([run(1), run(1), run(2)])) misjudged.push('optimization tracker: two runs of one optimizationId are taken');
   if (!isOptimizationTracker([run(1), run(2)])) misjudged.push('optimization tracker: two runs of their own numbers are refused');
-  if (!isRagSetup(setup(sample(STORED_SHAPES.RAG_ENRICH_STEP)))) misjudged.push('rag-setup.json: the one prompt of a setup saved before the chain is refused');
+  if (!isRagSetup(setup(enrichStep()))) misjudged.push('rag-setup.json: the one prompt of a setup saved before the chain is refused');
+  if (isRagSetup(setup({ ...enrichStep(), workers: 'x' }))) misjudged.push('rag-setup.json: the one prompt of a setup saved before the chain with a field of another kind is taken');
   if (!isRagSetup(setup(undefined))) misjudged.push('rag-setup.json: a setup without enrichment is refused');
   if (isRagSetup(setup([{ foo: 1 }]))) misjudged.push('rag-setup.json: an enrichment of an entry that is no prompt is taken');
   if (isRagSetup(setup('x'))) misjudged.push('rag-setup.json: an enrichment that is a text is taken');
+  if (isRagSetup({ ...setup(undefined), version: 2 })) misjudged.push('rag-setup.json: a setup of version 2 is taken');
   step(
     misjudged.length === 0 && typeof fits === 'function',
-    `the checks of the stored files take every field of its kind and refuse it of another, at every depth (${probes} probes of the fields of ${Object.keys(files).join(', ')}, and ${rules.length + 6} files the rules of a run name; wrong: ${misjudged.join('; ') || 'none'})`
+    `the checks of the stored files take every field of its kind and refuse it of another, at every depth (${probes} probes of the fields of ${Object.keys(files).join(', ')}, and ${rules.length + 8} files the rules of a run, an optimization tracker and a setup name; wrong: ${misjudged.join('; ') || 'none'})`
   );
 }
 
@@ -1197,6 +1192,25 @@ async function shapeChecks({ STORED_SHAPES, fits, isExperimentTracker, isOptimiz
     // Each prompt of the enrichment is a prompt (RAG_ENRICH_STEP): Save setup
     // drops an entry without one.
     ['a setup whose enrichment holds an entry that is no prompt', 'application/json', (stored) => JSON.stringify({ ...stored, enrich: [{ foo: 1 }] })],
+    // Every field of a setup, at every depth, is of the kind the page reads
+    // (RAG_SETUP, round 25): an object in a documentation field was drawn as
+    // "[object Object]" and written so, a policy flag "no" was written into
+    // pipeline.yaml as true.
+    ...[
+      ['documentation', 'modelPurpose', { a: 1 }],
+      ['policies', 'retainDays', 'x'],
+      ['policies', 'recordHistory', 'no'],
+      ['store', 'port', 'x'],
+      ['store', 'host', 5],
+      ['embedding', 'deploymentType', 5],
+      ['source', 'includeCode', 'yes'],
+      [null, 'pipelineVersion', 1],
+      [null, 'credentialDomain', true],
+    ].map(([section, field, value]) => [
+      `a setup whose ${section ? `${section}.` : ''}${field} is ${JSON.stringify(value)}`,
+      'application/json',
+      (stored) => JSON.stringify(section ? { ...stored, [section]: { ...stored[section], [field]: value } } : { ...stored, [field]: value }),
+    ]),
   ]) {
     storedRoadsRun.add('rag-setup.json');
     await road(`a rag-setup.json that is ${what}`, async (page) => {

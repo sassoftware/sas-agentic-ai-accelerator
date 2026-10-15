@@ -2230,7 +2230,8 @@ export async function buildRagBuilder(
   /** The enrichment that applySetup put back last, settled once it is drawn. */
   let enrichmentRestored: Promise<void> = Promise.resolve();
   const applySetup = (setup: RagSetup): void => {
-    ragDoc.setValues(setup.documentation);
+    // A stored null is a field that is not there (see isRagSetup).
+    ragDoc.setValues(setup.documentation ?? {});
     const storedPath = String(setup.source.path || '');
     const scheme = storedPath.toLowerCase().startsWith('sascontent:')
       ? 'sascontent'

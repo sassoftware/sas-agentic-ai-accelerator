@@ -229,8 +229,61 @@ const RAG_ENRICH_STEP: ObjectShape = {
   },
 };
 
+/**
+ * rag-setup.json: every field the page shows, writes back or hands to the
+ * generated job. What a setup saved before it existed lacks (artifactsFolder,
+ * documentation, policies, enrich, job) may be absent - the defaults stand in
+ * for the first three, and no enrichment and no job are what their absence
+ * means.
+ */
+const RAG_SETUP: ObjectShape = {
+  of: 'RagSetup',
+  required: ['version', 'source', 'extraction', 'chunking', 'embedding', 'store', 'tables'],
+  fields: {
+    version: 'number',
+    documentation: {
+      of: 'RagSetup.documentation',
+      fields: { modelPurpose: 'string', intendedUse: 'string', expectedBenefit: 'string', outOfScopeUseCases: 'string', limitations: 'string' },
+    },
+    artifactsFolder: 'string',
+    source: { of: 'RagSetup.source', required: ['path'], fields: { path: 'string', includeCode: 'boolean' } },
+    extraction: { of: 'RagSetup.extraction', required: ['extractor'], fields: { extractor: 'string' } },
+    chunking: {
+      of: 'RagSetup.chunking',
+      required: ['chunker', 'inputTokenLimit', 'overlapTokens'],
+      fields: { chunker: 'string', inputTokenLimit: 'number', overlapTokens: 'number' },
+    },
+    enrich: { list: RAG_ENRICH_STEP },
+    embedding: {
+      of: 'RagSetup.embedding',
+      required: ['model', 'dims'],
+      fields: { model: 'string', dims: 'number', deploymentType: 'string', scrEndpoint: 'string' },
+    },
+    store: {
+      of: 'RagSetup.store',
+      required: ['backend', 'collection'],
+      fields: { backend: 'string', host: 'string', port: 'number', database: 'string', sslmode: 'string', collection: 'string' },
+    },
+    tables: { of: 'RagSetup.tables', required: ['prefix', 'caslib'], fields: { prefix: 'string', caslib: 'string' } },
+    pipelineVersion: 'string',
+    credentialDomain: 'string',
+    policies: {
+      of: 'RagSetup.policies',
+      fields: {
+        deletedPolicy: 'string',
+        retainDays: 'number',
+        recordHistory: 'boolean',
+        embedReplicas: 'number',
+        persistElements: 'boolean',
+        persistChunks: 'boolean',
+      },
+    },
+    job: { of: 'RagSetup.job', required: ['definitionUri'], fields: { definitionUri: 'string' } },
+  },
+};
+
 /** The shapes of the stored files, for the harness. */
-export const STORED_SHAPES = { PET_ROW, OPTIMIZATION_ENTRY, RAG_ENRICH_STEP } as const;
+export const STORED_SHAPES = { PET_ROW, OPTIMIZATION_ENTRY, RAG_SETUP } as const;
 
 /**
  * The fields of a run of the experiment tracker as the page holds it: every
@@ -284,31 +337,14 @@ export function isOptimizationTracker(value: unknown): boolean {
 }
 
 /**
- * rag-setup.json: a setup of version 1 with the sections and the fields the
- * page shows - and writes back - from it. What a setup saved before it
- * existed lacks (artifactsFolder, documentation, policies, enrich, job) may
- * be absent - the defaults stand in for the first three, and no enrichment
- * and no job are what their absence means; where present, each is of its
- * kind. The enrichment is a list of prompts (RAG_ENRICH_STEP), or the one
- * prompt a setup saved before the chain held.
+ * rag-setup.json: a setup of version 1 whose every field, at every depth, is
+ * of the kind the page reads (RAG_SETUP). The enrichment is a list of
+ * prompts, or the one prompt a setup saved before the chain held, which is
+ * checked as a list of one.
  */
 export function isRagSetup(value: unknown): boolean {
   if (!isObject(value) || value.version !== 1) return false;
-  const { source, extraction, chunking, embedding, store, tables } = value;
-  return (
-    isObject(source) && typeof source.path === 'string' &&
-    isObject(extraction) && typeof extraction.extractor === 'string' &&
-    isObject(chunking) && typeof chunking.chunker === 'string' &&
-    typeof chunking.inputTokenLimit === 'number' && typeof chunking.overlapTokens === 'number' &&
-    isObject(embedding) && typeof embedding.model === 'string' && typeof embedding.dims === 'number' &&
-    isObject(store) && typeof store.backend === 'string' && typeof store.collection === 'string' &&
-    isObject(tables) && typeof tables.prefix === 'string' && typeof tables.caslib === 'string' &&
-    (value.artifactsFolder === undefined || typeof value.artifactsFolder === 'string') &&
-    (value.documentation === undefined || isObject(value.documentation)) &&
-    (value.policies === undefined || isObject(value.policies)) &&
-    (value.enrich == null || fits(value.enrich, { list: RAG_ENRICH_STEP }) || fits(value.enrich, RAG_ENRICH_STEP)) &&
-    (value.job === undefined || (isObject(value.job) && typeof value.job.definitionUri === 'string'))
-  );
+  return fits(isObject(value.enrich) ? { ...value, enrich: [value.enrich] } : value, RAG_SETUP);
 }
 
 /**
