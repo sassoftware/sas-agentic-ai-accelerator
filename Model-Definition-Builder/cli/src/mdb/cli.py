@@ -14,7 +14,6 @@ import json
 import os
 import re
 import sys
-import traceback
 from pathlib import Path, PurePath
 from typing import Optional
 
@@ -38,7 +37,7 @@ from .core.paths import (
     RepoNotFoundError, archive_dir, core_dir, definitions_dir, fact_sheet_path, find_repo_root,
     kind_folder_name, kind_of_folder,
 )
-from .core.printable import CONTROL, printable
+from .core.printable import CONTROL, printable, traceback_text
 from .core.validator import validate_all, validate_folder
 from .providers import load_adapters
 from .providers.base import CatalogModel, ProviderAdapter, slugify
@@ -4553,9 +4552,10 @@ def main() -> None:
         # An exception no command caught - an answer of SAS Viya that sasctl raises as an HTTPError, its body in
         # the text of the exception: typer printed its traceback with that text as it is, ESC included
         # (gate-23a, review-23a). It is the traceback Python prints, through a console of mdb on stderr - without
-        # control characters, as it is otherwise, on lines of their own width -, and exit code 1.
+        # control characters, as it is otherwise, on lines of their own width -, the text of each exception on the
+        # one line that names it (traceback_text), and exit code 1.
         _Console(stderr=True, emoji=False, highlight=False, soft_wrap=True).print(
-            "".join(traceback.format_exception(exc)), markup=False, end="")
+            traceback_text(exc), markup=False, end="")
         sys.exit(1)
 
 

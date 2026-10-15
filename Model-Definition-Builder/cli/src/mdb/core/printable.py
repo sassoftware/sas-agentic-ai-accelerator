@@ -7,6 +7,7 @@ rich, the audit script of the model-audit skill. Imports nothing of mdb."""
 from __future__ import annotations
 
 import re
+import traceback
 
 #: The control characters a terminal may act on that rich leaves in a text: every C0 character but the tab and
 #: the line end, DEL and the C1 range. rich itself takes out the carriage return, the bell, the backspace, the
@@ -19,3 +20,28 @@ def printable(text) -> str:
     """A text - or what `str` makes of a value - without the control
     characters of `CONTROL`."""
     return CONTROL.sub("", str(text))
+
+
+def traceback_text(exc: BaseException) -> str:
+    """The traceback Python prints for `exc`, with the text of every
+    exception in it - of `exc`, of its cause and context, of the members of
+    a group, the message of a SyntaxError - on the one line that names the
+    exception. That text can be an
+    answer of SAS Viya (sasctl raises its body as an HTTPError), and a line
+    break in it split that line (live-23b B2): every run of blanks, tabs and
+    line breaks in it becomes one blank, as in every other line of mdb that
+    shows an answer (viya/answer.py, one_line). The frames are Python's own
+    lines and stay as they are."""
+    shown = traceback.TracebackException.from_exception(exc, compact=True)     # as traceback.format_exception
+    todo, seen = [shown], set()
+    while todo:
+        each = todo.pop()
+        if each is None or id(each) in seen:
+            continue
+        seen.add(id(each))
+        # _str is the text the line of an exception shows, msg that of a SyntaxError (Python 3.10 to 3.14)
+        each._str = " ".join(str(each._str).split())
+        if isinstance(getattr(each, "msg", None), str):
+            each.msg = " ".join(each.msg.split())
+        todo += [each.__cause__, each.__context__, *(getattr(each, "exceptions", None) or ())]
+    return "".join(shown.format())

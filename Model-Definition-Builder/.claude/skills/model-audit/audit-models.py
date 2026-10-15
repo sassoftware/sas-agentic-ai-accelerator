@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 import sys
-import traceback
 
 try:
     from dotenv import find_dotenv, load_dotenv
@@ -33,7 +32,7 @@ try:
 except ImportError:
     pass
 
-from mdb.core.printable import printable
+from mdb.core.printable import printable, traceback_text
 from mdb.viya.registry import KIND_PROJECT
 from mdb.viya.session import ViyaConfigError, create_session
 from sasctl.services import model_repository as mr
@@ -120,8 +119,9 @@ def main() -> None:
         sys.exit(2)
     except Exception as exc:
         # an answer of SAS Model Manager that sasctl raises as an HTTPError holds its body in the text of the
-        # exception: the traceback Python prints, without control characters, and exit code 1
-        say("".join(traceback.format_exception(exc)), end="", file=sys.stderr)
+        # exception: the traceback Python prints, without control characters, the text of each exception on the
+        # one line that names it (traceback_text), and exit code 1
+        say(traceback_text(exc), end="", file=sys.stderr)
         sys.exit(1)
 
     if as_json:

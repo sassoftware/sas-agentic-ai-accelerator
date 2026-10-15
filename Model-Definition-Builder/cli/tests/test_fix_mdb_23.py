@@ -37,8 +37,8 @@ from test_mdb_23 import (  # noqa: F401  (audit_script is a fixture)
 
 #: What a server answered: a bracket of rich's markup, a backslash, a CR LF, an ESC sequence and a C1 CSI byte.
 BODY = 'bad [/red] \\ back\r\nline two \x1b[31mRED\x1b[0m \x9b2J end'
-#: The same as every line of mdb prints it.
-SHOWN = "bad [/red] \\ back\nline two [31mRED[0m 2J end"
+#: The same as every line of mdb prints it: on one line, the CR LF a blank (round 24, live-23b B2).
+SHOWN = "bad [/red] \\ back line two [31mRED[0m 2J end"
 
 
 def _controls(text: str) -> list:
