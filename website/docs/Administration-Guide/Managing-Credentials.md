@@ -193,7 +193,7 @@ end. Any other character - a line break, a control character, a blank such as
 U+00A0, an invisible one such as U+200B or U+034F, a letter outside ASCII such
 as ö - is refused with exit code 2 before anything is written or asked of SAS
 Viya, in a manifest, as an argument and as `--domain`; a manifest that lists
-such an id is refused by every credentials command. Every line names an id
+such an id is refused by every credentials command that reads it. Every line names an id
 and a domain as they are and unquoted, and such a character can show as
 another one or as none.
 
