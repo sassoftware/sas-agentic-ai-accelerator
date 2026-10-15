@@ -44,7 +44,13 @@
  *     optimize-job-writer.py with stand-ins for SAS, SAS Viya and dspy) in
  *     every way it ends;
  *   - options.json: every options.json of LLM-Definitions and
- *     Decision-Definitions, which mdb generated and uploads.
+ *     Decision-Definitions, which mdb generated and uploads, and every option
+ *     of mdb's option vocabulary (definition-core/static/option-vocabulary.json),
+ *     with its key, rendered as mdb's generator renders an option
+ *     (_render_options_json: default, range, description, the type of an
+ *     enum, bool or string option, the values of an enum, the label) - the
+ *     fields of an option a manifest gives itself are texts, and its values
+ *     a list of texts (OptionSpec).
  *
  * The suite goes on after a check that failed and after a road that stopped.
  * The mock is found at VERIFY_BASE (default http://localhost:4173); the
@@ -286,9 +292,29 @@ function writersCensus(storedNames) {
         if (!check('options.json', parsed(fs.readFileSync(file, 'utf8')))) refused.push(`${folder}/${definition}`);
       }
     }
-    const ok = read.length > 0 && refused.length === 0;
+    // Every option of the vocabulary, as the generator renders it, with a
+    // default of the kind of its type, and the key of a provider.
+    let vocabulary = {};
+    try {
+      vocabulary = parsed(fs.readFileSync(path.join(REPOSITORY, 'Model-Definition-Builder', 'definition-core', 'static', 'option-vocabulary.json'), 'utf8'));
+    } catch {
+      vocabulary = {};
+    }
+    const rendered = {};
+    for (const [name, option] of Object.entries((vocabulary && vocabulary.options) || {})) {
+      const entry = { default: option.type === 'enum' ? (option.values || [''])[0] : option.type === 'bool' ? true : option.type === 'string' ? '' : 0, range: option.range, description: option.description || '' };
+      if (['enum', 'bool', 'string'].includes(option.type)) {
+        entry.type = option.type;
+        if (option.type === 'enum' && option.values) entry.values = option.values;
+      }
+      if (option.label) entry.label = option.label;
+      rendered[name] = entry;
+    }
+    if (vocabulary && vocabulary.api_key) rendered.API_KEY = { default: 'Provider', range: vocabulary.api_key.range, description: vocabulary.api_key.description };
+    const vocabularyTaken = Object.keys(rendered).length > 1 && check('options.json', rendered);
+    const ok = read.length > 0 && refused.length === 0 && vocabularyTaken;
     for (const writer of ['Model-Definition-Builder/cli/src/mdb/core/generator.py', 'Model-Definition-Builder/cli/src/mdb/viya/registry.py']) tripped(`options.json ${writer}`, ok);
-    step(ok, `every options.json mdb generated for the repository - and uploads as it is - passes the check of the page (${read.length} read; refused: ${refused.join(', ') || 'none'})`);
+    step(ok, `every options.json mdb generated for the repository - and uploads as it is - passes the check of the page, and so does every option of mdb's option vocabulary as the generator renders it (${read.length} read; refused: ${refused.join(', ') || 'none'}; the ${Object.keys(rendered).length} options of the vocabulary: ${vocabularyTaken ? 'taken' : 'refused'})`);
   }
 
   // ==========================================================================

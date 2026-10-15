@@ -52,9 +52,10 @@
  *     page of its contents shows its runs and its optimization history;
  *   - an optimization history that cannot be read, or holds no list of runs,
  *     says so where the history stands, with no run and no Delete;
- *   - an LLM or a decision model whose options.json holds no options is shown
- *     as one that cannot be used, and offered nowhere; a stored run or an
- *     optimization run that used it does not tick its box;
+ *   - an LLM or a decision model whose options.json holds no options (a
+ *     list, an option without its default, an option whose values are no
+ *     texts) is shown as one that cannot be used, and offered nowhere; a
+ *     stored run or an optimization run that used it does not tick its box;
  *   - the documentation of a prompt-test that cannot be read says so;
  *   - a RAG setup whose contents, rag-setup.json or (never saved) attributes
  *     cannot be read says so and keeps Save setup, Manifest setup and Save
@@ -498,7 +499,11 @@ function offersCensus() {
 // checks every field of a stored row or entry against its shape (STORED_SHAPES:
 // PET_ROW, OPTIMIZATION_ENTRY, RAG_SETUP - round 25: a rag-setup.json whose
 // documentation held an object was drawn as "[object Object]" and written so
-// by Save setup, and a policy flag "no" went into pipeline.yaml as true). The
+// by Save setup, and a policy flag "no" went into pipeline.yaml as true -,
+// MODEL_OPTION: an options.json whose enum values were no texts
+// stopped the build of the whole Prompt Builder). A field the type gives no
+// kind (`unknown`: the default of an option) is read as any value, and no
+// shape holds it; its check asks for it by its presence. The
 // census probes the shape of every name of STORED_SHAPES. It reads the types of
 // the sources each shape mirrors (`of`: an interface, or a field of one that
 // is an object of its own) and compares them field for field - names and
@@ -525,7 +530,7 @@ async function shapeCensus() {
   }
 }
 
-async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimentTracker, isOptimizationTracker, isRagSetup }) {
+async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimentTracker, isOptimizationTracker, isRagSetup, isModelOptions }) {
   if (!STORED_SHAPES) throw new Error('it exports no STORED_SHAPES');
   // The interfaces and type aliases of the sources, by name.
   const types = {};
@@ -611,7 +616,9 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
       continue;
     }
     const declared = fieldsOf(node);
-    for (const name of Object.keys(declared)) if (!shape.fields[name]) differences.push(`${of}.${name}: not in the shape`);
+    for (const name of Object.keys(declared)) {
+      if (!shape.fields[name] && bare(declared[name]).type !== 'TSUnknownKeyword') differences.push(`${of}.${name}: not in the shape`);
+    }
     for (const [name, field] of Object.entries(shape.fields)) {
       if (!declared[name]) {
         differences.push(`${of}.${name}: not in the type`);
@@ -644,6 +651,7 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
     ],
     OPTIMIZATION_ENTRY: [(entry) => [entry], (value) => isOptimizationTracker(value), sample(STORED_SHAPES.OPTIMIZATION_ENTRY)],
     RAG_SETUP: [(value) => value, (value) => isRagSetup(value), setup([enrichStep()])],
+    MODEL_OPTION: [(option) => ({ reasoning_effort: option }), (value) => isModelOptions(value), { ...sample(STORED_SHAPES.MODEL_OPTION), default: 'x' }],
   };
   const misjudged = [];
   const unprobed = Object.keys(STORED_SHAPES).filter((name) => !files[name]);
@@ -714,9 +722,15 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
   if (isRagSetup(setup([{ foo: 1 }]))) misjudged.push('rag-setup.json: an enrichment of an entry that is no prompt is taken');
   if (isRagSetup(setup('x'))) misjudged.push('rag-setup.json: an enrichment that is a text is taken');
   if (isRagSetup({ ...setup(undefined), version: 2 })) misjudged.push('rag-setup.json: a setup of version 2 is taken');
+  // The default of an option is read as any value; an option without one is no option.
+  const option = (fields) => isModelOptions({ reasoning_effort: fields });
+  const defaults = [null, 0, 'x', true, ['x'], { x: 1 }];
+  for (const value of defaults) if (!option({ default: value })) misjudged.push(`options.json: an option whose default is ${JSON.stringify(value)} is refused`);
+  if (option({ type: 'enum', values: ['x'] })) misjudged.push('options.json: an option without its default is taken');
+  if (isModelOptions([sample(STORED_SHAPES.MODEL_OPTION)])) misjudged.push('options.json: a list of options is taken');
   step(
     misjudged.length === 0 && typeof fits === 'function',
-    `the checks of the stored files take every field of its kind and refuse it of another, at every depth (${probes} probes of the fields of ${Object.keys(files).join(', ')}, and ${rules.length + 8} files the rules of a run, an optimization tracker and a setup name; wrong: ${misjudged.join('; ') || 'none'})`
+    `the checks of the stored files take every field of its kind and refuse it of another, at every depth (${probes} probes of the fields of ${Object.keys(files).join(', ')}, and ${rules.length + 8 + defaults.length + 2} files the rules of a run, an optimization tracker, a setup and an options.json name; wrong: ${misjudged.join('; ') || 'none'})`
   );
 }
 
@@ -1306,15 +1320,21 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
   // ==========================================================================
   // An options.json that holds no options
   // ==========================================================================
-  // Every option of a model is described by an object that holds its default
-  // (isModelOptions). A model whose options.json is JSON and no such file is
-  // shown as one that cannot be used - its box off, with a note - and offered
+  // Every option of a model is described by an object that holds its default,
+  // and its type, values, label and description, where it has them, of the
+  // kind the page reads (isModelOptions, MODEL_OPTION). A model whose
+  // options.json is JSON and no such file is shown as one that cannot be
+  // used - its box off, with a note - and offered
   // nowhere else: not as a judge, a member or the chairman of a council, not
   // as a target of an optimization; a stored run or an optimization run that
   // used it, loaded, does not tick its box (offersCensus names every use of
   // the lists of the models).
   const OPTIONS_UNUSABLE = 'The options.json of this model holds no options this page can read';
-  for (const [what, body] of [['a list', '[1,2]'], ['an option without its description', '{"temperature":0.7}']]) {
+  for (const [what, body] of [
+    ['a list', '[1,2]'],
+    ['an option without its description', '{"temperature":0.7}'],
+    ['an option whose values are no texts', '{"temperature":{"default":0.7},"reasoning_effort":{"type":"enum","default":"low","values":[1,2]}}'],
+  ]) {
     storedRoadsRun.add('options.json');
     await road(`an options.json that is ${what}`, async (page) => {
       await page.route('**/files/files/opt-1/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body }));

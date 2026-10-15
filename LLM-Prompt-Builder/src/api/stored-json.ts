@@ -282,8 +282,18 @@ const RAG_SETUP: ObjectShape = {
   },
 };
 
+/**
+ * An option of options.json, as the page reads it: its default is read as a
+ * value of any kind, and is not in the shape (isModelOptions asks for it);
+ * the values of an enum are drawn as texts.
+ */
+const MODEL_OPTION: ObjectShape = {
+  of: 'ModelOption',
+  fields: { type: 'string', values: { list: 'string' }, label: 'string', description: 'string' },
+};
+
 /** The shapes of the stored files, for the harness. */
-export const STORED_SHAPES = { PET_ROW, OPTIMIZATION_ENTRY, RAG_SETUP } as const;
+export const STORED_SHAPES = { PET_ROW, OPTIMIZATION_ENTRY, RAG_SETUP, MODEL_OPTION } as const;
 
 /**
  * The keys of a run of the experiment tracker that the page reads as fields
@@ -364,10 +374,11 @@ export function isRagSetup(value: unknown): boolean {
 
 /**
  * options.json of an LLM or a decision model: every option the model takes,
- * each described by an object that holds its default.
+ * each described by an object that holds its default, and whose other fields
+ * the page reads are of the kind it reads (MODEL_OPTION).
  */
 export function isModelOptions(value: unknown): boolean {
-  return isObject(value) && Object.values(value).every((option) => isObject(option) && 'default' in option);
+  return isObject(value) && Object.values(value).every((option) => fits(option, MODEL_OPTION) && 'default' in (option as object));
 }
 
 /** The JSON files the page reads, by their name, with the check of each. */
