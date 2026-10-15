@@ -13,9 +13,13 @@
  * off while what it starts is running or a write is out, so such a click
  * started that action a second time. This stops a click on a disabled button
  * or input - also one off because its fieldset is - before any listener of
- * the page, for every control of the page, the dialogs included.
+ * the page, for every control of the page, the dialogs included. It listens
+ * on the window in the capture phase, the first stop of every click: a
+ * listener on the document in that phase - Bootstrap's for `data-bs-toggle`,
+ * registered when its modules are imported - comes after it, whichever was
+ * registered first.
  */
-export function refuseClicksOnDisabledControls(target: Document = document): void {
+export function refuseClicksOnDisabledControls(target: Window = window): void {
   target.addEventListener(
     'click',
     (event) => {

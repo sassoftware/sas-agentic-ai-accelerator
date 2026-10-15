@@ -387,8 +387,11 @@ RAG side (stateful; the block sits before the generic routes):
   route on `/files/files/trk-1/content`).
 - A click a script sends to a control that is off (`dispatchEvent`) reaches
   none of the page's listeners: `src/ui/disabled-guard.ts` stops it on the
-  document before them. `element.click()` on such a control does nothing
-  either, as in any browser.
+  window, in the capture phase, before them - Bootstrap's listener on the
+  document, which opens a dialog, included. `element.click()` on such a
+  control does nothing either, as in any browser. `verify-outcomes.js` sees
+  every click listener of the page (`CLICK_PROBE`, for a road opened with
+  `{ probeClicks: true }`).
 - A delete dialog is about what was selected at the click. The RAG Builder
   lists the setups of a project again for Delete project. Both builders open
   no dialog when another item or project was chosen while the usage was

@@ -39,7 +39,8 @@
  *     created and not read back says that its buttons stay off, and Try
  *     again reads it; Enter in the question of a retrieval test that runs
  *     starts no second test, and a click a script sends to a control that is
- *     off reaches no listener (at two moments, every such control).
+ *     off reaches no listener of the page and opens no dialog (at three
+ *     moments, every such control, every click listener of the page).
  *   - Save setup, Manifest setup and Save documentation cannot be used while
  *     the stored setup is read.
  *   - While a write is out, a change of a picker sent by a script (as the
@@ -191,6 +192,59 @@ const KEYS = {
   'ui/kind-selector.ts createKindSelector radio:keydown': 'arrows move the focus to the neighbouring card and choose nothing',
 };
 
+// Every click listener of the page, before any script of it runs: each one
+// added with addEventListener on any target (window, document, an element -
+// Bootstrap's data-api among them) and each one set as an element's
+// `onclick`. For a click sent with `__probe` set, each listener that runs is
+// written into that list with where it listens and whether it stopped the
+// click; a page a road opens with `{ probeClicks: true }` has it.
+const CLICK_PROBE = () => {
+  const add = EventTarget.prototype.addEventListener;
+  const remove = EventTarget.prototype.removeEventListener;
+  const stop = Event.prototype.stopImmediatePropagation;
+  const wrappers = new WeakMap();
+  const where = (event) => {
+    const target = event.currentTarget;
+    const name = target === window ? 'window' : target === document ? 'document' : target.id ? `#${target.id}` : target.nodeName;
+    return `${name} (${['none', 'capture', 'target', 'bubble'][event.eventPhase]})`;
+  };
+  Event.prototype.stopImmediatePropagation = function () {
+    this.__stopped = true;
+    return stop.call(this);
+  };
+  const wrap = (listener) => {
+    if (!wrappers.has(listener)) {
+      wrappers.set(listener, function (event) {
+        const run = () => (typeof listener === 'function' ? listener.call(this, event) : listener.handleEvent(event));
+        if (!event.__probe) return run();
+        event.__stopped = false;
+        const result = run();
+        event.__probe.push({ where: where(event), stopped: Boolean(event.__stopped) });
+        return result;
+      });
+    }
+    return wrappers.get(listener);
+  };
+  EventTarget.prototype.addEventListener = function (type, listener, options) {
+    return add.call(this, type, type === 'click' && listener ? wrap(listener) : listener, options);
+  };
+  EventTarget.prototype.removeEventListener = function (type, listener, options) {
+    return remove.call(this, type, type === 'click' && listener && wrappers.has(listener) ? wrappers.get(listener) : listener, options);
+  };
+  const property = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'onclick');
+  Object.defineProperty(HTMLElement.prototype, 'onclick', {
+    configurable: true,
+    enumerable: property.enumerable,
+    get() {
+      return this.__onclick ?? null;
+    },
+    set(handler) {
+      this.__onclick = handler;
+      property.set.call(this, typeof handler === 'function' ? wrap(handler) : handler);
+    },
+  });
+};
+
 function writesCensus() {
   let files;
   try {
@@ -267,7 +321,7 @@ function writesCensus() {
   writesCensus();
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   let pageErrors = [];
-  const newPage = async ({ clock = false } = {}) => {
+  const newPage = async ({ clock = false, probeClicks = false } = {}) => {
     const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
     // A loaded machine can take longer than Playwright's 30 s to load the page.
     page.setDefaultNavigationTimeout(180000);
@@ -287,6 +341,7 @@ function writesCensus() {
         }
       }).observe(document, { childList: true, subtree: true });
     });
+    if (probeClicks) await page.addInitScript(CLICK_PROBE);
     if (clock) await page.clock.install();
     return page;
   };
@@ -1450,20 +1505,51 @@ function writesCensus() {
   // it is asked for. Enter in the question started a second and a third
   // retrieval test, each with its job definition and its job, while Run test
   // was off; a click a script sends to a control that is off reached its
-  // listeners. Every control that is off at two moments - a test running, a
-  // save of the setup out - is sent such a click: none reaches a listener.
+  // listeners, and Bootstrap's listener on the document opened the dialog of a
+  // create button. Every control that is off at three moments - a test
+  // running, a save of the setup out, Save Experiments out - is sent such a
+  // click, and CLICK_PROBE sees every click listener of the page: the one
+  // that runs is the guard, on the window in the capture phase, and it stops
+  // the click; no other listener runs, and no dialog opens.
   const scriptedClicks = (page) =>
-    page.evaluate(() => {
+    page.evaluate(async () => {
       const controls = [...document.querySelectorAll('button, input, select, textarea')].filter((control) => control.matches(':disabled'));
       const reached = [];
+      let stoppedFirst = 0;
       for (const control of controls) {
-        const mark = () => reached.push(control.id || control.textContent.trim().slice(0, 30) || control.tagName);
-        control.addEventListener('click', mark);
-        control.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-        control.removeEventListener('click', mark);
+        const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+        event.__probe = [];
+        control.dispatchEvent(event);
+        const [first, ...others] = event.__probe;
+        if (first && first.where === 'window (capture)' && first.stopped) stoppedFirst += 1;
+        else if (first) others.unshift(first);
+        if (others.length) reached.push(`${control.id || control.textContent.trim().slice(0, 30) || control.tagName}: ${others.map((listener) => listener.where).join(', ')}`);
       }
-      return { off: controls.length, reached };
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      const dialogs = [...document.querySelectorAll('.modal')].filter((modal) => modal.classList.contains('show') || modal.style.display === 'block').map((modal) => modal.id);
+      if (document.body.classList.contains('modal-open') || document.querySelector('.modal-backdrop')) dialogs.push('a backdrop');
+      return { off: controls.length, stoppedFirst, reached, dialogs };
     });
+  const noneReached = (seen) => seen.off > 0 && seen.stoppedFirst === seen.off && seen.reached.length === 0 && seen.dialogs.length === 0;
+  const reachedText = (seen) => `stopped first by the guard: ${seen.stoppedFirst}; reached: ${JSON.stringify(seen.reached).slice(0, 400)}; dialogs: ${JSON.stringify(seen.dialogs)}`;
+  await road('a click a script sends to a control that is off while Save Experiments is out', async (page) => {
+    await openPage(page);
+    await openPromptTest(page, 'proj-1', 'model-used');
+    await goStep(page, 'LPB', 'build');
+    await page.route('**/modelRepository/models/model-used/**', async (route) => {
+      if (route.request().method() !== 'GET') await sleep(2500);
+      await route.continue().catch(() => {});
+    });
+    await page.click(lpb('pet-save-button'));
+    await waitUntil(async () => page.$eval('#LPB-selection', (block) => block.disabled), 'the selection is locked', 5000);
+    const writing = await scriptedClicks(page);
+    await waitUntil(async () => (await textOf(page, lpb('pet-save-only-result'))) !== '', 'the save has ended', 30000);
+    await atRest();
+    step(
+      noneReached(writing),
+      `while Save Experiments is out, a click a script sends to any of the ${writing.off} controls that are off reaches no listener of the page and opens no dialog (${reachedText(writing)})`
+    );
+  }, { probeClicks: true });
   await road('a retrieval test asked for by Enter and by a script while one runs', async (page) => {
     await openPage(page, 'rag');
     await openSetup(page, 'rag-setup-1');
@@ -1493,8 +1579,8 @@ function writesCensus() {
       `Enter in the question while a retrieval test runs starts no second test: one question, one job definition and one job (job definitions written: ${definitions}; jobs launched: ${jobs})`
     );
     step(
-      during.off > 0 && during.reached.length === 0,
-      `while the test runs, a click a script sends to any of the ${during.off} controls that are off reaches none of their listeners (reached: ${JSON.stringify(during.reached)})`
+      noneReached(during),
+      `while the test runs, a click a script sends to any of the ${during.off} controls that are off reaches no listener of the page and opens no dialog (${reachedText(during)})`
     );
     // While a save of the setup is out the selection and every button that
     // writes are off.
@@ -1509,10 +1595,10 @@ function writesCensus() {
     await waitUntil(async () => Boolean(await page.$(`${rgb('save-result')} .alert`)), 'the save has ended', 30000);
     await atRest();
     step(
-      writing.off > 0 && writing.reached.length === 0,
-      `while a save is out, a click a script sends to any of the ${writing.off} controls that are off reaches none of their listeners (reached: ${JSON.stringify(writing.reached)})`
+      noneReached(writing),
+      `while a save is out, a click a script sends to any of the ${writing.off} controls that are off reaches no listener of the page and opens no dialog (${reachedText(writing)})`
     );
-  });
+  }, { probeClicks: true });
 
   // A launch whose answer is lost after Job Execution took it: the read back
   // finds the job among those that are running - the name, the definition
