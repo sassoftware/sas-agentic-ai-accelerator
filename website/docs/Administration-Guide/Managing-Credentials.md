@@ -197,6 +197,18 @@ such an id is refused by every credentials command that reads it. Every line nam
 and a domain as they are and unquoted, and such a character can show as
 another one or as none.
 
+A value of the manifest is taken only as YAML reads it. `id`, `domain` and
+`source` must be text, `only` a list of texts and `verbatim` `true` or
+`false`. YAML reads an unquoted `0123` as the number 83 and `yes` as true,
+so such a value is refused with exit code 2
+before anything is written or asked of SAS Viya: `<file>: identity <n>: 'id'
+must be a text, and YAML read a number there - put it in quotes ('0123',
+'yes') to have it read as it is written`. Write such an id in quotes
+(`id: '0123'`), as `mdb credentials-add` does. An id that is missing, empty
+or `~` is refused as no id; a `domain` that is missing, empty or `~` is
+`agentic-ai-keys`. An empty name in `only` names an entry no source carries,
+so the identity is not equipped. This was tested, not run against SAS Viya.
+
 ### Adding an identity: `mdb credentials-add`
 
 `mdb credentials-add <type> <id>` adds a group or a user to the manifest, so
