@@ -446,6 +446,10 @@ def scaffold(source: Path, manifest: Path, domain: str = DEFAULT_DOMAIN,
     `as_argument` is the name of the manifest as a shell takes it in the
     commands the head of the file shows - in quotes where it holds a blank.
     The command line gives it; without it the name stands as it is.
+
+    Every value goes in through `_flow`, as the editor's do: unquoted, a
+    domain `2024` was read back as a number and refused, `team-keys #2` as
+    `team-keys`, and `keys: x` was no YAML.
     """
     listed = "\n".join(f"#   {name}" for name in entry_names) or "#   (none found)"
     named = as_argument or manifest.name
@@ -475,11 +479,11 @@ def scaffold(source: Path, manifest: Path, domain: str = DEFAULT_DOMAIN,
 # with. Creating the domain, or any group credential, needs SAS administrator
 # rights.
 
-domain: {domain}
+domain: {_flow(domain)}
 
 # Relative paths resolve against THIS file, so the manifest and the .env files
 # it names can be moved together.
-source: {relative_source(source, manifest)}
+source: {_flow(relative_source(source, manifest))}
 
 # Entries that source carries today. Use these names in an `only:` list - they
 # are how the DOMAIN spells them, not how the .env does (OpenAI, not
@@ -490,7 +494,7 @@ source: {relative_source(source, manifest)}
 identities:
 {about_the_placeholder}
   - type: group
-    id: {PLACEHOLDER_ID}
+    id: {_flow(PLACEHOLDER_ID)}
 
   # Narrow an identity to some of the entries:
   # - type: group
