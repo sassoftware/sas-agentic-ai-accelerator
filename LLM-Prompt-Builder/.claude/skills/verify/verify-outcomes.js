@@ -1514,6 +1514,54 @@ function writesCensus() {
     );
   });
 
+  // A launch whose answer is lost after Job Execution took it: the read back
+  // finds the job among those that are running - the name, the definition
+  // and the arguments are members of its request (`jobRequest`), as the mock
+  // and Job Execution list them - and the page follows it.
+  const loseLaunchAnswer = async (page) => {
+    let lost = 0;
+    await page.route('**/jobExecution/jobs', async (route) => {
+      if (route.request().method() !== 'POST' || lost > 0) return route.continue();
+      lost += 1;
+      await route.fetch();
+      return route.abort('failed');
+    });
+    return () => lost;
+  };
+  await road('Launch ingestion whose answer is lost after the job was launched', async (page) => {
+    await openPage(page, 'rag');
+    await openSetup(page, 'rag-setup-1');
+    await goStep(page, 'RGB', 'run');
+    const lost = await loseLaunchAnswer(page);
+    await page.click(rgb('launch'));
+    await waitUntil(async () => /completed/.test((await runState(page)).text) || (await textOf(page, rgb('status'))) !== '', 'the run card or the banner', 40000).catch(() => {});
+    await atRest();
+    const card = await runState(page);
+    const banner = await textOf(page, rgb('status'));
+    step(
+      lost() === 1 && card.shown && /completed/.test(card.text) && banner === '' && !card.launchOff,
+      `Launch ingestion whose answer is lost after Job Execution launched the job reads it back among the running jobs and follows it to its end (answers lost: ${lost()}; card: ${JSON.stringify(card).slice(0, 220)}; banner: "${clip(banner)}")`
+    );
+  });
+  await road('Run test whose answer is lost after the job was launched', async (page) => {
+    await openPage(page, 'rag');
+    await openSetup(page, 'rag-setup-1');
+    await goStep(page, 'RGB', 'run');
+    await page.click(rgb('test'));
+    await page.waitForSelector(rgb('test-question'), { state: 'visible' });
+    await page.fill(rgb('test-question'), 'What does the handbook say about leave?');
+    const lost = await loseLaunchAnswer(page);
+    await page.click(rgb('test-run'));
+    await waitUntil(async () => (await page.$$(`${rgb('test-results')} tbody tr`)).length > 0 || /not known/.test(await textOf(page, rgb('test-status'))), 'the chunks or the line that it is not known', 40000).catch(() => {});
+    await atRest();
+    const rows = (await page.$$(`${rgb('test-results')} tbody tr`)).length;
+    const status = await textOf(page, rgb('test-status'));
+    step(
+      lost() === 1 && rows > 0 && !/not known/.test(status),
+      `Run test whose answer is lost after Job Execution launched the job reads it back among the running jobs and shows what it returned (answers lost: ${lost()}; chunks: ${rows}; status: "${clip(status)}")`
+    );
+  });
+
   await road('a running ingestion on a page loaded after its launch', async (page) => {
     await openPage(page, 'rag');
     await openSetup(page, 'rag-setup-1');

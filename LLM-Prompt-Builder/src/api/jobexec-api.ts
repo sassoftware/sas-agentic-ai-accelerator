@@ -140,10 +140,12 @@ export async function launchJob(
       ),
     async () => {
       const launched = (await runningJobs()).find((job) => {
-        const request = (job.jobRequest ?? {}) as { jobDefinitionUri?: string; arguments?: Record<string, unknown> };
+        // The name is a member of the request, as the definition and the
+        // arguments are: the job itself carries none.
+        const request = (job.jobRequest ?? {}) as { name?: string; jobDefinitionUri?: string; arguments?: Record<string, unknown> };
         return (
           request.jobDefinitionUri === jobDefinitionUri &&
-          job.name === jobName &&
+          request.name === jobName &&
           (!request.arguments || Object.entries(args).every(([key, value]) => String(request.arguments?.[key] ?? '') === value))
         );
       });
