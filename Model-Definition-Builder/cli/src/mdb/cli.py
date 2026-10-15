@@ -27,8 +27,8 @@ from typer.core import TyperGroup
 from . import __version__
 from .core import drift, facts
 from .core.generator import (
-    AZURE_ENV_TEMPLATE, AZURE_TEMPLATES, CoreAssets, GenerationError, effective_score_file,
-    list_custom_options, render_assets,
+    AZURE_ENV_TEMPLATE, AZURE_TEMPLATES, CoreAssets, GenerationError, _render_options_json,
+    check_options_file, effective_score_file, list_custom_options, render_assets,
 )
 from .core.importer import import_folder
 from .core.manifest import MANIFEST_FILENAME, ModelManifest, export_json_schema, load_manifest
@@ -3253,6 +3253,11 @@ def register(
         for folder in targets:
             try:
                 manifest = load_manifest(folder)
+                # Before anything is written: the options of the manifest and
+                # the options.json this uploads keep check_options_json.
+                _render_options_json(manifest, ctx.core)
+                if (folder / "options.json").is_file():
+                    check_options_file(folder / "options.json")
                 if manifest.kind not in ensured_kinds:
                     ensured = ensure_repository_and_project(session, manifest.kind, ctx.core, responsible_party)
                     for created in ensured.created:

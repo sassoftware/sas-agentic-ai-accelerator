@@ -389,7 +389,78 @@ def _render_options_json(manifest: ModelManifest, core: CoreAssets) -> str:
             "range": core.api_key_meta["range"],
             "description": core.api_key_meta["description"].replace("{key_name}", manifest.provider.auth.key_name or ""),
         }
+    check_options_json(entries)
     return json.dumps(entries, indent=4, ensure_ascii=False)
+
+
+def _shown(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def check_options_json(entries: Any) -> None:
+    """Refuse an options.json the Prompt Builder would draw or send other
+    than it says. `generate` (and every command that renders) applies it to
+    the file it writes, `register` to the file it uploads.
+
+    The rule - JSON as the page reads it:
+
+        options.json         object: option name -> option
+        option               object that holds "default", and no NaN or
+                             Infinity (JSON has neither)
+        option.type          text, where given (absent or null: not given)
+        option.label         text, where given (absent or null: not given)
+        option.description   text, where given (absent or null: not given)
+        type "enum"          values: a non-empty list of texts
+                             default: one of values
+        type "bool"          default: true or false
+        option "API_KEY"     default: a non-empty text
+
+    Nothing else is checked: not `range`, not `values` of an option that is
+    no enum, not the default of any other option.
+
+    Raises GenerationError with a sentence naming the first option that
+    breaks the rule.
+    """
+    if not isinstance(entries, dict):
+        raise GenerationError(f"options.json is {_shown(entries)}, not an object of options.")
+    for name, option in entries.items():
+        if not isinstance(option, dict) or "default" not in option:
+            raise GenerationError(f"Option '{name}' is {_shown(option)}, not an object that holds a default.")
+        try:
+            json.dumps(option, allow_nan=False, default=str)
+        except ValueError:
+            raise GenerationError(f"Option '{name}' holds NaN or Infinity, which JSON does not hold.") from None
+        for field in ("type", "label", "description"):
+            if option.get(field) is not None and not isinstance(option[field], str):
+                raise GenerationError(f"Option '{name}' has the {field} {_shown(option[field])}, which is not a text.")
+        default = option["default"]
+        if option.get("type") == "enum":
+            values = option.get("values")
+            if not (isinstance(values, list) and values and all(isinstance(value, str) for value in values)):
+                raise GenerationError(
+                    f"Option '{name}' is an enum option whose values are {_shown(values)} - an enum option "
+                    "needs a non-empty list of texts as its values.")
+            if default not in values:
+                raise GenerationError(
+                    f"Option '{name}' has the default {_shown(default)}, which is not one of its values "
+                    f"{_shown(values)}.")
+        if option.get("type") == "bool" and not isinstance(default, bool):
+            raise GenerationError(
+                f"Option '{name}' is a bool option with the default {_shown(default)} - the default of a bool "
+                "option is true or false.")
+        if name == "API_KEY" and not (isinstance(default, str) and default):
+            raise GenerationError(
+                f"Option 'API_KEY' has the default {_shown(default)} - its default is the name of the "
+                "provider key, a non-empty text.")
+
+
+def check_options_file(path: Path) -> None:
+    """check_options_json for an options.json on disk."""
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise GenerationError(f"{path} is not JSON: {exc}") from exc
+    check_options_json(entries)
 
 
 def _render_model_configuration(manifest: ModelManifest, core: CoreAssets) -> str:
