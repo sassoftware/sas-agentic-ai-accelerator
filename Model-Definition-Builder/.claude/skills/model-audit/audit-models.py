@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import sys
+import traceback
 
 try:
     from dotenv import find_dotenv, load_dotenv
@@ -104,7 +105,8 @@ def audit() -> list[dict]:
 
 def say(text="", **options) -> None:
     """One print of the script: what SAS Logon and SAS Model Manager answered
-    - a sign-in that failed, the name and the attributes of a model - loses
+    - a sign-in that failed, the name and the attributes of a model, the
+    traceback of an answer the audit did not catch - loses
     its control characters first, as every line of mdb does."""
     print(printable(text), **options)
 
@@ -116,6 +118,11 @@ def main() -> None:
     except ViyaConfigError as exc:
         say(f"SAS Viya could not be used: {exc}", file=sys.stderr)
         sys.exit(2)
+    except Exception as exc:
+        # an answer of SAS Model Manager that sasctl raises as an HTTPError holds its body in the text of the
+        # exception: the traceback Python prints, without control characters, and exit code 1
+        say("".join(traceback.format_exception(exc)), end="", file=sys.stderr)
+        sys.exit(1)
 
     if as_json:
         say(json.dumps(rows, indent=2))

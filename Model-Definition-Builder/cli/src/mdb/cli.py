@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+import traceback
 from pathlib import Path, PurePath
 from typing import Optional
 
@@ -92,14 +94,35 @@ def _refuse_empty(command: str, name: str, option: str, value: str) -> None:
     _not_empty(option, value, _NAMES_NO.get((command, name)) or _NAMES_NO.get(name) or name.replace("_", " "))
 
 
+#: The exception click shows as a usage error - `No such option: <what was typed>` - and that a command raises to
+#: end with a line: click's own (typer up to 0.2x) or the copy typer brings along (typer 0.27).
+_CLICK_ERROR = next(kind for kind in typer.BadParameter.__mro__ if kind.__name__ == "ClickException")
+
+
 class _Commands(TyperGroup):
-    """The commands of mdb, each with `_refuse_empty_values`."""
+    """The commands of mdb, each with `_refuse_empty_values`. The message of
+    a usage error loses its control characters before click shows it: it
+    can hold what was typed (review-23a)."""
 
     def get_command(self, ctx, cmd_name):
         command = super().get_command(ctx, cmd_name)
         if command is not None:
             _refuse_empty_values(command, cmd_name)
         return command
+
+    def make_context(self, *args, **options):
+        try:
+            return super().make_context(*args, **options)
+        except _CLICK_ERROR as exc:
+            exc.message = printable(exc.message)
+            raise
+
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except _CLICK_ERROR as exc:
+            exc.message = printable(exc.message)
+            raise
 
 
 # pretty_exceptions_show_locals: with the default of typer 0.12.0 - the lowest version pyproject.toml allows - a
@@ -4524,7 +4547,16 @@ def main() -> None:
         load_dotenv(find_dotenv(usecwd=True))
     except ImportError:
         pass
-    app()
+    try:
+        app()
+    except Exception as exc:
+        # An exception no command caught - an answer of SAS Viya that sasctl raises as an HTTPError, its body in
+        # the text of the exception: typer printed its traceback with that text as it is, ESC included
+        # (gate-23a, review-23a). It is the traceback Python prints, through a console of mdb on stderr - without
+        # control characters, as it is otherwise, on lines of their own width -, and exit code 1.
+        _Console(stderr=True, emoji=False, highlight=False, soft_wrap=True).print(
+            "".join(traceback.format_exception(exc)), markup=False, end="")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
