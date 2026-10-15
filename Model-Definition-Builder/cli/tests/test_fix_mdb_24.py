@@ -9,6 +9,11 @@ Nothing signs in anywhere: the transport of requests is replaced.
   with its line break, so the answer stood on two lines. The tests take
   every command that reaches SAS Viya, and every handler of cli.py and of
   the modules of mdb/viya that can catch that HTTPError.
+- review[7]: a credentials manifest written by hand was read with `str()`
+  of what YAML made of it: `id:` empty or `~` became the group `None`,
+  `0123` the group `83`, `yes` the group `True`, and apply wrote or deleted
+  the credential of that other identity. The tests take every key that
+  Manifest.parse reads.
 """
 import ast
 import builtins
@@ -21,6 +26,7 @@ import pytest
 
 import mdb
 from mdb import cli
+from mdb.viya import credentials as cr
 from test_fix_mdb_23 import BODY, SHOWN, _answering, _main, no_dotenv  # noqa: F401  (no_dotenv is a fixture)
 from test_mdb_23 import _arguments, _reaching_sas_viya, _sign_in_env
 
@@ -139,3 +145,119 @@ def test_one_line_is_what_a_handler_shows_of_an_answer():
     """The function itself, on the HTTPError the review raised: BODY on one line."""
     exc = urllib.error.HTTPError("http://x/modelRepository", 500, BODY, {}, None)
     assert cli.one_line(str(exc)) == "HTTP Error 500: " + BODY.replace("\r\n", " ")
+
+
+# ---- review[7]: a value of the manifest is the text that was written, or it is refused -------------------------
+def _parse(text: str):
+    return cr.Manifest.parse(text, Path("credentials.yaml"))
+
+
+#: Unquoted values YAML reads as no text: what `str` made of each, and how the refusal names it.
+NO_TEXT = [("0123", "a number"), ("123", "a number"), ("1.50", "a number"), ("yes", "true or false"),
+           ("off", "true or false"), ("2024-01-01", "a date"), ("[a]", "a list"), ("{a: 1}", "a mapping")]
+
+
+def _keys_read_by_parse() -> dict:
+    """{key: the expression that reads it} of every `<mapping>.get("<key>")` in Manifest.parse."""
+    source = Path(cr.__file__).read_text(encoding="utf-8")
+    parse = next(node for node in ast.walk(ast.parse(source))
+                 if isinstance(node, ast.FunctionDef) and node.name == "parse")
+    parents = _parents(parse)
+    keys = {}
+    for node in ast.walk(parse):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" \
+                and node.args and isinstance(node.args[0], ast.Constant):
+            keys[node.args[0].value] = ast.unparse(parents[node])
+    return keys
+
+
+#: How each key of the manifest stands in an identity, for a manifest that holds `value` there.
+def _with(key: str, value: str) -> str:
+    if key in ("domain", "source"):
+        return f"{key}: {value}\nidentities:\n  - {{type: group, id: Team}}\n"
+    if key == "identities":
+        return f"identities: {value}\n"
+    return f"identities:\n  - {{type: group, id: Team, {key}: {value}}}\n".replace("id: Team, id:", "id:")
+
+
+def test_every_key_the_manifest_is_read_by_is_known():
+    """The class: every key Manifest.parse reads. A new key fails here until it is in the tests below."""
+    keys = _keys_read_by_parse()
+    assert set(keys) == {"source", "identities", "domain", "only", "type", "id", "verbatim", "state"}, keys
+    # every one but those checked against a list of their own values (type, state) and the list of identities
+    # goes through _written
+    assert {key for key, read in keys.items() if read.startswith("_written(")} == \
+        {"source", "domain", "only", "id", "verbatim"}, keys
+
+
+@pytest.mark.parametrize("key, written, read", [
+    (key, written, read) for key in ("source", "identities", "domain", "only", "type", "id", "verbatim", "state")
+    for written, read in NO_TEXT
+    if not (key == "only" and read == "a list" or key == "verbatim" and read == "true or false")])
+def test_a_value_yaml_reads_as_something_else_is_refused_for_every_key(key, written, read):
+    """No key takes what `str` makes of a value YAML did not read as it
+    was written - but a list for `only` and true or false for `verbatim`:
+    the manifest is refused, and nothing is planned."""
+    with pytest.raises(cr.CredentialError) as refused:
+        _parse(_with(key, written))
+    said = str(refused.value)
+    if key in ("source", "domain", "id", "only", "verbatim"):
+        kind = {"only": "a list", "verbatim": "true or false"}.get(key, "a text")
+        assert f"'{key}' must be {kind}, and YAML read {read} there" in said, said
+        assert not {"83", "True", "False", "1.5", "datetime"} & set(said.replace("(", " ").split()), said
+
+
+@pytest.mark.parametrize("written", ["", "~", "null"])
+def test_an_id_left_empty_is_no_id(written):
+    """`id:` and `id: ~` became the group "None"."""
+    with pytest.raises(cr.CredentialError, match="an identity with no id cannot be equipped"):
+        _parse(f"identities:\n  - type: group\n    id: {written}\n")
+
+
+@pytest.mark.parametrize("written, read", [("0123", "a number"), ("yes", "true or false"), ("1.50", "a number")])
+def test_a_name_of_only_yaml_reads_as_no_text_is_refused(written, read):
+    with pytest.raises(cr.CredentialError, match=f"a name of 'only' must be a text, and YAML read {read} there"):
+        _parse(f"identities:\n  - {{id: Team, only: [OpenAI, {written}]}}\n")
+
+
+def test_a_text_only_is_no_list_of_its_letters():
+    """`only: OpenAI` was read as the names O, p, e, n, A and I."""
+    with pytest.raises(cr.CredentialError, match="'only' must be a list, and YAML read a text there"):
+        _parse("identities:\n  - {id: Team, only: OpenAI}\n")
+
+
+@pytest.mark.parametrize("written", ["'no'", "1", "0"])
+def test_verbatim_is_true_or_false(written):
+    """`verbatim: 'no'` - a text - was read as true."""
+    with pytest.raises(cr.CredentialError, match="'verbatim' must be true or false"):
+        _parse(f"identities:\n  - {{id: Team, verbatim: {written}}}\n")
+
+
+def test_quoted_the_same_values_are_the_texts_written():
+    manifest = _parse("domain: '0123'\nsource: '0123'\nidentities:\n"
+                      "  - {type: group, id: '0123', only: ['yes', '1.50'], verbatim: true}\n"
+                      "  - {type: user, id: 'yes', verbatim: false}\n  - {id: 'null'}\n")
+    assert manifest.domain == "0123" and manifest.source.name == "0123"
+    assert [(who.type, who.id, who.only, who.verbatim) for who in manifest.identities] == [
+        ("group", "0123", ("yes", "1.50"), True), ("user", "yes", (), False), ("group", "null", (), False)]
+
+
+@pytest.mark.parametrize("domain", ["", "domain:\n", "domain: ~\n"])
+def test_a_domain_left_out_or_empty_is_the_default_as_before(domain):
+    assert _parse(f"{domain}identities:\n  - {{id: Team}}\n").domain == cr.DEFAULT_DOMAIN
+
+
+@pytest.mark.parametrize("written, row", [("", "None"), ("~", "None"), ("0123", "83"), ("yes", "True")])
+def test_credentials_apply_refuses_the_manifest_before_anything_is_asked(
+        tmp_path, monkeypatch, capsys, no_dotenv, written, row):
+    """The review's probe: `mdb credentials-apply --manifest <f> --dry-run`
+    planned the group `None`, `83` or `True` and asked SAS Viya for it. It
+    now ends with exit code 2 before any request, and names no such group."""
+    _sign_in_env(monkeypatch, "token", home=tmp_path)
+    sent = _answering(monkeypatch, 404)
+    (tmp_path / ".env").write_text("OPENAI_API_KEY=made-up\n", encoding="utf-8")
+    manifest = tmp_path / "credentials.yaml"
+    manifest.write_text(f"source: .env\nidentities:\n  - type: group\n    id: {written}\n", encoding="utf-8")
+    code, text = _main(monkeypatch, capsys, "credentials-apply", "--manifest", str(manifest), "--dry-run")
+    assert (code, sent) == (2, []), (code, sent, text)
+    assert f"groups/{row}" not in text and f"| {row} " not in text, text

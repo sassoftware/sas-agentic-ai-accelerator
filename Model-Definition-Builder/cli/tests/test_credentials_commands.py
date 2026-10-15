@@ -404,10 +404,11 @@ def test_a_flow_style_manifest_keeps_every_byte_outside_the_identity(mdb, eol):
 
 
 def test_identities_are_the_same_the_way_the_loader_reads_them():
-    """`type` defaults to group and an id is a string whatever YAML makes of
-    it, so `- {id: 123}` is the group "123" and is not added again."""
+    """`type` defaults to group, so `- {id: '123'}` is the group "123" and is
+    not added again. An id YAML reads as no text - `- {id: 123}` - is
+    refused (test_fix_mdb_24)."""
     path = Path("credentials.yaml")
-    text = "source: .env\nidentities:\n  - {id: 123}\n  - id: Team\n"
+    text = "source: .env\nidentities:\n  - {id: '123'}\n  - id: Team\n"
 
     assert edit_identity(text, path, "group", "123").outcome == "unchanged"
     assert edit_identity(text, path, "group", "Team").outcome == "unchanged"

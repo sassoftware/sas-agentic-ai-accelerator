@@ -261,6 +261,26 @@ def _not_yaml(path: Path, exc) -> CredentialError:
                            "handed as the manifest would be shown with its values.")
 
 
+#: How the line that refuses a value of the manifest names a kind of value YAML reads.
+_KINDS = {str: "a text", list: "a list", dict: "a mapping", bool: "true or false", int: "a number",
+          float: "a number"}
+
+
+def _written(value, kind: type, what: str):
+    """A value of the manifest as it was written: None where it is missing or
+    empty, the value where YAML read it as `kind`. Any other value is refused,
+    without the value - a key file handed as the manifest would show one:
+    YAML reads an unquoted `0123` as the number 83, `yes` as true and `~` as
+    nothing, and `str` made the identity `83`, `True` or `None` of it - apply
+    then wrote or deleted the credential of that other identity."""
+    if value is None or type(value) is kind:
+        return value
+    read = _KINDS.get(type(value), f"a {type(value).__name__}")
+    raise CredentialError(f"{what} must be {_KINDS[kind]}, and YAML read {read} there"
+                          + (" - put it in quotes ('0123', 'yes') to have it read as it is written"
+                             if kind is str else ""))
+
+
 def encode(entries: dict) -> dict:
     """The `secrets` map as the domain stores it (base64, per domain type)."""
     return {
@@ -352,7 +372,7 @@ class Manifest:
             raise CredentialError(f"{path}: expected a mapping at the top level")
 
         base = path.parent
-        default_source = raw.get("source")
+        default_source = _written(raw.get("source"), str, f"{path}: 'source'")
         listed = raw.get("identities")
         if allow_empty and listed in (None, []):
             listed = []
@@ -366,21 +386,22 @@ class Manifest:
             if not isinstance(item, dict):
                 raise CredentialError(
                     f"{path}: identity {index} must be a mapping with 'type' and 'id'")
-            source = item.get("source")
-            only = item.get("only") or ()
+            where = f"{path}: identity {index}:"
+            source = _written(item.get("source"), str, f"{where} 'source'")
+            only = _written(item.get("only"), list, f"{where} 'only'") or ()
             identities.append(Identity(
                 type=str(item.get("type", "group")),
-                id=str(item.get("id", "")),
+                id=_written(item.get("id"), str, f"{where} 'id'") or "",
                 source=(base / str(source)).resolve() if source else None,
-                verbatim=bool(item.get("verbatim", False)),
-                only=tuple(str(name) for name in only),
+                verbatim=bool(_written(item.get("verbatim"), bool, f"{where} 'verbatim'")),
+                only=tuple(_written(name, str, f"{where} a name of 'only'") or "" for name in only),
                 # A key that is missing means present. A key that is there
                 # with any other value - a YAML `no`, an empty value, a typo -
                 # is refused: a guess here would write or delete a credential.
                 state=str(item.get("state", "present")),
             ))
         return cls(
-            domain=str(raw.get("domain") or DEFAULT_DOMAIN),
+            domain=_written(raw.get("domain"), str, f"{path}: 'domain'") or DEFAULT_DOMAIN,
             source=(base / str(default_source)).resolve() if default_source else None,
             identities=identities,
         )
