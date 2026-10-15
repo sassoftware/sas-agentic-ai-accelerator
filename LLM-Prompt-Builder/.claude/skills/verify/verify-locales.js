@@ -53,8 +53,10 @@ Promise.all([import('node:fs'), import('node:path')]).then(([fs, path]) => {
   const placeholders = (text) => (String(text).match(/\{[A-Za-z][A-Za-z0-9_]*\}/g) || []).sort().join(' ');
 
   let failed = 0;
+  let checks = 0;
   const check = (offenders, label) => {
     const ok = offenders.length === 0;
+    checks += 1;
     if (!ok) failed += 1;
     console.log(`${ok ? 'OK ' : 'FAIL'}  ${label}${ok ? '' : ': ' + offenders.join(', ')}`);
   };
@@ -76,11 +78,34 @@ Promise.all([import('node:fs'), import('node:path')]).then(([fs, path]) => {
   );
   // Manifest of a decision template takes the most recent run ticked in the
   // box whose label is promptExperimentModelCorrect, whatever its answers. Every
-  // text the sources choose for the decision side (`decision ? ...` or
-  // `runIsDecision ? ...`) that speaks of an experiment run names that box by
-  // its label, in both languages.
+  // text the sources choose for the decision side (`decision ? ...`,
+  // `runIsDecision ? ...` or the second key of `manifestText(...)`) that
+  // speaks of an experiment run names that box by its label, in both
+  // languages.
   const DECISION_TEXT = /\b(?:decision|runIsDecision)\s*\?\s*\(?\s*promptBuilderInterfaceText\??\.([A-Za-z0-9_]+)/g;
-  const decisionKeys = [...new Set([...code.matchAll(DECISION_TEXT)].map((match) => match[1]))];
+  const MANIFEST_TEXT = /\bmanifestText\(\s*'[A-Za-z0-9_]+'\s*,\s*'([A-Za-z0-9_]+)'\s*\)/g;
+  const decisionKeys = [...new Set([...code.matchAll(DECISION_TEXT), ...code.matchAll(MANIFEST_TEXT)].map((match) => match[1]))];
+  // The owner named the box (2026-10-15): it documents the choice of the best
+  // decision model, which is the one Manifest takes.
+  const fullNameOf = (key) => names.find((name) => keyOf(name) === key);
+  const BOX = { en: 'Best Decision Model', de: 'Bestes Entscheidungsmodell' };
+  check(
+    Object.entries(BOX)
+      .filter(([locale, label]) => (locale === 'en' ? en : de).get(fullNameOf('promptExperimentModelCorrect')) !== label)
+      .map(([locale, label]) => `${locale} "${(locale === 'en' ? en : de).get(fullNameOf('promptExperimentModelCorrect'))}" (not "${label}")`),
+    `the box of a decision run reads "${BOX.en}" and "${BOX.de}"`
+  );
+  // No text of the decision side - the ones chosen for it above and every
+  // key that names a decision - speaks of a best prompt or a best response:
+  // that is the box of an LLM run.
+  const BEST_OF_LLM = /\bbest(?:e[nmrs]?)?\s+(?:prompt|response|antwort)/i;
+  const decisionSide = names.filter((name) => decisionKeys.includes(keyOf(name)) || /Decision/.test(keyOf(name)));
+  check(
+    [['en', en], ['de', de]].flatMap(([locale, texts]) =>
+      decisionSide.filter((name) => BEST_OF_LLM.test(String(texts.get(name)))).map((name) => `${locale} ${keyOf(name)}`)
+    ),
+    `none of the ${decisionSide.length} texts of the decision side speaks of a best prompt or a best response`
+  );
   const RUN = [['en', en, /experiment run/i], ['de', de, /Experimentlauf/]];
   const fullName = (key) => names.find((name) => keyOf(name) === key);
   const naming = [];
@@ -98,6 +123,6 @@ Promise.all([import('node:fs'), import('node:path')]).then(([fs, path]) => {
     naming.length === 0 ? ['no text of the decision side speaks of an experiment run'] : unnamed,
     `each of the ${decisionKeys.length} texts the sources choose for a decision template that speaks of an experiment run (${naming.join(', ')}) names the box Manifest reads by its label`
   );
-  console.log(`${7 - failed} checks passed, ${failed} failed`);
+  console.log(`${checks - failed} checks passed, ${failed} failed`);
   process.exitCode = failed > 0 ? 1 : 0;
 });

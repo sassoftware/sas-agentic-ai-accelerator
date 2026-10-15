@@ -186,12 +186,12 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   // The box is what Manifest takes, and says so; that the answers matched is
   // a note of its own (verify-outcomes.js: a run ticked whose answers did not).
   const bestLabel = await page.textContent('label[for="best-prompt-0-jev_mock"]');
-  assert(bestLabel.trim() === 'Use for Manifest', `the checkbox reads "Use for Manifest" in decision mode (got ${bestLabel})`);
+  assert(bestLabel.trim() === 'Best Decision Model', `the checkbox reads "Best Decision Model" in decision mode (got ${bestLabel})`);
   const matchedNote = await page.$eval('#app-obj-LPB-pet-0-run-nested-jev_mock-body', (body) => body.querySelector('.pb-expected-all-matched')?.textContent ?? '');
   assert(matchedNote === 'All expected answers matched', `the run whose answers all match carries the note that they do (got "${matchedNote}")`);
   assert((await page.$$('#app-obj-LPB-pet-0 .pb-prob-line')).length >= 4, 'probability bars are drawn per option');
   const legendText = await page.textContent('#app-obj-LPB-pet-legend');
-  assert(legendText.includes('Use for Manifest') && !legendText.includes('Judge the run'), 'the legend reads for a decision template');
+  assert(legendText.includes('Best Decision Model') && !legendText.includes('Judge the run'), 'the legend reads for a decision template');
 
   // ---- run against the decision model -----------------------------------------
   await resetLog();
@@ -490,12 +490,17 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   // not store changes no tag and is no manifest, and a tag update that failed
   // is reported in both directions. The fixture template carries the tag.
   const MANIFEST_BUTTON = '#app-obj-LPB-pet-create-model-button';
+  // On a decision template the button names the box Manifest reads.
+  const MANIFEST_LABEL = 'Manifest Best Decision Model';
   const MANIFEST_BOX = '#app-obj-LPB-pet-save-result';
   const SAVE_BUTTON = '#app-obj-LPB-pet-save-button';
   // What an ingress answers in place of the service: no JSON, so the page throws.
   const errorPage = { status: 502, contentType: 'text/html', body: '<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center></body></html>' };
-  const openTemplate = async (url, label) => {
-    const target = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
+  // `locale` opens the page in a browser of that language.
+  const openTemplate = async (url, label, locale) => {
+    const target = locale
+      ? await (await browser.newContext({ locale, viewport: { width: 1500, height: 1100 } })).newPage()
+      : await browser.newPage({ viewport: { width: 1500, height: 1100 } });
     const errors = [];
     target.on('pageerror', (e) => errors.push(e.message));
     await target.goto(url);
@@ -589,7 +594,7 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
     await target.click(MANIFEST_BUTTON);
     await waitUntil(async () => injected === 1, `${label}: the ${fault} request is refused`, 20000);
     const ended = await settles(
-      async () => !(await target.isDisabled(MANIFEST_BUTTON)) && (await target.textContent(MANIFEST_BUTTON)).trim() === 'Manifest Best Prompt',
+      async () => !(await target.isDisabled(MANIFEST_BUTTON)) && (await target.textContent(MANIFEST_BUTTON)).trim() === MANIFEST_LABEL,
       12000
     );
     assert(ended, `${label}: the manifest has ended and its button is usable again (button: ${(await target.textContent(MANIFEST_BUTTON)).trim()}${(await target.isDisabled(MANIFEST_BUTTON)) ? ', disabled' : ''})`);
@@ -752,7 +757,7 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
     const disabledAtOnce = await target.isDisabled(MANIFEST_BUTTON);
     const manifestedToasts = async () => (await target.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).filter((text) => text.includes('has been manifested')).length;
     await waitUntil(async () => (await manifestedToasts()) >= 1, 'a double click on Manifest: a decision manifest goes through', 20000);
-    await settles(async () => !(await target.isDisabled(MANIFEST_BUTTON)) && (await target.textContent(MANIFEST_BUTTON)).trim() === 'Manifest Best Prompt', 12000);
+    await settles(async () => !(await target.isDisabled(MANIFEST_BUTTON)) && (await target.textContent(MANIFEST_BUTTON)).trim() === MANIFEST_LABEL, 12000);
     // A second run, where there is one, ends within this.
     await sleep(2000);
     const entries = await getLog();
@@ -764,6 +769,81 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
       `a double click on Manifest runs one decision manifest: the experiments are saved once, one score code is stored, one toast says "manifested" (saves: ${trackers}, score codes: ${scoreCodes}, toasts: ${await manifestedToasts()}, errors: ${errors.join(' | ') || 'none'})`
     );
     await target.close();
+  }
+
+  // ---- the box of a decision run is the Best Decision Model ---------------------------------
+  // The owner named it (2026-10-15): it documents the choice of the best
+  // decision model, which is the one Manifest takes. Every manifest text of a
+  // decision template names it so - the box, the legend, the icon, the
+  // instructions and the count of the tracker, the heading, the description,
+  // the button and its hint while it is off, the toast - in both languages;
+  // the LLM side keeps its Best Response.
+  for (const [locale, words] of [
+    ['en-US', {
+      box: 'Best Decision Model', icon: 'selected as the Best Decision Model', instructions: 'tick the Best Decision Model', summary: 'with a Best Decision Model: 1',
+      heading: 'Manifest the Best Decision Model', description: 'ticked "Best Decision Model"', button: MANIFEST_LABEL,
+      hint: 'You have to select a Best Decision Model using the checkboxes.', toast: 'The Best Decision Model has been manifested.',
+      llmBox: 'Best Response', llmHeading: 'Manifest the Best Prompt', llmButton: 'Manifest Best Prompt', llmHint: 'You have to select a Best Prompt using the checkboxes.',
+    }],
+    ['de-DE', {
+      box: 'Bestes Entscheidungsmodell', icon: 'als Bestes Entscheidungsmodell ausgewählt', instructions: '„Bestes Entscheidungsmodell“ anzuhaken', summary: 'mit einem Besten Entscheidungsmodell: 1',
+      heading: 'Das Beste Entscheidungsmodell manifestieren', description: '„Bestes Entscheidungsmodell“ angehakt', button: 'Bestes Entscheidungsmodell manifestieren',
+      hint: 'Sie müssen ein Bestes Entscheidungsmodell über die Checkboxen auswählen.', toast: 'Das Beste Entscheidungsmodell wurde manifestiert.',
+      llmBox: 'Beste Antwort', llmHeading: 'Den besten Prompt manifestieren', llmButton: 'Besten Prompt manifestieren', llmHint: 'Sie müssen einen besten Prompt über die Checkboxen auswählen.',
+    }],
+  ]) {
+    const { target, errors } = await openTemplate(APP_URL, `the Best Decision Model (${locale})`, locale);
+    const textIn = async (selector) => ((await target.$eval(selector, (element) => element.textContent)) || '').replace(/\s+/g, ' ').trim();
+    const seen = await target.evaluate(() => {
+      const box = document.querySelector('[id^="best-prompt-0-"]');
+      return {
+        box: (document.querySelector(`label[for="${box?.id}"]`)?.textContent || '').trim(),
+        legend: document.querySelector('#app-obj-LPB-pet-legend')?.textContent || '',
+        icon: document.querySelector('#app-obj-LPB-pet-0 svg.bestPrompt title')?.textContent || '',
+        instructions: [...document.querySelectorAll('#app-obj-LPB-pane-build p')].map((p) => p.textContent).join(' | '),
+        summary: document.querySelector('#app-obj-LPB-pet-summary')?.textContent || '',
+        heading: [...document.querySelectorAll('#app-obj-LPB-pane-finalize h2')].map((h) => h.textContent.trim()),
+      };
+    });
+    const finalize = await textIn('#app-obj-LPB-pane-finalize');
+    const button = (await target.textContent(MANIFEST_BUTTON)).trim();
+    step(
+      seen.box === words.box && seen.legend.includes(words.box) && seen.icon.includes(words.icon) && seen.instructions.includes(words.instructions) &&
+        seen.summary.includes(words.summary) && seen.heading.includes(words.heading) && finalize.includes(words.description) && button === words.button,
+      `${locale}: a decision template names the box Manifest reads "${words.box}" - in the box, the legend, the icon, the instructions and the count of the tracker, the heading, the description and the button of Finalize (box: "${seen.box}"; icon: "${seen.icon}"; count: "${seen.summary}"; headings: ${JSON.stringify(seen.heading)}; button: "${button}"; instructions: "${seen.instructions.slice(0, 160)}")`
+    );
+    // No box ticked: the button is off, and its hint names the box.
+    await target.evaluate(() => document.querySelectorAll('[id^="best-prompt-"]').forEach((box) => box.checked && box.click()));
+    const off = { disabled: await target.isDisabled(MANIFEST_BUTTON), hint: await target.getAttribute(MANIFEST_BUTTON, 'title') };
+    step(off.disabled && off.hint === words.hint, `${locale}: with no box ticked Manifest is off, and its hint reads "${words.hint}" (disabled: ${off.disabled}; hint: "${off.hint}")`);
+    await target.evaluate(() => document.querySelector('[id^="best-prompt-0-"]').click());
+    await target.click(MANIFEST_BUTTON);
+    const toasted = await settles(async () => (await target.$$eval('.toast-body', (els) => els.map((e) => (e.textContent || '').trim()))).some((text) => text.includes(words.toast)), 20000);
+    await settles(async () => !(await target.isDisabled(MANIFEST_BUTTON)) && (await target.textContent(MANIFEST_BUTTON)).trim() === words.button, 12000);
+    step(toasted, `${locale}: the manifest of a decision template ends with the toast "${words.toast}" (toasts: ${JSON.stringify(await target.$$eval('.toast-body', (els) => els.map((e) => (e.textContent || '').trim())))})`);
+    // The LLM side keeps its Best Response.
+    await target.click('#app-obj-LPB-step-setup');
+    await target.click('#LPB-kind-llm');
+    await waitUntil(async () => (await target.$$eval('#LPB-project-dropdown option', (els) => els.map((e) => e.value))).includes('proj-1'), `${locale}: the LLM project is listed`);
+    await target.selectOption('#LPB-project-dropdown', 'proj-1');
+    await waitUntil(async () => (await target.$$eval('#LPB-prompt-dropdown option', (els) => els.map((e) => e.value))).includes('model-used'), `${locale}: the LLM prompt is listed`);
+    await target.selectOption('#LPB-prompt-dropdown', 'model-used');
+    await waitUntil(async () => (await target.$$('.pet-run-delete')).length >= 1, `${locale}: the LLM runs are drawn`, 15000);
+    const llm = await target.evaluate(() => {
+      const box = document.querySelector('[id^="best-prompt-0-"]');
+      return {
+        box: (document.querySelector(`label[for="${box?.id}"]`)?.textContent || '').trim(),
+        heading: [...document.querySelectorAll('#app-obj-LPB-pane-finalize h2')].map((h) => h.textContent.trim()),
+      };
+    });
+    const llmButton = (await target.textContent(MANIFEST_BUTTON)).trim();
+    await target.evaluate(() => document.querySelectorAll('[id^="best-prompt-"]').forEach((box) => box.checked && box.click()));
+    const llmHint = await target.getAttribute(MANIFEST_BUTTON, 'title');
+    step(
+      llm.box === words.llmBox && llm.heading.includes(words.llmHeading) && llmButton === words.llmButton && llmHint === words.llmHint && errors.length === 0,
+      `${locale}: a prompt template keeps "${words.llmBox}", "${words.llmHeading}", "${words.llmButton}" and its hint (box: "${llm.box}"; headings: ${JSON.stringify(llm.heading)}; button: "${llmButton}"; hint: "${llmHint}"; errors: ${errors.join(' | ') || 'none'})`
+    );
+    await target.context().close();
   }
 
   // ---- a template to start from ---------------------------------------------------------

@@ -40,7 +40,8 @@ bundle, one Job Definition and one report object for all three.
 - **Decision templates** for decision models (Jev, Von): a state and typed
   questions (a choice, a yes/no, a score) answered with calibrated
   probabilities, checked against expected answers, evaluated on labelled cases
-  and manifested with typed outputs a decision flow can branch on
+  and manifested with typed outputs a decision flow can branch on - from the
+  most recent run whose box *Best Decision Model* is ticked
 - Optional **prompt optimization** with DSPy in a SAS Job Execution job (an
   Optimize step of its own)
 - **RAG setups**: a folder of documents wired to a vector store — the RAG

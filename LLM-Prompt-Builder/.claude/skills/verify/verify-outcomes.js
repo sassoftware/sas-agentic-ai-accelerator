@@ -31,7 +31,7 @@
  *     opened while the usage was asked. A Delete project that stops part of
  *     the way shows what is left, in both builders, and says what was
  *     deleted.
- *   - A decision run: its box reads "Use for Manifest", also where it is
+ *   - A decision run: its box reads "Best Decision Model", also where it is
  *     ticked over answers that did not match, and the note that every
  *     expected answer matched stands on the run where they did.
  *   - A setup opened twice while its question about a running ingestion is
@@ -1042,13 +1042,13 @@ function writesCensus() {
     );
     const legend = await textOf(page, lpb('pet-legend'));
     const ok =
-      runs.length === 2 && runs.every((run) => run.ticked && run.label === 'Use for Manifest') &&
+      runs.length === 2 && runs.every((run) => run.ticked && run.label === 'Best Decision Model') &&
       runs.filter((run) => run.missed === 0).every((run) => run.note === 'All expected answers matched') &&
       runs.filter((run) => run.missed > 0).length === 1 && runs.filter((run) => run.missed > 0).every((run) => run.note === '') &&
-      legend.includes('Use for Manifest') && !legend.includes('Correct');
+      legend.includes('Best Decision Model') && !legend.includes('Correct');
     step(
       ok,
-      `a decision run: the box reads "Use for Manifest" also where it is ticked over answers that did not match, the note "All expected answers matched" stands on the run whose answers all matched and not on the other, and the legend says what the box does (runs: ${JSON.stringify(runs)}; legend: "${clip(legend)}")`
+      `a decision run: the box reads "Best Decision Model" also where it is ticked over answers that did not match, the note "All expected answers matched" stands on the run whose answers all matched and not on the other, and the legend says what the box does (runs: ${JSON.stringify(runs)}; legend: "${clip(legend)}")`
     );
   });
 

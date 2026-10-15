@@ -3297,7 +3297,7 @@ export async function buildPromptBuilder(
         )
       ).length;
       promptExperimentSummary.style.display = runCount === 0 ? 'none' : '';
-      promptExperimentSummary.innerText = `${promptBuilderInterfaceText?.promptExperimentSummary}`
+      promptExperimentSummary.innerText = `${promptMode === 'decision' ? promptBuilderInterfaceText?.promptExperimentDecisionSummary : promptBuilderInterfaceText?.promptExperimentSummary}`
         .replace('{runs}', String(runCount))
         .replace('{best}', String(bestCount));
     }
@@ -3815,7 +3815,7 @@ export async function buildPromptBuilder(
               );
               // Add fastest and fewest token prompt icons if applicable
               if (modelData?.best_prompt) {
-                promptExperimentContainerModelContainerAccordionItemButton.innerHTML = `<svg class="bestPrompt" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderBestPrompt}</title><path d="${TRACKER_ICON_PATHS.best}"/></svg> `;
+                promptExperimentContainerModelContainerAccordionItemButton.innerHTML = `<svg class="bestPrompt" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${runIsDecision ? promptBuilderInterfaceText.promptBuilderBestDecisionModel : promptBuilderInterfaceText.promptBuilderBestPrompt}</title><path d="${TRACKER_ICON_PATHS.best}"/></svg> `;
               }
               if (modelData?.fastest_prompt) {
                 promptExperimentContainerModelContainerAccordionItemButton.innerHTML += `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderFastestPrompt}</title><path d="${TRACKER_ICON_PATHS.fastest}"/></svg> `;
@@ -3866,7 +3866,7 @@ export async function buildPromptBuilder(
                       if (bestPromptCheckbox.checked && !hasBestPrompt) {
                         currentHeader.insertAdjacentHTML(
                           'afterbegin',
-                          `<svg class="bestPrompt" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${promptBuilderInterfaceText.promptBuilderBestPrompt}</title><path d="${TRACKER_ICON_PATHS.best}"/></svg> `
+                          `<svg class="bestPrompt" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#1f1f1f"><title>${runIsDecision ? promptBuilderInterfaceText.promptBuilderBestDecisionModel : promptBuilderInterfaceText.promptBuilderBestPrompt}</title><path d="${TRACKER_ICON_PATHS.best}"/></svg> `
                         );
                       } else if (!bestPromptCheckbox.checked && hasBestPrompt) {
                         hasBestPrompt.remove();
@@ -4552,10 +4552,15 @@ export async function buildPromptBuilder(
       await selectionLock.during(() => promptBuilderSaveExperiments());
     };
 
-    // Save the prompt run and turn the best prompt into a model
+    // Save the prompt run and turn the best prompt into a model. On a
+    // decision template the box a person ticks is the Best Decision Model,
+    // and the manifest texts name it so.
+    const manifestText = (llm: string, decision: string): string =>
+      `${promptBuilderInterfaceText?.[promptMode === 'decision' ? decision : llm]}`;
+    const manifestButtonText = (): string => manifestText('promptBuilderCreateModelButton', 'promptBuilderCreateDecisionModelButton');
     const promptExperimentCreateModelButton = document.createElement('button');
     promptExperimentCreateModelButton.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-create-model-button`;
-    promptExperimentCreateModelButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
+    promptExperimentCreateModelButton.innerText = manifestButtonText();
     promptExperimentCreateModelButton.setAttribute('type', 'button');
     promptExperimentCreateModelButton.setAttribute('class', 'btn btn-primary');
     // One manifest per click. The button used to be disabled inside the
@@ -4587,7 +4592,7 @@ export async function buildPromptBuilder(
         await runManifest(promptMode === 'decision' ? promptBuilderCreateDecisionModel : promptBulderCreateBestPromptModel);
       } finally {
         manifestClickRunning = false;
-        promptExperimentCreateModelButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
+        promptExperimentCreateModelButton.innerText = manifestButtonText();
         // Usable again where there is a best response to manifest.
         updateManifestButtonState();
       }
@@ -4608,7 +4613,7 @@ export async function buildPromptBuilder(
         promptExperimentCreateModelButton,
         promptExperimentCreateModelButtonWrapper,
         !hasBestPrompt || selectionLock.busy,
-        hasBestPrompt ? '' : `${promptBuilderInterfaceText?.promptBuilderCreateModelNoBestPrompt}`
+        hasBestPrompt ? '' : manifestText('promptBuilderCreateModelNoBestPrompt', 'promptBuilderCreateModelNoBestDecisionModel')
       );
       // The optimize panel gates on the same tracker state (its dataset is the
       // runs with a Best Response), so refresh it wherever the manifest button
@@ -4782,7 +4787,7 @@ export async function buildPromptBuilder(
         promptExperimentResultContainer.appendChild(line);
       } finally {
         promptExperimentCreateModelButton.disabled = false;
-        promptExperimentCreateModelButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
+        promptExperimentCreateModelButton.innerText = manifestButtonText();
       }
     }
     const manifestOutputsLabel = document.createElement('p');
@@ -5708,7 +5713,7 @@ ${scoreCodeReturn}`;
       createButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${promptBuilderInterfaceText.promptBuilderSaveExperimentsButtonStatus}`;
       const restore = (): void => {
         createButton.disabled = false;
-        createButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
+        createButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateDecisionModelButton}`;
       };
       const promptDropdown = document.getElementById(`${promptBuilderObject?.id}-prompt-dropdown`) as HTMLSelectElement;
       const promptExperimentRunModel = promptDropdown.value;
@@ -5722,7 +5727,7 @@ ${scoreCodeReturn}`;
       const chosen = bestItem as PETRow | null;
       const header = chosen ? (petRows.find((item) => item.runId === chosen.runId && item.model === '') ?? null) : null;
       if (!chosen || !header) {
-        promptExperimentResultContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelNoBestPrompt}`;
+        promptExperimentResultContainer.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelNoBestDecisionModel}`;
         restore();
         return;
       }
@@ -5866,7 +5871,7 @@ ${scoreCodeReturn}`;
       // The last write. Refused or thrown, the manifest is not completed: the
       // line of runManifest says that the attributes may be missing.
       written(await updateModelAttributes(promptExperimentRunModel, manifestAttributes), 'The update of the attributes');
-      showToast(`${promptBuilderInterfaceText?.promptBuilderManifestToast}`);
+      showToast(`${promptBuilderInterfaceText?.promptBuilderManifestDecisionToast}`);
       restore();
     }
 
@@ -8023,9 +8028,8 @@ ${scoreCodeReturn}`;
     workbenchCard.controls.appendChild(promptBuilderRunExperimentError);
     buildPane.appendChild(workbenchCard.element);
 
-    const trackerCard = createInstructionCard(promptExperimentTrackerHeader, instructionsTitle, [
-      instructionText(promptBuilderInterfaceText?.promptExperimentTrackerInstructions),
-    ]);
+    const trackerInstructions = instructionText(promptBuilderInterfaceText?.promptExperimentTrackerInstructions);
+    const trackerCard = createInstructionCard(promptExperimentTrackerHeader, instructionsTitle, [trackerInstructions]);
     const trackerToolbar = document.createElement('div');
     trackerToolbar.classList.add('d-flex', 'flex-wrap', 'align-items-center', 'gap-3');
     trackerToolbar.appendChild(promptExperimentSaveButton);
@@ -8414,6 +8418,11 @@ ${scoreCodeReturn}`;
       promptExperimentDecisionManifestOptions.classList.toggle('d-none', !decision);
       updateTlsWarning();
       promptExperimentManifestDescription.innerText = `${decision ? promptBuilderInterfaceText?.promptBuilderManifestDecisionDescription : promptBuilderInterfaceText?.promptBuilderManifestDescription}`;
+      promptExperimentManifestHeader.innerText = manifestText('promptBuilderManifestHeading', 'promptBuilderManifestDecisionHeading');
+      trackerInstructions.innerText = manifestText('promptExperimentTrackerInstructions', 'promptExperimentDecisionTrackerInstructions');
+      // The text of the button while no manifest runs; a running one gives
+      // it back with the text of the kind when it ends.
+      if (!manifestClickRunning) promptExperimentCreateModelButton.innerText = manifestButtonText();
       renderTrackerLegend();
       updateRunExperimentsButtonState();
       updateManifestButtonState();
