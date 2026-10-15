@@ -9,7 +9,7 @@ import type { PromptBuilderConfig, InterfaceText, PromptBuilderText } from '../t
 import type { DropdownOption } from '../types/models';
 import type { DependentDecision } from '../types/relationships';
 import { getAppState } from '../state/app-state';
-import { getFileContent } from '../api/files-api';
+import { readStoredJson, StoredFileUnusable } from '../api/stored-json';
 import { UnansweredWrite, ViyaRefused } from '../api/http-client';
 import {
   getModelProjects,
@@ -113,6 +113,8 @@ interface AvailableLLM {
   name: string;
   fileURI?: string;
   options?: Record<string, ModelOption>;
+  /** Its options.json was read and holds no options this page can read: the model cannot be used. */
+  optionsUnusable?: boolean;
   /** Cost/governance attributes read from the LLM's Model Manager registration
    *  (see loadLLMAttributes). Used for per-call cost estimation and copied onto
    *  the manifested prompt model. Any may be absent (older registrations). */
@@ -1078,27 +1080,25 @@ export async function buildPromptBuilder(
         if (promptBuilderAvailablePTE[promptBuilderAvailablepte]?.name === 'Prompt-Experiment-Tracker.json') {
           // A tracker that cannot be parsed must not abort the handler — the
           // Model Manager link and delete buttons below still have to work.
-          // Whether the file was read: what fails after that is a file that
-          // holds no runs this page can read, which opening it again does
-          // not change.
+          // A tracker that was read and holds no runs this page can read
+          // (StoredFileUnusable, see readStoredJson) stays so when it is
+          // opened again.
           let trackerRead = false;
           try {
             // Reset the prompt tracker to nothing
             promptExperimentTrackerRunID = 0;
-            const promptBuilderCurrentPTE = await getFileContent(promptBuilderAvailablePTE[promptBuilderAvailablepte].fileUri!);
-            if (superseded()) return;
-            const trackerText = await promptBuilderCurrentPTE.text();
+            let promptBuilderCurrentPTEContent: PETRow[];
+            try {
+              promptBuilderCurrentPTEContent = await readStoredJson<PETRow[]>(
+                promptBuilderAvailablePTE[promptBuilderAvailablepte].fileUri!,
+                'Prompt-Experiment-Tracker.json'
+              );
+            } catch (error) {
+              trackerRead = error instanceof StoredFileUnusable;
+              throw error;
+            }
             if (superseded()) return;
             trackerRead = true;
-            const promptBuilderCurrentPTEContent = JSON.parse(trackerText) as PETRow[];
-            // Every row of a run this page writes is an object with a numeric
-            // runId; a list of anything else holds no run it can read.
-            if (
-              !Array.isArray(promptBuilderCurrentPTEContent) ||
-              !promptBuilderCurrentPTEContent.every((row) => row !== null && typeof row === 'object' && typeof row.runId === 'number')
-            ) {
-              throw new Error('Prompt-Experiment-Tracker.json holds no list of runs');
-            }
             const promptBuilderPreviousExperiment: ExperimentTrackerEntry[] = [];
             let promptBuilderPreviousRunID = 0;
             promptBuilderCurrentPTEContent.forEach((value) => {
@@ -2002,20 +2002,15 @@ export async function buildPromptBuilder(
 
         modelDiv.appendChild(checkbox);
         modelDiv.appendChild(label);
-        // A model whose provider has no key for this user is visible but not
-        // selectable — the note names the missing entry and the domain.
-        const missingProvider = llmMissingCredentialDomain(model);
-        if (missingProvider) {
+        // A model that cannot be used is visible but not selectable, with a
+        // note that says why (see llmNotUsableNote).
+        const notUsable = llmNotUsableNote(model);
+        if (notUsable) {
           checkbox.disabled = true;
           label.classList.add('text-muted');
           const note = document.createElement('small');
-          note.classList.add('text-muted', 'd-block', 'pb-credential-note');
-          note.innerText = String(
-            promptBuilderInterfaceText?.promptBuilderCredentialMissing ??
-              'No {provider} key available in the {domain} credential domain - ask your administrator for access.'
-          )
-            .replace('{provider}', missingProvider)
-            .replace('{domain}', credentialDomain);
+          note.classList.add('text-muted', 'd-block', model.optionsUnusable ? 'pb-options-note' : 'pb-credential-note');
+          note.innerText = notUsable;
           modelDiv.title = note.innerText;
           modelDiv.appendChild(note);
         }
@@ -2048,12 +2043,14 @@ export async function buildPromptBuilder(
           for (const availableLLMContent of availableLLMContents) {
             if (availableLLMContent?.name === 'options.json') {
               availableLLM.fileURI = availableLLMContent.fileUri;
-              const currentOptions = await getFileContent(availableLLM.fileURI!);
-              availableLLM.options = await currentOptions.json();
+              availableLLM.options = await readStoredJson<Record<string, ModelOption>>(availableLLM.fileURI!, 'options.json');
             }
           }
         } catch (error) {
           console.error(`Failed to load options for LLM ${availableLLM.name}.`, error);
+          // An options.json that holds no options is no model without
+          // options: the model is shown as one that cannot be used.
+          availableLLM.optionsUnusable = error instanceof StoredFileUnusable;
         }
       })
     );
@@ -2082,6 +2079,23 @@ export async function buildPromptBuilder(
     function llmMissingCredentialDomain(llm: AvailableLLM): string | null {
       const provider = llm.options?.API_KEY?.default as string | undefined;
       return provider && providersWithoutCredential.has(provider) ? provider : null;
+    }
+    /**
+     * Why a model cannot be used, or null: its options.json holds no options
+     * this page can read, or its provider has no key for this user (the note
+     * names the missing entry and the domain). Such a model is shown, and
+     * offered nowhere.
+     */
+    function llmNotUsableNote(llm: AvailableLLM): string | null {
+      if (llm.optionsUnusable) return `${promptBuilderInterfaceText?.promptBuilderModelOptionsUnusable}`;
+      const missingProvider = llmMissingCredentialDomain(llm);
+      if (!missingProvider) return null;
+      return String(
+        promptBuilderInterfaceText?.promptBuilderCredentialMissing ??
+          'No {provider} key available in the {domain} credential domain - ask your administrator for access.'
+      )
+        .replace('{provider}', missingProvider)
+        .replace('{domain}', credentialDomain);
     }
     // Cost/governance attributes of a run's LLM (per-token / per-second prices,
     // provider, family, endpoint), resolved by model name. Fetched LAZILY — only
@@ -2141,10 +2155,11 @@ export async function buildPromptBuilder(
                 const optionsContent = contents.find((content) => content?.name === 'options.json');
                 if (optionsContent?.fileUri) {
                   model.fileURI = optionsContent.fileUri;
-                  model.options = await (await getFileContent(optionsContent.fileUri)).json();
+                  model.options = await readStoredJson<Record<string, ModelOption>>(optionsContent.fileUri, 'options.json');
                 }
               } catch (error) {
                 console.error(`Failed to load options for decision model ${model.name}.`, error);
+                model.optionsUnusable = error instanceof StoredFileUnusable;
               }
               // The card shows what the registration says the model is and
               // accepts, so the attributes are read up front rather than at
@@ -2228,18 +2243,13 @@ export async function buildPromptBuilder(
       const fit = document.createElement('small');
       fit.classList.add('d-block', 'pb-model-fit');
       card.appendChild(fit);
-      const missingProvider = llmMissingCredentialDomain(model);
-      if (missingProvider) {
+      const notUsable = llmNotUsableNote(model);
+      if (notUsable) {
         checkbox.disabled = true;
         label.classList.add('text-muted');
         const note = document.createElement('small');
-        note.classList.add('text-muted', 'd-block', 'pb-credential-note');
-        note.innerText = String(
-          promptBuilderInterfaceText?.promptBuilderCredentialMissing ??
-            'No {provider} key available in the {domain} credential domain - ask your administrator for access.'
-        )
-          .replace('{provider}', missingProvider)
-          .replace('{domain}', credentialDomain);
+        note.classList.add('text-muted', 'd-block', model.optionsUnusable ? 'pb-options-note' : 'pb-credential-note');
+        note.innerText = notUsable;
         card.appendChild(note);
       }
       decisionModelCards.push({ model, fit, price });
@@ -2611,8 +2621,9 @@ export async function buildPromptBuilder(
     judgePlaceholderOption.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSelectPlaceholder}`;
     promptBuilderJudgeModelSelect.appendChild(judgePlaceholderOption);
     promptBuilderAvailableLLMs.forEach((availableLLM) => {
-      // Models without a resolvable credential cannot judge either.
-      if (llmMissingCredentialDomain(availableLLM)) return;
+      // Models that cannot be used (no resolvable credential, an options.json
+      // that holds no options) cannot judge either.
+      if (llmNotUsableNote(availableLLM)) return;
       const judgeOption = document.createElement('option');
       judgeOption.value = availableLLM.name;
       judgeOption.innerText = availableLLM.name;
@@ -2668,7 +2679,7 @@ export async function buildPromptBuilder(
     promptBuilderJudgePanel.id = `${paneID}-obj-${promptBuilderObject?.id}-judge-panel`;
     promptBuilderJudgePanel.classList.add('pb-judge-panel', 'd-flex', 'flex-column', 'gap-1');
     promptBuilderAvailableLLMs.forEach((availableLLM, index) => {
-      if (llmMissingCredentialDomain(availableLLM)) return;
+      if (llmNotUsableNote(availableLLM)) return;
       const judgeItem = document.createElement('div');
       judgeItem.classList.add('form-check', 'mb-0');
       const judgeCheckbox = document.createElement('input');
@@ -6358,11 +6369,11 @@ ${scoreCodeReturn}`;
     /**
      * Read a model's job-written optimization tracker. An empty list when the
      * model holds no tracker; 'unread' when the contents or the tracker could
-     * not be read, 'unusable' when the tracker was read and is no list of
-     * runs - which reading it again does not change.
+     * not be read, 'unusable' when the tracker was read and holds no runs this
+     * page can read (see readStoredJson) - which reading it again does not
+     * change.
      */
     async function readOptimizationEntries(modelId: string): Promise<OptimizationTrackerEntry[] | 'unread' | 'unusable'> {
-      let text: string;
       try {
         const sourceContents = await getModelContents(modelId);
         const trackerContent = sourceContents.find(
@@ -6370,17 +6381,9 @@ ${scoreCodeReturn}`;
         );
         if (!trackerContent) return [];
         if (!trackerContent.fileUri) return 'unread';
-        text = await (await getFileContent(String(trackerContent.fileUri))).text();
-      } catch {
-        return 'unread';
-      }
-      try {
-        const trackerEntries = JSON.parse(text) as OptimizationTrackerEntry[];
-        return Array.isArray(trackerEntries) && trackerEntries.every((entry) => entry !== null && typeof entry === 'object')
-          ? trackerEntries
-          : 'unusable';
-      } catch {
-        return 'unusable';
+        return await readStoredJson<OptimizationTrackerEntry[]>(String(trackerContent.fileUri), 'Prompt-Optimization-Tracker.json');
+      } catch (error) {
+        return error instanceof StoredFileUnusable ? 'unusable' : 'unread';
       }
     }
 
@@ -7305,7 +7308,7 @@ ${scoreCodeReturn}`;
       promptBuilderAvailableLLMs.forEach((availableLLM, index) => {
         // The job resolves the same credential domains server-side, so a
         // model this user has no credential for cannot be a compare target.
-        if (llmMissingCredentialDomain(availableLLM)) return;
+        if (llmNotUsableNote(availableLLM)) return;
         const wrapper = document.createElement('div');
         wrapper.classList.add('form-check');
         const checkbox = document.createElement('input');
@@ -7536,7 +7539,7 @@ ${scoreCodeReturn}`;
       optimizeTargetSelect.appendChild(targetPlaceholder);
       promptBuilderAvailableLLMs.forEach((availableLLM) => {
         // The optimize job resolves the same credential domains server-side.
-        if (llmMissingCredentialDomain(availableLLM)) return;
+        if (llmNotUsableNote(availableLLM)) return;
         const targetOption = document.createElement('option');
         targetOption.value = availableLLM.name;
         targetOption.innerText = availableLLM.name;
@@ -7722,7 +7725,7 @@ ${scoreCodeReturn}`;
       optimizeJudgePlaceholder.innerText = `${promptBuilderInterfaceText?.promptBuilderJudgeSelectPlaceholder}`;
       optimizeJudgeSelect.appendChild(optimizeJudgePlaceholder);
       promptBuilderAvailableLLMs.forEach((availableLLM) => {
-        if (llmMissingCredentialDomain(availableLLM)) return;
+        if (llmNotUsableNote(availableLLM)) return;
         const judgeOption = document.createElement('option');
         judgeOption.value = availableLLM.name;
         judgeOption.innerText = availableLLM.name;

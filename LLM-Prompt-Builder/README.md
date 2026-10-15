@@ -265,7 +265,8 @@ Provider API keys resolve at load time from a **SAS Viya credential domain**
 credential overrides a group credential, and the credential's secrets map holds
 one entry per provider name (matching the `API_KEY.default` value an LLM's
 `options.json` references, e.g. `Anthropic`, `OpenAI`). Models whose entry is
-missing for the current user render **disabled with a note**, so who can run
+missing for the current user render **disabled with a note** (as does a model
+whose `options.json` holds no options the page can read), so who can run
 paid model calls is an identity decision administered centrally — see the
 "Managing Credentials" administration guide and
 [`src/api/credentials-api.ts`](src/api/credentials-api.ts).
@@ -404,6 +405,9 @@ src/
                             the browser has not met yet (HTTP 449)
     models-api.ts           SAS Model Manager calls
     files-api.ts            File content retrieval
+    stored-json.ts          The JSON files the page reads from SAS Model
+                            Manager, each checked for the fields the page
+                            needs from it
     folders-api.ts          SAS Content folders
     identity-api.ts         Current-user lookup
     credentials-api.ts      Provider keys from the credential domain
@@ -452,7 +456,8 @@ for it (`verify-new-item.js`), the lock on what is open and on the buttons
 that write while a write to SAS Model Manager is out (`verify-write-lock.js`),
 what a write answered and what
 one item, one write or one dialog leaves for the next (`verify-outcomes.js`),
-a read of what is stored that fails and is not taken for it (`verify-reads.js`),
+a read of what is stored that fails, and a stored JSON file that is not the
+file of its name - neither is taken for what is stored (`verify-reads.js`),
 the options group with its checkboxes
 (`verify-options.js`), the locale files (`verify-locales.js`) and the built
 page itself (`verify-tokens.js`: no text SAS Job Execution would substitute as

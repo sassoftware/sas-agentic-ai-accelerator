@@ -46,6 +46,7 @@ import {
   updateModelTags,
 } from '../api/models-api';
 import { getFileContent } from '../api/files-api';
+import { readStoredJson, StoredFileUnusable } from '../api/stored-json';
 import { UnansweredWrite, ViyaRefused } from '../api/http-client';
 import { getModelDependentDecisions } from '../api/relationships-api';
 import type { DependentDecision } from '../types/relationships';
@@ -2511,14 +2512,12 @@ export async function buildRagBuilder(
     const contents = await getModelContents(selectedSetupID);
     const setupItem = contents.find((item) => item.name === SETUP_FILE);
     if (!setupItem?.fileUri) return null;
-    const text = await (await getFileContent(setupItem.fileUri)).text();
-    let stored: unknown;
+    let stored: RagSetup;
     try {
-      stored = JSON.parse(text);
-    } catch {
-      throw new SetupUnusable();
+      stored = await readStoredJson<RagSetup>(setupItem.fileUri, SETUP_FILE);
+    } catch (error) {
+      throw error instanceof StoredFileUnusable ? new SetupUnusable() : error;
     }
-    if (stored === null || typeof stored !== 'object' || Array.isArray(stored)) throw new SetupUnusable();
     return { ...defaultSetup(config), ...stored } as RagSetup;
   }
 
@@ -3182,13 +3181,15 @@ export async function buildRagBuilder(
       if (setupItem?.fileUri) {
         let fileRead = false;
         try {
-          const response = await getFileContent(setupItem.fileUri);
-          if (!shown()) return true;
-          const text = await response.text();
+          let stored: RagSetup;
+          try {
+            stored = await readStoredJson<RagSetup>(setupItem.fileUri, SETUP_FILE);
+          } catch (error) {
+            fileRead = error instanceof StoredFileUnusable;
+            throw error;
+          }
           if (!shown()) return true;
           fileRead = true;
-          const stored = JSON.parse(text) as unknown;
-          if (stored === null || typeof stored !== 'object' || Array.isArray(stored)) throw new SetupUnusable();
           applySetup({ ...defaultSetup(config), ...stored } as RagSetup);
         } catch (error) {
           console.error('RAG Builder: reading the stored setup failed', error);
