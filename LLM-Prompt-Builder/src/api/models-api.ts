@@ -114,8 +114,8 @@ export async function createModel(
 
 /**
  * Get contents of a model. Every page of the listing is read (see
- * viyaGetAll): a prompt-test holds a content per optimization run beside its
- * tracker.
+ * viyaGetAll): beside its tracker a prompt-test can hold many contents, the
+ * dataset snapshots of its optimization runs among them.
  */
 export async function getModelContents(modelID: string): Promise<ModelContent[]> {
   return viyaGetAll<ModelContent>(`/modelRepository/models/${modelID}/contents?limit=100`);

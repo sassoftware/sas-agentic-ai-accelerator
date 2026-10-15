@@ -250,11 +250,10 @@ export interface CollectionPage<T> {
  * Every item of a collection: the page `path` asks for and every page after
  * it.
  *
- * The services answer a listing a page at a time - SAS Model Manager lists
- * the contents of a model 100 at a time for limit=100 and says in `count`
- * how many there are - and a caller that took the first page for the whole
- * listing took a prompt-test whose tracker is its 101st content for one
- * without a tracker. The next page is asked for while the page that came
+ * The services answer a listing a page at a time (`limit=` asks for the
+ * size of a page), and a caller that took the first page for the whole
+ * listing took a prompt-test whose tracker was beyond its first 100
+ * contents for one without a tracker. The next page is asked for while the page that came
  * says there is one: a link `next`, a `count` beyond the items read, or -
  * with neither - a page as full as its limit. A page that cannot be read
  * fails the whole listing, so a part is never taken for the whole.
