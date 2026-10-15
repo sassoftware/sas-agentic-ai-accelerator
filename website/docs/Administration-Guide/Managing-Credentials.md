@@ -203,9 +203,11 @@ A value of the manifest is taken only as YAML reads it. `id`, `domain` and
 so such a value is refused with exit code 2
 before anything is written or asked of SAS Viya: `<file>: identity <n>: 'id'
 must be a text, and YAML read a number there - put it in quotes ('0123',
-'yes') to have it read as it is written`. Write such an id in quotes
-(`id: '0123'`), as `mdb credentials-add` does. An id that is missing, empty
-or `~` is refused as no id; a `domain` that is missing, empty or `~` is
+'yes') to have it read as it is written`. Write such a value in quotes
+(`id: '0123'`). `mdb credentials-init`, `mdb credentials-add` and
+`mdb credentials-remove` quote every value they write where YAML would read
+it otherwise, so `--domain 2024` is written `domain: '2024'`. An id that is
+missing, empty or `~` is refused as no id; a `domain` that is missing, empty or `~` is
 `agentic-ai-keys`. An empty name in `only` names an entry no source carries,
 so the identity is not equipped. This was tested, not run against SAS Viya.
 
