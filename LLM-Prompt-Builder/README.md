@@ -41,7 +41,8 @@ bundle, one Job Definition and one report object for all three.
   questions (a choice, a yes/no, a score) answered with calibrated
   probabilities, checked against expected answers, evaluated on labelled cases
   and manifested with typed outputs a decision flow can branch on - from the
-  most recent run whose box *Best Decision Model* is ticked
+  model ticked *Best Decision Model* in the most recent run that has one (a
+  run has one Best Decision Model)
 - Optional **prompt optimization** with DSPy in a SAS Job Execution job (an
   Optimize step of its own)
 - **RAG setups**: a folder of documents wired to a vector store — the RAG

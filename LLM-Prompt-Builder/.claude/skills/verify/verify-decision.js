@@ -846,6 +846,68 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
     await target.context().close();
   }
 
+  // ---- one Best Decision Model per run (round 24) -------------------------------------------
+  // The box documents THE best decision model of a run, the one Manifest
+  // takes: a run has one. Where two decision models match every expected
+  // answer, the first is ticked and both carry the note; ticking the other
+  // one unticks the first; a run stored with two ticked shows the first,
+  // which is the one Manifest took; and Manifest takes the one ticked.
+  {
+    const target = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
+    const errors = [];
+    target.on('pageerror', (e) => errors.push(e.message));
+    const stored = await (await fetch(BASE + '/files/files/dtrk-1/content')).json();
+    const jevRow = stored.find((row) => row.model === 'jev_mock');
+    const twoTicked = [...stored, { ...jevRow, model: 'von_mock', best_prompt: 1 }];
+    await target.route('**/files/files/dtrk-1/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(twoTicked) }));
+    await target.goto(APP_URL);
+    await target.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+    await target.click('#LPB-kind-decision');
+    await waitUntil(async () => (await target.$$eval('#LPB-project-dropdown option', (els) => els.map((e) => e.value))).includes('proj-2'), 'one Best Decision Model: the decision project is listed');
+    await target.selectOption('#LPB-project-dropdown', 'proj-2');
+    await waitUntil(async () => (await target.$$('#LPB-prompt-dropdown option')).length === 2, 'one Best Decision Model: the decision template is listed');
+    await target.selectOption('#LPB-prompt-dropdown', 'model-dec');
+    await waitUntil(async () => (await target.$$('.pet-run-delete')).length >= 1, 'one Best Decision Model: the saved run is loaded');
+    const ticked = (run) => target.$$eval(`[id^="best-prompt-${run}-"]`, (boxes) => boxes.filter((box) => box.checked).map((box) => box.id.replace(/^best-prompt-\d+-/, '')));
+    const starred = (run) => target.$$eval(`#app-obj-LPB-pet-${run} .bestPrompt`, (icons) => icons.map((icon) => icon.closest('.accordion-button').id.replace(/^.*-run-nested-|-header$/g, '')));
+    const storedTicked = await ticked(0);
+    step(
+      storedTicked.join() === 'jev_mock' && (await starred(0)).join() === 'jev_mock',
+      `a decision run stored with two ticked models shows one Best Decision Model, the first, which Manifest took (ticked: ${JSON.stringify(storedTicked)}; starred: ${JSON.stringify(await starred(0))})`
+    );
+    // A run of both models, whose answers all match.
+    await target.click('#app-obj-LPB-step-build');
+    await target.waitForSelector('#app-obj-LPB-pane-build:not([hidden])');
+    if (!(await target.isChecked('#decision-model0'))) await target.check('#decision-model0');
+    if (!(await target.isChecked('#decision-model1'))) await target.check('#decision-model1');
+    await target.click('#app-obj-LPB-run-experiment');
+    await waitUntil(async () => Boolean(await target.$('#app-obj-LPB-pet-1')), 'one Best Decision Model: the run of both models is drawn', 15000);
+    const notes = await target.$$eval('#app-obj-LPB-pet-1 .pb-expected-all-matched', (found) => found.map((note) => note.closest('[id$="-body"]').id.replace(/^.*-run-nested-|-body$/g, '')));
+    const runTicked = await ticked(1);
+    step(
+      runTicked.join() === 'jev_mock' && notes.sort().join() === 'jev_mock,von_mock',
+      `a run of two decision models whose answers all match ticks the first as the Best Decision Model, and both carry the note that they matched (ticked: ${JSON.stringify(runTicked)}; notes: ${JSON.stringify(notes)})`
+    );
+    await target.evaluate(() => document.querySelector('#best-prompt-1-von_mock').click());
+    const afterTick = await ticked(1);
+    step(
+      afterTick.join() === 'von_mock' && (await starred(1)).join() === 'von_mock',
+      `ticking the other model of the run makes it the Best Decision Model and unticks the first (ticked: ${JSON.stringify(afterTick)}; starred: ${JSON.stringify(await starred(1))})`
+    );
+    await resetLog();
+    await target.click('#app-obj-LPB-step-finalize');
+    await target.waitForSelector('#app-obj-LPB-pane-finalize:not([hidden])');
+    await target.click(MANIFEST_BUTTON);
+    await settles(async () => (await target.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).some((text) => text.includes('The Best Decision Model has been manifested.')), 20000);
+    const score = findPartMatching(await getLog(), /def scoreModel\(/);
+    const scoreText = score ? multipartText(score.body) : '';
+    step(
+      scoreText.includes('von_mock') && !scoreText.includes('jev_mock') && errors.length === 0,
+      `Manifest takes the Best Decision Model that is ticked (score code calls von_mock: ${scoreText.includes('von_mock')}; jev_mock: ${scoreText.includes('jev_mock')}; page errors: ${errors.join(' | ') || 'none'})`
+    );
+    await target.close();
+  }
+
   // ---- a template to start from ---------------------------------------------------------
   await goStep('build');
   await page.selectOption('#app-obj-LPB-decision-template', 'guardrail');

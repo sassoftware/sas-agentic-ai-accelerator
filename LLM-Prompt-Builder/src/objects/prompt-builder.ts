@@ -1146,8 +1146,14 @@ export async function buildPromptBuilder(
                 // Index the last pushed run: persisted runIds can have gaps
                 // (a run whose experiments all failed produces no rows), so
                 // runId - 1 is not a safe array position.
-                (promptBuilderPreviousExperiment[promptBuilderPreviousExperiment.length - 1] as Record<string, unknown>)[value?.model] = {
-                  best_prompt: value?.best_prompt,
+                const run = promptBuilderPreviousExperiment[promptBuilderPreviousExperiment.length - 1];
+                // A decision run has one Best Decision Model: a run stored
+                // with more than one keeps the first, the one Manifest took.
+                const bestBefore =
+                  run.mode === 'decision' &&
+                  Object.keys(run).some((key) => !TRACKER_META_KEYS.includes(key) && (run[key] as ModelExperimentData)?.best_prompt);
+                (run as Record<string, unknown>)[value?.model] = {
+                  best_prompt: bestBefore && value?.best_prompt ? 0 : value?.best_prompt,
                   fastest_prompt: value?.fastest_prompt ?? false,
                   fewest_tokens_prompt: value?.fewest_tokens_prompt ?? false,
                   cheapest_prompt: value?.cheapest_prompt ?? false,
@@ -3245,10 +3251,16 @@ export async function buildPromptBuilder(
         (best, value, index) => (value !== null && (best < 0 || (costs[best] ?? Infinity) > value) ? index : best),
         -1
       );
+      // A run has one Best Decision Model: the first result whose answers
+      // all match is ticked; another one that matches carries the note only.
+      let bestTicked = false;
       answered.forEach(({ modelName, data, options }, index) => {
         const answers = parseAnswers(data?.answers);
+        const matched = allExpectedMatch(questions, answers, expected);
+        const best = matched === true && !bestTicked;
+        if (best) bestTicked = true;
         trackerEntry[modelName] = {
-          best_prompt: allExpectedMatch(questions, answers, expected),
+          best_prompt: matched === null ? null : best,
           fastest_prompt: index === fastestIndex,
           fewest_tokens_prompt: null,
           cheapest_prompt: index === cheapestIndex,
@@ -3879,17 +3891,31 @@ export async function buildPromptBuilder(
                     // Keep the tracker in sync so the selection survives a
                     // re-render (e.g. after a run was deleted)
                     modelData.best_prompt = bestPromptCheckbox.checked;
+                    // A decision run has one Best Decision Model: ticking
+                    // one unticks the one ticked before.
+                    if (runIsDecision && bestPromptCheckbox.checked) {
+                      Object.keys(promptExperimentTrackerRunResult)
+                        .filter((key) => !TRACKER_META_KEYS.includes(key) && key !== promptExperimentRunModelKey)
+                        .forEach((otherModel) => {
+                          const otherBox = document.getElementById(`best-prompt-${index}-${otherModel}`) as HTMLInputElement | null;
+                          if (otherBox?.checked) {
+                            otherBox.checked = false;
+                            otherBox.dispatchEvent(new Event('change'));
+                          }
+                        });
+                    }
                     updateManifestButtonState();
                   });
 
                   const bestPromptLabel = document.createElement('label');
                   bestPromptLabel.className = 'form-check-label';
                   bestPromptLabel.htmlFor = `best-prompt-${index}-${promptExperimentRunModelKey}`;
-                  // On a decision run the box says what it does - the run
-                  // Manifest takes - not that the answers matched: it is ticked
-                  // where they did, and a person may tick it on any run. That
-                  // they matched is a note of its own, from the answers and the
-                  // expected answers the run was made with.
+                  // On a decision run the box says what it does - the Best
+                  // Decision Model of the run, which Manifest takes - not that
+                  // the answers matched: it is ticked on the first result of a
+                  // run where they did, and a person may tick it on any result.
+                  // That they matched is a note of its own, from the answers and
+                  // the expected answers the run was made with.
                   bestPromptLabel.innerText = (runIsDecision
                     ? promptBuilderInterfaceText.promptExperimentModelCorrect
                     : promptBuilderInterfaceText.promptExperimentModelPromptBest) as string;

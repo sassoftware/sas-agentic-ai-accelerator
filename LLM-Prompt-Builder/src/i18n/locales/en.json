@@ -151,7 +151,7 @@
     "promptExperimentModelAnswers": "Answers:",
     "promptExperimentModelCorrect": "Best Decision Model",
     "promptExperimentAllExpectedMatched": "All expected answers matched",
-    "promptExperimentLegendCorrect": "Best Decision Model - ticked automatically where every expected answer matched, yours to change",
+    "promptExperimentLegendCorrect": "Best Decision Model - one per run, ticked automatically on the first result whose expected answers all matched, yours to change",
     "promptBuilderManifestDecisionDescription": "Turns the most recent experiment run ticked \"Best Decision Model\" into a scoreable model: the variables of the state template become its inputs, the questions are baked in, and every question comes back as a typed output pair - its answer and its confidence - beside the whole answer map. Use it in SAS Intelligent Decisioning to branch on an answer and gate it with its confidence.",
     "promptBuilderManifestDecisionOutputsInfo": "Plus, for every question, two outputs: <name> (the chosen option, yes/no, or the level number) and <name>_confidence (0 to 1).",
     "promptBuilderEvaluateHeading": "Evaluate on labelled cases",

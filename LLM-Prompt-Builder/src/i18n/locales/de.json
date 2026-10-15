@@ -151,7 +151,7 @@
     "promptExperimentModelAnswers": "Antworten:",
     "promptExperimentModelCorrect": "Bestes Entscheidungsmodell",
     "promptExperimentAllExpectedMatched": "Alle erwarteten Antworten getroffen",
-    "promptExperimentLegendCorrect": "Bestes Entscheidungsmodell - automatisch gesetzt, wo alle erwarteten Antworten getroffen wurden, änderbar",
+    "promptExperimentLegendCorrect": "Bestes Entscheidungsmodell - eines je Lauf, automatisch gesetzt beim ersten Ergebnis, bei dem alle erwarteten Antworten getroffen wurden, änderbar",
     "promptBuilderManifestDecisionDescription": "Macht aus dem jüngsten Experimentlauf, bei dem „Bestes Entscheidungsmodell“ angehakt ist, ein bewertbares Modell: die Variablen der Zustandsvorlage werden seine Eingaben, die Fragen sind fest eingebaut, und jede Frage kommt als typisiertes Ausgabepaar zurück - ihre Antwort und ihre Konfidenz - neben der gesamten Antwortmenge. In SAS Intelligent Decisioning verzweigen Sie auf eine Antwort und sichern sie mit ihrer Konfidenz ab.",
     "promptBuilderManifestDecisionOutputsInfo": "Dazu für jede Frage zwei Ausgaben: <name> (die gewählte Option, ja/nein oder die Stufennummer) und <name>_confidence (0 bis 1).",
     "promptBuilderEvaluateHeading": "Auf beschrifteten Fällen auswerten",
