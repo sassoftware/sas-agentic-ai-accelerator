@@ -74,6 +74,30 @@ Promise.all([import('node:fs'), import('node:path')]).then(([fs, path]) => {
     [...de].filter(([name, text]) => INFORMAL.test(String(text)) !== INFORMAL_ADDRESS.includes(keyOf(name))).map(([name]) => name),
     `German addresses the reader formally outside the ${INFORMAL_ADDRESS.length} listed texts, and each of those still says "du"`
   );
-  console.log(`${6 - failed} checks passed, ${failed} failed`);
+  // Manifest of a decision template takes the most recent run ticked in the
+  // box whose label is promptExperimentModelCorrect, whatever its answers. Every
+  // text the sources choose for the decision side (`decision ? ...` or
+  // `runIsDecision ? ...`) that speaks of an experiment run names that box by
+  // its label, in both languages.
+  const DECISION_TEXT = /\b(?:decision|runIsDecision)\s*\?\s*\(?\s*promptBuilderInterfaceText\??\.([A-Za-z0-9_]+)/g;
+  const decisionKeys = [...new Set([...code.matchAll(DECISION_TEXT)].map((match) => match[1]))];
+  const RUN = [['en', en, /experiment run/i], ['de', de, /Experimentlauf/]];
+  const fullName = (key) => names.find((name) => keyOf(name) === key);
+  const naming = [];
+  const unnamed = [];
+  for (const [locale, texts, run] of RUN) {
+    const label = String(texts.get(fullName('promptExperimentModelCorrect')));
+    for (const key of decisionKeys) {
+      const text = String(texts.get(fullName(key)) ?? '');
+      if (!run.test(text)) continue;
+      naming.push(`${locale} ${key}`);
+      if (!text.includes(label)) unnamed.push(`${locale} ${key} (no "${label}")`);
+    }
+  }
+  check(
+    naming.length === 0 ? ['no text of the decision side speaks of an experiment run'] : unnamed,
+    `each of the ${decisionKeys.length} texts the sources choose for a decision template that speaks of an experiment run (${naming.join(', ')}) names the box Manifest reads by its label`
+  );
+  console.log(`${7 - failed} checks passed, ${failed} failed`);
   process.exitCode = failed > 0 ? 1 : 0;
 });
