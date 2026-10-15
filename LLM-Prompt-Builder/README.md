@@ -268,10 +268,10 @@ credential overrides a group credential, and the credential's secrets map holds
 one entry per provider name (matching the `API_KEY.default` value an LLM's
 `options.json` references, e.g. `Anthropic`, `OpenAI`). Models whose entry is
 missing for the current user render **disabled with a note** (as does a model
-whose `options.json` holds no options the page can read, and one whose name a
-saved run uses for a field of its own - `systemPrompt`, `userPrompt`,
-`author`, `variables`, `manifest`, `judge`, `mode`, `expected` - or that is
-`__proto__`), so who can run
+whose `options.json` holds no options the page can read, and one named so
+that a saved run cannot keep its result - `systemPrompt`, `userPrompt`,
+`author`, `variables`, `manifest`, `judge`, `mode` and `expected`, which the
+page reads as fields of a run, and `__proto__`), so who can run
 paid model calls is an identity decision administered centrally — see the
 "Managing Credentials" administration guide and
 [`src/api/credentials-api.ts`](src/api/credentials-api.ts).

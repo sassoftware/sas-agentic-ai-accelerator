@@ -505,8 +505,8 @@ function offersCensus() {
 // kinds -, then loads the checks of stored-json.ts and sends each of them, for
 // every field at every depth, a value of another kind (refused), null and no
 // value (taken, unless the field is required), and the files the rules of a
-// run name (a run of its header alone, a model named like each field of a run
-// or __proto__ - refused - and like each other field every object has -
+// run name (a run of its header alone, a model named like each key the page
+// reads as a field of a run or __proto__ - refused - and like each other field every object has -
 // taken -, a model twice in a run, two runs of one optimizationId). The
 // covered sources: every .ts file under src (the types),
 // and src/api/stored-json.ts (the checks).
@@ -691,10 +691,10 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
   const rules = [
     ['a run of its header row alone', [header(1)], false],
     ['a run of its header row alone, before a run with a model', [header(1), header(2), modelRow(2, 'demo_llm')], false],
-    // A run cannot keep a result under the name of a field of its own, nor
-    // under __proto__; under the name of a field every object inherits it can
+    // A run cannot keep a result under a name the page reads as a field of a
+    // run (TRACKER_META_KEYS), nor under __proto__; under the name of a field every object inherits it can
     // (isReservedModelName), and the page writes such a run (verify-round-trip.js).
-    ...(TRACKER_META_KEYS || ['judge']).map((name) => [`a run whose model is named ${name}, a field of a run`, [header(1), modelRow(1, name)], false]),
+    ...(TRACKER_META_KEYS || ['judge']).map((name) => [`a run whose model is named ${name}, a key the page reads as a field of a run`, [header(1), modelRow(1, name)], false]),
     ...Object.getOwnPropertyNames(Object.prototype).map((name) => [
       `a run whose model is named ${name}, a field every object has`, [header(1), modelRow(1, name)], name !== '__proto__',
     ]),

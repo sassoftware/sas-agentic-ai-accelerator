@@ -31,9 +31,9 @@
  *     (one of them answering nothing, judged by a council), saved, opened
  *     again - the tracker is taken, every model's result is drawn - and saved
  *     again; the same for a decision model named constructor. A model named
- *     like a field of a run (TRACKER_META_KEYS) or __proto__ is not offered:
- *     its box is off, with a note that says why, and it is offered nowhere
- *     else;
+ *     like a key the page reads as a field of a run (TRACKER_META_KEYS) or
+ *     __proto__ is not offered: its box is off, with a note that gives the
+ *     reason true for each of these names, and it is offered nowhere else;
  *   - rag-setup.json, Save setup, Save documentation and Manifest setup: a
  *     setup whose every field the form holds was changed, with an enrichment
  *     of two prompts, and a stored setup with null in every field that is not
@@ -422,7 +422,11 @@ function writersCensus(storedNames) {
       const holder = box && (box.closest('.pb-model-card') || box.parentElement);
       return box ? { id: box.id, off: box.disabled, note: (holder.querySelector('.pb-name-note')?.textContent || '').trim() } : null;
     }, [container, name]);
+  // The note on a model a run cannot keep a result under, with the reason
+  // that is true for every such name (author is no field any run holds, and
+  // __proto__ is no field of a run at all).
   const NAME_NOTE = 'This model cannot be used here: a run keeps the result of each model under the name of the model';
+  const nameNote = (name) => `${NAME_NOTE}, and a run cannot keep the result of a model under the name ${name}. Register the model under another name to use it here.`;
 
   // ==========================================================================
   // Prompt-Experiment-Tracker.json: Save Experiments, every class of name
@@ -525,7 +529,7 @@ function writersCensus(storedNames) {
       const box = await boxOf(page, '#LPB-decision-model-selector-container', 'constructor');
       const reserved = await boxOf(page, '#LPB-decision-model-selector-container', 'mode');
       step(
-        Boolean(box) && !box.off && Boolean(reserved) && reserved.off && reserved.note.startsWith(NAME_NOTE),
+        Boolean(box) && !box.off && Boolean(reserved) && reserved.off && reserved.note === nameNote('mode'),
         `a decision model named constructor is offered, one named mode is not, with a note that says why (constructor: ${box ? (box.off ? 'off' : 'on') : 'missing'}; mode: ${reserved ? `${reserved.off ? 'off' : 'on'}, note "${clip(reserved.note)}"` : 'missing'})`
       );
       const before = await savedRuns(page);
@@ -556,16 +560,16 @@ function writersCensus(storedNames) {
     });
   }
 
-  // A run cannot keep a result under the name of one of its own fields, nor
-  // under __proto__: such a model is not offered (isReservedModelName).
-  await road('LLMs named like a field of a run or __proto__', async (page) => {
+  // A run cannot keep a result under a name the page reads as a field of a
+  // run, nor under __proto__: such a model is not offered (isReservedModelName).
+  await road('LLMs named like a key the page reads as a field of a run, or __proto__', async (page) => {
     const reserved = [...(stored ? stored.TRACKER_META_KEYS : []), '__proto__'];
     await addModels(page, 'llm-proj', reserved.map((name, index) => [`rt-${index}`, name]));
     await openPage(page);
     await goStep(page, 'LPB', 'build');
     const seen = [];
     for (const name of reserved) seen.push([name, await boxOf(page, '#LPB-model-selector-container', name)]);
-    const wrong = seen.filter(([, box]) => !box || !box.off || !box.note.startsWith(NAME_NOTE)).map(([name, box]) => `${name}: ${box ? `${box.off ? 'off' : 'on'}, note "${clip(box.note)}"` : 'missing'}`);
+    const wrong = seen.filter(([name, box]) => !box || !box.off || box.note !== nameNote(name)).map(([name, box]) => `${name}: ${box ? `${box.off ? 'off' : 'on'}, note "${clip(box.note)}"` : 'missing'}`);
     const lists = await page.evaluate(() => [
       ...[...document.querySelectorAll('#app-obj-LPB-judge-model option')].map((option) => option.value),
       ...[...document.querySelectorAll('#app-obj-LPB-judge-panel input')].map((input) => input.value),
@@ -575,7 +579,7 @@ function writersCensus(storedNames) {
     const elsewhere = lists.filter((value) => reserved.includes(value));
     step(
       reserved.length > 1 && wrong.length === 0 && elsewhere.length === 0 && lists.includes('demo_llm') && pageErrors.length === 0,
-      `an LLM named like a field of a run or __proto__ is shown with its box off and a note that says why, and offered nowhere else (names: ${reserved.join(', ')}; otherwise: ${wrong.join('; ') || 'none'}; offered as judge, member, chairman or target: ${elsewhere.join(', ') || 'none'}; page errors: ${pageErrors.join(' | ') || 'none'})`
+      `an LLM named like a key the page reads as a field of a run, or __proto__, is shown with its box off and a note that says why - a run cannot keep the result of a model under that name -, and offered nowhere else (names: ${reserved.join(', ')}; otherwise: ${wrong.join('; ') || 'none'}; offered as judge, member, chairman or target: ${elsewhere.join(', ') || 'none'}; page errors: ${pageErrors.join(' | ') || 'none'})`
     );
   });
 

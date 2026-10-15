@@ -286,14 +286,18 @@ const RAG_SETUP: ObjectShape = {
 export const STORED_SHAPES = { PET_ROW, OPTIMIZATION_ENTRY, RAG_SETUP } as const;
 
 /**
- * The fields of a run of the experiment tracker as the page holds it: every
- * other key of a run is the name of a model, so no model can be named so.
+ * The keys of a run of the experiment tracker that the page reads as fields
+ * of the run, not as the name of a model: the fields of a run as the page
+ * holds it, and `author`, which no run of the page holds and which the page
+ * has kept out of the models since its first version. Every other key of a
+ * run is the name of a model, so no model can be named so.
  */
 export const TRACKER_META_KEYS = ['systemPrompt', 'userPrompt', 'author', 'variables', 'manifest', 'judge', 'mode', 'expected'];
 
 /**
  * Whether a run as the page holds it cannot keep the result of a model of
- * this name: a field of the run has the name, or it is `__proto__`, which
+ * this name: the page reads the name as a field of the run
+ * (TRACKER_META_KEYS), or it is `__proto__`, which
  * sets the prototype of the run instead of a field of its own. The page
  * offers no such model, and the tracker check refuses a row of one. Every
  * other name - also one of a field every object inherits, such as
