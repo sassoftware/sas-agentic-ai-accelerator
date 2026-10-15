@@ -62,6 +62,10 @@
 
 * Check if a CAS session exists;
 * The option SESSREF names the session the CAS actions run in and keeps the name of a session that was ended, so SESSFOUND is asked whether that session is connected;
+* Where the session the option SESSREF names is not connected but lnkMySess is, the option is set to lnkMySess, which is then used and left as it is. A second cas lnkMySess only makes SAS warn that the session exists and leaves the option on the session that was ended, and the end of the program would end a session it did not start;
+%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 and %sysfunc(sessfound(lnkMySess)) EQ 1 %then %do;
+    options sessref=lnkMySess;
+%end;
 %if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;
     %let _lnk_clean_cas_session = 1;
     cas lnkMySess;

@@ -84,6 +84,14 @@ run; quit;
 /* A CAS session that is connected is used as it is, and only a session this
    program started is ended at its end. The option SESSREF keeps the name of
    a session that was ended, so SESSFOUND is asked whether it is connected. */
+/* Where that session is not connected but _rcvSess is, the option is set to
+   _rcvSess, which is then used and left as it is. A second cas _rcvSess
+   only makes SAS warn that the session exists and leaves the option on the
+   session that was ended, and the end of the program would end a session
+   it did not start. */
+%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 and %sysfunc(sessfound(_rcvSess)) EQ 1 %then %do;
+    options sessref=_rcvSess;
+%end;
 %if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;
     %let _rcv_clean_cas_session = 1;
     cas _rcvSess;

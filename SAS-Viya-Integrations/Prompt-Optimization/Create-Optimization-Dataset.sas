@@ -33,7 +33,15 @@
 %let dataset_caslib  = Public;
 %let dataset_table   = PROMPT_OPTIMIZATION_DATASET;
 
-cas _optbuild;
+/* A session _optbuild that is connected - left by an earlier run that did
+   not reach its end, say - is used and left as it is: a second cas _optbuild
+   only makes SAS warn that the session exists, and the end of the program
+   would end a session it did not start. */
+%let _opt_clean_cas_session = 0;
+%if %sysfunc(sessfound(_optbuild)) NE 1 %then %do;
+    %let _opt_clean_cas_session = 1;
+    cas _optbuild;
+%end;
 caslib _all_ assign sessref=_optbuild;
 
 /* One row per example: the variable column(s) + the reference response.
@@ -66,4 +74,7 @@ proc casutil session=_optbuild;
     droptable casdata="_staging" incaslib="casuser" quiet;
 run; quit;
 
-cas _optbuild terminate;
+%if &_opt_clean_cas_session. %then %do;
+    cas _optbuild terminate;
+%end;
+%symdel _opt_clean_cas_session;

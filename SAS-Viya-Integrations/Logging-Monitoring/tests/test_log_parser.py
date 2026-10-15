@@ -958,10 +958,18 @@ def test_code_file_brings_the_cas_session_and_the_librefs_the_step_takes_from_it
     assert [line for line in statements if line.startswith("cas ")] == ["cas llmLogMySess;", "cas llmLogMySess terminate;"]
 
 
+GUARD = ["%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 and %sysfunc(sessfound(llmLogMySess)) EQ 1 %then %do;",
+         "    options sessref=llmLogMySess;", "%end;"]
+
+
 def _session_check(program):
-    """The statements between the comment that announces the session check and the first PROC CAS."""
+    """The statements between the comment that announces the session check and the first PROC CAS, behind the three
+    lines in front of the check that make a connected llmLogMySess the session SESSREF names (fix-content-23)."""
     start = program.index("* Check if a CAS session exists;")
-    return program[start:program.index("proc cas;", start)]
+    part = program[start:program.index("proc cas;", start)]
+    guard = "\n".join(GUARD) + "\n"
+    assert part.count(guard) == 1
+    return part.replace(guard, "")
 
 
 @BOTH_PROGRAMS
@@ -1014,14 +1022,21 @@ def _starts_a_session_of_its_own(program, session):
         "    %let _log_clean_cas_session = 1;", "    cas llmLogMySess;", "%end;",
         "%else %do;", "    %let _log_clean_cas_session = 0;", "%end;"]
 
-    condition = lines[0][len("%if "):-len(" %then %do;")]
-    condition = condition.replace("%sysfunc(getoption(sessref))", session.sessref)
-    condition = re.sub(r"%sysfunc\(sessfound\((\w+)\)\)",
-                       lambda found: str(int(found.group(1).upper() in session.connected)), condition)
-    condition = re.sub(r"%symexist\((\w+)\)",
-                       lambda exists: str(int(exists.group(1).upper() in session.macro_variables)), condition)
-    left, operator, right = condition.split()
-    return {"EQ": int(left) == int(right), "NE": int(left) != int(right)}[operator]
+    def decide(condition, sessref):
+        condition = condition.replace("%sysfunc(getoption(sessref))", sessref)
+        condition = re.sub(r"%sysfunc\(sessfound\((\w+)\)\)",
+                           lambda found: str(int(found.group(1).upper() in session.connected)), condition)
+        condition = re.sub(r"%symexist\((\w+)\)",
+                           lambda exists: str(int(exists.group(1).upper() in session.macro_variables)), condition)
+        results = []
+        for part in condition.split(" and "):
+            left, operator, right = part.split()
+            results.append({"EQ": int(left) == int(right), "NE": int(left) != int(right)}[operator])
+        return all(results)
+
+    # the guard in front of the check sets the option to a connected llmLogMySess (fix-content-23)
+    sessref = "LLMLOGMYSESS" if decide(GUARD[0][len("%if "):-len(" %then %do;")], session.sessref) else session.sessref
+    return decide(lines[0][len("%if "):-len(" %then %do;")], sessref)
 
 
 @BOTH_PROGRAMS
@@ -1049,8 +1064,11 @@ def test_a_cas_session_of_the_user_is_used_and_never_ended(program):
     assert [line for line in statements if line.startswith("cas ") and "terminate" in line] == ["cas llmLogMySess terminate;"]
     assert [line for line in statements if line.startswith("%let _log_clean_cas_session")] == [
         "%let _log_clean_cas_session = 1;", "%let _log_clean_cas_session = 0;"]
-    # Neither the option nor a session reference is set by the program itself
-    assert not [line for line in statements if line.lower().startswith("options ") or "sessref=" in line.lower()]
+    # Neither the option nor a session reference is set by the program itself, but by the guard to its own
+    # session llmLogMySess where that one is connected and the session the option names is not - and in the first
+    # lines of the code file to its mysess
+    options = [line for line in statements if line.lower().startswith("options ") or "sessref=" in line.lower()]
+    assert options == (["options sessref=mysess;"] if "cas mysess;" in program else []) + ["options sessref=llmLogMySess;"]
 
 
 @BOTH_PROGRAMS

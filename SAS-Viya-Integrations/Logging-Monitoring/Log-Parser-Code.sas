@@ -3,6 +3,10 @@
     SPDX-License-Identifier: Apache-2.0
 ********************************************************************************/
 * A CAS session for the librefs below. A session that is connected is used as it is: starting mysess a second time in one SAS session makes SAS warn that the session exists. The session stays when the program ends, and so do the librefs;
+* Where the session the option SESSREF names is not connected but mysess is, the option is set to mysess, which is then used and left as it is. A second cas mysess only makes SAS warn that the session exists and leaves the option on the session that was ended;
+%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 and %sysfunc(sessfound(mysess)) EQ 1 %then %do;
+    options sessref=mysess;
+%end;
 %if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;
     cas mysess;
 %end;
@@ -74,6 +78,10 @@ quit;
 
 * Check if a CAS session exists;
 * The option SESSREF names the session the CAS actions run in and keeps the name of a session that was ended, so SESSFOUND is asked whether that session is connected;
+* Where the session the option SESSREF names is not connected but llmLogMySess is, the option is set to llmLogMySess, which is then used and left as it is. A second cas llmLogMySess only makes SAS warn that the session exists and leaves the option on the session that was ended, and the end of the program would end a session it did not start;
+%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 and %sysfunc(sessfound(llmLogMySess)) EQ 1 %then %do;
+    options sessref=llmLogMySess;
+%end;
 %if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;
     %let _log_clean_cas_session = 1;
     cas llmLogMySess;

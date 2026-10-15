@@ -8,8 +8,9 @@
     The tables created by this script are used in the provided SAS Visual
       Analytics report to help to provide accurate price information. Please
       update the prices, as no discounts or other special configs are assumed.
-      A CAS session is started for you when none is connected, and only
-      that session is ended again.
+      A CAS session is started for you when neither the session the option
+      SESSREF names nor a session mySess is connected, and only that session
+      is ended again.
 
     A table that exists is only replaced by a sheet that was read: a file
       that is not in the folder, a file without rows and a sheet that CAS
@@ -52,6 +53,10 @@ options nosyntaxcheck;
 
 * Check if a CAS session exists;
 * The option SESSREF names the session the CAS actions run in and keeps the name of a session that was ended, so SESSFOUND is asked whether that session is connected. A session that is connected is used as it is: starting mySess a second time in one SAS session makes SAS warn that the session exists, and ending it takes the session from the librefs another program bound to it;
+* Where the session the option SESSREF names is not connected but mySess is, the option is set to mySess, which is then used and left as it is. A second cas mySess only makes SAS warn that the session exists and leaves the option on the session that was ended, and the end of the program would end a session it did not start;
+%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 and %sysfunc(sessfound(mySess)) EQ 1 %then %do;
+    options sessref=mySess;
+%end;
 %if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;
     %let _lfs_clean_cas_session = 1;
     cas mySess;

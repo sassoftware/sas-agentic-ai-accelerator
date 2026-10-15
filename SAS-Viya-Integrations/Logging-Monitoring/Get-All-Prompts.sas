@@ -49,9 +49,10 @@
       work._gap_all_rag_runs
       work._gap_all_catalog
 
-    A CAS session called mySess is started for the run when the SAS session
-      has none that is connected, and it is ended again. A session that is
-      connected is used and left as it is.
+    A CAS session called mySess is started for the run when neither the
+      session the option SESSREF names nor a session mySess is connected,
+      and it is ended again. A session that is connected is used and left as
+      it is.
 
     gap is short for:
       Get All Prompts
@@ -88,6 +89,10 @@
 
 * Check if a CAS session exists;
 * The option SESSREF names the session the CAS actions run in and keeps the name of a session that was ended, so SESSFOUND is asked whether that session is connected. Behind Log-Parser-Code.sas in one SAS session a session is connected: starting it again made SAS warn that the session exists, and ending it took the session from the librefs of that program;
+* Where the session the option SESSREF names is not connected but mySess is, the option is set to mySess, which is then used and left as it is. A second cas mySess only makes SAS warn that the session exists and leaves the option on the session that was ended, so that every PROC CAS step of the program halted on SAS Viya on 2026-10-14, and the end of the program would end a session it did not start;
+%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 and %sysfunc(sessfound(mySess)) EQ 1 %then %do;
+    options sessref=mySess;
+%end;
 %if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;
     %let _gap_clean_cas_session = 1;
     cas mySess;

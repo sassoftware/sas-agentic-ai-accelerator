@@ -156,6 +156,10 @@ run;
 
 * Check if a CAS session exists;
 * The option SESSREF names the session the CAS actions run in and keeps the name of a session that was ended, so SESSFOUND is asked whether that session is connected. A session that is connected is used as it is, and only a session this program started is ended at its end;
+* Where the session the option SESSREF names is not connected but _latSess is, the option is set to _latSess, which is then used and left as it is. A second cas _latSess only makes SAS warn that the session exists and leaves the option on the session that was ended, and the end of the program would end a session it did not start;
+%if &_lat_ready. EQ 1 and %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 and %sysfunc(sessfound(_latSess)) EQ 1 %then %do;
+    options sessref=_latSess;
+%end;
 %if &_lat_ready. EQ 1 and %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;
     %let _lat_clean_cas_session = 1;
     cas _latSess;

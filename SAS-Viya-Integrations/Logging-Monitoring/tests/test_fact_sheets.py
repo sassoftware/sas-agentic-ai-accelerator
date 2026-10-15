@@ -165,7 +165,9 @@ def test_an_error_for_one_sheet_does_not_put_a_batch_session_into_syntax_check_m
     code = without_comments(program("Load-Fact-Sheets.sas"))
 
     assert code.count("%let _lfs_syntaxcheck = %sysfunc(getoption(syntaxcheck));\noptions nosyntaxcheck;\n") == 1
-    assert code.count("options &_lfs_syntaxcheck.;") == 1 and len(re.findall(r"^\s*options\b", code, flags=re.MULTILINE)) == 2
+    # the third OPTIONS statement is the one that sets SESSREF to a connected mySess (test_fix_content_23.py)
+    assert code.count("options &_lfs_syntaxcheck.;") == 1 and len(re.findall(r"^\s*options\b", code, flags=re.MULTILINE)) == 3
+    assert code.count("    options sessref=mySess;\n") == 1
     # switched off in front of the first step of the program and put back behind its last one
     in_order(code, "options nosyntaxcheck;", "cas mySess;", "%macro _lfs_read(", "%_lfs_read(llm_fact_sheet.csv",
              "delete _lfs_llm_fact_sheet _lfs_embedding_fact_sheet _lfs_decision_fact_sheet;", "cas mySess terminate;",
