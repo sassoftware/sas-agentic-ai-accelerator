@@ -42,6 +42,10 @@
  *     off, or to a node inside it (its text), reaches no listener of the page
  *     and opens no dialog (at three moments, every such control and every
  *     node inside it, every click listener of the page).
+ *   - A launch whose request never reached Job Execution (Launch ingestion,
+ *     Run test, Run optimization): with the running jobs listed, the page
+ *     says that the job is not among them; with that listing failed too,
+ *     that what SAS Viya holds could not be read back.
  *   - Save setup, Manifest setup and Save documentation cannot be used while
  *     the stored setup is read.
  *   - While a write is out, a change of a picker sent by a script (as the
@@ -1658,6 +1662,83 @@ function writesCensus() {
     step(
       lost() === 1 && rows > 0 && !/not known/.test(status),
       `Run test whose answer is lost after Job Execution launched the job reads it back among the running jobs and shows what it returned (answers lost: ${lost()}; chunks: ${rows}; status: "${clip(status)}")`
+    );
+  });
+
+  // A launch whose request never reached Job Execution: the read back lists
+  // the jobs that are running (200) and finds none of the launch. That is
+  // what the page says - not that what SAS Viya holds could not be read
+  // back, which it says where the listing fails as well.
+  const NOT_RUNNING = 'the job it was to launch is not among the jobs that are running: whether it was launched is not known';
+  const NOT_READ_BACK = 'what SAS Viya holds could not be read back';
+  const loseLaunch = async (page, listing) => {
+    const seen = { launches: 0, listings: [] };
+    await page.route('**/jobExecution/jobs', (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      seen.launches += 1;
+      return route.abort('failed');
+    });
+    await page.route('**/jobExecution/jobs?*', async (route) => {
+      if (!/state/.test(decodeURIComponent(route.request().url()))) return route.continue();
+      if (listing === 'fails') {
+        seen.listings.push('aborted');
+        return route.abort('failed');
+      }
+      const response = await route.fetch();
+      seen.listings.push(response.status());
+      return route.fulfill({ response });
+    });
+    return seen;
+  };
+  for (const listing of ['answered', 'fails']) {
+    const expected = listing === 'answered' ? NOT_RUNNING : NOT_READ_BACK;
+    const other = listing === 'answered' ? NOT_READ_BACK : NOT_RUNNING;
+    await road(`Launch ingestion whose request is lost, the running jobs ${listing === 'answered' ? 'listed' : 'not readable'}`, async (page) => {
+      await openPage(page, 'rag');
+      await openSetup(page, 'rag-setup-1');
+      await goStep(page, 'RGB', 'run');
+      const seen = await loseLaunch(page, listing);
+      await page.click(rgb('launch'));
+      await waitUntil(async () => (await textOf(page, rgb('status'))) !== '', 'the banner', 40000).catch(() => {});
+      await atRest();
+      const banner = await textOf(page, rgb('status'));
+      step(
+        seen.launches === 1 && seen.listings.length > 0 && (listing === 'fails' || seen.listings.every((status) => status === 200)) && banner.includes(expected) && !banner.includes(other),
+        `Launch ingestion whose request never reached Job Execution, with the jobs that are running ${listing === 'answered' ? 'listed (200)' : 'not readable'}: the banner says "${expected}" (launches: ${seen.launches}; listings: ${JSON.stringify(seen.listings)}; banner: "${clip(banner)}")`
+      );
+    });
+  }
+  await road('Run test whose request is lost, the running jobs listed', async (page) => {
+    await openPage(page, 'rag');
+    await openSetup(page, 'rag-setup-1');
+    await goStep(page, 'RGB', 'run');
+    await page.click(rgb('test'));
+    await page.waitForSelector(rgb('test-question'), { state: 'visible' });
+    await page.fill(rgb('test-question'), 'What does the handbook say about leave?');
+    const seen = await loseLaunch(page, 'answered');
+    await page.click(rgb('test-run'));
+    await waitUntil(async () => /not known/.test(await textOf(page, rgb('test-status'))), 'the line that it is not known', 40000).catch(() => {});
+    await atRest();
+    const status = await textOf(page, rgb('test-status'));
+    step(
+      seen.launches === 1 && seen.listings.length > 0 && seen.listings.every((code) => code === 200) && status.includes(NOT_RUNNING) && !status.includes(NOT_READ_BACK),
+      `Run test whose request never reached Job Execution, with the jobs that are running listed (200): the panel says "${NOT_RUNNING}" (launches: ${seen.launches}; listings: ${JSON.stringify(seen.listings)}; status: "${clip(status)}")`
+    );
+  });
+  await road('Run optimization whose request is lost, the running jobs listed', async (page) => {
+    await openPage(page);
+    await openPromptTest(page, 'proj-1', 'model-used');
+    await goStep(page, 'LPB', 'optimize');
+    await page.selectOption(lpb('optimize-target'), 'demo_llm');
+    await waitUntil(async () => !(await page.isDisabled(lpb('optimize-run'))), 'the optimization can be started', 15000);
+    const seen = await loseLaunch(page, 'answered');
+    await page.click(lpb('optimize-run'));
+    await waitUntil(async () => (await textOf(page, lpb('optimize-result'))) !== '', 'the result of the launch', 40000).catch(() => {});
+    await atRest();
+    const said = await textOf(page, lpb('optimize-result'));
+    step(
+      seen.launches === 1 && seen.listings.length > 0 && seen.listings.every((code) => code === 200) && said.includes(NOT_RUNNING) && !said.includes(NOT_READ_BACK),
+      `Run optimization whose request never reached Job Execution, with the jobs that are running listed (200): the Optimize step says "${NOT_RUNNING}" (launches: ${seen.launches}; listings: ${JSON.stringify(seen.listings)}; said: "${clip(said)}")`
     );
   });
 

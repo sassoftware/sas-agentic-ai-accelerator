@@ -165,14 +165,23 @@ export class ViyaRefused extends Error {
  * not be read back either: then it may have been carried out or not.
  */
 export class UnansweredWrite extends Error {
+  /**
+   * `jobNotRunning`: the write was a launch, the jobs that are running were
+   * read back, and the job of the launch is not among them - which leaves
+   * it unknown too (it may have run and ended), for another reason than a
+   * read back that failed.
+   */
   constructor(
     readonly done: false | null,
-    readonly lost: unknown
+    readonly lost: unknown,
+    readonly jobNotRunning = false
   ) {
     super(
       done === false
         ? 'A write got no answer, and reading back shows it was not carried out.'
-        : 'A write got no answer, and what is stored could not be read back.'
+        : jobNotRunning
+          ? 'A launch got no answer, and its job is not among the jobs that are running.'
+          : 'A write got no answer, and what is stored could not be read back.'
     );
   }
 }

@@ -2414,12 +2414,17 @@ export async function buildRagBuilder(
   /**
    * What a write that got no answer comes to once what SAS Viya holds was
    * read back (see writeOrReadBack): it was not carried out, or that is not
-   * known. '' for any other failure - a refusal, which is an answer.
+   * known - for a launch whose job is not among the running jobs, or as
+   * what SAS Viya holds could not be read back. '' for any other failure -
+   * a refusal, which is an answer.
    */
   const noAnswerText = (error: unknown): string => {
     if (!(error instanceof UnansweredWrite)) return '';
-    return error.done === false
-      ? str('ragBuilderNoAnswerNotDone', 'A request to SAS Viya got no usable answer, and reading back what SAS Viya holds shows that it was not carried out.')
+    if (error.done === false) {
+      return str('ragBuilderNoAnswerNotDone', 'A request to SAS Viya got no usable answer, and reading back what SAS Viya holds shows that it was not carried out.');
+    }
+    return error.jobNotRunning
+      ? str('ragBuilderNoAnswerJobNotRunning', 'A request to SAS Viya got no usable answer, and the job it was to launch is not among the jobs that are running: whether it was launched is not known, as it may have ended already.')
       : str('ragBuilderNoAnswerUnknown', 'A request to SAS Viya got no usable answer, and what SAS Viya holds could not be read back: whether it was carried out is not known.');
   };
 
@@ -3641,7 +3646,7 @@ export async function buildRagBuilder(
       runClock.textContent = '';
       // A launch that got no answer was read back (see launchJob): one that
       // is running did not get here, and no run of it is shown - the read
-      // back found none running.
+      // back found none running, or could not read the running jobs.
       if (noAnswerText(error)) {
         runCard.style.display = 'none';
         runStateText.textContent = '';

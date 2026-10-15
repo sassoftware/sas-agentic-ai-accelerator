@@ -5063,11 +5063,19 @@ export async function buildPromptBuilder(
     /**
      * What a write that got no answer comes to once what SAS Viya holds was
      * read back (see writeOrReadBack): it was not carried out, or that is not
-     * known. '' for any other failure - a refusal, which is an answer.
+     * known - for a launch whose job is not among the running jobs, or as
+     * what SAS Viya holds could not be read back. '' for any other failure -
+     * a refusal, which is an answer.
      */
     function noAnswerText(error: unknown): string {
       if (!(error instanceof UnansweredWrite)) return '';
-      return `${error.done === false ? promptBuilderInterfaceText?.promptBuilderNoAnswerNotDone : promptBuilderInterfaceText?.promptBuilderNoAnswerUnknown}`;
+      return `${
+        error.done === false
+          ? promptBuilderInterfaceText?.promptBuilderNoAnswerNotDone
+          : error.jobNotRunning
+            ? promptBuilderInterfaceText?.promptBuilderNoAnswerJobNotRunning
+            : promptBuilderInterfaceText?.promptBuilderNoAnswerUnknown
+      }`;
     }
 
     // Save the experiments to the SAS Model Manager. The success/failure

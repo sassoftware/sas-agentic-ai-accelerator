@@ -18,7 +18,7 @@
  * server-side from the credential domain under the launching user's identity.
  */
 
-import { viyaGet, viyaGetAll, viyaFetch, viyaPost, ViyaRefused, writeOrReadBack, type CollectionPage } from './http-client';
+import { viyaGet, viyaGetAll, viyaFetch, viyaPost, UnansweredWrite, ViyaRefused, writeOrReadBack, type CollectionPage } from './http-client';
 
 /** Job Execution job states (subset we care about). */
 export type JobState =
@@ -123,7 +123,9 @@ async function primeJobExecutionSession(): Promise<void> {
  * back: a job of this definition, of this name and - where the listing names
  * them - with these arguments is the one it launched. None found leaves the
  * launch unknown (an UnansweredWrite with `done` null), not refused: the job
- * may have been launched and have ended already.
+ * may have been launched and have ended already. Where the jobs that are
+ * running were read and hold none of this launch, the UnansweredWrite says
+ * so (`jobNotRunning`) - not that they could not be read.
  */
 export async function launchJob(
   jobDefinitionUri: string,
@@ -131,6 +133,7 @@ export async function launchJob(
   args: Record<string, string>
 ): Promise<JobExecutionJob> {
   await primeJobExecutionSession();
+  let runningJobsRead = false;
   return writeOrReadBack(
     () =>
       viyaPost<JobExecutionJob>(
@@ -139,7 +142,9 @@ export async function launchJob(
         'application/vnd.sas.job.execution.job.request+json'
       ),
     async () => {
-      const launched = (await runningJobs()).find((job) => {
+      const running = await runningJobs();
+      runningJobsRead = true;
+      const launched = running.find((job) => {
         // The name is a member of the request, as the definition and the
         // arguments are: the job itself carries none.
         const request = (job.jobRequest ?? {}) as { name?: string; jobDefinitionUri?: string; arguments?: Record<string, unknown> };
@@ -152,7 +157,11 @@ export async function launchJob(
       if (!launched) throw new Error('no job of this launch is running');
       return launched;
     }
-  );
+  ).catch((error: unknown) => {
+    // The listing was read and holds no job of this launch.
+    if (error instanceof UnansweredWrite && error.done === null && runningJobsRead) throw new UnansweredWrite(null, error.lost, true);
+    throw error;
+  });
 }
 
 /** The jobs that are pending or running, newest first, every page of them. */
