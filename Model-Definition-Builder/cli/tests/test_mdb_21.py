@@ -830,7 +830,7 @@ def test_an_address_that_cannot_be_used_is_refused_before_any_request(env, fake_
 @pytest.mark.parametrize("url, port", [
     ("https://viya.example.com", None), ("viya.example.com", None), ("https://viya.example.com:8443", 8443),
     ("https://viya.example.com:8443/", 8443), ("HTTPS://viya.example.com:443", 443), ("http://127.0.0.1:4983", 4983),
-    ("https://viya.example.com:", None), ("https://viya.example.com/SASLogon", None), ("http://localhost:65535", 65535),
+    ("https://viya.example.com/SASLogon", None), ("http://localhost:65535", 65535),
 ])
 def test_an_address_that_can_be_used_reaches_sasctl_as_it_did(env, fake_sasctl, url, port):
     env.setenv(s.URL_ENV, url)

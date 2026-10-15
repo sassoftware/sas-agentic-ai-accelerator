@@ -119,7 +119,8 @@ def _address_problem(url: str) -> str:
     * `host:8443` - a port and no scheme: sasctl reads `host` as the scheme
       and asks `host://host:8443/...`. A host alone it takes as https.
     * A port that is no number from 1 to 65535 was dropped, and the default
-      port was asked.
+      port was asked - an empty one too (`http://host:`), which urlparse
+      reads as no port.
     * A scheme other than https or http: sasctl sends with requests, which
       connects for these two alone.
     * An IPv6 address in brackets: sasctl takes the host without its
@@ -151,7 +152,7 @@ def _address_problem(url: str) -> str:
         port = parsed.port
     except ValueError:
         port = 0
-    if port == 0:
+    if port == 0 or parsed.netloc.endswith(":"):
         return "its port is no number from 1 to 65535"
     if not parsed.hostname:
         return "it names no host"
