@@ -325,3 +325,29 @@ def test_import_reads_every_options_json_mdb_writes_as_written(tmp_path, monkeyp
         read = {name: spec.default for name, spec in manifest.options.items()}
         assert read == {name: option["default"] for name, option in document.items()
                         if name != "API_KEY" and name not in legacy}
+
+
+# -- mdb retire refuses a file edited by hand before it saves the tag --------
+
+def test_retire_refuses_a_file_edited_by_hand_before_it_saves_the_tag(tmp_path, monkeypatch, repo_root, no_viya):
+    """review-26: the refusal asks to run mdb generate --force and then mdb
+    retire again; that rerun retires the model."""
+    folder = _relocated(tmp_path, monkeypatch, repo_root, "claude_sonnet_4_5")
+    with (folder / "README.md").open("a", encoding="utf-8") as readme:
+        readme.write("\nA line edited by hand.\n")
+    before = _files(folder)
+    out = _printed(monkeypatch)
+    first = CliRunner().invoke(cli.app, ["retire", "claude_sonnet_4_5"])
+    assert first.exit_code == 1, out.getvalue()
+    assert "README.md was edited by hand - retire refuses to overwrite it." in out.getvalue()
+    assert _files(folder) == before
+    assert "deprecated" not in yaml.safe_load((folder / MANIFEST_FILENAME).read_text(encoding="utf-8"))["tags"].get(
+        "extra", [])
+
+    assert CliRunner().invoke(cli.app, ["generate", "claude_sonnet_4_5", "--force"]).exit_code == 0
+    out = _printed(monkeypatch)
+    second = CliRunner().invoke(cli.app, ["retire", "claude_sonnet_4_5"])
+    assert second.exit_code == 0, out.getvalue()
+    assert "claude_sonnet_4_5: tagged deprecated and regenerated." in out.getvalue()
+    assert "deprecated" in yaml.safe_load((folder / MANIFEST_FILENAME).read_text(encoding="utf-8"))["tags"]["extra"]
+    assert "The registered model's status was not updated" in out.getvalue()

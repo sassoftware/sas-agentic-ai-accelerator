@@ -3667,15 +3667,15 @@ def retire(
         console.print(f"{_plain(model_id)}: already deprecated - archiving.")
     else:
         manifest.tags.extra.append("deprecated")
-        # Rendered before the manifest is saved: a manifest that cannot be
-        # rendered (an option that breaks check_options_json) is refused with
-        # nothing written.
+        # Rendered and checked before the manifest is saved: a manifest that
+        # cannot be rendered (an option that breaks check_options_json) or a
+        # generated file edited by hand is refused with nothing written, so
+        # the rerun the refusal asks for finds the definition not deprecated.
         try:
             rendered = render_assets(manifest, ctx.core)
         except GenerationError as exc:
             console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
             raise typer.Exit(1)
-        manifest.save(folder)
         blockers = [c for c in drift.classify(folder, rendered)
                     if c.status in (drift.FileStatus.HAND_EDITED, drift.FileStatus.UNTRACKED)]
         if blockers:
@@ -3684,6 +3684,7 @@ def retire(
             console.print("Fold the edits into definition.yaml (or generation.overrides), run mdb generate --force, "
                           "then rerun mdb retire.")
             raise typer.Exit(1)
+        manifest.save(folder)
         for name, content in rendered.items():
             (folder / name).write_bytes(content)
         drift.write_lock(folder, (folder / MANIFEST_FILENAME).read_bytes(), rendered)
