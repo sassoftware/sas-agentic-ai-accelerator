@@ -463,11 +463,14 @@ what a write answered and what
 one item, one write or one dialog leaves for the next (`verify-outcomes.js`),
 a read of what is stored that fails, and a stored JSON file that is not the
 file of its name - neither is taken for what is stored (`verify-reads.js`),
-the options group with its checkboxes
-(`verify-options.js`), the locale files (`verify-locales.js`) and the built
+every stored JSON file the page reads as each of its writers writes it - for
+`options.json` every option shape mdb's generator writes, drawn and sent as
+written (`verify-round-trip.js`), the options group with its checkboxes
+(`verify-options.js`), the locale files (`verify-locales.js`), the built
 page itself (`verify-tokens.js`: no text SAS Job Execution would substitute as
 a `$token$` - the build removes the one marker comment of the bundler that
-had that shape). After `npm run build`, from a scratch folder in which
+had that shape) and the harness itself (`verify-waits.js`: no wait of a fixed
+time stands in for a state the suites look at). After `npm run build`, from a scratch folder in which
 `playwright` is installed:
 
 ```bash

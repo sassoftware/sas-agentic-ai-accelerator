@@ -52,10 +52,15 @@
  *     page of its contents shows its runs and its optimization history;
  *   - an optimization history that cannot be read, or holds no list of runs,
  *     says so where the history stands, with no run and no Delete;
- *   - an LLM or a decision model whose options.json holds no options (a
- *     list, an option without its default, an option whose values are no
- *     texts) is shown as one that cannot be used, and offered nowhere; a
- *     stored run or an optimization run that used it does not tick its box;
+ *   - an LLM whose options.json is not one the page can read (a list, an
+ *     option that is no object, an enum whose values are no texts or that has
+ *     none, a box whose default is 1, a provider key named by a number) is
+ *     shown as one that cannot be used, and offered nowhere; a stored run or
+ *     an optimization run that used it does not tick its box; one whose
+ *     options hold, in fields the page does not read of them, values of any
+ *     kind is usable, each option drawn and sent as it is written; a decision
+ *     model is not usable when the page cannot read its API_KEY.default, and
+ *     usable with any other field;
  *   - the documentation of a prompt-test that cannot be read says so;
  *   - a RAG setup whose contents, rag-setup.json or (never saved) attributes
  *     cannot be read says so and keeps Save setup, Manifest setup and Save
@@ -116,7 +121,7 @@ const CENSUS = {
     'promptBuilderPromptSelectorDropdown.onchange -> getModelContents': [1, 'the runs of the prompt-test are not read: the page says so, and Save Experiments (with what saves first) writes nothing (road below)'],
     'promptBuilderPromptSelectorDropdown.onchange -> readStoredJson': [1, 'as the listing; a tracker that is read and holds no runs this page can read says that, and that opening it again does not help (road below)'],
     'buildPromptBuilder -> getModelContents': [2, 'an LLM or a decision model is offered without its options; nothing stored is written from them'],
-    'buildPromptBuilder -> readStoredJson': [2, 'as the listing; an options.json that holds no options this page can read shows the model as one that cannot be used, offered nowhere (road below)'],
+    'buildPromptBuilder -> readStoredJson': [2, 'as the listing; an options.json that is not one this page can read shows the model as one that cannot be used, offered nowhere (road below)'],
     'buildPromptBuilder -> getModelDetails': [1, 'a decision model card without the attributes of its registration; nothing is written from them'],
     'ensureLLMCostAttributes -> getModelDetails': [1, 'the LLM has no cost attributes: a manifest copies none, and writes no attribute empty'],
     'promptBuilderSaveExperiments -> getModelContents': [1, 'throws: the save stops with its line, before the upload'],
@@ -503,8 +508,9 @@ function offersCensus() {
 // by Save setup, and a policy flag "no" went into pipeline.yaml as true -,
 // MODEL_OPTION: an options.json whose enum values were no texts
 // stopped the build of the whole Prompt Builder). A field the type gives no
-// kind (`unknown`: the default of an option) is read as any value, and no
-// shape holds it; its check asks for it by its presence. The
+// kind (`unknown`: the default of an option) is in no shape: the check of an
+// options.json reads it by the rule of the option's kind (isModelOptions),
+// and the rules below name each kind; so are the values of an enum. The
 // census probes the shape of every name of STORED_SHAPES. It reads the types of
 // the sources each shape mirrors (`of`: an interface, or a field of one that
 // is an object of its own) and compares them field for field - names and
@@ -519,6 +525,67 @@ function offersCensus() {
 // --------------------------------------------------------------------------
 let storedJson = null;
 
+// The rules of an option of the options.json of an LLM, each kind of option
+// with a file the page takes and files it refuses: what the page draws as
+// written is taken, what it could draw only as something else is refused.
+const OPTION_RULES = (numberFields) => {
+  const one = (key, option) => ({ [key]: option });
+  const rules = [];
+  const add = (what, key, option, taken) => rules.push([`${what} (${key}: ${JSON.stringify(option)})`, one(key, option), taken]);
+  for (const type of [undefined, 'string']) {
+    const typed = (fields) => (type ? { type, ...fields } : fields);
+    const kind = type ? 'a string option' : 'an option of no type';
+    for (const value of [0, 0.5, 'x', '', true, false]) add(`${kind} whose default is a text, a number or a boolean`, 'my_option', typed({ default: value }), true);
+    for (const value of [null, ['x'], { x: 1 }]) add(`${kind} whose default is ${value === null ? 'null' : Array.isArray(value) ? 'a list' : 'an object'}`, 'my_option', typed({ default: value }), false);
+    add(`${kind} without its default`, 'my_option', typed({ label: 'x' }), false);
+    add(`${kind} with values that are no texts, which are not read`, 'my_option', typed({ default: 'x', values: [1, 2] }), true);
+    add(`${kind} whose label is no text`, 'my_option', typed({ default: 'x', label: 5 }), false);
+    add(`${kind} whose description is no text`, 'my_option', typed({ default: 'x', description: { a: 1 } }), false);
+  }
+  add('an option whose type is no text', 'my_option', { type: 5, default: 'x' }, false);
+  add('an option of a type the page draws by its default', 'my_option', { type: 'int', default: 3 }, true);
+  add('an enum whose default is one of its texts', 'my_option', { type: 'enum', default: 'a', values: ['a', 'b'] }, true);
+  add('an enum whose default is none of its values', 'my_option', { type: 'enum', default: 'c', values: ['a', 'b'] }, false);
+  add('an enum without its values', 'my_option', { type: 'enum', default: 'a' }, false);
+  add('an enum with no values', 'my_option', { type: 'enum', default: 'a', values: [] }, false);
+  add('an enum whose values are no texts', 'my_option', { type: 'enum', default: 1, values: [1, 2] }, false);
+  add('an enum one of whose values is no text', 'my_option', { type: 'enum', default: 'a', values: ['a', 1] }, false);
+  add('an enum whose values are a text', 'my_option', { type: 'enum', default: 'a', values: 'a' }, false);
+  for (const value of [true, false, 'true', 'false']) add('a bool whose default is true or false', 'my_option', { type: 'bool', default: value }, true);
+  for (const value of [1, 0, 'yes', '', null]) add('a bool whose default is not true or false', 'my_option', { type: 'bool', default: value }, false);
+  add('a bool whose label is no text', 'my_option', { type: 'bool', default: true, label: 5 }, false);
+  for (const key of numberFields) {
+    add('a number of a field of the page, whose label, description and values are not read', key, { default: 0.5, label: 5, description: { a: 1 }, values: [1] }, true);
+    add('an option of a field of the page that is no number, drawn as any other', key, { default: 'low', label: 'x' }, true);
+    add('an option of a field of the page that is no number, whose label is no text', key, { default: 'low', label: 5 }, false);
+    add('an enum of a field of the page', key, { type: 'enum', default: 'a', values: ['a'] }, true);
+    add('an enum of a field of the page without its values', key, { type: 'enum', default: 0.5 }, false);
+    add('a bool of a field of the page whose default is 1', key, { type: 'bool', default: 1 }, false);
+  }
+  add('API_KEY whose default is a text', 'API_KEY', { default: 'OpenAI', label: 5, values: [1], type: 7 }, true);
+  for (const value of ['', 5, true, ['OpenAI'], { name: 'OpenAI' }, null]) add('API_KEY whose default is no text, or an empty one', 'API_KEY', { default: value }, false);
+  add('API_KEY without its default', 'API_KEY', { label: 'x' }, false);
+  add('API_KEY that is a text', 'API_KEY', 'OpenAI', false);
+  rules.push(['a list of options', [{ default: 0.5 }], false]);
+  rules.push(['an option that is no object', { temperature: 0.7 }, false]);
+  rules.push(['an option that is null', { temperature: null }, false]);
+  rules.push(['no options at all', {}, true]);
+  return rules;
+};
+// The file of a decision model: the page reads its API_KEY.default alone.
+const DECISION_OPTION_RULES = [
+  ['a file without API_KEY', {}, true],
+  ['API_KEY whose default is a text, and other options of any kind', { API_KEY: { default: 'OpenAI', label: 7 }, mode: { type: 'enum', default: 'a', values: [1, 2] }, x: 5, y: null, z: [1] }, true],
+  ['API_KEY that is null', { API_KEY: null }, true],
+  ['API_KEY whose default is a number', { API_KEY: { default: 5 } }, false],
+  ['API_KEY whose default is an empty text', { API_KEY: { default: '' } }, false],
+  ['API_KEY whose default is a list', { API_KEY: { default: ['OpenAI'] } }, false],
+  ['API_KEY without its default', { API_KEY: { label: 'x' } }, false],
+  ['API_KEY that is a text', { API_KEY: 'OpenAI' }, false],
+  ['a list', [{ API_KEY: { default: 'OpenAI' } }], false],
+  ['a text', 'API_KEY', false],
+];
+
 const kindOfShape = (shape) =>
   typeof shape === 'string' ? shape : shape.list ? `list(${kindOfShape(shape.list)})` : shape.map ? `map(${kindOfShape(shape.map)})` : `object(${shape.of})`;
 
@@ -531,7 +598,7 @@ async function shapeCensus() {
   }
 }
 
-async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimentTracker, isOptimizationTracker, isRagSetup, isModelOptions }) {
+async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, NUMBER_FIELD_OPTIONS, fits, isExperimentTracker, isOptimizationTracker, isRagSetup, isModelOptions, isDecisionModelOptions }) {
   if (!STORED_SHAPES) throw new Error('it exports no STORED_SHAPES');
   // The interfaces and type aliases of the sources, by name.
   const types = {};
@@ -723,15 +790,31 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
   if (isRagSetup(setup([{ foo: 1 }]))) misjudged.push('rag-setup.json: an enrichment of an entry that is no prompt is taken');
   if (isRagSetup(setup('x'))) misjudged.push('rag-setup.json: an enrichment that is a text is taken');
   if (isRagSetup({ ...setup(undefined), version: 2 })) misjudged.push('rag-setup.json: a setup of version 2 is taken');
-  // The default of an option is read as any value; an option without one is no option.
-  const option = (fields) => isModelOptions({ reasoning_effort: fields });
-  const defaults = [null, 0, 'x', true, ['x'], { x: 1 }];
-  for (const value of defaults) if (!option({ default: value })) misjudged.push(`options.json: an option whose default is ${JSON.stringify(value)} is refused`);
-  if (option({ type: 'enum', values: ['x'] })) misjudged.push('options.json: an option without its default is taken');
-  if (isModelOptions([sample(STORED_SHAPES.MODEL_OPTION)])) misjudged.push('options.json: a list of options is taken');
+  // options.json: every rule of an option by its kind, as the page draws it
+  // and sends it (isModelOptions), and the one field the page reads of the
+  // file of a decision model (isDecisionModelOptions).
+  const optionRules = OPTION_RULES(NUMBER_FIELD_OPTIONS || []);
+  for (const [what, value, taken] of optionRules) if (isModelOptions(value) !== taken) misjudged.push(`options.json: ${what} is ${taken ? 'refused' : 'taken'}`);
+  for (const [what, value, taken] of DECISION_OPTION_RULES) {
+    if (typeof isDecisionModelOptions !== 'function' || isDecisionModelOptions(value) !== taken) misjudged.push(`options.json of a decision model: ${what} is ${taken ? 'refused' : 'taken'}`);
+  }
+  // The number fields of the page's own, from the code: every option whose
+  // default the drawing of the LLMs reads by its name is one of
+  // NUMBER_FIELD_OPTIONS, drawn there only when it is a number
+  // (isNumberOption) - the options the check reads no label of.
+  {
+    const builder = sourceFiles()['objects/prompt-builder.ts'] || '';
+    const named = [...new Set([...builder.matchAll(/model\.options\.(\w+)\.default/g)].map((match) => match[1]))].sort();
+    const guarded = [...builder.matchAll(/if \(model\?\.options\?\.(\w+) && isNumberOption\(model\.options\.(\w+)\)\) \{/g)].filter((match) => match[1] === match[2]).map((match) => match[1]).sort();
+    const listed = Array.isArray(NUMBER_FIELD_OPTIONS) ? [...NUMBER_FIELD_OPTIONS].sort() : [];
+    step(
+      listed.length > 0 && JSON.stringify(named) === JSON.stringify(listed) && JSON.stringify(guarded) === JSON.stringify(listed),
+      `every option the page draws in a number field of its own is one of NUMBER_FIELD_OPTIONS, and is drawn there only when it is a number (NUMBER_FIELD_OPTIONS: ${listed.join(', ') || 'none'}; read by name: ${named.join(', ') || 'none'}; drawn only as numbers: ${guarded.join(', ') || 'none'})`
+    );
+  }
   step(
     misjudged.length === 0 && typeof fits === 'function',
-    `the checks of the stored files take every field of its kind and refuse it of another, at every depth (${probes} probes of the fields of ${Object.keys(files).join(', ')}, and ${rules.length + 8 + defaults.length + 2} files the rules of a run, an optimization tracker, a setup and an options.json name; wrong: ${misjudged.join('; ') || 'none'})`
+    `the checks of the stored files take every field of its kind and refuse it of another, at every depth (${probes} probes of the fields of ${Object.keys(files).join(', ')}, and ${rules.length + 8 + optionRules.length + DECISION_OPTION_RULES.length} files the rules of a run, an optimization tracker, a setup and an options.json name; wrong: ${misjudged.join('; ') || 'none'})`
   );
 }
 
@@ -1322,22 +1405,25 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
   });
 
   // ==========================================================================
-  // An options.json that holds no options
+  // An options.json that is not one the page can read
   // ==========================================================================
-  // Every option of a model is described by an object that holds its default,
-  // and its type, values, label and description, where it has them, of the
-  // kind the page reads (isModelOptions, MODEL_OPTION). A model whose
-  // options.json is JSON and no such file is shown as one that cannot be
-  // used - its box off, with a note - and offered
-  // nowhere else: not as a judge, a member or the chairman of a council, not
-  // as a target of an optimization; a stored run or an optimization run that
-  // used it, loaded, does not tick its box (offersCensus names every use of
-  // the lists of the models).
-  const OPTIONS_UNUSABLE = 'The options.json of this model holds no options this page can read';
+  // Every option of an LLM is an object that holds its default, drawn and
+  // sent as it is written, by the rule of its kind (isModelOptions; the rules
+  // themselves are probed by shapeChecks). A model whose options.json is JSON
+  // and no such file - one of its options the page could draw only as
+  // something else - is shown as one that cannot be used - its box off, with
+  // a note - and offered nowhere else: not as a judge, a member or the
+  // chairman of a council, not as a target of an optimization; a stored run
+  // or an optimization run that used it, loaded, does not tick its box
+  // (offersCensus names every use of the lists of the models).
+  const OPTIONS_UNUSABLE = 'The options.json of this model is not one this page can read, so the model cannot be used here.';
   for (const [what, body] of [
     ['a list', '[1,2]'],
-    ['an option without its description', '{"temperature":0.7}'],
-    ['an option whose values are no texts', '{"temperature":{"default":0.7},"reasoning_effort":{"type":"enum","default":"low","values":[1,2]}}'],
+    ['an option that is no object', '{"temperature":0.7}'],
+    ['an enum whose values are no texts', '{"temperature":{"default":0.7},"reasoning_effort":{"type":"enum","default":"low","values":[1,2]}}'],
+    ['an enum without its values', '{"temperature":{"default":0.7},"reasoning_effort":{"type":"enum","default":"low"}}'],
+    ['a box whose default is 1', '{"temperature":{"default":0.7},"my_flag":{"type":"bool","default":1}}'],
+    ['a provider key named by a number', '{"temperature":{"default":0.7},"API_KEY":{"default":5}}'],
   ]) {
     storedRoadsRun.add('options.json');
     await road(`an options.json that is ${what}`, async (page) => {
@@ -1378,6 +1464,90 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
       );
     });
   }
+  // An options.json whose options hold, in the fields the page does not read
+  // of them, values of any kind: the LLM is usable, each option drawn and
+  // sent as it is written.
+  storedRoadsRun.add('options.json');
+  await road('an options.json whose options hold values of any kind where the page does not read them', async (page) => {
+    const body = '{"temperature":{"default":0.7,"label":5,"description":{"a":1},"values":[1,2]},"my_mode":{"default":"fast","values":5},"API_KEY":{"default":"OpenAI","label":7,"type":3}}';
+    await page.route('**/files/files/opt-1/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body }));
+    await openPage(page);
+    await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
+    await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-free');
+    await goStep(page, 'LPB', 'build');
+    const llm = await page.evaluate(() => {
+      const box = document.querySelector('#model0');
+      const control = (id) => {
+        const element = document.getElementById(id);
+        return element ? `${element.type}=${element.value}` : 'none';
+      };
+      return {
+        name: box?.value,
+        off: Boolean(box?.disabled),
+        note: (box?.closest('.form-check')?.querySelector('.pb-options-note, .pb-credential-note, .pb-name-note')?.textContent || '').trim(),
+        temperature: control('temperature0'),
+        mode: control('my_mode0'),
+        judge: [...document.querySelectorAll('#app-obj-LPB-judge-model option')].map((option) => option.value),
+      };
+    });
+    step(
+      llm.name === 'demo_llm' && !llm.off && llm.note === '' && llm.temperature === 'number=0.7' && llm.mode === 'text=fast' && llm.judge.includes('demo_llm') && pageErrors.length === 0,
+      `an LLM whose options hold values of any kind where the page does not read them is usable, each option drawn as it is written (box ${llm.name}: ${llm.off ? 'off' : 'on'}; note: "${clip(llm.note)}"; temperature: ${llm.temperature}; my_mode: ${llm.mode}; offered as judge: ${llm.judge.includes('demo_llm')}; page errors: ${pageErrors.join(' | ') || 'none'})`
+    );
+    if (llm.off) return;
+    await page.check('#model0');
+    await page.fill(lpb('user-prompt'), 'A question');
+    await resetLog();
+    await page.click(lpb('run-experiment'));
+    await waitUntil(async () => (await getLog()).some((entry) => entry.url === '/scr/demo_llm/demo_llm' && entry.status !== null), 'the call of demo_llm is answered', 60000);
+    const call = (await getLog()).find((entry) => entry.url === '/scr/demo_llm/demo_llm');
+    let request = {};
+    try {
+      request = JSON.parse(call.body);
+    } catch {
+      request = {};
+    }
+    const options = (request.inputs || []).find((input) => input.name === 'options');
+    const sent = options ? options.value : '';
+    step(
+      /^\{temperature:0\.7,my_mode:fast,API_KEY:[^,{}]+\}$/.test(sent),
+      `a run sends each option of that LLM as it is written, and its provider key (options: "${clip(sent.replace(/API_KEY:[^,}]+/, 'API_KEY:<key>'))}")`
+    );
+    await waitUntil(async () => (await textOf(page, lpb('run-experiment'))) === 'Run Experiments', 'the run has ended', 60000);
+  });
+
+  // The options.json of a decision model: the page reads its API_KEY.default
+  // alone (isDecisionModelOptions).
+  storedRoadsRun.add('options.json');
+  await road('an options.json of a decision model whose provider key is named by a number', async (page) => {
+    await page.route('**/files/files/dopt-1/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '{"API_KEY":{"default":5}}' }));
+    await openPage(page, 'decision');
+    await goStep(page, 'LPB', 'build');
+    const card = await page.evaluate(() => {
+      const box = document.querySelector('#decision-model0');
+      const holder = box?.closest('.pb-model-card');
+      return { off: Boolean(box?.disabled), name: holder?.textContent || '', note: (holder?.querySelector('.pb-options-note')?.textContent || '').trim() };
+    });
+    step(
+      card.name.includes('jev_mock') && card.off && card.note.startsWith(OPTIONS_UNUSABLE),
+      `a decision model whose provider key is named by a number is shown as one that cannot be used, with the note of its options.json (box: ${card.off ? 'off' : 'on'}; note: "${clip(card.note)}")`
+    );
+  });
+  await road('an options.json of a decision model whose other options are of any kind', async (page) => {
+    const body = '{"API_KEY":{"default":"OpenAI","label":7},"mode":{"type":"enum","default":"a","values":[1,2]},"x":5,"y":null}';
+    await page.route('**/files/files/dopt-1/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body }));
+    await openPage(page, 'decision');
+    await goStep(page, 'LPB', 'build');
+    const card = await page.evaluate(() => {
+      const box = document.querySelector('#decision-model0');
+      const holder = box?.closest('.pb-model-card');
+      return { off: Boolean(box?.disabled), name: holder?.textContent || '', note: (holder?.querySelector('.pb-options-note, .pb-credential-note, .pb-name-note')?.textContent || '').trim() };
+    });
+    step(
+      card.name.includes('jev_mock') && !card.off && card.note === '' && pageErrors.length === 0,
+      `a decision model whose options.json holds fields of any kind beside its provider key is usable - the page reads its API_KEY.default alone (box: ${card.off ? 'off' : 'on'}; note: "${clip(card.note)}"; page errors: ${pageErrors.join(' | ') || 'none'})`
+    );
+  });
   await road('an options.json of a decision model that is no options file', async (page) => {
     await page.route('**/files/files/dopt-1/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '"API_KEY"' }));
     await openPage(page, 'decision');

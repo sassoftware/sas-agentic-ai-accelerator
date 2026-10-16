@@ -43,14 +43,17 @@
  *     the page, and the optimization job (Optimize-Prompt-DSPy.sas, run by
  *     optimize-job-writer.py with stand-ins for SAS, SAS Viya and dspy) in
  *     every way it ends;
- *   - options.json: every options.json of LLM-Definitions and
- *     Decision-Definitions, which mdb generated and uploads, and every option
- *     of mdb's option vocabulary (definition-core/static/option-vocabulary.json),
- *     with its key, rendered as mdb's generator renders an option
- *     (_render_options_json: default, range, description, the type of an
- *     enum, bool or string option, the values of an enum, the label) - the
- *     fields of an option a manifest gives itself are texts, and its values
- *     a list of texts (OptionSpec).
+ *   - options.json: every options.json of LLM-Definitions (the check of an
+ *     LLM, isModelOptions) and of Decision-Definitions (the check of a
+ *     decision model, isDecisionModelOptions), which mdb generated and
+ *     uploads; and every option shape mdb's generator can write, written by
+ *     mdb itself (options-writer.py runs its Python: every field of
+ *     OptionSpec with a value of each kind it takes, for an option of no
+ *     vocabulary and every option of the vocabulary an LLM template
+ *     supports, the provider key of AuthBlock, and base_url of a self-hosted
+ *     model): each file mdb writes is taken by the check of the page, and
+ *     each option of it is drawn - on one page, an LLM per kind of file - and
+ *     sent in a run as it is written; a shape mdb refuses writes nothing.
  *
  * The suite goes on after a check that failed and after a road that stopped.
  * The mock is found at VERIFY_BASE (default http://localhost:4173); the
@@ -153,6 +156,7 @@ const OTHER_CODE = {
   'Model-Definition-Builder/cli/src/mdb/core/generator.py': { 'options.json': ['writes', 'renders the options.json of a definition - every options.json of the repository'] },
   'Model-Definition-Builder/cli/src/mdb/viya/registry.py': { 'options.json': ['writes', 'uploads the options.json of a definition folder - every options.json of the repository'] },
   'Model-Definition-Builder/cli/src/mdb/core/importer.py': { 'options.json': ['reads', 'imports a definition folder'] },
+  'Model-Definition-Builder/cli/src/mdb/cli.py': { 'options.json': ['reads', 'checks the options.json of a definition folder before register uploads it (check_options_file)'] },
   'Model-Definition-Builder/cli/src/mdb/core/releases.py': { 'options.json': ['names', 'a word that sorts a change into a part of the release notes'] },
   'SAS-Viya-Integrations/Logging-Monitoring/Get-All-Prompts.sas': {
     'Prompt-Experiment-Tracker.json': ['reads', 'the prompts table'],
@@ -278,44 +282,66 @@ function writersCensus(storedNames) {
   }
 
   // ==========================================================================
-  // options.json: what mdb generated and uploads
+  // options.json: what mdb generated and uploads, and every shape it writes
   // ==========================================================================
+  const OPTIONS_WRITERS = ['Model-Definition-Builder/cli/src/mdb/core/generator.py', 'Model-Definition-Builder/cli/src/mdb/viya/registry.py'];
+  // The kinds of options.json mdb writes, one file of each for the page (see
+  // the road below): a kind is what the page reads of each option of a file.
+  const writtenKinds = new Map();
   {
     const read = [];
     const refused = [];
-    for (const folder of ['LLM-Definitions', 'Decision-Definitions']) {
+    for (const [folder, checkOf] of [['LLM-Definitions', (value) => check('options.json', value)], ['Decision-Definitions', (value) => Boolean(stored && stored.isDecisionModelOptions && stored.isDecisionModelOptions(value))]]) {
       const root = path.join(REPOSITORY, folder);
       if (!fs.existsSync(root)) continue;
       for (const definition of fs.readdirSync(root)) {
         const file = path.join(root, definition, 'options.json');
         if (!fs.existsSync(file)) continue;
         read.push(`${folder}/${definition}`);
-        if (!check('options.json', parsed(fs.readFileSync(file, 'utf8')))) refused.push(`${folder}/${definition}`);
+        if (!checkOf(parsed(fs.readFileSync(file, 'utf8')))) refused.push(`${folder}/${definition}`);
       }
     }
-    // Every option of the vocabulary, as the generator renders it, with a
-    // default of the kind of its type, and the key of a provider.
-    let vocabulary = {};
-    try {
-      vocabulary = parsed(fs.readFileSync(path.join(REPOSITORY, 'Model-Definition-Builder', 'definition-core', 'static', 'option-vocabulary.json'), 'utf8'));
-    } catch {
-      vocabulary = {};
-    }
-    const rendered = {};
-    for (const [name, option] of Object.entries((vocabulary && vocabulary.options) || {})) {
-      const entry = { default: option.type === 'enum' ? (option.values || [''])[0] : option.type === 'bool' ? true : option.type === 'string' ? '' : 0, range: option.range, description: option.description || '' };
-      if (['enum', 'bool', 'string'].includes(option.type)) {
-        entry.type = option.type;
-        if (option.type === 'enum' && option.values) entry.values = option.values;
+    const ok = read.length > 0 && refused.length === 0;
+    for (const writer of OPTIONS_WRITERS) tripped(`options.json ${writer}`, ok);
+    step(ok, `every options.json mdb generated for the repository - and uploads as it is - passes the check of the page, an LLM's the check of an LLM and a decision model's the check of a decision model (${read.length} read; refused: ${refused.join(', ') || 'none'})`);
+  }
+  {
+    // Every option shape mdb's generator can write, written by mdb.
+    const python = resolvePython();
+    const script = path.join(PROJECT, '.claude', 'skills', 'verify', 'options-writer.py');
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'options-writer-')), 'out.json');
+    const run = python
+      ? spawnSync(python.command, [...python.args, '-I', script, REPOSITORY, out], { encoding: 'utf8', timeout: 600000, maxBuffer: 1 << 26 })
+      : { status: null, stderr: 'no Python interpreter found (set VERIFY_PYTHON)' };
+    const answer = run.status === 0 ? parsed(fs.readFileSync(out, 'utf8')) || {} : {};
+    const shapes = answer.results || [];
+    const numberFields = (stored && stored.NUMBER_FIELD_OPTIONS) || [];
+    const written = shapes.filter((shape) => shape.written !== null);
+    const refusedByMdb = shapes.filter((shape) => shape.written === null);
+    // Taken by the check of the page, or not - and then mdb wrote a file the
+    // page cannot read.
+    const notTaken = [];
+    for (const shape of written) {
+      const file = parsed(shape.written);
+      if (file === undefined || !check('options.json', file)) {
+        notTaken.push(`${shape.shape}${file === undefined ? ' (no JSON)' : ''}`);
+        continue;
       }
-      if (option.label) entry.label = option.label;
-      rendered[name] = entry;
+      const kind = JSON.stringify(
+        Object.entries(file).map(([key, option]) => [
+          key === 'API_KEY' ? 'API_KEY' : numberFields.includes(key) ? 'a number field of the page' : 'an option',
+          Object.fromEntries(Object.entries(option).filter(([field]) => field !== 'range').map(([field, value]) => [field, field === 'label' || field === 'description' ? typeof value : value]).sort()),
+        ])
+      );
+      if (!writtenKinds.has(kind)) writtenKinds.set(kind, { shape: shape.shape, file });
     }
-    if (vocabulary && vocabulary.api_key) rendered.API_KEY = { default: 'Provider', range: vocabulary.api_key.range, description: vocabulary.api_key.description };
-    const vocabularyTaken = Object.keys(rendered).length > 1 && check('options.json', rendered);
-    const ok = read.length > 0 && refused.length === 0 && vocabularyTaken;
-    for (const writer of ['Model-Definition-Builder/cli/src/mdb/core/generator.py', 'Model-Definition-Builder/cli/src/mdb/viya/registry.py']) tripped(`options.json ${writer}`, ok);
-    step(ok, `every options.json mdb generated for the repository - and uploads as it is - passes the check of the page, and so does every option of mdb's option vocabulary as the generator renders it (${read.length} read; refused: ${refused.join(', ') || 'none'}; the ${Object.keys(rendered).length} options of the vocabulary: ${vocabularyTaken ? 'taken' : 'refused'})`);
+    const ok = run.status === 0 && written.length > 0 && notTaken.length === 0;
+    for (const writer of OPTIONS_WRITERS) tripped(`options.json ${writer}`, ok);
+    const reasons = [...new Set(refusedByMdb.map((shape) => String(shape.refused).split('\n')[0].replace(/'[^']*'/g, "'...'")))];
+    step(
+      ok,
+      `every options.json mdb's generator writes for an option shape is taken by the check of the page (mdb: ${answer.mdb || 'not run'}; ${shapes.length} shapes - every field of OptionSpec with a value of each kind, ${(answer.notOfAnLlm || []).length} options of the vocabulary of no LLM template left out (${(answer.notOfAnLlm || []).join(', ') || 'none'}): ${written.length} written, ${refusedByMdb.length} refused by mdb (${clip(reasons.join(' | ') || 'none')}); ${writtenKinds.size} kinds of file; written and not taken: ${notTaken.length}${notTaken.length ? ` - ${clip(notTaken.slice(0, 12).join('; '))}` : ''}${run.status === 0 ? '' : `; the writer: ${clip(run.stderr || run.error || 'it did not run')}`})`
+    );
   }
 
   // ==========================================================================
@@ -462,6 +488,149 @@ function writersCensus(storedNames) {
   // __proto__ is no field of a run at all).
   const NAME_NOTE = 'This model cannot be used here: a run keeps the result of each model under the name of the model';
   const nameNote = (name) => `${NAME_NOTE}, and a run cannot keep the result of a model under the name ${name}. Register the model under another name to use it here.`;
+
+  // ==========================================================================
+  // options.json: every kind of file mdb writes, drawn and sent as written
+  // ==========================================================================
+  // One page lists an LLM per kind of file (writtenKinds); each option of it
+  // is drawn with its default as written - a choice of the values of an enum
+  // with its default chosen, a box ticked by the default of a bool, a field
+  // that holds the default of any other option -, and a run of all of them
+  // sends each option as written: `key:default`, a box as true or false, a
+  // string option whose default is empty not at all, and API_KEY as the key
+  // the credential domain holds under its default.
+  {
+    const kinds = [...writtenKinds.values()].map((kind, index) => ({ ...kind, id: `rto-${index}`, name: `rto_${index}` }));
+    await road('every kind of options.json mdb writes, drawn and sent as written', async (page) => {
+      const keyNames = [...new Set(kinds.flatMap(({ file }) => (file.API_KEY ? [file.API_KEY.default] : [])))];
+      const secretOf = (keyName) => `key-of-${keyName}`;
+      await page.route('**/credentials/domains/agentic-ai-keys/secrets**', async (route) => {
+        const answer = await route.fetch();
+        const body = await answer.json();
+        for (const keyName of keyNames) body.secrets[keyName] = Buffer.from(secretOf(keyName)).toString('base64');
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+      });
+      // The listing of the LLMs, page by page as the page asks for it.
+      await page.route('**/modelRepository/projects/llm-proj/models**', async (route) => {
+        if (route.request().method() !== 'GET') return route.continue();
+        const url = new URL(route.request().url());
+        if ((url.searchParams.get('filter') || '').includes('deprecated')) return route.continue();
+        const whole = new URL(url);
+        whole.searchParams.set('start', '0');
+        whole.searchParams.set('limit', '1000');
+        const answer = await route.fetch({ url: whole.toString() });
+        const items = [...((await answer.json()).items || []), ...kinds.map(({ id, name }) => ({ id, name }))];
+        const start = Number(url.searchParams.get('start') || 0);
+        const limit = Number(url.searchParams.get('limit') || 50);
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: items.slice(start, start + limit), start, limit, count: items.length }) });
+      });
+      await page.route('**/modelRepository/models/rto-*/contents**', (route) => {
+        if (route.request().method() !== 'GET') return route.continue();
+        const id = new URL(route.request().url()).pathname.split('/')[3];
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ id: `c-${id}`, name: 'options.json', fileUri: `/files/files/${id}` }] }) });
+      });
+      await page.route('**/files/files/rto-*/content', (route) => {
+        const id = new URL(route.request().url()).pathname.split('/')[3];
+        const kind = kinds.find((entry) => entry.id === id);
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(kind ? kind.file : null) });
+      });
+      const sent = new Map();
+      await page.route('**/scr/**', (route) => {
+        const model = decodeURIComponent(new URL(route.request().url()).pathname.split('/')[2] || '');
+        if (!model.startsWith('rto_')) return route.continue();
+        let body = {};
+        try {
+          body = JSON.parse(route.request().postData() || '{}');
+        } catch {
+          body = {};
+        }
+        sent.set(model, ((body.inputs || []).find((input) => input.name === 'options') || {}).value);
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { response: 'r', run_time: 1, prompt_length: 1, output_length: 1 } }) });
+      });
+      await openPage(page);
+      await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
+      await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-free');
+      await goStep(page, 'LPB', 'build');
+      // What is drawn for each option of each file.
+      const drawn = await page.evaluate((entries) => entries.map(({ name, keys }) => {
+        const box = [...document.querySelectorAll('#LPB-model-selector-container input[type=checkbox]')].find((input) => input.value === name);
+        if (!box) return { name, box: 'missing' };
+        const index = box.id.replace(/^model/, '');
+        const holder = box.closest('.form-check');
+        const note = (holder?.querySelector('.pb-options-note, .pb-credential-note, .pb-name-note')?.textContent || '').trim();
+        const controls = {};
+        for (const key of keys) {
+          const control = document.getElementById(`${key}${index}`);
+          if (!control) {
+            controls[key] = null;
+            continue;
+          }
+          const radios = [...document.getElementsByName(`${control.id}-seg`)];
+          controls[key] = {
+            tag: control.tagName.toLowerCase(),
+            type: control.type,
+            value: control.value,
+            checked: control.checked,
+            choices: control.tagName === 'SELECT' ? [...control.options].map((option) => option.value) : radios.map((radio) => radio.value),
+            chosen: control.tagName === 'SELECT' ? control.value : (radios.find((radio) => radio.checked) || {}).value,
+          };
+        }
+        return { name, off: box.disabled, note, controls };
+      }), kinds.map(({ name, file }) => ({ name, keys: Object.keys(file) })));
+      const wrongDrawn = [];
+      for (const kind of kinds) {
+        const seen = drawn.find((entry) => entry.name === kind.name) || {};
+        if (seen.box === 'missing' || seen.off || seen.note) {
+          wrongDrawn.push(`${kind.shape}: ${seen.box === 'missing' ? 'not listed' : `box off, "${seen.note}"`}`);
+          continue;
+        }
+        for (const [key, option] of Object.entries(kind.file)) {
+          const control = seen.controls[key];
+          const fault = (what) => wrongDrawn.push(`${kind.shape}: ${key} ${what} (drawn: ${JSON.stringify(control)})`);
+          if (key === 'API_KEY') {
+            if (control) fault('has a control');
+          } else if (!control) fault('has no control');
+          else if (option.type === 'enum') {
+            if (JSON.stringify(control.choices) !== JSON.stringify(option.values) || control.chosen !== option.default || control.value !== option.default) fault('is not the choice of its values with its default chosen');
+          } else if (option.type === 'bool') {
+            if (control.type !== 'checkbox' || control.checked !== (option.default === true || option.default === 'true')) fault('is not a box ticked by its default');
+          } else if (!['number', 'text'].includes(control.type) || control.value !== String(option.default)) fault('is not a field that holds its default');
+        }
+      }
+      step(
+        kinds.length > 0 && wrongDrawn.length === 0 && pageErrors.length === 0,
+        `every kind of options.json mdb writes is usable, and each option is drawn with its default as written (${kinds.length} LLMs, ${kinds.reduce((sum, { file }) => sum + Object.keys(file).length, 0)} options; drawn otherwise: ${wrongDrawn.length}${wrongDrawn.length ? ` - ${clip(wrongDrawn.slice(0, 8).join('; '))}` : ''}; page errors: ${pageErrors.join(' | ') || 'none'})`
+      );
+      // A run of all of them.
+      const usable = drawn.filter((entry) => entry.controls && !entry.off).map((entry) => entry.name);
+      await page.evaluate((names) => {
+        // The box of each LLM, not the box of a bool option beside it.
+        for (const box of document.querySelectorAll('#LPB-model-selector-container input[type=checkbox]')) {
+          if (/^model\d+$/.test(box.id) && names.includes(box.value) !== box.checked) box.click();
+        }
+      }, usable);
+      await page.fill(lpb('user-prompt'), 'A question for every kind of options');
+      await page.click(lpb('run-experiment'));
+      await waitUntil(async () => sent.size >= usable.length, 'every LLM of the run is called', 120000);
+      await waitUntil(async () => (await textOf(page, lpb('run-experiment'))) === 'Run Experiments', 'the run has ended', 120000);
+      const wrongSent = [];
+      for (const kind of kinds.filter(({ name }) => usable.includes(name))) {
+        const expected = Object.entries(kind.file)
+          .filter(([, option]) => !(option.type === 'string' && String(option.default) === ''))
+          .map(([key, option]) =>
+            key === 'API_KEY' ? `API_KEY:${secretOf(option.default)}` : option.type === 'bool' ? `${key}:${option.default === true || option.default === 'true'}` : `${key}:${String(option.default)}`
+          );
+        const want = `{${expected.join(',')}}`;
+        if (sent.get(kind.name) !== want) wrongSent.push(`${kind.shape}: sent ${JSON.stringify(sent.get(kind.name))}, written ${want}`);
+      }
+      const ok = usable.length === kinds.length && wrongDrawn.length === 0 && wrongSent.length === 0;
+      for (const writer of OPTIONS_WRITERS) tripped(`options.json ${writer}`, ok);
+      step(
+        usable.length > 0 && wrongSent.length === 0,
+        `a run of every kind of options.json mdb writes sends each option as it is written (${usable.length} LLMs called: ${sent.size}; sent otherwise: ${wrongSent.length}${wrongSent.length ? ` - ${clip(wrongSent.slice(0, 6).join('; '))}` : ''})`
+      );
+    });
+  }
 
   // ==========================================================================
   // Prompt-Experiment-Tracker.json: Save Experiments, every class of name
