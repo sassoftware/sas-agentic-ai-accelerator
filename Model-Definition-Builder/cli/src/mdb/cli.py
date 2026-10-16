@@ -1123,7 +1123,7 @@ def import_(
     except GenerationError as exc:
         console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
         console.print("Nothing was written - the folder stays fully hand-maintained. "
-                      "Repair the option in its options.json, then rerun mdb import.")
+                      "Repair its options.json, then rerun mdb import.")
         raise typer.Exit(1)
     # Render BEFORE writing the manifest: a folder must never be left
     # half-adopted when e.g. an option cannot be resolved

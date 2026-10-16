@@ -245,7 +245,8 @@ def test_import_refuses_an_options_json_it_cannot_read_with_one_line(case, tmp_p
     assert result.exit_code == 1, (result.exception, out.getvalue())
     assert [shown for shown in out.getvalue().splitlines() if shown.startswith(f"gpt_5_mini: {line}")], \
         out.getvalue()
-    assert "Nothing was written" in out.getvalue()
+    assert ("Nothing was written - the folder stays fully hand-maintained. Repair its options.json, then rerun "
+            "mdb import.") in out.getvalue().splitlines()
     assert _files(folder) == before
 
 
