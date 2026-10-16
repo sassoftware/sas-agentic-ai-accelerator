@@ -405,26 +405,32 @@ def check_options_json(entries: Any) -> None:
     The rule - JSON as the page reads it:
 
         options.json         object: option name -> option
+        option name          no "," and no ":"
         option               object that holds "default", and no NaN or
                              Infinity (JSON has neither)
         option.type          text, where given (absent or null: not given)
         option.label         text, where given (absent or null: not given)
         option.description   text, where given (absent or null: not given)
-        type "enum"          values: a non-empty list of texts
+        type "enum"          values: a non-empty list of texts, none with ","
                              default: one of values
         type "bool"          default: true or false
         option "API_KEY"     default: a non-empty text
-        any other option     default: a text, a number, true or false
+        any other option     default: a text without ",", a number, true or
+                             false
+
+    A run of the Builder sends the options as one text,
+    {name:value,name:value}, which the score code splits at each "," and each
+    name from its value at the first ":" - so a name holds neither, and a text
+    a run can send of the file (the default of an option, a value of an enum)
+    no ",".
 
     Nothing else is checked: not `range`, not `values` of an option that is
-    no enum. Nor what the options string of a run, `{name:value,...}`,
-    carries to the score code: its parser (_options_parser.py.j2) ends a
-    value at the next comma (what follows is read as a further option where
-    it holds a colon, and left out where it does not),
-    takes the blanks and then the quotes off its ends, reads true and false
-    in any case as true and false, and reads a value as a number where
-    float() reads one that holds a point or int() one that does not; and
-    the Prompt Builder leaves an empty option of type string out of a run.
+    no enum. Nor the rest of what the parser of the score code
+    (_options_parser.py.j2) does with a value of that text: it takes the
+    blanks and then the quotes off its ends, reads true and false in any case
+    as true and false, and reads a value as a number where float() reads one
+    that holds a point or int() one that does not; and the Prompt Builder
+    leaves an empty option of type string out of a run.
 
     Raises GenerationError with a sentence naming the first option that
     breaks the rule.
@@ -432,6 +438,10 @@ def check_options_json(entries: Any) -> None:
     if not isinstance(entries, dict):
         raise GenerationError(f"options.json is {_shown(entries)}, not an object of options.")
     for name, option in entries.items():
+        if "," in name or ":" in name:
+            raise GenerationError(
+                f"Option '{name}' has a comma or a colon in its name - the Builder sends the options as "
+                "{name:value,name:value}, so a name holds neither.")
         if not isinstance(option, dict) or "default" not in option:
             raise GenerationError(f"Option '{name}' is {_shown(option)}, not an object that holds a default.")
         try:
@@ -448,6 +458,10 @@ def check_options_json(entries: Any) -> None:
                 raise GenerationError(
                     f"Option '{name}' is an enum option whose values are {_shown(values)} - an enum option "
                     "needs a non-empty list of texts as its values.")
+            if any("," in value for value in values):
+                raise GenerationError(
+                    f"Option '{name}' has the values {_shown(values)} - the Builder sends the options as "
+                    "{name:value,name:value}, so a value of an enum holds no comma.")
             if default not in values:
                 raise GenerationError(
                     f"Option '{name}' has the default {_shown(default)}, which is not one of its values "
@@ -465,6 +479,11 @@ def check_options_json(entries: Any) -> None:
             raise GenerationError(
                 f"Option '{name}' has the default {_shown(default)} - the default of an option is a text, "
                 "a number, true or false.")
+        if (name != "API_KEY" and option.get("type") not in ("enum", "bool")
+                and isinstance(default, str) and "," in default):
+            raise GenerationError(
+                f"Option '{name}' has the default {_shown(default)} - the Builder sends the options as "
+                "{name:value,name:value}, so a text default holds no comma.")
 
 
 def check_options_file(path: Path) -> None:
