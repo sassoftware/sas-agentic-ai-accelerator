@@ -12,8 +12,13 @@
  * This module turns one entry into a form control. Enums with up to five
  * values render as a segmented button group (with a hidden input carrying
  * the selected value under the conventional element id, so value collection
- * stays uniform); larger enums fall back to a select.
+ * stays uniform); larger enums fall back to a select. An entry of no such
+ * type is a number input when its default is a number, and a text input
+ * otherwise, so that its default is shown as it stands (isNumberOption).
+ * The page draws only entries isModelOptions takes.
  */
+
+import { isNumberOption } from '../api/stored-json';
 
 export interface TypedOptionMeta {
   default: unknown;
@@ -58,7 +63,7 @@ export function createTypedOptionControl(key: string, meta: TypedOptionMeta, con
     checkbox.checked = meta.default === true || meta.default === 'true';
     return checkbox;
   }
-  if (meta?.type === 'string') {
+  if (meta?.type === 'string' || !isNumberOption(meta)) {
     const textInput = document.createElement('input');
     textInput.type = 'text';
     textInput.id = controlId;

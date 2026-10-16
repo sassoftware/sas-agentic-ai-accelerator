@@ -9,7 +9,15 @@ import type { PromptBuilderConfig, InterfaceText, PromptBuilderText } from '../t
 import type { DropdownOption } from '../types/models';
 import type { DependentDecision } from '../types/relationships';
 import { getAppState } from '../state/app-state';
-import { isReservedModelName, readStoredJson, StoredFileUnusable, TRACKER_META_KEYS } from '../api/stored-json';
+import {
+  isDecisionModelOptions,
+  isNumberOption,
+  isReservedModelName,
+  NUMBER_FIELD_OPTIONS,
+  readStoredJson,
+  StoredFileUnusable,
+  TRACKER_META_KEYS,
+} from '../api/stored-json';
 import { UnansweredWrite, ViyaRefused } from '../api/http-client';
 import {
   getModelProjects,
@@ -99,10 +107,11 @@ interface ModelOption {
   default: unknown;
   /** Optional typed-option fields (Model Definition Builder emits these for
    *  non-numeric options): 'enum' renders a segmented selector (or dropdown)
-   *  of `values`, 'bool' a checkbox, 'string' a text input. Absent = numeric
-   *  input (legacy shape). `label` overrides the displayed option name. */
+   *  of its `values` (read by isModelOptions with the default), 'bool' a
+   *  checkbox, 'string' a text input. Absent = a number input for a number
+   *  default, a text input otherwise (isNumberOption). `label` overrides the
+   *  displayed option name. */
   type?: 'enum' | 'bool' | 'string';
-  values?: string[];
   label?: string;
   description?: string;
   [key: string]: unknown;
@@ -113,7 +122,7 @@ interface AvailableLLM {
   name: string;
   fileURI?: string;
   options?: Record<string, ModelOption>;
-  /** Its options.json was read and holds no options this page can read: the model cannot be used. */
+  /** Its options.json was read and is not one this page can read: the model cannot be used. */
   optionsUnusable?: boolean;
   /** Cost/governance attributes read from the LLM's Model Manager registration
    *  (see loadLLMAttributes). Used for per-call cost estimation and copied onto
@@ -1887,7 +1896,7 @@ export async function buildPromptBuilder(
         optionsDiv.classList.add('model-options');
         optionsDiv.id = `options${index}`;
 
-        if (model?.options?.temperature) {
+        if (model?.options?.temperature && isNumberOption(model.options.temperature)) {
           const temperatureInput = document.createElement('input');
           temperatureInput.type = 'number';
           temperatureInput.id = `temperature${index}`;
@@ -1901,7 +1910,7 @@ export async function buildPromptBuilder(
           optionsDiv.appendChild(temperatureInput);
         }
 
-        if (model?.options?.top_p) {
+        if (model?.options?.top_p && isNumberOption(model.options.top_p)) {
           const topPInput = document.createElement('input');
           topPInput.type = 'number';
           topPInput.id = `top_p${index}`;
@@ -1915,7 +1924,7 @@ export async function buildPromptBuilder(
           optionsDiv.appendChild(topPInput);
         }
 
-        if (model?.options?.top_k) {
+        if (model?.options?.top_k && isNumberOption(model.options.top_k)) {
           const topKInput = document.createElement('input');
           topKInput.type = 'number';
           topKInput.id = `top_k${index}`;
@@ -1929,7 +1938,7 @@ export async function buildPromptBuilder(
           optionsDiv.appendChild(topKInput);
         }
 
-        if (model?.options?.max_length) {
+        if (model?.options?.max_length && isNumberOption(model.options.max_length)) {
           const maxLengthInput = document.createElement('input');
           maxLengthInput.type = 'number';
           maxLengthInput.id = `max_length${index}`;
@@ -1943,7 +1952,7 @@ export async function buildPromptBuilder(
           optionsDiv.appendChild(maxLengthInput);
         }
 
-        if (model?.options?.max_tokens) {
+        if (model?.options?.max_tokens && isNumberOption(model.options.max_tokens)) {
           const maxTokensInput = document.createElement('input');
           maxTokensInput.type = 'number';
           maxTokensInput.id = `max_tokens${index}`;
@@ -1959,7 +1968,7 @@ export async function buildPromptBuilder(
 
         // Reasoning models cap output via max_completion_tokens - same user
         // concept as Max Tokens, so it presents identically.
-        if (model?.options?.max_completion_tokens) {
+        if (model?.options?.max_completion_tokens && isNumberOption(model.options.max_completion_tokens)) {
           const maxCompletionInput = document.createElement('input');
           maxCompletionInput.type = 'number';
           maxCompletionInput.id = `max_completion_tokens${index}`;
@@ -1973,7 +1982,7 @@ export async function buildPromptBuilder(
           optionsDiv.appendChild(maxCompletionInput);
         }
 
-        if (model?.options?.max_new_tokens) {
+        if (model?.options?.max_new_tokens && isNumberOption(model.options.max_new_tokens)) {
           const maxNewTokensInput = document.createElement('input');
           maxNewTokensInput.type = 'number';
           maxNewTokensInput.id = `max_new_tokens${index}`;
@@ -1992,12 +2001,10 @@ export async function buildPromptBuilder(
         // text/number inputs otherwise), so models with e.g. reasoning_effort
         // or an Azure resource override are fully configurable instead of
         // silently running on their score-code defaults.
-        const legacyRenderedOptions = new Set([
-          'API_KEY', 'temperature', 'top_p', 'top_k', 'max_length', 'max_tokens',
-          'max_new_tokens', 'max_completion_tokens',
-        ]);
+        // API_KEY has no control, and a number of NUMBER_FIELD_OPTIONS has its
+        // field above.
         Object.entries(model?.options ?? {}).forEach(([optionKey, optionMeta]) => {
-          if (legacyRenderedOptions.has(optionKey)) return;
+          if (optionKey === 'API_KEY' || (NUMBER_FIELD_OPTIONS.includes(optionKey) && isNumberOption(optionMeta))) return;
           const tooltipText = String(optionMeta?.description ?? optionKey);
           optionsDiv.appendChild(createOptionLabel(optionDisplayLabel(optionKey, optionMeta), tooltipText));
           optionsDiv.appendChild(createTypedOptionControl(optionKey, optionMeta, `${optionKey}${index}`));
@@ -2051,7 +2058,7 @@ export async function buildPromptBuilder(
           }
         } catch (error) {
           console.error(`Failed to load options for LLM ${availableLLM.name}.`, error);
-          // An options.json that holds no options is no model without
+          // An options.json this page cannot read is no model without
           // options: the model is shown as one that cannot be used.
           availableLLM.optionsUnusable = error instanceof StoredFileUnusable;
         }
@@ -2084,8 +2091,8 @@ export async function buildPromptBuilder(
       return provider && providersWithoutCredential.has(provider) ? provider : null;
     }
     /**
-     * Why a model cannot be used, or null: its options.json holds no options
-     * this page can read, a run cannot keep its result under its name
+     * Why a model cannot be used, or null: its options.json is not one this
+     * page can read, a run cannot keep its result under its name
      * (isReservedModelName), or its provider has no key for this user (the
      * note names the missing entry and the domain). Such a model is shown,
      * and offered nowhere.
@@ -2164,7 +2171,7 @@ export async function buildPromptBuilder(
                 const optionsContent = contents.find((content) => content?.name === 'options.json');
                 if (optionsContent?.fileUri) {
                   model.fileURI = optionsContent.fileUri;
-                  model.options = await readStoredJson<Record<string, ModelOption>>(optionsContent.fileUri, 'options.json');
+                  model.options = await readStoredJson<Record<string, ModelOption>>(optionsContent.fileUri, 'options.json', isDecisionModelOptions);
                 }
               } catch (error) {
                 console.error(`Failed to load options for decision model ${model.name}.`, error);
@@ -2631,7 +2638,7 @@ export async function buildPromptBuilder(
     promptBuilderJudgeModelSelect.appendChild(judgePlaceholderOption);
     promptBuilderAvailableLLMs.forEach((availableLLM) => {
       // Models that cannot be used (no resolvable credential, an options.json
-      // that holds no options) cannot judge either.
+      // this page cannot read) cannot judge either.
       if (llmNotUsableNote(availableLLM)) return;
       const judgeOption = document.createElement('option');
       judgeOption.value = availableLLM.name;
@@ -2989,10 +2996,13 @@ export async function buildPromptBuilder(
                 // code fall back to container env vars (AZURE_OPENAI_RESOURCE etc.)
                 if (optionMeta?.type === 'string' && control.value === '') return;
                 currentlySelectedModel.options[`${key}`] = control.value;
-              } else {
+              } else if (isNumberOption(optionMeta)) {
                 const numeric = parseFloat(control.value);
-                // A non-numeric value in a legacy-shaped option passes through as text
+                // An emptied number field is sent empty
                 currentlySelectedModel.options[`${key}`] = Number.isNaN(numeric) ? control.value : numeric;
+              } else {
+                // An option of no such type whose default is no number has a text field
+                currentlySelectedModel.options[`${key}`] = control.value;
               }
             } else if (key === 'API_KEY') {
               const apiKeys = promptBuilderObject?.API_KEYS as Record<string, string> | undefined;

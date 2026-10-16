@@ -376,7 +376,7 @@
     "promptBuilderJudgeModelLabel": "Judge model",
     "promptBuilderJudgeSelectPlaceholder": "Select a judge model",
     "promptBuilderCredentialMissing": "No {provider} key available in the {domain} credential domain - ask your administrator for access.",
-    "promptBuilderModelOptionsUnusable": "The options.json of this model holds no options this page can read, so the model cannot be used here. Repair the file in SAS Model Manager.",
+    "promptBuilderModelOptionsUnusable": "The options.json of this model is not one this page can read, so the model cannot be used here. Repair the file in SAS Model Manager.",
     "promptBuilderModelNameReserved": "This model cannot be used here: a run keeps the result of each model under the name of the model, and a run cannot keep the result of a model under the name {name}. Register the model under another name to use it here.",
     "promptBuilderJudgeIncludeSelfLabel": "Include the judge's own response",
     "promptBuilderJudgeIncludeSelfInfo": "By default the judge does not rank its own response, because language models tend to prefer their own output (self-preference bias). Tick this only if you want the judge model's own response included in the ranking anyway — its rank may then be inflated in its own favour.",

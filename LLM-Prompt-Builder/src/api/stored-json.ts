@@ -283,13 +283,14 @@ const RAG_SETUP: ObjectShape = {
 };
 
 /**
- * An option of options.json, as the page reads it: its default is read as a
- * value of any kind, and is not in the shape (isModelOptions asks for it);
- * the values of an enum are drawn as texts.
+ * An option of options.json that the page draws with a control of its kind,
+ * as the page reads it there: its type names that kind, and its label and
+ * description are shown as texts. Its default and the values of an enum are
+ * read by the rule of its kind (isModelOptions), and are not in the shape.
  */
 const MODEL_OPTION: ObjectShape = {
   of: 'ModelOption',
-  fields: { type: 'string', values: { list: 'string' }, label: 'string', description: 'string' },
+  fields: { type: 'string', label: 'string', description: 'string' },
 };
 
 /** The shapes of the stored files, for the harness. */
@@ -373,12 +374,82 @@ export function isRagSetup(value: unknown): boolean {
 }
 
 /**
- * options.json of an LLM or a decision model: every option the model takes,
- * each described by an object that holds its default, and whose other fields
- * the page reads are of the kind it reads (MODEL_OPTION).
+ * The options the page draws in number fields of its own - with a label, a
+ * step and a range of the page, and nothing else of the option - when they
+ * are numbers (isNumberOption); otherwise as every other option.
+ */
+export const NUMBER_FIELD_OPTIONS = ['temperature', 'top_p', 'top_k', 'max_length', 'max_tokens', 'max_completion_tokens', 'max_new_tokens'];
+
+/**
+ * Whether the page draws an option as a number and sends the number: its
+ * type is none of enum, bool and string, and its default is a number. Any
+ * other option of no such type is drawn in a text field and sent as text.
+ */
+export const isNumberOption = (option: { type?: unknown; default?: unknown }): boolean =>
+  !['enum', 'bool', 'string'].includes(option.type as string) && typeof option.default === 'number';
+
+const isKeyName = (value: unknown): boolean => typeof value === 'string' && value !== '';
+
+/**
+ * options.json of an LLM: every option as the page draws it and sends it in a
+ * run. The rule mdb writes the file by (check_options_json of
+ * Model-Definition-Builder/cli/src/mdb/core/generator.py), word for word:
+ *
+ *     options.json         object: option name -> option
+ *     option               object that holds "default", and no NaN or
+ *                          Infinity (JSON has neither)
+ *     option.type          text, where given (absent or null: not given)
+ *     option.label         text, where given (absent or null: not given)
+ *     option.description   text, where given (absent or null: not given)
+ *     type "enum"          values: a non-empty list of texts
+ *                          default: one of values
+ *     type "bool"          default: true or false
+ *     option "API_KEY"     default: a non-empty text
+ *
+ * The page reads the file by that rule, with these differences only:
+ *   - it reads the default of every other option as well, which is a text, a
+ *     number or a boolean: a number is drawn in a number field and sent as a
+ *     number (isNumberOption), anything else in a text field and sent as
+ *     text - a default that is null, a list or an object it cannot draw as
+ *     written;
+ *   - it reads a bool's default "true" or "false" (a text) as the box ticked
+ *     or not, as it reads true or false;
+ *   - of API_KEY it reads the default alone (the name of the provider key),
+ *     and the label and the description of an option it draws in a number
+ *     field of its own (NUMBER_FIELD_OPTIONS) not at all.
+ * An option the page could draw only as something else - an enum without its
+ * values in a number field, a box off for a default of 1, a provider key
+ * named by a number - makes the file one the page cannot read.
  */
 export function isModelOptions(value: unknown): boolean {
-  return isObject(value) && Object.values(value).every((option) => fits(option, MODEL_OPTION) && 'default' in (option as object));
+  return (
+    isObject(value) &&
+    Object.entries(value).every(([key, option]) => {
+      if (!isObject(option) || !('default' in option)) return false;
+      if (key === 'API_KEY') return isKeyName(option.default);
+      if (option.type !== undefined && option.type !== null && typeof option.type !== 'string') return false;
+      if (NUMBER_FIELD_OPTIONS.includes(key) && isNumberOption(option)) return true;
+      if (!fits(option, MODEL_OPTION)) return false;
+      if (option.type === 'enum') {
+        const values = option.values;
+        return Array.isArray(values) && values.length > 0 && values.every((item) => typeof item === 'string') && (values as unknown[]).includes(option.default);
+      }
+      if (option.type === 'bool') return [true, false, 'true', 'false'].includes(option.default as never);
+      return ['string', 'number', 'boolean'].includes(typeof option.default);
+    })
+  );
+}
+
+/**
+ * options.json of a decision model: the page reads its API_KEY.default alone,
+ * the name of the provider key a call of the model sends - where API_KEY is
+ * given, it is an object whose default is a non-empty text. No other field of
+ * the file is read, so none is checked.
+ */
+export function isDecisionModelOptions(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  const key = Object.prototype.hasOwnProperty.call(value, 'API_KEY') ? value.API_KEY : undefined;
+  return key === undefined || key === null || (isObject(key) && isKeyName(key.default));
 }
 
 /** The JSON files the page reads, by their name, with the check of each. */
@@ -386,6 +457,7 @@ export const STORED_JSON_FILES = {
   'Prompt-Experiment-Tracker.json': isExperimentTracker,
   'Prompt-Optimization-Tracker.json': isOptimizationTracker,
   'rag-setup.json': isRagSetup,
+  // Of an LLM; the one of a decision model is read by isDecisionModelOptions.
   'options.json': isModelOptions,
 } as const;
 
@@ -400,11 +472,17 @@ export class StoredFileUnusable extends Error {
 
 /**
  * Read a stored JSON file and check it against the fields the page needs
- * from a file of its name. Throws as getFileContent does when the file could
+ * from a file of its name - by the function of its name, or by `check` where
+ * a reader reads less of it (the options.json of a decision model,
+ * isDecisionModelOptions). Throws as getFileContent does when the file could
  * not be read, and StoredFileUnusable when it was read and is no JSON or not
  * that file - which reading it again does not change.
  */
-export async function readStoredJson<T>(fileURI: string, fileName: StoredJsonName): Promise<T> {
+export async function readStoredJson<T>(
+  fileURI: string,
+  fileName: StoredJsonName,
+  check: (value: unknown) => boolean = STORED_JSON_FILES[fileName]
+): Promise<T> {
   const text = await (await getFileContent(fileURI)).text();
   let value: unknown;
   try {
@@ -412,6 +490,6 @@ export async function readStoredJson<T>(fileURI: string, fileName: StoredJsonNam
   } catch {
     throw new StoredFileUnusable(fileName);
   }
-  if (!STORED_JSON_FILES[fileName](value)) throw new StoredFileUnusable(fileName);
+  if (!check(value)) throw new StoredFileUnusable(fileName);
   return value as T;
 }
