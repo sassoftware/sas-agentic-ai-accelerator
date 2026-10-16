@@ -405,13 +405,12 @@ const isKeyName = (value: unknown): boolean => typeof value === 'string' && valu
  *                          default: one of values
  *     type "bool"          default: true or false
  *     option "API_KEY"     default: a non-empty text
+ *     any other option     default: a text, a number, true or false
  *
- * The page reads the file by that rule, with these differences only:
- *   - it reads the default of every other option as well, which is a text, a
- *     number or a boolean: a number is drawn in a number field and sent as a
- *     number (isNumberOption), anything else in a text field and sent as
- *     text - a default that is null, a list or an object it cannot draw as
- *     written;
+ * The default of any other option is drawn as it is written: a number in a
+ * number field, sent as a number (isNumberOption), anything else in a text
+ * field, sent as text - a default that is null, a list or an object cannot
+ * be. The page reads the file by that rule, with these differences only:
  *   - it reads a bool's default "true" or "false" (a text) as the box ticked
  *     or not, as it reads true or false;
  *   - of API_KEY it reads the default alone (the name of the provider key),
