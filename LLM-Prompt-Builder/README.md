@@ -465,7 +465,9 @@ a read of what is stored that fails, and a stored JSON file that is not the
 file of its name - neither is taken for what is stored (`verify-reads.js`),
 every stored JSON file the page reads as each of its writers writes it - for
 `options.json` every option shape mdb's generator writes, drawn and sent as
-written (`verify-round-trip.js`), the options group with its checkboxes
+written, and options of every name an element of the page has, each drawn as a
+control of its own, sent as written and loaded again with the run
+(`verify-round-trip.js`), the options group with its checkboxes
 (`verify-options.js`), the locale files (`verify-locales.js`), the built
 page itself (`verify-tokens.js`: no text SAS Job Execution would substitute as
 a `$token$` - the build removes the one marker comment of the bundler that

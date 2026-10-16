@@ -388,6 +388,20 @@ export const NUMBER_FIELD_OPTIONS = ['temperature', 'top_p', 'top_k', 'max_lengt
 export const isNumberOption = (option: { type?: unknown; default?: unknown }): boolean =>
   !['enum', 'bool', 'string'].includes(option.type as string) && typeof option.default === 'number';
 
+/**
+ * The id of the control of the option `key` of the LLM drawn at `index`: a
+ * number field of the page's own (an option of NUMBER_FIELD_OPTIONS that is a
+ * number) is `${key}${index}`; the control of every other option is
+ * `llm${index}-option-${key}`, with "%" and "-" of the name written as %25
+ * and %2D. So no option, whatever its name (model, options, a-seg-0), shares
+ * an id with another option, with the radios of a choice (`<id>-seg-<n>`) or
+ * with another element of the page.
+ */
+export const optionControlId = (index: number, key: string, option: unknown): string =>
+  NUMBER_FIELD_OPTIONS.includes(key) && isObject(option) && isNumberOption(option)
+    ? `${key}${index}`
+    : `llm${index}-option-${key.replace(/[%-]/g, (character) => (character === '%' ? '%25' : '%2D'))}`;
+
 const isKeyName = (value: unknown): boolean => typeof value === 'string' && value !== '';
 
 /**

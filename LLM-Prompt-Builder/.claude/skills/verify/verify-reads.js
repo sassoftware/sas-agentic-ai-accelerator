@@ -1475,7 +1475,9 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, NUMBER_FIELD_OPTI
     await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
     await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-free');
     await goStep(page, 'LPB', 'build');
-    const llm = await page.evaluate(() => {
+    // The control of my_mode, by its id (optionControlId).
+    const modeId = storedJson ? storedJson.optionControlId(0, 'my_mode', { default: 'fast', values: 5 }) : 'my_mode0';
+    const llm = await page.evaluate((modeId) => {
       const box = document.querySelector('#model0');
       const control = (id) => {
         const element = document.getElementById(id);
@@ -1486,10 +1488,10 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, NUMBER_FIELD_OPTI
         off: Boolean(box?.disabled),
         note: (box?.closest('.form-check')?.querySelector('.pb-options-note, .pb-credential-note, .pb-name-note')?.textContent || '').trim(),
         temperature: control('temperature0'),
-        mode: control('my_mode0'),
+        mode: control(modeId),
         judge: [...document.querySelectorAll('#app-obj-LPB-judge-model option')].map((option) => option.value),
       };
-    });
+    }, modeId);
     step(
       llm.name === 'demo_llm' && !llm.off && llm.note === '' && llm.temperature === 'number=0.7' && llm.mode === 'text=fast' && llm.judge.includes('demo_llm') && pageErrors.length === 0,
       `an LLM whose options hold values of any kind where the page does not read them is usable, each option drawn as it is written (box ${llm.name}: ${llm.off ? 'off' : 'on'}; note: "${clip(llm.note)}"; temperature: ${llm.temperature}; my_mode: ${llm.mode}; offered as judge: ${llm.judge.includes('demo_llm')}; page errors: ${pageErrors.join(' | ') || 'none'})`

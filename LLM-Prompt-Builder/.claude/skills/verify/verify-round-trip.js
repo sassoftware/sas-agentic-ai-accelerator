@@ -55,6 +55,12 @@
  *     model): each file mdb writes is taken by the check of the page, and
  *     each option of it is drawn - on one page, an LLM per kind of file - and
  *     sent in a run as it is written; a shape mdb refuses writes nothing.
+ *     And options of every name an element of the page has, of every field
+ *     of an object and of names around the way the id of a control is made
+ *     of a name, written by mdb: each file is taken, and on the page each
+ *     option is drawn as a control of its own, sent as written, and chosen
+ *     as it was sent when the run is loaded, also from the tracker Save
+ *     Experiments wrote.
  *
  * The suite goes on after a check that failed and after a road that stopped.
  * The mock is found at VERIFY_BASE (default http://localhost:4173); the
@@ -552,16 +558,20 @@ function writersCensus(storedNames) {
       await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
       await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-free');
       await goStep(page, 'LPB', 'build');
-      // What is drawn for each option of each file.
-      const drawn = await page.evaluate((entries) => entries.map(({ name, keys }) => {
+      // What is drawn for each option of each file, found by the id of its
+      // control (optionControlId), which takes the index of its LLM.
+      const indexes = await page.evaluate((names) => names.map((name) => {
+        const box = [...document.querySelectorAll('#LPB-model-selector-container input[type=checkbox]')].find((input) => input.value === name && /^model\d+$/.test(input.id));
+        return box ? Number(box.id.replace(/^model/, '')) : null;
+      }), kinds.map(({ name }) => name));
+      const drawn = await page.evaluate((entries) => entries.map(({ name, keys, ids }) => {
         const box = [...document.querySelectorAll('#LPB-model-selector-container input[type=checkbox]')].find((input) => input.value === name);
         if (!box) return { name, box: 'missing' };
-        const index = box.id.replace(/^model/, '');
         const holder = box.closest('.form-check');
         const note = (holder?.querySelector('.pb-options-note, .pb-credential-note, .pb-name-note')?.textContent || '').trim();
         const controls = {};
-        for (const key of keys) {
-          const control = document.getElementById(`${key}${index}`);
+        for (const [at, key] of keys.entries()) {
+          const control = ids ? document.getElementById(ids[at]) : null;
           if (!control) {
             controls[key] = null;
             continue;
@@ -577,7 +587,7 @@ function writersCensus(storedNames) {
           };
         }
         return { name, off: box.disabled, note, controls };
-      }), kinds.map(({ name, file }) => ({ name, keys: Object.keys(file) })));
+      }), kinds.map(({ name, file }, at) => ({ name, keys: Object.keys(file), ids: indexes[at] === null ? null : Object.keys(file).map((key) => stored.optionControlId(indexes[at], key, file[key])) })));
       const wrongDrawn = [];
       for (const kind of kinds) {
         const seen = drawn.find((entry) => entry.name === kind.name) || {};
@@ -629,6 +639,186 @@ function writersCensus(storedNames) {
       step(
         usable.length > 0 && wrongSent.length === 0,
         `a run of every kind of options.json mdb writes sends each option as it is written (${usable.length} LLMs called: ${sent.size}; sent otherwise: ${wrongSent.length}${wrongSent.length ? ` - ${clip(wrongSent.slice(0, 6).join('; '))}` : ''})`
+      );
+    });
+  }
+
+  // ==========================================================================
+  // options.json: an option of any name, drawn, sent and loaded again
+  // ==========================================================================
+  // The control of an option is found by its id (optionControlId). It was
+  // `${name}${index}`, the id of another element for some names: an option
+  // named model read the box of its LLM, one named options the div of its
+  // options, and one named __proto__ was not sent at all. The names here:
+  // every id of the page, with the digits at its end and without them (the
+  // name whose control would have had that id), every field of
+  // Object.prototype and __proto__, and names around the way an id is made
+  // of a name (OPTION_NAME_PROBES). mdb writes each name alone as an enum of
+  // two values, and every name it writes together in one file; each file it
+  // writes is taken by the check of the page. The file of all of them is the
+  // options.json of three LLMs: each option is drawn as a choice of its own
+  // inside its LLM, with its default chosen and no id twice on the page; a
+  // run sends each as written; and the run loaded - from the tracker in
+  // memory and from the one Save Experiments wrote - chooses each option as
+  // it was sent.
+  const OPTION_NAME_PROBES = ['a', 'a-b', 'a%2Db', 'a%', 'a-seg', 'a-seg-0', 'a-seg-1', '-', '%'];
+  {
+    await road('options of every name an element of the page has, drawn, sent and loaded again', async (page) => {
+      await openPage(page);
+      await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
+      await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-free');
+      const ids = await page.evaluate(() => [...document.querySelectorAll('[id]')].map((element) => element.id));
+      const names = [...new Set([...ids, ...ids.map((id) => id.replace(/\d+$/, '')), ...Object.getOwnPropertyNames(Object.prototype), ...OPTION_NAME_PROBES])].filter((name) => name !== '');
+      // mdb writes them.
+      const python = resolvePython();
+      const script = path.join(PROJECT, '.claude', 'skills', 'verify', 'options-writer.py');
+      const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'options-names-'));
+      fs.writeFileSync(path.join(folder, 'names.json'), JSON.stringify(names));
+      const run = python
+        ? spawnSync(python.command, [...python.args, '-I', script, REPOSITORY, path.join(folder, 'out.json'), path.join(folder, 'names.json')], { encoding: 'utf8', timeout: 600000, maxBuffer: 1 << 26 })
+        : { status: null, stderr: 'no Python interpreter found (set VERIFY_PYTHON)' };
+      const answer = run.status === 0 ? parsed(fs.readFileSync(path.join(folder, 'out.json'), 'utf8')) || {} : {};
+      const alone = answer.names || [];
+      const together = answer.together || {};
+      const file = together.written ? parsed(together.written) : undefined;
+      const notTaken = alone.filter((entry) => entry.written !== null && !check('options.json', parsed(entry.written))).map((entry) => entry.key);
+      const refusedByMdb = alone.filter((entry) => entry.written === null);
+      const takenTogether = file !== undefined && check('options.json', file);
+      step(
+        run.status === 0 && alone.length === names.length && notTaken.length === 0 && takenTogether && ['model', 'options', '__proto__'].every((name) => names.includes(name)),
+        `every options.json mdb writes for an option named like an element of the page, a field of an object or around the way an id is made of a name is taken by the check of the page (${names.length} names, model, options and __proto__ among them: ${['model', 'options', '__proto__'].every((name) => names.includes(name))}; ${alone.length - refusedByMdb.length} written alone, ${refusedByMdb.length} refused by mdb${refusedByMdb.length ? ` - ${clip(refusedByMdb.slice(0, 6).map((entry) => `${entry.key}: ${String(entry.refused).split('\n')[0]}`).join('; '))}` : ''}; written alone and not taken: ${notTaken.join(', ') || 'none'}; all of them in one file: ${(together.keys || []).length}, ${together.written ? (takenTogether ? 'taken' : 'not taken') : `not written (${clip(together.refused || run.stderr || run.error || 'it did not run')})`})`
+      );
+      if (!takenTogether) return;
+      const keys = Object.keys(file);
+      const llms = ['rtn_0', 'rtn_1', 'rtn_2'];
+      const secret = 'key-of-the-names';
+      await page.route('**/credentials/domains/agentic-ai-keys/secrets**', async (route) => {
+        const answered = await route.fetch();
+        const body = await answered.json();
+        if (file.API_KEY) body.secrets[file.API_KEY.default] = Buffer.from(secret).toString('base64');
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+      });
+      await page.route('**/modelRepository/projects/llm-proj/models**', async (route) => {
+        if (route.request().method() !== 'GET') return route.continue();
+        const answered = await route.fetch();
+        const body = await answered.json();
+        if (!(new URL(route.request().url()).searchParams.get('filter') || '').includes('deprecated')) {
+          body.items = [...(body.items || []), ...llms.map((name, index) => ({ id: `rtn-${index}`, name }))];
+          if (typeof body.count === 'number') body.count += llms.length;
+        }
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+      });
+      await page.route('**/modelRepository/models/rtn-*/contents**', (route) =>
+        route.request().method() === 'GET'
+          ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ id: 'c-rtn', name: 'options.json', fileUri: '/files/files/rtn-options' }] }) })
+          : route.continue()
+      );
+      await page.route('**/files/files/rtn-options/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: together.written }));
+      const sent = new Map();
+      await page.route('**/scr/**', (route) => {
+        const model = decodeURIComponent(new URL(route.request().url()).pathname.split('/')[2] || '');
+        if (!llms.includes(model)) return route.continue();
+        const body = parsed(route.request().postData() || '{}') || {};
+        sent.set(model, ((body.inputs || []).find((input) => input.name === 'options') || {}).value);
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { response: `answer of ${model}`, run_time: 1, prompt_length: 1, output_length: 1 } }) });
+      });
+      await openPage(page);
+      await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
+      await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-free');
+      await goStep(page, 'LPB', 'build');
+      // The index of each LLM, and the id of the control of each option.
+      const indexes = await page.evaluate((names) => names.map((name) => {
+        const box = [...document.querySelectorAll('#LPB-model-selector-container input[type=checkbox]')].find((input) => input.value === name && /^model\d+$/.test(input.id));
+        return box ? Number(box.id.replace(/^model/, '')) : null;
+      }), llms);
+      const controlIds = indexes.map((index) => (index === null ? null : keys.filter((key) => key !== 'API_KEY').map((key) => [key, stored.optionControlId(index, key, file[key])])));
+      // What is drawn: each option a choice inside its LLM, its default chosen.
+      const shown = () =>
+        page.evaluate(([llmNames, perLLM]) => {
+          const counts = new Map();
+          for (const element of document.querySelectorAll('[id]')) counts.set(element.id, (counts.get(element.id) || 0) + 1);
+          return llmNames.map((name, at) => {
+            const box = [...document.querySelectorAll('#LPB-model-selector-container input[type=checkbox]')].find((input) => input.value === name && /^model\d+$/.test(input.id));
+            if (!box || !perLLM[at]) return { name, missing: true };
+            const index = box.id.replace(/^model/, '');
+            const holder = document.getElementById(`options${index}`);
+            const faults = [];
+            if (counts.get(box.id) !== 1) faults.push(`the box ${box.id} ${counts.get(box.id)} times`);
+            if (!holder || counts.get(holder.id) !== 1) faults.push(`the options ${holder ? `${holder.id} ${counts.get(holder.id)} times` : 'missing'}`);
+            const chosen = {};
+            for (const [key, id] of perLLM[at]) {
+              const control = document.getElementById(id);
+              const radios = [...document.getElementsByName(`${id}-seg`)];
+              if (!control || !holder || !holder.contains(control)) {
+                faults.push(`${key}: no control of its own (${id})`);
+                continue;
+              }
+              if (counts.get(id) !== 1) faults.push(`${key}: the id ${id} ${counts.get(id)} times`);
+              for (const radio of radios) if (counts.get(radio.id) !== 1 || !holder.contains(radio)) faults.push(`${key}: the choice ${radio.id} ${counts.get(radio.id)} times, or outside its LLM`);
+              if (JSON.stringify(radios.map((radio) => radio.value)) !== '["low","high"]') faults.push(`${key}: the choices ${JSON.stringify(radios.map((radio) => radio.value))}`);
+              const picked = (radios.find((radio) => radio.checked) || {}).value;
+              chosen[key] = picked === control.value ? picked : `${control.value} (choice ${picked})`;
+            }
+            return { name, ticked: box.checked, off: box.disabled, faults, chosen };
+          });
+        }, [llms, controlIds]);
+      const allChosen = (seen, value) => seen.flatMap((llm) => (llm.missing ? [`${llm.name} not listed`] : Object.entries(llm.chosen).filter(([, chosen]) => chosen !== value).map(([key, chosen]) => `${llm.name} ${key}: ${chosen}`)));
+      const drawn = await shown();
+      const drawFaults = drawn.flatMap((llm) => (llm.missing ? [`${llm.name} not listed`] : [...(llm.off ? [`${llm.name} off`] : []), ...llm.faults.map((fault) => `${llm.name} ${fault}`)]));
+      const notHigh = allChosen(drawn, 'high');
+      step(
+        drawFaults.length === 0 && notHigh.length === 0 && pageErrors.length === 0,
+        `each option of every name is drawn as a choice of its own inside its LLM, with its default chosen and no id twice on the page (${llms.length} LLMs of ${keys.length} options; wrong: ${clip([...drawFaults, ...notHigh].slice(0, 8).join('; ') || 'none')}; page errors: ${pageErrors.join(' | ') || 'none'})`
+      );
+      // A run of the three.
+      await page.evaluate((names) => {
+        for (const box of document.querySelectorAll('#LPB-model-selector-container input[type=checkbox]')) {
+          if (/^model\d+$/.test(box.id) && names.includes(box.value) !== box.checked) box.click();
+        }
+      }, llms);
+      await page.fill(lpb('user-prompt'), 'A question for options of every name');
+      await page.click(lpb('run-experiment'));
+      await waitUntil(async () => sent.size >= llms.length, 'every LLM of the run is called', 120000);
+      await waitUntil(async () => (await textOf(page, lpb('run-experiment'))) === 'Run Experiments', 'the run has ended', 120000);
+      await atRest();
+      const want = `{${keys.map((key) => (key === 'API_KEY' ? `API_KEY:${secret}` : `${key}:${file[key].default}`)).join(',')}}`;
+      const wrongSent = llms.filter((name) => sent.get(name) !== want).map((name) => `${name}: ${clip(JSON.stringify(sent.get(name)))}`);
+      step(wrongSent.length === 0, `a run sends each option of every name as it is written (sent otherwise: ${wrongSent.join('; ') || 'none'}; written: ${clip(want)})`);
+      // Every option chosen otherwise, then the run loaded: each as it was sent.
+      const chooseLow = () =>
+        page.evaluate((perLLM) => {
+          for (const pairs of perLLM) for (const [, id] of pairs || []) document.getElementById(`${id}-seg-0`)?.click();
+        }, controlIds);
+      const loadRun = async () => {
+        await chooseLow();
+        const low = allChosen(await shown(), 'low');
+        await page.click(`${lpb('pet-0')} .pet-run-load`);
+        await waitUntil(async () => allChosen(await shown(), 'high').length === 0, 'every option is chosen as it was sent', 30000).catch(() => {});
+        const seen = await shown();
+        return { low, high: allChosen(seen, 'high'), unticked: seen.filter((llm) => !llm.missing && !llm.ticked).map((llm) => llm.name) };
+      };
+      const fromMemory = await loadRun();
+      step(
+        fromMemory.low.length === 0 && fromMemory.high.length === 0 && fromMemory.unticked.length === 0,
+        `the run loaded chooses each option of every name as it was sent, and ticks its LLMs (not chosen otherwise before: ${clip(fromMemory.low.slice(0, 4).join('; ') || 'none')}; not as sent: ${clip(fromMemory.high.slice(0, 6).join('; ') || 'none')}; LLMs not ticked: ${fromMemory.unticked.join(', ') || 'none'})`
+      );
+      // Saved, opened again, and loaded from the tracker that was written.
+      const log = await saveExperiments(page);
+      const upload = uploadsOf(log, 'model-free', 'Prompt-Experiment-Tracker.json').pop();
+      await page.route('**/modelRepository/models/model-free/contents**', (route) =>
+        route.request().method() === 'GET'
+          ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ id: 'c-rtn-trk', name: 'Prompt-Experiment-Tracker.json', fileUri: '/files/files/rtn-trk' }] }) })
+          : route.continue()
+      );
+      await page.route('**/files/files/rtn-trk/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: upload ? upload.text : '[]' }));
+      await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-used');
+      await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-free');
+      await goStep(page, 'LPB', 'build');
+      await waitUntil(async () => (await savedRuns(page)) > 0, 'the saved run is drawn', 30000).catch(() => {});
+      const fromTracker = await loadRun();
+      step(
+        Boolean(upload) && fromTracker.low.length === 0 && fromTracker.high.length === 0 && fromTracker.unticked.length === 0 && pageErrors.length === 0,
+        `saved and opened again, the run loaded chooses each option of every name as it was sent (tracker uploaded: ${Boolean(upload)}; not chosen otherwise before: ${clip(fromTracker.low.slice(0, 4).join('; ') || 'none')}; not as sent: ${clip(fromTracker.high.slice(0, 6).join('; ') || 'none')}; LLMs not ticked: ${fromTracker.unticked.join(', ') || 'none'}; page errors: ${pageErrors.join(' | ') || 'none'})`
       );
     });
   }

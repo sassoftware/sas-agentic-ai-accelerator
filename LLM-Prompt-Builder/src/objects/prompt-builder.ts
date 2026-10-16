@@ -15,6 +15,7 @@ import {
   isNumberOption,
   isReservedModelName,
   NUMBER_FIELD_OPTIONS,
+  optionControlId,
   readStoredJson,
   StoredFileUnusable,
   TRACKER_META_KEYS,
@@ -589,7 +590,8 @@ function openModelManagerLink(
  * `API_KEY:OpenAI`, `normalize:true`) round-trip without breaking parsing.
  */
 function parseScrOptionsString(optionsStr: string | null | undefined): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
+  // No prototype: an option named __proto__ is a field like any other.
+  const result: Record<string, unknown> = Object.create(null);
   if (!optionsStr) return result;
   const inner = String(optionsStr).trim().replace(/^\{/, '').replace(/\}$/, '');
   if (inner.trim() === '') return result;
@@ -2008,7 +2010,7 @@ export async function buildPromptBuilder(
           if (optionKey === 'API_KEY' || (NUMBER_FIELD_OPTIONS.includes(optionKey) && isNumberOption(optionMeta))) return;
           const tooltipText = String(optionMeta?.description ?? optionKey);
           optionsDiv.appendChild(createOptionLabel(optionDisplayLabel(optionKey, optionMeta), tooltipText));
-          optionsDiv.appendChild(createTypedOptionControl(optionKey, optionMeta, `${optionKey}${index}`));
+          optionsDiv.appendChild(createTypedOptionControl(optionKey, optionMeta, optionControlId(index, optionKey, optionMeta)));
         });
 
         modelDiv.appendChild(checkbox);
@@ -2980,12 +2982,13 @@ export async function buildPromptBuilder(
         if (promptBuilderCheckbox.checked) {
           const currentlySelectedModel: { name: string; options: Record<string, unknown> } = {
             name: promptBuilderCurrentLLM.name,
-            options: {},
+            // No prototype: an option named __proto__ is a field like any other.
+            options: Object.create(null) as Record<string, unknown>,
           };
           Object.keys(promptBuilderCurrentLLM.options ?? {}).forEach((key) => {
             if (key !== 'API_KEY') {
               const optionMeta = promptBuilderCurrentLLM.options![key];
-              const control = document.getElementById(`${key}${index}`) as
+              const control = document.getElementById(optionControlId(index, key, optionMeta)) as
                 | HTMLInputElement
                 | HTMLSelectElement
                 | null;
@@ -4442,7 +4445,9 @@ export async function buildPromptBuilder(
           const modelData = trackerEntry[availableLLM.name] as ModelExperimentData;
           Object.entries(modelData?.options ?? {}).forEach(([optionKey, optionValue]) => {
             if (optionKey === 'API_KEY') return;
-            const optionInput = document.getElementById(`${optionKey}${llmIndex}`) as
+            const optionInput = document.getElementById(
+              optionControlId(llmIndex, optionKey, availableLLM.options?.[optionKey])
+            ) as
               | HTMLInputElement
               | HTMLSelectElement
               | null;

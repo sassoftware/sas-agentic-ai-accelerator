@@ -1,7 +1,7 @@
 """Every option shape mdb's generator can write into an options.json, written
 by mdb itself - for verify-round-trip.js.
 
-    python options-writer.py <repository> <out.json>
+    python options-writer.py <repository> <out.json> [<names.json>]
 
 mdb is loaded from <repository>/Model-Definition-Builder/cli/src. The shapes
 come from the code: every field of OptionSpec (mdb/core/manifest.py) that
@@ -19,6 +19,14 @@ auth - and goes the way `mdb generate` takes it: ModelManifest.model_validate,
 then render_assets. The result is a list of
     {"shape": <name>, "key": <option>, "written": <options.json text> | null,
      "refused": <the message of mdb> | null}
+
+With <names.json>, a list of option names, it writes names in place of
+shapes: each name alone as an enum of two values in that manifest - an
+informational option, which mdb writes under a name of any text (an option
+that reaches the score code needs a name of letters, digits and
+underscores) -, and every name written alone together in one manifest -
+    {"names": [{"key": <name>, "written": ..., "refused": ...}],
+     "together": {"keys": [<name>], "written": ..., "refused": ...}}
 """
 import copy
 import json
@@ -72,6 +80,23 @@ if not bases:
     raise SystemExit('no model of LLM-Definitions with an api_key auth that mdb generates without options')
 base = bases[0]
 UNSUPPORTED = 'is not supported by score template family'
+
+if len(sys.argv) > 3:
+    names = json.loads(Path(sys.argv[3]).read_text(encoding='utf-8'))
+    OPTION = {'type': 'enum', 'default': 'high', 'values': ['low', 'high'], 'informational': True}
+    alone = []
+    for name in names:
+        data = copy.deepcopy(base)
+        data['options'] = {name: dict(OPTION)}
+        written, refused = write(data)
+        alone.append({'key': name, 'written': written, 'refused': refused})
+    keys = [entry['key'] for entry in alone if entry['written'] is not None]
+    data = copy.deepcopy(base)
+    data['options'] = {name: dict(OPTION) for name in keys}
+    written, refused = write(data)
+    out.write_text(json.dumps({'mdb': mdb.__file__, 'base': base['model_id'], 'names': alone, 'together': {'keys': keys, 'written': written, 'refused': refused}}, indent=1), encoding='utf-8')
+    print(f'{len(names)} names, {len(keys)} written alone, together {"written" if written is not None else "refused"}, mdb from {mdb.__file__}')
+    raise SystemExit(0)
 
 
 def base_for(key):
