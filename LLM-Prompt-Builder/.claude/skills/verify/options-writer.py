@@ -4,9 +4,12 @@ by mdb itself - for verify-round-trip.js.
     python options-writer.py <repository> <out.json>
 
 mdb is loaded from <repository>/Model-Definition-Builder/cli/src. The shapes
-come from the code: every field of OptionSpec (mdb/core/manifest.py) with a
-value of each kind its annotation allows - a field this script has no values
-for stops it -, for an option of no vocabulary and for every option of the
+come from the code: every field of OptionSpec (mdb/core/manifest.py) that
+reaches options.json as the page reads it with a value of each kind its
+annotation allows - a field this script does not know stops it; min, max,
+range and informational, which shape only the range text the page does not
+read and the score code, are left at none -, for an option of no vocabulary
+and for every option of the
 vocabulary (definition-core/static/option-vocabulary.json), with the provider
 key of AuthBlock beside it, and the option base_url, which the generator
 writes from provider.params of a self-hosted model, with a value of every kind

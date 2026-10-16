@@ -66,7 +66,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
-const { trackPagesOf, quiet, dialogShown, dialogsGone, gate } = require('./page-waits.cjs');
+const { trackPagesOf, quiet, dialogShown, clickInDialog, dialogsGone, gate } = require('./page-waits.cjs');
 const { parse, walk, callsInSource, sourceFiles } = require('./source-census.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
@@ -439,10 +439,7 @@ function writesCensus() {
     await atRest();
     return { id: await page.inputValue(picker), opened };
   };
-  const confirmDialog = async (page) => {
-    await dialogShown(page, '.modal.show');
-    await page.click('.modal.show .btn-danger');
-  };
+  const confirmDialog = (page) => clickInDialog(page, '.btn-danger');
 
   // ============================================================================
   // The Prompt Builder
@@ -941,10 +938,8 @@ function writesCensus() {
       await page.click('#LPB-delete-project-button');
       // One dialog per prompt-test of the project.
       const asked = (await (await fetch(`${BASE}/modelRepository/projects/${project}/models`)).json()).items.length;
-      for (let dialog = 0; dialog < asked; dialog++) {
-        await confirmDialog(page);
-        await dialogsGone(page);
-      }
+      for (let dialog = 0; dialog < asked; dialog++) await confirmDialog(page);
+      await dialogsGone(page);
       await waitUntil(async () => (await toasts(page)).length > 0, 'a toast', 20000);
       await atRest();
       const said = (await toasts(page)).join(' | ');

@@ -11,7 +11,7 @@
 const crypto = require('crypto');
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
-const { trackPagesOf, quiet, dialogShown, dialogsGone, gate } = require('./page-waits.cjs');
+const { trackPagesOf, quiet, dialogShown, clickInDialog, dialogsGone, gate } = require('./page-waits.cjs');
 const { resolvePython, compilePython, callScoreModel, withoutTlsDefault, expectedTlsVerify, tlsVerifyOf } = require('./python-check.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
@@ -1931,7 +1931,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
       return t && t.includes(n);
     }, `confirmation modal ${n}`);
     await projectUsageNote(n);
-    await page.click('.modal.show .btn-danger');
+    await clickInDialog(page, '.btn-danger');
   }
   await waitUntil(
     async () => (await getLog()).some((e) => e.method === 'DELETE' && e.url === '/modelRepository/projects/proj-1'),

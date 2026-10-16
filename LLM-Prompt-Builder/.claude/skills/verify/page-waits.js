@@ -90,6 +90,19 @@ async function dialogShown(page, selector, timeout = 60000) {
 }
 
 /**
+ * Click a button of the dialog that is shown, and wait until that dialog is
+ * gone - a confirmation dialog of the page is removed once it has faded out.
+ * Where one dialog follows another (one per item of a Delete project), a wait
+ * on every dialog being gone can miss the moment between the two.
+ */
+async function clickInDialog(page, button, timeout = 60000) {
+  await dialogShown(page, '.modal.show', timeout);
+  const dialog = await page.$('.modal.show');
+  await page.click(`.modal.show ${button}`);
+  await dialog.waitForElementState('hidden', { timeout }).catch(() => {});
+}
+
+/**
  * No Bootstrap dialog on the page any more: every one has faded out and is
  * hidden, its backdrop is gone, and the page behind it can be used - which
  * is when a dialog hands its answer on (`hidden.bs.modal`).
@@ -133,4 +146,4 @@ function gate(timeout = 180000) {
   };
 }
 
-module.exports = { trackRequests, trackPagesOf, quiet, dialogShown, dialogsGone, gate };
+module.exports = { trackRequests, trackPagesOf, quiet, dialogShown, clickInDialog, dialogsGone, gate };

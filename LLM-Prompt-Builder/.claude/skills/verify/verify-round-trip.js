@@ -48,7 +48,8 @@
  *     decision model, isDecisionModelOptions), which mdb generated and
  *     uploads; and every option shape mdb's generator can write, written by
  *     mdb itself (options-writer.py runs its Python: every field of
- *     OptionSpec with a value of each kind it takes, for an option of no
+ *     OptionSpec that reaches options.json as the page reads it, with a
+ *     value of each kind it takes, for an option of no
  *     vocabulary and every option of the vocabulary an LLM template
  *     supports, the provider key of AuthBlock, and base_url of a self-hosted
  *     model): each file mdb writes is taken by the check of the page, and
@@ -340,7 +341,7 @@ function writersCensus(storedNames) {
     const reasons = [...new Set(refusedByMdb.map((shape) => String(shape.refused).split('\n')[0].replace(/'[^']*'/g, "'...'")))];
     step(
       ok,
-      `every options.json mdb's generator writes for an option shape is taken by the check of the page (mdb: ${answer.mdb || 'not run'}; ${shapes.length} shapes - every field of OptionSpec with a value of each kind, ${(answer.notOfAnLlm || []).length} options of the vocabulary of no LLM template left out (${(answer.notOfAnLlm || []).join(', ') || 'none'}): ${written.length} written, ${refusedByMdb.length} refused by mdb (${clip(reasons.join(' | ') || 'none')}); ${writtenKinds.size} kinds of file; written and not taken: ${notTaken.length}${notTaken.length ? ` - ${clip(notTaken.slice(0, 12).join('; '))}` : ''}${run.status === 0 ? '' : `; the writer: ${clip(run.stderr || run.error || 'it did not run')}`})`
+      `every options.json mdb's generator writes for an option shape is taken by the check of the page (mdb: ${answer.mdb || 'not run'}; ${shapes.length} shapes - every field of OptionSpec the page reads with a value of each kind, ${(answer.notOfAnLlm || []).length} options of the vocabulary of no LLM template left out (${(answer.notOfAnLlm || []).join(', ') || 'none'}): ${written.length} written, ${refusedByMdb.length} refused by mdb (${clip(reasons.join(' | ') || 'none')}); ${writtenKinds.size} kinds of file; written and not taken: ${notTaken.length}${notTaken.length ? ` - ${clip(notTaken.slice(0, 12).join('; '))}` : ''}${run.status === 0 ? '' : `; the writer: ${clip(run.stderr || run.error || 'it did not run')}`})`
     );
   }
 
