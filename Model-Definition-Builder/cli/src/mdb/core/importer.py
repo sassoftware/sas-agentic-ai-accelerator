@@ -177,9 +177,19 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
         notes.append("Azure definitions are converged onto the GA v1 endpoint - the generated scorer "
                      "differs from legacy dated-api-version scripts by design.")
 
-    # Options: keep the folder's defaults; API_KEY becomes auth.key_name
+    # Options: keep the folder's defaults; API_KEY becomes auth.key_name.
+    # What is read of options.json - the default of each option, the key name
+    # of API_KEY where one is given - keeps check_options_json, so a folder
+    # that breaks it is refused with the line naming the option.
+    from .generator import check_options_json
+    if not isinstance(options_doc, dict):
+        check_options_json(options_doc)
     api_key_entry = options_doc.pop("API_KEY", None)
+    if api_key_entry and not isinstance(api_key_entry, dict):
+        check_options_json({"API_KEY": api_key_entry})
     key_name = (api_key_entry or {}).get("default")
+    if key_name and not isinstance(key_name, str):
+        check_options_json({"API_KEY": {"default": key_name}})
     if key_name in ("ProviderName", "Provider"):
         # The base template's placeholder leaked into some folders (PR #6 finding);
         # normalize to the provider's LLM_API_KEYS KeyName
@@ -198,7 +208,9 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
             continue
         if name not in CORE_OPTIONS:
             notes.append(f"Option '{name}' is outside the core set - verify it against the vocabulary.")
-        option_specs[name] = OptionSpec(default=meta.get("default", 1))
+        read = {"default": meta.get("default", 1)} if isinstance(meta, dict) else meta
+        check_options_json({name: read})
+        option_specs[name] = OptionSpec(default=read["default"])
 
     row = read_row(fact_sheet, model_id) or {}
     if not row:

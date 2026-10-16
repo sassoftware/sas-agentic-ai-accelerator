@@ -1118,13 +1118,19 @@ def import_(
         console.print(f"[yellow]{_plain(model_id)} already has a definition.yaml - nothing imported.[/yellow]")
         raise typer.Exit(0)
     fact_sheet = ctx.fact_sheet(ctx.kind_of(folder))
-    result = import_folder(folder, fact_sheet)
+    try:
+        result = import_folder(folder, fact_sheet)
+    except GenerationError as exc:
+        console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
+        console.print("Nothing was written - the folder stays fully hand-maintained. "
+                      "Repair the option in its options.json, then rerun mdb import.")
+        raise typer.Exit(1)
     # Render BEFORE writing the manifest: a folder must never be left
     # half-adopted when e.g. an option cannot be resolved
     try:
         rendered = render_assets(result.manifest, ctx.core)
     except GenerationError as exc:
-        console.print(f"[red]{_plain(model_id)}: {_plain(exc)}[/red]")
+        console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
         console.print("Nothing was written - the folder stays fully hand-maintained. "
                       "Declare the option inline (type/description) in a definition.yaml "
                       "or extend the vocabulary, then rerun mdb import.")

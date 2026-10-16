@@ -1,0 +1,251 @@
+# Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""fix-mdb-26: the refusals of check_options_json on one line, what `mdb
+import` reads of a hand-maintained options.json, and the order of `mdb
+retire`.
+
+- gate-26 (V003): an option whose name holds a line break was refused by
+  `validate` over two lines; `import` and `add` printed the refusal as it
+  was too.
+- gate-26 (import): an options.json whose option had a default that is null,
+  a list or an object, or whose API_KEY default was no text, ended `mdb
+  import` in a traceback of the manifest's model; the one for API_KEY did
+  not name the option.
+- review-26 (retire): a generated file edited by hand was refused after the
+  manifest had been saved with its deprecated tag; the rerun the refusal asks
+  for then said "already deprecated." and did nothing.
+"""
+import ast
+import contextlib
+import io
+import json
+import shutil
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+import yaml
+from typer.testing import CliRunner
+
+from mdb import cli
+from mdb.core import generator, importer, validator
+from mdb.core.generator import GenerationError, _render_options_json, check_options_json
+from mdb.core.importer import import_folder
+from mdb.core.manifest import (
+    MANIFEST_FILENAME, AuthBlock, MetadataBlock, ModelManifest, OptionSpec, PricingBlock, ProviderBlock,
+    RuntimeBlock, TagsBlock,
+)
+from mdb.core.paths import DEFINITION_DIRS, FACT_SHEETS
+from mdb.viya import registry, session as viya_session
+
+#: A refusal whose option name holds a line break, as check_options_json words it.
+BROKEN_NAME = "a\nb[x]"
+SENTENCE = (f"Option '{BROKEN_NAME}' is a bool option with the default 1 - the default of a bool option is true "
+            "or false.")
+ONE_LINE = "Option 'a b[x]' is a bool option with the default 1 - the default of a bool option is true or false."
+
+CLI_SOURCE = Path(cli.__file__)
+
+
+def _printed(monkeypatch) -> io.StringIO:
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "console", cli._Console(file=out, width=1000, force_terminal=False, emoji=False))
+    return out
+
+
+def _relocated(tmp_path, monkeypatch, repo_root, model_id: str, kind: str = "llm") -> Path:
+    source = repo_root / DEFINITION_DIRS[kind]
+    target = tmp_path / "defs" / DEFINITION_DIRS[kind]
+    shutil.copytree(source / model_id, target / model_id,
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copy2(source / FACT_SHEETS[kind], target / FACT_SHEETS[kind])
+    monkeypatch.setenv("MDB_REPO", str(repo_root))
+    monkeypatch.setenv("MDB_DEFINITIONS", str(tmp_path / "defs"))
+    monkeypatch.setenv("SAS_SCR_ENDPOINT", "https://viya.example/llm")
+    return target / model_id
+
+
+def _files(folder: Path) -> dict:
+    return {path.relative_to(folder).as_posix(): path.read_bytes()
+            for path in sorted(folder.rglob("*")) if path.is_file()}
+
+
+@pytest.fixture
+def no_viya(monkeypatch):
+    """No SAS Viya: a session is refused as one without configuration, and
+    the setup and registration of `register` and the download of `pull` are
+    recorded instead."""
+    calls = []
+
+    def refused():
+        raise viya_session.ViyaConfigError("no SAS Viya in this test")
+
+    monkeypatch.setattr(viya_session, "create_session", refused)
+    monkeypatch.setattr(cli, "_viya_session", lambda: contextlib.nullcontext(object()))
+    monkeypatch.setattr(registry, "ensure_repository_and_project",
+                        lambda *args, **kwargs: calls.append("ensure") or SimpleNamespace(created=[]))
+    monkeypatch.setattr(registry, "register_model", lambda *args, **kwargs: calls.append("register"))
+    monkeypatch.setattr(registry, "pull_model", lambda session, model_id, defs_dir, force=False: SimpleNamespace(
+        kind="llm", had_definition=False, reconstructed_config=False, files=[]))
+    return calls
+
+
+# -- mdb import reads a hand-maintained options.json by the rule -------------
+
+def _hand_maintained(tmp_path, monkeypatch, repo_root) -> Path:
+    folder = _relocated(tmp_path, monkeypatch, repo_root, "gpt_5_mini")
+    (folder / MANIFEST_FILENAME).unlink()
+    (folder / ".mdb-lock.json").unlink(missing_ok=True)
+    return folder
+
+
+def _with_options(folder: Path, change) -> None:
+    options = json.loads((folder / "options.json").read_text(encoding="utf-8"))
+    options = change(options)
+    (folder / "options.json").write_text(json.dumps(options, indent=4), encoding="utf-8")
+
+
+def _set(name, value):
+    def change(options):
+        options[name] = value
+        return options
+    return change
+
+
+def _set_default(name, value):
+    def change(options):
+        options[name]["default"] = value
+        return options
+    return change
+
+
+#: Everything import reads of options.json that breaks the rule, with the line it is refused with.
+IMPORT_REFUSED = {
+    "options.json that is a list": (
+        lambda options: [options], "options.json is ["),
+    "an option that is a number": (
+        _set("max_completion_tokens", 4000),
+        "Option 'max_completion_tokens' is 4000, not an object that holds a default."),
+    "a default that is null": (
+        _set_default("max_completion_tokens", None),
+        "Option 'max_completion_tokens' has the default null - the default of an option is a text, a number, "
+        "true or false."),
+    "a default that is a list": (
+        _set_default("max_completion_tokens", [1]),
+        "Option 'max_completion_tokens' has the default [1] - the default of an option is a text, a number, "
+        "true or false."),
+    "a default that is an object": (
+        _set_default("max_completion_tokens", {"a": 1}),
+        "Option 'max_completion_tokens' has the default {\"a\": 1} - the default of an option is a text, a "
+        "number, true or false."),
+    "a default that is NaN": (
+        _set_default("max_completion_tokens", float("nan")),
+        "Option 'max_completion_tokens' holds NaN or Infinity, which JSON does not hold."),
+    "an API_KEY that is a text": (
+        _set("API_KEY", "OpenAI"),
+        "Option 'API_KEY' is \"OpenAI\", not an object that holds a default."),
+    "an API_KEY default that is a number": (
+        _set_default("API_KEY", 5),
+        "Option 'API_KEY' has the default 5 - its default is the name of the provider key, a non-empty text."),
+    "an API_KEY default that is true": (
+        _set_default("API_KEY", True),
+        "Option 'API_KEY' has the default true - its default is the name of the provider key, a non-empty "
+        "text."),
+    "an API_KEY default that is a list": (
+        _set_default("API_KEY", ["OpenAI"]),
+        "Option 'API_KEY' has the default [\"OpenAI\"] - its default is the name of the provider key, a "
+        "non-empty text."),
+}
+
+
+@pytest.mark.parametrize("case", sorted(IMPORT_REFUSED))
+def test_import_refuses_an_options_json_it_cannot_read_with_one_line(case, tmp_path, monkeypatch, repo_root):
+    change, line = IMPORT_REFUSED[case]
+    folder = _hand_maintained(tmp_path, monkeypatch, repo_root)
+    _with_options(folder, change)
+    before = _files(folder)
+    out = _printed(monkeypatch)
+    result = CliRunner().invoke(cli.app, ["import", "gpt_5_mini"])
+    assert result.exit_code == 1, (result.exception, out.getvalue())
+    assert [shown for shown in out.getvalue().splitlines() if shown.startswith(f"gpt_5_mini: {line}")], \
+        out.getvalue()
+    assert "Nothing was written" in out.getvalue()
+    assert _files(folder) == before
+
+
+#: What import reads otherwise than as a refusal - unchanged by the rule.
+IMPORT_TAKEN = {
+    "an API_KEY default that is empty: no key": (_set_default("API_KEY", ""), None),
+    "an API_KEY default that is null: no key": (_set_default("API_KEY", None), None),
+    "an API_KEY that is null: no key": (_set("API_KEY", None), None),
+    "an option without a default: 1": (lambda options: {**options, "seed": {"range": "any"}}, 1),
+    "a legacy Azure option of any default: left out": (_set("azure_api_version", {"default": None}), None),
+}
+
+
+@pytest.mark.parametrize("case", sorted(IMPORT_TAKEN))
+def test_import_still_takes_what_it_does_not_read_as_a_key_or_a_default(case, tmp_path, monkeypatch, repo_root):
+    change, seed = IMPORT_TAKEN[case]
+    folder = _hand_maintained(tmp_path, monkeypatch, repo_root)
+    _with_options(folder, change)
+    manifest = import_folder(folder, folder.parent / FACT_SHEETS["llm"]).manifest
+    if "API_KEY" in case:
+        assert manifest.provider.auth.mode == "none"
+    if seed is not None:
+        assert manifest.options["seed"].default == seed
+    assert "azure_api_version" not in manifest.options
+
+
+def _everything_the_generator_writes(core) -> list:
+    """The options.json the generator writes for every option of the
+    vocabulary and an inline option of every type (test_mdb_26's round trip),
+    with a key and without, for a provider and a self-hosted template."""
+    def valid(vocab):
+        return {"enum": (vocab.get("values") or ["x"])[0], "bool": True, "string": "text"}.get(vocab.get("type"), 1)
+    options = {name: OptionSpec(default=valid(vocab)) for name, vocab in core.vocabulary.items()}
+    options.update({
+        "my_number": OptionSpec(type="number", default=0.5, description="A number."),
+        "my_int": OptionSpec(type="int", default=3, description="An int."),
+        "my_on": OptionSpec(type="bool", default=True, description="On."),
+        "my_off": OptionSpec(type="bool", default=False, description="Off.", label="Off"),
+        "my_choice": OptionSpec(type="enum", default="b", values=["a", "b"], description="A choice."),
+        "my_text": OptionSpec(type="string", default="", description="A text."),
+        "my_note": OptionSpec(type="string", default="n", description="Informational.", informational=True),
+    })
+    written = []
+    for template, auth, params in (
+            ("openai_chat", AuthBlock(mode="api_key", key_name="OpenAI"), {}),
+            ("openai_compat_selfhosted", AuthBlock(mode="none"), {"base_url": "http://host:8000/v1"})):
+        manifest = ModelManifest(
+            model_id="test_fix_mdb_26", display_name="Test",
+            provider=ProviderBlock(adapter="openai", model_version="gpt-test", params=params, auth=auth,
+                                   endpoint="https://api.openai.com/v1/chat/completions"),
+            runtime=RuntimeBlock(template=template, requirements_profile="api-wrapper"),
+            options=options,
+            tags=TagsBlock(size_class="LLM", license_class="Proprietary", provider_tag="OpenAI", scr_sizing="small"),
+            metadata=MetadataBlock(description="Test.", pricing=PricingBlock(cost_type="Tokens")),
+            modeler="tester",
+        )
+        written.append(json.loads(_render_options_json(manifest, core)))
+    return written
+
+
+def test_import_reads_every_options_json_mdb_writes_as_written(tmp_path, monkeypatch, repo_root, core):
+    """Round trip: every options.json of the repository and everything the
+    generator can write, in a hand-maintained folder, is read by import with
+    the defaults and the key name it holds."""
+    documents = [json.loads(path.read_text(encoding="utf-8"))
+                 for kind in DEFINITION_DIRS.values() for path in sorted((repo_root / kind).glob("*/options.json"))]
+    documents += _everything_the_generator_writes(core)
+    assert len(documents) > 50
+    folder = _hand_maintained(tmp_path, monkeypatch, repo_root)
+    legacy = {"azure_openai_resource", "azure_api_version", "api_version", "endpoint_url", "azure_deployment"}
+    for document in documents:
+        check_options_json(document)
+        (folder / "options.json").write_text(json.dumps(document), encoding="utf-8")
+        manifest = import_folder(folder, folder.parent / FACT_SHEETS["llm"]).manifest
+        key = document.get("API_KEY", {}).get("default")
+        assert manifest.provider.auth.key_name == (key or None) or key in ("ProviderName", "Provider")
+        read = {name: spec.default for name, spec in manifest.options.items()}
+        assert read == {name: option["default"] for name, option in document.items()
+                        if name != "API_KEY" and name not in legacy}
