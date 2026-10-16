@@ -222,10 +222,10 @@ def test_a_file_that_breaks_the_rule_is_refused(case):
 
 def test_what_the_rule_leaves_alone_passes():
     """A field given as null is not given; values of an option that is no
-    enum, range and the default of any other option are not read."""
+    enum and range are not read."""
     check_options_json({
-        "x": {"default": None, "label": None, "description": None, "type": None, "values": [1], "range": 5},
-        "y": {"default": {"any": "kind"}, "type": "string"},
+        "x": {"default": 0.5, "label": None, "description": None, "type": None, "values": [1], "range": 5},
+        "y": {"default": "", "type": "string"},
         "API_KEY": {"default": "OpenAI", "range": "sk-****", "description": "The key."},
     })
 

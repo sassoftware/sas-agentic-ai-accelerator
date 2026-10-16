@@ -414,9 +414,10 @@ def check_options_json(entries: Any) -> None:
                              default: one of values
         type "bool"          default: true or false
         option "API_KEY"     default: a non-empty text
+        any other option     default: a text, a number, true or false
 
     Nothing else is checked: not `range`, not `values` of an option that is
-    no enum, not the default of any other option.
+    no enum.
 
     Raises GenerationError with a sentence naming the first option that
     breaks the rule.
@@ -452,6 +453,11 @@ def check_options_json(entries: Any) -> None:
             raise GenerationError(
                 f"Option 'API_KEY' has the default {_shown(default)} - its default is the name of the "
                 "provider key, a non-empty text.")
+        if (name != "API_KEY" and option.get("type") not in ("enum", "bool")
+                and not isinstance(default, (str, int, float))):
+            raise GenerationError(
+                f"Option '{name}' has the default {_shown(default)} - the default of an option is a text, "
+                "a number, true or false.")
 
 
 def check_options_file(path: Path) -> None:
