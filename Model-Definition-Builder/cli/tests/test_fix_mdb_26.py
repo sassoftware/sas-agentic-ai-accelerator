@@ -90,6 +90,82 @@ def no_viya(monkeypatch):
     return calls
 
 
+# -- every command that prints a refusal of the rule prints it on one line ---
+
+#: What raises the refusal of check_options_json in a command of cli.py.
+RULE_CALLS = {"render_assets", "_render_options_json", "check_options_file", "import_folder",
+              "validate_folder", "validate_all"}
+
+
+def _commands_that_reach_the_rule() -> set:
+    """Every command function of cli.py - a function under `@<app>.command`
+    - whose body calls one of RULE_CALLS, read from the source."""
+    found = set()
+    for node in ast.walk(ast.parse(CLI_SOURCE.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        decorated = any(isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr == "command"
+                        for d in node.decorator_list)
+        calls = {call.func.id for call in ast.walk(node)
+                 if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)}
+        if decorated and calls & RULE_CALLS:
+            found.add(node.name)
+    return found
+
+
+def _refusing(*args, **kwargs):
+    raise GenerationError(SENTENCE)
+
+
+#: Each such command, the argument list that drives it to the call and what is made to refuse there.
+DRIVEN = {
+    "add": (["add", "openai", "gpt-test", "--id", "zz_fix_mdb_26", "--yes", "--offline"],
+            [(cli, "render_assets")]),
+    "generate": (["generate", "gpt_5_mini"], [(cli, "render_assets")]),
+    "validate": (["validate", "gpt_5_mini"], [(validator, "render_assets")]),
+    "ship": (["ship", "gpt_5_mini"], [(validator, "render_assets")]),
+    "import_": (["import", "gpt_5_mini"], [(cli, "import_folder")]),
+    "import_ (render)": (["import", "gpt_5_mini"], [(cli, "render_assets")]),
+    "register": (["register", "gpt_5_mini"], [(cli, "_render_options_json")]),
+    "retire": (["retire", "gpt_5_mini"], [(cli, "render_assets")]),
+    "pull": (["pull", "gpt_5_mini", "--import", "--force"], [(cli, "import_folder")]),
+    "provider_check": (["provider", "check", "openai"], [(cli, "render_assets")]),
+}
+
+
+def test_every_command_that_reaches_the_rule_is_driven():
+    assert _commands_that_reach_the_rule() == {name.split(" ")[0] for name in DRIVEN}
+
+
+@pytest.mark.parametrize("case", sorted(DRIVEN))
+def test_a_refusal_of_the_rule_is_printed_on_one_line(case, tmp_path, monkeypatch, repo_root, no_viya):
+    arguments, refusing = DRIVEN[case]
+    folder = _relocated(tmp_path, monkeypatch, repo_root, "gpt_5_mini")
+    if case.startswith("import_"):
+        (folder / MANIFEST_FILENAME).unlink()
+    for module, name in refusing:
+        monkeypatch.setattr(module, name, _refusing)
+    out = _printed(monkeypatch)
+    result = CliRunner().invoke(cli.app, arguments)
+    assert result.exception is None or isinstance(result.exception, SystemExit), result.exception
+    lines = out.getvalue().splitlines()
+    assert [line for line in lines if ONE_LINE in line], out.getvalue()
+    assert not [line for line in lines if line.endswith("Option 'a")], out.getvalue()
+
+
+def test_validate_prints_the_refusal_of_a_name_with_a_line_break_on_one_line(tmp_path, monkeypatch, repo_root):
+    """gate-26: the probe of the finding, a manifest whose option name holds a
+    line break, through the real rule."""
+    folder = _relocated(tmp_path, monkeypatch, repo_root, "gpt_5_mini")
+    data = yaml.safe_load((folder / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    data["options"][BROKEN_NAME] = {"type": "bool", "default": 1, "description": "A flag."}
+    (folder / MANIFEST_FILENAME).write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    out = _printed(monkeypatch)
+    result = CliRunner().invoke(cli.app, ["validate", "gpt_5_mini"])
+    assert result.exit_code == 1
+    assert f"[V003] gpt_5_mini: {ONE_LINE}" in out.getvalue().splitlines()
+
+
 # -- mdb import reads a hand-maintained options.json by the rule -------------
 
 def _hand_maintained(tmp_path, monkeypatch, repo_root) -> Path:

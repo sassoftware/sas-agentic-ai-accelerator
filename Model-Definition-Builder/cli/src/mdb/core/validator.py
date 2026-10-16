@@ -19,6 +19,7 @@ from .generator import (
     AZURE_TEMPLATES, CoreAssets, GenerationError, list_custom_options, render_assets,
 )
 from .manifest import MANIFEST_FILENAME, ModelManifest, load_manifest
+from ..viya.answer import one_line
 
 Severity = Literal["error", "warning", "info"]
 
@@ -76,7 +77,7 @@ def validate_folder(folder: Path, core: CoreAssets, fact_sheet: Path) -> list[Is
     try:
         rendered = render_assets(manifest, core)
     except GenerationError as exc:
-        issues.append(Issue("V003", "error", model_id, str(exc)))
+        issues.append(Issue("V003", "error", model_id, one_line(str(exc))))
         return issues
 
     # V004 - generated files on disk match a fresh render (the CI drift gate)

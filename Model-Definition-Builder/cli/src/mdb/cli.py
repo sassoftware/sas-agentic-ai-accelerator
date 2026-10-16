@@ -727,7 +727,7 @@ def add(
         _review_catalog_values(manifest, skip_review=yes or accept_defaults, core=ctx.core)
         rendered = render_assets(manifest, ctx.core)
     except (GenerationError, ValueError) as exc:
-        console.print(f"[red]{_plain(exc)}[/red]")
+        console.print(f"[red]{_plain(one_line(str(exc)))}[/red]")
         raise typer.Exit(1)
 
     defs_name = kind_folder_name(manifest.kind)
