@@ -417,7 +417,14 @@ def check_options_json(entries: Any) -> None:
         any other option     default: a text, a number, true or false
 
     Nothing else is checked: not `range`, not `values` of an option that is
-    no enum.
+    no enum. Nor what the options string of a run, `{name:value,...}`,
+    carries to the score code: its parser (_options_parser.py.j2) ends a
+    value at the next comma (what follows is read as a further option where
+    it holds a colon, and left out where it does not),
+    takes the blanks and then the quotes off its ends, reads true and false
+    in any case as true and false, and reads a value as a number where
+    float() reads one that holds a point or int() one that does not; and
+    the Prompt Builder leaves an empty option of type string out of a run.
 
     Raises GenerationError with a sentence naming the first option that
     breaks the rule.
