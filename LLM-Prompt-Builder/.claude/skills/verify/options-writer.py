@@ -116,7 +116,7 @@ VALUES_OF_KIND = {
     float: [0.5, math.nan, math.inf],
     int: [3],
     bool: [True, False],
-    str: ['', 'low', '2'],
+    str: ['', 'low', '2', 'a,b'],
     type(None): [None],
 }
 
@@ -143,7 +143,7 @@ def values_of(name, annotation):
         elif kind == 'list':
             if of is not str:
                 raise SystemExit(f'OptionSpec.{name}: a list of {of}, which this script has no values for')
-            found.extend([[], ['low', 'high'], ['high', 'low', 'max', 'min', 'mid', 'off']])
+            found.extend([[], ['low', 'high'], ['high', 'low', 'max', 'min', 'mid', 'off'], ['low', 'a,b']])
         elif of in VALUES_OF_KIND:
             found.extend(VALUES_OF_KIND[of])
         else:

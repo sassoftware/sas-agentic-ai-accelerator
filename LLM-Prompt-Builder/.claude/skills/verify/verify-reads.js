@@ -535,7 +535,8 @@ const OPTION_RULES = (numberFields) => {
   for (const type of [undefined, 'string']) {
     const typed = (fields) => (type ? { type, ...fields } : fields);
     const kind = type ? 'a string option' : 'an option of no type';
-    for (const value of [0, 0.5, 'x', '', true, false]) add(`${kind} whose default is a text, a number or a boolean`, 'my_option', typed({ default: value }), true);
+    for (const value of [0, 0.5, 'x', '', 'a:b', true, false]) add(`${kind} whose default is a text, a number or a boolean`, 'my_option', typed({ default: value }), true);
+    for (const value of ['a,b', ',']) add(`${kind} whose default is a text with a comma, which a run cannot send`, 'my_option', typed({ default: value }), false);
     for (const value of [null, ['x'], { x: 1 }]) add(`${kind} whose default is ${value === null ? 'null' : Array.isArray(value) ? 'a list' : 'an object'}`, 'my_option', typed({ default: value }), false);
     add(`${kind} without its default`, 'my_option', typed({ label: 'x' }), false);
     add(`${kind} with values that are no texts, which are not read`, 'my_option', typed({ default: 'x', values: [1, 2] }), true);
@@ -550,6 +551,11 @@ const OPTION_RULES = (numberFields) => {
   add('an enum with no values', 'my_option', { type: 'enum', default: 'a', values: [] }, false);
   add('an enum whose values are no texts', 'my_option', { type: 'enum', default: 1, values: [1, 2] }, false);
   add('an enum one of whose values is no text', 'my_option', { type: 'enum', default: 'a', values: ['a', 1] }, false);
+  add('an enum one of whose values has a comma', 'my_option', { type: 'enum', default: 'a', values: ['a', 'b,c'] }, false);
+  add('an enum whose default has a comma', 'my_option', { type: 'enum', default: 'b,c', values: ['a', 'b,c'] }, false);
+  add('an enum whose values have a colon', 'my_option', { type: 'enum', default: 'a:b', values: ['a:b', 'c'] }, true);
+  for (const key of ['a,b', 'a:b', ',', ':']) add('an option whose name has a comma or a colon', key, { default: 'x' }, false);
+  for (const key of ['model', 'options', '__proto__', 'constructor', 'a-b', 'a%2Db', '']) add('an option of a name of any other text', key, { default: 'x' }, true);
   add('an enum whose values are a text', 'my_option', { type: 'enum', default: 'a', values: 'a' }, false);
   for (const value of [true, false, 'true', 'false']) add('a bool whose default is true or false', 'my_option', { type: 'bool', default: value }, true);
   for (const value of [1, 0, 'yes', '', null]) add('a bool whose default is not true or false', 'my_option', { type: 'bool', default: value }, false);
@@ -558,11 +564,13 @@ const OPTION_RULES = (numberFields) => {
     add('a number of a field of the page, whose label, description and values are not read', key, { default: 0.5, label: 5, description: { a: 1 }, values: [1] }, true);
     add('an option of a field of the page that is no number, drawn as any other', key, { default: 'low', label: 'x' }, true);
     add('an option of a field of the page that is no number, whose label is no text', key, { default: 'low', label: 5 }, false);
+    add('an option of a field of the page whose default is a text with a comma', key, { default: 'a,b' }, false);
     add('an enum of a field of the page', key, { type: 'enum', default: 'a', values: ['a'] }, true);
     add('an enum of a field of the page without its values', key, { type: 'enum', default: 0.5 }, false);
     add('a bool of a field of the page whose default is 1', key, { type: 'bool', default: 1 }, false);
   }
   add('API_KEY whose default is a text', 'API_KEY', { default: 'OpenAI', label: 5, values: [1], type: 7 }, true);
+  add('API_KEY whose default is a text with a comma, which a run does not send', 'API_KEY', { default: 'Open,AI' }, true);
   for (const value of ['', 5, true, ['OpenAI'], { name: 'OpenAI' }, null]) add('API_KEY whose default is no text, or an empty one', 'API_KEY', { default: value }, false);
   add('API_KEY without its default', 'API_KEY', { label: 'x' }, false);
   add('API_KEY that is a text', 'API_KEY', 'OpenAI', false);

@@ -410,18 +410,24 @@ const isKeyName = (value: unknown): boolean => typeof value === 'string' && valu
  * Model-Definition-Builder/cli/src/mdb/core/generator.py), word for word:
  *
  *     options.json         object: option name -> option
+ *     option name          no "," and no ":"
  *     option               object that holds "default", and no NaN or
  *                          Infinity (JSON has neither)
  *     option.type          text, where given (absent or null: not given)
  *     option.label         text, where given (absent or null: not given)
  *     option.description   text, where given (absent or null: not given)
- *     type "enum"          values: a non-empty list of texts
+ *     type "enum"          values: a non-empty list of texts, none with ","
  *                          default: one of values
  *     type "bool"          default: true or false
  *     option "API_KEY"     default: a non-empty text
- *     any other option     default: a text, a number, true or false
+ *     any other option     default: a text without ",", a number, true or
+ *                          false
  *
- * The default of any other option is drawn as it is written: a number in a
+ * A run sends the options as one text, {name:value,name:value}, which the
+ * score code splits at each "," and each name from its value at the first
+ * ":" - so a name holds neither, and a text a run can send of the file (the
+ * default of an option, a value of an enum) no ",". The default of any
+ * other option is drawn as it is written: a number in a
  * number field, sent as a number (isNumberOption), anything else in a text
  * field, sent as text - a default that is null, a list or an object cannot
  * be. The page reads the file by that rule, with these differences only:
@@ -432,23 +438,25 @@ const isKeyName = (value: unknown): boolean => typeof value === 'string' && valu
  *     field of its own (NUMBER_FIELD_OPTIONS) not at all.
  * An option the page could draw only as something else - an enum without its
  * values in a number field, a box off for a default of 1, a provider key
- * named by a number - makes the file one the page cannot read.
+ * named by a number - or send only as something else - a default "a,b" read
+ * as "a" - makes the file one the page cannot read.
  */
 export function isModelOptions(value: unknown): boolean {
   return (
     isObject(value) &&
     Object.entries(value).every(([key, option]) => {
       if (!isObject(option) || !('default' in option)) return false;
+      if (key.includes(',') || key.includes(':')) return false;
       if (key === 'API_KEY') return isKeyName(option.default);
       if (option.type !== undefined && option.type !== null && typeof option.type !== 'string') return false;
       if (NUMBER_FIELD_OPTIONS.includes(key) && isNumberOption(option)) return true;
       if (!fits(option, MODEL_OPTION)) return false;
       if (option.type === 'enum') {
         const values = option.values;
-        return Array.isArray(values) && values.length > 0 && values.every((item) => typeof item === 'string') && (values as unknown[]).includes(option.default);
+        return Array.isArray(values) && values.length > 0 && values.every((item) => typeof item === 'string' && !item.includes(',')) && (values as unknown[]).includes(option.default);
       }
       if (option.type === 'bool') return [true, false, 'true', 'false'].includes(option.default as never);
-      return ['string', 'number', 'boolean'].includes(typeof option.default);
+      return ['string', 'number', 'boolean'].includes(typeof option.default) && !(typeof option.default === 'string' && option.default.includes(','));
     })
   );
 }
